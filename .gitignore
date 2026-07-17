@@ -12,6 +12,9 @@ obj/
 # Generated parser-vs-FCS divergence report (cargo test --test fcs_divergence)
 fcs-divergence/
 
+# Generated name-resolution divergence report (resolve_divergence report generator)
+resolve-divergence/
+
 
 # Added by cargo
 
