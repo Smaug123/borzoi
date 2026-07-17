@@ -978,17 +978,34 @@ impl<'a> Resolver<'a> {
                         // being a marker may mean FCS opens the companion
                         // module's (unmodelled) values here (codex review,
                         // round 2, on the marker PR).
-                        // An **enumerable assembly module** is not this branch's
-                        // business: it has its own tiered interpretation
-                        // (`OpenInterpretation::AssemblyModule`, applied below), so a
-                        // *relative* or *shortened* open reaches it at its true
-                        // priority — this branch only ever sees the path as written
-                        // (review, Slice A). A `[<RequireQualifiedAccess>]` module
-                        // imports nothing at all (FCS errors, FS0892), so it needs no
-                        // conservatism either: nothing came in to shadow with.
-                        let enumerable = self
-                            .opened_assembly_module(&path)
-                            .is_some_and(|h| h == handle);
+                        // An **enumerable assembly module** at this path is not this
+                        // branch's business: it has its own tiered interpretation
+                        // (`OpenInterpretation::AssemblyModule`, applied below), which
+                        // imports its values at their true priority. A plain `open`
+                        // opens that module — **never** the bare type (that needs
+                        // `open type`) — so a same-named *type* companion at the path
+                        // (`type Tagged` beside the suffixed `module Tagged`, compiled
+                        // `TaggedModule`) must not make the open unmodelled: it is the
+                        // module that opens, and its values are modelled.
+                        //
+                        // The predicate is therefore "an enumerable module exists
+                        // here" — the exact condition `open_interpretations` uses to
+                        // emit the `AssemblyModule` tier — **not** "the type-preferring
+                        // `opened_assembly_type` handle *is* that module". The latter
+                        // reads the companion *type* (the first-wins `by_type` index
+                        // returns it over the source-named module), so at a collision
+                        // it wrongly deemed the open non-enumerable, set
+                        // `unmodelled_open_active`, and suppressed every later
+                        // *relative* reading — including the implicit
+                        // `Microsoft.FSharp.Collections` that makes a bare `Seq.toList`
+                        // resolve. When the module is genuinely unenumerable (its
+                        // source-name slot lost to an abbreviation marker, or its
+                        // contents dropped) `opened_assembly_module` is `None`, so the
+                        // conservative path below still fires.
+                        // A `[<RequireQualifiedAccess>]` module imports nothing at all
+                        // (FCS errors, FS0892), so it needs no conservatism either:
+                        // nothing came in to shadow with.
+                        let enumerable = self.opened_assembly_module(&path).is_some();
                         if !enumerable {
                             if self.assemblies.is_module(handle)
                                 || self.assemblies.is_abbreviation(handle)
@@ -1353,16 +1370,35 @@ impl<'a> Resolver<'a> {
                             // `Sub.f`) is not modelled yet (Slice B of the plan
                             // gives the walk a module-rooted prefix). Conservative
                             // while such an open is in scope — but only when the
-                            // module could actually seed one: it has nested
-                            // members. A childless module seeds nothing, and
-                            // blanketing it would suppress the merged *namespace*
-                            // half of the same path (Q9). (A residue-bearing
-                            // surface — an undecodable member could be the head —
-                            // is covered by the hidden-name blanket above.)
-                            if handles
-                                .iter()
-                                .any(|&h| !self.assemblies.children(h).is_empty())
-                            {
+                            // module could actually seed one: it has an
+                            // **accessible** nested member — a *public* nested
+                            // module/type a cross-assembly dotted head could root
+                            // at (`open M` sees only public members). A childless
+                            // module seeds nothing, and blanketing it would
+                            // suppress the merged *namespace* half of the same path
+                            // (Q9).
+                            //
+                            // The accessibility filter is load-bearing: an F#
+                            // module's `let` values compile to (often dozens of)
+                            // **non-public** compiler-generated closure classes that
+                            // surface as `children`, yet none can be a
+                            // cross-assembly dotted-head prefix. Counting them made
+                            // opening ANY closure-backed module defer every later
+                            // dotted head — `open Fantomas.FCS.Text.Range` (whose
+                            // `Range` module is all closure classes, no public nested
+                            // member) killed a bare `Seq.toList` two lines down. This
+                            // is the same accessible-child fix the R2 primitive-alias
+                            // shadow already made (`resolve_fsharp_core.rs`). (A
+                            // residue-bearing surface — an undecodable member could
+                            // be the head — is covered by the hidden-name blanket
+                            // above; `module_may_hide_nested_modules` feeds the
+                            // `incomplete_open_prefixes` veto separately.)
+                            if handles.iter().any(|&h| {
+                                self.assemblies
+                                    .children(h)
+                                    .iter()
+                                    .any(|&c| self.assemblies.is_public(c))
+                            }) {
                                 self.opaque_dotted_open = true;
                             }
                         }

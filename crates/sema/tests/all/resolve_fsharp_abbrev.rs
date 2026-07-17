@@ -319,16 +319,23 @@ fn open_type_of_an_abbreviation_marker_goes_opaque() {
 }
 
 #[test]
-fn plain_open_of_a_marker_with_a_module_companion_goes_opaque() {
+fn plain_open_of_a_marker_with_a_module_companion_binds_the_module_value() {
     // codex review round 2 (marker PR): `Lib.Companion` is BOTH an
     // abbreviation (`type Companion = string` — a marker, which wins the
     // source-name index slot) and a suffixed module companion
     // (`module Companion`, compiled `CompanionModule`). A plain
     // `open Lib.Companion` opens the MODULE's values in FCS, so its
-    // (unmodelled) `fromCompanion` shadows the earlier open's value; treating
-    // the marker as a plain class open — nothing imported, nothing opaque —
-    // would keep resolving `Other.fromCompanion` where FCS binds
-    // `Lib.Companion.fromCompanion`.
+    // `fromCompanion` shadows the earlier `open Other`'s same-named value.
+    //
+    // The companion module is enumerable, so we bind its `fromCompanion`
+    // exactly as FCS does — the precise, latest-open-wins target. (Previously
+    // the enumerable check compared the type-preferring `opened_assembly_type`
+    // handle — the abbreviation marker — against `opened_assembly_module`; they
+    // differ at a collision, so the open was wrongly deemed opaque and this
+    // deferred. The guard now asks whether a module interpretation *exists*, the
+    // §5a fix; see `docs/assembly-module-open-plan.md`.) The load-bearing
+    // property is unchanged: the marker-backed open does NOT leak `Other`'s
+    // value — it binds the companion module's own.
     let env = fixture_env();
     let src = "module M\nmodule Other =\n    let fromCompanion = 99\nopen Other\nopen Lib.Companion\nlet y = fromCompanion\n";
     let rf = resolve(src, &env);
@@ -339,30 +346,30 @@ fn plain_open_of_a_marker_with_a_module_companion_goes_opaque() {
             .unwrap()
             .into(),
     );
-    assert_eq!(
-        rf.resolution_at(range),
-        Some(Resolution::Deferred(DeferredReason::UnboundName)),
-        "the marker-backed open must shadow the earlier open's value, not leak it"
-    );
+    match rf.resolution_at(range) {
+        Some(Resolution::Member { parent, .. }) => assert_eq!(
+            env.entity(parent).name,
+            "CompanionModule",
+            "the marker-backed open must bind the companion module's own \
+             `fromCompanion`, not leak `Other`'s"
+        ),
+        other => panic!("expected the companion module's `fromCompanion` Member, got {other:?}"),
+    }
 }
 
-/// Review round 13, deliberately left standing (§5a of
-/// `docs/assembly-module-open-plan.md`). The sibling test above pins the *safe* half:
-/// `open Lib.Companion` must not leak the earlier open's `fromCompanion`. This pins the
-/// half we do not yet deliver — FCS **resolves** it, to the companion module's own value.
+/// Review round 13 (§5a of `docs/assembly-module-open-plan.md`), now **delivered**.
+/// The sibling test above pins the shadowing half: `open Lib.Companion` binds the
+/// companion module's `fromCompanion` over an earlier open's. This pins the bare
+/// half — FCS **resolves** `fromCompanion` to the companion module's own value.
 ///
 /// `Lib.Companion` is both an abbreviation (which wins the type-index slot) and a suffixed
 /// companion module. `opened_assembly_type` returns the type-index winner while
-/// `opened_assembly_module` returns the module, so the guard's `h == handle` identity test
-/// fails, the old abbreviation branch raises `opaque_value_open`, and the name defers —
-/// even though Slice A can enumerate that module perfectly well.
-///
-/// The fix is to ask whether the path *has* a module interpretation rather than whether it
-/// is the *same handle* as the type lookup. That re-opens the kind-collision seam §4c cut,
-/// so it belongs with Slice B's walk rework. Remove the `#[ignore]` and watch this fail as
-/// step one.
+/// `opened_assembly_module` returns the module, so the guard's old `h == handle` identity
+/// test failed, the abbreviation branch raised `opaque_value_open`, and the name deferred —
+/// even though the fold can enumerate that module perfectly well. The guard now asks whether
+/// the path *has* a module interpretation (`opened_assembly_module(&path).is_some()`), the
+/// exact condition `open_interpretations` uses to emit the `AssemblyModule` tier.
 #[test]
-#[ignore = "§5a of docs/assembly-module-open-plan.md: a companion module behind a type-index collision still defers"]
 fn an_opened_companion_module_behind_a_type_collision_still_resolves() {
     let env = fixture_env();
     let src = "module M\nopen Lib.Companion\nlet y = fromCompanion\n";
