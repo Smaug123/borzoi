@@ -248,9 +248,16 @@ fn run_rust_filter(source: &str) -> Result<Vec<NormalisedToken>, ()> {
             (tok, span)
         });
         filter(source, raw)
-            // Drop `BlockEnd` and `AndBang`: both map to `FSharpTokenKind.None`
-            // on the FCS side and are absent from its public token stream (see
-            // `lexfilter_diff::assert_filtered_streams_match`).
+            // Drop `BlockEnd` and `AndBang`: both are absent from FCS's public
+            // token stream, for *different* reasons. `OAND_BANG` has no
+            // `FSharpTokenKind` arm (→ `None`). `OBLOCKEND` *does* map to a real
+            // kind (`OffsideBlockEnd`), but FCS's outer LexFilter wrapper
+            // swallows every one and re-inserts `OBLOCKEND_COMING_SOON`/`_IS_HERE`
+            // tokens (→ `None`) in its place, so a real block end never reaches
+            // the public tokenizer. Either way `tokens-filtered` shows neither
+            // (see `common::assert_filtered_streams_match` for the full
+            // mechanism, and `lexfilter_diff::block_end` for the placement pins
+            // this drop would otherwise leave unverified).
             .filter(|(tok, _)| {
                 !matches!(
                     tok,
