@@ -2506,6 +2506,25 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Abbreviation
     }
 
+    /// Whether `handle` has a **public type-abbreviation child** named `name`, at
+    /// **any** arity — the generic-arity gap the arity-0 [`Self::nested`] walk
+    /// misses. A qualified path landing on such a child must defer: the
+    /// abbreviation's target is unmodelled, and FCS *chases* it before deciding
+    /// ownership — a record/union target falls through to a lower reading, a
+    /// class target keeps this module (probed) — so we can commit neither
+    /// direction and decline instead (D5, correctness over availability). Mirrors
+    /// the [`Self::is_abbreviation`] defer the arity-0 `nested` branch of
+    /// `assembly_path_records` already applies; this closes it for a *generic*
+    /// abbreviation, which `nested(.., 0)` skips on arity.
+    pub fn has_public_abbreviation_child(&self, handle: EntityHandle, name: &str) -> bool {
+        self.children(handle).iter().copied().any(|c| {
+            self.is_public(c) && self.is_abbreviation(c) && {
+                let e = self.entity(c);
+                e.source_name.as_deref().unwrap_or(&e.name) == name
+            }
+        })
+    }
+
     /// Find a member of `handle` by its display name, returning its
     /// [`MemberIndex`]. The first member with that name wins (overloads share a
     /// name; disambiguating them needs signatures, a later concern). `None` if
@@ -2824,11 +2843,15 @@ impl AssemblyEnv {
     ///   **generic** one — and FCS keeps the module for *every* generic type kind
     ///   except a **record** or **union**, whose bare name is not an expression
     ///   and which FCS re-roots to a lower-priority reading (probed exhaustively:
-    ///   class, struct, interface, delegate, and abbreviation children keep the
-    ///   module even with no accessible constructor, while `Collide.GenRec` /
-    ///   `Collide.GenUni` fall through to a lower same-named type's static). A
-    ///   kind-blind check would occupy the record/union and wrongly retain the
-    ///   module qualifier (codex review). The non-authoritative-signature gate on
+    ///   class, struct, interface, and delegate children keep the module even
+    ///   with no accessible constructor, while `Collide.GenRec` / `Collide.GenUni`
+    ///   fall through to a lower same-named type's static). A kind-blind check
+    ///   would occupy the record/union and wrongly retain the module qualifier
+    ///   (codex review). A generic **abbreviation** is *not* decided here — its
+    ///   target is unmodelled and FCS's answer is target-sensitive, so
+    ///   `assembly_path_records` defers the whole path via
+    ///   [`Self::has_public_abbreviation_child`] before this runs (codex review
+    ///   3). The non-authoritative-signature gate on
     ///   [`Self::qualified_path_occupied`] keeps this kind test on trustworthy
     ///   pickle data — a `--standalone` record misread as a class never reaches
     ///   here;
@@ -2892,9 +2915,15 @@ impl AssemblyEnv {
     /// is not an expression: those two alone FCS re-roots to a lower-priority
     /// reading (probed exhaustively — a class with only a private constructor, a
     /// struct with only the implicit default constructor, a non-constructible
-    /// interface, a delegate, and an abbreviation all keep the module; a record
-    /// and a union do not). So the rule is purely kind-based, *not*
-    /// constructibility.
+    /// interface, and a delegate all keep the module; a record and a union do
+    /// not). So the rule is purely kind-based, *not* constructibility.
+    ///
+    /// An **abbreviation** child is deliberately excluded from this test — it is
+    /// intercepted *earlier*, in `assembly_path_records`, by
+    /// [`Self::has_public_abbreviation_child`], which defers the whole path
+    /// (FCS's answer is target-sensitive, and the target is unmodelled). So an
+    /// abbreviation never reaches this predicate through the walk; the arm here
+    /// (which would return `true`, since it is not a record/union) is unreached.
     ///
     /// Only a **generic** child reaches this test — the arity-0 [`Self::nested`]
     /// step consumes non-generic children first — so `Enum` / `Measure` /

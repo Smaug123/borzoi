@@ -344,11 +344,13 @@ const MOD: &str = "QP.ModHalf.Collide";
 /// The type qualifier's full dotted path (our rendering).
 const TYP: &str = "QP.TypeHalf.Collide";
 
-/// Every generic `Gen*` child kind, paired with whether FCS keeps the **module**
-/// qualifier on `Collide.<name>` (probed exhaustively, both open orders). This
-/// is the systematic guard for [`child_type_keeps_module_qualifier`]: every type
-/// kind keeps the module EXCEPT a record/union, and the table is diffed against
-/// FCS so a mis-modelled kind reddens rather than passing silently.
+/// Every non-abbreviation generic `Gen*` child kind, paired with whether FCS
+/// keeps the **module** qualifier on `Collide.<name>` (probed exhaustively, both
+/// open orders). The systematic guard for `child_type_keeps_module_qualifier`:
+/// every type kind keeps the module EXCEPT a record/union, and the table is
+/// diffed against FCS so a mis-modelled kind reddens rather than passing
+/// silently. Abbreviations are *not* here — FCS chases their (unmodelled) target
+/// so they defer, covered by [`abbreviation_children_defer_the_qualifier`].
 const SHAPES: &[(&str, bool)] = &[
     ("GenCls", true),        // class, public ctor
     ("GenClsPriv", true),    // class, only a private ctor — still owned by the module
@@ -356,9 +358,17 @@ const SHAPES: &[(&str, bool)] = &[
     ("GenStructDef", true),  // struct, only the implicit default ctor
     ("GenIface", true),      // interface — not constructible, yet owned by the module
     ("GenDel", true),        // delegate
-    ("GenAbbr", true),       // abbreviation (FCS chases the target)
     ("GenRec", false),       // record — bare name is not an expression, falls through
     ("GenUni", false),       // union — likewise
+];
+
+/// The generic type-**abbreviation** children, with the kind FCS's target-chase
+/// lands on (`true` = the qualifier FCS keeps is the module, `false` = FCS falls
+/// through to the type). We model neither — both defer — so this pairing is only
+/// the FCS-side pin the defer test documents against.
+const ABBREVS: &[(&str, bool)] = &[
+    ("GenAbbrCls", true),  // abbreviation -> class: FCS keeps the module
+    ("GenAbbrRec", false), // abbreviation -> record: FCS falls through to the type
 ];
 
 fn fixture_env() -> AssemblyEnv {
@@ -369,14 +379,14 @@ fn fixture_env() -> AssemblyEnv {
 }
 
 /// A snippet under `opens` that references `Collide.<name>` once for every name
-/// the cells assert on — the fixed cells plus every [`SHAPES`] entry — so
-/// `at(src, "Collide.<name>")` finds each exactly once.
+/// the cells assert on — the fixed cells, every [`SHAPES`] entry, and every
+/// [`ABBREVS`] entry — so `at(src, "Collide.<name>")` finds each exactly once.
 fn fixture_src(opens: &str) -> String {
     let mut src = format!(
         "module Snippet\n{opens}let a = Collide.fromModule ()\nlet b = Collide.TypeOnly ()\n\
          let c = Collide.Shared ()\nlet d = Collide.Equals\nlet e = Collide.CaseOnly\n"
     );
-    for (i, (name, _)) in SHAPES.iter().enumerate() {
+    for (i, (name, _)) in SHAPES.iter().chain(ABBREVS.iter()).enumerate() {
         src.push_str(&format!("let s{i} = Collide.{name} ()\n"));
     }
     src
@@ -562,6 +572,39 @@ fn fixture_cells_with_the_module_open_last() {
 #[test]
 fn fixture_cells_with_the_type_open_last() {
     fixture_order_independent_cells(&fixture_src("open QP.ModHalf\nopen QP.TypeHalf\n"));
+}
+
+/// A generic type **abbreviation** child (`ABBREVS`): FCS chases the target
+/// before deciding ownership — a class target keeps the module, a record target
+/// falls through to the type — so FCS's answer is *target-sensitive*. Our
+/// projection does not model the abbreviation target, so we **defer** the whole
+/// path (`has_public_abbreviation_child` → `ProjectShadowed`), making no claim on
+/// the qualifier in *either* direction. That is sound both ways: committing the
+/// module would be wrong for a record target, committing the type wrong for a
+/// class target (codex review). Asserted with the module open last, where our
+/// module tier is tried first and the defer actually fires (with the type open
+/// last the type tier resolves its own static first — the modules-before-types
+/// gap, not this concern).
+#[test]
+fn abbreviation_children_defer_the_qualifier() {
+    let src = fixture_src("open QP.TypeHalf\nopen QP.ModHalf\n");
+    let env = fixture_env();
+    let rf = resolve_src(&src, &env);
+    let uses = fcs_uses(&src, &[ensure_qualifier_fixture_built()]);
+
+    for &(name, fcs_keeps_module) in ABBREVS {
+        let path = format!("Collide.{name}");
+        // Pin FCS's target-sensitive answer both ways, so the divergence we are
+        // deliberately avoiding is documented, not assumed.
+        if fcs_keeps_module {
+            assert_fcs_qualifier_is_module(&uses, &src, name);
+        } else {
+            assert_fcs_qualifier_is_type(&uses, &src, name);
+        }
+        // We defer: no claim on the qualifier or the leaf, whatever FCS did.
+        assert_no_claim(&rf, qualifier_of(&src, &path));
+        assert_no_claim(&rf, at(&src, &path));
+    }
 }
 
 /// KNOWN GAP (pinned red, `resolve_string_qualifier_repro` mould): FCS searches

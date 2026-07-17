@@ -99,6 +99,18 @@ impl<'a> Resolver<'a> {
                 recs.push((src.text_range(), Resolution::Entity(child)));
                 parent = child;
                 i += 1;
+            } else if self
+                .assemblies
+                .has_public_abbreviation_child(parent, &names[i])
+            {
+                // A *generic* type-abbreviation child the arity-0 `nested` step
+                // above missed: defer the whole path, exactly as the arity-0
+                // nested-abbreviation branch does. Its target is unmodelled, so
+                // FCS may chase it to a record/union (which falls through to a
+                // lower reading) or a class (which keeps this module) — we cannot
+                // tell which, so we must not commit the module qualifier here
+                // (codex review). ProjectShadowed defers, never a wrong target.
+                return AssemblyPath::ProjectShadowed;
             } else {
                 match self.assemblies.static_lookup(parent, &names[i]) {
                     StaticLookup::Resolved(idx) => {

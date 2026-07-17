@@ -33,9 +33,16 @@
 //   GenStructDef  — generic struct (implicit default)  -> module
 //   GenIface      — generic interface (no ctor at all) -> module
 //   GenDel        — generic delegate                   -> module
-//   GenAbbr       — generic abbreviation               -> module (chases target)
 //   GenRec        — generic record                     -> TYPE (falls through)
 //   GenUni        — generic union                      -> TYPE (falls through)
+//
+// The two `GenAbbr*` children are generic type ABBREVIATIONS. FCS chases the
+// target before deciding ownership: a class target keeps the module, a record
+// target falls through. Our projection does not model the target, so we DEFER
+// both (never a wrong qualifier), which the differential asserts:
+//
+//   GenAbbrCls    — abbreviation -> a class     (FCS: module; we defer)
+//   GenAbbrRec    — abbreviation -> a record    (FCS: TYPE;   we defer)
 
 namespace QP.ModHalf
 
@@ -70,14 +77,17 @@ module Collide =
 
     type GenDel<'a> = delegate of 'a -> unit
 
-    type GenAbbr<'a> = ResizeArray<'a>
-
     /// A generic **record** — its bare name is *not* an expression, so FCS falls
     /// through the module to the type half's static `GenRec`.
     type GenRec<'a> = { G: 'a }
 
     /// A generic **union** — likewise; falls through to the type half's static.
     type GenUni<'a> = OnlyCase of 'a
+
+    // Generic abbreviations. FCS chases the target (a class keeps the module, a
+    // record falls through); we do not model the target, so both defer.
+    type GenAbbrCls<'a> = ResizeArray<'a>
+    type GenAbbrRec<'a> = GenRec<'a>
 
     let fromModule () = 1
 
@@ -94,6 +104,7 @@ type Collide() =
     static member GenStructDef() = 8
     static member GenIface() = 9
     static member GenDel() = 10
-    static member GenAbbr() = 11
-    static member GenRec() = 12
-    static member GenUni() = 13
+    static member GenRec() = 11
+    static member GenUni() = 12
+    static member GenAbbrCls() = 13
+    static member GenAbbrRec() = 14
