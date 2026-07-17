@@ -2510,6 +2510,33 @@ fn diff_sig_opaque_type_then_indented_val_mutable() {
     assert_sig_asts_match("module M\ntype Shape\n    val mutable X : int\n");
 }
 
+/// An *attributed* `val` (`[<A>] val X`) promotes too — FCS makes it a
+/// module-level attributed `Val`. The boundary check looks past the attribute
+/// run for the `val`.
+#[test]
+fn diff_sig_opaque_type_then_attributed_val() {
+    assert_sig_asts_match(
+        "module M\ntype Shape\n    [<System.Obsolete>] val X : int\n    val Y : int\n",
+    );
+}
+
+/// But an *attributed non-`val`* (`[<A>] type …`) after an opaque type is not a
+/// valid module decl — FCS rejects it, so we must keep rejecting (no promotion).
+#[test]
+fn opaque_type_then_attributed_non_val_is_rejected() {
+    let src = "module M\ntype Shape\n    [<System.Obsolete>] type Y = int\n";
+    let parse = parse_sig(src);
+    assert!(
+        !parse.errors.is_empty(),
+        "{src:?}: an attributed non-`val` after an opaque type must stay a parse error",
+    );
+    assert_eq!(
+        parse.root.text().to_string(),
+        src,
+        "{src:?}: recovery must stay lossless",
+    );
+}
+
 /// An abutting `member` after an opaque type is *not* a valid module decl — FCS
 /// rejects it, so we must keep rejecting (no phantom promotion).
 #[test]

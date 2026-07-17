@@ -444,6 +444,16 @@ impl<'src> Parser<'src> {
                 // is not a valid module-sig-decl, so it stays on the `false` arm
                 // below and is skipped, matching FCS's rejection.
                 Some((Ok(FilteredToken::Raw(Token::Val)), _)) => true,
+                // The same, with a *leading attribute run* — `[<A>] val X`. FCS
+                // promotes the attributed `val` to a module-level `Val` too, so
+                // look past the attribute list(s) for the `val`; an attributed
+                // *non*-`val` (`[<A>] type`/`member`) is not a valid module decl
+                // and falls through to the `false` arm (FCS rejects it).
+                Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
+                    if self.attributed_val_follows_from(self.pos) =>
+                {
+                    true
+                }
                 // Any *other* raw token abuts the header with no separating
                 // layout virtual — an indented continuation (FCS errors).
                 Some((Ok(FilteredToken::Raw(_)), _)) => false,
@@ -969,6 +979,54 @@ impl<'src> Parser<'src> {
                 }
                 // A `BlockEnd` (dangling attribute) or anything else: not an
                 // attributed member sig in this scope.
+                _ => return false,
+            }
+        }
+    }
+
+    /// `[<…>]` attribute run followed — in the *same* offside scope — by a bare
+    /// `val`. Unlike [`Self::attributed_member_sig_follows_from`] (which admits
+    /// every member introducer for the *in-body* attributed-member case), only
+    /// `val` qualifies: after a bodyless opaque type, FCS promotes an abutting
+    /// attributed `val` (`type Shape`⏎`  [<A>] val X : …`) to a module-level
+    /// `SynModuleSigDecl.Val`, but rejects an attributed *non*-`val`
+    /// (`[<A>] type`/`member`/… — not a valid module-sig-decl). Walks the
+    /// *filtered* stream so offside boundaries are respected: only another
+    /// attribute list or a `BlockSep` may sit between the run and the `val`.
+    fn attributed_val_follows_from(&self, from: usize) -> bool {
+        let toks = &self.filtered_tokens;
+        let mut i = from;
+        let skip_trivia = |mut i: usize| {
+            while i < toks.len()
+                && matches!(&toks[i].0, Ok(FilteredToken::Raw(t)) if trivia_kind(t).is_some())
+            {
+                i += 1;
+            }
+            i
+        };
+        loop {
+            i = skip_trivia(i);
+            let Some((Ok(ft), _)) = toks.get(i) else {
+                return false;
+            };
+            match ft {
+                // Consume one attribute list `[< … >]`, then loop.
+                FilteredToken::Raw(Token::LBrackLess) => {
+                    i += 1;
+                    while i < toks.len()
+                        && !matches!(&toks[i].0, Ok(FilteredToken::Raw(Token::GreaterRBrack)))
+                    {
+                        i += 1;
+                    }
+                    if i >= toks.len() {
+                        return false;
+                    }
+                    i += 1; // past `>]`
+                }
+                // An offside continuation to the next list / the `val`.
+                FilteredToken::Virtual(Virtual::BlockSep) => i += 1,
+                // Only a bare `val` promotes to a module-level decl.
+                FilteredToken::Raw(Token::Val) => return true,
                 _ => return false,
             }
         }
