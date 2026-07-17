@@ -432,6 +432,18 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Raw(Token::Semi | Token::SemiSemi | Token::And)), _)) => {
                     true
                 }
+                // An abutting `val` spec — the `val` is *indented* under the
+                // bodyless header, so the lex-filter emits no separating layout
+                // virtual (it abuts `Name`). FCS nonetheless closes the opaque
+                // type and parses the `val` as a *module-level*
+                // `SynModuleSigDecl.Val`, promoted out of the type (a bodyless
+                // `type Shape`⏎`  val (|…|) : …`, `ProvidedTypes.fsi`). Leave the
+                // `val` at the cursor for the enclosing module-sig-decl loop; the
+                // opaque type is complete. Only `val` promotes this way — every
+                // *other* abutting raw token (`member`, `abstract`, `inherit`, …)
+                // is not a valid module-sig-decl, so it stays on the `false` arm
+                // below and is skipped, matching FCS's rejection.
+                Some((Ok(FilteredToken::Raw(Token::Val)), _)) => true,
                 // Any *other* raw token abuts the header with no separating
                 // layout virtual — an indented continuation (FCS errors).
                 Some((Ok(FilteredToken::Raw(_)), _)) => false,
@@ -496,7 +508,7 @@ impl<'src> Parser<'src> {
             // arm, which `peek_starts_type` would otherwise claim (choking on
             // the `#`). Reuses the impl-side `INLINE_IL_REPR` parser / node.
             self.parse_inline_il_repr();
-        } else if !self.peek_is_kind_marked_repr_start()
+        } else if !self.peek_is_sig_kind_marked_repr_start()
             && !self.peek_is_delegate_repr_start()
             && !self.peek_is_object_model_start()
             && self.peek_starts_type()
@@ -525,14 +537,16 @@ impl<'src> Parser<'src> {
             // routing it to the skip branch below instead skips the col-aligned
             // member run and preserves any genuine sibling.
             self.parse_sig_object_model_repr();
-        } else if self.peek_is_kind_marked_repr_start() {
+        } else if self.peek_is_sig_kind_marked_repr_start() {
             // An explicit-kind object-model body — `class … end` / `struct … end`
             // / `interface … end` (slice 3c), FCS's
             // `SynTypeDefnSigRepr.ObjectModel(Class|Struct|Interface, memberSigs,
-            // _)`. The member sigs reuse the 3a/3b loop; the kind + projection are
-            // already in the normaliser. Unlike a bare member body this needs no
-            // `opened_block` gate — the explicit `end` delimits the body, so there
-            // is no blockless column-0 ambiguity.
+            // _)` — or the verbose `begin … end` body, whose kind is
+            // `Unspecified` (`begin`/`end` pure delimiters, dropped from the AST;
+            // `test.fsi`'s `AbstractType`). The member sigs reuse the 3a/3b loop;
+            // the kind + projection are already in the normaliser. Unlike a bare
+            // member body this needs no `opened_block` gate — the explicit
+            // `end` delimits the body, so there is no blockless column-0 ambiguity.
             self.parse_sig_kind_marked_repr();
             // The explicit-`end` form emits an extra `OBLOCKSEP` *after* `end`,
             // before the outer body block's closing `OBLOCKEND` (FCS's
@@ -1126,10 +1140,22 @@ impl<'src> Parser<'src> {
         }
     }
 
+    /// `true` iff the repr at the cursor is an explicit-`end`-delimited
+    /// object-model body: a `class`/`struct`/`interface` kind marker (the shared
+    /// [`Self::peek_is_kind_marked_repr_start`]) **or** the verbose `begin … end`
+    /// body (a sig-only spelling of the *unspecified*-kind object model). Routed
+    /// through [`Self::parse_sig_kind_marked_repr`]. `begin` heads no *type* form
+    /// (unlike `struct (…)`), so it needs no disambiguation lookahead.
+    fn peek_is_sig_kind_marked_repr_start(&self) -> bool {
+        self.peek_is_kind_marked_repr_start()
+            || matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::Begin)), _)))
+    }
+
     /// Parse an explicit-kind-marked signature object-model body —
     /// `class … end` / `struct … end` / `interface … end` (phase 10.14 slice
-    /// 3c) — into a [`SyntaxKind::OBJECT_MODEL_REPR`], FCS's
-    /// `SynTypeDefnSigRepr.ObjectModel(Class|Struct|Interface, memberSigs, _)`.
+    /// 3c), or the verbose `begin … end` body (an *unspecified*-kind object
+    /// model) — into a [`SyntaxKind::OBJECT_MODEL_REPR`], FCS's
+    /// `SynTypeDefnSigRepr.ObjectModel(Class|Struct|Interface|Unspecified, memberSigs, _)`.
     /// Mirrors the impl-side [`Self::parse_kind_marked_repr`] framing (the kind
     /// keyword marker, the inner member block, the closing `end`), but parses
     /// member *signatures* via [`Self::parse_sig_member_block_items`] rather than
@@ -1142,10 +1168,16 @@ impl<'src> Parser<'src> {
     fn parse_sig_kind_marked_repr(&mut self) {
         self.builder
             .start_node(FSharpLang::kind_to_raw(SyntaxKind::OBJECT_MODEL_REPR));
-        // The kind keyword → the marker token the facade reads the kind off.
+        // The kind keyword → the marker token the facade reads the kind off. A
+        // verbose `begin … end` body carries *no* kind (FCS's
+        // `SynTypeDefnKind.Unspecified`, `begin`/`end` pure delimiters), so it
+        // rides a `BEGIN_TOK` marker — which no `is_class`/`is_struct`/
+        // `is_interface` accessor reads, leaving the projected kind `Unspecified`,
+        // exactly as a bare `type T = member …` body.
         let kw = match self.peek() {
             Some((Ok(FilteredToken::Raw(Token::Class)), _)) => SyntaxKind::CLASS_TOK,
             Some((Ok(FilteredToken::Raw(Token::Struct)), _)) => SyntaxKind::STRUCT_TOK,
+            Some((Ok(FilteredToken::Raw(Token::Begin)), _)) => SyntaxKind::BEGIN_TOK,
             _ => SyntaxKind::INTERFACE_TOK,
         };
         self.bump_into(kw);
