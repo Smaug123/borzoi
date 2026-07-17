@@ -2069,7 +2069,10 @@ impl<'a> Resolver<'a> {
                             self.assembly_prefixes_by_priority().any(|prefix| {
                                 match self.assembly_path_records(prefix, segments) {
                                     AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    AssemblyPath::ProjectShadowed => true,
+                                    // A higher abbreviation-defer reading is
+                                    // uncertain, so the root binding is unsafe.
+                                    AssemblyPath::ProjectShadowed
+                                    | AssemblyPath::AbbreviationOpaque => true,
                                     AssemblyPath::NoMatch => false,
                                 }
                             });
@@ -2079,7 +2082,9 @@ impl<'a> Resolver<'a> {
                             Some(root_recs)
                         }
                     }
-                    AssemblyPath::ProjectShadowed | AssemblyPath::NoMatch => None,
+                    AssemblyPath::ProjectShadowed
+                    | AssemblyPath::AbbreviationOpaque
+                    | AssemblyPath::NoMatch => None,
                 }
             } else {
                 // Value/member path: a project-bound head (nested module, local,

@@ -747,6 +747,29 @@ pub fn ensure_abbrev_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **module-vs-type qualifier** fixture
+/// (`tests/fixtures/qualifier_env`, `SemaQualifierFixture.dll`) once per test
+/// binary and return its `.dll` path. The deliberate `Collide` module/type
+/// bare-name collision for the qualifier-precedence differential
+/// (`tests/all/resolve_qualifier_precedence_diff.rs`); behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_qualifier_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/qualifier_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build qualifier fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaQualifierFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **OV-9 overload-corpus** fixture
 /// (`tests/fixtures/overload_corpus`, `OverloadCorpus.dll`) once per test binary
 /// and return its `.dll` path. `csharp` is the generated universe

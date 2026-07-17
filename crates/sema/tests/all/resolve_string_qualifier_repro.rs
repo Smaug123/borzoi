@@ -1,6 +1,6 @@
-//! Minimal repro for a name-resolution **precedence** bug found by the
-//! whole-project differential (`crates/lsp/tests/all/resolve_real_project_diff.rs`)
-//! against `WoofWare.PawPrint.Domain`:
+//! End-to-end pin for the name-resolution **precedence** rule a whole-project
+//! differential divergence (`crates/lsp/tests/all/resolve_real_project_diff.rs`,
+//! against `WoofWare.PawPrint.Domain`) once caught us breaking:
 //!
 //! ```fsharp
 //! open System
@@ -8,41 +8,29 @@
 //! if String.Equals (name, resourceName, StringComparison.Ordinal) then
 //! ```
 //!
-//! FCS resolves the `String` qualifier of `String.Equals(...)` to the **type**
-//! `System.String` (assembly `System.Runtime`); we resolve it to the FSharp.Core
-//! **module** `Microsoft.FSharp.Core.String` (the `String.length`/`String.concat`
-//! functions module), which auto-opens under the implicitly-opened
-//! `Microsoft.FSharp.Core`. `Equals` is a static method on the type, absent from
-//! the module, so ours is a wrong go-to-definition on that qualifier.
+//! Both `String` candidates are legitimately in scope (`open System` brings the
+//! **type** `System.String`; FSharp.Core's `[<AutoOpen>]` — and here an explicit
+//! later `open Microsoft.FSharp.Core` — brings the `String.length`/`String.concat`
+//! functions **module**), so the qualifier pick is a precedence question. F#'s
+//! rule (`ResolveExprLongIdentPrim`, NameResolution.fs): the module search runs
+//! first, but a module reading whose member lookup *fails inside the module*
+//! razes `UndefinedName` and does **not** own the path — `AtMostOneResultQuery`
+//! lets the type search re-root it, and `System.String`'s static `Equals` wins.
+//! FCS therefore resolves the qualifier to the type (assembly `System.Runtime`).
 //!
-//! Both are legitimately in scope (`open System` brings the type; FSharp.Core's
-//! `[<AutoOpen>]` brings the module), so this is a *precedence* question. F#'s
-//! rule: for `String.Equals`, name resolution of the long-identifier qualifier
-//! must consider the **type** `System.String` and find its static `Equals`, not
-//! stop at the same-named module whose value set has no `Equals`.
-//!
-//! **What triggers it (localised while writing this test):** the explicit
-//! `open Microsoft.FSharp.Core` *after* `open System`. With `open System` alone,
-//! the qualifier resolves correctly to `System.String` — so the module's
-//! auto-open is not enough on its own. It is the *later* explicit open that flips
-//! the pick: our resolver applies latest-open-wins to the qualifier and lands on
-//! the FSharp.Core `String` module, without checking that the member being
-//! accessed (`Equals`) exists only on the `System.String` type. So the fault is
-//! in the open-precedence step, not in member lookup.
-//!
-//! This is a **sema** bug, not a dependency-resolution one — the "we gave" side
-//! names a FSharp.Core entity, which proves both FSharp.Core and System.Runtime
-//! were read into the [`AssemblyEnv`] correctly; only the pick is wrong.
+//! We used to get this wrong: [`AssemblyEnv::static_lookup`]'s ownership
+//! fall-through treated the module like a class and walked the compiled class's
+//! base chain, where `Object`'s `Equals` made the name look "occupied" — so the
+//! later-open module reading wrongly owned the path (recording the FSharp.Core
+//! `String` module at the qualifier, a wrong go-to-definition) and the
+//! `open System` tier was never consulted. `module_qualified_occupied` now
+//! restricts a module receiver to FCS's in-module search domain; the sibling
+//! `static_lookup` pins live in `assembly_env.rs`
+//! (`static_lookup_on_a_module_ignores_object_members`).
 //!
 //! Deterministic (no FCS): the env is the real, shipped `FSharp.Core.dll` +
-//! `System.Runtime.dll`, and the test asserts the *correct* FCS answer directly,
-//! so it fails today and will pass once the precedence is fixed. `#[ignore]`d so
-//! it documents the bug without reddening the gate; run it explicitly:
-//!
-//! ```text
-//! nix develop -c cargo test -p borzoi-sema --test all \
-//!   resolve_string_qualifier_repro:: -- --ignored --nocapture
-//! ```
+//! `System.Runtime.dll`, and the test asserts the FCS answer directly (pinned by
+//! the whole-project differential above).
 
 use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll};
 
@@ -77,18 +65,15 @@ fn at(src: &str, needle: &str) -> TextRange {
 }
 
 #[test]
-#[ignore = "known sema precedence bug: the `String` qualifier of `String.Equals` \
-            resolves to the FSharp.Core `String` module instead of `System.String`; \
-            run with --ignored to reproduce"]
 fn string_qualifier_of_static_call_resolves_to_the_bcl_type_not_the_fsharp_core_module() {
     // `open System` makes the type `System.String` a candidate; FSharp.Core's
     // `String` module is already in scope via its assembly `[<AutoOpen>]`. Only
     // the type carries a static `Equals`, so FCS resolves the qualifier to it.
     // `open Microsoft.FSharp.Core` *after* `open System` mirrors the real file
     // (WoofWare's `Assembly.fs` opens `System` then, later, `Microsoft.FSharp.Core`):
-    // the FSharp.Core `String` module is re-introduced by a *later* open, and our
-    // resolver lets latest-open-wins pick it even though the `Equals` member lives
-    // only on the `System.String` type.
+    // the FSharp.Core `String` module is re-introduced by a *later* open, so its
+    // reading is the tier tried first — the member-absent module must not own the
+    // path there.
     let src =
         "module M\nopen System\nopen Microsoft.FSharp.Core\nlet b = String.Equals (\"a\", \"b\")\n";
     let parsed = parse(src);
