@@ -4795,7 +4795,7 @@ fn untrusted_property_provenance_is_queryable() {
 
 #[test]
 fn exact_undefined_child_gate_is_not_unpinned_by_an_unpinned_group() {
-    // `mark_property_group_children_unpinned` skips a child whose own
+    // `mark_property_group_children_provenance` skips a child whose own
     // condition is provably false. Under C.2b that proof includes an
     // exact-undefined read: `'$(NoSuch)' != ''` is exactly False (`NoSuch`
     // substitutes to ""), so a child carrying it cannot write whichever way
