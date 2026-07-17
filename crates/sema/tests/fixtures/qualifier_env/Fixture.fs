@@ -19,9 +19,15 @@
 //                                           qualifier has no base chain).
 //   CaseOnly   — union case only:           occupied in the module, absent on
 //                                           the type.
-//   Gen        — generic nested type:       occupies the module-qualified name
-//                                           even though an arity-0 lookup
-//                                           misses it.
+//   GenCls     — generic class + static:    a bare generic *class* name IS a
+//                                           constructor expression, so the module
+//                                           occupies (modules-first).
+//   GenRec     — generic record + static:   a bare record name is NOT a
+//                                           constructor expression, so FCS falls
+//                                           through to the type's static.
+//   GenUni     — generic union + static:    likewise not a constructor
+//                                           expression — falls through to the
+//                                           type's static.
 
 namespace QP.ModHalf
 
@@ -33,9 +39,18 @@ module Collide =
         | Equals
         | CaseOnly
 
-    /// A generic nested type: FCS's in-module type lookup is arity-indefinite
-    /// for a non-final segment, so the name is occupied at any arity.
-    type Gen<'a> = { G: 'a }
+    /// A generic **class** — `Collide.GenCls ()` is a constructor expression, so
+    /// the module owns the qualifier (`nested (.., 0)` misses it on arity, but
+    /// FCS's `ResolveObjectConstructorPrim` admits it).
+    type GenCls<'a>() =
+        member _.Kind = "cls"
+
+    /// A generic **record** — its bare name is *not* a constructor expression, so
+    /// FCS falls through the module to the type half's static `GenRec`.
+    type GenRec<'a> = { G: 'a }
+
+    /// A generic **union** — likewise not a bare constructor expression.
+    type GenUni<'a> = OnlyCase of 'a
 
     let fromModule () = 1
 
@@ -46,3 +61,6 @@ namespace QP.TypeHalf
 type Collide() =
     static member TypeOnly() = 3
     static member Shared() = 4
+    static member GenCls() = 5
+    static member GenRec() = 6
+    static member GenUni() = 7

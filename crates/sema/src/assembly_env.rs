@@ -2805,11 +2805,22 @@ impl AssemblyEnv {
     /// - an **unknowable pickle** ([`ExtensionMembers::Unknowable`]): the vals'
     ///   source names cannot be enumerated at all (a rename is invisible), so any
     ///   name may be occupied — own and defer, mirroring the open fold's residue;
-    /// - a public **child entity** of the name at any arity/kind: the arity-0
-    ///   resolvable ones were already taken by the path walk's
-    ///   [`Self::nested`] step, so this catches what that step's arity-0 key
-    ///   misses (FCS's in-module type lookup is `MaybeHaveArity` — a generic
-    ///   nested type still occupies), plus exceptions and submodules;
+    /// - a public **constructible child type** of the name — a class/struct with
+    ///   an accessible constructor (or a delegate). Only this: the arity-0
+    ///   children FCS *would* resolve here (a non-generic nested type, a
+    ///   submodule, an exception) were already consumed by the path walk's
+    ///   arity-0 [`Self::nested`] step, so the only child that reaches this clause
+    ///   is a **generic** one, and at the final segment FCS resolves a bare
+    ///   generic type name through `ResolveObjectConstructorPrim` — which admits a
+    ///   constructible class but **not** a record or union, whose bare name is not
+    ///   a constructor expression (probed: with a lower same-named type carrying a
+    ///   static `Gen`, `Collide.GenRec()`/`Collide.GenUni()` fall through to that
+    ///   static, while `Collide.GenCls()` — a class with a ctor — keeps the
+    ///   module). An arity-blind check here would occupy the record/union and
+    ///   wrongly retain the module qualifier (codex review). The residual: a
+    ///   pickle-less F# record/union read as [`EntityKind::Class`] over-occupies —
+    ///   bounded and rare, the same undecidable direction the resolver's
+    ///   `assembly_slot_class` documents;
     /// - a public child **union**'s accessible **case** of the name —
     ///   `[<RequireQualifiedAccess>]` unions included (their cases resolve at the
     ///   lowest in-module priority, but still *in the module* — the final
@@ -2839,7 +2850,9 @@ impl AssemblyEnv {
                 return false;
             }
             let c = self.entity(child);
-            if c.source_name.as_deref().unwrap_or(&c.name) == name {
+            if c.source_name.as_deref().unwrap_or(&c.name) == name
+                && self.child_is_bare_constructor_expr(c)
+            {
                 return true;
             }
             c.kind == EntityKind::Union
@@ -2848,6 +2861,35 @@ impl AssemblyEnv {
                     Some(cases) => cases.iter().any(|case| case == name),
                 }
         })
+    }
+
+    /// Whether a module child's **bare name** is a constructor expression FCS's
+    /// `ResolveObjectConstructorPrim` admits — the module-qualified final-segment
+    /// occupancy rule ([`Self::module_qualified_occupied`]). A **class** or
+    /// **struct** with an accessible public instance constructor, or a
+    /// **delegate** (its constructor is compiler-synthesised, so no member row is
+    /// required). Records, unions, interfaces, enums, measures, abbreviations,
+    /// and modules are **not** constructor expressions by their bare name — FCS
+    /// falls through them to a lower-priority reading (probed). The non-final /
+    /// intermediate case does not arise for the non-constructible kinds: an F#
+    /// record/union/interface cannot declare nested types, so a generic one is
+    /// always a leaf.
+    fn child_is_bare_constructor_expr(&self, entity: &Entity) -> bool {
+        match entity.kind {
+            EntityKind::Class | EntityKind::Struct => entity.members.iter().any(|m| {
+                matches!(m, Member::Method(mm) if mm.is_constructor && !mm.is_static)
+                    && member_is_public(m)
+            }),
+            EntityKind::Delegate => true,
+            EntityKind::Interface
+            | EntityKind::Enum
+            | EntityKind::Module
+            | EntityKind::Union
+            | EntityKind::Record
+            | EntityKind::Abbreviation
+            | EntityKind::Exception
+            | EntityKind::Measure => false,
+        }
     }
 
     /// The type of the **single unambiguous public instance field / non-indexer
