@@ -12,6 +12,7 @@
 //! harness lives in `tests/all/common/mod.rs`.
 
 mod assignment;
+mod block_end;
 mod closers;
 mod comments_strings;
 mod computation_expr;
