@@ -1,0 +1,13 @@
+[package]
+name = "borzoi-astgen"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+description = "Code generator for the borzoi-cst typed-AST facade (plan Stage 4)."
+
+# No external dependencies: the generator is a pure-Rust descriptor table, so it
+# adds nothing to `borzoi-cst`'s dependency closure (it is a sibling tool,
+# never a dependency of the crate it generates).
+[dependencies]
+borzoi-spawn = { path = "../../crates/spawn" }

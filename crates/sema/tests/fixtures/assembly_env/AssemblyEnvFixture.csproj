@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Minimal fixture for crates/sema's AssemblyEnv index test. Owned by the
+       sema crate (not shared with crates/assembly) so this slice stays
+       decoupled from the assembly crate's own evolving fixtures. We only read
+       the produced .dll through Ecma335Assembly::enumerate_type_defs, so the test
+       is robust to the assembly crate adding Entity/Member fields. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaAssemblyEnvFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+</Project>

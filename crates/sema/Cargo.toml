@@ -1,0 +1,32 @@
+[package]
+name = "borzoi-sema"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+borzoi-cst = { path = "../cst" }
+borzoi-assembly = { path = "../assembly" }
+rowan = "0.16"
+# Structured spans for the resolution fold, so the per-file cost of
+# `resolve_project` shows up in the LSP's OpenTelemetry traces. Optional and
+# gated behind the `otel` feature so the default, reusable core has no `tracing`
+# dependency at all; the LSP's own `otel` feature turns it on.
+tracing = { version = "0.1", optional = true }
+# Union-find / unification table (the crate `rustc` itself uses) — the
+# inference substrate for Phase 3 type inference (see `docs/type-checker-plan.md`
+# D8). Default features only (no `dogged`/`persistent`); its lone transitive dep
+# is `log`, already in the workspace lockfile.
+ena = "0.14"
+
+[features]
+# Emit per-file `resolve_file` spans from the resolution fold. Off by default so
+# the reusable core stays free of `tracing`; enabled transitively by the LSP's
+# `otel` feature (the only build that installs a subscriber to record them).
+otel = ["dep:tracing"]
+
+[dev-dependencies]
+borzoi-oracle-harness = { path = "../oracle-harness" }
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

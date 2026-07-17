@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Multi-TFM producer with the same TFM-conditional inner
+         ProjectReference shape as ../../multi-tfm-cond/leaf/. The F#
+         top in ../fsharp-top targets net10.0, so NuGet's nearest-
+         compatible algorithm selects net6.0 here and the inner
+         polyfill ref fires. -->
+    <TargetFrameworks>netstandard2.0;net6.0</TargetFrameworks>
+    <RootNamespace>MultiTfmCondFsharpLeaf</RootNamespace>
+    <AssemblyName>MultiTfmCondFsharpLeaf</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\polyfill\Polyfill.csproj"
+                      Condition="'$(TargetFramework)' == 'net6.0'" />
+  </ItemGroup>
+
+</Project>

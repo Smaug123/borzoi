@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's auto-open-module resolution test
+       (tests/all/resolve_autoopen.rs). A real F# library standing in for
+       FSharp.Core: it declares `[<AutoOpen>]` modules, a module-suffix
+       module / type clash, and a `[<CompiledName>]`-renamed generic member,
+       all emitted by the F# compiler with their genuine attributes *and* a
+       signature pickle. Read only through Ecma335Assembly::enumerate_type_defs. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaAutoOpenFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="RootModule.fs" />
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

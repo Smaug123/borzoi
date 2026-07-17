@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/assembly",
+    "crates/corpus-diff",
+    "crates/cst",
+    "crates/lsp",
+    "crates/msbuild",
+    "crates/nuget",
+    "crates/oracle-harness",
+    "crates/sema",
+    "crates/spawn",
+    "tools/astgen",
+]
+
+[workspace.package]
+license = "MIT OR Apache-2.0"

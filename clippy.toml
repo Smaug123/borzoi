@@ -1,0 +1,16 @@
+# Child-process launches must go through a serialised spawn wrapper —
+# `borzoi::spawn` in any process that links the LSP library,
+# or the SPAWN_LOCK wrappers each crate's tests/common carries. On
+# macOS (no `pipe2`) the stdio pipes a spawn creates get FD_CLOEXEC
+# only after `pipe()`, so concurrent spawns leak raw descriptors into
+# each other's children; a long-lived inheritor then holds a one-shot
+# child's stdout open forever and the draining `read()` never sees EOF
+# (observed 2026-07-10 as the parser_diff_ifdef suite hang — full
+# account in crates/lsp/src/spawn.rs). The wrappers themselves, and
+# call sites in provably single-threaded processes, carry
+# `#[allow(clippy::disallowed_methods)]` with a justification.
+disallowed-methods = [
+    { path = "std::process::Command::spawn", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+    { path = "std::process::Command::status", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+    { path = "std::process::Command::output", reason = "serialise via a SPAWN_LOCK wrapper (borzoi::spawn or the crate's tests/common) — see clippy.toml" },
+]

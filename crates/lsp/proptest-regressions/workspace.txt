@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d8e9accad7a02d4c3148f5fa86f2f6b6f4e1fccb0666017281b505ca6bec6cd1 # shrinks to tfm = "net10.0", gated = true

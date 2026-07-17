@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Polyfill is net6.0-only: it only makes sense to consume when the
+         leaf is being evaluated under net6.0. The leaf has a conditional
+         ProjectReference targeting this csproj — see ../leaf/Leaf.csproj. -->
+    <TargetFramework>net6.0</TargetFramework>
+    <RootNamespace>MultiTfmCondPolyfill</RootNamespace>
+    <AssemblyName>MultiTfmCondPolyfill</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

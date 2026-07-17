@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches the rest of the .NET surface in this repo (MiniLib,
+         fcs-dump, csharp-sidecar) so the test runner needs only one runtime
+         pack. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MemberShapes</AssemblyName>
+    <RootNamespace>MemberShapes</RootNamespace>
+    <!-- A non-default version so `projector_typeref_shapes` proves the
+         projector reads the manifest row rather than echoing a 1.0.0.0 stub. -->
+    <AssemblyVersion>1.2.3.4</AssemblyVersion>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+</Project>

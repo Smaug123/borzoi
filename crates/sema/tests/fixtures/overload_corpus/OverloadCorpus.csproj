@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The OV-9 overload matrix (docs/overload-resolution-plan.md §6, stage
+       OV-9). `Generated.cs` is NOT checked in: it is emitted deterministically
+       by the generator (crates/sema/tests/all/common/overload_corpus.rs) before this
+       project is built, so the C# universe and the Rust side's expectations
+       cannot drift apart. The default Compile glob picks it up.
+
+       C# — not F# — on purpose: an F#-authored assembly gets
+       `MethodLike::arg_group_count = None` (OV-6.1's currying gate), so every
+       multi-parameter candidate would be "possibly curried" and the engine would
+       defer the whole matrix. C# is the language whose emitted IL fixes the
+       single-argument-group fact the engine needs. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>OverloadCorpus</AssemblyName>
+    <RootNamespace>OvCorpus</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+</Project>

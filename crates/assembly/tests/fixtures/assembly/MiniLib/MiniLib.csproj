@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches the rest of the .NET surface in this repo (fcs-dump,
+         csharp-sidecar). Targeting a different framework here would force
+         the test runner to install a second runtime pack. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MiniLib</AssemblyName>
+    <RootNamespace>MiniLib</RootNamespace>
+    <!-- Deterministic build so the .dll bytes are stable across runs. The
+         diff test doesn't currently depend on byte-stability (it goes
+         through both readers, so logical equality suffices) but keeping it
+         deterministic makes binary-level debugging tractable. -->
+    <Deterministic>true</Deterministic>
+    <!-- Don't generate XML doc files or symbol packages — we only consume the
+         .dll, and the extra artefacts noisily fill bin/ and slow rebuilds. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+</Project>

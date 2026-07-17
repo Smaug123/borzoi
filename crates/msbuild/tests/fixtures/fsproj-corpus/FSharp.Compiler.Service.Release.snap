@@ -1,0 +1,459 @@
+is_partial: true
+properties (23):
+  AllowCrossTargeting
+  AssemblyName
+  CompressMetadata
+  Configurations
+  DefineConstants
+  EnableDefaultEmbeddedResourceItems
+  FsLexOutputFolder
+  FsYaccOutputFolder
+  IsPackable
+  NoInterfaceData
+  NoOptimizationData
+  NoWarn
+  Nullable
+  NuspecFile
+  OtherFlags
+  OutputType
+  PackageDescription
+  PackageIconFullPath
+  PackageId
+  PackageReleaseNotes
+  PackageTags
+  Tailcalls
+  TargetFrameworks
+items (381):
+  Compile       Utilities/NullHelpers.fs
+  Compile       Utilities/Activity.fsi
+  Compile       Utilities/Activity.fs
+  Compile       Utilities/Caches.fsi
+  Compile       Utilities/Caches.fs
+  Compile       Utilities/illib.fsi
+  Compile       Utilities/illib.fs
+  Compile       Utilities/sformat.fsi
+  Compile       Utilities/sformat.fs
+  Compile       Utilities/sr.fsi
+  Compile       Utilities/sr.fs
+  Compile       Utilities/ResizeArray.fsi
+  Compile       Utilities/ResizeArray.fs
+  Compile       Utilities/HashMultiMap.fsi
+  Compile       Utilities/HashMultiMap.fs
+  Compile       Utilities/EditDistance.fsi
+  Compile       Utilities/EditDistance.fs
+  Compile       Utilities/TaggedCollections.fsi
+  Compile       Utilities/TaggedCollections.fs
+  Compile       Utilities/Cancellable.fsi
+  Compile       Utilities/Cancellable.fs
+  Compile       Utilities/FileSystem.fsi
+  Compile       Utilities/FileSystem.fs
+  Compile       Utilities/ildiag.fsi
+  Compile       Utilities/ildiag.fs
+  Compile       Utilities/zmap.fsi
+  Compile       Utilities/zmap.fs
+  Compile       Utilities/zset.fsi
+  Compile       Utilities/zset.fs
+  Compile       Utilities/XmlAdapters.fsi
+  Compile       Utilities/XmlAdapters.fs
+  Compile       Utilities/InternalCollections.fsi
+  Compile       Utilities/InternalCollections.fs
+  Compile       Utilities/QueueList.fsi
+  Compile       Utilities/QueueList.fs
+  Compile       Utilities/lib.fsi
+  Compile       Utilities/lib.fs
+  Compile       Utilities/DependencyGraph.fs
+  Compile       Utilities/LruCache.fsi
+  Compile       Utilities/LruCache.fs
+  Compile       Utilities/ImmutableArray.fsi
+  Compile       Utilities/ImmutableArray.fs
+  Compile       Utilities/rational.fsi
+  Compile       Utilities/rational.fs
+  Compile       Utilities/PathMap.fsi
+  Compile       Utilities/PathMap.fs
+  Compile       Utilities/RidHelpers.fs
+  Compile       Utilities/range.fsi
+  Compile       Utilities/range.fs
+  Compile       Facilities/LanguageFeatures.fsi
+  Compile       Facilities/LanguageFeatures.fs
+  Compile       Facilities/DiagnosticOptions.fsi
+  Compile       Facilities/DiagnosticOptions.fs
+  Compile       Facilities/TextLayoutRender.fsi
+  Compile       Facilities/TextLayoutRender.fs
+  Compile       Facilities/DiagnosticsLogger.fsi
+  Compile       Facilities/DiagnosticsLogger.fs
+  Compile       Facilities/DiagnosticResolutionHints.fsi
+  Compile       Facilities/DiagnosticResolutionHints.fs
+  Compile       Facilities/Hashing.fsi
+  Compile       Facilities/Hashing.fs
+  Compile       Facilities/prim-lexing.fsi
+  Compile       Facilities/prim-lexing.fs
+  Compile       Facilities/prim-parsing.fsi
+  Compile       Facilities/prim-parsing.fs
+  Compile       Facilities/ReferenceResolver.fsi
+  Compile       Facilities/ReferenceResolver.fs
+  Compile       Facilities/SimulatedMSBuildReferenceResolver.fsi
+  Compile       Facilities/SimulatedMSBuildReferenceResolver.fs
+  Compile       Facilities/CompilerLocation.fsi
+  Compile       Facilities/CompilerLocation.fs
+  Compile       Facilities/BuildGraph.fsi
+  Compile       Facilities/BuildGraph.fs
+  Compile       Facilities/AsyncMemoize.fsi
+  Compile       Facilities/AsyncMemoize.fs
+  Compile       Utilities/ReadOnlySpan.fsi
+  Compile       Utilities/ReadOnlySpan.fs
+  Compile       AbstractIL/il.fsi
+  Compile       AbstractIL/il.fs
+  Compile       AbstractIL/ilx.fsi
+  Compile       AbstractIL/ilx.fs
+  Compile       AbstractIL/ilascii.fsi
+  Compile       AbstractIL/ilascii.fs
+  Compile       /ilpars.fsi link=AbstractIL\FsYaccOut\ilpars.fsi
+  Compile       /ilpars.fs link=AbstractIL\FsYaccOut\ilpars.fs
+  Compile       /illex.fsi link=AbstractIL\FsLexOut\illex.fsi
+  Compile       /illex.fs link=AbstractIL\FsLexOut\illex.fs
+  Compile       AbstractIL/ilprint.fsi
+  Compile       AbstractIL/ilprint.fs
+  Compile       AbstractIL/ilmorph.fsi
+  Compile       AbstractIL/ilmorph.fs
+  Compile       AbstractIL/ilsign.fsi
+  Compile       AbstractIL/ilsign.fs
+  Compile       AbstractIL/ilnativeres.fsi
+  Compile       AbstractIL/ilnativeres.fs
+  Compile       AbstractIL/ilsupp.fsi
+  Compile       AbstractIL/ilsupp.fs
+  Compile       AbstractIL/ilbinary.fsi
+  Compile       AbstractIL/ilbinary.fs
+  Compile       AbstractIL/ilread.fsi
+  Compile       AbstractIL/ilread.fs
+  Compile       AbstractIL/ilwritepdb.fsi
+  Compile       AbstractIL/ilwritepdb.fs
+  Compile       AbstractIL/ilwrite.fsi
+  Compile       AbstractIL/ilwrite.fs
+  Compile       AbstractIL/ilreflect.fsi
+  Compile       AbstractIL/ilreflect.fs
+  Compile       SyntaxTree/PrettyNaming.fsi
+  Compile       SyntaxTree/PrettyNaming.fs
+  Compile       SyntaxTree/UnicodeLexing.fsi
+  Compile       SyntaxTree/UnicodeLexing.fs
+  Compile       SyntaxTree/XmlDoc.fsi
+  Compile       SyntaxTree/XmlDoc.fs
+  Compile       SyntaxTree/SyntaxTrivia.fsi
+  Compile       SyntaxTree/SyntaxTrivia.fs
+  Compile       SyntaxTree/SyntaxTree.fsi
+  Compile       SyntaxTree/SyntaxTree.fs
+  Compile       SyntaxTree/SyntaxTreeOps.fsi
+  Compile       SyntaxTree/SyntaxTreeOps.fs
+  Compile       SyntaxTree/WarnScopes.fsi
+  Compile       SyntaxTree/WarnScopes.fs
+  Compile       SyntaxTree/LexerStore.fsi
+  Compile       SyntaxTree/LexerStore.fs
+  Compile       SyntaxTree/ParseHelpers.fsi
+  Compile       SyntaxTree/ParseHelpers.fs
+  Compile       /pppars.fsi link=SyntaxTree\FsYaccOutput\pppars.fsi
+  Compile       /pppars.fs link=SyntaxTree\FsYaccOutput\pppars.fs
+  Compile       /pars.fsi link=SyntaxTree\FsYaccOutput\pars.fsi
+  Compile       /pars.fs link=SyntaxTree\FsYaccOutput\pars.fs
+  Compile       SyntaxTree/LexHelpers.fsi link=SyntaxTree\LexHelpers.fsi
+  Compile       SyntaxTree/LexHelpers.fs link=SyntaxTree\LexHelpers.fs
+  Compile       /pplex.fsi link=SyntaxTree\FsLexOutput\pplex.fsi
+  Compile       /pplex.fs link=SyntaxTree\FsLexOutput\pplex.fs
+  Compile       //lex.fsi link=SyntaxTree\FsLexOutput\lex.fsi
+  Compile       //lex.fs link=SyntaxTree\FsLexOutput\lex.fs
+  Compile       SyntaxTree/LexFilter.fsi
+  Compile       SyntaxTree/LexFilter.fs
+  Compile       TypedTree/tainted.fsi
+  Compile       TypedTree/tainted.fs
+  Compile       TypedTree/TypeProviders.fsi
+  Compile       TypedTree/TypeProviders.fs
+  Compile       TypedTree/QuotationPickler.fsi
+  Compile       TypedTree/QuotationPickler.fs
+  Compile       TypedTree/CompilerGlobalState.fsi
+  Compile       TypedTree/CompilerGlobalState.fs
+  Compile       TypedTree/WellKnownAttribs.fsi
+  Compile       TypedTree/WellKnownAttribs.fs
+  Compile       TypedTree/TypedTree.fsi
+  Compile       TypedTree/TypedTree.fs
+  Compile       TypedTree/TypedTreeBasics.fsi
+  Compile       TypedTree/TypedTreeBasics.fs
+  Compile       TypedTree/TcGlobals.fsi
+  Compile       TypedTree/TcGlobals.fs
+  Compile       TypedTree/TypedTreeOps.Remap.fsi
+  Compile       TypedTree/TypedTreeOps.Remap.fs
+  Compile       TypedTree/TypedTreeOps.ExprConstruction.fsi
+  Compile       TypedTree/TypedTreeOps.ExprConstruction.fs
+  Compile       TypedTree/TypedTreeOps.FreeVars.fsi
+  Compile       TypedTree/TypedTreeOps.FreeVars.fs
+  Compile       TypedTree/TypedTreeOps.Attributes.fsi
+  Compile       TypedTree/TypedTreeOps.Attributes.fs
+  Compile       TypedTree/TypedTreeOps.Remapping.fsi
+  Compile       TypedTree/TypedTreeOps.Remapping.fs
+  Compile       TypedTree/TypedTreeOps.ExprOps.fsi
+  Compile       TypedTree/TypedTreeOps.ExprOps.fs
+  Compile       TypedTree/TypedTreeOps.Transforms.fsi
+  Compile       TypedTree/TypedTreeOps.Transforms.fs
+  Compile       TypedTree/TypedTreePickle.fsi
+  Compile       TypedTree/TypedTreePickle.fs
+  Compile       TypedTree/UpdatePrettyTyparNames.fsi
+  Compile       TypedTree/UpdatePrettyTyparNames.fs
+  Compile       Utilities/TypeHashing.fs
+  Compile       Checking/import.fsi
+  Compile       Checking/import.fs
+  Compile       Checking/TypeHierarchy.fsi
+  Compile       Checking/TypeHierarchy.fs
+  Compile       Checking/infos.fsi
+  Compile       Checking/infos.fs
+  Compile       Checking/AccessibilityLogic.fsi
+  Compile       Checking/AccessibilityLogic.fs
+  Compile       Checking/AttributeChecking.fsi
+  Compile       Checking/AttributeChecking.fs
+  Compile       Checking/TypeRelations.fsi
+  Compile       Checking/TypeRelations.fs
+  Compile       Checking/InfoReader.fsi
+  Compile       Checking/InfoReader.fs
+  Compile       Checking/NicePrint.fsi
+  Compile       Checking/NicePrint.fs
+  Compile       Checking/AugmentWithHashCompare.fsi
+  Compile       Checking/AugmentWithHashCompare.fs
+  Compile       Checking/RelatedSymbolUse.fs
+  Compile       Checking/NameResolution.fsi
+  Compile       Checking/NameResolution.fs
+  Compile       Checking/SignatureConformance.fsi
+  Compile       Checking/SignatureConformance.fs
+  Compile       Checking/MethodOverrides.fsi
+  Compile       Checking/MethodOverrides.fs
+  Compile       Checking/MethodCalls.fsi
+  Compile       Checking/MethodCalls.fs
+  Compile       Checking/PatternMatchCompilation.fsi
+  Compile       Checking/PatternMatchCompilation.fs
+  Compile       Checking/OverloadResolutionCache.fsi
+  Compile       Checking/OverloadResolutionCache.fs
+  Compile       Checking/ConstraintSolver.fsi
+  Compile       Checking/ConstraintSolver.fs
+  Compile       Checking/CheckFormatStrings.fsi
+  Compile       Checking/CheckFormatStrings.fs
+  Compile       Checking/FindUnsolved.fsi
+  Compile       Checking/FindUnsolved.fs
+  Compile       Checking/QuotationTranslator.fsi
+  Compile       Checking/QuotationTranslator.fs
+  Compile       Checking/PostInferenceChecks.fsi
+  Compile       Checking/PostInferenceChecks.fs
+  Compile       Checking/TailCallChecks.fsi
+  Compile       Checking/TailCallChecks.fs
+  Compile       Checking/CheckBasics.fsi
+  Compile       Checking/CheckBasics.fs
+  Compile       Checking/CheckRecordSyntaxHelpers.fsi
+  Compile       Checking/CheckRecordSyntaxHelpers.fs
+  Compile       Checking/Expressions/CheckExpressionsOps.fs
+  Compile       Checking/Expressions/CheckExpressions.fsi
+  Compile       Checking/Expressions/CheckExpressions.fs
+  Compile       Checking/CheckPatterns.fsi
+  Compile       Checking/CheckPatterns.fs
+  Compile       Checking/Expressions/CheckComputationExpressions.fsi
+  Compile       Checking/Expressions/CheckComputationExpressions.fs
+  Compile       Checking/Expressions/CheckSequenceExpressions.fs
+  Compile       Checking/Expressions/CheckArrayOrListComputedExpressions.fs
+  Compile       Checking/CheckIncrementalClasses.fsi
+  Compile       Checking/CheckIncrementalClasses.fs
+  Compile       Checking/CheckDeclarations.fsi
+  Compile       Checking/CheckDeclarations.fs
+  Compile       Checking/SignatureHash.fsi
+  Compile       Checking/SignatureHash.fs
+  Compile       Optimize/Optimizer.fsi
+  Compile       Optimize/Optimizer.fs
+  Compile       Optimize/DetupleArgs.fsi
+  Compile       Optimize/DetupleArgs.fs
+  Compile       Optimize/InnerLambdasToTopLevelFuncs.fsi
+  Compile       Optimize/InnerLambdasToTopLevelFuncs.fs
+  Compile       Optimize/LowerCalls.fsi
+  Compile       Optimize/LowerCalls.fs
+  Compile       Optimize/LowerSequences.fsi
+  Compile       Optimize/LowerSequences.fs
+  Compile       Optimize/LowerComputedCollections.fsi
+  Compile       Optimize/LowerComputedCollections.fs
+  Compile       Optimize/LowerStateMachines.fsi
+  Compile       Optimize/LowerStateMachines.fs
+  Compile       Optimize/LowerLocalMutables.fsi
+  Compile       Optimize/LowerLocalMutables.fs
+  Compile       CodeGen/IlxGenSupport.fsi
+  Compile       CodeGen/IlxGenSupport.fs
+  Compile       CodeGen/EraseClosures.fsi
+  Compile       CodeGen/EraseClosures.fs
+  Compile       CodeGen/EraseUnions.Types.fs
+  Compile       CodeGen/EraseUnions.Emit.fs
+  Compile       CodeGen/EraseUnions.fsi
+  Compile       CodeGen/EraseUnions.fs
+  Compile       CodeGen/IlxGen.fsi
+  Compile       CodeGen/IlxGen.fs
+  Compile       Driver/FxResolver.fsi
+  Compile       Driver/FxResolver.fs
+  Compile       DependencyManager/AssemblyResolveHandler.fsi link=Driver\AssemblyResolveHandler.fsi
+  Compile       DependencyManager/AssemblyResolveHandler.fs link=Driver\AssemblyResolveHandler.fs
+  Compile       DependencyManager/NativeDllResolveHandler.fsi link=Driver\NativeDllResolveHandler.fsi
+  Compile       DependencyManager/NativeDllResolveHandler.fs link=Driver\NativeDllResolveHandler.fs
+  Compile       DependencyManager/DependencyProvider.fsi link=Driver\DependencyProvider.fsi
+  Compile       DependencyManager/DependencyProvider.fs link=Driver\DependencyProvider.fs
+  Compile       Driver/CompilerConfig.fsi
+  Compile       Driver/CompilerConfig.fs
+  Compile       Driver/CompilerImports.fsi
+  Compile       Driver/CompilerImports.fs
+  Compile       Driver/CompilerDiagnostics.fsi
+  Compile       Driver/CompilerDiagnostics.fs
+  Compile       Driver/GraphChecking/Continuation.fsi
+  Compile       Driver/GraphChecking/Continuation.fs
+  Compile       Driver/GraphChecking/Types.fsi
+  Compile       Driver/GraphChecking/Types.fs
+  Compile       Driver/GraphChecking/Graph.fsi
+  Compile       Driver/GraphChecking/Graph.fs
+  Compile       Driver/GraphChecking/TrieMapping.fsi
+  Compile       Driver/GraphChecking/TrieMapping.fs
+  Compile       Driver/GraphChecking/FileContentMapping.fsi
+  Compile       Driver/GraphChecking/FileContentMapping.fs
+  Compile       Driver/GraphChecking/DependencyResolution.fsi
+  Compile       Driver/GraphChecking/DependencyResolution.fs
+  Compile       Driver/GraphChecking/GraphProcessing.fsi
+  Compile       Driver/GraphChecking/GraphProcessing.fs
+  Compile       Driver/ParseAndCheckInputs.fsi
+  Compile       Driver/ParseAndCheckInputs.fs
+  Compile       Driver/ScriptClosure.fsi
+  Compile       Driver/ScriptClosure.fs
+  Compile       Driver/CompilerOptions.fsi
+  Compile       Driver/CompilerOptions.fs
+  Compile       Driver/OptimizeInputs.fsi
+  Compile       Driver/OptimizeInputs.fs
+  Compile       Driver/XmlDocFileWriter.fsi
+  Compile       Driver/XmlDocFileWriter.fs
+  Compile       Driver/BinaryResourceFormats.fsi
+  Compile       Driver/BinaryResourceFormats.fs
+  Compile       Driver/StaticLinking.fsi
+  Compile       Driver/StaticLinking.fs
+  Compile       Driver/CreateILModule.fsi
+  Compile       Driver/CreateILModule.fs
+  Compile       Driver/fsc.fsi
+  Compile       Driver/fsc.fs
+  Compile       Symbols/SymbolHelpers.fsi
+  Compile       Symbols/SymbolHelpers.fs
+  Compile       Symbols/Symbols.fsi
+  Compile       Symbols/Symbols.fs
+  Compile       Symbols/FSharpDiagnostic.fsi
+  Compile       Symbols/FSharpDiagnostic.fs
+  Compile       Symbols/Exprs.fsi
+  Compile       Symbols/Exprs.fs
+  Compile       Symbols/SymbolPatterns.fsi
+  Compile       Symbols/SymbolPatterns.fs
+  Compile       Service/SemanticClassification.fsi
+  Compile       Service/SemanticClassification.fs
+  Compile       Service/ItemKey.fsi
+  Compile       Service/ItemKey.fs
+  Compile       Service/SemanticClassificationKey.fsi
+  Compile       Service/SemanticClassificationKey.fs
+  Compile       Service/FSharpSource.fsi
+  Compile       Service/FSharpSource.fs
+  Compile       Service/IncrementalBuild.fsi
+  Compile       Service/IncrementalBuild.fs
+  Compile       Service/ServiceCompilerDiagnostics.fsi
+  Compile       Service/ServiceCompilerDiagnostics.fs
+  Compile       Service/ServiceConstants.fs
+  Compile       Service/ServiceDeclarationLists.fsi
+  Compile       Service/ServiceDeclarationLists.fs
+  Compile       Service/ServiceLexing.fsi
+  Compile       Service/ServiceLexing.fs
+  Compile       Service/ServiceParseTreeWalk.fsi
+  Compile       Service/ServiceParseTreeWalk.fs
+  Compile       Service/SynExpr.fsi
+  Compile       Service/SynExpr.fs
+  Compile       Service/SynPat.fsi
+  Compile       Service/SynPat.fs
+  Compile       Service/ServiceNavigation.fsi
+  Compile       Service/ServiceNavigation.fs
+  Compile       Service/ServiceParamInfoLocations.fsi
+  Compile       Service/ServiceParamInfoLocations.fs
+  Compile       Service/FSharpParseFileResults.fsi
+  Compile       Service/FSharpParseFileResults.fs
+  Compile       Service/ServiceParsedInputOps.fsi
+  Compile       Service/ServiceParsedInputOps.fs
+  Compile       Service/ServiceAssemblyContent.fsi
+  Compile       Service/ServiceAssemblyContent.fs
+  Compile       Service/ServiceXmlDocParser.fsi
+  Compile       Service/ServiceXmlDocParser.fs
+  Compile       Service/ExternalSymbol.fsi
+  Compile       Service/ExternalSymbol.fs
+  Compile       Service/QuickParse.fsi
+  Compile       Service/QuickParse.fs
+  Compile       Service/FSharpCheckerResults.fsi
+  Compile       Service/FSharpCheckerResults.fs
+  Compile       Service/FSharpProjectSnapshot.fs
+  Compile       Service/BackgroundCompiler.fsi
+  Compile       Service/BackgroundCompiler.fs
+  Compile       Service/TransparentCompiler.fsi
+  Compile       Service/TransparentCompiler.fs
+  Compile       Service/service.fsi
+  Compile       Service/service.fs
+  Compile       Service/FSharpWorkspaceState.fs
+  Compile       Service/FSharpWorkspaceQuery.fs
+  Compile       Service/FSharpWorkspace.fs
+  Compile       Service/ServiceInterfaceStubGenerator.fsi
+  Compile       Service/ServiceInterfaceStubGenerator.fs
+  Compile       Service/ServiceStructure.fsi
+  Compile       Service/ServiceStructure.fs
+  Compile       Service/ServiceAnalysis.fsi
+  Compile       Service/ServiceAnalysis.fs
+  Compile       Interactive/FSharpInteractiveServer.fsi
+  Compile       Interactive/FSharpInteractiveServer.fs
+  Compile       Interactive/ControlledExecution.fs
+  Compile       Interactive/fsihelp.fsi
+  Compile       Interactive/fsihelp.fs
+  Compile       Interactive/fsi.fsi
+  Compile       Interactive/fsi.fs
+  Compile       Legacy/LegacyHostedCompilerForTesting.fs
+project_references (2):
+  ../FSharp.DependencyManager.Nuget/FSharp.DependencyManager.Nuget.fsproj
+  ../FSharp.Core/FSharp.Core.fsproj
+package_references (7, uncertain=true):
+  Include System.Collections.Immutable version=<none>
+  Include System.Reflection.Emit version=<none>
+  Include System.Reflection.Metadata version=<none>
+  Include System.Buffers version=<none>
+  Include System.Diagnostics.DiagnosticSource version=<none>
+  Include System.Memory version=<none>
+  Include System.Runtime.CompilerServices.Unsafe version=<none>
+framework_references (0):
+diagnostics (39):
+  UnsupportedConstruct { element: "Project Sdk=\"Microsoft.NET.Sdk\"" }
+  UndefinedProperty { name: "NoWarn" }
+  UndefinedProperty { name: "DefineConstants" }
+  UndefinedProperty { name: "DotNetBuildUseMonoRuntime" }
+  UndefinedProperty { name: "OfficialBuildId" }
+  UndefinedProperty { name: "FSharpNetCoreProductTargetFramework" }
+  UndefinedProperty { name: "FSHARPCORE_USE_PACKAGE" }
+  UndefinedProperty { name: "OtherFlags" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "TargetFramework" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "TargetFramework" }
+  UndefinedProperty { name: "FSLanguageVersion" }
+  UndefinedProperty { name: "FSharpLibrariesChangelogVersion" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "IntermediateOutputPath" }
+  UndefinedProperty { name: "MonoPackaging" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UndefinedProperty { name: "FSHARPCORE_USE_PACKAGE" }
+  UndefinedProperty { name: "FSHARPCORE_USE_PACKAGE" }
+  UndefinedProperty { name: "TargetFrameworkIdentifier" }
+  UndefinedProperty { name: "SystemCollectionsImmutableVersion" }
+  UndefinedProperty { name: "SystemReflectionEmitVersion" }
+  UndefinedProperty { name: "SystemReflectionMetadataVersion" }
+  UndefinedProperty { name: "SystemBuffersVersion" }
+  UndefinedProperty { name: "SystemDiagnosticsDiagnosticSourceVersion" }
+  UndefinedProperty { name: "SystemMemoryVersion" }
+  UndefinedProperty { name: "SystemRuntimeCompilerServicesUnsafeVersion" }

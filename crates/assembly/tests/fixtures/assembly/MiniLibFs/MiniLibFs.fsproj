@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches MiniLib.csproj / fcs-dump / csharp-sidecar — keeps
+         the test runner on a single runtime pack. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MiniLibFs</AssemblyName>
+    <RootNamespace>MiniLibFs</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- The F# pickle resource gets embedded by default; once phase 6
+         lands we'll use it. For now the differential test only consults
+         ECMA-335 metadata + the CompilationMappingAttribute emitted
+         alongside it, so the resource is harmless either way. -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>

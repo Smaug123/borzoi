@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d65d2c7be10d23c75528604303409e1ec918c2f8140d3687ada12ad7d4f5412c # shrinks to assets = RawAssets { version: 3, targets: {"net10.0": {"P0B/0.0.0": RawTargetEntry { kind: "project", compile: None, framework: Some(".NETStandard,Version=v0.0") }, "P1B/0.0.0": RawTargetEntry { kind: "project", compile: None, framework: Some(".NETStandard,Version=v0.0") }}, "net6.0": {}}, libraries: {"P0B/0.0.0": RawLibrary { kind: "project", path: None, msbuild_project: Some("../B/B.fsproj") }, "P1B/0.0.0": RawLibrary { kind: "project", path: None, msbuild_project: Some("../B/B.fsproj") }}, package_folders: ["/pkgs/"], project: RawProject { frameworks: {"net10.0": RawProjectFramework { framework_references: {} }, "net6.0": RawProjectFramework { framework_references: {} }} } }

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Multi-TFM producer. NuGet's nearest-compatible algorithm should
+         resolve net6.0 when a net10.0 consumer references this. The
+         interesting bit (vs. ../multi-tfm/) is the conditional inner ref
+         below: under net6.0 the leaf depends on Polyfill, under
+         netstandard2.0 it does not. -->
+    <TargetFrameworks>netstandard2.0;net6.0</TargetFrameworks>
+    <RootNamespace>MultiTfmCondLeaf</RootNamespace>
+    <AssemblyName>MultiTfmCondLeaf</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- This is the test fulcrum: a TFM-conditional <ProjectReference>.
+         Under net6.0 (the TFM NuGet picks for a net10.0 consumer) the ref
+         fires; under netstandard2.0 it does not. The sidecar's closure
+         walk must discover this edge from the leaf's *own* per-project
+         workspace (loaded under net6.0), not from the top workspace
+         (which evaluates the leaf under the top's net10.0 — a TFM that
+         does not match the leaf's TargetFrameworks and so falls back to
+         the first listed, netstandard2.0). -->
+    <ProjectReference Include="..\polyfill\Polyfill.csproj"
+                      Condition="'$(TargetFramework)' == 'net6.0'" />
+  </ItemGroup>
+
+</Project>

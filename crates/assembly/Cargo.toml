@@ -1,0 +1,56 @@
+[package]
+name = "borzoi-assembly"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+# Pure-Rust deflate via miniz_oxide. F# stores compressed signature/optimization
+# resources as raw deflate (no gzip/zlib header), matching .NET's
+# `DeflateStream(CompressionMode.Decompress)`. `default-features = false` plus
+# the `rust_backend` feature avoids dragging in `libz-sys` / native zlib.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+sha1 = "0.10"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+# Derive `serde::{Serialize, Deserialize}` on the public `Entity` model, so a
+# consumer (the LSP's on-disk projection cache) can persist a projected assembly
+# and skip the parse+project on a warm restart. Runtime consumers that don't
+# cache pay nothing for it.
+serde = ["dep:serde"]
+# Differential-test helpers (the `test_support` module). Gated behind a
+# feature because the normaliser pulls serde in for the FCS-side JSON
+# shape, and runtime consumers don't need that. External callers that
+# want the normaliser dev-dep this crate with `features = ["test-support"]`;
+# the assembly crate's own integration tests self-reference (see
+# `[dev-dependencies]` below) so plain `cargo test` keeps working.
+test-support = ["dep:serde", "dep:serde_json"]
+
+[dev-dependencies]
+borzoi-oracle-harness = { path = "../oracle-harness" }
+# Self-reference activates the `test-support` feature when building
+# the crate for its own integration tests, so `tests/all/assembly_diff.rs`
+# can use the normaliser without a `--features` flag on the test
+# command.
+borzoi-assembly = { path = ".", features = ["test-support"] }
+# The bounded child-process driver (`BoundedCommand`) for everything the tests
+# shell out to — the fixture `dotnet build`s, `MetadataEmitter`, `fcs-dump`,
+# `dotnet --list-sdks`. Every launch takes the one process-global spawn lock and
+# every wait runs under a deadline, so a wedged child fails the run rather than
+# hanging it.
+borzoi-spawn = { path = "../spawn" }
+# Property-based / fuzz harness for the fail-loud robustness tests
+# (`tests/all/fail_loud.rs`). Matches the workspace convention in the cst,
+# msbuild, and lsp crates. The harness itself sets
+# `failure_persistence: None`: a `tests/`-only proptest can't anchor a
+# `proptest-regressions/` directory (no lib.rs/main.rs), and the sweeps
+# are deterministic (fixed fixtures, exhaustive coverage floor) so
+# committed counterexamples aren't needed for replay.
+proptest = "1"
+# Each fixture build runs in a fresh copy of the fixtures tree (see
+# `tests/all/common/mod.rs`), so concurrent `dotnet build`s in sibling test
+# binaries never race on a shared `obj/`/`bin/`. `TempDir` gives each copy
+# a process-unique location.
+tempfile = "3"

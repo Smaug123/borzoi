@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b55a763d09c185783b50860430e40999e6370db0988987f7d6a245e15ecfe4ec # shrinks to ast = BoolLit(false)
+cc ad7276e6219110cc376e846e7119a967516e3b269f9f021ecb36094e816b0500 # shrinks to ast = And(Neq("A", ""), Or(BoolLit(false), Or(Neq("8", " 8"), Eq("", "A"))))

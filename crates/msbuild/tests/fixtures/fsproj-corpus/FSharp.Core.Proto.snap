@@ -1,0 +1,103 @@
+is_partial: true
+properties (16):
+  AllowCrossTargeting
+  Configurations
+  DefineConstants
+  IsPackable
+  NoWarn
+  NuspecFile
+  Optimize
+  OtherFlags
+  OutputType
+  PackageDescription
+  PackageId
+  PackageReleaseNotes
+  PackageVersionPrefix
+  PreRelease
+  Tailcalls
+  TargetFrameworks
+items (69):
+  CompileBefore prim-types-prelude.fsi link=Primitives/prim-types-prelude.fsi
+  CompileBefore prim-types-prelude.fs link=Primitives/prim-types-prelude.fs
+  Compile       prim-types.fsi link=Primitives/prim-types.fsi
+  Compile       prim-types.fs link=Primitives/prim-types.fs
+  Compile       Random.fsi link=Random/Random.fsi
+  Compile       Random.fs link=Random/Random.fs
+  Compile       local.fsi link=Collections/local.fsi
+  Compile       local.fs link=Collections/local.fs
+  Compile       array2.fsi link=Collections/array2.fsi
+  Compile       array2.fs link=Collections/array2.fs
+  Compile       option.fsi link=Collections/option.fsi
+  Compile       option.fs link=Collections/option.fs
+  Compile       result.fsi link=Collections/result.fsi
+  Compile       result.fs link=Collections/result.fs
+  Compile       collections.fsi link=Collections/collections.fsi
+  Compile       collections.fs link=Collections/collections.fs
+  Compile       seqcore.fsi link=Collections/seqcore.fsi
+  Compile       seqcore.fs link=Collections/seqcore.fs
+  Compile       seq.fsi link=Collections/seq.fsi
+  Compile       seq.fs link=Collections/seq.fs
+  Compile       string.fsi link=Collections/string.fsi
+  Compile       string.fs link=Collections/string.fs
+  Compile       list.fsi link=Collections/list.fsi
+  Compile       list.fs link=Collections/list.fs
+  Compile       array.fsi link=Collections/array.fsi
+  Compile       array.fs link=Collections/array.fs
+  Compile       array3.fsi link=Collections/array3.fsi
+  Compile       array3.fs link=Collections/array3.fs
+  Compile       map.fsi link=Collections/map.fsi
+  Compile       map.fs link=Collections/map.fs
+  Compile       set.fsi link=Collections/set.fsi
+  Compile       set.fs link=Collections/set.fs
+  Compile       reflect.fsi link=Reflection/reflect.fsi
+  Compile       reflect.fs link=Reflection/reflect.fs
+  Compile       math/z.fsi link=Numerics/z.fsi
+  Compile       math/z.fs link=Numerics/z.fs
+  Compile       ../Compiler/Utilities/sformat.fsi link=Printf/sformat.fsi
+  Compile       ../Compiler/Utilities/sformat.fs link=Printf/sformat.fs
+  Compile       printf.fsi link=Printf/printf.fsi
+  Compile       printf.fs link=Printf/printf.fs
+  Compile       quotations.fsi link=Quotations/quotations.fsi
+  Compile       quotations.fs link=Quotations/quotations.fs
+  Compile       nativeptr.fsi link=NativeInterop/nativeptr.fsi
+  Compile       nativeptr.fs link=NativeInterop/nativeptr.fs
+  Compile       event.fsi link=Control/event.fsi
+  Compile       event.fs link=Control/event.fs
+  Compile       resumable.fsi link=Control/resumable.fsi
+  Compile       resumable.fs link=Control/resumable.fs
+  Compile       async.fsi link=Control/async.fsi
+  Compile       async.fs link=Control/async.fs
+  Compile       tasks.fsi link=Control/tasks.fsi
+  Compile       tasks.fs link=Control/tasks.fs
+  Compile       eventmodule.fsi link=Control/eventmodule.fsi
+  Compile       eventmodule.fs link=Control/eventmodule.fs
+  Compile       observable.fsi link=Control/observable.fsi
+  Compile       observable.fs link=Control/observable.fs
+  Compile       mailbox.fsi link=MailboxProcessor/mailbox.fsi
+  Compile       mailbox.fs link=MailboxProcessor/mailbox.fs
+  Compile       Nullable.fsi link=Queries/Nullable.fsi
+  Compile       Nullable.fs link=Queries/Nullable.fs
+  Compile       Linq.fsi link=Queries/Linq.fsi
+  Compile       Linq.fs link=Queries/Linq.fs
+  Compile       MutableTuple.fs link=Queries/MutableTuple.fs
+  Compile       QueryExtensions.fs link=Queries/QueryExtensions.fs
+  Compile       Query.fsi link=Queries/Query.fsi
+  Compile       Query.fs link=Queries/Query.fs
+  Compile       SI.fs link=Units/SI.fs
+  Compile       fslib-extra-pervasives.fsi link=Extras/fslib-extra-pervasives.fsi
+  Compile       fslib-extra-pervasives.fs link=Extras/fslib-extra-pervasives.fs
+project_references (0):
+package_references (0, uncertain=true):
+framework_references (0):
+diagnostics (11):
+  UnsupportedConstruct { element: "Project Sdk=\"Microsoft.NET.Sdk\"" }
+  UndefinedProperty { name: "NoWarn" }
+  UndefinedProperty { name: "DefineConstants" }
+  UndefinedProperty { name: "OtherFlags" }
+  UndefinedProperty { name: "FSCorePackageVersion" }
+  UndefinedProperty { name: "FSProductVersionPrefix" }
+  UndefinedProperty { name: "FSLanguageVersion" }
+  UndefinedProperty { name: "FSharpLibrariesChangelogVersion" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UnsupportedConstruct { element: "Target" }

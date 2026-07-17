@@ -1,0 +1,35 @@
+is_partial: true
+properties (7):
+  DisableImplicitFSharpCoreReference
+  NoWarn
+  OutputType
+  PublishReadyToRun
+  RuntimeIdentifier
+  TargetFramework
+  TolerateUnusedBindings
+items (11):
+  Compile       Lexing.fsi
+  Compile       Lexing.fs
+  Compile       Parsing.fsi
+  Compile       Parsing.fs
+  Compile       Arg.fsi
+  Compile       Arg.fs
+  Compile       fslexast.fs
+  Compile       fslexpars.fs
+  Compile       fslexlex.fs
+  Compile       fslexdriver.fs
+  Compile       fslex.fs
+project_references (1):
+  ../../src/FSharp.Core/FSharp.Core.fsproj
+package_references (0, uncertain=true):
+framework_references (0):
+diagnostics (9):
+  UnsupportedConstruct { element: "Project Sdk=\"Microsoft.NET.Sdk\"" }
+  UndefinedProperty { name: "FSharpNetCoreProductTargetFramework" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UndefinedProperty { name: "NoWarn" }
+  UndefinedProperty { name: "EnablePublishReadyToRun" }
+  UndefinedProperty { name: "NETCoreSdkRuntimeIdentifier" }
+  UndefinedProperty { name: "BUILDING_USING_DOTNET" }
+  UndefinedProperty { name: "FSHARPCORE_USE_PACKAGE" }
+  UndefinedProperty { name: "FSHARPCORE_USE_PACKAGE" }

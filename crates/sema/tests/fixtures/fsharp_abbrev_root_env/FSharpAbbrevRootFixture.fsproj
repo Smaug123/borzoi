@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for resolver R2-0 (codex round 4): an F# abbreviation declared
+       at true global scope (`namespace global`) — the empty-namespace "root"
+       reading, kept separate from `fsharp_abbrev_env` so its signature-data
+       flag does not spill into every other bare-name lookup that fixture's
+       tests exercise (a shared assembly's root-namespace signature flag would
+       make it namespace-blind, unlike the per-open-namespace checks). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaFSharpAbbrevRootFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

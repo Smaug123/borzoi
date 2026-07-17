@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MiniLibPdb</AssemblyName>
+    <RootNamespace>MiniLibPdb</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <!-- The whole point of this fixture: an embedded portable PDB (plus
+         embedded source, so the robustness harness exercises the
+         document-blob decompression path too). The sibling fixtures build
+         with DebugType=none, so without this one the PDB reader never sees
+         mutated bytes. -->
+    <DebugType>embedded</DebugType>
+    <EmbedAllSources>true</EmbedAllSources>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>

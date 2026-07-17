@@ -1,0 +1,33 @@
+[package]
+name = "borzoi-msbuild"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+roxmltree = "0.21"
+
+[features]
+# Differential-test helpers (the `test_support` module): a public window
+# onto the otherwise-private `Condition` evaluator so the integration tests
+# can fuzz raw condition strings against the real MSBuild evaluator via
+# `tools/msbuild-condition-oracle`. Gated behind a feature so it never
+# widens the crate's runtime public surface; the self-reference in
+# `[dev-dependencies]` activates it for this crate's own `cargo test`.
+test-support = []
+
+[dev-dependencies]
+# Self-reference activates the `test-support` feature when building the
+# crate for its own integration tests, so `tests/condition_diff.rs` and
+# `tests/condition_properties.rs` can reach the evaluator without a
+# `--features` flag on the test command (same trick as the assembly crate).
+borzoi-msbuild = { path = ".", features = ["test-support"] }
+# The resident `msbuild-condition-oracle` driver (`BatchChild`) and the bounded
+# one-shot `dotnet msbuild` driver (`BoundedCommand`, re-exported from
+# `borzoi-spawn`), so every wait on a child runs under a deadline and
+# every launch takes the one process-global spawn lock.
+borzoi-oracle-harness = { path = "../oracle-harness" }
+proptest = "1"
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

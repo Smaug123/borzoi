@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 694e1f60c693a677a0b65f0e1abb3a954a5eb268039590eb8066fb97e7e7c97f # shrinks to Fixture { sdk_groups: [], project_groups: [Items { cond: None, items: [Package { identity: Id(1), version: Attr(Lit(0)), cond: None }] }, Items { cond: None, items: [PackageUpdate { identity: Id(1), version: Clear, version_override: None, private_assets: false, cond: None }] }] }
+cc e65de7b1cd8af19fe16ddaa3acd8cf41aa879575bd9330460e8a7754eaba95c5 # shrinks to Fixture { sdk_groups: [], project_groups: [Items { cond: None, items: [PackageUpdate { identity: TwoIds(2, 2), version: Absent, version_override: Some(Lit(0)), private_assets: false, cond: None }, Package { identity: TwoIds(0, 2), version: Attr(Lit(0)), cond: None }] }] }
+cc ab432c35449b908e55b2550ed21cd77cc82f4b5aef2335e46a2beca74c30f86d # shrinks to Fixture { sdk_groups: [], project_groups: [Items { cond: None, items: [PackageUpdate { identity: TwoIds(1, 1), version: Absent, version_override: None, private_assets: true, cond: None }, Package { identity: TwoIds(0, 1), version: Attr(Lit(0)), cond: None }] }] }

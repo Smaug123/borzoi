@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>EscapeFixture</RootNamespace>
+    <!-- Deliberately hostile: a path-traversal payload in AssemblyName.
+         The sidecar must reduce this to a single filename component
+         before joining it with the cache root, otherwise the emit would
+         escape obj/borzoi/csharp-sidecar/. -->
+    <AssemblyName>../escape-attempt</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

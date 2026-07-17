@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Phase 5 of docs/completed/multi-tfm-resolution-plan.md: F# top that
+       ProjectReferences a multi-TFM C# leaf with a TFM-conditional inner
+       ref. Pins that the cross-language closure walker
+       (`resolve_transitive_project_tfms`) surfaces the same map for an
+       fsproj root that it does for a csproj root, so the LSP can call
+       the sidecar's `buildMetadata` on the C# subtree without special-
+       casing the language at the closure-discovery layer. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>MultiTfmCondFsharp</RootNamespace>
+    <AssemblyName>MultiTfmCondFsharpTop</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\leaf\Leaf.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ece5f0eaef44137c0c602db6ba229e3797dbf50656163f0534c2a14fded2f75e # shrinks to dag = Dag { imports: [[1, 2], [2], []] }

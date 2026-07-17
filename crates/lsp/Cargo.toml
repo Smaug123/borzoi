@@ -1,0 +1,78 @@
+[package]
+name = "borzoi"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+borzoi-spawn = { path = "../spawn" }
+borzoi-assembly = { path = "../assembly", features = ["serde"] }
+borzoi-cst = { path = "../cst" }
+borzoi-msbuild = { path = "../msbuild" }
+borzoi-sema = { path = "../sema" }
+lsp-server = "0.7"
+lsp-types = "0.95"
+rowan = "0.16"
+# Compact binary serde format for the on-disk assembly-projection cache
+# (`assembly_cache`). Faster + smaller than JSON for the warm-restart deserialize
+# of every referenced DLL's projected `Entity` tree; 1.x drives serde directly.
+bincode = "1.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+# OpenTelemetry export, behind the `otel` feature so the default (and `nix
+# build`) binary stays free of the tokio/otel dependency tree. With the feature
+# on we export over OTLP/HTTP via the blocking reqwest client: our own code
+# stays fully synchronous (reqwest owns a runtime internally, pulled in via
+# hyper-util), and the batch span processor runs on its own thread, so the
+# stdio loop never blocks on the network. No TLS backend is pulled in — the
+# collector endpoint is plain HTTP. See `telemetry.rs`.
+opentelemetry = { version = "0.32", optional = true }
+opentelemetry_sdk = { version = "0.32", optional = true, features = ["logs"] }
+opentelemetry-otlp = { version = "0.32", optional = true, default-features = false, features = [
+    "trace",
+    "logs",
+    "http-proto",
+    "reqwest-blocking-client",
+] }
+# Bridges `tracing` events into OpenTelemetry log records (→ Loki via the
+# collector). 0.32 tracks `opentelemetry` 0.32; it auto-attaches the active
+# span's trace context so log lines correlate to Tempo traces. See `telemetry.rs`.
+opentelemetry-appender-tracing = { version = "0.32", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
+tracing-subscriber = { version = "0.3", optional = true, features = [
+    "env-filter",
+    "fmt",
+] }
+
+# Synchronous HTTP client for the `sourcelink-fetch` feature: when a referenced
+# assembly's source isn't embedded in its PDB, go-to-definition fetches it from
+# the SourceLink URL. Behind a feature so the default binary stays offline and
+# dependency-light; isolated behind the `goto_source::SourceFetcher` trait so
+# it's swappable and never touches tests. `https-rustls` is a pure-Rust TLS
+# backend (no OpenSSL), matching the no-native-deps convention.
+minreq = { version = "2", optional = true, features = ["https-rustls"] }
+
+[features]
+otel = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:opentelemetry-appender-tracing",
+    "dep:tracing-opentelemetry",
+    "dep:tracing-subscriber",
+    # Turn on the sema fold's per-file `resolve_file` spans, so
+    # `resolve_project`'s cost is attributable per Compile item in the trace.
+    "borzoi-sema/otel",
+]
+# Fetch non-embedded referenced-assembly source over the network (SourceLink) for
+# go-to-definition. Off by default: the source URL is surfaced instead.
+sourcelink-fetch = ["dep:minreq"]
+
+[dev-dependencies]
+borzoi-oracle-harness = { path = "../oracle-harness" }
+borzoi-assembly = { path = "../assembly", features = ["test-support"] }
+proptest = "1"
+tempfile = "3"

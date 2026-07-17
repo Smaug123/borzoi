@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>DocIds</AssemblyName>
+    <RootNamespace>DocIds</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- The whole point of this fixture: emit the sidecar `DocIds.xml` whose
+         `<member name>` keys are Roslyn's documentation comment IDs, the
+         oracle the doc-id generator is diffed against. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Exercises the pointer-parameter encoding (`System.Int32*`). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+</Project>

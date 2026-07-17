@@ -1,0 +1,490 @@
+//! FCS-free regression tests for F# assembly type abbreviations in type-position
+//! lookup. Plain abbreviations are present in F# signature data but not as ECMA
+//! TypeDefs; the projection surfaces each public one as a name-only
+//! `EntityKind::Abbreviation` marker entity, and the resolver shadow-defers a
+//! lookup that lands on a marker (never resolving through it). When the pickle
+//! cannot be decoded at all, a coarse per-namespace fallback defers every bare
+//! name under the assembly's namespaces instead.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use borzoi_assembly::Ecma335Assembly;
+use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_oracle_harness::BoundedCommand;
+use borzoi_sema::{
+    AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, resolve_file,
+};
+use rowan::TextRange;
+
+/// Budget for one fixture `dotnet build`. A cold build restores packages and runs
+/// the F# compiler, which is legitimately minutes, so the bound sits far above the
+/// harness's per-request default: it is there to stop a build that has *stalled* —
+/// blocked on a NuGet lock held by a concurrent run in a sibling worktree, say —
+/// from hanging the suite forever, not to police a slow one.
+const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// `dotnet build -c Release` a fixture project under [`BUILD_TIMEOUT`], failing
+/// loudly (with the build's own output) if it errors or never finishes.
+fn dotnet_build(project: &Path, what: &str) {
+    let mut cmd = Command::new("dotnet");
+    cmd.args(["build", "-c", "Release", "--nologo"])
+        .arg(project);
+    BoundedCommand::new(cmd).timeout(BUILD_TIMEOUT).run_ok(what);
+}
+
+fn ensure_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fsharp_abbrev_env");
+            dotnet_build(&project, "dotnet build F# abbreviation fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaFSharpAbbrevFixture.dll")
+        })
+        .as_path()
+}
+
+fn fixture_env() -> AssemblyEnv {
+    let bytes = std::fs::read(ensure_fixture_built()).expect("read F# abbreviation fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse F# abbreviation fixture dll");
+    AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
+}
+
+/// A *separate* fixture for the ROOT (`namespace global`) tier: its
+/// signature-data flag applies to the empty namespace, which — unlike every
+/// other namespace check here — is not name-scoped in `fsharp_abbrev_env`'s
+/// assembly, so sharing one assembly would make every bare name in every
+/// other test here defer via the root tier too.
+fn ensure_root_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/fsharp_abbrev_root_env");
+            dotnet_build(&project, "dotnet build F# root-abbreviation fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaFSharpAbbrevRootFixture.dll")
+        })
+        .as_path()
+}
+
+fn root_fixture_env() -> AssemblyEnv {
+    let bytes =
+        std::fs::read(ensure_root_fixture_built()).expect("read F# root-abbreviation fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse F# root-abbreviation fixture dll");
+    AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
+}
+
+fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
+    let parsed = parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors in {src:?}: {:?}",
+        parsed.errors
+    );
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    resolve_file(&file, &ProjectItems::default(), env)
+}
+
+fn at(hay: &str, needle: &str) -> TextRange {
+    let start = hay
+        .find(needle)
+        .unwrap_or_else(|| panic!("{needle:?} not in {hay:?}"));
+    TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + needle.len()).unwrap().into(),
+    )
+}
+
+fn assert_shadowable(src: &str) {
+    let env = fixture_env();
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "int64")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "Lib.int64 may be a metadata-invisible F# abbreviation"
+    );
+}
+
+#[test]
+fn opened_fsharp_assembly_namespace_marks_annotation_shadowable() {
+    assert_shadowable("module M\nopen Lib\nlet x : int64 = \"\"\n");
+}
+
+#[test]
+fn enclosing_fsharp_assembly_namespace_marks_annotation_shadowable() {
+    assert_shadowable("namespace Lib\nmodule M =\n    let x : int64 = \"\"\n");
+}
+
+#[test]
+fn real_type_in_signature_data_namespace_still_resolves() {
+    // Regression pin (codex review P2 on `docs/completed/r2-annotation-typing-plan.md`):
+    // `Lib` carries F# signature data (because of the `int64` abbreviation), but
+    // it also declares a perfectly ordinary ECMA TypeDef, `Marker`. The V3 defer
+    // must only kick in once the normal tiered lookup has failed to find a real
+    // match — checking it *before* that lookup made every single-segment type
+    // name under `open Lib` defer, including `Marker`, which used to resolve
+    // (losing go-to-definition for ordinary types from any opened F# library).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Marker = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "Marker", 0)
+        .expect("fixture must declare Lib.Marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "Marker")),
+        Some(Resolution::Entity(marker)),
+        "Marker is a real TypeDef and must resolve, not defer"
+    );
+}
+
+#[test]
+fn root_namespace_with_signature_data_marks_annotation_shadowable_with_no_open() {
+    // Regression pin (codex review P2, round 4, on
+    // `docs/completed/r2-annotation-typing-plan.md`): the fixture declares `namespace
+    // global; type uint64 = string` — a genuine F# abbreviation with an empty
+    // namespace path. FCS lets a bare, unopened name bind to a global-namespace
+    // abbreviation, so the ROOT tier (the empty prefix `resolve_type_path` also
+    // walks with no `open` in scope) needs the same shadow check as every
+    // opened/enclosing reading — a guard that skipped the empty prefix would
+    // wrongly resolve `uint64` as the primitive alias.
+    let env = root_fixture_env();
+    let src = "module M\nlet x : uint64 = \"\"\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "uint64")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "global.uint64 may be a metadata-invisible F# abbreviation, with no open needed"
+    );
+}
+
+#[test]
+fn root_namespace_real_type_still_resolves_with_no_open() {
+    // The round-2/round-3 counterpart at the ROOT tier: `GlobalMarker` is a
+    // real TypeDef at `namespace global`, so it must resolve — not defer —
+    // even though the same (empty) namespace carries signature data.
+    let env = root_fixture_env();
+    let src = "module M\nlet x : GlobalMarker = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&[], "GlobalMarker", 0)
+        .expect("fixture must declare the global-namespace GlobalMarker");
+    assert_eq!(
+        rf.resolution_at(at(src, "GlobalMarker")),
+        Some(Resolution::Entity(marker)),
+        "GlobalMarker is a real TypeDef and must resolve, not defer"
+    );
+}
+
+#[test]
+fn ancestor_namespace_of_signature_data_is_not_marked_shadowable() {
+    // Regression pin (codex review P2 on `docs/completed/r2-annotation-typing-plan.md`):
+    // the fixture assembly declares a real TypeDef at `Other.Deep` but nothing
+    // directly in `Other`. F# `open N` imports only `N`'s direct members, so an
+    // abbreviation that could only live in `Other.Deep`'s signature data is never
+    // in scope from `open Other` — marking `Other` shadowable on `Other.Deep`'s
+    // evidence (the old ancestor-prefix-expansion bug) would wrongly defer this.
+    let env = fixture_env();
+    let src = "module M\nopen Other\nlet x : int64 = 1L\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "int64")),
+        None,
+        "Other has no direct signature data, so int64 is not shadowed by it"
+    );
+}
+
+#[test]
+fn bare_names_with_no_abbreviation_do_not_defer() {
+    // The name-keyed refinement over the original coarse per-namespace flag:
+    // `Lib` genuinely exports abbreviations (`int64`, `Collide`), but none
+    // named `uint64` — the pickled signature data says so exactly. A coarse
+    // "Lib carries signature data" signal deferred EVERY bare annotation under
+    // `open Lib`; the abbreviation markers synthesised from the pickle defer
+    // only the names that actually collide, so `uint64` keeps its "no shadow
+    // possible" reading (the signal the R2 alias gate needs to ever fire for
+    // projects that reference any F# library).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : uint64 = 1UL\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "uint64")),
+        None,
+        "Lib's signature data has no `uint64` abbreviation, so nothing shadows it"
+    );
+}
+
+#[test]
+fn auto_open_abbreviation_shadows_a_same_tier_direct_type() {
+    // Review-confirmed (reproduced end-to-end against real fsc): `Lib`
+    // declares `Collide` twice — a direct record TypeDef, and an abbreviation
+    // inside the `[<AutoOpen>] module Auto`. fsc binds `Lib.Auto.Collide`
+    // (= string): an auto-open module's contents outrank the same namespace's
+    // own direct members even at the same tier. The abbreviation emits no
+    // TypeDef, so the precise auto-open veto can only see it through a
+    // pickle-synthesised marker child of `Auto`; without one, the tier's own
+    // lookup resolves the direct record — a wrong target, not a sound defer.
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet f (x : Collide) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Collide")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "the auto-open `Auto.Collide` abbreviation must shadow the direct `Lib.Collide`"
+    );
+}
+
+#[test]
+fn private_abbreviation_does_not_shadow() {
+    // `Lib.Hidden` is `type private Hidden = string`: not nameable from
+    // another assembly, so `open Lib; (x : Hidden)` cannot bind it and the
+    // annotation must keep its no-shadow reading. Pins the marker synthesis'
+    // accessibility filter (a pickled entity with a non-empty `TAccess` path
+    // list is not public).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Hidden = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Hidden")),
+        None,
+        "a private abbreviation is invisible cross-assembly and must not shadow"
+    );
+}
+
+#[test]
+fn unknowable_abbreviations_fall_back_to_coarse_namespace_defers() {
+    // The fallback channel: when an assembly's signature pickle cannot be
+    // decoded (or it embeds foreign CCU pickles), its abbreviations are
+    // unknowable — no markers exist — so the resolver must defer EVERY bare
+    // name under the namespaces the assembly declares into, name-blind, as
+    // the pre-marker coarse signal did. `uint64` names no abbreviation in the
+    // fixture, so this deferring proves the coarse channel (contrast
+    // `bare_names_with_no_abbreviation_do_not_defer`, which pins that the
+    // same lookup does NOT defer when the pickle decoded).
+    use borzoi_assembly::EcmaView;
+    use borzoi_sema::AbbreviationVisibility;
+    let bytes = std::fs::read(ensure_fixture_built()).expect("read F# abbreviation fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse F# abbreviation fixture dll");
+    let entities = view.enumerate_type_defs().expect("enumerate fixture types");
+    let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![(
+        PathBuf::from("SemaFSharpAbbrevFixture.dll"),
+        entities,
+        AbbreviationVisibility::Unknowable,
+        Vec::new(),
+    )]);
+    let src = "module M\nopen Lib\nlet x : uint64 = 1UL\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "uint64")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an unknowable assembly's namespaces defer every bare annotation under them"
+    );
+}
+
+#[test]
+fn open_type_of_an_abbreviation_marker_goes_opaque() {
+    // codex review (marker PR): `open type Lib.int64` (where `Lib.int64` is a
+    // metadata-invisible abbreviation of `string`) opens the TARGET's statics
+    // in FCS. We cannot enumerate them from a name-only marker, so the open
+    // must go opaque — suppressing earlier opens' same-named values — rather
+    // than pushing an empty statics set that would let `Opened.openedValue`
+    // keep winning where FCS might bind a target static of the same name.
+    let env = fixture_env();
+    let src = "module M\nmodule Opened =\n    let openedValue = 1\nopen Opened\nopen type Lib.int64\nlet y = openedValue\n";
+    let rf = resolve(src, &env);
+    let use_start = src.rfind("openedValue").expect("use site");
+    let range = TextRange::new(
+        u32::try_from(use_start).unwrap().into(),
+        u32::try_from(use_start + "openedValue".len())
+            .unwrap()
+            .into(),
+    );
+    assert_eq!(
+        rf.resolution_at(range),
+        Some(Resolution::Deferred(DeferredReason::UnboundName)),
+        "the opened value must defer past an opaque `open type` of a marker \
+         (without the opaque routing it wrongly resolves the opened Item)"
+    );
+}
+
+#[test]
+fn plain_open_of_a_marker_with_a_module_companion_goes_opaque() {
+    // codex review round 2 (marker PR): `Lib.Companion` is BOTH an
+    // abbreviation (`type Companion = string` — a marker, which wins the
+    // source-name index slot) and a suffixed module companion
+    // (`module Companion`, compiled `CompanionModule`). A plain
+    // `open Lib.Companion` opens the MODULE's values in FCS, so its
+    // (unmodelled) `fromCompanion` shadows the earlier open's value; treating
+    // the marker as a plain class open — nothing imported, nothing opaque —
+    // would keep resolving `Other.fromCompanion` where FCS binds
+    // `Lib.Companion.fromCompanion`.
+    let env = fixture_env();
+    let src = "module M\nmodule Other =\n    let fromCompanion = 99\nopen Other\nopen Lib.Companion\nlet y = fromCompanion\n";
+    let rf = resolve(src, &env);
+    let use_start = src.rfind("fromCompanion").expect("use site");
+    let range = TextRange::new(
+        u32::try_from(use_start).unwrap().into(),
+        u32::try_from(use_start + "fromCompanion".len())
+            .unwrap()
+            .into(),
+    );
+    assert_eq!(
+        rf.resolution_at(range),
+        Some(Resolution::Deferred(DeferredReason::UnboundName)),
+        "the marker-backed open must shadow the earlier open's value, not leak it"
+    );
+}
+
+/// Review round 13, deliberately left standing (§5a of
+/// `docs/assembly-module-open-plan.md`). The sibling test above pins the *safe* half:
+/// `open Lib.Companion` must not leak the earlier open's `fromCompanion`. This pins the
+/// half we do not yet deliver — FCS **resolves** it, to the companion module's own value.
+///
+/// `Lib.Companion` is both an abbreviation (which wins the type-index slot) and a suffixed
+/// companion module. `opened_assembly_type` returns the type-index winner while
+/// `opened_assembly_module` returns the module, so the guard's `h == handle` identity test
+/// fails, the old abbreviation branch raises `opaque_value_open`, and the name defers —
+/// even though Slice A can enumerate that module perfectly well.
+///
+/// The fix is to ask whether the path *has* a module interpretation rather than whether it
+/// is the *same handle* as the type lookup. That re-opens the kind-collision seam §4c cut,
+/// so it belongs with Slice B's walk rework. Remove the `#[ignore]` and watch this fail as
+/// step one.
+#[test]
+#[ignore = "§5a of docs/assembly-module-open-plan.md: a companion module behind a type-index collision still defers"]
+fn an_opened_companion_module_behind_a_type_collision_still_resolves() {
+    let env = fixture_env();
+    let src = "module M\nopen Lib.Companion\nlet y = fromCompanion\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "fromCompanion")),
+            Some(Resolution::Member { .. })
+        ),
+        "FCS opens the MODULE half of `Lib.Companion` and binds its `fromCompanion`; the \
+         abbreviation winning the type-index slot must not hide it — got {:?}",
+        rf.resolution_at(at(src, "fromCompanion"))
+    );
+}
+
+#[test]
+fn module_companion_does_not_suppress_the_abbreviation_marker() {
+    // codex round 4: the suffixed module companion (`module Companion`,
+    // compiled `CompanionModule`, source name `Companion`) must not count as
+    // "an ECMA row already occupies the abbreviation's slot" — a module never
+    // occupies the TYPE-position name. Without the marker, the type index
+    // hands `Companion` to the module and a bare annotation binds a module
+    // entity where FCS binds the abbreviation (= string).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Companion = \"\"\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Companion")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "the abbreviation marker must shadow the type position, not the module companion"
+    );
+}
+
+#[test]
+fn renamed_abbreviation_marker_outranks_its_module_companion() {
+    // codex round 5: `[<CompiledName("RenamedAbbrev")>] type Renamed = string`
+    // gives the marker a source_name, which routes it through the same
+    // source-named index pass as the suffixed `module Renamed` companion. The
+    // type must still win the bare name (F#'s type-over-module slot rule):
+    // the annotation defers on the abbreviation marker rather than binding
+    // the module entity.
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Renamed = \"\"\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Renamed")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "the renamed abbreviation's marker must win the bare name over the module companion"
+    );
+}
+
+#[test]
+fn nested_renamed_abbreviation_marker_outranks_its_module_companion() {
+    // codex round 6: the round-5 rule, one level down. `Lib.Holder` nests a
+    // renamed abbreviation (`NestedRenamed`, compiled `NestedRenamedAbbrev` —
+    // so its marker carries a source_name) and a suffixed module companion.
+    // `AssemblyEnv::nested`'s source-name tier must prefer the TYPE (the
+    // marker, which shadow-defers the whole path — a multi-segment path
+    // records nothing) over the module in any child storage order; matching
+    // the module instead records a module entity in type position where FCS
+    // binds the abbreviation.
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Holder.NestedRenamed = \"\"\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "NestedRenamed")),
+        None,
+        "the nested marker must shadow-defer the path (recording nothing at a \
+         multi-segment tail), never bind the module companion in type position"
+    );
+}
+
+#[test]
+fn rec_module_multi_segment_forward_path_defers() {
+    // Review finding #3 (probe-confirmed): inside `module rec`, a
+    // multi-segment annotation can name a nested module declared LATER —
+    // `Deep.Marker` binds the forward `M.Deep.Marker` in FCS. The
+    // source-ordered walk has not seen `module Deep` yet, so the
+    // descends-into-nested-module veto misses and the tiered walk bound the
+    // assembly `Other.Deep.Marker` instead — a wrong target. The rec
+    // pre-scan of the block's module names must defer the path (recording
+    // nothing — a multi-segment tail is never a primitive-alias head).
+    let env = fixture_env();
+    let src = "module rec M\nopen Other\nlet f (x : Deep.Marker) = x\nmodule Deep =\n    type Marker = A of int\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Marker")),
+        None,
+        "a rec-forward module path must not bind the same-path assembly type"
+    );
+}
+
+#[test]
+fn non_rec_later_module_does_not_veto_the_assembly_path() {
+    // The non-rec control: without `rec`, the later `module Deep` is NOT in
+    // scope at the annotation, so FCS genuinely binds the assembly
+    // `Other.Deep.Marker` — the pre-scan must key on `rec` and leave this
+    // resolving.
+    let env = fixture_env();
+    let src = "module M\nopen Other\nlet f (x : Deep.Marker) = x\nmodule Deep =\n    type Marker = A of int\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Other".into(), "Deep".into()], "Marker", 0)
+        .expect("fixture must declare Other.Deep.Marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "Marker")),
+        Some(Resolution::Entity(marker)),
+        "without rec the assembly path is the true binding"
+    );
+}
+
+#[test]
+fn nested_rec_module_forward_path_defers_too() {
+    // The nested `module rec Outer = …` entry point (a fresh rec block inside
+    // a non-rec file) must pre-scan its own nested-module names exactly like
+    // a top-level `module rec` header.
+    let env = fixture_env();
+    let src = "module M\nopen Other\nmodule rec Outer =\n    let f (x : Deep.Marker) = x\n    module Deep =\n        type Marker = A of int\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Marker")),
+        None,
+        "a nested rec block's forward module path must not bind the assembly type"
+    );
+}

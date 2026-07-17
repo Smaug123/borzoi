@@ -1,0 +1,16 @@
+[package]
+name = "borzoi-oracle-harness"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+borzoi-spawn = { path = "../spawn" }
+# rustc's own lexer, used by `module_tree` to read `mod` declarations without
+# re-implementing Rust's string/comment/raw-literal lexing by hand.
+proc-macro2 = "1"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"

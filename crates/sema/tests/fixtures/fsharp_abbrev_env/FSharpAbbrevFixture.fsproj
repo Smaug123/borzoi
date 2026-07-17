@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for resolver R2-0: F# type abbreviations are exported through
+       signature data, not ECMA TypeDefs. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaFSharpAbbrevFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="NestedEncoding.fs" />
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

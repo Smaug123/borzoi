@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches the rest of the .NET surface in this repo. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MiniLibFsExt</AssemblyName>
+    <RootNamespace>MiniLibFsExt</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The augmentations target the C# `MiniLib.Counter` defined in
+         the sibling fixture. A ProjectReference makes the F# compiler
+         pull `MiniLib.dll` onto the reference set so `type Counter with`
+         resolves; the resulting `MiniLibFsExt.dll` carries only the
+         augmenting methods (the F# compiler emits them as static methods
+         on the `Extensions` module class, with the receiver re-prepended
+         for instance-style augmentations and `[ExtensionAttribute]`
+         marking them for cross-language consumption). -->
+    <ProjectReference Include="..\MiniLib\MiniLib.csproj" />
+  </ItemGroup>
+
+</Project>

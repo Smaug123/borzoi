@@ -1,0 +1,22 @@
+.direnv/
+target/
+# Nix build-output symlinks: bare `result` plus `nix build --out-link result-<name>` variants.
+result
+result-*
+.claude/worktrees/
+
+# .NET build artifacts (tools/fcs-dump)
+bin/
+obj/
+
+# Generated parser-vs-FCS divergence report (cargo test --test fcs_divergence)
+fcs-divergence/
+
+
+# Added by cargo
+
+/target
+
+# OV-9: the overload matrix is emitted deterministically by the generator
+# (crates/sema/tests/common/overload_corpus.rs) before the fixture is built.
+crates/sema/tests/fixtures/overload_corpus/Generated.cs

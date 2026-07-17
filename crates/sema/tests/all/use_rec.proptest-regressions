@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc dff14bbdf43092c0108fd61a88bd73ce138208ece320f2f1328e91152e088bc7 # shrinks to forms = [Form { is_use: true, is_rec: true }]

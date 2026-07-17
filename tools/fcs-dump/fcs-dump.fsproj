@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>FcsDump</RootNamespace>
+    <AssemblyName>fcs-dump</AssemblyName>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Nullable>enable</Nullable>
+    <!-- The SDK auto-references FSharp.Core at its bundled version; we want
+         to pin a newer patch to satisfy FCS, so opt out of the implicit ref. -->
+    <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Pin FSharp.Core so it matches what FCS 43.12.204 requires; the SDK
+         ships an older patch revision and would otherwise trigger NU1605. -->
+    <PackageReference Include="FSharp.Core" Version="10.1.204" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="43.12.204" />
+    <PackageReference Include="FSharp.SystemTextJson" Version="1.4.36" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Two producer TFMs so NuGet's restore has a real pick to make:
+         netstandard2.0 is reachable from net10.0 (the consumer) but is
+         strictly less compatible than net6.0, which is also reachable.
+         NuGet's nearest-compatible algorithm should select net6.0; the
+         picker must agree, even though "net10.0" appears in neither
+         TargetFrameworks entry. -->
+    <TargetFrameworks>netstandard2.0;net6.0</TargetFrameworks>
+    <RootNamespace>MultiTfmLeaf</RootNamespace>
+    <AssemblyName>MultiTfmLeaf</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

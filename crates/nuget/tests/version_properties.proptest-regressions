@@ -1,0 +1,12 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 7270e6d5e6c5723b4667964a2eb9b13f51e4ed8bb1b3fbbee9417479ebcded51 # shrinks to p = Parts { nums: [0], labels: [], metadata: None }
+cc 7b076c38df53e6b8c087860f5e1d11af83c83bc90ea7260119d382e0825af856 # shrinks to p = Parts { nums: [0], labels: [], metadata: None }
+cc ab21d82d2c61ba69d046f13bcbb1492db0875717644cd0942ec146e0731db63d # shrinks to p = Parts { nums: [0], labels: [], metadata: None }, extra = ["A"]
+cc b5b81ffc78c41e8ec64b5cf1ef4fd0a31a818522649736f2f2e10977283ccb02 # shrinks to p = Parts { nums: [0], labels: [], metadata: None }, meta = ["A"]
+cc f52500c525b13b56e5a866cb4d85e6a6b2877156e1697ff7a0ee5ed1037aca5a # shrinks to p = Parts { nums: [0], labels: [], metadata: None }
+cc f2c2ea20b565ac55f4a8d08b71785e02d20e9d4e31469e5df023abbea57ffcec # shrinks to pa = Parts { nums: [0], labels: [], metadata: None }, pb = Parts { nums: [0], labels: [], metadata: None }, pc = Parts { nums: [0], labels: [], metadata: None }

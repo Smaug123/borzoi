@@ -1,0 +1,791 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+# `contents: read` covers `actions/checkout` and the cache/artifact actions;
+# change detection is plain git (no GitHub API). Declaring the block explicitly
+# pins least privilege regardless of the repo's default-workflow-permissions
+# setting.
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      cst: ${{ steps.filter.outputs.cst }}
+      msbuild: ${{ steps.filter.outputs.msbuild }}
+      assembly: ${{ steps.filter.outputs.assembly }}
+      lsp: ${{ steps.filter.outputs.lsp }}
+      sema: ${{ steps.filter.outputs.sema }}
+      nuget: ${{ steps.filter.outputs.nuget }}
+      astgen: ${{ steps.filter.outputs.astgen }}
+      fcs: ${{ steps.filter.outputs.fcs }}
+      sidecar: ${{ steps.filter.outputs.sidecar }}
+      workspace: ${{ steps.filter.outputs.workspace }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Full history so the diff base is present locally for the change
+          # detector: a push diffs against `github.event.before`, a PR against
+          # `github.event.pull_request.base.sha`. checkout retries its fetch,
+          # and if the base still can't be resolved the detector fails open
+          # (runs everything) rather than failing the run.
+          fetch-depth: 0
+      - name: Filter changed paths
+        id: filter
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          GITHUB_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # tools/ci/detect-changes.sh maps the changed paths to the per-job
+        # filter outputs; its path prefixes mirror the job gates in this file.
+        # The offline NuGet closure (`nix/**`) feeds every dotnet-driven test,
+        # so it sits in `workspace` to trigger the test/fcs-dump jobs on a
+        # closure-only change.
+        run: bash tools/ci/detect-changes.sh
+
+  lint:
+    name: Lint (clippy/fmt/doc)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      # ubuntu-latest has ~14 GB free on / but ~65 GB on /mnt. Bind-mount both
+      # /nix (the flake closure: two dotnet SDKs + the Rust toolchain) and
+      # cargo's target/ onto /mnt so neither exhausts the root disk. The
+      # /mnt/cargo-target backing dir is chowned to the runner so cargo (and
+      # rust-cache, which caches the default ./target) can write through the
+      # bind mount; the `df -h` line surfaces headroom on a cold run.
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          # Run the key-deriving/cleanup cargo+rustc calls inside the devshell so
+          # the cache key reflects the Nix-pinned toolchain, not the runner's
+          # rustup default. save-if main-only: PRs restore but do not each save,
+          # keeping the per-job caches from churning the 10 GB repo quota.
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Run clippy
+        run: |
+          nix develop --command cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run fmt
+        run: |
+          nix develop --command cargo fmt --check
+
+      - name: Run cargo doc
+        run: |
+          nix develop --command env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+      - name: Test change detection
+        run: bash tools/ci/detect-changes.test.sh
+
+  fcs-dump:
+    name: Build fcs-dump
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # Build whenever any fcs-dump-consuming test might run. The union here is
+      # the union of every consuming job's gate: test-cst, test-assembly,
+      # test-sema, and test-lsp (whose gate pulls in msbuild + sidecar via lsp's
+      # deps). test-msbuild/test-nuget/test-astgen/test-spawn/test-oracle-harness
+      # do NOT invoke fcs-dump. If you add a gate to a consuming job, mirror it.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.msbuild }}" == "true" || \
+                "${{ needs.changes.outputs.assembly }}" == "true" || \
+                "${{ needs.changes.outputs.lsp }}" == "true" || \
+                "${{ needs.changes.outputs.sema }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.sidecar }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — building fcs-dump."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping fcs-dump build."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache fcs-dump build output
+        if: steps.gate.outputs.run == 'true'
+        # Intermediate bin/obj so an unchanged fcs-dump publishes incrementally.
+        # Keyed by the F# sources, the project file, and flake.lock (which pins
+        # the SDK); restore-keys let a near-miss seed the incremental build.
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            tools/fcs-dump/bin
+            tools/fcs-dump/obj
+          key: fcs-dump-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/fcs-dump/**/*.fs', 'tools/fcs-dump/**/*.fsproj', 'flake.lock') }}
+          restore-keys: |
+            fcs-dump-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Compute .NET runtime identifier
+        if: steps.gate.outputs.run == 'true'
+        id: rid
+        run: |
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            Linux-X64)   rid=linux-x64 ;;
+            Linux-ARM64) rid=linux-arm64 ;;
+            macOS-ARM64) rid=osx-arm64 ;;
+            macOS-X64)   rid=osx-x64 ;;
+            *)
+              echo "Unsupported runner platform: ${{ runner.os }}-${{ runner.arch }}" >&2
+              exit 1
+              ;;
+          esac
+          echo "rid=$rid" >> "$GITHUB_OUTPUT"
+
+      - name: Publish fcs-dump (self-contained)
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command dotnet publish tools/fcs-dump \
+            -c Release \
+            -r ${{ steps.rid.outputs.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=false \
+            -o "$RUNNER_TEMP/fcs-dump-bundle"
+
+      - name: Package fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        # tar preserves the +x bit that upload-artifact would otherwise drop, so
+        # the consumers need no chmod. `test -x` fails loud, like
+        # if-no-files-found: error would.
+        run: |
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/fcs-dump.tgz" fcs-dump-bundle
+
+      - name: Upload fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        # A job→job handoff, not a cross-run cache. The artifact is scoped to
+        # this run; `overwrite: true` so "Re-run all jobs" (which re-runs
+        # fcs-dump) replaces the previous attempt's bundle rather than failing on
+        # the name clash. "Re-run failed jobs" does not re-run an already-green
+        # fcs-dump, and its attempt-1 artifact stays downloadable by the reruns.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}/fcs-dump.tgz
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  test-cst:
+    name: Test cst
+    needs: [changes, fcs-dump]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running cst tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping cst tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}
+      - name: Unpack fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        # `tar -xp` restores the +x bit the packaging step preserved.
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/fcs-dump.tgz"
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
+
+      - name: Test cst crate
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-cst --verbose
+
+  test-msbuild:
+    name: Test msbuild
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.msbuild }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running msbuild tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping msbuild tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test msbuild crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test -p borzoi-msbuild --verbose
+
+  test-nuget:
+    name: Test nuget
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # The differential tests build tools/nuget-oracle themselves via
+      # `dotnet build` (offline, against the devshell's pinned NuGet store);
+      # no fcs-dump artifact is involved.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.nuget }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running nuget tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping nuget tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test nuget crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test -p borzoi-nuget --verbose
+
+  test-astgen:
+    name: Test astgen
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # The staleness gate (`tools/astgen/tests/up_to_date.rs`) asserts the
+      # checked-in `crates/cst/src/syntax/generated/*.rs` equals a fresh
+      # generation. It fires on `astgen` (the generator/descriptor table) and on
+      # `cst` (the generated facade lives there, so a hand-edit must be caught).
+      # No fcs-dump needed — the generator is pure Rust + rustfmt.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.astgen }}" == "true" || \
+                "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running astgen tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping astgen tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test astgen crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test -p borzoi-astgen --verbose
+
+  test-assembly:
+    name: Test assembly
+    needs: [changes, fcs-dump]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.assembly }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running assembly tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping assembly tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}
+      - name: Unpack fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/fcs-dump.tgz"
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
+
+      - name: Test assembly crate
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-assembly --all-features --verbose
+
+  test-sema:
+    name: Test sema
+    needs: [changes, fcs-dump]
+    runs-on: ubuntu-latest
+    steps:
+      # sema's differential suite (~1.2k tests) drives fcs-dump, so it downloads
+      # the bundle. sema depends on cst + assembly, so a change to either can
+      # break it; hence they are in the gate alongside sema itself.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.sema }}" == "true" || \
+                "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.assembly }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running sema tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping sema tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}
+      - name: Unpack fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/fcs-dump.tgz"
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
+
+      - name: Test sema crate
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --verbose
+
+  test-lsp:
+    name: Test lsp
+    needs: [changes, fcs-dump]
+    runs-on: ubuntu-latest
+    steps:
+      # Also runs on `sema` (lsp depends on it) and `sidecar`:
+      # `crates/lsp/build.rs` bundles `tools/csharp-sidecar/`, and
+      # `tests/csharp_sidecar*.rs` exercise the bundled artifact end-to-end.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.cst }}" == "true" || \
+                "${{ needs.changes.outputs.msbuild }}" == "true" || \
+                "${{ needs.changes.outputs.assembly }}" == "true" || \
+                "${{ needs.changes.outputs.lsp }}" == "true" || \
+                "${{ needs.changes.outputs.sema }}" == "true" || \
+                "${{ needs.changes.outputs.fcs }}" == "true" || \
+                "${{ needs.changes.outputs.sidecar }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running lsp tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping lsp tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Download fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: fcs-dump-bundle
+          path: ${{ runner.temp }}
+      - name: Unpack fcs-dump bundle
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/fcs-dump.tgz"
+          test -x "$RUNNER_TEMP/fcs-dump-bundle/fcs-dump"
+
+      - name: Test lsp crate
+        if: steps.gate.outputs.run == 'true'
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi --verbose
+
+  test-sidecar:
+    name: Test csharp-sidecar (xUnit)
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.sidecar }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running sidecar xUnit tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping sidecar xUnit tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Run sidecar xUnit tests
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command dotnet test tools/csharp-sidecar.tests/csharp-sidecar.tests.csproj --verbosity normal
+
+  test-spawn:
+    name: Test spawn
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # spawn underpins every test harness (BatchChild/BoundedCommand), so it
+      # lives in the `workspace` filter: a change to it runs the whole suite,
+      # and this job runs its own unit tests. No fcs-dump needed.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running spawn tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping spawn tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test spawn crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test -p borzoi-spawn --verbose
+
+  test-oracle-harness:
+    name: Test oracle-harness
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # oracle-harness (BatchChild) drives every resident oracle, so — like
+      # spawn — it lives in the `workspace` filter: a change runs the whole
+      # suite, and this job runs its own tests. No fcs-dump needed (its tests
+      # spawn trivial `sh -c` responders). NOTE: `batch_recovers_from_a_transient_wedge`
+      # hardcodes a 300 ms child deadline and can flake on a loaded shared runner.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running oracle-harness tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping oracle-harness tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test oracle-harness crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test -p borzoi-oracle-harness --verbose
+
+  nix-build:
+    name: Nix Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+    - name: Move /nix and cargo's target/ to the large /mnt disk
+      run: |
+        df -h / /mnt || true
+        sudo mkdir -p /mnt/nix /nix
+        sudo mount --bind /mnt/nix /nix
+        sudo mkdir -p /mnt/cargo-target
+        sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+        mkdir -p "$GITHUB_WORKSPACE/target"
+        sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+    - name: Install Nix
+      uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+    - name: Build Nix package
+      run: |
+        nix build .#default --print-build-logs
+
+  all-required-checks-complete:
+    if: ${{ always() }}
+    needs:
+      - changes
+      - lint
+      - fcs-dump
+      - test-cst
+      - test-msbuild
+      - test-nuget
+      - test-astgen
+      - test-assembly
+      - test-sema
+      - test-lsp
+      - test-sidecar
+      - test-spawn
+      - test-oracle-harness
+      - nix-build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: G-Research/common-actions/check-required-lite@901acf923ac37b7f61777c210cb5145c2d9f489a
+        with:
+          needs-context: ${{ toJSON(needs) }}

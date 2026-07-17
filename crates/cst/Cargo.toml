@@ -1,0 +1,16 @@
+[package]
+name = "borzoi-cst"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+logos = "0.14"
+rowan = "0.16"
+
+[dev-dependencies]
+borzoi-oracle-harness = { path = "../oracle-harness" }
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"

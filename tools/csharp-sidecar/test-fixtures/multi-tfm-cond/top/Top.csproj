@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Consumer of the multi-TFM leaf. The leaf has a conditional inner
+         ref to Polyfill that only fires under net6.0; verifying that the
+         sidecar's closure walk discovers that edge from the leaf's *own*
+         per-project workspace (not the top workspace, which evaluates
+         the leaf under net10.0 and therefore misses the net6.0-only
+         edge) is the point of this fixture. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>MultiTfmCondTop</RootNamespace>
+    <AssemblyName>MultiTfmCondTop</AssemblyName>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\leaf\Leaf.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>PkgRefFixture</RootNamespace>
+    <AssemblyName>PkgRefFixture</AssemblyName>
+    <Nullable>enable</Nullable>
+    <!-- Suppress NuGetAudit so a future advisory on Newtonsoft.Json doesn't
+         turn the test run red. The fixture isn't shipped; the package is
+         just here to exercise PackageReference + restore + metadata reads. -->
+    <NuGetAudit>false</NuGetAudit>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 13.0.3 is the smallest well-known package we can pin that's
+         widely cached on developer machines and CI. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+</Project>

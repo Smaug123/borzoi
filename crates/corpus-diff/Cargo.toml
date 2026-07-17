@@ -1,0 +1,25 @@
+[package]
+name = "borzoi-corpus-diff"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+borzoi = { path = "../lsp" }
+borzoi-msbuild = { path = "../msbuild" }
+borzoi-sema = { path = "../sema" }
+# The bounded driver for the `fcs-dump` children this harness shells out to. A
+# regular dependency, not a dev-dependency: this crate is itself an unpublished
+# integration-test shell (see the module docs), and the drivers live in its
+# library, not its tests.
+borzoi-spawn = { path = "../spawn" }
+lsp-types = "0.95"
+rowan = "0.16"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+borzoi-assembly = { path = "../assembly" }
+borzoi-cst = { path = "../cst" }
+tempfile = "3"
