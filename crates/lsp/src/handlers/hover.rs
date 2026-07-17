@@ -124,9 +124,6 @@ fn project_unavailable(
         docs,
         ..
     } = state;
-    let Some(resolved) = semantic.resolved_project_for(&project, workspace, docs) else {
-        return ProjectClassify::NotInProject;
-    };
     let Some(parses) = semantic.parses_for_project(&project, workspace, docs) else {
         return ProjectClassify::NotInProject;
     };
@@ -136,6 +133,11 @@ fn project_unavailable(
         .iter()
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))
     else {
+        return ProjectClassify::NotInProject;
+    };
+    // Only this file's own resolution is inspected (`resolved.file(idx)`), so fold
+    // just the prefix up to it — the same slice as `project_hover`.
+    let Some(resolved) = semantic.resolved_prefix_for(&project, idx, workspace, docs) else {
         return ProjectClassify::NotInProject;
     };
     let file = resolved.file(idx);
@@ -190,13 +192,10 @@ fn project_hover(
         docs,
         ..
     } = state;
-    // The project's `AssemblyEnv` is an input to inference (Stage 3.3a: a member
-    // access `recv.Name` resolves the member against it) and to rendering an
-    // `Entity` / `Member` resolution. It must be the *exact* env the fold
-    // resolved against — a re-fetched env can shift the handles the resolution
-    // recorded (see `resolved_project_and_env_for`) — so take both from one
-    // paired call.
-    let (resolved, env) = semantic.resolved_project_and_env_for(&project, workspace, docs)?;
+    // This file's Compile-order index, computed *before* resolving so we fold
+    // only the prefix up to it: F# is order-sensitive, so the hovered name (and
+    // any cross-file `Item` / earlier binder it resolves to) lives at an index
+    // `<= target_file_idx` — the suffix fold can't change this file's answer.
     let parses = semantic
         .parses_for_project(&project, workspace, docs)?
         .clone();
@@ -204,6 +203,14 @@ fn project_hover(
         .paths
         .iter()
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
+    // The project's `AssemblyEnv` is an input to inference (Stage 3.3a: a member
+    // access `recv.Name` resolves the member against it) and to rendering an
+    // `Entity` / `Member` resolution. It must be the *exact* env the fold
+    // resolved against — a re-fetched env can shift the handles the resolution
+    // recorded (see `resolved_prefix_and_env_for`) — so take both from one
+    // paired call.
+    let (resolved, env) =
+        semantic.resolved_prefix_and_env_for(&project, target_file_idx, workspace, docs)?;
     let file = resolved.file(target_file_idx);
 
     // Inference is per-file and pure (no IO — it reads only the parsed file, its

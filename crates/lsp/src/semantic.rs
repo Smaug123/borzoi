@@ -949,6 +949,36 @@ impl SemanticState {
             .map(|(resolved, _env)| resolved)
     }
 
+    /// Like [`Self::resolved_project_for`], but folds only the Compile **prefix**
+    /// up to and including `up_to_index` — the env-less view of
+    /// [`Self::resolved_prefix_and_env_for`], whose soundness argument it shares.
+    /// The returned [`ResolvedProject`] covers `.file(up_to_index)`. Prefer this
+    /// for a single-file request whose answer depends only on `0..=up_to_index`
+    /// (definition / completion of a *use*): the referenced def, or any in-scope
+    /// completion candidate, is declared at an index `<= up_to_index`, so the
+    /// suffix fold is pure waste.
+    pub fn resolved_prefix_for(
+        &mut self,
+        project: &Path,
+        up_to_index: usize,
+        workspace: &mut Workspace,
+        docs: &HashMap<Url, String>,
+    ) -> Option<Arc<ResolvedProject>> {
+        self.resolved_prefix_and_env_for(project, up_to_index, workspace, docs)
+            .map(|(resolved, _env)| resolved)
+    }
+
+    /// The number of Compile-order files in the cached resolved fold for
+    /// `project`, if one is cached — the *depth* of the retained prefix. A sliced
+    /// single-file request for file `k` caches only `k + 1`; a full request
+    /// (find-references) caches the whole project. Lets a test pin that a handler
+    /// folded only the prefix, not the whole project — the point of the slice.
+    pub fn cached_resolved_len(&self, project: &Path) -> Option<usize> {
+        self.resolved_projects
+            .get(&canonicalise(project))
+            .map(|(resolved, _env)| resolved.len())
+    }
+
     /// The Compile-ordered parses for the project at `project`, preferring
     /// the in-memory buffer of each member file over its on-disk text.
     /// Returns `None` when the project failed to evaluate or evaluated only

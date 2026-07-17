@@ -83,7 +83,10 @@ fn member_candidates(
         docs,
         ..
     } = state;
-    let resolved = semantic.resolved_project_for(&project, workspace, docs)?;
+    // Size the fold to this file's Compile index *first*, so we fold only the
+    // prefix up to it: F# is order-sensitive, so the receiver's type and every
+    // in-scope member candidate are declared at an index `<= file_idx` — the
+    // suffix fold can't add a candidate this file can see.
     let parses = semantic
         .parses_for_project(&project, workspace, docs)?
         .clone();
@@ -91,6 +94,7 @@ fn member_candidates(
         .paths
         .iter()
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
+    let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
     let file = resolved.file(file_idx);
     let impl_file = &parses.files[file_idx];
 
