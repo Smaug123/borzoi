@@ -86,25 +86,39 @@ impl<'src> Parser<'src> {
             });
         }
 
-        // A trailing `Virtual::BlockSep` while the raw `}` is still pending is
-        // consumed zero-width — advancing `pos` but not the raw cursor — so
-        // `bump_swallowed_closer` still finds the raw `}` *and* the enclosing
-        // `parse_type_defn_repr` still observes the type body's following
-        // `BlockEnd`, which it needs to admit an `and` continuation
-        // (`type T = {⏎ … }⏎ and U = …`). A draining `bump_into` would instead
-        // eat the `}`. This fires only while the type body's block is open: in
-        // the `}`-on-own-line layout (`type T = {⏎ X : int⏎ }`, the separator
-        // *before* the `}`) and the bare-trailing-member layout
-        // (`type R =⏎ { … }⏎ member …`, phase 9.13b, the body-block separator
-        // *after* the `}` — position-blind here, but the member item then sits
-        // directly at the cursor for `parse_type_defn_repr`'s bare-members
-        // hook). When the block has already closed (`type R = { X: int }` with
-        // the next decl offside), the `BlockEnd` arrives first and this no-ops,
-        // leaving the enclosing scope's separator alone. Record *expressions* /
-        // *patterns* have no `and` chain, so their loops harmlessly leave this
-        // `BlockSep` for the caller; only the type-def repr must consume it
-        // here.
-        if matches!(self.next_non_trivia_raw_at_pos(), Some(Token::RBrace)) {
+        // The record owns exactly one trailing `Virtual::BlockSep`: the offside
+        // separator of the `}`-on-own-line layout (`type T = {⏎ X : int⏎ }`),
+        // which sits *before* the swallowed `}`. Consume it zero-width —
+        // advancing `pos` but not the raw cursor — so `bump_swallowed_closer`
+        // still finds the raw `}` *and* the enclosing `parse_type_defn_repr`
+        // still observes the type body's following `BlockEnd`, which it needs to
+        // admit an `and` continuation (`type T = {⏎ … }⏎ and U = …`). A draining
+        // `bump_into` would instead eat the `}`.
+        //
+        // A `BlockSep` sitting *after* the `}` is **not** the record's — it is
+        // the type body's separator before a bare trailing member
+        // (`type R =⏎ { … }⏎ member …`, phase 9.13b), owned by
+        // `parse_type_defn_repr`'s bare-members hook. Leaving it there lets that
+        // hook consume it (via `bump_into`) in its correct place *after* the
+        // `}`, rather than mis-stamping it zero-width *inside* the record before
+        // the closer. The span comparison against the swallowed `}` makes the
+        // ownership local: eat iff the separator precedes the closer. When the
+        // block has already closed (`type R = { X: int }` with the next decl
+        // offside), the `BlockEnd` arrives first — no `BlockSep` at the cursor —
+        // so this no-ops, leaving the enclosing scope's separator alone. Record
+        // *expressions* / *patterns* have no `and` chain, so their loops
+        // harmlessly leave this `BlockSep` for the caller; only the type-def
+        // repr must consume its own here.
+        let own_trailing_sep_start = match self.peek() {
+            Some((Ok(FilteredToken::Virtual(Virtual::BlockSep)), sep_span)) => Some(sep_span.start),
+            _ => None,
+        };
+        if own_trailing_sep_start.is_some_and(|sep_start| {
+            matches!(
+                self.next_non_trivia_raw_at_pos_with_span(),
+                Some((Token::RBrace, brace_span)) if sep_start < brace_span.start
+            )
+        }) {
             self.eat_zero_width_virtual(Virtual::BlockSep);
         }
 
