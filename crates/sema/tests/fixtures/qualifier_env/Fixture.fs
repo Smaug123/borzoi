@@ -89,6 +89,12 @@ module Collide =
     type GenAbbrCls<'a> = ResizeArray<'a>
     type GenAbbrRec<'a> = GenRec<'a>
 
+    // A generic abbreviation AND a val of the same name. FCS resolves the val
+    // (its module search checks vals before types), so the abbreviation defer
+    // must run *after* the value lookup, not before it (codex review 4).
+    type ValAndAbbr<'a> = ResizeArray<'a>
+    let ValAndAbbr () = 99
+
     let fromModule () = 1
 
     let Shared () = 2
@@ -108,3 +114,20 @@ type Collide() =
     static member GenUni() = 12
     static member GenAbbrCls() = 13
     static member GenAbbrRec() = 14
+
+// Finding-2 pair (codex review 4): an as-written-**root** module abbreviation
+// must not preempt a higher-priority `open`. `RootHolder` exists as a GLOBAL
+// module (reachable at the root) whose `Aliased` is a generic abbreviation, and
+// again under `QP.HighNs` whose `Aliased` is a real val. With `open QP.HighNs`,
+// FCS resolves `RootHolder.Aliased` to `QP.HighNs.RootHolder.Aliased` (the open
+// outranks the root); the root abbreviation must defer *tier-locally*, not veto
+// the open.
+namespace global
+
+module RootHolder =
+    type Aliased<'a> = ResizeArray<'a>
+
+namespace QP.HighNs
+
+module RootHolder =
+    let Aliased () = 7

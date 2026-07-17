@@ -578,13 +578,13 @@ fn fixture_cells_with_the_type_open_last() {
 /// before deciding ownership — a class target keeps the module, a record target
 /// falls through to the type — so FCS's answer is *target-sensitive*. Our
 /// projection does not model the abbreviation target, so we **defer** the whole
-/// path (`has_public_abbreviation_child` → `ProjectShadowed`), making no claim on
-/// the qualifier in *either* direction. That is sound both ways: committing the
-/// module would be wrong for a record target, committing the type wrong for a
-/// class target (codex review). Asserted with the module open last, where our
-/// module tier is tried first and the defer actually fires (with the type open
-/// last the type tier resolves its own static first — the modules-before-types
-/// gap, not this concern).
+/// path (`has_public_abbreviation_child` → the tier-local `AbbreviationOpaque`),
+/// making no claim on the qualifier in *either* direction. That is sound both
+/// ways: committing the module would be wrong for a record target, committing
+/// the type wrong for a class target (codex review). Asserted with the module
+/// open last, where our module tier is tried first and the defer actually fires
+/// (with the type open last the type tier resolves its own static first — the
+/// modules-before-types gap, not this concern).
 #[test]
 fn abbreviation_children_defer_the_qualifier() {
     let src = fixture_src("open QP.TypeHalf\nopen QP.ModHalf\n");
@@ -605,6 +605,74 @@ fn abbreviation_children_defer_the_qualifier() {
         assert_no_claim(&rf, qualifier_of(&src, &path));
         assert_no_claim(&rf, at(&src, &path));
     }
+}
+
+/// A module legally declaring **both** `let X` and `type X<'a>`: FCS's in-module
+/// search checks vals before types, so `M.X` resolves to the **val**. The
+/// abbreviation defer must therefore run *after* the own-value lookup — inside
+/// `static_lookup`'s `Uncertain` arm, not before it — or it would suppress a
+/// resolvable member (codex review 4). Here `Collide.ValAndAbbr` is a val and a
+/// generic abbreviation both; module open last, so our module tier is tried
+/// first.
+#[test]
+fn a_module_value_wins_over_its_own_same_named_abbreviation() {
+    let src = "module Snippet\nopen QP.TypeHalf\nopen QP.ModHalf\nlet a = Collide.ValAndAbbr ()\n";
+    let env = fixture_env();
+    let rf = resolve_src(src, &env);
+    let uses = fcs_uses(src, &[ensure_qualifier_fixture_built()]);
+
+    assert_fcs_qualifier_is_module(&uses, src, "ValAndAbbr");
+    assert_fcs_pin(
+        &uses,
+        src,
+        at(src, "Collide.ValAndAbbr"),
+        "QP.ModHalf.Collide.ValAndAbbr",
+        FIXTURE_ASM,
+    );
+    assert_our_entity(
+        &rf,
+        &env,
+        qualifier_of(src, "Collide.ValAndAbbr"),
+        FIXTURE_ASM,
+        MOD,
+    );
+    assert_our_member(
+        &rf,
+        &env,
+        at(src, "Collide.ValAndAbbr"),
+        FIXTURE_ASM,
+        "QP.ModHalf.Collide.ValAndAbbr",
+    );
+}
+
+/// An as-written-**root** module whose child is a generic abbreviation must NOT
+/// preempt a higher-priority `open` that resolves the whole path. The global
+/// `RootHolder.Aliased` is an abbreviation; `open QP.HighNs` brings a real
+/// `QP.HighNs.RootHolder.Aliased` val at higher priority, and FCS binds it. Our
+/// root abbreviation defers *tier-locally* (`AbbreviationOpaque`, not the
+/// preemptive `ProjectShadowed`), so the open is tried first and wins (codex
+/// review 4).
+#[test]
+fn a_higher_open_outranks_a_root_abbreviation() {
+    let src = "module Snippet\nopen QP.HighNs\nlet a = RootHolder.Aliased ()\n";
+    let env = fixture_env();
+    let rf = resolve_src(src, &env);
+    let uses = fcs_uses(src, &[ensure_qualifier_fixture_built()]);
+
+    assert_fcs_pin(
+        &uses,
+        src,
+        at(src, "RootHolder.Aliased"),
+        "QP.HighNs.RootHolder.Aliased",
+        FIXTURE_ASM,
+    );
+    assert_our_member(
+        &rf,
+        &env,
+        at(src, "RootHolder.Aliased"),
+        FIXTURE_ASM,
+        "QP.HighNs.RootHolder.Aliased",
+    );
 }
 
 /// KNOWN GAP (pinned red, `resolve_string_qualifier_repro` mould): FCS searches

@@ -99,18 +99,6 @@ impl<'a> Resolver<'a> {
                 recs.push((src.text_range(), Resolution::Entity(child)));
                 parent = child;
                 i += 1;
-            } else if self
-                .assemblies
-                .has_public_abbreviation_child(parent, &names[i])
-            {
-                // A *generic* type-abbreviation child the arity-0 `nested` step
-                // above missed: defer the whole path, exactly as the arity-0
-                // nested-abbreviation branch does. Its target is unmodelled, so
-                // FCS may chase it to a record/union (which falls through to a
-                // lower reading) or a class (which keeps this module) — we cannot
-                // tell which, so we must not commit the module qualifier here
-                // (codex review). ProjectShadowed defers, never a wrong target.
-                return AssemblyPath::ProjectShadowed;
             } else {
                 match self.assemblies.static_lookup(parent, &names[i]) {
                     StaticLookup::Resolved(idx) => {
@@ -136,6 +124,23 @@ impl<'a> Resolver<'a> {
                     // ([`Self::open_type_statics`]), where such a name shadows by
                     // position and defers.
                     StaticLookup::Uncertain => {
+                        // …unless the occupying entity is a *generic
+                        // type-abbreviation* child the arity-0 `nested` step above
+                        // missed (a val would have resolved above; only a
+                        // non-value occupant reaches here). Its target is
+                        // unmodelled and FCS's ownership is target-sensitive — a
+                        // record/union target falls through, a class target keeps
+                        // the module — so we can commit neither: defer the whole
+                        // path (codex review 3). `AbbreviationOpaque` defers
+                        // *tier-locally* (unlike `ProjectShadowed` it does not
+                        // preempt a higher-priority open that resolves the path —
+                        // codex review 4).
+                        if self
+                            .assemblies
+                            .has_public_abbreviation_child(parent, &names[i])
+                        {
+                            return AssemblyPath::AbbreviationOpaque;
+                        }
                         recs.push((src.text_range(), deferred));
                         i += 1;
                         break;
@@ -317,7 +322,15 @@ impl<'a> Resolver<'a> {
                     }
                     fallback.get_or_insert(payload);
                 }
-                AssemblyPath::ProjectShadowed => return TieredResolution::ShadowDeferred,
+                // A generic-abbreviation reading defers, like a project shadow —
+                // but only once *reached in priority order*. The preemptive
+                // as-written-root check above skips it (it is not
+                // `ProjectShadowed`), so a higher-priority `open` resolving the
+                // path is tried first and wins; the abbreviation defers only if
+                // it is the highest reading left (codex review 4).
+                AssemblyPath::ProjectShadowed | AssemblyPath::AbbreviationOpaque => {
+                    return TieredResolution::ShadowDeferred;
+                }
                 AssemblyPath::NoMatch => {
                     if veto == ShadowVeto::OnNoMatch {
                         return TieredResolution::ShadowDeferred;

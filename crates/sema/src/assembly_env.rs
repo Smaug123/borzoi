@@ -2516,6 +2516,12 @@ impl AssemblyEnv {
     /// the [`Self::is_abbreviation`] defer the arity-0 `nested` branch of
     /// `assembly_path_records` already applies; this closes it for a *generic*
     /// abbreviation, which `nested(.., 0)` skips on arity.
+    ///
+    /// `assembly_path_records` consults this only in the `Uncertain` arm of its
+    /// `static_lookup` — *after* a resolvable module value would have won (a
+    /// module legally declaring both `let X` and `type X<'a>` resolves to the
+    /// val, codex review 4) — and returns its `AbbreviationOpaque` reading so the
+    /// defer is tier-local rather than a preemptive lexical shadow.
     pub fn has_public_abbreviation_child(&self, handle: EntityHandle, name: &str) -> bool {
         self.children(handle).iter().copied().any(|c| {
             self.is_public(c) && self.is_abbreviation(c) && {
@@ -2918,12 +2924,14 @@ impl AssemblyEnv {
     /// interface, and a delegate all keep the module; a record and a union do
     /// not). So the rule is purely kind-based, *not* constructibility.
     ///
-    /// An **abbreviation** child is deliberately excluded from this test — it is
-    /// intercepted *earlier*, in `assembly_path_records`, by
-    /// [`Self::has_public_abbreviation_child`], which defers the whole path
-    /// (FCS's answer is target-sensitive, and the target is unmodelled). So an
-    /// abbreviation never reaches this predicate through the walk; the arm here
-    /// (which would return `true`, since it is not a record/union) is unreached.
+    /// An **abbreviation** child returns `true` here (it is not a record/union),
+    /// making the module-qualified name [`StaticLookup::Uncertain`] — but
+    /// `assembly_path_records` then intercepts it (via
+    /// [`Self::has_public_abbreviation_child`], in the `Uncertain` arm, after a
+    /// resolvable val would have won) and defers the whole path tier-locally
+    /// (`AbbreviationOpaque`): FCS's ownership is target-sensitive and the target
+    /// is unmodelled, so neither committing the module nor falling through is
+    /// safe.
     ///
     /// Only a **generic** child reaches this test — the arity-0 [`Self::nested`]
     /// step consumes non-generic children first — so `Enum` / `Measure` /
