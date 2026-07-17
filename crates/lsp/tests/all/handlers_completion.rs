@@ -9,7 +9,7 @@
 //! - excludes **static** members (`Empty`) — a value receiver, not a type path;
 //! - offers **nothing** on an untyped / deferred receiver (D5: silence).
 
-use crate::common::runtime_project_state;
+use crate::common::{runtime_project_state, runtime_project_state_files};
 use borzoi::handlers::completion;
 use borzoi::server::State;
 use lsp_types::{
@@ -41,6 +41,38 @@ fn labels(state: &mut State, uri: &Url, line: u32, character: u32) -> Option<Vec
         }
         None => None,
     }
+}
+
+/// Member completion folds only the Compile **prefix** up to the cursor's file:
+/// a completion in file 0 of a two-file project resolves the receiver against
+/// file 0 alone and never folds the later file. Pins the resolution-slice wiring
+/// (`resolved_prefix_for` with the file's Compile index, not `usize::MAX`) — a
+/// regression to the whole-project fold would cache both files.
+#[test]
+fn member_completion_folds_only_the_prefix_up_to_the_cursor_file() {
+    let src = "module M\nlet s = \"hi\"\nlet n = s.\n";
+    let (mut state, uris) =
+        runtime_project_state_files(&[("Lib.fs", src), ("Later.fs", "module Later\nlet z = 1\n")]);
+    let proj = uris[0]
+        .to_file_path()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("P.fsproj");
+
+    // Completion still works (soundness): `s.` offers `System.String` members.
+    let labels = labels(&mut state, &uris[0], 2, 10).expect("member completions after `s.`");
+    assert!(
+        labels.iter().any(|l| l == "Length"),
+        "expected `Length` among {labels:?}"
+    );
+
+    // ...but only file 0 was folded; the later file never was.
+    assert_eq!(
+        state.semantic.cached_resolved_len(&proj),
+        Some(1),
+        "completion on file 0 folds only file 0, not the later Compile file"
+    );
 }
 
 #[test]
