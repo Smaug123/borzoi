@@ -12,7 +12,9 @@ use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
-use super::model::{CaseKind, DeferredReason, ExportDeclKind, Resolution, SlotClass};
+use super::model::{
+    CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, Resolution, SlotClass,
+};
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
@@ -395,6 +397,7 @@ impl<'a> Resolver<'a> {
         apn: &ActivePatName,
         at_module_level: bool,
         arity: Option<usize>,
+        is_private: bool,
     ) -> Vec<ScopeEntry> {
         let Some(range) = apn.name_range() else {
             // A malformed name with no `|` (recovery): nothing to intern.
@@ -458,8 +461,8 @@ impl<'a> Resolver<'a> {
             };
             let use_id = self.intern(use_def);
             // Every case of one recognizer shares its shape, keyed by the *use*
-            // identity `case_reference` returns, so a same-file applied head can
-            // look it up (Stage 2). No consumer reads it yet.
+            // identity — the case's `use_id` def, which is also the `ExportedItem`'s
+            // `def` below, so a same-file `Item` maps back to it (Stage 3a).
             self.active_pattern_shape.insert(use_id, shape);
             // A *module-level* case name occupies the value/pattern namespace of its
             // container; record it so a same-named type is seen as contention for the
@@ -468,23 +471,61 @@ impl<'a> Resolver<'a> {
             // cannot reach it — so it must not touch `container_decls`, or a later
             // `match … with Pal.Color.Red` would wrongly defer instead of resolving the
             // union case.
-            if at_module_level {
+            //
+            // Stage 3a: a non-anonymous-root module-level case gets ONE
+            // project-global identity — a `Resolution::Item` shared by same-file AND
+            // cross-file uses (find-references/rename span both — the union-case
+            // precedent) — via an [`ExportedItem`] with `qualified: None` (so
+            // value-namespace queries never see it; it rides `value_exports` as a
+            // pattern-only case through the decl derivation) whose `def` is the
+            // recognizer-span `use_id`, pointing go-to-def at the recognizer. A
+            // distinct `ItemId` per case keeps find-references per-case. An
+            // anonymous-root or *local* case has no cross-file handle: it stays a
+            // file-local `Resolution::Local(use_id)`.
+            let case_res = if at_module_level {
                 self.mark_decl(&case_name).active_pattern = true;
-                // The export-decl-list twin of the module-level hidden-value
-                // marker (legacy `note_hidden_value_module` at the `module_let`
-                // group level): each module-level case decl makes its container
-                // derive into `modules_with_hidden_values`. Its `path` (container +
-                // case name) is the hidden-container anchor; Stage 3 attaches the
-                // recognizer shape.
+                let item = if self.anonymous_root {
+                    None
+                } else {
+                    let item_idx = self.items.len();
+                    let item_id = ItemId::new(self.item_base as usize + item_idx);
+                    self.items.push(ExportedItem {
+                        name: case_name.clone(),
+                        qualified: None,
+                        id: item_id,
+                        def: use_id,
+                        case: None,
+                        access_root_len: self.export_access_root_len(is_private),
+                    });
+                    Some((item_idx, item_id))
+                };
                 let mut path = self.container_path.clone();
                 path.push(case_name.clone());
-                self.push_export_decl(path, token_range.start(), ExportDeclKind::ActivePatternCase);
-            }
-            entries.push(ScopeEntry::binding(
-                case_name,
-                Resolution::Local(use_id),
-                self.open_generation,
-            ));
+                self.push_export_decl(
+                    path,
+                    token_range.start(),
+                    ExportDeclKind::ActivePatternCase {
+                        item: item.map(|(idx, _)| idx),
+                        shape,
+                    },
+                );
+                match item {
+                    Some((_, item_id)) => Resolution::Item(item_id),
+                    None => Resolution::Local(use_id),
+                }
+            } else {
+                Resolution::Local(use_id)
+            };
+            // The case entry is **pattern-namespace-only** — an active-pattern case
+            // is not a value in expression position (`let v = Even` is FS0039). Mark
+            // it so `latest_entry` (expression lookup) skips it regardless of whether
+            // it is `Item`- (module-level, Stage 3a) or `Local`-backed (anonymous
+            // root / a local recognizer); `case_reference` (pattern position) still
+            // finds it. Without this an `Item`-backed case would leak into
+            // expression lookup and shadow a same-named ordinary value.
+            let mut entry = ScopeEntry::binding(case_name, case_res, self.open_generation);
+            entry.pattern_only = true;
+            entries.push(entry);
         }
         entries
     }
@@ -1477,15 +1518,15 @@ impl<'a> Resolver<'a> {
                         // head (`Red`) is a provisional binder, resolved in the
                         // binders loop, so it is skipped here.
                         self.record(single.text_range(), res);
-                        // When the head is a *same-file active pattern* with a stored
-                        // shape, its curried arguments split into parameters
+                        // When the head is an active pattern with a stored shape —
+                        // same-file (`Local`) or cross-file opened (`Item`, Stage
+                        // 3a) — its curried arguments split into parameters
                         // (expressions) and the result sub-pattern (a binder) — FCS's
                         // `TcPatLongIdentActivePatternCase`. A named-field group
                         // (`Case (field = pat)`) is never an active-pattern applied
                         // head, so restrict to the curried form and leave the group to
                         // the default recursion below.
-                        if let Resolution::Local(use_id) = res
-                            && let Some(shape) = self.active_pattern_shape.get(&use_id).copied()
+                        if let Some(shape) = self.resolution_active_pattern_shape(res)
                             && p.name_pat_pairs().is_none()
                         {
                             let args: Vec<Pat> = p.args().collect();
@@ -1607,6 +1648,37 @@ impl<'a> Resolver<'a> {
     /// FS0722-illegal, and the only legal applied use binds correctly by default)
     /// or a **partial point-free** one (`arity == None`, no parameter count to
     /// split on). See `docs/parameterized-active-pattern-args-plan.md`.
+    /// The [`ActivePatternShape`] of the recognizer an applied pattern head
+    /// resolved to, if it is an active pattern with a known shape (Stage 3a of
+    /// `docs/export-decl-model-plan.md`):
+    ///
+    /// - a **same-file** case resolves to [`Resolution::Item`] (or, under an
+    ///   anonymous root, [`Resolution::Local`]) — its shape is keyed by the case's
+    ///   use-def in [`Self::active_pattern_shape`]; an `Item` is mapped to that def
+    ///   through this file's `items`;
+    /// - a **cross-file** case resolves to [`Resolution::Item`] whose handle is
+    ///   out of this file's range — its shape comes from
+    ///   [`ProjectItems::active_pattern_shape_of`].
+    ///
+    /// `None` for any other resolution — an ordinary value, a union/exception case,
+    /// a referenced-assembly tag, a deferred/qualified head — which keeps today's
+    /// fabricate-a-binder behaviour (the unknown-shape decline is Stage 3c).
+    fn resolution_active_pattern_shape(&self, res: Resolution) -> Option<ActivePatternShape> {
+        match res {
+            Resolution::Local(id) => self.active_pattern_shape.get(&id).copied(),
+            Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
+                // Same-file: map the handle to its defining use-def, then the shape.
+                Some(local) => self
+                    .items
+                    .get(local)
+                    .and_then(|it| self.active_pattern_shape.get(&it.def).copied()),
+                // Cross-file: the shape crosses the boundary in the side map.
+                None => self.preceding.active_pattern_shape_of(id),
+            },
+            _ => None,
+        }
+    }
+
     fn split_active_pattern_args(&mut self, shape: ActivePatternShape, args: &[Pat]) -> bool {
         // An applied head always has ≥ 1 arg; guard the degenerate case anyway.
         if args.is_empty() {

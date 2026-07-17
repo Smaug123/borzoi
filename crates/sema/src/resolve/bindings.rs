@@ -111,7 +111,11 @@ impl<'a> Resolver<'a> {
             // active-pattern head itself contributes no binder there).
             if let Some(apn) = active_pat_name_of(&head) {
                 let arity = active_pattern_param_arity(&head);
-                eager_entries = self.define_active_pattern(&apn, true, arity);
+                // A `let private (|Even|Odd|)` scopes its cross-file case handle to
+                // its container, exactly as a `let private` value / `private` case
+                // does (`export_access_root_len`).
+                let is_private = super::decls::header_is_private(binding.syntax());
+                eager_entries = self.define_active_pattern(&apn, true, arity, is_private);
             }
             for def in binders(&head, BinderRole::Let) {
                 // An active-pattern *parameter* argument (`let (Scale divisor) =
@@ -250,7 +254,9 @@ impl<'a> Resolver<'a> {
                 // sees them as expression constructors (see [`resolve_local_let_rhss`]).
                 if let Some(apn) = active_pat_name_of(&head) {
                     let arity = active_pattern_param_arity(&head);
-                    ap_cases = self.define_active_pattern(&apn, false, arity);
+                    // A *local* active pattern is not a module member — it exports
+                    // no cross-file handle, so its `private`-ness is irrelevant.
+                    ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
                 for def in binders(&head, BinderRole::Let) {

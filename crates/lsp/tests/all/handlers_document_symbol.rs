@@ -85,6 +85,22 @@ fn lists_a_single_let_value() {
 }
 
 #[test]
+fn does_not_list_active_pattern_case_handles() {
+    // An active pattern's per-case cross-file identity handles (Stage 3a) point at
+    // the shared recognizer span with kind `ActivePattern`, so listing them would
+    // advertise `(|Even|Odd|)` as two duplicate `FUNCTION` symbols named `Even` /
+    // `Odd` at one range. They are filtered out of the outline; only the ordinary
+    // `let g` value is listed.
+    let syms = run("module M\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\nlet g = 1\n");
+    let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        vec!["g"],
+        "active-pattern case handles must not be listed: {syms:#?}"
+    );
+}
+
+#[test]
 fn function_binding_is_a_function_kind() {
     let syms = run("let f x = x\n");
     assert_eq!(syms.len(), 1, "{syms:#?}");

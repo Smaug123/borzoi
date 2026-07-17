@@ -38,9 +38,18 @@ pub(super) struct ExportRecord {
     /// accessible only from a site within the `k`-segment prefix of the path.
     access_root_len: Option<usize>,
     /// Whether the export is a **constructor case** (union case / `exception`
-    /// constructor — see [`ExportedItem::is_case`]), i.e. also live in the
-    /// constructor (pattern) namespace.
+    /// constructor / active-pattern case), i.e. live in the constructor (pattern)
+    /// namespace. Union/exception cases are *also* values; an active-pattern case
+    /// is not (`pattern_only`).
     is_case: bool,
+    /// Whether the export is **pattern-namespace-only** — an active-pattern case
+    /// (Stage 3a, `docs/export-decl-model-plan.md`). Such a case rides this history
+    /// so it inherits the constructor namespace's Compile-order provenance and
+    /// accessibility recovery (a plain union case does the same), but a bare use in
+    /// *expression* position is FS0039, so every value-namespace query excludes it
+    /// ([`Self::latest_accessible_value`] et al.). `false` for a value or a
+    /// value-live union/exception case.
+    pattern_only: bool,
 }
 
 /// Exported project items visible to a file from *earlier* in Compile order.
@@ -171,6 +180,15 @@ pub struct ProjectItems {
     /// [`Resolution::Item`] as a case ([`Resolver::case_classification`](super::state::Resolver::case_classification)) — for
     /// pattern-position resolution and case/module collision soundness.
     pub(super) case_item_ids: HashSet<ItemId>,
+    /// The recognizer [`ActivePatternShape`] of each earlier-file module-level
+    /// **active-pattern case**, keyed by its project-global [`ItemId`] (Stage 3a,
+    /// `docs/export-decl-model-plan.md`). AP cases ride [`Self::value_exports`] as
+    /// **pattern-only** [`ExportRecord`]s — so they inherit the constructor
+    /// namespace's Compile-order provenance and accessibility recovery exactly as a
+    /// union case does — and this side map carries the shape a use site needs to
+    /// split a parameterized use (`DivBy divisor`) as a same-file one does. Read by
+    /// [`Self::active_pattern_shape_of`].
+    pub(super) active_pattern_shapes: HashMap<ItemId, ActivePatternShape>,
     /// Each union/enum **case**'s *type-qualified* export path (`["Lib", "Color",
     /// "Red"]` = container + type + case) → its project-global handle. Parallel to
     /// [`Self::value_exports`] (the *value*-namespace history), but keyed by the
@@ -321,7 +339,14 @@ impl ProjectItems {
     /// path is already caught by the cross-file `Item` branch before the
     /// assembly lookup runs — only proper-prefix value matches reach here.
     pub(super) fn is_project_value_prefixed(&self, names: &[String]) -> bool {
-        (1..=names.len()).any(|k| self.value_exports.contains_key(&names[..k]))
+        // A prefix is a project value only if it holds a *value* export — a
+        // pattern-only active-pattern-case path (Stage 3a) is not a dottable value,
+        // so it does not make `names` value-prefixed.
+        (1..=names.len()).any(|k| {
+            self.value_exports
+                .get(&names[..k])
+                .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
+        })
     }
 
     /// The handle of the exported **ordinary value** (a `let`/static value, *not* a
@@ -336,7 +361,12 @@ impl ProjectItems {
     pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
         self.value_exports
             .get(path)
-            .and_then(|h| h.last())
+            // A pattern-only active-pattern case (Stage 3a) is not a value-namespace
+            // export, so it must be transparent here — skip it and read the latest
+            // ACTUAL value-space export (else a trailing AP case masks an underlying
+            // ordinary value, making a `Container.Color.Red` qualifier resolve as a
+            // case where FCS binds the value).
+            .and_then(|h| h.iter().rev().find(|r| !r.pattern_only))
             .filter(|r| !r.is_case)
             .map(|r| r.id)
     }
@@ -446,7 +476,9 @@ impl ProjectItems {
             .keys()
             .filter(|q| q.len() == module_path.len() + 1 && q.starts_with(module_path))
             .filter_map(|q| {
-                self.latest_accessible_in_file(q, site, file, |_| true)
+                // Value-namespace: exclude pattern-only active-pattern cases (Stage
+                // 3a) — a value-live union/exception case still counts.
+                self.latest_accessible_in_file(q, site, file, |r| !r.pattern_only)
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
@@ -480,7 +512,9 @@ impl ProjectItems {
         path: &[String],
         site: &[String],
     ) -> Option<ItemId> {
-        self.latest_accessible(path, site, |_| true)
+        // A value or a value-live union/exception case — never a pattern-only
+        // active-pattern case (FS0039 in expression position; Stage 3a).
+        self.latest_accessible(path, site, |r| !r.pattern_only)
     }
 
     /// The latest **case** export at `path` accessible from `site` — restricted
@@ -594,6 +628,9 @@ impl ProjectItems {
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);
         }
+        for (id, shape) in idx.active_pattern_shapes {
+            self.active_pattern_shapes.insert(id, shape);
+        }
         self.count +=
             u32::try_from(file.exports.items.len()).expect("more than u32::MAX items in one file");
     }
@@ -624,6 +661,15 @@ impl ProjectItems {
                     .map(|id| (q.last().expect("non-empty qualified path").clone(), id))
             })
             .collect()
+    }
+
+    /// The recognizer [`ActivePatternShape`] of the earlier-file **active-pattern
+    /// case** with handle `id`, if any (Stage 3a). A use whose applied head resolved
+    /// to a cross-file AP case (`Resolution::Item`) looks the shape up here to split
+    /// its arguments; a non-AP `Item` (an ordinary value, a union/exception case) is
+    /// absent. See [`Self::active_pattern_shapes`].
+    pub(super) fn active_pattern_shape_of(&self, id: ItemId) -> Option<ActivePatternShape> {
+        self.active_pattern_shapes.get(&id).copied()
     }
 
     /// Whether `path` is a declared earlier-file project **namespace** (see
@@ -700,6 +746,7 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     case_item_ids: Vec<ItemId>,
+    active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
     real_nested_modules: Vec<Vec<String>>,
@@ -740,6 +787,10 @@ impl FileExportIndices {
                                     id: it.id,
                                     access_root_len: it.access_root_len,
                                     is_case: it.is_case(),
+                                    // A value-namespace item (`let` value or a
+                                    // value-live union/exception case) is never
+                                    // pattern-only — that is the AP-case branch below.
+                                    pattern_only: false,
                                 },
                             ));
                         }
@@ -823,9 +874,40 @@ impl FileExportIndices {
                 ExportDeclKind::Namespace => {
                     fi.namespace_paths.push(decl.path.clone());
                 }
-                ExportDeclKind::ActivePatternCase => {
-                    push_container_hidden(&mut fi, &decl.path);
-                }
+                ExportDeclKind::ActivePatternCase { item, shape } => match item {
+                    Some(item_idx) => {
+                        // Stage 3a: the AP case rides `value_exports` as a
+                        // **pattern-only** case record (`is_case = true`,
+                        // `pattern_only = true`), so it inherits the constructor
+                        // namespace's Compile-order provenance and accessibility
+                        // recovery exactly as a union case does — the value-namespace
+                        // queries exclude it via `pattern_only`, so a bare
+                        // expression-position use stays FS0039. It also enters
+                        // `case_item_ids` (a cross-file `Item` classifies as a case)
+                        // and the `active_pattern_shapes` side map (the recognizer
+                        // shape for the use-site split). Its container is **not**
+                        // marked hidden — the case is now enumerable, the narrowed AP
+                        // hidden trigger; a container hidden for another reason keeps
+                        // that reason's own marker.
+                        let it = &file.exports.items[*item_idx];
+                        fi.value_exports.push((
+                            decl.path.clone(),
+                            ExportRecord {
+                                id: it.id,
+                                access_root_len: it.access_root_len,
+                                is_case: true,
+                                pattern_only: true,
+                            },
+                        ));
+                        fi.case_item_ids.push(it.id);
+                        fi.active_pattern_shapes.push((it.id, *shape));
+                    }
+                    None => {
+                        // Anonymous root: no cross-file handle, so keep today's
+                        // conservative hidden-value marker for the container.
+                        push_container_hidden(&mut fi, &decl.path);
+                    }
+                },
             }
         }
         fi
@@ -992,10 +1074,25 @@ pub(super) enum ExportDeclKind {
     Extern { name: Vec<String> },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
-    /// A module-level active-pattern case. `path` = container + case name. Its
-    /// container is hidden (an `open` brings a pattern-namespace name we cannot
-    /// enumerate). Stage 3 will attach the recognizer shape.
-    ActivePatternCase,
+    /// A module-level active-pattern case (Stage 3a). `path` = container + case
+    /// name. AP cases are **pattern-namespace-only** — a bare use in expression
+    /// position is FS0039 — so, unlike a value-namespace case, they never enter
+    /// [`value_exports`](ProjectItems::value_exports); they enter the dedicated
+    /// [`active_pattern_case_exports`](ProjectItems::active_pattern_case_exports)
+    /// index (carrying the recognizer `shape`, so a cross-file *parameterized* use
+    /// splits its arguments exactly as a same-file one does) and
+    /// [`case_item_ids`](ProjectItems::case_item_ids).
+    ///
+    /// `item` indexes [`ResolvedFile::exports`]`.items` — the AP case's own
+    /// [`ExportedItem`] (with `qualified: None`, so value-namespace queries never
+    /// see it; its `def` is the per-case recognizer-span use, so a cross-file
+    /// `Resolution::Item` points go-to-def at the recognizer). It is `None` under
+    /// an **anonymous root** (no cross-file handle), where the decl falls back to
+    /// today's hidden-value marker for its container.
+    ActivePatternCase {
+        item: Option<usize>,
+        shape: ActivePatternShape,
+    },
 }
 
 /// Why a use was left unresolved-but-not-an-error. Every variant is honest
@@ -1580,17 +1677,24 @@ impl ResolvedFile {
     }
 
     /// The [`ActivePatternShape`] of the same-file active-pattern recognizer a
-    /// resolution names, if `res` is a case *use* of one (its
-    /// [`Resolution::Local`] use-def identity keys the stored shape). `None` for
-    /// any other resolution — a non-active-pattern binder, a cross-file item, a
-    /// referenced-assembly entity, `Deferred`, `Unresolved`.
-    ///
-    /// Exposes the shape [`resolve_file`](super::resolve_file) stored so it can
-    /// be observed (there is no runtime consumer yet — Stage 1 of
-    /// `docs/parameterized-active-pattern-args-plan.md` only stores it).
+    /// resolution names, if `res` is a case *use* of one. A module-level case use
+    /// resolves to [`Resolution::Item`] (Stage 3a — one identity shared with
+    /// cross-file uses), an anonymous-root / local one to [`Resolution::Local`];
+    /// both key the stored shape by the case's use-def, so an `Item` is mapped to
+    /// that def through this file's exports. `None` for any other resolution — a
+    /// non-active-pattern binder, a **cross-file** item, a referenced-assembly
+    /// entity, `Deferred`, `Unresolved`.
     pub fn active_pattern_shape(&self, res: Resolution) -> Option<ActivePatternShape> {
         match res {
             Resolution::Local(id) => self.active_pattern_shape.get(&id).copied(),
+            // A same-file `Item` (a module-level AP case handle): map it to its
+            // exported use-def, then the shape. A cross-file `Item` (out of this
+            // file's range) is `None` — same-file-only, like `resolved_def`.
+            Resolution::Item(id) => {
+                let local = id.index().checked_sub(self.item_base as usize)?;
+                let item = self.exports.items.get(local)?;
+                self.active_pattern_shape.get(&item.def).copied()
+            }
             _ => None,
         }
     }

@@ -51,6 +51,15 @@ pub fn file_export_symbols(text: &str, file: &ImplFile) -> Vec<(String, SymbolKi
         .iter()
         .filter_map(|export| {
             let def = resolved.def(export.def());
+            // Skip active-pattern **case** handles: these are cross-file identity
+            // exports (Stage 3a), each pointing at the shared recognizer span with
+            // kind [`DefKind::ActivePattern`], so listing them would advertise
+            // `(|Even|Odd|)` as two duplicate `FUNCTION` symbols at one range. The
+            // recognizer's own outline symbol is a separate concern (it is not an
+            // export); until it lands the AP contributes no outline entry.
+            if def.kind == DefKind::ActivePattern {
+                return None;
+            }
             let kind = symbol_kind_for(def.kind)?;
             Some((def.name.clone(), kind, range_to_lsp(text, def.range)))
         })

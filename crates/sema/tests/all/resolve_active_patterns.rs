@@ -161,6 +161,28 @@ fn case_is_not_an_expression_value() {
 }
 
 #[test]
+fn active_pattern_case_does_not_shadow_a_same_named_value_in_expression_position() {
+    // FCS-verified (`uses-project`, diagnostics-clean): in a NAMED module, `let
+    // Even = 42; let (|Even|Odd|) …; let x = Even`, the expression `Even` resolves
+    // to the ordinary VALUE (`M.Even`), not the recognizer — an AP case is
+    // pattern-namespace-only, so it must not shadow a same-named value in
+    // expression position, even though it is now `Item`-backed (Stage 3a). "Even":
+    // value decl (0), recognizer name (1), body construction (2), `let x` use (3).
+    let src = "module M\nlet Even = 42\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\nlet x = Even\n";
+    let rf = resolve(src);
+    let res = rf
+        .resolution_at(nth(src, "Even", 3))
+        .expect("`Even` expression use resolves");
+    let def = rf.resolved_def(res).expect("names a def");
+    assert_eq!(
+        def.range,
+        nth(src, "Even", 0),
+        "resolves to the ordinary value `let Even`, not the recognizer"
+    );
+    assert_eq!(def.kind, DefKind::Value { is_function: false });
+}
+
+#[test]
 fn active_pattern_value_reference_does_not_misresolve() {
     // An active-pattern name in *expression* position (`(|Foo|_|)`) is an
     // `opName` value reference; the recognizer is not keyed in value scope, so
@@ -796,6 +818,23 @@ fn shape_total_single_case_one_arity() {
         shape_of_case_use(src, "Scale", 1),
         ActivePatternShape {
             total: true,
+            single_case: true,
+            arity: Some(1),
+        }
+    );
+}
+
+#[test]
+fn shape_of_named_module_case_use_via_public_accessor() {
+    // The public `active_pattern_shape` accessor must resolve the shape for a
+    // same-file MODULE-LEVEL case use, which is now `Item`-backed (Stage 3a), not
+    // only the anonymous-root `Local` form — so `match n with DivBy 3` in a named
+    // module still splits its arguments. "DivBy": recognizer name (0), match use (1).
+    let src = "module M\nlet (|DivBy|_|) d n = if n % d = 0 then Some () else None\nlet f n = match n with DivBy 3 -> 1 | _ -> 0\n";
+    assert_eq!(
+        shape_of_case_use(src, "DivBy", 1),
+        ActivePatternShape {
+            total: false,
             single_case: true,
             arity: Some(1),
         }

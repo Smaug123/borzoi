@@ -734,13 +734,16 @@ impl<'a> Resolver<'a> {
                 let e = out.entry(name).or_default();
                 e.value_slot = Some(e.value_slot.map_or(file, |v| v.max(file)));
             }
-            // Constructor-namespace children (cases / exceptions). A case is the
-            // dimension a bare *pattern* reads — but it is ALSO a value, so it
-            // feeds `value_slot` too.
+            // Constructor-namespace children (union / exception / active-pattern
+            // cases) feed the `case` dimension only. A value-live union/exception
+            // case is ALSO a value, but it is already in `value_names` (it is a
+            // value), so feeding `value_slot` here would be redundant — and it MUST
+            // NOT, because a **pattern-only** active-pattern case (Stage 3a) is a
+            // case but *not* a value (`fragment_value_children` excludes it), so it
+            // would wrongly claim the value slot.
             for name in case_names {
                 let e = out.entry(name).or_default();
                 e.case = Some(e.case.map_or(file, |c| c.max(file)));
-                e.value_slot = Some(e.value_slot.map_or(file, |v| v.max(file)));
             }
             // A constructible type takes FCS's unqualified value slot, but sema
             // models no project type constructor — so it can only ever DEFER the
@@ -1337,32 +1340,54 @@ impl<'a> Resolver<'a> {
                 // a strictly later file).
                 let type_present = sub.has_type || direct_types.contains(&name);
 
-                // Value namespace. A constructible type (file-blind) may own the
-                // slot unmodelled → defer. Otherwise the later fold wins: the direct
-                // tier when it strictly out-files every submodule value (re-push),
-                // the submodule when its value folds at or after the direct tier's
-                // file (its natural push already commits it — S1 cross-file, and the
-                // same-file tie, no action).
-                if !type_present && sub.value_slot.is_none_or(|v| direct_file > v) {
-                    // Direct case strictly out-files every submodule value → wins the
-                    // value slot outright, serving both namespaces (`value_slot >=
-                    // case`, so it out-files the case too and wins the ctor).
+                // The two namespaces are decided INDEPENDENTLY (FCS folds each on
+                // its own). The direct case wins a namespace only by strictly
+                // out-filing every submodule contribution to it — a same-file tie
+                // goes to the submodule, which folds after the direct tier within a
+                // file. `value_slot` and `case` can now DIFFER: a value-live
+                // union/exception case feeds both, but a **pattern-only**
+                // active-pattern case (Stage 3a) feeds `case` only (it is not a
+                // value), so the direct case can win the value slot while the
+                // submodule's active pattern wins the constructor slot.
+                let direct_wins_value =
+                    !type_present && sub.value_slot.is_none_or(|v| direct_file > v);
+                let direct_wins_ctor = sub.case.is_none_or(|c| direct_file > c);
+                if direct_wins_value && direct_wins_ctor {
+                    // One ordinary re-push serves both namespaces (the direct value
+                    // is also a case, and it out-files the submodule in both).
                     value_winners.push((name, id));
                     continue;
                 }
-                let submodule_wins_value =
-                    !type_present && sub.value_slot.is_some_and(|v| v >= direct_file);
-                if !submodule_wins_value {
-                    // A constructible type may own the value slot (unmodelled) →
-                    // defer the expression; the constructor namespace is decided
-                    // independently below.
-                    value_deferrals.push(name.clone());
+                // Constructor namespace: the direct case wins by a pattern-only
+                // re-push (so it does not clobber the value slot the submodule /
+                // direct value owns); else the submodule case wins by its natural
+                // (later) push. Types never contest the constructor namespace.
+                if direct_wins_ctor {
+                    ctor_winners.push((name.clone(), id));
                 }
-                // Constructor namespace. The direct case wins (re-push) when it
-                // out-files every submodule case; else the submodule case wins by
-                // its natural push order (no action). Types never contest it.
-                if sub.case.is_none_or(|c| direct_file > c) {
-                    ctor_winners.push((name, id));
+                // Value namespace.
+                if !direct_wins_value {
+                    // A constructible type may own the slot unmodelled → defer;
+                    // otherwise a submodule value wins by its natural push (no
+                    // action).
+                    let submodule_wins_value =
+                        !type_present && sub.value_slot.is_some_and(|v| v >= direct_file);
+                    if !submodule_wins_value {
+                        value_deferrals.push(name.clone());
+                    }
+                } else if !direct_wins_ctor && sub.value_slot.is_some() {
+                    // The direct case wins the value slot but LOSES the constructor
+                    // slot to the submodule (a pattern-only active pattern). When the
+                    // submodule has no value (`value_slot` is None — the common case,
+                    // e.g. an `[<AutoOpen>]` active pattern over a direct exception),
+                    // the direct value already wins by its earlier direct-tier push,
+                    // and re-pushing it would clobber the submodule's constructor
+                    // entry — so do nothing. But when the submodule ALSO has a real
+                    // (earlier) value, that value's later frame push would out-position
+                    // the direct value, which should win — and a value-only re-push is
+                    // not expressible, so DEFER the value (a sound over-defer of an
+                    // exotic collision; the constructor namespace still resolves).
+                    value_deferrals.push(name.clone());
                 }
             }
         }
