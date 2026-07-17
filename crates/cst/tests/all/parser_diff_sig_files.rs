@@ -2477,3 +2477,79 @@ fn abstract_override_default_sig_is_rejected() {
         );
     }
 }
+
+// ---- Opaque type followed by an abutting `val` spec -------------------------
+//
+// A bodyless `type Name` (no `=`) is an opaque `Simple(None)` type. When the
+// following `val` sig is *indented* under it, the lex-filter emits no
+// declaration separator (the `val` abuts the type header), yet FCS still closes
+// the opaque type and parses the `val` as a *module-level* `SynModuleSigDecl.Val`
+// — the val is promoted out of the type, not made a member of it. Only `val`
+// (plain / `[<A>]`-attributed / `mutable`) is accepted this way; an abutting
+// `member` is rejected (see `opaque_type_then_indented_member_is_rejected`).
+// Seen in `tests/service/data/TestTP/ProvidedTypes.fsi` (`type Shape` + `val`s).
+
+/// `type Shape`⏎`  val X : int` — the indented `val` promotes to a module-level
+/// `Val` sibling of the opaque type.
+#[test]
+fn diff_sig_opaque_type_then_indented_val() {
+    assert_sig_asts_match("module M\ntype Shape\n    val X : int\n    val Y : int\n");
+}
+
+/// The same, with an active-pattern `val (|Foo|Bar|)` name (as ProvidedTypes.fsi).
+#[test]
+fn diff_sig_opaque_type_then_active_pattern_val() {
+    assert_sig_asts_match(
+        "module M\ntype Shape\n    val (|Foo|Bar|) : int -> int\n    val Rebuild : int -> int\n",
+    );
+}
+
+/// A `val mutable` promotes the same way.
+#[test]
+fn diff_sig_opaque_type_then_indented_val_mutable() {
+    assert_sig_asts_match("module M\ntype Shape\n    val mutable X : int\n");
+}
+
+/// An *attributed* `val` (`[<A>] val X`) promotes too — FCS makes it a
+/// module-level attributed `Val`. The boundary check looks past the attribute
+/// run for the `val`.
+#[test]
+fn diff_sig_opaque_type_then_attributed_val() {
+    assert_sig_asts_match(
+        "module M\ntype Shape\n    [<System.Obsolete>] val X : int\n    val Y : int\n",
+    );
+}
+
+/// But an *attributed non-`val`* (`[<A>] type …`) after an opaque type is not a
+/// valid module decl — FCS rejects it, so we must keep rejecting (no promotion).
+#[test]
+fn opaque_type_then_attributed_non_val_is_rejected() {
+    let src = "module M\ntype Shape\n    [<System.Obsolete>] type Y = int\n";
+    let parse = parse_sig(src);
+    assert!(
+        !parse.errors.is_empty(),
+        "{src:?}: an attributed non-`val` after an opaque type must stay a parse error",
+    );
+    assert_eq!(
+        parse.root.text().to_string(),
+        src,
+        "{src:?}: recovery must stay lossless",
+    );
+}
+
+/// An abutting `member` after an opaque type is *not* a valid module decl — FCS
+/// rejects it, so we must keep rejecting (no phantom promotion).
+#[test]
+fn opaque_type_then_indented_member_is_rejected() {
+    let src = "module M\ntype Shape\n    member A : int\n";
+    let parse = parse_sig(src);
+    assert!(
+        !parse.errors.is_empty(),
+        "{src:?}: an abutting `member` after an opaque type must stay a parse error",
+    );
+    assert_eq!(
+        parse.root.text().to_string(),
+        src,
+        "{src:?}: recovery must stay lossless",
+    );
+}
