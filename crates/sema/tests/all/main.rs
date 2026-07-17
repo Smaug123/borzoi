@@ -30,6 +30,7 @@ mod resolve_autoopen;
 mod resolve_corpus_diff;
 mod resolve_cross_file_cases;
 mod resolve_diff;
+mod resolve_divergence;
 mod resolve_enums;
 mod resolve_exceptions;
 mod resolve_export_case_kind;

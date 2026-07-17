@@ -29,7 +29,13 @@
 //!   FCS-free by `resolve_scoping.rs` and exactly by `resolve_diff.rs`.)
 //! * **gap** — we honestly return `Deferred`, or recorded nothing at that range
 //!   (a construct we don't model yet, or a long-ident whose occurrence range we
-//!   key differently). Expected and uninteresting; counted, not gated.
+//!   key differently). Expected — but the *fraction* of B1 uses that gap is now
+//!   floored by [`MIN_B1_COVERAGE_PERMILLE`] as a **completeness ratchet** (a
+//!   population-normalised counterpart to the divergence *soundness* gate: it
+//!   rises when we bind more lexical names, and a regression that starts
+//!   declining names it used to bind lowers it). The categorised worklist
+//!   *behind* the number — what these gaps are, by construct — is the sibling
+//!   report generator `resolve_divergence.rs` (its `gap_b1.txt`).
 //!
 //! Only the **B1 lexical** slice is checked: B2/B3 uses (`x.Length`, overloaded
 //! members) need inference we do not do, so they are skipped — not divergences.
@@ -82,6 +88,31 @@ const MAX_RESOLUTION_DIVERGENCES: usize = 0;
 /// Loosely ceilinged to catch an explosion, not to drive to zero: 147 measured
 /// 2026-06-29, with headroom for parser improvements surfacing more OR-patterns.
 const MAX_ALT_BINDERS: usize = 220;
+
+/// Floor on **in-file B1 coverage**, in permille — the fraction of pure-lexical
+/// uses FCS resolves to an in-file binder that we *also* bind
+/// (`matches * 1000 / (matches + gaps)`). This is the **completeness ratchet**,
+/// the counterpart to the [`MAX_RESOLUTION_DIVERGENCES`] *soundness* gate:
+/// binding more lexical names raises it, and a regression that starts declining
+/// names it used to bind lowers it.
+///
+/// A *ratio*, deliberately — not an absolute `gaps <= N` ceiling. The comparable
+/// population is "files that parse cleanly on both sides", which parser work
+/// **grows** (a newly-parsing file's deferred uses would inflate an absolute gap
+/// count) and parser regressions **shrink** (dropping a file's gaps would mask a
+/// real regression) — neither a name-resolution change (codex review). Dividing
+/// by the population makes the metric invariant to file *count*; only a shift in
+/// the population's average difficulty, or an actual resolution change, moves it,
+/// and the headroom below absorbs ordinary drift. (Pinning an exact file list was
+/// the alternative — a ratio needs no upkeep.) The categorised worklist behind
+/// the number is `resolve_divergence.rs`'s `gap_b1.txt` (dominated today by
+/// `value:local-or-param`). Tied to the default stride; re-measure with
+/// `--ignored` if you change `*_STRIDE`.
+///
+/// 488‰ measured 2026-07-17 (12258 / 25069 B1 uses, 355 files, stride 13); the
+/// floor sits a little under it to absorb the rare FCS isolation-check flake and
+/// marginal population drift. Raise it after a phase moves gaps into matches.
+const MIN_B1_COVERAGE_PERMILLE: usize = 480;
 
 /// How many sites of each kind to print for investigation.
 const SAMPLE: usize = 40;
@@ -214,6 +245,25 @@ fn resolution_matches_fcs_over_corpus() {
          MIN_RESOLUTION_MATCHES = {}). Resolution matches regressed.",
         tally.matches,
         MIN_RESOLUTION_MATCHES,
+    );
+    let b1_seen = tally.matches + tally.gaps;
+    // `b1_seen > 0`: the match floor above already established `matches` is in the
+    // thousands, so this never divides by zero.
+    let coverage_permille = tally.matches * 1000 / b1_seen;
+    assert!(
+        coverage_permille >= MIN_B1_COVERAGE_PERMILLE,
+        "in-file B1 coverage fell to {}.{}% ({}/{} lexical uses bound; floor is \
+         MIN_B1_COVERAGE_PERMILLE = {}‰). We are deferring a larger *fraction* of \
+         the pure-lexical names FCS resolves than before — a completeness \
+         regression (population-normalised, so a parser change that grows or \
+         shrinks the comparable file set does not move it the way an absolute gap \
+         count would). Regenerate `resolve_divergence`'s gap_b1.txt for the \
+         categorised worklist.",
+        coverage_permille / 10,
+        coverage_permille % 10,
+        tally.matches,
+        b1_seen,
+        MIN_B1_COVERAGE_PERMILLE,
     );
 }
 
