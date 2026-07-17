@@ -112,3 +112,38 @@ fn diff_ast_begin_end_comment_only_is_unit() {
 fn diff_sig_module_begin_end() {
     assert_sig_asts_match("module X = begin\n    val a : int\nend\n");
 }
+
+// ---- Signature-file type-body form `type T = begin … end` -------------------
+//
+// FCS's `classSpfn` admits an OCaml-verbose `begin … end` object-model body
+// (`SynTypeDefnSigRepr.ObjectModel(SynTypeDefnKind.Unspecified, memberSigs, _)`,
+// the same *unspecified* kind a bare `type T = member …` body carries — the
+// `begin`/`end` are pure delimiters, dropped from the AST). Seen in
+// `tests/fsharp/core/members/basics/test.fsi`. `begin` opens no inner offside
+// block (like `struct`), so the members sit directly in the `=`-body block.
+
+/// `type T = begin member … end` — a single member sig in a verbose body.
+#[test]
+fn diff_sig_type_begin_end_member() {
+    assert_sig_asts_match("module M\ntype T =\n    begin\n        member A : int\n    end\n");
+}
+
+/// A verbose body mixing `val` / `member` / `abstract` / `new` sigs, as
+/// `test.fsi`'s `AbstractType` does.
+#[test]
+fn diff_sig_type_begin_end_mixed_members() {
+    assert_sig_asts_match(
+        "module M\ntype T =\n    begin\n        val f : string\n        \
+         member A : int\n        abstract B : string -> int\n        new : string -> T\n    end\n",
+    );
+}
+
+/// A `member … with get,set` property sig inside a verbose body — the indexer /
+/// get-set shapes `test.fsi` exercises.
+#[test]
+fn diff_sig_type_begin_end_get_set() {
+    assert_sig_asts_match(
+        "module M\ntype T =\n    begin\n        member P : string with get,set\n        \
+         member I : int -> string with get\n    end\n",
+    );
+}

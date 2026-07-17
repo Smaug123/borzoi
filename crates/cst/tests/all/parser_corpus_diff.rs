@@ -60,8 +60,11 @@ use crate::common::{
 /// Measured 2026-07-12 against the pinned F# corpus (dotnet/fsharp
 /// `c3c01c99`, the compiler shipped in SDK 10.0.301): 5452 of 6344 records
 /// (was 5451; the trait-call support's concrete `typarAlts` alternatives —
-/// `((^T or int) : (static member …) …)` — took one more file).
-const MIN_AST_MATCHES: usize = 5452;
+/// `((^T or int) : (static member …) …)` — took one more file). 2026-07-17: 5455,
+/// +2 from group B (the verbose `begin … end` sig type body and the opaque-type
+/// `val`-promotion — `test.fsi` and `ProvidedTypes.fsi` now match; the third is
+/// pre-existing floor lag).
+const MIN_AST_MATCHES: usize = 5455;
 
 /// Upper bound on files that normalise on both sides but disagree. Drive this
 /// to zero: each one is a parser bug or a normaliser asymmetry. (The
@@ -79,8 +82,9 @@ const MAX_AST_DIVERGENCES: usize = 1;
 /// Measured 2026-07-12 against the pinned F# corpus (dotnet/fsharp
 /// `c3c01c99`): 5424, up from 5423 with the newly-matching concrete
 /// trait-call support alternative. (The earlier 5427 was against the old
-/// `bdb847ab` corpus — that tree changed, not our range handling.)
-const MIN_AST_RANGE_MATCHES: usize = 5424;
+/// `bdb847ab` corpus — that tree changed, not our range handling.) 2026-07-17:
+/// 5427, the two group-B files' ranges also match (plus pre-existing floor lag).
+const MIN_AST_RANGE_MATCHES: usize = 5427;
 
 /// Upper bound on files whose normalised AST shape matches FCS but whose
 /// audited broad AST ranges diverge. This starts high because the first generic

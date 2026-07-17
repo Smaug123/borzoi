@@ -348,18 +348,20 @@ fn sig_val_in_unsupported_type_body_does_not_leak() {
             vec!["z"],
             false,
         ),
-        // An *indented* continuation of an opaque type (`type T`⏎`  val x …`, no
-        // `=`): invalid F#. The lex-filter leaves the indented spec at the cursor
-        // with no separating virtual (it continues the type's line), so the
-        // opaque-type parse must NOT treat it as a completed type and let `val x`
-        // leak — it errors and skips the continuation; `val y` (offside-aligned)
-        // survives.
+        // An *indented* `val` after an opaque type (`type T`⏎`  val x …`, no `=`):
+        // FCS *accepts* this and promotes `val x` to a *module-level*
+        // `SynModuleSigDecl.Val` — the opaque type is complete and the abutting
+        // `val` is a sibling, not a member (`type Shape` + `val`s in
+        // `ProvidedTypes.fsi`). The lex-filter leaves the `val` at the cursor with
+        // no separating virtual, but the opaque-type parse now recognises an
+        // abutting `val` as the boundary. Both `val x` and `val y` survive.
         (
             "module M\ntype T\n  val x : int\nval y : int\n",
-            vec!["y"],
-            true,
+            vec!["x", "y"],
+            false,
         ),
-        // Same, with an indented `member` continuation (also skipped, not leaked).
+        // But an indented `member` continuation is *not* a valid module decl — FCS
+        // rejects it, so it is still skipped (errored), not leaked.
         (
             "module M\ntype T\n  member X : int\nval y : int\n",
             vec!["y"],
