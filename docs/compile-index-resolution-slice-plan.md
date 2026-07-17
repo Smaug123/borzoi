@@ -89,11 +89,47 @@ call the prefix method) and is intentionally out of scope here.
   proving the suffix wasn't folded; a later deeper request extends the prefix; an
   edit still reuses the unchanged prefix (stage-2 reuse count).
 
+## Cross-buffer refresh (`workspace/semanticTokens/refresh`)
+
+Built on this slice: after an edit, an already-open *later* buffer may resolve
+differently, but the client only re-requests tokens for the buffer it edited. The
+server sends `workspace/semanticTokens/refresh` so the client re-requests every
+visible buffer — and each folds only up to its own Compile index (this slice), so
+the refresh is cheap.
+
+- **Signal — conservative, invalidation-driven.** `wants_refresh` is set by
+  *every* invalidator (a text-sync edit, or a watched structural /
+  referenced-assembly change) — **at the invalidation, not at a later fold**, so
+  an invalidation with no following fold (a `didClose` restoring disk text, a
+  watched-file change, a project that now evaluates partially) still refreshes.
+  It is *not* keyed on "the fold reused a previous result": extending a cached
+  prefix to a deeper file (a hover after the token request) folds incrementally
+  but changed nothing (no invalidation → no refresh). Deciding *precisely* whether
+  a later buffer's tokens moved would mean re-deriving the whole downstream
+  projection a token classifier follows — an export's name, its `SemanticClass`
+  (a later `A.f` recolours function→variable with the path/id unchanged), its
+  accessibility, the auto-open/namespace surface — against *the state the client
+  last saw* (distinct from the deliberately-stale deeper base the fold retains for
+  reuse). A too-narrow signal silently leaves tokens stale, so we refresh on any
+  invalidation and let the client diff the returned tokens, re-rendering only what
+  changed — an unaffected buffer just pays a re-tokenise (the resolution is reused).
+- **No loop.** The refresh's own re-requests are ordinary requests, not
+  invalidations, so they set nothing.
+- **One refresh in flight (coalescing).** The dispatch loop drains `wants_refresh`
+  after every request *and* notification — but the drain sends nothing while a
+  previous refresh is still outstanding (`pending_refresh_id`), leaving the flag
+  set. The next refresh goes out only when the client *replies* to the first
+  (`Message::Response` clears the slot and re-drains). So a typing burst — a
+  `didChange` per keystroke, each draining after the notification — collapses to
+  one refresh at a time instead of one per keystroke, each of which would fan a
+  workspace-wide re-tokenise across every visible buffer. The client-side debounce
+  rate-limits further: one refresh per typing pause.
+- **Plumbing.** Sent with a fresh JSON-RPC id per send (ids must distinguish
+  concurrently-outstanding requests) — retained in `pending_refresh_id` to match
+  the reply — iff the client advertised
+  `workspace.semanticTokens.refreshSupport`.
+
 ## Out of scope (next slices)
 
-- **`workspace/semanticTokens/refresh`** after an edit that changed cross-file
-  state, so an already-open *later* buffer re-requests and updates. This is what
-  delivers "see the change arise in the later file" (which does not work today —
-  borzoi never sends the refresh); it builds on this slice (each buffer folds up
-  to its own index on demand).
-- Slicing hover / definition / completion.
+- Slicing hover / definition / completion (mechanical once the prefix method
+  exists — compute `idx` first, call `resolved_prefix_and_env_for`).
