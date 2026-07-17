@@ -136,9 +136,11 @@ pub enum StaticLookup {
     /// The name **is** occupied, but we decline to name a target — defer, and keep the
     /// path owned. Either it is not *selectable* through a qualified path (an
     /// instance-only member, an inherited static, an unknowable base chain — FCS finds
-    /// the name and errors rather than re-rooting the path), or it is selectable but
-    /// not *uniquely* (an overload set, a metadata ambiguity), or we cannot decide it
-    /// at all (an undecidable augmentation — an `Augmentation` of `Possible` certainty).
+    /// the name and errors rather than re-rooting the path; for a *module* receiver
+    /// only its own contents count, never the compiled class's base chain — see
+    /// `module_qualified_occupied`), or it is selectable but not *uniquely* (an
+    /// overload set, a metadata ambiguity), or we cannot decide it at all (an
+    /// undecidable augmentation — an `Augmentation` of `Possible` certainty).
     Uncertain,
 }
 
@@ -2608,10 +2610,12 @@ impl AssemblyEnv {
     ///   overload set, a metadata ambiguity, or an undecidable augmentation (whose
     ///   name is *occupied*, we simply cannot say by what) ⇒ [`StaticLookup::Uncertain`];
     /// - no own-level static candidate, but the name is still reachable by FCS's
-    ///   **inheritance-aware, kind-agnostic** member lookup (`qualified_path_occupied`)
-    ///   ⇒ [`StaticLookup::Uncertain`] as well: FCS finds it and errors (or resolves an
-    ///   inherited static) rather than re-rooting the path, so falling through would
-    ///   hand the path to a reading FCS never consults;
+    ///   qualified lookup (`qualified_path_occupied` — for a *type*, the
+    ///   inheritance-aware, kind-agnostic member lookup; for a *module*, the
+    ///   in-module search over its own contents, which never sees the compiled
+    ///   class's base chain) ⇒ [`StaticLookup::Uncertain`] as well: FCS finds it
+    ///   and errors (or resolves) rather than re-rooting the path, so falling
+    ///   through would hand the path to a reading FCS never consults;
     /// - nothing anywhere ⇒ [`StaticLookup::Absent`], and only then may a lower tier
     ///   own the path.
     pub fn static_lookup(&self, handle: EntityHandle, name: &str) -> StaticLookup {
@@ -2705,14 +2709,22 @@ impl AssemblyEnv {
     /// what makes the two incapable of disagreeing about whether a member exists,
     /// which is exactly what review rounds 3 and 4 caught them doing.
     ///
-    /// FCS's lookup is inheritance-aware and kind-agnostic (probed 2026-07-10: an
-    /// *inherited static* resolves through the derived name, and an *instance-only*
-    /// member of the name makes FCS error rather than re-root the path at a
-    /// lower-priority reading), so this walks the base chain — the receiver's own
-    /// level included — for **any public member** of the name that FCS can see
-    /// ([`Presence`] on [`Channel::Qualified`], so a certainly-hidden augmentation
-    /// does not count: fsi, `CoreExts.ExtStatic "x"` is FS0039, and with `High.M`'s
-    /// only `X` an augmentation, `open Low; open High; M.X` is `Low.M.X`).
+    /// A **module** receiver is answered by [`Self::module_qualified_occupied`]
+    /// instead — FCS resolves a module-qualified name through
+    /// `ResolveExprLongIdentInModuleOrNamespace`, whose search domain is the
+    /// module's own contents, never the compiled class's inheritance chain.
+    /// Everything below is the **type**-receiver rule
+    /// (`ResolveLongIdentInTyconRefs`).
+    ///
+    /// FCS's type-member lookup is inheritance-aware and kind-agnostic (probed
+    /// 2026-07-10: an *inherited static* resolves through the derived name, and an
+    /// *instance-only* member of the name makes FCS error rather than re-root the
+    /// path at a lower-priority reading), so this walks the base chain — the
+    /// receiver's own level included — for **any public member** of the name that
+    /// FCS can see ([`Presence`] on [`Channel::Qualified`], so a certainly-hidden
+    /// augmentation does not count: fsi, `CoreExts.ExtStatic "x"` is FS0039, and
+    /// with `High.M`'s only `X` an augmentation, `open Low; open High; M.X` is
+    /// `Low.M.X`).
     ///
     /// A chain whose membership cannot be enumerated counts as *possible* (own and
     /// defer, never fall through to a reading FCS would not reach): an **interface**
@@ -2729,6 +2741,9 @@ impl AssemblyEnv {
     /// reading in both shapes, so counting them would defer (and un-resolve)
     /// paths FCS resolves.
     fn qualified_path_occupied(&self, handle: EntityHandle, name: &str) -> bool {
+        if self.entity(handle).kind == EntityKind::Module {
+            return self.module_qualified_occupied(handle, name);
+        }
         // An interface-rooted reading owns conservatively: its member surface
         // (inherited interfaces + `Object`) is not enumerable through
         // `base_chain`, and FCS owns such a reading even for a base-interface
@@ -2755,6 +2770,83 @@ impl AssemblyEnv {
                         && member_is_public(m)
                         && self.presence_of(level, m, Channel::Qualified) != Presence::Absent
                 })
+        })
+    }
+
+    /// Whether FCS's **module-qualified lookup** could find `name` in module
+    /// `handle` — the module half of [`Self::qualified_path_occupied`], consulted
+    /// only when no own-level static of the name is selectable.
+    ///
+    /// FCS resolves `Module.name` through `ResolveExprLongIdentInModuleOrNamespace`
+    /// (NameResolution.fs), whose search domain is the module's own contents —
+    /// vals (`AllValsByLogicalName`), exception constructors, union cases
+    /// (`TryFindTypeWithUnionCase`), nested types, submodules — and **never** the
+    /// compiled class's base chain: `Object`'s members (`Equals`, `ToString`,
+    /// `GetHashCode`, …) are unreachable through a module qualifier. On no match it
+    /// razes `UndefinedName`, and `AtMostOneResultQuery` then lets the *type*
+    /// search re-root the path (`moduleSearch +++ tyconSearch`,
+    /// `ResolveExprLongIdentPrim`) — the exact opposite of the type-receiver rule:
+    /// `open System; open Microsoft.FSharp.Core; String.Equals ("a", "b")` is
+    /// `System.String.Equals`, not the FSharp.Core `String` module, because the
+    /// module's failed member lookup does not own the path (the
+    /// `resolve_string_qualifier_repro` divergence — the base-chain rule made
+    /// `Equals` "occupied" via `Object`, so the later-open module reading wrongly
+    /// owned the path and the `open System` tier was never consulted).
+    ///
+    /// Each clause maps to one FCS in-module search; vals are already covered by
+    /// [`Self::static_lookup`]'s own-level candidate scan (a module's vals compile
+    /// to own-level statics, matched by *source* name exactly as
+    /// `AllValsByLogicalName` is keyed by logical name — so an IL
+    /// `[<CompiledName>]` spelling does not occupy). The remainder:
+    ///
+    /// - an **undecodable member** of the name ([`Self::has_skipped_member`] —
+    ///   same IL-name-keyed precision as the type-receiver rule, and the same
+    ///   vanishingly-rare renamed-skip miss);
+    /// - an **unknowable pickle** ([`ExtensionMembers::Unknowable`]): the vals'
+    ///   source names cannot be enumerated at all (a rename is invisible), so any
+    ///   name may be occupied — own and defer, mirroring the open fold's residue;
+    /// - a public **child entity** of the name at any arity/kind: the arity-0
+    ///   resolvable ones were already taken by the path walk's
+    ///   [`Self::nested`] step, so this catches what that step's arity-0 key
+    ///   misses (FCS's in-module type lookup is `MaybeHaveArity` — a generic
+    ///   nested type still occupies), plus exceptions and submodules;
+    /// - a public child **union**'s accessible **case** of the name —
+    ///   `[<RequireQualifiedAccess>]` unions included (their cases resolve at the
+    ///   lowest in-module priority, but still *in the module* — the final
+    ///   `tyconSearch +++ moduleSearch +++ unionSearch` arm); a union whose case
+    ///   names the pickle did not supply (`union_case_names` of `None`) may hide
+    ///   any name, so it occupies conservatively.
+    ///
+    /// **Public-only is deliberate**, as in the type rule: FCS filters
+    /// accessibility during the module search (`IsValAccessible` /
+    /// `IsTyconReprAccessible` / `AccessibleEntityRef`) and re-roots past an
+    /// inaccessible match. A *dropped* (undecodable) child type is NOT consulted:
+    /// like the open fold, drops are a property of a path's other split partners,
+    /// and counting the namespace-coarse signal here would occupy every name in
+    /// every module of an affected namespace.
+    fn module_qualified_occupied(&self, handle: EntityHandle, name: &str) -> bool {
+        if self.has_skipped_member(handle, name) {
+            return true;
+        }
+        if matches!(
+            self.module_extension_members(handle),
+            ExtensionMembers::Unknowable
+        ) {
+            return true;
+        }
+        self.children(handle).iter().copied().any(|child| {
+            if !self.is_public(child) {
+                return false;
+            }
+            let c = self.entity(child);
+            if c.source_name.as_deref().unwrap_or(&c.name) == name {
+                return true;
+            }
+            c.kind == EntityKind::Union
+                && match &c.union_case_names {
+                    None => true,
+                    Some(cases) => cases.iter().any(|case| case == name),
+                }
         })
     }
 
