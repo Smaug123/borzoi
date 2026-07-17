@@ -1381,7 +1381,9 @@ struct State<'r> {
     /// Compile uncertainty deliberately tolerates SDK property machinery, but a
     /// later `<PackageReference Version="$(Name)">` consuming such a value must
     /// not be reported as trustworthy because MSBuild evaluates project
-    /// properties before project items.
+    /// properties before project items. Mutated only via
+    /// [`Self::apply_property_provenance`]; see [`PropertyProvenance`] for how
+    /// this channel relates to [`Self::unpinned_value_properties`].
     sdk_package_tainted_properties: HashMap<String, SdkPackagePropertyTaint>,
     /// The preprocessor-symbol analogue of [`Self::compile_context`]: `true`
     /// while resolving a user-authored `<DefineConstants>` write or the
@@ -1439,7 +1441,9 @@ struct State<'r> {
     /// ([`evaluate_condition_inner`]) — re-surfaces the root as a
     /// diagnostic under the active contexts, degrading compile/package
     /// certainty exactly like a direct undefined reference. A later clean
-    /// overwrite re-pins the property.
+    /// overwrite re-pins the property. Mutated only via
+    /// [`Self::apply_property_provenance`]; see [`PropertyProvenance`] for how
+    /// this channel relates to [`Self::sdk_package_tainted_properties`].
     unpinned_value_properties: HashMap<String, UnpinnedRoot>,
     /// Lowercased referenceable names present in the caller's environment
     /// snapshot — *including* names promotion skipped (case collisions,
@@ -1569,6 +1573,83 @@ impl Expansion {
 struct SdkPackagePropertyTaint {
     span: Range<usize>,
     origin: DiagnosticOrigin,
+}
+
+/// What a single property write does to the SDK-package taint channel
+/// ([`State::sdk_package_tainted_properties`]).
+enum TaintOutcome {
+    /// Mark the property tainted at `span` (a write we can't trust for a
+    /// later package read).
+    Set(Range<usize>),
+    /// Clear any existing taint — a clean write re-pins the name.
+    Clear,
+    /// Leave the existing taint mark as-is.
+    Keep,
+}
+
+/// What a single property write does to the unpinned channel
+/// ([`State::unpinned_value_properties`]).
+enum UnpinnedOutcome {
+    /// Record `root` — every later read re-surfaces it as a diagnostic.
+    Set(UnpinnedRoot),
+    /// Clear any existing root — a clean write under a clean gate re-pins.
+    Clear,
+    /// Leave the existing root as-is.
+    Keep,
+}
+
+/// The provenance verdict for a single property write: what happens to
+/// **both** forward-uncertainty channels, applied through the one method
+/// ([`State::apply_property_provenance`]) that mutates either map.
+///
+/// The two channels stay deliberately separate — this type pairs them at
+/// the *decision* point, not the concept:
+/// * [`State::unpinned_value_properties`] rides the diagnostic pipeline: a
+///   read re-surfaces its root under the active context, so it can flip
+///   [`State::items_uncertain`] and [`State::define_constants_uncertain`].
+/// * [`State::sdk_package_tainted_properties`] is a silent marker checked
+///   only at package/item sites and propagates through *clean* reads; it
+///   deliberately **never** reaches [`State::items_uncertain`] (Compile
+///   evaluation tolerates SDK property machinery).
+///
+/// Both union into [`ParsedProject::untrusted_properties`]
+/// ([`State::property_provenance_untrusted`]). Because a write must name an
+/// outcome for each channel, a new write path cannot update one map and
+/// silently forget the other.
+struct PropertyProvenance {
+    taint: TaintOutcome,
+    unpinned: UnpinnedOutcome,
+}
+
+impl TaintOutcome {
+    /// The taint outcome of a write the property pass performed: taint it
+    /// when the value/condition is untrusted, else clear unless a prior
+    /// taint must be preserved (an earlier untrusted write to the same
+    /// name whose divergence still stands).
+    fn after_write(taints_property: bool, span: Range<usize>, preserve_existing: bool) -> Self {
+        if taints_property {
+            TaintOutcome::Set(span)
+        } else if preserve_existing {
+            TaintOutcome::Keep
+        } else {
+            TaintOutcome::Clear
+        }
+    }
+}
+
+impl UnpinnedOutcome {
+    /// The unpinned outcome of a write the property pass performed:
+    /// `unpinned_by` is the root cause when the new value (or the gate it
+    /// sat behind) leans on one; a clean value under a clean gate re-pins,
+    /// while a clean value under a still-uncertain gate leaves the prior
+    /// state untouched.
+    fn after_write(unpinned_by: Option<UnpinnedRoot>, write_condition_maybe_wrong: bool) -> Self {
+        match unpinned_by {
+            Some(root) => UnpinnedOutcome::Set(root),
+            None if !write_condition_maybe_wrong => UnpinnedOutcome::Clear,
+            None => UnpinnedOutcome::Keep,
+        }
+    }
 }
 
 impl<'r> State<'r> {
@@ -1992,8 +2073,16 @@ impl<'r> State<'r> {
             // project XML: percents in them are literal.
             self.lookup.insert_computed(name, value);
             self.written.remove(&lower);
-            self.unpinned_value_properties.remove(&lower);
-            self.clear_sdk_package_property_taint(name);
+            // Scrub both provenance marks so a stale taint/unpinned entry
+            // doesn't outlive the value it described.
+            self.apply_property_provenance(
+                name,
+                &lower,
+                PropertyProvenance {
+                    taint: TaintOutcome::Clear,
+                    unpinned: UnpinnedOutcome::Clear,
+                },
+            );
             self.reserved.insert(lower.clone());
             self.protected.insert(lower);
         }
@@ -2556,17 +2645,31 @@ impl<'r> State<'r> {
             .contains_key(&name.to_ascii_lowercase())
     }
 
-    fn update_sdk_package_property_taint_after_write(
+    /// The single point that mutates either forward-uncertainty channel:
+    /// apply a [`PropertyProvenance`] verdict to both maps. `name` keys the
+    /// taint map (lowercased internally, carrying the write span/origin);
+    /// `lower` keys the unpinned map. Every taint/unpinned mutation flows
+    /// through here so the two channels cannot drift at population time.
+    fn apply_property_provenance(
         &mut self,
         name: &str,
-        span: Range<usize>,
-        taints_property: bool,
-        preserve_existing_taint: bool,
+        lower: &str,
+        provenance: PropertyProvenance,
     ) {
-        if taints_property {
-            self.mark_sdk_package_property_tainted(name, span);
-        } else if !preserve_existing_taint {
-            self.clear_sdk_package_property_taint(name);
+        match provenance.taint {
+            TaintOutcome::Set(span) => self.mark_sdk_package_property_tainted(name, span),
+            TaintOutcome::Clear => self.clear_sdk_package_property_taint(name),
+            TaintOutcome::Keep => {}
+        }
+        match provenance.unpinned {
+            UnpinnedOutcome::Set(root) => {
+                self.unpinned_value_properties
+                    .insert(lower.to_string(), root);
+            }
+            UnpinnedOutcome::Clear => {
+                self.unpinned_value_properties.remove(lower);
+            }
+            UnpinnedOutcome::Keep => {}
         }
     }
 
@@ -2645,29 +2748,6 @@ impl<'r> State<'r> {
         node.attribute("Condition").is_some_and(|cond| {
             self.unpinned_root_for_raw(cond).is_some() || self.raw_uses_sdk_package_taint(cond)
         })
-    }
-
-    /// Record the pin state of a property after a write the property pass
-    /// actually performed. `unpinned_by` is the root cause when the new
-    /// value (or the gate it sat behind) leans on one; a clean value under
-    /// a clean gate re-pins the property.
-    fn update_unpinned_value_after_write(
-        &mut self,
-        lower: &str,
-        unpinned_by: Option<UnpinnedRoot>,
-        write_condition_maybe_wrong: bool,
-    ) {
-        match unpinned_by {
-            Some(root) => {
-                self.unpinned_value_properties
-                    .insert(lower.to_string(), root);
-            }
-            None => {
-                if !write_condition_maybe_wrong {
-                    self.unpinned_value_properties.remove(lower);
-                }
-            }
-        }
     }
 
     /// The [`UnpinnedRoot`] to record for a write gated on a condition the
@@ -3089,19 +3169,21 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                         // for package metadata. Taint them for the item
                         // pass's package reads, and unpin them so every
                         // item-pass read re-surfaces the root cause.
-                        mark_property_group_children_sdk_package_tainted(node, state);
-                        if let Some(root) = group_unpinned_root.as_ref() {
-                            mark_property_group_children_unpinned(node, root, state);
-                        }
+                        mark_property_group_children_provenance(
+                            node,
+                            group_unpinned_root.as_ref(),
+                            state,
+                        );
                     }
                     state.define_context = prev;
                     state.package_context = prev_pkg;
                 }
                 CondGate::Unsupported => {
-                    mark_property_group_children_sdk_package_tainted(node, state);
-                    if let Some(root) = group_unpinned_root.as_ref() {
-                        mark_property_group_children_unpinned(node, root, state);
-                    }
+                    mark_property_group_children_provenance(
+                        node,
+                        group_unpinned_root.as_ref(),
+                        state,
+                    );
                     emit_unsupported_condition(node, state);
                     state.define_context = prev;
                     state.package_context = prev_pkg;
@@ -3480,10 +3562,7 @@ fn scan_undecided_choose_branch(
     for child in branch.children().filter(Node::is_element) {
         match child.tag_name().name() {
             "PropertyGroup" => {
-                mark_property_group_children_sdk_package_tainted(child, state);
-                if let Some(root) = unpinned_root {
-                    mark_property_group_children_unpinned(child, root, state);
-                }
+                mark_property_group_children_provenance(child, unpinned_root, state);
             }
             "ItemGroup" => {
                 *any_items = true;
@@ -3589,29 +3668,42 @@ fn walk_property_child_inner(
             // in the real build — so the property's final value is not
             // trustworthy. Taint it for package reads, and unpin it so every
             // item-pass read re-surfaces the gate's root cause.
-            if condition_taints_property || own_condition_maybe_wrong {
-                state.mark_sdk_package_property_tainted(&name, node.range());
-            }
-            if own_condition_maybe_wrong
-                && let Some(root) = state
+            let taint = if condition_taints_property || own_condition_maybe_wrong {
+                TaintOutcome::Set(node.range())
+            } else {
+                TaintOutcome::Keep
+            };
+            let unpinned = if own_condition_maybe_wrong {
+                match state
                     .unpinned_root_from_recent_diagnostics(diagnostics_before_condition)
                     .or_else(|| {
                         node.attribute("Condition")
                             .map(|c| UnpinnedRoot::UnsupportedCondition(c.to_string()))
-                    })
-            {
-                state.unpinned_value_properties.insert(lower.clone(), root);
-            }
+                    }) {
+                    Some(root) => UnpinnedOutcome::Set(root),
+                    None => UnpinnedOutcome::Keep,
+                }
+            } else {
+                UnpinnedOutcome::Keep
+            };
+            state.apply_property_provenance(&name, &lower, PropertyProvenance { taint, unpinned });
             return;
         }
         CondGate::Unsupported => {
-            state.mark_sdk_package_property_tainted(&name, node.range());
-            if let Some(condition) = node.attribute("Condition") {
-                state.unpinned_value_properties.insert(
-                    lower.clone(),
-                    UnpinnedRoot::UnsupportedCondition(condition.to_string()),
-                );
-            }
+            let unpinned = match node.attribute("Condition") {
+                Some(condition) => {
+                    UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(condition.to_string()))
+                }
+                None => UnpinnedOutcome::Keep,
+            };
+            state.apply_property_provenance(
+                &name,
+                &lower,
+                PropertyProvenance {
+                    taint: TaintOutcome::Set(node.range()),
+                    unpinned,
+                },
+            );
             emit_unsupported_condition(node, state);
             return;
         }
@@ -3635,12 +3727,17 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        state.unpinned_value_properties.insert(
-            lower.clone(),
-            UnpinnedRoot::UnsupportedCondition(format!("<{name}> body")),
-        );
         state.record_directory_build_path_write(&name);
-        state.mark_sdk_package_property_tainted(&name, node.range());
+        state.apply_property_provenance(
+            &name,
+            &lower,
+            PropertyProvenance {
+                taint: TaintOutcome::Set(node.range()),
+                unpinned: UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(format!(
+                    "<{name}> body"
+                ))),
+            },
+        );
         return;
     };
     // While `define_context` is set (a user `<DefineConstants>` write), any
@@ -3673,16 +3770,22 @@ fn walk_property_child_inner(
         // the tainted name doesn't appear in `properties`.
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        state.unpinned_value_properties.remove(&lower);
         // The real build stores the value we refused to compute, so later
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
-        state.update_sdk_package_property_taint_after_write(
-            &name,
-            node.range(),
+        let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
+            node.range(),
             preserve_existing_sdk_taint,
+        );
+        state.apply_property_provenance(
+            &name,
+            &lower,
+            PropertyProvenance {
+                taint,
+                unpinned: UnpinnedOutcome::Clear,
+            },
         );
         return;
     }
@@ -3703,16 +3806,22 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        state.unpinned_value_properties.remove(&lower);
         // The real build stores the value we refused to compute, so later
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
-        state.update_sdk_package_property_taint_after_write(
-            &name,
-            node.range(),
+        let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
+            node.range(),
             true,
+        );
+        state.apply_property_provenance(
+            &name,
+            &lower,
+            PropertyProvenance {
+                taint,
+                unpinned: UnpinnedOutcome::Clear,
+            },
         );
         return;
     }
@@ -3725,16 +3834,22 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        state.unpinned_value_properties.remove(&lower);
         // The real build stores the value we refused to compute, so later
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
-        state.update_sdk_package_property_taint_after_write(
-            &name,
-            node.range(),
+        let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
+            node.range(),
             true,
+        );
+        state.apply_property_provenance(
+            &name,
+            &lower,
+            PropertyProvenance {
+                taint,
+                unpinned: UnpinnedOutcome::Clear,
+            },
         );
         return;
     }
@@ -3757,22 +3872,24 @@ fn walk_property_child_inner(
         None
     };
     let unpinned_by = expansion.unpinned_root.clone().or(gate_unpinned_root);
-    state.update_unpinned_value_after_write(&lower, unpinned_by, write_condition_maybe_wrong);
-    state.lookup.insert_escaped(name.clone(), expansion.value);
-    state.written.insert(lower, name.clone());
-    state.record_directory_build_path_write(&name);
     // Unlike the unevaluable-value paths above, a cleanly-expanded value
     // under a pinned gate is exact even inside an SDK file: the property
     // pass computes the same final value MSBuild would, so plain SDK
     // provenance is not a taint. Only `value_taints_property`'s targeted
     // conditions (an untrusted gate, tainted input, or an expansion issue
     // inside the SDK) poison the write.
-    state.update_sdk_package_property_taint_after_write(
-        &name,
-        node.range(),
-        value_taints_property,
-        preserve_existing_sdk_taint,
-    );
+    let provenance = PropertyProvenance {
+        taint: TaintOutcome::after_write(
+            value_taints_property,
+            node.range(),
+            preserve_existing_sdk_taint,
+        ),
+        unpinned: UnpinnedOutcome::after_write(unpinned_by, write_condition_maybe_wrong),
+    };
+    state.lookup.insert_escaped(name.clone(), expansion.value);
+    state.written.insert(lower.clone(), name.clone());
+    state.record_directory_build_path_write(&name);
+    state.apply_property_provenance(&name, &lower, provenance);
 }
 
 /// Result of evaluating a node's `Condition` attribute.
@@ -4349,48 +4466,44 @@ fn property_child_could_write(child: Node<'_, '_>, state: &State<'_>) -> bool {
         && state.unpinned_root_for_raw(cond).is_none())
 }
 
-/// Unpin every unprotected property a maybe-skipped (or maybe-run)
-/// `<PropertyGroup>` writes: the gate could not be pinned down, so the
-/// property's final value is untrustworthy whichever branch our evaluation
-/// took. Protected names are exempt for the same reason as in
-/// [`mark_property_group_children_sdk_package_tainted`]: MSBuild discards
-/// those writes without consulting the gate at all; children whose own
-/// condition is cleanly false are exempt because they cannot write
-/// whichever way the group gate goes.
-fn mark_property_group_children_unpinned(
+/// Mark every unprotected, possibly-writing child of a maybe-run/maybe-skipped
+/// `<PropertyGroup>` with the group gate's provenance in one pass, so the two
+/// channels cannot diverge on which children they cover: SDK-package taint
+/// always (the gate could not be pinned down, so a child's final value is
+/// untrustworthy for a later package read whichever branch our evaluation
+/// took), and the unpinned `unpinned_root` when the gate itself was
+/// unpinnable (so every item-pass read re-surfaces its root cause).
+///
+/// Protected names are exempt: MSBuild discards those writes without
+/// consulting the gate at all, so a maybe-skipped write cannot change them —
+/// marking one would falsely degrade a value the caller pinned. Children whose
+/// own condition is cleanly false are exempt too — they cannot write whichever
+/// way the group gate goes (see [`property_child_could_write`]).
+fn mark_property_group_children_provenance(
     node: Node<'_, '_>,
-    root: &UnpinnedRoot,
+    unpinned_root: Option<&UnpinnedRoot>,
     state: &mut State<'_>,
 ) {
     for child in node.children().filter(Node::is_element) {
-        let lower = child.tag_name().name().to_ascii_lowercase();
-        if state.protected.contains(&lower) {
-            continue;
-        }
-        if !property_child_could_write(child, state) {
-            continue;
-        }
-        state.unpinned_value_properties.insert(lower, root.clone());
-    }
-}
-
-fn mark_property_group_children_sdk_package_tainted(node: Node<'_, '_>, state: &mut State<'_>) {
-    for child in node.children().filter(Node::is_element) {
-        // A child whose own condition is cleanly false cannot write
-        // regardless of the group gate — see [`property_child_could_write`].
         if !property_child_could_write(child, state) {
             continue;
         }
         let name = child.tag_name().name();
-        // MSBuild discards writes to protected names (reserved well-knowns
-        // and caller-supplied globals) without evaluating the group's
-        // condition at all, so a maybe-skipped write cannot change them —
-        // tainting one would falsely degrade later package reads of a value
-        // the caller pinned.
         if state.protected.contains(&name.to_ascii_lowercase()) {
             continue;
         }
-        state.mark_sdk_package_property_tainted(name, child.range());
+        let lower = name.to_ascii_lowercase();
+        state.apply_property_provenance(
+            name,
+            &lower,
+            PropertyProvenance {
+                taint: TaintOutcome::Set(child.range()),
+                unpinned: match unpinned_root {
+                    Some(root) => UnpinnedOutcome::Set(root.clone()),
+                    None => UnpinnedOutcome::Keep,
+                },
+            },
+        );
     }
 }
 
