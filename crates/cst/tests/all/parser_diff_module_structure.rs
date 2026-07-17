@@ -1516,6 +1516,27 @@ fn diff_ast_record_close_on_own_line_and_chain() {
     assert_asts_match("type T =\n    { X : int\n    }\nand U = { Y : int }\n");
 }
 
+/// Phase 9.13b — a `}`-on-own-line record *and* a bare trailing member. This is
+/// the one layout that exercises *both* trailing separators around the swallowed
+/// `}`: the offside `OBLOCKSEP` *before* the `}` (the record's own close-line
+/// separator, which `parse_record_repr` consumes) and the `OBLOCKSEP` *after*
+/// the `}` (the type body's separator before the member, which the bare-members
+/// hook consumes). Regression guard that separator ownership stays split
+/// correctly across the two.
+#[test]
+fn diff_ast_record_own_line_close_then_bare_member() {
+    assert_asts_match("type T =\n    {\n      X : int\n    }\n    member _.M = 1\n");
+}
+
+/// Phase 9.13b — the same split, but with the fields and `}` on one line
+/// (`{ X : int }`) so the *only* separator is the one *after* the `}`. The
+/// record owns no trailing separator here; the whole `OBLOCKSEP` belongs to the
+/// bare-members hook.
+#[test]
+fn diff_ast_record_inline_close_then_bare_member() {
+    assert_asts_match("type T =\n    { X : int }\n    member _.M = 1\n");
+}
+
 // ---- Phase 9.5: discriminated unions -----------------------------------
 //
 // `type T = A | B of int * x:string` → `SynTypeDefnSimpleRepr.Union`
