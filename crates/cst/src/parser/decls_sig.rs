@@ -317,13 +317,20 @@ impl<'src> Parser<'src> {
     fn parse_sig_type_defn_name_and_body(&mut self) -> (bool, bool) {
         // The `SynComponentInfo` header — name + optional type parameters +
         // after-keyword attributes (reused verbatim from the impl path).
+        let errors_before_header = self.errors.len();
         let offside_attr = self.parse_type_defn_header();
         // Optional after-decls `when …` constraint clause
         // (`SynComponentInfo.constraints`), before the repr's `=`.
         if matches!(self.peek(), Some((Ok(FilteredToken::Raw(Token::When)), _))) {
             self.parse_typar_constraints();
         }
-        let closed_block = self.parse_sig_type_defn_repr();
+        // Whether the header (name + typars + `when` constraints) parsed cleanly.
+        // A malformed header (`type T when` with no constraint) must NOT promote a
+        // following abutting `val` to a phantom module-level `Val`: FCS reports
+        // the `val` as unexpected and produces no `Val`, so promotion is offered
+        // only after a well-formed opaque type (see [`Self::parse_sig_type_defn_repr`]).
+        let header_ok = self.errors.len() == errors_before_header;
+        let closed_block = self.parse_sig_type_defn_repr(header_ok);
         (closed_block, offside_attr)
     }
 
@@ -357,7 +364,13 @@ impl<'src> Parser<'src> {
     /// `and`-chain loop uses it to decide whether a following `and` continues the
     /// group — a single-line body leaves its block open, so an inline `and` is not
     /// chained.
-    fn parse_sig_type_defn_repr(&mut self) -> bool {
+    ///
+    /// `header_ok` is `false` when the header (name / typars / `when` constraints)
+    /// parsed with errors. It gates the opaque-type `val`-promotion arms: an
+    /// abutting `val` is promoted out of a *well-formed* opaque type only. After a
+    /// malformed header (`type T when`⏎`  val …`) FCS rejects the `val`, so a
+    /// bad header sends it to the unsupported-body skip instead of a phantom `Val`.
+    fn parse_sig_type_defn_repr(&mut self, header_ok: bool) -> bool {
         // A non-`=` body. FCS's `tyconSpfn` second alternative
         // (`typeNameInfo opt_classSpfn`) produces a **bodyless** type —
         // `SynTypeDefnSigRepr.Simple(SynTypeDefnSimpleRepr.None)`, the opaque
@@ -443,14 +456,21 @@ impl<'src> Parser<'src> {
                 // *other* abutting raw token (`member`, `abstract`, `inherit`, …)
                 // is not a valid module-sig-decl, so it stays on the `false` arm
                 // below and is skipped, matching FCS's rejection.
-                Some((Ok(FilteredToken::Raw(Token::Val)), _)) => true,
+                //
+                // Promotion is offered only after a *well-formed* header
+                // (`header_ok`): FCS reports the `val` after a malformed header
+                // (`type T when`) as unexpected and produces no `Val`, so a bad
+                // header sends the `val` to the `false` skip arm — not a phantom
+                // module-level `Val`.
+                Some((Ok(FilteredToken::Raw(Token::Val)), _)) if header_ok => true,
                 // The same, with a *leading attribute run* — `[<A>] val X`. FCS
                 // promotes the attributed `val` to a module-level `Val` too, so
                 // look past the attribute list(s) for the `val`; an attributed
                 // *non*-`val` (`[<A>] type`/`member`) is not a valid module decl
-                // and falls through to the `false` arm (FCS rejects it).
+                // and falls through to the `false` arm (FCS rejects it). Gated on
+                // `header_ok` the same way as the plain `val` arm above.
                 Some((Ok(FilteredToken::Raw(Token::LBrackLess)), _))
-                    if self.attributed_val_follows_from(self.pos) =>
+                    if header_ok && self.attributed_val_follows_from(self.pos) =>
                 {
                     true
                 }

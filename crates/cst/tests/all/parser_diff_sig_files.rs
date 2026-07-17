@@ -5,6 +5,7 @@
 
 use crate::common::{assert_sig_asts_match, assert_sig_asts_match_allow_errors};
 use borzoi_cst::parser::parse_sig;
+use borzoi_cst::syntax::SyntaxKind;
 
 // ---- Phase 10.11: sig-file scaffolding + headers (empty bodies) ---------
 
@@ -2546,6 +2547,58 @@ fn opaque_type_then_indented_member_is_rejected() {
     assert!(
         !parse.errors.is_empty(),
         "{src:?}: an abutting `member` after an opaque type must stay a parse error",
+    );
+    assert_eq!(
+        parse.root.text().to_string(),
+        src,
+        "{src:?}: recovery must stay lossless",
+    );
+}
+
+/// Promotion is valid only after a *well-formed* opaque type. A malformed header
+/// (`type T when` with no constraint) followed by an indented `val` must NOT
+/// promote the `val` to a phantom module-level `Val`: FCS reports "Unexpected
+/// keyword 'val' in type name" and produces no `Val` (verified against the
+/// oracle). Regression for the unconditional promotion arm.
+#[test]
+fn opaque_type_malformed_header_then_val_is_not_promoted() {
+    let src = "module M\ntype T when\n    val X : int\n";
+    let parse = parse_sig(src);
+    assert!(
+        !parse.errors.is_empty(),
+        "{src:?}: a malformed type header must stay a parse error",
+    );
+    assert!(
+        !parse
+            .root
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::VAL_DECL),
+        "{src:?}: the `val` after a malformed header must not promote to a phantom VAL_DECL",
+    );
+    assert_eq!(
+        parse.root.text().to_string(),
+        src,
+        "{src:?}: recovery must stay lossless",
+    );
+}
+
+/// The attributed promotion arm is gated the same way — `[<A>] val` after a
+/// malformed header does not promote either (FCS: "Unexpected symbol '[<' in
+/// type name").
+#[test]
+fn opaque_type_malformed_header_then_attributed_val_is_not_promoted() {
+    let src = "module M\ntype T when\n    [<A>] val X : int\n";
+    let parse = parse_sig(src);
+    assert!(
+        !parse.errors.is_empty(),
+        "{src:?}: a malformed type header must stay a parse error",
+    );
+    assert!(
+        !parse
+            .root
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::VAL_DECL),
+        "{src:?}: the attributed `val` after a malformed header must not promote",
     );
     assert_eq!(
         parse.root.text().to_string(),
