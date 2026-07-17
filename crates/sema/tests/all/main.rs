@@ -25,6 +25,7 @@ mod overloads_oracle;
 mod project_half_matrix;
 mod resolve_active_patterns;
 mod resolve_assembly;
+mod resolve_assembly_active_patterns;
 mod resolve_assembly_diff;
 mod resolve_autoopen;
 mod resolve_corpus_diff;

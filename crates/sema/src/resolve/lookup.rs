@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::id_text;
 use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
 use super::state::{
-    AssemblyPath, OpenInterpretation, Resolver, SameFileQualified, ScopeEntry, ShadowVeto,
-    TieredResolution,
+    ActivePatternShape, AssemblyPath, OpenInterpretation, Resolver, SameFileQualified, ScopeEntry,
+    ShadowVeto, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -248,7 +248,8 @@ impl<'a> Resolver<'a> {
         let mut entries: Vec<ScopeEntry> = Vec::new();
         for s in &surfaces {
             for e in &s.entries {
-                let res = if demote || (demote_cases && e.is_case) || collided.contains(&e.name) {
+                let demoted = demote || (demote_cases && e.is_case) || collided.contains(&e.name);
+                let res = if demoted {
                     Resolution::Deferred(DeferredReason::UnboundName)
                 } else {
                     match e.target {
@@ -270,6 +271,16 @@ impl<'a> Resolver<'a> {
                     }
                 };
                 entry.opened_case = e.is_case;
+                // An assembly active-pattern tag carries its demangled recognizer
+                // shape (Stage 3b): its `Deferred` resolution has no identity to
+                // key the shape on, so the applied-head split reads it from here.
+                // But a **demoted** entry defers precisely because which
+                // constructor occupies the name is unknown — a residue-bearing
+                // open could hide a shadowing case, or two assemblies could
+                // contribute a same-named union case / differently-shaped
+                // recognizer that FCS binds by reference order — so its shape is
+                // untrustworthy and must not drive the split (certain-implies-exact).
+                entry.opened_ap_shape = if demoted { None } else { e.ap_shape };
                 entries.push(entry);
             }
         }
@@ -1570,6 +1581,33 @@ impl<'a> Resolver<'a> {
     /// sibling namespace), so a caller keeps the decline-and-drop behaviour for a
     /// genuine maybe-var head.
     pub(super) fn case_reference(&self, name: &str) -> Option<Resolution> {
+        self.case_reference_entry(name)
+            .map(|entry| entry.resolution)
+    }
+
+    /// Like [`case_reference`](Self::case_reference) but also reports the
+    /// recognizer [`ActivePatternShape`] carried on the matched scope entry —
+    /// non-`None` only for an opened **assembly** active-pattern tag, whose
+    /// `Deferred` resolution has no identity for
+    /// [`resolution_active_pattern_shape`](Self::resolution_active_pattern_shape)
+    /// to key on (Stage 3b). The applied-head split combines the two: this
+    /// entry-carried shape for an assembly case, the resolution-keyed one for a
+    /// same-file / cross-file `Item` / `Local` case.
+    pub(super) fn applied_active_pattern_case(
+        &self,
+        name: &str,
+    ) -> Option<(Resolution, Option<ActivePatternShape>)> {
+        self.case_reference_entry(name)
+            .map(|entry| (entry.resolution, entry.opened_ap_shape))
+    }
+
+    /// The scope entry [`case_reference`](Self::case_reference) resolves a
+    /// pattern-position `name` to — the latest in-scope **case** entry (values do
+    /// not shadow a case in the constructor namespace), or `None` when none is in
+    /// scope or a hidden/stale/opaque open forces a deferral. Split out so both
+    /// `case_reference` and [`applied_active_pattern_case`](Self::applied_active_pattern_case)
+    /// see the *same* entry — no duplicate scan to drift.
+    fn case_reference_entry(&self, name: &str) -> Option<&ScopeEntry> {
         let name = id_text(name);
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
@@ -1610,10 +1648,10 @@ impl<'a> Resolver<'a> {
                 // *reference* — the name provably occupies the constructor
                 // namespace — just one with no committed target.
                 if entry.opened_case {
-                    return Some(entry.resolution);
+                    return Some(entry);
                 }
                 match self.case_classification(entry.resolution) {
-                    Some(true) => return Some(entry.resolution),
+                    Some(true) => return Some(entry),
                     // A value does not shadow a case in the constructor namespace:
                     // keep scanning for an earlier case.
                     Some(false) => continue,

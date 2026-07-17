@@ -398,13 +398,135 @@ value-namespace queries provably exclude AP cases) + multi-file
 `uses-project`-diagnostics-clean; certain-implies-exact; the ignored
 `resolve_corpus_diff` gate stays green.
 
-#### Stage 3b: assembly-side active-pattern shape
+#### Stage 3b: assembly-side active-pattern shape (as shipped)
 
-**Dependencies**: 3a. Derive assembly AP shape from metadata — the mangled
-`|A|B|` val name gives the cases + totality, the signature's curried arity gives
-`arity = params − 1` — and attach it to the fold's `opened_case` entries
-(`assembly_env.rs`), so assembly APs (`(|KeyValue|)`, `(|Failure|_|)`) also
-split correctly, exactly as project ones now do.
+**Dependencies**: 3a. Derive the assembly AP shape from the mangled `|A|B|` val
+name — cases + totality + single-case — and attach it to the **fold's**
+`opened_case` entries (an *explicit* `open <module>` / `open <namespace>`), so a
+**total single-case** assembly recognizer (`(|Scale|)`) splits an applied use
+frontAndBack exactly as a project one now does. Recognizers reached through the
+*implicit* `[<assembly: AutoOpen>]` auto-open — including FSharp.Core's
+`(|KeyValue|)` / `(|Failure|_|)` — are out of scope here (see "Scope" below).
+
+**The `arity = params − 1` premise was wrong, and is dropped.** The plan hoped
+the signature's curried arity would give the parameter count. It does not: F#
+compiles a recognizer's *tupled* argument groups to **flattened** IL parameters,
+so the metadata parameter count is an **upper bound** on FCS's type-derived
+`paramCount` (`stripFunTy` on the recognizer's F# type — the number
+`TcPatLongIdentActivePatternCase` actually splits on), not equal to it. And an
+F# assembly's methods carry no `arg_group_count` (its `None` is exactly "cannot
+tell curried from tupled from flattened IL"), so the divergence is
+*undetectable* from metadata. An **over-estimated** arity is a wrong commit: a
+use at `k = paramCount + 1` would treat the genuine result binder as a
+parameter, resolving a name FCS binds to an outer value instead — a
+certain-implies-exact violation. So **arity is `None` for every assembly
+recognizer.** (The one metadata-certain case — `params == 1` ⇒ `arity == 0`,
+since a single un-tuple-able parameter must be the matched value — makes no
+observable difference anyway: a partial single-case AP's only legal applied use
+is `k = 1`, which binds the result under both `arity == None` and `arity ==
+0`.)
+
+That leaves a clean, name-only derivation (verified by reading the built DLL
+through the assembly reader, and FCS-probing the use side against it — the probe
+matrix below). It follows FCS's own `ActivePatternInfoOfValName`
+(`PrettyNaming.fs`): the IL method name **is** the mangled logical name, so
+`total`/`single_case`/the case list are exactly what FCS computes.
+
+Derivation (`active_pattern_banana` in `assembly_env.rs`, replacing
+`active_pattern_tags`), for a well-formed `|…|` banana only (a malformed name
+attaches **no** shape — residue, today's behaviour):
+
+| IL metadata name | cases | `total` | `single_case` | `arity` |
+|---|---|---|---|---|
+| `\|Even\|Odd\|` | `[Even, Odd]` | `true` (no trailing `\|_\|`) | `false` | `None` |
+| `\|Scale\|` | `[Scale]` | `true` | `true` | `None` |
+| `\|DivBy\|_\|` | `[DivBy]` | `false` (trailing `\|_\|`) | `true` | `None` |
+| `\|_\|` / `\|\|` / `\|A\|\|B\|` | — | — | — | (malformed → no shape) |
+
+`total` = the **last** `\|`-segment is not `_` (FCS checks only the last
+segment); `single_case` = exactly one remaining case; every case non-empty and
+not `_`.
+
+**Metadata facts pinned by the DLL dump** (params = flattened IL parameter
+count):
+
+| F# recognizer | IL name | params | note |
+|---|---|---|---|
+| `(\|Even\|Odd\|) n` | `\|Even\|Odd\|` | 1 | multi-case (arity irrelevant) |
+| `(\|Scale\|) k n` | `\|Scale\|` | 2 | `params−1 = 1` = paramCount, but arity dropped |
+| `(\|DivBy\|_\|) d n` | `\|DivBy\|_\|` | 2 | `params−1 = 1` = paramCount |
+| `(\|Nonempty\|_\|) s` | `\|Nonempty\|_\|` | 1 | s IS the matched value; paramCount 0 |
+| `(\|InRange\|_\|) (lo,hi) n` | `\|InRange\|_\|` | **3** | **paramCount 1** — `params−1 = 2` OVER-counts (tupling) |
+| `(\|Positive\|_\|) = fun n->` | `\|Positive\|_\|` | 1 | point-free compiled as a 1-param **Method**, not a property |
+| `(\|P3\|) a b n` | `\|P3\|` | 3 | `params−1 = 2` = paramCount |
+
+`InRange` is the counter-example: `params−1 = 2 ≠` FCS's paramCount `1`.
+
+**FCS use-side verdicts** (fsi- and `dotnet build`-verified against the built
+fixture DLL — every consumer compiles clean):
+
+- `open …Recognizers; match n with Scale factor v` → `factor` = the **outer
+  value** (a parameter), `v` = the recognizer result (**binds**). frontAndBack
+  holds cross-assembly, arity-free. *This is the Stage-3b behaviour change.*
+- `Scale g` (k = 1) → `g` **binds** the partially-applied recognizer (`g 5` runs
+  the recognizer, not an outer `g`).
+- `DivBy divisor` (partial, paramCount 1, k = 1) → `divisor` = the outer value in
+  FCS; with `arity == None` sema keeps today's fabricate-a-binder (a status-quo
+  unsoundness, **not** a regression — the 3c residue).
+- `InRange (1, 10) x` → `x` binds; today's behaviour already correct (the `(1,10)`
+  const-tuple binds nothing), and `arity == None` preserves it.
+- FSharp.Core `KeyValue (k, v)` / `Failure msg` are reached through the *implicit*
+  auto-open, which this stage leaves untouched — they keep declining in pattern
+  position (sound; the implicit-path follow-up in "Scope" below). An **explicit**
+  `open Microsoft.FSharp.Core.Operators` folds them through the fold path, where
+  the shape applies.
+
+Wiring: `OpenFoldName` and `ScopeEntry` gain an `Option<ActivePatternShape>`
+(set only on an AP-tag entry); the applied-head split site reads it via
+`applied_active_pattern_case` (a `case_reference` companion), falling back to
+`resolution_active_pattern_shape` for same-file/cross-file `Item`/`Local` heads.
+The demangle stays in sema (`active_pattern_banana`, replacing
+`active_pattern_tags`); no `borzoi-assembly` change, and no signature reading at
+all (arity is `None`).
+
+**Scope — the fold path only.** The shape is attached only for recognizers
+folded in through the fold (`fold_container_into`, i.e. explicit `open <module>`
+/ `open <namespace>`). That path already computes the pattern-namespace winner
+through its demotions, and the shape must ride *every* one of them
+(certain-implies-exact — a shape trusted where the tag is not the definite case
+is a wrong split):
+
+- **demoted / collided** fold entry (residue, cross-surface collision) → the
+  writer drops the shape (`open_assembly_module_fold`, the `demoted` gate);
+- **not an authoritative F# module** (`fsc --standalone` / undecoded pickle, where
+  `EntityKind::Module` is only an IL heuristic and a banana `let` is really a
+  method group) → no demangle (`fsharp_signature_unreliable`);
+- **shadowed by a same-named value** (a `[<Literal>]` / constant is a *constant
+  pattern* FCS's latest-wins puts in charge of the name, which `case_reference`
+  skips as an ordinary value) → the **use-site split declines** whenever `lookup`
+  finds any same-named value in scope — this open, a later open, a local `let`, or
+  an auto-open child. Checked at the split site, not the fold, because the shadow
+  can come from anywhere in the final scope; and only for assembly recognizers,
+  since same-file / cross-file project ones (3a) resolve through the constructor
+  namespace, which already models it. The applied form is FCS-illegal when the
+  constant pattern actually wins, so declining is sound.
+
+A well-formed **zero-tag** recognizer (the quoted `` `|_|` ``, a partial pattern
+with no case names) demangles to an empty tag list — it contributes no case
+entry but is *not* residue, so it never poisons the open surface.
+
+The **implicit `[<assembly: AutoOpen>]` path** (`open_type_statics` — the one
+FSharp.Core's `(|KeyValue|)` / `(|Failure|_|)` actually take) is **deliberately
+left at today's behaviour**: it does not carry the fold's demotions, so trusting
+a shape there could be a wrong commit. Its recognizers keep declining in pattern
+position (sound — a coverage gap, not a regression). Routing that path through
+the fold's demotions — so the named FSharp.Core examples split too — is a
+follow-up, because doing it soundly means giving the implicit path the full
+residue / collision / constant-pattern-shadow machinery the fold has, which is a
+larger structural change than this stage. (This scoping was reached after a codex
+review sequence: an earlier draft wired the implicit path directly and each
+review surfaced another demotion it was missing — guard accretion that the
+retreat to the fold-only core resolves.)
 
 #### Stage 3c: barrier-decline for still-unknown-shape AP-certain heads
 

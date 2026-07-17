@@ -70,6 +70,15 @@ pub(super) struct ScopeEntry {
     /// it skips plain values; project-side cases are instead classified through
     /// their [`DefKind`] (an opened assembly case has no def to classify).
     pub(super) opened_case: bool,
+    /// For an opened **assembly active-pattern tag**
+    /// ([`OpenFoldName::ap_shape`](crate::OpenFoldName::ap_shape)), the recognizer
+    /// [`ActivePatternShape`] demangled from its `|A|B|` IL name; `None` for
+    /// every other entry. An assembly AP tag resolves to
+    /// [`Resolution::Deferred`], which carries no identity to key a shape on, so
+    /// the applied-head split
+    /// ([`applied_active_pattern_case`](Resolver::applied_active_pattern_case))
+    /// reads it here instead — `docs/export-decl-model-plan.md` Stage 3b.
+    pub(super) opened_ap_shape: Option<ActivePatternShape>,
 }
 
 impl ScopeEntry {
@@ -87,6 +96,7 @@ impl ScopeEntry {
             pattern_only: false,
             open_pos: 0,
             opened_case: false,
+            opened_ap_shape: None,
         }
     }
 
@@ -108,6 +118,7 @@ impl ScopeEntry {
             pattern_only: false,
             open_pos,
             opened_case: false,
+            opened_ap_shape: None,
         }
     }
 
@@ -127,6 +138,7 @@ impl ScopeEntry {
             pattern_only: true,
             open_pos,
             opened_case: false,
+            opened_ap_shape: None,
         }
     }
 }

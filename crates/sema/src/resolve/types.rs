@@ -1510,7 +1510,8 @@ impl<'a> Resolver<'a> {
                         self.record_qualified_case_pattern(&segs);
                     } else if applied
                         && let [single] = segs.as_slice()
-                        && let Some(res) = self.case_reference(single.text())
+                        && let Some((res, opened_shape)) =
+                            self.applied_active_pattern_case(single.text())
                     {
                         // An *applied* single-segment head (`B n`, `Some x`) is a
                         // constructor / active-pattern reference that `binders` drops;
@@ -1520,13 +1521,36 @@ impl<'a> Resolver<'a> {
                         self.record(single.text_range(), res);
                         // When the head is an active pattern with a stored shape —
                         // same-file (`Local`) or cross-file opened (`Item`, Stage
-                        // 3a) — its curried arguments split into parameters
-                        // (expressions) and the result sub-pattern (a binder) — FCS's
+                        // 3a) via `resolution_active_pattern_shape`, or an **opened
+                        // assembly** tag (Stage 3b) whose `Deferred` resolution
+                        // carries the shape on its scope entry (`opened_shape`) — its
+                        // curried arguments split into parameters (expressions) and
+                        // the result sub-pattern (a binder) — FCS's
                         // `TcPatLongIdentActivePatternCase`. A named-field group
                         // (`Case (field = pat)`) is never an active-pattern applied
                         // head, so restrict to the curried form and leave the group to
                         // the default recursion below.
-                        if let Some(shape) = self.resolution_active_pattern_shape(res)
+                        //
+                        // An **opened assembly** recognizer's tag shares the pattern
+                        // namespace with any same-named value: a `[<Literal>]` /
+                        // constant value there is a CONSTANT PATTERN FCS's latest-wins
+                        // puts in charge of the name (`case_reference` skips it as an
+                        // ordinary value and still returns the recognizer's shape). So
+                        // when the name has *any* same-named value binding in scope —
+                        // this open, a later open, a local `let`, an auto-open child —
+                        // decline the split (`Foo x` is FCS-illegal when the constant
+                        // pattern wins, so declining is sound; codex rounds 4c/5a).
+                        // Same-file / cross-file project recognizers (`opened_shape`
+                        // absent) resolve through the constructor namespace, which
+                        // already models this, so the guard is scoped to `opened_shape`.
+                        // `lookup` keys on the *normalized* name (scope entries are
+                        // `id_text`-stripped), so a quoted head `` `Scale` `` must be
+                        // normalized too or the guard silently misses the shadow.
+                        let shadowed =
+                            opened_shape.is_some() && self.lookup(id_text(single.text())).is_some();
+                        if let Some(shape) =
+                            opened_shape.or_else(|| self.resolution_active_pattern_shape(res))
+                            && !shadowed
                             && p.name_pat_pairs().is_none()
                         {
                             let args: Vec<Pat> = p.args().collect();
