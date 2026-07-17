@@ -2553,3 +2553,27 @@ fn opaque_type_then_indented_member_is_rejected() {
         "{src:?}: recovery must stay lossless",
     );
 }
+
+/// The nameless-`namespace` leniency is **impl-only**: FCS recovers a bare
+/// `namespace` / `namespace rec` in a *signature* file as an `AnonModule`
+/// (dropping `rec`), not an empty `DeclaredNamespace`. Rather than mis-project a
+/// `DeclaredNamespace` where FCS produced an `AnonModule` (a both-accept-but-
+/// different divergence), the sig side keeps its pre-existing parse error; the
+/// sig-specific `AnonModule` recovery is a separate deferred item. (This asserts
+/// only *that* we reject — a `we_reject_fcs_accepts` residual, not an AST match.)
+#[test]
+fn nameless_namespace_in_sig_stays_a_parse_error() {
+    for src in ["namespace\n", "namespace rec\n"] {
+        let parse = parse_sig(src);
+        assert!(
+            !parse.errors.is_empty(),
+            "{src:?}: a nameless namespace in a .fsi must stay a parse error \
+             (the impl-only leniency must not leak to signatures)",
+        );
+        assert_eq!(
+            parse.root.text().to_string(),
+            src,
+            "{src:?}: recovery must stay lossless",
+        );
+    }
+}

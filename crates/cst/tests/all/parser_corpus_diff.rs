@@ -63,8 +63,11 @@ use crate::common::{
 /// `((^T or int) : (static member …) …)` — took one more file). 2026-07-17: 5455,
 /// +2 from group B (the verbose `begin … end` sig type body and the opaque-type
 /// `val`-promotion — `test.fsi` and `ProvidedTypes.fsi` now match; the third is
-/// pre-existing floor lag).
-const MIN_AST_MATCHES: usize = 5455;
+/// pre-existing floor lag). 2026-07-17: 5457, +2 from group C (the nameless
+/// `namespace` / `namespace rec` — `Namespace 05.fs` / `08.fs`). The
+/// initialiser-less `member val` (`Auto property 04.fs`) was dropped as too
+/// context-sensitive (see the note in `parser_diff_module_structure.rs`).
+const MIN_AST_MATCHES: usize = 5457;
 
 /// Upper bound on files that normalise on both sides but disagree. Drive this
 /// to zero: each one is a parser bug or a normaliser asymmetry. (The
@@ -84,6 +87,8 @@ const MAX_AST_DIVERGENCES: usize = 1;
 /// trait-call support alternative. (The earlier 5427 was against the old
 /// `bdb847ab` corpus — that tree changed, not our range handling.) 2026-07-17:
 /// 5427, the two group-B files' ranges also match (plus pre-existing floor lag).
+/// (Group C's two nameless-namespace files match shape but their broad ranges
+/// diverge — see [`MAX_AST_RANGE_DIVERGENCES`] — so they do not lift this floor.)
 const MIN_AST_RANGE_MATCHES: usize = 5427;
 
 /// Upper bound on files whose normalised AST shape matches FCS but whose
@@ -93,8 +98,12 @@ const MIN_AST_RANGE_MATCHES: usize = 5427;
 /// Drive this down as those cases become explicit.
 ///
 /// Measured 2026-07-09 against the pinned F# corpus (dotnet/fsharp
-/// `c3c01c99`): exactly 28, unchanged from the old corpus.
-const MAX_AST_RANGE_DIVERGENCES: usize = 28;
+/// `c3c01c99`): exactly 28, unchanged from the old corpus. 2026-07-17: 30 — the
+/// two nameless-namespace files group C now accepts (`Namespace 05.fs` / `08.fs`)
+/// match shape but their broad module range diverges from FCS (an empty-`longId`
+/// `DeclaredNamespace`'s span; the same approximate broad-range class this ceiling
+/// already tolerates), so they land here rather than in the range-match count.
+const MAX_AST_RANGE_DIVERGENCES: usize = 30;
 
 /// Upper bound on files where our parser is clean but FCS reports
 /// `ParseHadErrors`. These are parser acceptance gaps, but a known corpus
