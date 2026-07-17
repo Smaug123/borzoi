@@ -5,8 +5,8 @@
 > namespace half. `open M` now resolves M's value / union-case / exception /
 > active-pattern / nested-type surface the way FCS folds it, precedence falling out
 > of push order (latest-wins). Outstanding: submodule **dotted heads** (Slice B),
-> option-B bare-name **slot eviction** (§8), **value-binding accessibility**, the two
-> §5a over-conservative cells, and the **implicit-open** placement. Reference-order
+> option-B bare-name **slot eviction** (§8), **value-binding accessibility**, the remaining
+> §5a over-conservative cell, and the **implicit-open** placement. Reference-order
 > merges stay declined by design (§4c). Leave in `docs/` until those close.
 
 ## How it resolves now ("the fold")
@@ -182,9 +182,13 @@ tags in a residue-bearing recursed child; a module whose pickle did not decode
 
 `open M` then `Sub.f ()`. The tiered assembly walk roots a path at a *namespace* prefix,
 and an opened module is not one — so the fold leaves this deferring
-(`opaque_dotted_open`, raised only for a module that has nested members, since a childless
-one can seed no dotted head and blanketing it would suppress the merged namespace half of
-the same path — Q9). It needs a module-handle prefix channel the walk can descend through
+(`opaque_dotted_open`, raised only for a module with an **accessible** (public) nested
+member, since a member-less one — or one whose only children are the non-public
+compiler-generated closure classes that back its `let` values — can seed no dotted head a
+cross-assembly `open` could see, and blanketing it would defer every *unrelated* later
+dotted head: `open Fantomas.FCS.Text.Range` (all closure classes) killing a bare
+`Seq.toList` was exactly that, now fixed by the accessible-child filter). It needs a
+module-handle prefix channel the walk can descend through
 `nested()`. Pinned by `a_submodule_of_an_opened_assembly_module_never_names_a_wrong_target`
 (the safe half) plus the `#[ignore]`d target-behaviour test
 `crates/sema/tests/all/resolve_autoopen.rs:994` — remove the `#[ignore]` and watch it fail
@@ -193,19 +197,29 @@ nested-type dotted-head cells; lifting this flips them.
 
 ### 5a. Over-conservative cells left standing (deliberate)
 
-Two places where we **defer though FCS resolves** — both availability losses in the safe
-direction (never a wrong target), left standing because closing them re-grows the
-machinery §4c cut. Both pinned by `#[ignore]`d tests carrying the FCS-correct expectation;
-whoever picks this up starts by removing the `#[ignore]` and watching them fail.
+One place where we **defer though FCS resolves** — an availability loss in the safe
+direction (never a wrong target), left standing because closing it re-grows the
+machinery §4c cut. Pinned by an `#[ignore]`d test carrying the FCS-correct expectation;
+whoever picks this up starts by removing the `#[ignore]` and watching it fail.
 
-- **A companion module behind a type-index collision.** When a path carries both a
-  type/abbreviation and a suffixed companion module, `opened_assembly_type` returns the
-  type-index winner while `opened_assembly_module` returns the module, so the guard's
-  `h == handle` identity test fails and the abbreviation branch raises `opaque_value_open`;
-  `open Lib.Companion; fromCompanion` defers even though the fold can enumerate that module.
-  The fix is to ask whether the path *has* a module interpretation rather than whether it is
-  the *same handle* — it re-opens the kind-collision seam, so it belongs with Slice B's walk
-  rework. Pinned by `resolve_fsharp_abbrev.rs:365` (`#[ignore]`).
+> **Delivered.** *A companion module behind a type-index collision* used to defer here:
+> when a path carried both a type/abbreviation and a suffixed companion module,
+> `opened_assembly_type` returned the type-index winner while `opened_assembly_module`
+> returned the module, so the old `h == handle` identity guard misfired, the abbreviation
+> branch raised `opaque_value_open`, and `open Lib.Companion; fromCompanion` deferred even
+> though the fold can enumerate that module. The guard now asks whether the path *has* a
+> module interpretation (`opened_assembly_module(&path).is_some()`) — the exact condition
+> `open_interpretations` uses to emit the `AssemblyModule` tier — so the module's value binds
+> as FCS folds it. This did **not** re-open the §4c merge seam: the `AssemblyModule` tier was
+> already produced by that same predicate, and the dropped-path / incomplete-prefix /
+> project-opaque conservatism fires independently; the fix only stops the spurious
+> `unmodelled_open_active` when the module is genuinely enumerable. Pinned by
+> `resolve_fsharp_abbrev.rs`'s `an_opened_companion_module_behind_a_type_collision_still_resolves`
+> and `plain_open_of_a_marker_with_a_module_companion_binds_the_module_value`. It also fixed a
+> live regression: an `open` of any enumerable module with a same-named type companion
+> (`open Fantomas.FCS.Text.Range`) wrongly suppressed the implicit
+> `Microsoft.FSharp.Collections`, deferring every later bare `Seq.toList` in the file.
+
 - **The incomplete-prefix veto ignores precedence.** `incomplete_open_prefixes` is a
   non-empty-vector test, so any incomplete prefix in scope vetoes a later `open Sub` even
   when a *newer, definite* prefix would outrank it. Making the veto precedence-aware means

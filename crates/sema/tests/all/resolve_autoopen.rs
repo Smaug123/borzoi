@@ -1393,6 +1393,108 @@ fn opening_a_suffixed_companion_module_imports_the_module_not_the_type() {
 }
 
 #[test]
+fn opening_a_companion_module_does_not_suppress_implicit_namespace_readings() {
+    // Regression. `open Demo.Tagged` opens the enumerable module `Tagged`
+    // (compiled `TaggedModule`), which shares a namespace with the plainly-named
+    // *type* `Tagged`. The open-classifier's `enumerable` check compared the
+    // type-preferring `opened_assembly_type` handle (the type) against
+    // `opened_assembly_module` (the module); they differ, so the enumerable
+    // module was misclassified as an *unmodelled type* open and set
+    // `unmodelled_open_active` — which suppresses every later *relative* assembly
+    // reading, including the implicit open of `Microsoft.FSharp.Core`. So a
+    // qualified path whose head is a module of that implicitly-opened namespace
+    // (`CoreClosed.closedValue` — the fixture's stand-in for `Seq.toList` through
+    // the implicit `Microsoft.FSharp.Collections`) wrongly deferred.
+    //
+    // A plain F# `open` opens the module, never the bare type (that needs
+    // `open type`), so the type companion must not make the open unmodelled.
+    // `Demo.Solo` (a suffixed module with NO type companion) is the control that
+    // always resolved; `Demo.Tagged` must now behave identically.
+    let env = fixture_env();
+    let core_closed = env
+        .lookup_type(
+            &["Microsoft".into(), "FSharp".into(), "Core".into()],
+            "CoreClosed",
+            0,
+        )
+        .expect("fixture declares Microsoft.FSharp.Core.CoreClosed");
+
+    for open_line in ["open Demo.Tagged\n", "open Demo.Solo\n"] {
+        let src = format!("{open_line}let test () = CoreClosed.closedValue ()\n");
+        let rf = resolve(&src, &env);
+        assert_eq!(
+            rf.resolution_at(at(&src, "CoreClosed")),
+            Some(Resolution::Entity(core_closed)),
+            "`open`ing an enumerable companion module must not suppress the \
+             implicit `Microsoft.FSharp.Core` reading of `CoreClosed` (`{}`)",
+            open_line.trim(),
+        );
+    }
+
+    // The companion module's own value still imports — the open is not weakened.
+    let src = "open Demo.Tagged\nlet t () = wrap 5\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "wrap")) {
+        Some(Resolution::Member { parent, .. }) => assert_eq!(
+            env.entity(parent).name,
+            "TaggedModule",
+            "bare `wrap` must bind the opened companion module",
+        ),
+        other => panic!("expected the companion module's `wrap`, got {other:?}"),
+    }
+}
+
+#[test]
+fn opening_a_module_with_only_non_public_children_does_not_defer_unrelated_dotted_heads() {
+    // Regression: `Seq.toList` deferring after `open Fantomas.FCS.Text.Range`.
+    // Opening an assembly module raises `opaque_dotted_open` (the Slice B gap — a
+    // dotted head *through* the opened module, `open M; Sub.f`, is not modelled),
+    // which blanket-defers EVERY later dotted head. The trigger was
+    // `!children(h).is_empty()`, which counted the **non-public** compiler-generated
+    // closure classes that back a module's `let` values. `Range` is nothing but
+    // those, so opening it wrongly killed a bare `Seq.toList` two lines down.
+    //
+    // `Demo.ModuleOpen.OnlyNonPublicNested` reproduces the shape: only a `private`
+    // nested module (the deterministic stand-in for those closures) and no public
+    // nested member. It cannot seed a dotted head we don't model, so a later,
+    // wholly unrelated qualified path (`CoreClosed.closedValue` through the implicit
+    // `Microsoft.FSharp.Core` — the fixture's `Seq.toList` analog) must still
+    // resolve. The blanket now keys on an *accessible* (public) child, mirroring the
+    // R2 primitive-alias shadow's accessible-child fix.
+    let env = fixture_env();
+    let core_closed = env
+        .lookup_type(
+            &["Microsoft".into(), "FSharp".into(), "Core".into()],
+            "CoreClosed",
+            0,
+        )
+        .expect("fixture declares Microsoft.FSharp.Core.CoreClosed");
+    let src = "open Demo.ModuleOpen.OnlyNonPublicNested\nlet test () = CoreClosed.closedValue ()\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "CoreClosed")),
+        Some(Resolution::Entity(core_closed)),
+        "opening a module whose only children are non-public must not suppress an \
+         unrelated dotted head"
+    );
+
+    // The opened module's own value still imports — the open is not weakened, and a
+    // module with a genuine *public* nested submodule (`Demo.ModuleOpen.Plain.Sub`)
+    // still defers dotted heads, pinned by
+    // `a_submodule_of_an_opened_assembly_module_never_names_a_wrong_target`.
+    let src2 = "open Demo.ModuleOpen.OnlyNonPublicNested\nlet test () = plainValue 1\n";
+    let rf2 = resolve(src2, &env);
+    assert!(
+        matches!(
+            rf2.resolution_at(at(src2, "plainValue")),
+            Some(Resolution::Member { .. })
+        ),
+        "the opened module's own value must still resolve, got {:?}",
+        rf2.resolution_at(at(src2, "plainValue")),
+    );
+}
+
+#[test]
 fn a_project_module_and_an_assembly_module_at_one_path_merge() {
     // Review round 6, then the round-18 deep cut. FCS merges a project module with a
     // referenced module of the same FQN — `open Demo.ModuleOpen.Plain` imports the

@@ -440,6 +440,21 @@ module Plain =
     module Sub =
         let subOpened () = 20
 
+// A module whose only nested entities are NON-PUBLIC. In the wild these are the
+// compiler-generated closure classes that back a module's `let` values — a real
+// F# module like `Fantomas.FCS.Text.Range` has a dozen of them and NO public
+// nested member. A `private` nested module reproduces that shape deterministically
+// (a public value beside it, so the module itself is enumerable and openable).
+// `open`ing such a module seeds no dotted head we cannot model — nothing public to
+// root at — so the dotted-head blanket (`opaque_dotted_open`) must NOT fire, and a
+// later unrelated qualified path must still resolve. Regression:
+// `resolve_autoopen.rs::opening_a_module_with_only_non_public_children_does_not_defer_unrelated_dotted_heads`.
+module OnlyNonPublicNested =
+    module private Hidden =
+        let secret = 41
+
+    let plainValue (x: int) = x + Hidden.secret
+
 // The cross-assembly MERGE (review round 5): the sibling `fsharp_abbrev_env` fixture
 // declares this very module FQN too. FCS merges them — each assembly's unique values
 // resolve, and a colliding name binds the later-referenced one. Sema does not model
