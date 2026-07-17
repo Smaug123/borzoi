@@ -206,15 +206,19 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
         let mutable = if mv.is_mutable { "mutable " } else { "" };
         return format!("{keyword} {mutable}{name}{typars}: {ret}");
     }
-    // A *generic* module value (`let empty<'T> = …`) is emitted as a
-    // 0-parameter generic *method*, not a property, so the rebrand above never
-    // tags it — yet it is still a value (`val empty<'T>: 'T[]`), not a unit
-    // function. Treat a 0-parameter generic module method as a value: a generic
-    // 0-parameter *unit-function* (`let f<'T> () = …`) is vanishingly rare, and
-    // distinguishing the two needs the pickle's `ValReprInfo` arity (follow-up).
+    // A *generic* module value (`let empty<'T> = …`) is emitted as a 0-parameter
+    // generic *method*, not a property, so the rebrand above never tags it — yet
+    // it is still a value (`val empty<'T>: 'T[]`), not a unit function.
+    // `is_module_value_binding` is the authoritative value/function split: it is
+    // set from the pickle's argument-group *count* (0 groups ⇒ value), which — as
+    // the sema classifier already relies on (`AssemblyEnv::member_class`) —
+    // distinguishes a value (0 groups) from a 0-parameter *unit-function*
+    // (`let f<'T> () = …`, one zero-length `unit` group). The group *count* is the
+    // discriminator, not `val_il_arity`'s *sum*: both sum to 0, since a `unit`
+    // group is empty. So a unit-function correctly falls through to the arrow form.
     if owner.kind == EntityKind::Module
         && m.signature.parameters.is_empty()
-        && !m.generic_parameters.is_empty()
+        && m.is_module_value_binding
     {
         return format!("{keyword} {name}{typars}: {ret}");
     }
