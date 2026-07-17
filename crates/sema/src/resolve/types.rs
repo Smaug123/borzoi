@@ -496,6 +496,7 @@ impl<'a> Resolver<'a> {
                         def: use_id,
                         case: None,
                         access_root_len: self.export_access_root_len(is_private),
+                        attributed: false,
                     });
                     Some((item_idx, item_id))
                 };
@@ -1540,9 +1541,14 @@ impl<'a> Resolver<'a> {
                         // this open, a later open, a local `let`, an auto-open child —
                         // decline the split (`Foo x` is FCS-illegal when the constant
                         // pattern wins, so declining is sound; codex rounds 4c/5a).
-                        // Same-file / cross-file project recognizers (`opened_shape`
-                        // absent) resolve through the constructor namespace, which
-                        // already models this, so the guard is scoped to `opened_shape`.
+                        // Project recognizers (`opened_shape` absent) resolve through
+                        // the constructor namespace, whose **bare**-head scan defers a
+                        // maybe-literal contest itself
+                        // ([`ScopeEntry::maybe_constant_pattern`]); the *applied* head
+                        // resolved here is exempt from that contest — an applied
+                        // literal pattern is FS3191-illegal, so on a clean program the
+                        // case reading is the only legal one — hence this coarser
+                        // any-value guard stays scoped to `opened_shape`.
                         // `lookup` keys on the *normalized* name (scope entries are
                         // `id_text`-stripped), so a quoted head `` `Scale` `` must be
                         // normalized too or the guard silently misses the shadow.

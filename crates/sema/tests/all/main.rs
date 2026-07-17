@@ -28,6 +28,7 @@ mod resolve_assembly;
 mod resolve_assembly_active_patterns;
 mod resolve_assembly_diff;
 mod resolve_autoopen;
+mod resolve_constant_pattern_shadows;
 mod resolve_corpus_diff;
 mod resolve_cross_file_active_patterns;
 mod resolve_cross_file_cases;

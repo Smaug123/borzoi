@@ -983,3 +983,43 @@ fn chained_open_prefers_prior_open_namespace_over_enclosing_module() {
         expected_cross_file: 1,
     });
 }
+
+#[test]
+fn literal_constant_patterns_shadow_cases_like_fcs() {
+    // `[<Literal>]` values are constant patterns: unlike plain values they
+    // contest the pattern namespace against constructor cases (latest-wins in
+    // FCS's `ePatItems`; within ONE opened module the vals fold after the
+    // tycons, so the module's own literal wins regardless of source order —
+    // `g`/`h` below). Sema defers each contested bare head (FCS binds the
+    // literal, which we do not commit to — the harness allows the decline and
+    // would fail on the old wrong commit of the case), while `Odd`, which no
+    // maybe-literal contests, still commits cross-file to the recognizer.
+    assert_matches_fcs(&Project {
+        files: vec![
+            (
+                "LitA.fs",
+                "module LitA\n\
+                 let (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n\
+                 type C =\n    | Red\n    | Blue\n\
+                 [<Literal>]\n\
+                 let Red = 9\n\
+                 [<Literal>]\n\
+                 let Shadow = 5\n\
+                 type D =\n    | Shadow\n    | Teal\n",
+            ),
+            (
+                "LitB.fs",
+                "module LitB\n\
+                 open LitA\n\
+                 [<Literal>]\n\
+                 let Even = 7\n\
+                 let f (n: int) = match n with Even -> 1 | _ -> 0\n\
+                 let g (n: int) = match n with Red -> 2 | _ -> 0\n\
+                 let h (n: int) = match n with Shadow -> 3 | _ -> 0\n\
+                 let q (d: D) = match d with LitA.Shadow -> 4 | _ -> 0\n\
+                 let before (n: int) = match n with Odd -> 5 | _ -> 6\n",
+            ),
+        ],
+        expected_cross_file: 1,
+    });
+}

@@ -51,3 +51,12 @@ module Shadowed =
 
     [<Literal>]
     let Scale = 7
+
+// A plain `[<Literal>]` with NO same-named recognizer: fsc emits it as a CLI
+// `Literal`-flagged static field, so `value_may_be_constant_pattern` is
+// *certainly* true. Folded in by an `open`, it contests an earlier project
+// case of the same name in the pattern namespace (a constant pattern,
+// latest-wins) — the case must defer, not commit.
+module Consts =
+    [<Literal>]
+    let Marker = 3

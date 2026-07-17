@@ -180,6 +180,17 @@ pub struct ProjectItems {
     /// [`Resolution::Item`] as a case ([`Resolver::case_classification`](super::state::Resolver::case_classification)) — for
     /// pattern-position resolution and case/module collision soundness.
     pub(super) case_item_ids: HashSet<ItemId>,
+    /// The project-global [`ItemId`]s of earlier files' **attributed**
+    /// module-level `let` values ([`ExportedItem::attributed`]) — maybe-literal
+    /// constant-pattern contestants. A `[<Literal>]` value enters FCS's pattern
+    /// namespace (`ePatItems`) and beats a case, and attribute *identity* is
+    /// unverifiable from source, so attribute presence is the sound
+    /// over-approximation. Read per id
+    /// ([`Self::is_attributed_item`]) to flag opened value entries, and per
+    /// module child path ([`Self::module_value_may_be_constant_pattern`]) to
+    /// suppress a case an opened module's own maybe-literal would out-fold
+    /// (FCS folds a module's vals *after* its tycons).
+    pub(super) attributed_value_ids: HashSet<ItemId>,
     /// The recognizer [`ActivePatternShape`] of each earlier-file module-level
     /// **active-pattern case**, keyed by its project-global [`ItemId`] (Stage 3a,
     /// `docs/export-decl-model-plan.md`). AP cases ride [`Self::value_exports`] as
@@ -628,6 +639,9 @@ impl ProjectItems {
         for id in idx.case_item_ids {
             self.case_item_ids.insert(id);
         }
+        for id in idx.attributed_value_ids {
+            self.attributed_value_ids.insert(id);
+        }
         for (id, shape) in idx.active_pattern_shapes {
             self.active_pattern_shapes.insert(id, shape);
         }
@@ -639,6 +653,35 @@ impl ProjectItems {
     /// [`Self::case_item_ids`]).
     pub(super) fn is_case_item(&self, id: ItemId) -> bool {
         self.case_item_ids.contains(&id)
+    }
+
+    /// Whether `id` is an earlier file's **attributed** module-level value
+    /// (see [`Self::attributed_value_ids`]) — a maybe-literal, which contests
+    /// the pattern namespace as a constant pattern.
+    pub(super) fn is_attributed_item(&self, id: ItemId) -> bool {
+        self.attributed_value_ids.contains(&id)
+    }
+
+    /// Whether `path` (a module child, container + name) exports an
+    /// **attributed value accessible from `site`** — a maybe-literal constant
+    /// pattern. FCS folds an opened module's vals *after* its tycons
+    /// (`AddModuleOrNamespaceContentsToNameEnv`: exceptions → tycons → vals),
+    /// so such a value beats the module's own same-named case in bare pattern
+    /// position **regardless of their source order** — the case must defer
+    /// ([`Resolver::pattern_suppressed_case_ids`](super::state::Resolver)).
+    /// An inaccessible value is filtered exactly as FCS filters it from the
+    /// opened environment, leaving the case committed.
+    pub(super) fn module_value_may_be_constant_pattern(
+        &self,
+        path: &[String],
+        site: &[String],
+    ) -> bool {
+        self.value_exports.get(path).is_some_and(|history| {
+            history.iter().any(|rec| {
+                self.attributed_value_ids.contains(&rec.id)
+                    && accessible_from(rec.access_root_len, path, site)
+            })
+        })
     }
 
     /// The `(name, id)` of every earlier-file **constructor case** exported
@@ -746,6 +789,7 @@ type QualifiedCaseExport = (ItemId, Option<usize>);
 struct FileExportIndices {
     value_exports: Vec<(Vec<String>, ExportRecord)>,
     case_item_ids: Vec<ItemId>,
+    attributed_value_ids: Vec<ItemId>,
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
@@ -796,6 +840,9 @@ impl FileExportIndices {
                         }
                         if it.is_case() {
                             fi.case_item_ids.push(it.id);
+                        }
+                        if it.attributed {
+                            fi.attributed_value_ids.push(it.id);
                         }
                         if let Some(tq) = type_qualified {
                             // The type-qualified case index is gated on the case's
@@ -1221,6 +1268,17 @@ pub struct ExportedItem {
     /// / the collapse recovery filter through [`accessible_from`]. `internal` is
     /// intra-project-visible (one assembly), so only `private` narrows this.
     pub(super) access_root_len: Option<usize>,
+    /// `true` when the defining module-level `let` binding carried **any
+    /// attribute list** (on the binding or its enclosing `let` decl) — a
+    /// maybe-`[<Literal>]`. A literal value is an FCS *constant pattern*, which
+    /// contests the pattern namespace against constructor cases (latest-wins in
+    /// `ePatItems`), and attribute identity cannot be verified from source (a
+    /// shadowing `LiteralAttribute` alias is undetectable), so presence is the
+    /// sound over-approximation: an attributed value makes a colliding bare case
+    /// use **defer**, while an unattributed value provably cannot be a literal
+    /// and never contests. Always `false` for cases and active-pattern case
+    /// handles.
+    pub(super) attributed: bool,
 }
 
 impl ExportedItem {

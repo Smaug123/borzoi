@@ -216,6 +216,15 @@ pub struct OpenFoldName {
     /// shape (`docs/export-decl-model-plan.md` Stage 3b) — the tag's `Deferred`
     /// resolution has no identity to key the shape on.
     pub ap_shape: Option<ActivePatternShape>,
+    /// Whether a **val** entry may be an FCS *constant pattern* — a CLI
+    /// `Literal`-flagged field, a `System.Decimal` field (a C# `const decimal`
+    /// carries `DecimalConstantAttribute` with NO `Literal` flag — Q17), or an
+    /// undecidable target ([`AssemblyEnv`]'s `value_may_be_constant_pattern`).
+    /// A literal enters FCS's pattern namespace (`ePatItems`, latest-wins), so
+    /// such a val met before a case in the bare pattern-position scan defers
+    /// the case rather than being skipped as a plain value. `false` for every
+    /// case / type-shadow entry.
+    pub constant_pattern: bool,
 }
 
 /// The target of an [`OpenFoldName`].
@@ -1993,6 +2002,7 @@ impl AssemblyEnv {
                     space: OpenFoldSpace::Both,
                     is_case: true,
                     ap_shape: None,
+                    constant_pattern: false,
                 });
             }
         }
@@ -2020,6 +2030,7 @@ impl AssemblyEnv {
                     space: OpenFoldSpace::Value,
                     is_case: false,
                     ap_shape: None,
+                    constant_pattern: false,
                 });
             }
             if c.kind == EntityKind::Union && !c.is_require_qualified_access {
@@ -2046,6 +2057,7 @@ impl AssemblyEnv {
                                 space: OpenFoldSpace::Both,
                                 is_case: true,
                                 ap_shape: None,
+                                constant_pattern: false,
                             });
                         }
                     }
@@ -2135,6 +2147,7 @@ impl AssemblyEnv {
                                 space: OpenFoldSpace::Pattern,
                                 is_case: true,
                                 ap_shape: Some(shape),
+                                constant_pattern: false,
                             });
                         }
                     }
@@ -2148,12 +2161,14 @@ impl AssemblyEnv {
                 },
                 None => OpenFoldTarget::Opaque,
             };
+            let constant_pattern = self.value_may_be_constant_pattern(&target);
             out.entries.push(OpenFoldName {
                 name,
                 target,
                 space: OpenFoldSpace::Value,
                 is_case: false,
                 ap_shape: None,
+                constant_pattern,
             });
         }
 

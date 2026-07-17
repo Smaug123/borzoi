@@ -205,6 +205,7 @@ impl<'a> Resolver<'a> {
             // of a `private` type is scoped to the type's container) and any
             // enclosing `private` module (oracle-pinned D3/D5).
             access_root_len: self.export_access_root_len(type_is_private),
+            attributed: false,
         });
         self.push_export_decl(
             qualified,
@@ -292,6 +293,7 @@ impl<'a> Resolver<'a> {
             // namespace; the access-root is recorded for consistency (it is
             // reached only through the type-qualified index).
             access_root_len: self.export_access_root_len(type_is_private),
+            attributed: false,
         });
         // The export-decl-list twin: a case `Item` decl (no value path). Its
         // type-qualified path is threaded by `export_type_qualified_case` below,

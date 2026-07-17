@@ -391,6 +391,30 @@ no accessibility recovery, split same-file/cross-file identity — all traced to
 resolve in pattern position and split their args by shape; (b) union/exception
 cases of an AP-declaring module stop being over-suppressed.
 
+**Post-review fix — literal constant patterns contest the cases.** A review of
+the shipped 3a found (and probes confirmed, all build-clean) that a
+`[<Literal>]` value *is* a constant pattern: FCS's `ePatItems` holds exactly
+the constructor cases and the literal values, latest-wins, so
+`open A; [<Literal>] let Even = 7; match n with Even` binds the literal where
+sema committed the opened case — an AP case, but equally a **union/exception
+case** (the hole predates 3a). Two rules pin the model: the slot is
+position-ordered (a literal *before* the `open` loses to it), and within ONE
+opened module the literal wins **regardless of source order** (FCS folds a
+module as exceptions → tycons → vals). The fix: attribute-**presence** on a
+module-level `let` marks it maybe-literal (identity is unverifiable — a
+`LiteralAttribute` alias shadow is undetectable; an *unattributed* value
+provably cannot be a literal and still never contests), carried on scope
+entries (`maybe_constant_pattern`) and into `ProjectItems`
+(`ExportedItem::attributed`); the bare pattern scan (`case_reference`) defers
+on meeting one before the case, and the open fold suppresses a case whose own
+module exports an accessible maybe-literal (`pattern_suppressed_case_ids`, the
+vals-after-tycons rule). Assembly-side the CLI `Literal` flag / Q17 decimal
+rule gives the *exact* bit (`OpenFoldName::constant_pattern`). Exemptions,
+both FCS-pinned: an **applied** head is never a literal on a clean program
+(FS3191), so the applied split keeps committing; a **qualified** case pattern
+(`A.Green`) resolves to the case, ignoring the literal (sema currently
+declines that shape either way — committing it is a follow-up).
+
 **Oracle**: FCS-free direct tests (head → recognizer decl; no expression-position
 resolution; `DivBy divisor` → outer value, no binder; `Scale g` still binds `g`;
 value-namespace queries provably exclude AP cases) + multi-file

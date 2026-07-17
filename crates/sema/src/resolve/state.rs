@@ -79,6 +79,24 @@ pub(super) struct ScopeEntry {
     /// ([`applied_active_pattern_case`](Resolver::applied_active_pattern_case))
     /// reads it here instead — `docs/export-decl-model-plan.md` Stage 3b.
     pub(super) opened_ap_shape: Option<ActivePatternShape>,
+    /// `true` when this **value** entry may be an FCS *constant pattern* — a
+    /// `[<Literal>]` (or `decimal`-literal) value. Unlike a plain value, a
+    /// literal contests the pattern (constructor) namespace: FCS's `ePatItems`
+    /// holds exactly the constructor cases and the literal values, latest-wins,
+    /// so `open A; [<Literal>] let Even = 7; match n with Even` binds the
+    /// literal where the earlier opened case would otherwise win. Source side
+    /// this is attribute-**presence** on the module-level `let` (attribute
+    /// *identity* is unverifiable — a shadowing `LiteralAttribute` alias is
+    /// undetectable — so any attributed value is maybe-literal, while an
+    /// unattributed one provably is not; an attribute on a *local* `let` does
+    /// not even parse). Assembly side it is the CLI `Literal` flag / the Q17
+    /// `decimal` rule ([`OpenFoldName::constant_pattern`](crate::OpenFoldName::constant_pattern)).
+    /// A **bare** pattern-position scan meeting such a value before a case
+    /// defers ([`case_reference`](Resolver::case_reference)); an *applied* head
+    /// is exempt — FS3191 makes an applied literal pattern illegal, so on a
+    /// clean program an applied head is never the literal. `false` for cases,
+    /// parameters, and locals.
+    pub(super) maybe_constant_pattern: bool,
 }
 
 impl ScopeEntry {
@@ -97,6 +115,7 @@ impl ScopeEntry {
             open_pos: 0,
             opened_case: false,
             opened_ap_shape: None,
+            maybe_constant_pattern: false,
         }
     }
 
@@ -119,6 +138,7 @@ impl ScopeEntry {
             open_pos,
             opened_case: false,
             opened_ap_shape: None,
+            maybe_constant_pattern: false,
         }
     }
 
@@ -139,6 +159,7 @@ impl ScopeEntry {
             open_pos,
             opened_case: false,
             opened_ap_shape: None,
+            maybe_constant_pattern: false,
         }
     }
 }
