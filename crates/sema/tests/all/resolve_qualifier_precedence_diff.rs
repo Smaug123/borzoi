@@ -133,9 +133,38 @@ fn member_source_name(m: &Member) -> &str {
     }
 }
 
+/// Canonicalise a core-BCL assembly name to its **ref-pack facade**, so an FCS
+/// pin holds regardless of how the `fcs-dump` driving the differential was
+/// deployed.
+///
+/// A type-forwarded corelib type (`System.String`, `System.Object`, …) is
+/// *defined* in `System.Private.CoreLib.dll` and *surfaced* through the
+/// `System.Runtime.dll` facade. Which assembly FCS names for it depends on the
+/// framework its script resolution loads: a **framework-dependent** `fcs-dump`
+/// resolves the SDK **ref pack**, where the corelib types are defined directly
+/// in `System.Runtime.dll`, so FCS reports `System.Runtime`; a
+/// **self-contained** publish (what CI ships — see the `dotnet publish
+/// --self-contained` step in `.github/workflows/ci.yml`) resolves the
+/// *implementation* framework, where `System.Runtime.dll` merely forwards to
+/// `System.Private.CoreLib.dll`, so FCS reports `System.Private.CoreLib`. Both
+/// name the same logical entity, and our side always reads the ref-pack
+/// `System.Runtime.dll` ([`ensure_system_runtime_dll`]) and so reports the
+/// facade — the pins are written in facade terms. Mapping the implementation
+/// name to the facade is sound *because these cells build their BCL env from
+/// `System.Runtime.dll` alone*, so `System.Runtime` is the one facade in play;
+/// any *other* assembly still fails the pin, so genuine oracle drift is caught,
+/// not absorbed.
+fn canonical_assembly(asm: &str) -> &str {
+    match asm {
+        "System.Private.CoreLib" => "System.Runtime",
+        other => other,
+    }
+}
+
 /// Assert FCS reports a use at exactly `range` with the pinned
 /// `(full name, assembly)` — the oracle guard, so a cell cannot rot into
-/// comparing us against a drifted FCS answer.
+/// comparing us against a drifted FCS answer. Assemblies are compared up to
+/// corelib facade↔implementation equivalence ([`canonical_assembly`]).
 fn assert_fcs_pin(uses: &[NormalisedUse], src: &str, range: TextRange, full: &str, asm: &str) {
     let hit = uses
         .iter()
@@ -144,8 +173,11 @@ fn assert_fcs_pin(uses: &[NormalisedUse], src: &str, range: TextRange, full: &st
         })
         .unwrap_or_else(|| panic!("no FCS use at {range:?} in {src:?}"));
     assert_eq!(
-        (hit.full_name.as_deref(), hit.assembly.as_deref()),
-        (Some(full), Some(asm)),
+        (
+            hit.full_name.as_deref(),
+            hit.assembly.as_deref().map(canonical_assembly)
+        ),
+        (Some(full), Some(canonical_assembly(asm))),
         "FCS pin drifted at {range:?} in {src:?}"
     );
 }
