@@ -85,7 +85,7 @@ impl<'src> Parser<'src> {
             // (AnonModule) when no header is present; returns whether one was
             // parsed so the body loop won't claim a *second* whole-file header
             // (10.7e).
-            let header_present = self.parse_optional_file_header();
+            let header_present = self.parse_optional_file_header(false);
 
             // Body decls. At file scope the shared loop runs to the next
             // `namespace` boundary or EOF; nested-module bodies (phase 8.4)
@@ -196,7 +196,7 @@ impl<'src> Parser<'src> {
                 .unwrap_or_else(|| self.source.len()..self.source.len());
             // The header is identical to the impl side (`module Foo` /
             // `namespace N`); reuse phase 8's machinery.
-            let header_present = self.parse_optional_file_header();
+            let header_present = self.parse_optional_file_header(true);
             // Body specifications. The loop hands control back at the next
             // `namespace` header (file segmentation). `header_present` seeds the
             // `header_parsed` latch so a second (attributed) whole-file `module`
@@ -582,10 +582,10 @@ impl<'src> Parser<'src> {
     /// must *not* claim a second header). A leading `[<…>]` hides the swallowed
     /// `module` here (the first raw is `[<`), so the attributed whole-file header
     /// is parsed by the body loop instead, with this returning `false`.
-    pub(super) fn parse_optional_file_header(&mut self) -> bool {
+    pub(super) fn parse_optional_file_header(&mut self, sig: bool) -> bool {
         match self.next_non_trivia_raw_at_pos() {
             Some(Token::Namespace) => {
-                self.parse_namespace_header();
+                self.parse_namespace_header(sig);
                 true
             }
             Some(Token::Module) if self.raw_leading_named_module() => {
@@ -1350,7 +1350,15 @@ impl<'src> Parser<'src> {
     /// post-parse pass at `ParseAndCheckInputs.fs:154-164`). Everything else
     /// — including a dotted `global.Foo` head (a documented gap; see the
     /// phase-8 sub-plan) — flows through [`Self::parse_long_ident_path`].
-    pub(super) fn parse_namespace_header(&mut self) {
+    ///
+    /// `sig` marks a signature (`.fsi`) header. It only affects the *nameless*
+    /// recovery: FCS recovers a bare `namespace` differently in the two file
+    /// kinds — an impl file gives an empty-`longId` `DeclaredNamespace`, but a
+    /// signature file gives an **`AnonModule`** (dropping any `rec`). Only the
+    /// impl form is modelled here; a nameless sig namespace stays a parse error
+    /// (its pre-existing `we_reject_fcs_accepts` state) rather than mis-projecting
+    /// a `DeclaredNamespace` where FCS produced an `AnonModule`.
+    pub(super) fn parse_namespace_header(&mut self, sig: bool) {
         // `namespace` is a real filtered token; claim it as NAMESPACE_TOK.
         self.bump_into(SyntaxKind::NAMESPACE_TOK);
 
@@ -1368,7 +1376,37 @@ impl<'src> Parser<'src> {
         };
         if bare_global {
             self.bump_into(SyntaxKind::GLOBAL_TOK);
+        } else if !sig && self.next_non_trivia_raw_at_pos().is_none() {
+            // A *nameless* `namespace` / `namespace rec` with no *significant*
+            // token following, in an *impl* file (`Namespace 05.fs` / `08.fs`).
+            // FCS accepts this as a
+            // `DeclaredNamespace` with an empty `longId` — a nameless namespace
+            // with no body is legal, the empty name deferred to a later phase, not
+            // a parse error — so emit no name path and no diagnostic. The
+            // normaliser reads the absent name as an empty `longId`, matching FCS.
+            //
+            // The *trivia* after a nameless namespace inherits our documented
+            // leniencies over *invalid* trailing content that FCS's lexer /
+            // directive layer rejects but ours does not: a mid-file `U+FEFF` (our
+            // `Whitespace` regex folds a BOM in anywhere), an out-of-first-line
+            // `#!` shebang (we accept `#!` anywhere), and a malformed `#nowarn`/
+            // `#warnon` argument (we parse but don't validate the warning number —
+            // see `docs/fcs-divergences.md`, Lexer / Directives). So a pathological
+            // `namespace`⏎`<BOM>` / `#!x` / `#nowarn FS` reads as clean here where
+            // FCS errors on the invalid input. These are all "purely FCS erroring
+            // on invalid F# code" — left as-is (per the maintainer) rather than
+            // reimplementing FCS's lexer/directive validation in this recovery:
+            // they never fire on valid source, and benign trailing trivia (a
+            // comment, whitespace, a well-formed directive) matches FCS exactly.
         } else {
+            // Otherwise a name is required. `parse_long_ident_path` parses the
+            // identifier / `global`-dotted path when one is present, or — when a
+            // *declaration* follows the missing name (`namespace`⏎`type T = int`,
+            // `Namespace 02/04/06/07/09.fs`) — emits "expected identifier after
+            // `namespace`", exactly as FCS rejects it ("Unexpected start of
+            // structured construct … Expected identifier, 'global'"). A nameless
+            // namespace is thus accepted only when *empty*; a bodied one is a
+            // parse error on both sides.
             self.parse_long_ident_path("namespace");
         }
     }
