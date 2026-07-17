@@ -1,9 +1,11 @@
 //! Type definitions (`define_*`) and type-position name resolution.
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, Pat, SyntaxKind, SyntaxToken,
-    TupleSegment, Type, TypeDefn, TypeDefnRepr,
+    ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, MemberLetBindings, Pat,
+    SyntaxKind, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr,
 };
+
+use super::state::Frame;
 
 use rowan::TextRange;
 
@@ -606,6 +608,304 @@ impl<'a> Resolver<'a> {
             | Some(TypeDefnRepr::InlineIl(_))
             | None => {}
         }
+    }
+
+    /// Resolve the value uses **inside a type's member bodies** — the slice that
+    /// lets a `member` / `new` / property body see its self-identifier, its
+    /// parameters, the type's primary-constructor parameters, and the type's
+    /// class-level `let`/`do` fields. Before this the resolver indexed member
+    /// *names* (so `Type.Member` resolves from outside) but never descended into
+    /// the bodies, so every local/parameter use inside a member deferred.
+    ///
+    /// The scope is layered, innermost last:
+    /// * a **type frame** — the primary-ctor params (and `as self`), visible to
+    ///   every field RHS and member body;
+    /// * a **field frame** — the class-level `let`/`do` bindings, accumulated in
+    ///   source order (a field RHS sees ctor params + earlier fields) and visible
+    ///   to every member body;
+    /// * a per-member **member frame** — the member's self-id + curried params.
+    ///
+    /// Only **genuine** definitions are walked: an *augmentation* (`type T with
+    /// …`) lacks the original type's ctor-param / field scope, so walking its
+    /// bodies blind could bind a same-named module value where FCS binds the
+    /// type's private field — a D5 divergence. Augmentation bodies defer wholesale
+    /// (sound under-resolution), a later slice.
+    pub(super) fn resolve_type_member_bodies(&mut self, defn: &TypeDefn) {
+        if super::is_type_augmentation(defn) {
+            return;
+        }
+        // The same member union `define_type_members` files: object-model repr
+        // members plus any trailing members.
+        let mut members: Vec<MemberDefn> = defn.members().collect();
+        if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
+            members.extend(om.members());
+        }
+
+        // F# splits a type's field scope by staticness. Two owned accumulators,
+        // built in source order:
+        //  * `instance_entries` — the ctor params, `as self`, then *every* field
+        //    (static and instance) in source order; the scope an *instance* body
+        //    sees. A static field is added here too, at its source position, so
+        //    latest-wins gives the right precedence (a later `static let x`
+        //    shadows an earlier ctor param `x`).
+        //  * `static_entries` — the static fields only; the scope a *static* body
+        //    (a `static member` / `static let` / static auto-property initialiser
+        //    / secondary `new`) sees. The instance scope is unavailable there:
+        //    such a body runs before/without an instance, so binding its uses
+        //    against the ctor params / instance fields would wrong-resolve a name
+        //    that shadows an outer binding (`let x = 0; type T(x) = static member
+        //    S = x` is `M.x`, not the ctor param).
+        let mut instance_entries: Vec<ScopeEntry> = Vec::new();
+        if let Some(ctor) = defn.implicit_ctor() {
+            instance_entries
+                .extend(self.pattern_locals(ctor.args().into_iter(), BinderRole::Param));
+            if let Some(self_tok) = ctor.self_id()
+                && let Some(entry) = self.bind_self_ident(&self_tok)
+            {
+                instance_entries.push(entry);
+            }
+        }
+        let mut static_entries: Vec<ScopeEntry> = Vec::new();
+
+        // Class-level `let`/`do`, in source order — each RHS/body sees the fields
+        // (of matching or wider staticness) declared before it.
+        for m in &members {
+            match m {
+                MemberDefn::LetBindings(lb) => {
+                    self.resolve_class_let(lb, &mut static_entries, &mut instance_entries);
+                }
+                MemberDefn::Do(d) => {
+                    let depth =
+                        self.push_field_scope(d.is_static(), &static_entries, &instance_entries);
+                    if let Some(e) = d.expr() {
+                        self.resolve_expr(&e);
+                    }
+                    self.pop_field_scope(depth);
+                }
+                _ => {}
+            }
+        }
+
+        // Member bodies, each against its own (static or instance) field scope.
+        for m in &members {
+            self.resolve_member_body(m, &static_entries, &instance_entries);
+        }
+    }
+
+    /// Push the single field frame a body/RHS of the given staticness resolves
+    /// against — the **static** field list for a static context, or the
+    /// **instance** field list for an instance context. One frame, not two, so
+    /// within-frame latest-wins reproduces F#'s source-order precedence: the
+    /// instance list holds the ctor params, `as self`, and *every* field
+    /// (static and instance) in source order, so a later `static let x` correctly
+    /// shadows an earlier ctor param `x` in an instance body. The static list
+    /// holds only the static fields. Returns the frame count (always 1) for
+    /// [`Self::pop_field_scope`].
+    fn push_field_scope(
+        &mut self,
+        is_static: bool,
+        static_entries: &[ScopeEntry],
+        instance_entries: &[ScopeEntry],
+    ) -> usize {
+        let entries = if is_static {
+            static_entries
+        } else {
+            instance_entries
+        };
+        self.scopes.push(Frame {
+            entries: entries.to_vec(),
+        });
+        1
+    }
+
+    fn pop_field_scope(&mut self, depth: usize) {
+        for _ in 0..depth {
+            self.scopes.pop();
+        }
+    }
+
+    /// Resolve one type-member's body against the field scope of its staticness,
+    /// pushing a per-member frame for its self-identifier and parameters. The
+    /// class-level `let`/`do` fields are handled by the caller (they scope *all*
+    /// members of matching staticness).
+    fn resolve_member_body(
+        &mut self,
+        m: &MemberDefn,
+        static_entries: &[ScopeEntry],
+        instance_entries: &[ScopeEntry],
+    ) {
+        match m {
+            MemberDefn::Member(mm) => {
+                let Some(b) = mm.binding() else {
+                    return;
+                };
+                // A `static member` and a secondary constructor (`new`) are both
+                // static contexts: no self-id, no access to the instance scope.
+                let is_static = mm.is_static() || mm.leading_keyword() == MemberLeading::New;
+                // The field scope is pushed *before* the parameter patterns are
+                // resolved, so a param pattern that uses a class-local active
+                // pattern (`member _.M(Hit y)`) resolves it against the class
+                // fields, not a same-named module recognizer.
+                let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+                let mut entries = Vec::new();
+                if let Some(Pat::LongIdent(l)) = b.pat() {
+                    // The self-identifier is the first head segment on an
+                    // *instance* member — before the member name (`member
+                    // this.Name`), or, on the invalid active-pattern-named form
+                    // (`member x.(|Hit|)`), the only ident, the name being a
+                    // sibling `ActivePatName`. Static members / constructors have
+                    // none.
+                    if !is_static && let Some(head) = l.head() {
+                        let idents: Vec<SyntaxToken> = head.idents().collect();
+                        let name_is_active_pattern = l
+                            .syntax()
+                            .children()
+                            .any(|c| ActivePatName::can_cast(c.kind()));
+                        let self_len = if name_is_active_pattern { 1 } else { 2 };
+                        if idents.len() >= self_len
+                            && let Some(first) = idents.first()
+                            && let Some(entry) = self.bind_self_ident(first)
+                        {
+                            entries.push(entry);
+                        }
+                    }
+                    entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+                }
+                if let Some(ret) = b.return_type() {
+                    self.resolve_type(&ret);
+                }
+                self.scopes.push(Frame { entries });
+                if let Some(body) = b.expr() {
+                    self.resolve_expr(&body);
+                }
+                self.scopes.pop();
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::GetSetMember(g) => {
+                // A get/set property shares one self-identifier across both
+                // accessors; each accessor has its own parameter list + body. The
+                // field scope wraps the whole property so the self-id and every
+                // accessor parameter pattern resolve against the class fields.
+                let is_static = g.is_static();
+                let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+                let self_entry = (!is_static)
+                    .then(|| {
+                        g.head_pat().and_then(|p| p.head()).and_then(|h| {
+                            let idents: Vec<SyntaxToken> = h.idents().collect();
+                            (idents.len() >= 2).then(|| idents[0].clone())
+                        })
+                    })
+                    .flatten()
+                    .and_then(|tok| self.bind_self_ident(&tok));
+                for acc in [g.getter(), g.setter()].into_iter().flatten() {
+                    let mut entries = Vec::new();
+                    if let Some(e) = &self_entry {
+                        entries.push(e.clone());
+                    }
+                    entries.extend(self.pattern_locals(acc.args(), BinderRole::Param));
+                    if let Some(ret) = acc.return_type() {
+                        self.resolve_type(&ret);
+                    }
+                    self.scopes.push(Frame { entries });
+                    if let Some(body) = acc.body() {
+                        self.resolve_expr(&body);
+                    }
+                    self.scopes.pop();
+                }
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::AutoProperty(a) => {
+                // `member val P = init`: the initialiser runs in the constructor
+                // — an instance context (ctor params + fields) unless declared
+                // `static`. No self-id / params either way.
+                if let Some(ty) = a.ty() {
+                    self.resolve_type(&ty);
+                }
+                let depth = self.push_field_scope(a.is_static(), static_entries, instance_entries);
+                if let Some(e) = a.expr() {
+                    self.resolve_expr(&e);
+                }
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::Interface(i) => {
+                // `interface I with member …`: resolve the interface type and
+                // recurse into the implementing members (each a normal member).
+                if let Some(ty) = i.interface_type() {
+                    self.resolve_type(&ty);
+                }
+                for inner in i.members() {
+                    self.resolve_member_body(&inner, static_entries, instance_entries);
+                }
+            }
+            // `let`/`do` fields are handled by the caller; abstract slots, val
+            // fields, member signatures, and `inherit` carry no resolvable body.
+            MemberDefn::LetBindings(_)
+            | MemberDefn::Do(_)
+            | MemberDefn::AbstractSlot(_)
+            | MemberDefn::ValField(_)
+            | MemberDefn::MemberSig(_)
+            | MemberDefn::Inherit(_) => {}
+        }
+    }
+
+    /// Process a type's class-level `let` / `let rec` field group, mirroring
+    /// [`Self::resolve_local_let`](super::Resolver::resolve_local_let) but routing
+    /// the value binders into the caller's field accumulators (by the group's
+    /// staticness) so they scope the right member bodies. Both the group's heads
+    /// (annotations, active-pattern-arg patterns) and its RHSs resolve against the
+    /// fields declared *before* this group, so a later class-`let` that uses an
+    /// earlier class-local active pattern binds the class recognizer, not a
+    /// same-named module one.
+    fn resolve_class_let(
+        &mut self,
+        lb: &MemberLetBindings,
+        static_entries: &mut Vec<ScopeEntry>,
+        instance_entries: &mut Vec<ScopeEntry>,
+    ) {
+        let is_static = lb.is_static();
+        // The prior-field scope covers head interning *and* RHS resolution.
+        let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+        let (value_entries, per_binding) = self.prepare_local_bindings(lb.bindings());
+        if lb.is_rec() {
+            // A `rec` field is in scope for every RHS in the group (mutually
+            // recursive fields), so make the value binders visible for the RHSs.
+            self.scopes.push(Frame {
+                entries: value_entries.clone(),
+            });
+            self.resolve_local_let_rhss(&per_binding);
+            self.scopes.pop();
+        } else {
+            self.resolve_local_let_rhss(&per_binding);
+        }
+        self.pop_field_scope(depth);
+        // Accumulate in source order. A static field enters *both* scopes (an
+        // instance body sees it too, at this position); an instance field only
+        // the instance scope.
+        if is_static {
+            static_entries.extend(value_entries.iter().cloned());
+        }
+        instance_entries.extend(value_entries);
+    }
+
+    /// Intern a member's self-identifier token (`this` in `member this.M`) as a
+    /// local value, record its self-resolution, and return the scope entry the
+    /// caller pushes for the body. A wildcard self (`member _.M`) binds nothing.
+    fn bind_self_ident(&mut self, tok: &SyntaxToken) -> Option<ScopeEntry> {
+        let raw = tok.text();
+        if raw == "_" {
+            return None;
+        }
+        let name = id_text(raw).to_string();
+        let range = tok.text_range();
+        let id = self.intern(Def {
+            name: raw.to_string(),
+            range,
+            kind: DefKind::Value { is_function: false },
+            provisional: false,
+        });
+        let res = Resolution::Local(id);
+        self.record(range, res);
+        Some(ScopeEntry::binding(name, res, self.open_generation))
     }
 
     /// Resolve the type-name uses inside a [`Type`], recursing structurally
