@@ -555,7 +555,14 @@ let private parseBench (cache: bool) (iterations: int) =
 /// which rewrites/inserts virtual tokens for the offside rule, type
 /// application disambiguation, etc. — the stream the parser actually
 /// consumes.
-let private dumpTokens (absolute: string) (withLexFilter: bool) =
+///
+/// `compact = false` emits the JSON payload (`{ WithLexFilter, Tokens }`).
+/// `compact = true` emits a plain-text view — one token per line,
+/// `Kind\tStartLine:StartCol-EndLine:EndCol` — for eyeballing the stream
+/// (offside virtuals included) against our lex-filter without a JSON reader.
+/// The tab keeps `cut -f1` yielding the bare kind sequence. Single-file only:
+/// the batch path stays JSONL for the Rust harness.
+let private dumpTokens (absolute: string) (withLexFilter: bool) (compact: bool) =
     let text = File.ReadAllText(absolute)
     let sourceText = SourceText.ofString text
 
@@ -578,13 +585,31 @@ let private dumpTokens (absolute: string) (withLexFilter: bool) =
         filePath = absolute,
         flags = flags)
 
-    let payload =
-        {| WithLexFilter = withLexFilter
-           Tokens = tokens.ToArray() |}
+    if compact then
+        let sb = System.Text.StringBuilder()
+        for t in tokens do
+            let r = t.Range
+            sb
+                .Append(t.Kind)
+                .Append('\t')
+                .Append(r.StartLine)
+                .Append(':')
+                .Append(r.StartColumn)
+                .Append('-')
+                .Append(r.EndLine)
+                .Append(':')
+                .Append(r.EndColumn)
+                .Append('\n')
+            |> ignore
+        Console.Out.Write(sb.ToString())
+    else
+        let payload =
+            {| WithLexFilter = withLexFilter
+               Tokens = tokens.ToArray() |}
 
-    let json = JsonSerializer.Serialize(payload, buildOptions ())
-    Console.Out.Write(json)
-    Console.Out.WriteLine()
+        let json = JsonSerializer.Serialize(payload, buildOptions ())
+        Console.Out.Write(json)
+        Console.Out.WriteLine()
 
 /// Batch token dump. Reads file paths from stdin, one per line, and emits one
 /// JSON object per file to stdout (JSONL). On per-file failure emits
@@ -6035,8 +6060,8 @@ let private usage () =
     eprintfn "  ast-batch                read paths from stdin, emit ParsedInput JSONL"
     eprintfn "  parse-bench [N]          read paths from stdin, parse-only throughput bench (N iters, cache off)"
     eprintfn "  parse-bench-cached [N]   as parse-bench but with the parse cache sized to the whole input"
-    eprintfn "  tokens-raw               dump pre-LexFilter token stream"
-    eprintfn "  tokens-filtered          dump post-LexFilter token stream"
+    eprintfn "  tokens-raw [--compact]      dump pre-LexFilter token stream"
+    eprintfn "  tokens-filtered [--compact] dump post-LexFilter token stream"
     eprintfn "  tokens-filtered-batch    read paths from stdin, emit JSONL"
     eprintfn "  tokens-raw-batch         read paths from stdin, emit JSONL"
     eprintfn "  entities <dll-path>      dump entity skeletons of a managed DLL"
@@ -6080,10 +6105,16 @@ let main argv =
         parseBench true (int iterations)
         0
     | [| "tokens-raw"; sourcePath |] ->
-        dumpTokens (Path.GetFullPath sourcePath) false
+        dumpTokens (Path.GetFullPath sourcePath) false false
+        0
+    | [| "tokens-raw"; sourcePath; "--compact" |] ->
+        dumpTokens (Path.GetFullPath sourcePath) false true
         0
     | [| "tokens-filtered"; sourcePath |] ->
-        dumpTokens (Path.GetFullPath sourcePath) true
+        dumpTokens (Path.GetFullPath sourcePath) true false
+        0
+    | [| "tokens-filtered"; sourcePath; "--compact" |] ->
+        dumpTokens (Path.GetFullPath sourcePath) true true
         0
     | [| "tokens-filtered-batch" |] ->
         dumpTokensBatch true
