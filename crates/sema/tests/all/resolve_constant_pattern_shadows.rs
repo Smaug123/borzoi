@@ -277,3 +277,23 @@ fn assembly_literal_defers_an_earlier_project_case() {
 fn fixture_path() -> &'static Path {
     crate::common::ensure_active_pattern_fixture_built()
 }
+
+// --- namespace straddle: an auto-open submodule literal vs a direct case ---
+
+#[test]
+fn auto_open_submodule_literal_defers_a_direct_namespace_case() {
+    // FCS pin (build-clean): `open N` folds the namespace's direct tycon tier
+    // first, then its `[<AutoOpen>]` submodules — so the submodule's literal
+    // post-dates the direct case `N.C.X` and wins the bare pattern
+    // (`N.Sub.X`). The straddle's ctor-winner re-push must not override it
+    // (codex round 1).
+    let src0 = "namespace N\n\ntype C =\n    | X\n    | Zed\n\n[<AutoOpen>]\nmodule Sub =\n    [<Literal>]\n    let X = 4\n";
+    let src1 =
+        "module B\n\nopen N\n\nlet f (n: int) =\n    match n with\n    | X -> 1\n    | _ -> 0\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    assert_defers(
+        proj.file(1),
+        nth(src1, "X", 0),
+        "bare `X` with an auto-open submodule literal",
+    );
+}

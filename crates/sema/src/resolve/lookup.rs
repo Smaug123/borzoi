@@ -715,18 +715,25 @@ impl<'a> Resolver<'a> {
             let mut value_names: Vec<String>;
             let mut case_names: Vec<String>;
             if file < current {
-                value_names = self
-                    .preceding
-                    .fragment_value_children(&sub, file, &site)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect();
+                value_names = Vec::new();
                 case_names = self
                     .preceding
                     .fragment_constructor_children(&sub, file, &site)
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect();
+                for (name, id) in self.preceding.fragment_value_children(&sub, file, &site) {
+                    // A maybe-literal value is a constant-pattern contestant: it
+                    // ALSO feeds the `case` dimension (below), so a direct case
+                    // does not win the constructor slot merely because the case
+                    // index lists no submodule case — FCS folds the submodule's
+                    // vals after the direct tycon tier, and a literal there beats
+                    // the direct case in bare pattern position (codex round 1).
+                    if self.preceding.is_attributed_item(id) {
+                        case_names.push(name.clone());
+                    }
+                    value_names.push(name);
+                }
             } else {
                 value_names = Vec::new();
                 case_names = Vec::new();
@@ -737,7 +744,10 @@ impl<'a> Resolver<'a> {
                         && super::model::accessible_from(item.access_root_len, q, &site)
                     {
                         let name = q.last().expect("non-empty qualified path").clone();
-                        if item.is_case() {
+                        // A case — or a maybe-literal value, a constant-pattern
+                        // contestant in the constructor namespace (see the
+                        // cross-file branch above).
+                        if item.is_case() || item.attributed {
                             case_names.push(name.clone());
                         }
                         value_names.push(name);
@@ -751,12 +761,14 @@ impl<'a> Resolver<'a> {
                 e.value_slot = Some(e.value_slot.map_or(file, |v| v.max(file)));
             }
             // Constructor-namespace children (union / exception / active-pattern
-            // cases) feed the `case` dimension only. A value-live union/exception
-            // case is ALSO a value, but it is already in `value_names` (it is a
-            // value), so feeding `value_slot` here would be redundant — and it MUST
-            // NOT, because a **pattern-only** active-pattern case (Stage 3a) is a
-            // case but *not* a value (`fragment_value_children` excludes it), so it
-            // would wrongly claim the value slot.
+            // cases — plus maybe-literal values, constant-pattern contestants,
+            // added above) feed the `case` dimension only. A value-live
+            // union/exception case is ALSO a value, but it is already in
+            // `value_names` (it is a value), so feeding `value_slot` here would be
+            // redundant — and it MUST NOT, because a **pattern-only**
+            // active-pattern case (Stage 3a) is a case but *not* a value
+            // (`fragment_value_children` excludes it), so it would wrongly claim
+            // the value slot.
             for name in case_names {
                 let e = out.entry(name).or_default();
                 e.case = Some(e.case.map_or(file, |c| c.max(file)));
