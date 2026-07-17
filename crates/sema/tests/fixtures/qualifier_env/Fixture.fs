@@ -19,15 +19,23 @@
 //                                           qualifier has no base chain).
 //   CaseOnly   — union case only:           occupied in the module, absent on
 //                                           the type.
-//   GenCls     — generic class + static:    a bare generic *class* name IS a
-//                                           constructor expression, so the module
-//                                           occupies (modules-first).
-//   GenRec     — generic record + static:   a bare record name is NOT a
-//                                           constructor expression, so FCS falls
-//                                           through to the type's static.
-//   GenUni     — generic union + static:    likewise not a constructor
-//                                           expression — falls through to the
-//                                           type's static.
+//
+// The `Gen*` children are a **generic type of each kind**, each with a matching
+// TYPE-half static, exercising the child-type occupancy rule
+// (`child_type_keeps_module_qualifier`) exhaustively. `nested (.., 0)` misses a
+// generic child on arity, so `static_lookup` decides who owns the qualifier —
+// and FCS keeps the module for every kind EXCEPT a record/union, whose bare
+// name is not an expression (probed, both open orders):
+//
+//   GenCls        — generic class (public ctor)        -> module
+//   GenClsPriv    — generic class (private ctor only)  -> module
+//   GenStructCtor — generic struct (explicit ctor)     -> module
+//   GenStructDef  — generic struct (implicit default)  -> module
+//   GenIface      — generic interface (no ctor at all) -> module
+//   GenDel        — generic delegate                   -> module
+//   GenAbbr       — generic abbreviation               -> module (chases target)
+//   GenRec        — generic record                     -> TYPE (falls through)
+//   GenUni        — generic union                      -> TYPE (falls through)
 
 namespace QP.ModHalf
 
@@ -39,17 +47,36 @@ module Collide =
         | Equals
         | CaseOnly
 
-    /// A generic **class** — `Collide.GenCls ()` is a constructor expression, so
-    /// the module owns the qualifier (`nested (.., 0)` misses it on arity, but
-    /// FCS's `ResolveObjectConstructorPrim` admits it).
+    // The generic-type child of each kind. FCS keeps the module qualifier for
+    // all but the record and union (probed) — the kind-based occupancy rule.
     type GenCls<'a>() =
         member _.Kind = "cls"
 
-    /// A generic **record** — its bare name is *not* a constructor expression, so
-    /// FCS falls through the module to the type half's static `GenRec`.
+    type GenClsPriv<'a> private (x: 'a) =
+        member _.X = x
+
+    [<Struct>]
+    type GenStructCtor<'a>(x: 'a) =
+        member _.X = x
+
+    [<Struct>]
+    type GenStructDef<'a> =
+        struct
+            val mutable X: 'a
+        end
+
+    type GenIface<'a> =
+        abstract M: unit -> 'a
+
+    type GenDel<'a> = delegate of 'a -> unit
+
+    type GenAbbr<'a> = ResizeArray<'a>
+
+    /// A generic **record** — its bare name is *not* an expression, so FCS falls
+    /// through the module to the type half's static `GenRec`.
     type GenRec<'a> = { G: 'a }
 
-    /// A generic **union** — likewise not a bare constructor expression.
+    /// A generic **union** — likewise; falls through to the type half's static.
     type GenUni<'a> = OnlyCase of 'a
 
     let fromModule () = 1
@@ -62,5 +89,11 @@ type Collide() =
     static member TypeOnly() = 3
     static member Shared() = 4
     static member GenCls() = 5
-    static member GenRec() = 6
-    static member GenUni() = 7
+    static member GenClsPriv() = 6
+    static member GenStructCtor() = 7
+    static member GenStructDef() = 8
+    static member GenIface() = 9
+    static member GenDel() = 10
+    static member GenAbbr() = 11
+    static member GenRec() = 12
+    static member GenUni() = 13

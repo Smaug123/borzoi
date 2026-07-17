@@ -2709,10 +2709,16 @@ impl AssemblyEnv {
     /// what makes the two incapable of disagreeing about whether a member exists,
     /// which is exactly what review rounds 3 and 4 caught them doing.
     ///
-    /// A **module** receiver is answered by [`Self::module_qualified_occupied`]
-    /// instead — FCS resolves a module-qualified name through
+    /// A **module** receiver — one whose `EntityKind::Module` is *authoritative*
+    /// (its F# signature decoded; see [`Self::fsharp_signature_unreliable`]) — is
+    /// answered by [`Self::module_qualified_occupied`] instead, because FCS
+    /// resolves a module-qualified name through
     /// `ResolveExprLongIdentInModuleOrNamespace`, whose search domain is the
-    /// module's own contents, never the compiled class's inheritance chain.
+    /// module's own contents, never the compiled class's inheritance chain. A
+    /// module whose signature is **non-authoritative** (a pickle-less or
+    /// `--standalone` image) is only an IL heuristic — FCS imports it as a plain
+    /// type — so it takes the type rule below, exactly as
+    /// [`Self::entity_class`](AssemblyEnv) declines to classify it as a module.
     /// Everything below is the **type**-receiver rule
     /// (`ResolveLongIdentInTyconRefs`).
     ///
@@ -2741,7 +2747,12 @@ impl AssemblyEnv {
     /// reading in both shapes, so counting them would defer (and un-resolve)
     /// paths FCS resolves.
     fn qualified_path_occupied(&self, handle: EntityHandle, name: &str) -> bool {
-        if self.entity(handle).kind == EntityKind::Module {
+        // A genuine (authoritative) module takes the in-module search domain; a
+        // non-authoritative one is really a plain type to FCS, so it falls
+        // through to the base-chain rule below (mirroring `entity_class`).
+        if self.entity(handle).kind == EntityKind::Module
+            && !self.fsharp_signature_unreliable(handle)
+        {
             return self.module_qualified_occupied(handle, name);
         }
         // An interface-rooted reading owns conservatively: its member surface
@@ -2805,28 +2816,38 @@ impl AssemblyEnv {
     /// - an **unknowable pickle** ([`ExtensionMembers::Unknowable`]): the vals'
     ///   source names cannot be enumerated at all (a rename is invisible), so any
     ///   name may be occupied — own and defer, mirroring the open fold's residue;
-    /// - a public **constructible child type** of the name — a class/struct with
-    ///   an accessible constructor (or a delegate). Only this: the arity-0
-    ///   children FCS *would* resolve here (a non-generic nested type, a
-    ///   submodule, an exception) were already consumed by the path walk's
-    ///   arity-0 [`Self::nested`] step, so the only child that reaches this clause
-    ///   is a **generic** one, and at the final segment FCS resolves a bare
-    ///   generic type name through `ResolveObjectConstructorPrim` — which admits a
-    ///   constructible class but **not** a record or union, whose bare name is not
-    ///   a constructor expression (probed: with a lower same-named type carrying a
-    ///   static `Gen`, `Collide.GenRec()`/`Collide.GenUni()` fall through to that
-    ///   static, while `Collide.GenCls()` — a class with a ctor — keeps the
-    ///   module). An arity-blind check here would occupy the record/union and
-    ///   wrongly retain the module qualifier (codex review). The residual: a
-    ///   pickle-less F# record/union read as [`EntityKind::Class`] over-occupies —
-    ///   bounded and rare, the same undecidable direction the resolver's
-    ///   `assembly_slot_class` documents;
+    /// - a public **child type** of the name that FCS resolves in the module —
+    ///   [`Self::child_type_keeps_module_qualifier`]. The arity-0 children FCS
+    ///   *would* resolve here (a non-generic nested type, a submodule, an
+    ///   exception) were already consumed by the path walk's arity-0
+    ///   [`Self::nested`] step, so the only child that reaches this clause is a
+    ///   **generic** one — and FCS keeps the module for *every* generic type kind
+    ///   except a **record** or **union**, whose bare name is not an expression
+    ///   and which FCS re-roots to a lower-priority reading (probed exhaustively:
+    ///   class, struct, interface, delegate, and abbreviation children keep the
+    ///   module even with no accessible constructor, while `Collide.GenRec` /
+    ///   `Collide.GenUni` fall through to a lower same-named type's static). A
+    ///   kind-blind check would occupy the record/union and wrongly retain the
+    ///   module qualifier (codex review). The non-authoritative-signature gate on
+    ///   [`Self::qualified_path_occupied`] keeps this kind test on trustworthy
+    ///   pickle data — a `--standalone` record misread as a class never reaches
+    ///   here;
     /// - a public child **union**'s accessible **case** of the name —
     ///   `[<RequireQualifiedAccess>]` unions included (their cases resolve at the
     ///   lowest in-module priority, but still *in the module* — the final
     ///   `tyconSearch +++ moduleSearch +++ unionSearch` arm); a union whose case
     ///   names the pickle did not supply (`union_case_names` of `None`) may hide
-    ///   any name, so it occupies conservatively.
+    ///   any name, so it occupies conservatively. **Bounded residual** (codex
+    ///   review, unmodelled): FCS's `TryFindTypeWithUnionCase` stops at the
+    ///   *first* child union declaring the case and only then checks
+    ///   representation accessibility, so two child unions sharing a case name
+    ///   where the first has a private representation would make FCS fall through
+    ///   — but a private representation contributes no names to `union_case_names`
+    ///   at all, so we cannot see the first union declared it, and this `any`
+    ///   accepts the later union. The scenario (two module-level unions with a
+    ///   shared case name, the first private, colliding with a same-named type's
+    ///   static) is vanishingly rare and unmodellable from the accessible-case
+    ///   list alone.
     ///
     /// **Public-only is deliberate**, as in the type rule: FCS filters
     /// accessibility during the module search (`IsValAccessible` /
@@ -2851,7 +2872,7 @@ impl AssemblyEnv {
             }
             let c = self.entity(child);
             if c.source_name.as_deref().unwrap_or(&c.name) == name
-                && self.child_is_bare_constructor_expr(c)
+                && self.child_type_keeps_module_qualifier(c)
             {
                 return true;
             }
@@ -2863,33 +2884,27 @@ impl AssemblyEnv {
         })
     }
 
-    /// Whether a module child's **bare name** is a constructor expression FCS's
-    /// `ResolveObjectConstructorPrim` admits — the module-qualified final-segment
-    /// occupancy rule ([`Self::module_qualified_occupied`]). A **class** or
-    /// **struct** with an accessible public instance constructor, or a
-    /// **delegate** (its constructor is compiler-synthesised, so no member row is
-    /// required). Records, unions, interfaces, enums, measures, abbreviations,
-    /// and modules are **not** constructor expressions by their bare name — FCS
-    /// falls through them to a lower-priority reading (probed). The non-final /
-    /// intermediate case does not arise for the non-constructible kinds: an F#
-    /// record/union/interface cannot declare nested types, so a generic one is
-    /// always a leaf.
-    fn child_is_bare_constructor_expr(&self, entity: &Entity) -> bool {
-        match entity.kind {
-            EntityKind::Class | EntityKind::Struct => entity.members.iter().any(|m| {
-                matches!(m, Member::Method(mm) if mm.is_constructor && !mm.is_static)
-                    && member_is_public(m)
-            }),
-            EntityKind::Delegate => true,
-            EntityKind::Interface
-            | EntityKind::Enum
-            | EntityKind::Module
-            | EntityKind::Union
-            | EntityKind::Record
-            | EntityKind::Abbreviation
-            | EntityKind::Exception
-            | EntityKind::Measure => false,
-        }
+    /// Whether FCS keeps the **module qualifier** on `Module.Name` when a public
+    /// child type of the module is named `Name` — the child-type arm of
+    /// [`Self::module_qualified_occupied`]. FCS's in-module type lookup
+    /// (`LookupTypeNameInEntityMaybeHaveArity`) resolves the bare name to the
+    /// child for *every* type kind **except a record or union**, whose bare name
+    /// is not an expression: those two alone FCS re-roots to a lower-priority
+    /// reading (probed exhaustively — a class with only a private constructor, a
+    /// struct with only the implicit default constructor, a non-constructible
+    /// interface, a delegate, and an abbreviation all keep the module; a record
+    /// and a union do not). So the rule is purely kind-based, *not*
+    /// constructibility.
+    ///
+    /// Only a **generic** child reaches this test — the arity-0 [`Self::nested`]
+    /// step consumes non-generic children first — so `Enum` / `Measure` /
+    /// `Exception` / `Module` (none of which can be generic) are unreachable
+    /// here; they map to "keeps" (the safe side: keeping the qualifier defers the
+    /// leaf, never a wrong target, whereas falling through could re-root a path
+    /// FCS owns). The gate keeps this on authoritative pickle data, so the kind
+    /// is trustworthy.
+    fn child_type_keeps_module_qualifier(&self, entity: &Entity) -> bool {
+        !matches!(entity.kind, EntityKind::Record | EntityKind::Union)
     }
 
     /// The type of the **single unambiguous public instance field / non-indexer

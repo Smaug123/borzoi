@@ -18,17 +18,19 @@
 //!   whose `QP.ModHalf.Collide` module / `QP.TypeHalf.Collide` type collision
 //!   adds the arms FSharp.Core cannot: a name on **both** halves (`Shared` —
 //!   FCS binds the module in *either* open order: modules-before-types), union
-//!   cases colliding with `Object` member names (`Equals`), and generic children
-//!   whose bare name is (`GenCls`) or is not (`GenRec`/`GenUni`) a constructor
-//!   expression — the class-vs-record/union occupancy split.
+//!   cases colliding with `Object` member names (`Equals`), and a **generic
+//!   child of every type kind** (`SHAPES`) — the exhaustive guard for the
+//!   child-type occupancy rule, where FCS keeps the module for every kind except
+//!   a record/union.
 //!
 //! Every cell asserts **both** sides explicitly: the FCS answer is pinned
 //! literally (so an oracle drift is caught, not silently absorbed), and our
 //! resolution is asserted per the certain-implies-exact doctrine — where we
 //! commit, we must name FCS's entity; where the answer is beyond the model (an
-//! overload set, a union-case leaf), we must make *no claim*, never a wrong one.
+//! overload set, a union-case or module-kept leaf), we must make *no claim*,
+//! never a wrong one.
 //!
-//! The three `#[ignore]`d cells pin the one FCS rule the tier walk does not yet
+//! The one `#[ignore]`d cell pins the single FCS rule the tier walk does not yet
 //! implement — **modules are searched before types across all opens**, not
 //! interleaved by open recency — in the `resolve_string_qualifier_repro` mould:
 //! deterministic asserts of the FCS-correct answer, red on purpose until the
@@ -337,6 +339,28 @@ fn string_cells_with_only_open_system() {
 
 const FIXTURE_ASM: &str = "SemaQualifierFixture";
 
+/// The module qualifier's full dotted path (our rendering).
+const MOD: &str = "QP.ModHalf.Collide";
+/// The type qualifier's full dotted path (our rendering).
+const TYP: &str = "QP.TypeHalf.Collide";
+
+/// Every generic `Gen*` child kind, paired with whether FCS keeps the **module**
+/// qualifier on `Collide.<name>` (probed exhaustively, both open orders). This
+/// is the systematic guard for [`child_type_keeps_module_qualifier`]: every type
+/// kind keeps the module EXCEPT a record/union, and the table is diffed against
+/// FCS so a mis-modelled kind reddens rather than passing silently.
+const SHAPES: &[(&str, bool)] = &[
+    ("GenCls", true),        // class, public ctor
+    ("GenClsPriv", true),    // class, only a private ctor — still owned by the module
+    ("GenStructCtor", true), // struct, explicit ctor
+    ("GenStructDef", true),  // struct, only the implicit default ctor
+    ("GenIface", true),      // interface — not constructible, yet owned by the module
+    ("GenDel", true),        // delegate
+    ("GenAbbr", true),       // abbreviation (FCS chases the target)
+    ("GenRec", false),       // record — bare name is not an expression, falls through
+    ("GenUni", false),       // union — likewise
+];
+
 fn fixture_env() -> AssemblyEnv {
     env_of(&[
         ensure_qualifier_fixture_built(),
@@ -344,17 +368,46 @@ fn fixture_env() -> AssemblyEnv {
     ])
 }
 
+/// A snippet under `opens` that references `Collide.<name>` once for every name
+/// the cells assert on — the fixed cells plus every [`SHAPES`] entry — so
+/// `at(src, "Collide.<name>")` finds each exactly once.
 fn fixture_src(opens: &str) -> String {
-    format!(
+    let mut src = format!(
         "module Snippet\n{opens}let a = Collide.fromModule ()\nlet b = Collide.TypeOnly ()\n\
-         let c = Collide.Shared ()\nlet d = Collide.Equals\nlet e = Collide.CaseOnly\n\
-         let f = Collide.GenCls ()\nlet g = Collide.GenRec ()\nlet h = Collide.GenUni ()\n"
-    )
+         let c = Collide.Shared ()\nlet d = Collide.Equals\nlet e = Collide.CaseOnly\n"
+    );
+    for (i, (name, _)) in SHAPES.iter().enumerate() {
+        src.push_str(&format!("let s{i} = Collide.{name} ()\n"));
+    }
+    src
+}
+
+/// FCS keeps the module qualifier on `Collide.<name>` — its full name renders as
+/// the bare `"Collide"` for a module. (We do not pin FCS's *leaf*: a keeper's
+/// leaf varies — the type itself, an empty private-ctor result, or an
+/// abbreviation target — and our side makes no claim on it anyway.)
+fn assert_fcs_qualifier_is_module(uses: &[NormalisedUse], src: &str, name: &str) {
+    let path = format!("Collide.{name}");
+    assert_fcs_pin(uses, src, qualifier_of(src, &path), "Collide", FIXTURE_ASM);
+}
+
+/// FCS re-roots `Collide.<name>` to the **type** static (qualifier + leaf).
+fn assert_fcs_qualifier_is_type(uses: &[NormalisedUse], src: &str, name: &str) {
+    let path = format!("Collide.{name}");
+    assert_fcs_pin(uses, src, qualifier_of(src, &path), TYP, FIXTURE_ASM);
+    assert_fcs_pin(
+        uses,
+        src,
+        at(src, &path),
+        &format!("{TYP}.{name}"),
+        FIXTURE_ASM,
+    );
 }
 
 /// The cells that agree in **both** open orders (FCS is order-independent
-/// here; our tier walk reaches the same answers because the winning reading
-/// either owns its tier or is fallen through to).
+/// throughout; a cell lands here when *our* answer is order-independent too —
+/// i.e. the winning reading owns its tier or is fallen through to regardless of
+/// which open is latest).
 fn fixture_order_independent_cells(src: &str) {
     let env = fixture_env();
     let rf = resolve_src(src, &env);
@@ -368,19 +421,13 @@ fn fixture_order_independent_cells(src: &str) {
         "QP.ModHalf.Collide.fromModule",
         FIXTURE_ASM,
     );
-    assert_fcs_pin(
-        &uses,
-        src,
-        qualifier_of(src, "Collide.fromModule"),
-        "Collide",
-        FIXTURE_ASM,
-    );
+    assert_fcs_qualifier_is_module(&uses, src, "fromModule");
     assert_our_entity(
         &rf,
         &env,
         qualifier_of(src, "Collide.fromModule"),
         FIXTURE_ASM,
-        "QP.ModHalf.Collide",
+        MOD,
     );
     assert_our_member(
         &rf,
@@ -390,28 +437,15 @@ fn fixture_order_independent_cells(src: &str) {
         "QP.ModHalf.Collide.fromModule",
     );
 
-    // Type-only static: the module reading must fall through (this is the
-    // fixture's `String.Equals` shape — the very bug).
-    assert_fcs_pin(
-        &uses,
-        src,
-        at(src, "Collide.TypeOnly"),
-        "QP.TypeHalf.Collide.TypeOnly",
-        FIXTURE_ASM,
-    );
-    assert_fcs_pin(
-        &uses,
-        src,
-        qualifier_of(src, "Collide.TypeOnly"),
-        "QP.TypeHalf.Collide",
-        FIXTURE_ASM,
-    );
+    // Type-only static: the module reading must fall through (the fixture's
+    // `String.Equals` shape — the very bug).
+    assert_fcs_qualifier_is_type(&uses, src, "TypeOnly");
     assert_our_entity(
         &rf,
         &env,
         qualifier_of(src, "Collide.TypeOnly"),
         FIXTURE_ASM,
-        "QP.TypeHalf.Collide",
+        TYP,
     );
     assert_our_member(
         &rf,
@@ -421,9 +455,9 @@ fn fixture_order_independent_cells(src: &str) {
         "QP.TypeHalf.Collide.TypeOnly",
     );
 
-    // Union case only in the module: the name is occupied there
-    // (`TryFindTypeWithUnionCase`), so the qualifier is the module and the
-    // case leaf is beyond the model — no claim, never the type half.
+    // Union case only in the module: occupied there (`TryFindTypeWithUnionCase`),
+    // so the qualifier is the module and the case leaf is beyond the model — no
+    // claim, never the type half.
     assert_fcs_pin(
         &uses,
         src,
@@ -431,80 +465,35 @@ fn fixture_order_independent_cells(src: &str) {
         "QP.ModHalf.Collide.U.CaseOnly",
         FIXTURE_ASM,
     );
-    assert_fcs_pin(
-        &uses,
-        src,
-        qualifier_of(src, "Collide.CaseOnly"),
-        "Collide",
-        FIXTURE_ASM,
-    );
+    assert_fcs_qualifier_is_module(&uses, src, "CaseOnly");
     assert_our_entity(
         &rf,
         &env,
         qualifier_of(src, "Collide.CaseOnly"),
         FIXTURE_ASM,
-        "QP.ModHalf.Collide",
+        MOD,
     );
     assert_no_claim(&rf, at(src, "Collide.CaseOnly"));
 
-    // A generic **record** child collides with a type-half static of the same
-    // name. A bare record name is NOT a constructor expression, so FCS's module
-    // search falls through to the type static — in *either* open order (the
-    // type reading owns the whole path whichever tier it sits in). The fix's
-    // whole point: the module child must not occupy `GenRec` (codex review). The
-    // pre-fix arity/kind-blind occupancy retained the module qualifier here.
-    assert_fcs_pin(
-        &uses,
-        src,
-        at(src, "Collide.GenRec"),
-        "QP.TypeHalf.Collide.GenRec",
-        FIXTURE_ASM,
-    );
-    assert_fcs_pin(
-        &uses,
-        src,
-        qualifier_of(src, "Collide.GenRec"),
-        "QP.TypeHalf.Collide",
-        FIXTURE_ASM,
-    );
-    assert_our_entity(
-        &rf,
-        &env,
-        qualifier_of(src, "Collide.GenRec"),
-        FIXTURE_ASM,
-        "QP.TypeHalf.Collide",
-    );
-    assert_our_member(
-        &rf,
-        &env,
-        at(src, "Collide.GenRec"),
-        FIXTURE_ASM,
-        "QP.TypeHalf.Collide.GenRec",
-    );
-
-    // A generic **union** child: same as the record — its bare name is not a
-    // constructor expression, so FCS falls through to the type static.
-    assert_fcs_pin(
-        &uses,
-        src,
-        at(src, "Collide.GenUni"),
-        "QP.TypeHalf.Collide.GenUni",
-        FIXTURE_ASM,
-    );
-    assert_our_entity(
-        &rf,
-        &env,
-        qualifier_of(src, "Collide.GenUni"),
-        FIXTURE_ASM,
-        "QP.TypeHalf.Collide",
-    );
-    assert_our_member(
-        &rf,
-        &env,
-        at(src, "Collide.GenUni"),
-        FIXTURE_ASM,
-        "QP.TypeHalf.Collide.GenUni",
-    );
+    // Every record/union shape: FCS re-roots to the type static in *both* orders,
+    // and so do we (the module child does not occupy the name, so a lower type
+    // reading owns the whole path whichever tier it sits in). This is the crux of
+    // the occupancy fix — a kind-blind occupancy would retain the module here.
+    for &(name, keeps_module) in SHAPES {
+        if keeps_module {
+            continue;
+        }
+        let path = format!("Collide.{name}");
+        assert_fcs_qualifier_is_type(&uses, src, name);
+        assert_our_entity(&rf, &env, qualifier_of(src, &path), FIXTURE_ASM, TYP);
+        assert_our_member(
+            &rf,
+            &env,
+            at(src, &path),
+            FIXTURE_ASM,
+            &format!("{TYP}.{name}"),
+        );
+    }
 }
 
 #[test]
@@ -513,7 +502,7 @@ fn fixture_cells_with_the_module_open_last() {
     fixture_order_independent_cells(&src);
 
     // With the module's open latest, the module tier is tried first, so the
-    // two modules-first cells agree without needing the cross-tier rule:
+    // module-owned cells agree without needing the cross-tier rule.
     let env = fixture_env();
     let rf = resolve_src(&src, &env);
     let uses = fcs_uses(&src, &[ensure_qualifier_fixture_built()]);
@@ -544,49 +533,30 @@ fn fixture_cells_with_the_module_open_last() {
         "QP.ModHalf.Collide.U.Equals",
         FIXTURE_ASM,
     );
-    assert_fcs_pin(
-        &uses,
-        &src,
-        qualifier_of(&src, "Collide.Equals"),
-        "Collide",
-        FIXTURE_ASM,
-    );
+    assert_fcs_qualifier_is_module(&uses, &src, "Equals");
     assert_our_entity(
         &rf,
         &env,
         qualifier_of(&src, "Collide.Equals"),
         FIXTURE_ASM,
-        "QP.ModHalf.Collide",
+        MOD,
     );
     assert_no_claim(&rf, at(&src, "Collide.Equals"));
 
-    // A generic **class** child whose bare name IS a constructor expression:
-    // FCS keeps the module (`QP.ModHalf.Collide.GenCls`), and with the module
-    // tier tried first we agree on the qualifier. The class-vs-record/union
-    // split is the crux of the occupancy fix — `GenCls` occupies, `GenRec` /
-    // `GenUni` do not.
-    assert_fcs_pin(
-        &uses,
-        &src,
-        at(&src, "Collide.GenCls"),
-        "QP.ModHalf.Collide.GenCls",
-        FIXTURE_ASM,
-    );
-    assert_fcs_pin(
-        &uses,
-        &src,
-        qualifier_of(&src, "Collide.GenCls"),
-        "Collide",
-        FIXTURE_ASM,
-    );
-    assert_our_entity(
-        &rf,
-        &env,
-        qualifier_of(&src, "Collide.GenCls"),
-        FIXTURE_ASM,
-        "QP.ModHalf.Collide",
-    );
-    assert_no_claim(&rf, at(&src, "Collide.GenCls"));
+    // Every module-keeping generic kind: FCS keeps the module, and with the
+    // module tier tried first we agree on the qualifier and make no claim on the
+    // leaf. The record/union arm is the order-independent block above; this is
+    // the whole rest of the kind table (class/struct/interface/delegate/abbrev),
+    // the exhaustive guard that the kind rule is "keep unless record/union".
+    for &(name, keeps_module) in SHAPES {
+        if !keeps_module {
+            continue;
+        }
+        let path = format!("Collide.{name}");
+        assert_fcs_qualifier_is_module(&uses, &src, name);
+        assert_our_entity(&rf, &env, qualifier_of(&src, &path), FIXTURE_ASM, MOD);
+        assert_no_claim(&rf, at(&src, &path));
+    }
 }
 
 #[test]
@@ -597,20 +567,25 @@ fn fixture_cells_with_the_type_open_last() {
 /// KNOWN GAP (pinned red, `resolve_string_qualifier_repro` mould): FCS searches
 /// **all module candidates before any type candidate** (`moduleSearch +++
 /// tyconSearch`, order-independent — the FCS pins in
-/// [`fixture_cells_with_the_module_open_last`] hold in this open order too),
-/// but our tier walk interleaves readings by open recency: with `open
-/// QP.TypeHalf` last, the type tier is tried first, owns `Shared` (its own
-/// static), and the module val FCS binds is never consulted. Modelling
-/// modules-before-types across tiers is a separate walk restructure; until
-/// then this cell documents the divergence deterministically.
+/// [`fixture_cells_with_the_module_open_last`] hold in this open order too), but
+/// our tier walk interleaves readings by open recency. With `open QP.TypeHalf`
+/// last the type tier is tried first and owns every module-kept name — `Shared`
+/// and `Equals` via the type's own member, and each module-keeping generic kind
+/// via the type's static. So EVERY name FCS keeps on the module binds the type
+/// half for us in this order. Modelling modules-before-types across tiers is a
+/// separate walk restructure; until then this cell documents the whole divergent
+/// set deterministically.
 #[test]
 #[ignore = "known gap: modules are searched before types across all opens, but the \
-            tier walk interleaves by open recency — `Collide.Shared` binds the type \
-            half's static when the type's open is later; run with --ignored to reproduce"]
-fn shared_member_binds_the_module_even_when_the_type_open_is_later() {
+            tier walk interleaves by open recency — every module-kept `Collide.*` \
+            binds the type half when the type's open is later; run with --ignored"]
+fn module_kept_names_bind_the_module_even_when_the_type_open_is_later() {
     let src = fixture_src("open QP.ModHalf\nopen QP.TypeHalf\n");
     let env = fixture_env();
     let rf = resolve_src(&src, &env);
+
+    // The whole modules-before-types set, in one cell: `Shared`, the union case
+    // `Equals`, and every module-keeping generic kind.
     assert_our_member(
         &rf,
         &env,
@@ -618,54 +593,25 @@ fn shared_member_binds_the_module_even_when_the_type_open_is_later() {
         FIXTURE_ASM,
         "QP.ModHalf.Collide.Shared",
     );
-}
-
-/// KNOWN GAP, same family as
-/// [`shared_member_binds_the_module_even_when_the_type_open_is_later`]: the
-/// type tier is tried first and `Equals` — inherited from `Object` — makes the
-/// class reading *occupied* (correctly, for a class receiver), so it owns the
-/// path and records the TYPE at the qualifier, where FCS's module-first search
-/// finds the union case and records the MODULE.
-#[test]
-#[ignore = "known gap: modules are searched before types across all opens — the \
-            `Collide.Equals` qualifier binds the type half when the type's open is \
-            later; run with --ignored to reproduce"]
-fn equals_qualifier_binds_the_module_even_when_the_type_open_is_later() {
-    let src = fixture_src("open QP.ModHalf\nopen QP.TypeHalf\n");
-    let env = fixture_env();
-    let rf = resolve_src(&src, &env);
     assert_our_entity(
         &rf,
         &env,
         qualifier_of(&src, "Collide.Equals"),
         FIXTURE_ASM,
-        "QP.ModHalf.Collide",
+        MOD,
     );
-    assert_no_claim(&rf, at(&src, "Collide.Equals"));
-}
-
-/// KNOWN GAP, same family: the constructible generic class `GenCls` IS owned by
-/// the module per FCS (both orders), but with `open QP.TypeHalf` last our type
-/// tier is tried first and owns `GenCls` via its own static — the same
-/// modules-before-types cross-tier rule the two cells above lack. (The
-/// order-independent cells cover the record/union arm, which agrees in both
-/// orders; this is the *class* arm's order-dependent half.)
-#[test]
-#[ignore = "known gap: modules are searched before types across all opens — the \
-            `Collide.GenCls` qualifier binds the type half's static when the type's \
-            open is later; run with --ignored to reproduce"]
-fn gencls_qualifier_binds_the_module_even_when_the_type_open_is_later() {
-    let src = fixture_src("open QP.ModHalf\nopen QP.TypeHalf\n");
-    let env = fixture_env();
-    let rf = resolve_src(&src, &env);
-    assert_our_entity(
-        &rf,
-        &env,
-        qualifier_of(&src, "Collide.GenCls"),
-        FIXTURE_ASM,
-        "QP.ModHalf.Collide",
-    );
-    assert_no_claim(&rf, at(&src, "Collide.GenCls"));
+    for &(name, keeps_module) in SHAPES {
+        if !keeps_module {
+            continue;
+        }
+        assert_our_entity(
+            &rf,
+            &env,
+            qualifier_of(&src, &format!("Collide.{name}")),
+            FIXTURE_ASM,
+            MOD,
+        );
+    }
 }
 
 // ============================================================================
@@ -700,15 +646,21 @@ fn module_occupancy_follows_the_in_module_search_domain() {
         env.static_lookup(module, "CaseOnly"),
         StaticLookup::Uncertain
     );
-    // A generic **class** child occupies (its bare name is a constructor
-    // expression — `nested (.., 0)` misses it on arity, but FCS's
-    // `ResolveObjectConstructorPrim` admits it); a generic **record** / **union**
-    // child does NOT (their bare names are not constructor expressions), so the
-    // name is absent here and a lower-priority reading may own the path. This is
-    // exactly the class-vs-record/union split the FCS matrix above pins.
-    assert_eq!(env.static_lookup(module, "GenCls"), StaticLookup::Uncertain);
-    assert_eq!(env.static_lookup(module, "GenRec"), StaticLookup::Absent);
-    assert_eq!(env.static_lookup(module, "GenUni"), StaticLookup::Absent);
+    // Every generic child kind: a module-keeping kind is `Uncertain` (occupied,
+    // path stays on the module), a record/union is `Absent` (a lower reading may
+    // own the path). The exhaustive kind split, mirroring the FCS matrix.
+    for &(name, keeps_module) in SHAPES {
+        let got = env.static_lookup(module, name);
+        if keeps_module {
+            assert_eq!(
+                got,
+                StaticLookup::Uncertain,
+                "{name} should keep the module qualifier"
+            );
+        } else {
+            assert_eq!(got, StaticLookup::Absent, "{name} should fall through");
+        }
+    }
     // The type half's static is NOT in this module: genuinely absent, so a
     // lower-priority reading may own the path.
     assert_eq!(env.static_lookup(module, "TypeOnly"), StaticLookup::Absent);
