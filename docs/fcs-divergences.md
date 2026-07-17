@@ -133,6 +133,23 @@ exists.
 - **Diagnostic message text is not reproduced verbatim** — diff tests compare AST
   projections and require only a non-empty error list, not FCS's exact wording.
   (general testing-fidelity caveat; `edfb565`)
+- **Malformed opaque sig header + indented `val`: recovery tree differs** — a
+  bodyless opaque `type T` in a `.fsi` followed by an *indented* `val` is promoted
+  out of the type to a module-level `Val` (the `ProvidedTypes.fsi` idiom, #115).
+  When the header is *malformed* in the one specific shape `type T when` (a bare
+  trailing `when` with an empty constraint clause and no type parameters) followed
+  by the abutting `val`, the input is invalid on **both** sides (both emit parse
+  errors), but the recovery *shape* diverges: we still promote a phantom
+  module-level `VAL_DECL`, whereas FCS consumes the `val` into the erroring type
+  name ("Unexpected keyword 'val' in type name") and emits no `Val`. The divergence
+  is confined to that one shape — `type T<'a` (missing `>`), `type T<'a when`, and
+  `type T when 'a` all *do* promote on both sides (oracle-verified), so matching FCS
+  would mean gating promotion on an *empty trailing `when`-clause*, a narrow
+  grammar-recovery quirk on input no one writes. Left as-is: correctness is intact
+  (both reject; only the recovered tree of already-invalid input differs), and a
+  header-error gate that is any broader regresses the three promoting shapes.
+  (`parse_sig_type_defn_repr`, `crates/cst/src/parser/decls_sig.rs`; surfaced by the
+  codex review of #115, fix attempt #120 abandoned)
 
 ## Directives / preprocessor
 

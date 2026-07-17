@@ -443,6 +443,17 @@ impl<'src> Parser<'src> {
                 // *other* abutting raw token (`member`, `abstract`, `inherit`, …)
                 // is not a valid module-sig-decl, so it stays on the `false` arm
                 // below and is skipped, matching FCS's rejection.
+                //
+                // Known divergence (deliberately unfixed): the *malformed* bare
+                // header `type T when` (empty trailing `when` clause, no typars)
+                // also promotes here, where FCS emits no `Val` — both sides still
+                // reject the input, only the recovered tree differs. The three
+                // neighbouring malformed shapes (`type T<'a`, `type T<'a when`,
+                // `type T when 'a`) *do* promote on both sides, so any gate broader
+                // than "empty trailing `when`-clause" regresses them; matching FCS
+                // exactly is not worth the surface area on input no one writes. See
+                // docs/fcs-divergences.md, "Malformed opaque sig header + indented
+                // `val`".
                 Some((Ok(FilteredToken::Raw(Token::Val)), _)) => true,
                 // The same, with a *leading attribute run* — `[<A>] val X`. FCS
                 // promotes the attributed `val` to a module-level `Val` too, so
