@@ -3,6 +3,7 @@
 use std::fmt;
 use std::io;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use super::protocol::SidecarErrorKind;
 
@@ -22,6 +23,9 @@ pub enum SidecarError {
     BundledSidecarUnavailable,
     /// Generic I/O failure on stdin/stdout of the sidecar process.
     Io(io::Error),
+    /// The sidecar did not complete a request within its deadline. The whole
+    /// round trip is covered, including writing the request to stdin.
+    RequestTimedOut { method: String, after: Duration },
     /// The sidecar emitted bytes that do not conform to the LSP-style
     /// length-prefixed framing.
     Framing(String),
@@ -70,6 +74,10 @@ impl fmt::Display for SidecarError {
                  install a .NET 10 SDK and rebuild this crate to enable it"
             ),
             SidecarError::Io(e) => write!(f, "sidecar I/O error: {e}"),
+            SidecarError::RequestTimedOut { method, after } => write!(
+                f,
+                "sidecar request {method:?} did not complete within {after:?}"
+            ),
             SidecarError::Framing(msg) => write!(f, "sidecar framing error: {msg}"),
             SidecarError::Json(e) => write!(f, "sidecar JSON error: {e}"),
             SidecarError::Rpc { code, message } => {
