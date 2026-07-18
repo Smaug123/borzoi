@@ -203,11 +203,30 @@ pub(super) enum AssemblyPath<R> {
     /// is only a fallback that a lower tier resolving the whole path supersedes.
     Resolved { payload: R, owns_path: bool },
     /// A project value (member access on it), an *exact* project module path,
-    /// or the current module shadows the path; F# resolves it in-project, so
-    /// the assembly index must not be consulted. A project module that is only a
-    /// *proper* prefix does **not** land here — it merges with the assembly
-    /// namespace and falls through (see [`Resolver::assembly_path_records`]).
+    /// or a lexically-in-scope nested module shadows the path; F# resolves it
+    /// in-project, so the assembly index must not be consulted. A project module
+    /// that is only a *proper* prefix does **not** land here — it merges with the
+    /// assembly namespace and falls through (see
+    /// [`Resolver::assembly_path_records`]).
     ProjectShadowed,
+    /// The path is rooted at the **current module's own name**, used as a
+    /// self-qualifier from within that module (`List.fold` inside
+    /// `module List`), and nothing *else* project-side shadows it. FCS never
+    /// binds a module's own name as a self-qualifier — `M.x` inside `M` is
+    /// FS0039 — so the name falls through to whatever an `open` / implicit
+    /// `[<AutoOpen>]` supplies (bare `List` → `Microsoft.FSharp.Collections.List`).
+    ///
+    /// Distinct from [`Self::ProjectShadowed`] in exactly one way: it does **not**
+    /// trip the preemptive as-written-root veto in
+    /// [`Resolver::resolve_assembly_path_tiered`] — a higher-priority open (the
+    /// auto-open included) must be walked first, unlike a genuine project-bound
+    /// head an open cannot redirect. Reached in priority order — i.e. at the
+    /// **root** tier, once every open has declined — it defers like
+    /// `ProjectShadowed` (the module still shadows a same-named *root* namespace,
+    /// so the as-written assembly reading must not resolve: `Demo.Calc` inside
+    /// `module Demo` beside a referenced-assembly `Demo.Calc` is FS0039, not the
+    /// assembly type).
+    SelfModuleShadowed,
     /// This reading lands on a **generic type-abbreviation child** of a module
     /// (missed by the arity-0 `nested` walk): the name binds in the module, but
     /// the abbreviation target is unmodelled and FCS's ownership is

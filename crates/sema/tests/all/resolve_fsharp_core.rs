@@ -287,6 +287,264 @@ fn qualified_path_through_microsoft_open_resolves() {
     }
 }
 
+/// The real, shipped FSharp.Core `Microsoft.FSharp.Collections.List` module.
+fn list_module(env: &AssemblyEnv) -> borzoi_sema::EntityHandle {
+    env.lookup_type(
+        &["Microsoft".into(), "FSharp".into(), "Collections".into()],
+        "List",
+        0,
+    )
+    .expect("real FSharp.Core must declare the List module")
+}
+
+#[test]
+fn bare_list_call_inside_a_module_named_list_resolves_into_fsharp_core() {
+    // The `module List = …` augmentation idiom (WoofWare.Myriad `List.fs`): a
+    // file declares its own `[<RequireQualifiedAccess>] module private List` and,
+    // *inside* that module, calls `List.fold` / `List.rev`. FCS resolves both the
+    // head `List` and the member to FSharp.Core — the current module's own name is
+    // NOT in scope as a self-qualifier (FS0039 for a self-member like
+    // `List.partitionChoice`), so the name falls through to the auto-opened
+    // `Microsoft.FSharp.Collections.List` (fcs-dump `uses`:
+    //   L8  List -> List (FSharp.Core);  fold -> Microsoft.FSharp.Collections.List.fold
+    //   L13 List -> List (FSharp.Core);  rev  -> Microsoft.FSharp.Collections.List.rev).
+    // A same-file `module List` used to make the whole path defer as an unbound
+    // name — the as-written self-module shadow preempted the opens tier where
+    // FSharp.Core lives.
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let src = "namespace N\n\
+               \n\
+               [<RequireQualifiedAccess>]\n\
+               module private List =\n\
+               \x20\x20\x20\x20let f xs = List.fold (fun a b -> a + b) 0 xs\n\
+               \x20\x20\x20\x20let g xs = List.rev xs\n";
+
+    // `List.fold`: head → the FSharp.Core List module, whole path → its `Fold`.
+    assert_eq!(
+        rf_head(&env, src, "List", 1),
+        Some(Resolution::Entity(list)),
+        "the head `List` of `List.fold` (occ 1, after the `module List` header) must \
+         resolve to Microsoft.FSharp.Collections.List"
+    );
+    match resolve(src, &env).resolution_at(nth(src, "List.fold", 0)) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(parent, list, "fold resolves into the List module");
+            assert_eq!(il_name(env.member_at(parent, idx)), "Fold");
+        }
+        other => panic!("expected Member for `List.fold`, got {other:?}"),
+    }
+
+    // `List.rev`: head (occ 2) → the FSharp.Core List module, whole path → `Reverse`.
+    assert_eq!(
+        rf_head(&env, src, "List", 2),
+        Some(Resolution::Entity(list)),
+        "the head `List` of `List.rev` must resolve to Microsoft.FSharp.Collections.List"
+    );
+    match resolve(src, &env).resolution_at(nth(src, "List.rev", 0)) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(parent, list, "rev resolves into the List module");
+            // `List.rev`'s F# source name is `rev`; its compiled IL method is `Reverse`.
+            assert_eq!(il_name(env.member_at(parent, idx)), "Reverse");
+        }
+        other => panic!("expected Member for `List.rev`, got {other:?}"),
+    }
+}
+
+/// Resolve `src` and read the resolution at the `n`th occurrence of `head`.
+fn rf_head(env: &AssemblyEnv, src: &str, head: &str, n: usize) -> Option<Resolution> {
+    resolve(src, env).resolution_at(nth(src, head, n))
+}
+
+#[test]
+fn self_qualified_member_of_a_split_module_does_not_bind_fsharp_core() {
+    // A module split across files: FCS merges `module N.List` over the namespace,
+    // so a self-qualified `List.fold2` inside the *later* fragment binds the
+    // project's own `N.List.fold2` (defined in file1), NOT FSharp.Core's
+    // `List.fold2` — even though FSharp.Core defines a `fold2`. The merge is
+    // *per member* (fcs-dump `uses-project`): a name the project fragment supplies
+    // resolves to the project, a name only FSharp.Core defines still falls through
+    // to it. Committing FSharp.Core's `fold2` here would be a wrong go-to-def (D5),
+    // which the self-module relaxation must not do — so the tail with a project
+    // member stays a conservative deferral, while `List.rev` (no project member)
+    // still resolves into FSharp.Core.
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let file1 = "namespace N\n\nmodule List =\n    let fold2 = 1\n";
+    let file2 = "namespace N\n\n\
+                 module List =\n\
+                 \x20\x20\x20\x20let g = List.fold2\n\
+                 \x20\x20\x20\x20let h = List.rev [ 1 ]\n";
+    let proj = resolve_project(&[impl_file(file1), impl_file(file2)], &env);
+    let f2 = proj.file(1);
+
+    // `List.fold2`: the tail names the merged module's own project member, so we
+    // must NOT commit FSharp.Core's `List.fold2`.
+    let fold2 = f2.resolution_at(nth(file2, "List.fold2", 0));
+    assert!(
+        !matches!(fold2, Some(Resolution::Member { .. })),
+        "`List.fold2` names the split module's own project member, not FSharp.Core's; got {fold2:?}"
+    );
+    assert_ne!(
+        f2.resolution_at(nth(file2, "List", 1)),
+        Some(Resolution::Entity(list)),
+        "the head `List` of the self-qualified project member must not bind FSharp.Core's List"
+    );
+
+    // `List.rev`: FSharp.Core supplies this one (the project fragment does not),
+    // so the per-member merge still lets it resolve into FSharp.Core.
+    match f2.resolution_at(nth(file2, "List.rev", 0)) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(parent, list, "rev resolves into FSharp.Core's List module");
+            assert_eq!(il_name(env.member_at(parent, idx)), "Reverse");
+        }
+        other => panic!("expected FSharp.Core Member for `List.rev`, got {other:?}"),
+    }
+}
+
+#[test]
+fn self_qualified_call_inside_a_module_nested_under_a_module_resolves_into_fsharp_core() {
+    // The self-qualifier idiom also applies when `module List` is nested under
+    // another *module* (not just a namespace): inside `module Top` / `module List`,
+    // `List.fold` still binds FSharp.Core (fcs-dump: `List -> List (FSharp.Core)`,
+    // `fold -> Microsoft.FSharp.Collections.List.fold`). The self name is the last
+    // segment of the module chain `[Top, List]`, a *suffix*, so a prefix-only self
+    // test would miss it and keep deferring.
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let src = "module Top\n\n\
+               module List =\n\
+               \x20\x20\x20\x20let g xs = List.fold (fun a b -> a + b) 0 xs\n";
+    assert_eq!(
+        rf_head(&env, src, "List", 1),
+        Some(Resolution::Entity(list)),
+        "`List` nested under `module Top` must still resolve to FSharp.Core's List"
+    );
+    match resolve(src, &env).resolution_at(nth(src, "List.fold", 0)) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(parent, list);
+            assert_eq!(il_name(env.member_at(parent, idx)), "Fold");
+        }
+        other => panic!("expected FSharp.Core Member for nested `List.fold`, got {other:?}"),
+    }
+}
+
+#[test]
+fn self_qualified_project_type_shadowing_a_fsharp_core_nested_module_does_not_bind_it() {
+    // A module augmentation may add a *type* colliding with a FSharp.Core member
+    // that FSharp.Core resolves as a *whole* path: file1's `N.Operators` defines
+    // `type Checked`, and `Microsoft.FSharp.Core.Operators` has a nested module
+    // `Checked`. Inside file2's `N.Operators`, `Operators.Checked` binds the
+    // project type (fcs-dump: `Operators -> N.Operators`, `Checked ->
+    // N.Operators.Checked`) — but FSharp.Core's `Operators.Checked` *owns* its path
+    // (a nested module), so the opens tier would resolve it outright, committing the
+    // head to FSharp.Core's `Operators` Entity. `Checked` is a type, not a value, so
+    // only the exported-*type* index vetoes that fallthrough.
+    let env = fsharp_core_env();
+    let core_operators = core(&env, "Operators");
+    let file1 = "namespace N\n\nmodule Operators =\n    type Checked() = class end\n";
+    let file2 = "namespace N\n\nmodule Operators =\n    let x = Operators.Checked()\n";
+    let proj = resolve_project(&[impl_file(file1), impl_file(file2)], &env);
+    let f2 = proj.file(1);
+    let checked = f2.resolution_at(nth(file2, "Operators.Checked", 0));
+    assert!(
+        !matches!(checked, Some(Resolution::Entity(e)) if e != core_operators)
+            && !matches!(checked, Some(Resolution::Member { .. })),
+        "`Operators.Checked` names the project type, not FSharp.Core's nested Checked module; got {checked:?}"
+    );
+    assert_ne!(
+        f2.resolution_at(nth(file2, "Operators", 1)),
+        Some(Resolution::Entity(core_operators)),
+        "the head `Operators` must bind the project `N.Operators` (which owns `Checked`), not FSharp.Core"
+    );
+}
+
+#[test]
+fn self_qualified_name_captured_by_a_same_file_child_module_does_not_bind_fsharp_core() {
+    // A same-file *child* module of the same name captures a self-qualified head:
+    // inside `module List`, a child `module List` with `type rev` means `List.rev()`
+    // binds the child's type, not FSharp.Core (fcs-dump: `List -> N.List.List`,
+    // `rev -> N.List.List.rev`). FCS resolves a self-qualified head to the nearest
+    // *non-self* `List`, so the child wins; the relaxation must not commit
+    // FSharp.Core's `List.rev` here (a wrong go-to-def).
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let src = "namespace N\n\n\
+               module List =\n\
+               \x20\x20\x20\x20module List =\n\
+               \x20\x20\x20\x20\x20\x20\x20\x20type rev() = class end\n\
+               \x20\x20\x20\x20let x = List.rev()\n";
+    let rf = resolve(src, &env);
+    let whole = rf.resolution_at(nth(src, "List.rev", 0));
+    assert!(
+        !matches!(whole, Some(Resolution::Member { .. })),
+        "`List.rev` is captured by the same-file child `module List`, not FSharp.Core; got {whole:?}"
+    );
+    // The head `List` (occ 2 — after the two `module List` headers) must not bind
+    // FSharp.Core's List module either.
+    assert_ne!(
+        rf.resolution_at(nth(src, "List", 2)),
+        Some(Resolution::Entity(list)),
+        "the head `List` is captured by the child module, so it must not bind FSharp.Core"
+    );
+}
+
+#[test]
+fn companion_type_does_not_block_the_per_member_fallthrough_to_fsharp_core() {
+    // The `type List` / `module List` companion pattern (FSharp.Core's own shape)
+    // is *per member*: inside the module, `List.length` — which the sibling type
+    // lacks but FSharp.Core supplies — still resolves to FSharp.Core (fcs-dump:
+    // `List -> List (FSharp.Core)`, `length -> Microsoft.FSharp.Collections.List.length`).
+    // So a same-name sibling type must NOT blanket-defer self-qualified references.
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let src = "namespace N\n\n\
+               type List =\n\
+               \x20\x20\x20\x20static member Go () = 1\n\
+               \n\
+               module List =\n\
+               \x20\x20\x20\x20let y = List.length [ 1 ]\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(nth(src, "List", 2)),
+        Some(Resolution::Entity(list)),
+        "the companion type does not shadow `List.length`, which is FSharp.Core's"
+    );
+    match rf.resolution_at(nth(src, "List.length", 0)) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(parent, list);
+            assert_eq!(il_name(env.member_at(parent, idx)), "Length");
+        }
+        other => panic!("expected FSharp.Core Member for `List.length`, got {other:?}"),
+    }
+}
+
+#[test]
+fn self_qualified_call_in_a_recursive_module_does_not_bind_fsharp_core() {
+    // `module rec` / `namespace rec` DO put the module's own name in scope, so the
+    // "self is FS0039" premise is void: inside `module rec List`, `List.rev` binds
+    // the project's own `N.List.rev` (fcs-dump: `List -> N.List`, `rev -> N.List.rev`),
+    // NOT FSharp.Core's `List.rev`. The relaxation must not fire for a recursive
+    // module.
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let src = "namespace N\n\n\
+               module rec List =\n\
+               \x20\x20\x20\x20let rev (x: int) = x\n\
+               \x20\x20\x20\x20let y = List.rev 1\n";
+    let rf = resolve(src, &env);
+    let whole = rf.resolution_at(nth(src, "List.rev", 0));
+    assert!(
+        !matches!(whole, Some(Resolution::Member { .. })),
+        "`List.rev` in a `module rec List` binds the project's own `rev`, not FSharp.Core; got {whole:?}"
+    );
+    assert_ne!(
+        rf.resolution_at(nth(src, "List", 1)),
+        Some(Resolution::Entity(list)),
+        "the recursive module's own name is in scope, so the head must not bind FSharp.Core"
+    );
+}
+
 #[test]
 fn task_builder_extension_members_do_not_resolve_bare() {
     // The manifest also auto-opens MODULE paths
