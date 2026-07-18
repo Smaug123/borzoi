@@ -56,6 +56,13 @@ tracing-subscriber = { version = "0.3", optional = true, features = [
 minreq = { version = "2", optional = true, features = ["https-rustls"] }
 
 [features]
+# On by default: a bare `cargo build` / `cargo install` / `nix build` yields a
+# binary whose go-to-definition into a referenced assembly actually navigates,
+# rather than one that silently surfaces a raw URL the editor must fetch
+# out-of-band. `otel` layers on top of this (it is additive, not an
+# alternative), so the telemetry build keeps working go-to-definition. Opt out
+# with `--no-default-features` for the leanest, network-incapable binary.
+default = ["sourcelink-fetch"]
 otel = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -68,7 +75,8 @@ otel = [
     "borzoi-sema/otel",
 ]
 # Fetch non-embedded referenced-assembly source over the network (SourceLink) for
-# go-to-definition. Off by default: the source URL is surfaced instead.
+# go-to-definition. In `default`, so it is on unless `--no-default-features`;
+# without it the source URL is surfaced for the client to open instead.
 sourcelink-fetch = ["dep:minreq"]
 
 [dev-dependencies]
