@@ -22,6 +22,24 @@ pub(super) enum TypeAltOperand {
     CanBeNullable,
 }
 
+/// The outcome of parsing one type definition's `= <repr>` body — the return
+/// of [`Parser::parse_type_defn_repr`]. Two independent booleans that its sole
+/// caller ([`Parser::parse_type_defn_name_and_body`]) consumes for different
+/// purposes; a named struct keeps them from being transposed.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct TypeDefnReprOutcome {
+    /// `true` iff the body opened **and** closed its offside block — the
+    /// `and`-continuation gate ([`Parser::parse_type_defn`]): a valid chain has
+    /// each body offside (its own block, closed by an `OBLOCKEND` before the
+    /// `and`), whereas an *inline* `type T = int and U = …` keeps the `and`
+    /// inside the first body's still-open block, which FCS rejects.
+    pub(super) closed_block: bool,
+    /// `true` iff the body was an object model (`member …`), which the caller
+    /// uses to flag a primary constructor on a non-class repr (FCS's "Only
+    /// class types may take value arguments", phase 9.8a).
+    pub(super) is_object_model: bool,
+}
+
 impl<'src> Parser<'src> {
     /// Phase 9.1/9.2 — parse a swallowed bare `type T = <typ>` definition,
     /// plus any `and`-chained continuations, into a [`SyntaxKind::TYPE_DEFNS`]
@@ -198,7 +216,10 @@ impl<'src> Parser<'src> {
         ) {
             return (true, offside_attr);
         }
-        let (closed_block, is_object_model) = self.parse_type_defn_repr();
+        let TypeDefnReprOutcome {
+            closed_block,
+            is_object_model,
+        } = self.parse_type_defn_repr();
         // A primary constructor is only valid on a class (object-model) repr.
         // FCS still fills the `implicitConstructor` slot for `type R(x) = {…}` /
         // `type A(x) = int` but reports "Only class types may take value
@@ -1218,17 +1239,18 @@ impl<'src> Parser<'src> {
     /// a `with`-augment block (after the body close — admitted everywhere); see
     /// the two hooks below.
     ///
-    /// Returns `(closed_block, is_object_model)`. `closed_block` is `true` iff
+    /// Returns a [`TypeDefnReprOutcome`]. Its `closed_block` is `true` iff
     /// the body opened **and** closed its offside block — the `and`-continuation
     /// gate ([`Self::parse_type_defn`]): a valid chain has each body offside (its
     /// own block, closed by an `OBLOCKEND` before the `and`), whereas an
     /// *inline* `type T = int and U = …` keeps the `and` inside the first body's
     /// still-open block — FCS rejects that ("Unexpected keyword 'and' in member
     /// definition"), so we must not splice it into a bogus chain.
-    /// `is_object_model` is `true` iff the body was an object model (`member …`),
-    /// which the caller uses to flag a primary constructor on a non-class repr
-    /// (FCS's "Only class types may take value arguments", phase 9.8a).
-    fn parse_type_defn_repr(&mut self) -> (bool, bool) {
+    /// Its `is_object_model` is `true` iff the body was an object model
+    /// (`member …`), which the caller uses to flag a primary constructor on a
+    /// non-class repr (FCS's "Only class types may take value arguments", phase
+    /// 9.8a).
+    fn parse_type_defn_repr(&mut self) -> TypeDefnReprOutcome {
         // The repr's `=`. The caller ([`Self::parse_type_defn_name_and_body`])
         // only routes here once it has seen the `=`; a bodyless type (no `=`) is
         // handled there as `SynTypeDefnSimpleRepr.None`, so the token is
@@ -1500,10 +1522,16 @@ impl<'src> Parser<'src> {
             // closed-block result is what precedes a potential `and`
             // continuation, so it replaces the repr's.
             let aug_closed = self.parse_with_augmentation_members(false, true);
-            return (aug_closed, is_object_model);
+            return TypeDefnReprOutcome {
+                closed_block: aug_closed,
+                is_object_model,
+            };
         }
 
-        (closed_block, is_object_model)
+        TypeDefnReprOutcome {
+            closed_block,
+            is_object_model,
+        }
     }
 
     /// `true` iff the `OBLOCKSEP` at the cursor is followed by a member-block

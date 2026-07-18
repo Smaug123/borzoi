@@ -67,7 +67,15 @@ use crate::common::{
 /// `namespace` / `namespace rec` — `Namespace 05.fs` / `08.fs`). The
 /// initialiser-less `member val` (`Auto property 04.fs`) was dropped as too
 /// context-sensitive (see the note in `parser_diff_module_structure.rs`).
-const MIN_AST_MATCHES: usize = 5457;
+/// 2026-07-18: 5458, +1 from group D's parenthesised-pattern member head
+/// (`static member (y) …` — `neg133.fs`). The two-token range-step operator name
+/// `(.. ..)` (`productioncoverage01.fs`) was explored then **dropped**: a
+/// merged-token spelling can't be canonicalised from source text without
+/// conflating a comment between the dots (`(.. (*c*) ..)`) or a quoted identifier
+/// spelled ``` ``....`` ```; a faithful fix needs a distinct token *kind* threaded
+/// through the CST accessors and sema, disproportionate for one grammar-coverage
+/// file. Left a documented `we_reject_fcs_accepts` divergence.
+const MIN_AST_MATCHES: usize = 5458;
 
 /// Upper bound on files that normalise on both sides but disagree. Drive this
 /// to zero: each one is a parser bug or a normaliser asymmetry. (The
@@ -89,7 +97,9 @@ const MAX_AST_DIVERGENCES: usize = 1;
 /// 5427, the two group-B files' ranges also match (plus pre-existing floor lag).
 /// (Group C's two nameless-namespace files match shape but their broad ranges
 /// diverge — see [`MAX_AST_RANGE_DIVERGENCES`] — so they do not lift this floor.)
-const MIN_AST_RANGE_MATCHES: usize = 5427;
+/// 2026-07-18: 5428, group D's `neg133.fs` matches shape and broad ranges (the
+/// range-step file was dropped — see [`MIN_AST_MATCHES`]).
+const MIN_AST_RANGE_MATCHES: usize = 5428;
 
 /// Upper bound on files whose normalised AST shape matches FCS but whose
 /// audited broad AST ranges diverge. This starts high because the first generic

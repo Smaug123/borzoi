@@ -555,7 +555,14 @@ let private parseBench (cache: bool) (iterations: int) =
 /// which rewrites/inserts virtual tokens for the offside rule, type
 /// application disambiguation, etc. — the stream the parser actually
 /// consumes.
-let private dumpTokens (absolute: string) (withLexFilter: bool) =
+///
+/// `compact = false` emits the JSON payload (`{ WithLexFilter, Tokens }`).
+/// `compact = true` emits a plain-text view — one token per line,
+/// `Kind\tStartLine:StartCol-EndLine:EndCol` — for eyeballing the stream
+/// (offside virtuals included) against our lex-filter without a JSON reader.
+/// The tab keeps `cut -f1` yielding the bare kind sequence. Single-file only:
+/// the batch path stays JSONL for the Rust harness.
+let private dumpTokens (absolute: string) (withLexFilter: bool) (compact: bool) =
     let text = File.ReadAllText(absolute)
     let sourceText = SourceText.ofString text
 
@@ -578,13 +585,31 @@ let private dumpTokens (absolute: string) (withLexFilter: bool) =
         filePath = absolute,
         flags = flags)
 
-    let payload =
-        {| WithLexFilter = withLexFilter
-           Tokens = tokens.ToArray() |}
+    if compact then
+        let sb = System.Text.StringBuilder()
+        for t in tokens do
+            let r = t.Range
+            sb
+                .Append(t.Kind)
+                .Append('\t')
+                .Append(r.StartLine)
+                .Append(':')
+                .Append(r.StartColumn)
+                .Append('-')
+                .Append(r.EndLine)
+                .Append(':')
+                .Append(r.EndColumn)
+                .Append('\n')
+            |> ignore
+        Console.Out.Write(sb.ToString())
+    else
+        let payload =
+            {| WithLexFilter = withLexFilter
+               Tokens = tokens.ToArray() |}
 
-    let json = JsonSerializer.Serialize(payload, buildOptions ())
-    Console.Out.Write(json)
-    Console.Out.WriteLine()
+        let json = JsonSerializer.Serialize(payload, buildOptions ())
+        Console.Out.Write(json)
+        Console.Out.WriteLine()
 
 /// Batch token dump. Reads file paths from stdin, one per line, and emits one
 /// JSON object per file to stdout (JSONL). On per-file failure emits
@@ -4564,6 +4589,18 @@ let private extraRefArgs () : string[] =
         paths.Split([| ';'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
         |> Array.map (fun p -> "-r:" + p.Trim())
 
+/// `-r:` reference arguments from an explicit list — the resident-batch sibling
+/// of [`extraRefArgs`], which reads them from `BORZOI_FCS_EXTRA_REFS`. A resident
+/// child is spawned once and serves callers whose fixture refs differ, so the
+/// refs must ride in each *request* (the env channel is fixed at spawn); this
+/// turns one request's `refs` list into the same `-r:` switches `extraRefArgs`
+/// would have produced from the env var.
+let private extraRefArgsOf (refs: string list) : string[] =
+    refs
+    |> List.map (fun p -> "-r:" + p.Trim())
+    |> List.filter (fun s -> s <> "-r:")
+    |> List.toArray
+
 /// Normalise one symbol use to the JSON shape the sema differential consumes:
 /// the symbol's display name, the use range, whether it is the defining
 /// occurrence, the declaration range (`null` for an out-of-any-file symbol),
@@ -5165,49 +5202,31 @@ let private dumpAttrsBatch () =
 /// single-file `uses` path does — via script resolution on the first file —
 /// then those `-r:` switches are reused for a real multi-file project so the
 /// source-file set is exactly the Compile-ordered list given on stdin.
-let private dumpUsesProject () =
-    let paths =
-        let acc = ResizeArray<string>()
-        let mutable line = Console.In.ReadLine()
-        while not (isNull line) do
-            let p = (Option.ofObj line |> Option.defaultValue "").Trim()
-            if p <> "" then acc.Add(Path.GetFullPath p)
-            line <- Console.In.ReadLine()
-        acc.ToArray()
-
-    if Array.isEmpty paths then
-        failwith "fcs-dump uses-project: no source files on stdin"
-
-    // `#if` symbols the caller wants defined (`BORZOI_FCS_DEFINES`,
-    // `;`/newline-separated) as `--define:` flags (see the `otherOptions` note
-    // below). Passed to *both* script-option discovery — so the first file's
-    // script parse/diagnostics take the same active directives — and the per-file
-    // project check, otherwise a first file that `#if`s on a project define could
-    // mis-parse or abort here before the check ever sees the defines.
-    let defineArgs : string[] =
-        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_DEFINES") with
-        | None -> [||]
-        | Some s ->
-            s.Split([| ';'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
-            |> Array.map (fun d -> "--define:" + d.Trim())
-
-    // The caller's `<LangVersion>` (`BORZOI_FCS_LANGVERSION`, a single
-    // canonical token such as `preview` / `9.0`) as a `--langversion:` flag.
-    // Unset means the caller's project uses the SDK default, so FCS's own
-    // default (which our `LanguageVersion::DEFAULT` pins to) already agrees —
-    // no flag needed. When set, threaded to *both* script-option discovery (so
-    // the first file's script parse/diagnostics gate the same syntax features)
-    // and the per-file project check (`otherOptions`), exactly like `defineArgs`
-    // — otherwise a first file using a version-gated construct could mis-parse
-    // or abort here before the check ever sees the pinned version.
-    let langVersionArgs : string[] =
-        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_LANGVERSION") with
-        | None -> [||]
-        | Some s when s.Trim() = "" -> [||]
-        | Some s -> [| "--langversion:" + s.Trim() |]
-
-    let checker = FSharpChecker.Create()
-
+/// Shared core of the `uses-project` oracle: type-check `paths` (Compile order)
+/// as ONE project against the given `checker`, folding `refArgs` / `defineArgs`
+/// / `langVersionArgs` into the compiler switches, and return the per-file
+/// `{ Path, Diagnostics, Uses }` records. Fails hard on a reference-resolution
+/// error or a per-file abort — the one-shot [`dumpUsesProject`] lets that exit
+/// the process nonzero; the resident [`usesProjectBatchCore`] catches it into a
+/// `BatchError` line so one bad project cannot wedge the resident child.
+///
+/// The switch handling (verbatim from the pre-refactor one-shot): keep only
+/// compiler switches from the script options (the `-r:` references and flags such
+/// as `--targetprofile`); drop any source-file entries so the explicit,
+/// Compile-ordered `SourceFiles` is the sole file set. Append the fixture refs,
+/// the caller's `#if` symbols (`defineArgs`) so FCS parses the same conditional
+/// branches the caller's own parser did, and the pinned `--langversion`
+/// (`langVersionArgs`) so both sides take the same version-gated syntax branches.
+/// `--define`/`--langversion` are additive to FCS's implicit symbols (e.g.
+/// `COMPILED`); any `--langversion` script resolution injected is filtered out
+/// first so the pinned one is the sole (last-wins-safe) version switch.
+let private usesProjectFiles
+    (checker: FSharpChecker)
+    (paths: string[])
+    (refArgs: string[])
+    (defineArgs: string[])
+    (langVersionArgs: string[])
+    =
     let firstText = SourceText.ofString (File.ReadAllText(paths.[0]))
     let scriptOpts, scriptDiags =
         checker.GetProjectOptionsFromScript(
@@ -5228,24 +5247,12 @@ let private dumpUsesProject () =
             |> String.concat "; "
         failwithf "fcs-dump uses-project: reference resolution failed: %s" summary
 
-    // Keep only compiler switches from the script options (the `-r:` references
-    // and flags such as `--targetprofile`); drop any source-file entries so the
-    // explicit, Compile-ordered `SourceFiles` is the sole file set. Append any
-    // fixture references (`BORZOI_FCS_EXTRA_REFS`), the caller's `#if`
-    // symbols (`defineArgs`, above) so FCS parses the same conditional-compilation
-    // branches the caller's own parser did — otherwise a project with
-    // `$(DefineConstants)` would diverge on `#if` — and the pinned
-    // `--langversion` (`langVersionArgs`) so both sides take the same
-    // version-gated syntax branches. `--define`/`--langversion` are additive to
-    // FCS's own implicit symbols (e.g. `COMPILED`), which is what we want. Any
-    // `--langversion` script resolution may itself have injected is filtered out
-    // first so our pinned one is the sole (last-wins-safe) version switch.
     let otherOptions =
         scriptOpts.OtherOptions
         |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
         |> Array.filter (fun o ->
             not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
-        |> fun switches -> Array.concat [ switches; extraRefArgs (); defineArgs; langVersionArgs ]
+        |> fun switches -> Array.concat [ switches; refArgs; defineArgs; langVersionArgs ]
 
     let projOpts =
         { scriptOpts with
@@ -5256,41 +5263,143 @@ let private dumpUsesProject () =
             OtherOptions = otherOptions
             UseScriptResolutionRules = false }
 
-    let files =
-        paths
-        |> Array.map (fun absolute ->
-            let sourceText = SourceText.ofString (File.ReadAllText(absolute))
-            let parseResults, checkAnswer =
-                checker.ParseAndCheckFileInProject(
-                    absolute,
-                    0,
-                    sourceText,
-                    projOpts,
-                    userOpName = "fcs-dump-uses-project")
-                |> Async.RunSynchronously
+    paths
+    |> Array.map (fun absolute ->
+        let sourceText = SourceText.ofString (File.ReadAllText(absolute))
+        let parseResults, checkAnswer =
+            checker.ParseAndCheckFileInProject(
+                absolute,
+                0,
+                sourceText,
+                projOpts,
+                userOpName = "fcs-dump-uses-project")
+            |> Async.RunSynchronously
 
-            let checkResults =
-                match checkAnswer with
-                | FSharpCheckFileAnswer.Succeeded r -> r
-                | FSharpCheckFileAnswer.Aborted ->
-                    failwithf "fcs-dump uses-project: type-check aborted for %s" absolute
+        let checkResults =
+            match checkAnswer with
+            | FSharpCheckFileAnswer.Succeeded r -> r
+            | FSharpCheckFileAnswer.Aborted ->
+                failwithf "fcs-dump uses-project: type-check aborted for %s" absolute
 
-            let diagnostics =
-                Array.append parseResults.Diagnostics checkResults.Diagnostics
-                |> Array.map projectDiagnostic
-            let uses =
-                checkResults.GetAllUsesOfAllSymbolsInFile()
-                |> Seq.map projectSymbolUse
-                |> Seq.toArray
+        let diagnostics =
+            Array.append parseResults.Diagnostics checkResults.Diagnostics
+            |> Array.map projectDiagnostic
+        let uses =
+            checkResults.GetAllUsesOfAllSymbolsInFile()
+            |> Seq.map projectSymbolUse
+            |> Seq.toArray
 
-            {| Path = absolute
-               Diagnostics = diagnostics
-               Uses = uses |})
+        {| Path = absolute
+           Diagnostics = diagnostics
+           Uses = uses |})
 
+let private dumpUsesProject () =
+    let paths =
+        let acc = ResizeArray<string>()
+        let mutable line = Console.In.ReadLine()
+        while not (isNull line) do
+            let p = (Option.ofObj line |> Option.defaultValue "").Trim()
+            if p <> "" then acc.Add(Path.GetFullPath p)
+            line <- Console.In.ReadLine()
+        acc.ToArray()
+
+    if Array.isEmpty paths then
+        failwith "fcs-dump uses-project: no source files on stdin"
+
+    // `#if` symbols the caller wants defined (`BORZOI_FCS_DEFINES`,
+    // `;`/newline-separated) as `--define:` flags; the pinned `<LangVersion>`
+    // (`BORZOI_FCS_LANGVERSION`) as a `--langversion:` flag. Both are threaded
+    // through [`usesProjectFiles`] to *both* script-option discovery and the
+    // per-file check — see its doc-comment. (Unset langversion means the SDK
+    // default, which FCS already agrees with, so no flag.)
+    let defineArgs : string[] =
+        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_DEFINES") with
+        | None -> [||]
+        | Some s ->
+            s.Split([| ';'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
+            |> Array.map (fun d -> "--define:" + d.Trim())
+
+    let langVersionArgs : string[] =
+        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_LANGVERSION") with
+        | None -> [||]
+        | Some s when s.Trim() = "" -> [||]
+        | Some s -> [| "--langversion:" + s.Trim() |]
+
+    let checker = FSharpChecker.Create()
+    let files = usesProjectFiles checker paths (extraRefArgs ()) defineArgs langVersionArgs
     let payload = {| Files = files |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
+
+/// Resident sibling of [`dumpUsesProject`]: the multi-file `uses-project`
+/// projection driven as a [`fileBatchCore`]-style oracle for `sema`'s per-project
+/// differential loops (`resolve_project_diff`, `resolve_straddle_gen_diff`,
+/// `resolve_project_assembly_diff`, the fold matrices), which otherwise spawn one
+/// `dotnet fcs-dump uses-project` per project and pay the .NET + FCS cold-start
+/// every time. One JSON request per stdin line —
+/// `{ "paths": [<abs .fs>…], "refs": [<dll>…], "defines": [<sym>…],
+/// "langversion": <token|null> }`, Compile order preserved — and one compact
+/// `{ "Files": [ { Path, Diagnostics, Uses } … ] }` response line: the SAME
+/// payload the one-shot emits (compact rather than indented; the `serde_json`
+/// consumer is whitespace-insensitive). Per-request failures become
+/// `{ "BatchError": <msg> }`, exactly as in `file-batch`.
+let private usesProjectBatchCore () =
+    let checker = FSharpChecker.Create()
+    let compact = buildOptionsCompact ()
+
+    let respond (line: string) : string =
+        try
+            use doc = JsonDocument.Parse(line: string)
+            let root = doc.RootElement
+            let strArray (name: string) : string[] =
+                match root.TryGetProperty(name) with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    arr.EnumerateArray()
+                    |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
+                    |> Seq.toArray
+                | _ -> [||]
+            let paths = strArray "paths" |> Array.map Path.GetFullPath
+            if Array.isEmpty paths then
+                failwith "no paths in request"
+            let refArgs = strArray "refs" |> Array.toList |> extraRefArgsOf
+            let defineArgs = strArray "defines" |> Array.map (fun d -> "--define:" + d.Trim())
+            let langVersionArgs =
+                match root.TryGetProperty("langversion") with
+                | true, v when v.ValueKind = JsonValueKind.String ->
+                    match Option.ofObj (v.GetString()) with
+                    | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
+                    | _ -> [||]
+                | _ -> [||]
+            let files = usesProjectFiles checker paths refArgs defineArgs langVersionArgs
+            JsonSerializer.Serialize({| Files = files |}, compact)
+        with ex ->
+            JsonSerializer.Serialize({| BatchError = ex.Message |}, compact)
+
+    let mutable line = Console.In.ReadLine()
+    while not (isNull line) do
+        let trimmed = (Option.ofObj line |> Option.defaultValue "").Trim()
+        if trimmed <> "" then
+            Console.Out.WriteLine(respond trimmed)
+            Console.Out.Flush()
+        line <- Console.In.ReadLine()
+
+/// [`usesProjectBatchCore`] on a large-stack thread, mirroring [`fileBatch`]:
+/// a deeply-nested project's typed tree can recurse past the default 1 MB stack
+/// and take the resident child down with an uncatchable `StackOverflowException`.
+let private usesProjectBatch () =
+    let mutable captured: exn option = None
+    let worker =
+        System.Threading.Thread(
+            (fun () ->
+                try usesProjectBatchCore ()
+                with ex -> captured <- Some ex),
+            512 * 1024 * 1024)
+    worker.Start()
+    worker.Join()
+    match captured with
+    | Some ex -> raise ex
+    | None -> ()
 
 /// Tolerant, per-file census driver for the Phase-3 scoping measurement
 /// (`crates/sema/tests/uses_census.rs`). Reads source paths from stdin, one per
@@ -6030,6 +6139,154 @@ let private dumpOverloads (absolute: string) =
     Console.Out.Write(json)
     Console.Out.WriteLine()
 
+/// Resident, multi-projection single-file oracle: the amortised-startup engine
+/// behind `sema`'s per-case differential loops (`resolve_diff`, `infer_*_diff`,
+/// `attr_resolution_diff`, `overloads_oracle`, …). Each of those otherwise spawns
+/// one `dotnet fcs-dump <kind> <file>` per snippet and pays the ~1.6 s .NET + FCS
+/// cold-start *every* time; driven as a [`BatchChild`]-style resident child it is
+/// paid once per pool slot for the whole test binary — the same amortisation
+/// `dumpAstBatch` gives the `cst` parser diffs, extended to carry per-request
+/// fixture references and to fan several projections through one warm checker.
+///
+/// Protocol: one JSON request per stdin line,
+/// `{ "kind": <projection>, "path": <abs .fs>, "refs": [<dll>…] }`, and exactly
+/// one compact JSON response line — the SAME payload the matching one-shot
+/// `dumpXxx` emits. The one-shots serialise with `buildOptions ()`
+/// (`WriteIndented = true`); this uses `buildOptionsCompact ()` so the response
+/// is a single line (the transport is line-delimited), which is invisible to the
+/// Rust `serde_json` consumers (whitespace-insensitive) — so no consumer changes.
+///
+/// A per-request failure is reported as `{ "BatchError": <msg> }` rather than
+/// thrown: throwing would kill the resident child mid-batch, so one bad snippet
+/// would respawn-storm and eventually panic every *later* request too. The Rust
+/// driver turns the sentinel back into the loud panic the one-shot's `failwith`
+/// would have raised, so a genuinely broken case still fails its own test, alone.
+let private fileBatchCore () =
+    // `keepAssemblyContents` so the `types` / `binder-types` / `overloads`
+    // projections can read the elaborated implementation file; harmless to the
+    // `uses` / `attrs` projections (they never touch it). One checker, reused for
+    // every request, is what makes the referenced-assembly reads warm.
+    let checker = FSharpChecker.Create(keepAssemblyContents = true)
+    let compact = buildOptionsCompact ()
+
+    // A required JSON string field, coerced to non-null: a missing or `null`
+    // field is a malformed request, reported (via the enclosing `try`) as a
+    // `BatchError` rather than silently defaulting.
+    let reqString (root: JsonElement) (name: string) : string =
+        match root.GetProperty(name).GetString() with
+        | null -> failwithf "request field %s is null" name
+        | s -> s
+
+    let respond (line: string) : string =
+        try
+            use doc = JsonDocument.Parse(line: string)
+            let root = doc.RootElement
+            let kind = reqString root "kind"
+            let path = reqString root "path"
+            let refs =
+                match root.TryGetProperty("refs") with
+                | true, arr when arr.ValueKind = JsonValueKind.Array ->
+                    arr.EnumerateArray()
+                    |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
+                    |> Seq.toList
+                | _ -> []
+            let absolute = Path.GetFullPath path
+            let refArgs = extraRefArgsOf refs
+
+            let text = File.ReadAllText absolute
+            let sourceText = SourceText.ofString text
+
+            // Mirror the one-shot handlers exactly: script-mode options (SDK
+            // refs, no .fsproj) plus this request's fixture refs, fail hard on a
+            // *reference-resolution* error, then parse-and-check.
+            let opts0, scriptDiags =
+                checker.GetProjectOptionsFromScript(
+                    absolute, sourceText, assumeDotNetFramework = false, useSdkRefs = true)
+                |> Async.RunSynchronously
+            let opts =
+                { opts0 with OtherOptions = Array.append opts0.OtherOptions refArgs }
+            let blocking =
+                scriptDiags
+                |> List.filter (fun d ->
+                    d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+            if not (List.isEmpty blocking) then
+                let summary =
+                    blocking
+                    |> List.map (fun d -> sprintf "FS%04d: %s" d.ErrorNumber d.Message)
+                    |> String.concat "; "
+                failwithf "script resolution failed: %s" summary
+
+            let parseResults, checkAnswer =
+                checker.ParseAndCheckFileInProject(
+                    absolute, 0, sourceText, opts, userOpName = "fcs-dump-file-batch")
+                |> Async.RunSynchronously
+            let checkResults =
+                match checkAnswer with
+                | FSharpCheckFileAnswer.Succeeded r -> r
+                | FSharpCheckFileAnswer.Aborted -> failwith "type-check aborted"
+
+            let implFile () =
+                match checkResults.ImplementationFile with
+                | Some impl -> impl
+                | None -> failwith "no implementation file (keepAssemblyContents not honoured?)"
+
+            let errorLines () =
+                checkResults.Diagnostics
+                |> Array.filter (fun d ->
+                    d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+                |> Array.map (fun d ->
+                    {| Line = d.StartLine; Code = d.ErrorNumber; Message = d.Message |})
+
+            match kind with
+            | "uses" ->
+                let uses =
+                    checkResults.GetAllUsesOfAllSymbolsInFile()
+                    |> Seq.map projectSymbolUse
+                    |> Seq.toArray
+                JsonSerializer.Serialize({| Uses = uses |}, compact)
+            | "attrs" ->
+                let attrs = collectAttrRecords parseResults.ParseTree checkResults
+                JsonSerializer.Serialize({| Attrs = attrs; Errors = errorLines () |}, compact)
+            | "types" ->
+                let exprs = collectExprTypes true (implFile ())
+                JsonSerializer.Serialize({| File = absolute; Exprs = exprs |}, compact)
+            | "binder-types" ->
+                let binders = collectBinderTypes (implFile ())
+                JsonSerializer.Serialize({| File = absolute; Binders = binders |}, compact)
+            | "overloads" ->
+                let calls = collectOverloads (implFile ())
+                JsonSerializer.Serialize({| File = absolute; Calls = calls; Errors = errorLines () |}, compact)
+            | other ->
+                failwithf "unknown kind %s" other
+        with ex ->
+            JsonSerializer.Serialize({| BatchError = ex.Message |}, compact)
+
+    let mutable line = Console.In.ReadLine()
+    while not (isNull line) do
+        let trimmed = (Option.ofObj line |> Option.defaultValue "").Trim()
+        if trimmed <> "" then
+            Console.Out.WriteLine(respond trimmed)
+            Console.Out.Flush()
+        line <- Console.In.ReadLine()
+
+/// [`fileBatchCore`] on a large-stack thread, mirroring [`dumpAstBatch`]: the
+/// `types` / `binder-types` projections serialise a deeply-nested typed tree,
+/// which can recurse past the default 1 MB stack and take the whole resident
+/// child down with an uncatchable `StackOverflowException`. 512 MB clears it.
+let private fileBatch () =
+    let mutable captured: exn option = None
+    let worker =
+        System.Threading.Thread(
+            (fun () ->
+                try fileBatchCore ()
+                with ex -> captured <- Some ex),
+            512 * 1024 * 1024)
+    worker.Start()
+    worker.Join()
+    match captured with
+    | Some ex -> raise ex
+    | None -> ()
+
 /// Tolerant, per-file census driver for the Phase-3 *type* scoping measurement
 /// (`crates/sema/tests/types_census.rs`) — the type-side sibling of
 /// [`dumpUsesCensusBatchCore`]. Reads source paths from stdin, one per line, and
@@ -6145,8 +6402,8 @@ let private usage () =
     eprintfn "  ast-batch                read paths from stdin, emit ParsedInput JSONL"
     eprintfn "  parse-bench [N]          read paths from stdin, parse-only throughput bench (N iters, cache off)"
     eprintfn "  parse-bench-cached [N]   as parse-bench but with the parse cache sized to the whole input"
-    eprintfn "  tokens-raw               dump pre-LexFilter token stream"
-    eprintfn "  tokens-filtered          dump post-LexFilter token stream"
+    eprintfn "  tokens-raw [--compact]      dump pre-LexFilter token stream"
+    eprintfn "  tokens-filtered [--compact] dump post-LexFilter token stream"
     eprintfn "  tokens-filtered-batch    read paths from stdin, emit JSONL"
     eprintfn "  tokens-raw-batch         read paths from stdin, emit JSONL"
     eprintfn "  entities <dll-path>      dump entity skeletons of a managed DLL"
@@ -6160,6 +6417,8 @@ let private usage () =
     eprintfn "  types-census-batch       read paths from stdin; emit per-file classified expr types (Phase-3 census)"
     eprintfn "  binder-types <source-path>  dump per-binder inferred types (Phase-3 binder-type oracle)"
     eprintfn "  overloads <source-path>  dump the chosen overload at each call node (overload-resolution oracle)"
+    eprintfn "  file-batch               resident single-file oracle: one JSON request/line {kind,path,refs}, one compact JSON response/line"
+    eprintfn "  uses-project-batch       resident project oracle: one JSON request/line {paths,refs,defines,langversion}, one compact {Files} response/line"
     2
 
 [<EntryPoint>]
@@ -6190,10 +6449,16 @@ let main argv =
         parseBench true (int iterations)
         0
     | [| "tokens-raw"; sourcePath |] ->
-        dumpTokens (Path.GetFullPath sourcePath) false
+        dumpTokens (Path.GetFullPath sourcePath) false false
+        0
+    | [| "tokens-raw"; sourcePath; "--compact" |] ->
+        dumpTokens (Path.GetFullPath sourcePath) false true
         0
     | [| "tokens-filtered"; sourcePath |] ->
-        dumpTokens (Path.GetFullPath sourcePath) true
+        dumpTokens (Path.GetFullPath sourcePath) true false
+        0
+    | [| "tokens-filtered"; sourcePath; "--compact" |] ->
+        dumpTokens (Path.GetFullPath sourcePath) true true
         0
     | [| "tokens-filtered-batch" |] ->
         dumpTokensBatch true
@@ -6216,6 +6481,9 @@ let main argv =
     | [| "uses-project" |] ->
         dumpUsesProject ()
         0
+    | [| "uses-project-batch" |] ->
+        usesProjectBatch ()
+        0
     | [| "uses-census-batch" |] ->
         dumpUsesCensusBatch ()
         0
@@ -6233,5 +6501,8 @@ let main argv =
         0
     | [| "overloads"; sourcePath |] ->
         dumpOverloads (Path.GetFullPath sourcePath)
+        0
+    | [| "file-batch" |] ->
+        fileBatch ()
         0
     | _ -> usage ()
