@@ -11,18 +11,25 @@
 > 2026-07-18 through the real `fcs-dump uses` / `types` / `binder-types`
 > oracles.
 >
-> **The headline dependency, stated up front:** every user-visible CE payoff is
-> a *type* (hover on a `let!` binder, dot-completion on a CE-bound value), and
-> every realistic builder's types are generic instantiations (`Async<'T>`,
+> **The headline dependencies, stated up front:** every user-visible CE payoff
+> is a *type* (hover on a `let!` binder, dot-completion on a CE-bound value),
+> and every realistic builder's types are generic instantiations (`Async<'T>`,
 > `option<'T>`, `Task<'T>`). `Ty::Named` carries no generic-argument list today
 > ([`crates/sema/src/ty.rs`](../crates/sema/src/ty.rs), the documented
 > "no-args-yet" decision), and member wakes defer generic methods
 > ([overload-resolution-plan.md §5](overload-resolution-plan.md)). So the
-> typing stages of this plan (CE-4 onward) are **hard-gated on the `Ty`
-> generic-args substrate**, which the overload plan already names as needing
-> its own pre-requisite plan. The stages before that gate (the oracle harness,
-> the body-furniture typing, the pure desugarer core) are real, independently
-> valuable, and unblocked today.
+> typing stages of this plan (CE-4 onward) are **hard-gated on the CE-P0
+> substrate** — `Ty` generic args (which the overload plan already names as
+> needing its own pre-requisite plan) *plus* three metadata/plumbing gaps a
+> GPT-5.6 review surfaced (2026-07-18): F# **argument-group recovery**
+> (`MethodLike::arg_group_count` is `None` for every F#-assembly method, so
+> the OV-6.1 curry gate would defer `AsyncBuilder.Bind` even with generics),
+> **attribute projection** (`MethodLike::custom_attrs` is initialized empty,
+> so the `[<CustomOperation>]`/`[<DefaultValue>]` gates in §CE-D2 are
+> unimplementable today), and **contextual lambda/pattern typing** (CE-1b).
+> The stages before that gate (the oracle harness, the body-furniture typing,
+> the pure desugarer core) are real, independently valuable, and unblocked
+> today.
 
 ## 1. What already works, and what this plan actually adds
 
@@ -211,19 +218,41 @@ rowan node synthesis, no framework: data in, data out, and the translation is
 inspectable and property-testable in isolation (per `gospel.md`,
 data descriptions over behavioural abstractions).
 
+One wrinkle the wake reuse must not inherit: `wake_member` records a
+`member_resolutions` entry at its `use_range`, and a synthesized call's
+coordinates are a *user-visible* span (§2.5 — the `Return` call sits at the
+returned expression's range). Hover consults `member_resolutions` before
+expression types, so the plain wake would show `AsyncBuilder.Return` at a
+literal — precisely the synthetic resolutions FCS's sink drops. `CeCore`
+`Call`s therefore use a **no-record** variant of the wake (a flag or a
+sibling constraint), and CE-0 asserts the absence: no `member_resolutions`
+entry may appear at any synthesized-call span.
+
 ### CE-D2. `BuilderMethods`: probe the builder like FCS does, or defer
 
 FCS's existence probes see **extension members in scope** (§2.1) — the same
 landmine as overload resolution's P15. `BuilderMethods` is built from the
-builder's resolved entity via the `AssemblyEnv`/project-item member model,
-gated exactly like OV-6: if the `ExtensionScope` says an in-scope extension
-*might* contribute a member with any name the translation would probe
-(`Bind`, `Delay`, `Run`, `Quote`, `Source`, `BindReturn`, …), **defer the
-whole CE**. This gate is what makes `task` defer naturally (its builder
-surface lives in `TaskBuilderExtensions` priority extensions —
-[`resolve_fsharp_core.rs`](../crates/sema/tests/all/resolve_fsharp_core.rs)
-already pins them unmodelled) while `async`/`option`-style builders pass.
-Skipped members on the entity (`Entity::skipped_members`) ⇒ defer likewise.
+builder's resolved **assembly** entity (project-defined builders are out of v1
+scope entirely — see CE-D4), and two gates protect it:
+
+- **The extension gate is *stricter* than OV-6's name-keyed refinement.** For
+  overloads, an extension only matters if it shares the called name, so EX-1's
+  by-name gate suffices. Here an in-scope extension of **any** name can carry
+  `[<CustomOperation>]` and flip the whole CE query-like (§2.4) — so a
+  name-keyed check is unsound. Rule: if the builder type has *any* in-scope
+  extension surface whose members' **attributes** cannot be completely
+  enumerated, defer the whole CE. Once CE-P0's attribute projection covers the
+  extension-member index, a `Known` surface with no `[<CustomOperation>]`
+  carrier re-admits the CE (and its members then join the by-name existence
+  probes). This gate is what makes `task` defer naturally (its builder surface
+  lives in `TaskBuilderExtensions` priority extensions —
+  [`resolve_fsharp_core.rs`](../crates/sema/tests/all/resolve_fsharp_core.rs)
+  already pins them unmodelled) while `async`/`option`-style builders pass.
+- Skipped members on the entity (`Entity::skipped_members`) ⇒ defer likewise;
+  so does any member whose attributes are unreadable, since the
+  `[<CustomOperation>]`/`[<DefaultValue>]` rules below key on them
+  (`MethodLike::custom_attrs` is empty today — the CE-P0 attribute-projection
+  prerequisite).
 
 Member-directed choices are reproduced **exactly or not at all**:
 
@@ -235,15 +264,25 @@ Member-directed choices are reproduced **exactly or not at all**:
   final-`do!` forms (rare members; feature-gated, see langversion below).
 - `Quote` present, or any `[<CustomOperation>]` member, or the builder is
   `query` ⇒ defer the CE wholesale (§2.4).
-- `Delay`/`Run`/`Source` presence is *modelled* (they only add calls, they
-  don't fork the translation), from CE-4 on.
+- `Delay` presence is *modelled* from CE-4 on (it only adds the outer wrap and
+  the `Combine`/`While`/`Try` thunks). **`Source` or `Run` present ⇒ defer the
+  whole CE** until the data-gated tail (§6) models them — each inserts calls
+  that change the range picture and, for `Run`, the whole-CE type. (`async`
+  has neither, so v1 is unaffected.)
 
 **Langversion.** The translation is feature-gated in several places (AndBang,
-ReturnFromFinal, ImplicitYield, …). We assume latest-langversion, matching the
-oracle; every place where a *lower* real-world langversion would produce a
-different translation is covered by a defer rule above (the feature-dependent
-choices are exactly the `BindReturn`/`…Final`/implicit-yield/custom-op forms we
-defer), so mis-assumption can cause deferral, never wrongness.
+ReturnFromFinal, ImplicitYield, typed and wildcard bang binders, …). We assume
+latest-langversion, matching the oracle, and the `BindReturn`/`…Final`/
+implicit-yield/custom-op defer rules above cover most divergence — but not all
+of it: a project pinned to an older `<LangVersion>` rejects `and!` outright,
+and typed (`let! x : T = …`) and wildcard (`use! _ = …`) binders are
+feature-gated too, so "assume latest" can commit types for code the project's
+own compiler rejects. `infer_file` currently receives no language version.
+Rule: the version-sensitive shapes (`and!` in CE-6; typed/wildcard bang
+binders wherever they first commit) land **only alongside** LangVersion
+threading from the `.fsproj` evaluation (the property is already in the
+evaluated table; an unpinned project means latest), with "pinned below the
+feature" ⇒ defer that shape.
 
 ### CE-D3. The commit discipline: head + binders first, shadow-masked interiors later
 
@@ -274,19 +313,30 @@ and read-off stays ground-only.
 ### CE-D4. When is the builder's type known?
 
 FCS checks the builder expression before translating (§2.1). Our generation
-pass mirrors that with two tiers:
+pass mirrors that with two tiers — both restricted to **assembly-defined
+builder types**:
 
 - **Generation-time-known** (CE-4): the head resolves (via the resolver's
-  `Resolution`) to an assembly module value / in-file annotated binder whose
-  type bridges to a ground `Ty` without unification — `async` ⇒
-  `AsyncBuilder`. Desugar immediately, generate constraints inline.
+  `Resolution`) to an assembly module value whose type bridges to a ground
+  `Ty` without unification — `async` ⇒ `AsyncBuilder`. Desugar immediately,
+  generate constraints inline.
 - **Solve-time-known** (CE-8): otherwise emit a suspended `CeExpand`
   constraint keyed on the head's type variable — the `HasMember` pattern —
-  and desugar+generate at wake, when unification grounds the builder type
-  (the in-file `let opt = OptionBuilder()` case). This makes the solver's
-  constraint set grow mid-solve; the loop already tolerates that
+  and desugar+generate at wake, when unification grounds the builder type to
+  an assembly entity (e.g. a `let b = async in b { … }` chain). This makes
+  the solver's constraint set grow mid-solve; the loop already tolerates that
   (`wake_member` pushes `Eq`s), but the termination argument must be restated,
   which is why it is its own stage.
+
+**Project-defined builders (the P2/P6 `OptionBuilder` shape) are out of v1
+scope**, deferred with a named trigger (§5): the same-file member index
+(`TypeMemberSet`) stores member names and `DefId`s but **no signatures**, so
+neither `BuilderMethods`' attribute checks nor the method wakes can run
+against an in-file builder, and constructor inference cannot even ground
+`OptionBuilder()` today. A project-type **member-signature substrate** is the
+prerequisite, and it is deliberately not smuggled into this plan. The P2/P6
+differential fixtures still earn their keep before then: they pin the FCS side
+and assert we defer silently.
 
 ## 5. What stays deferred (each sound, with its trigger)
 
@@ -301,6 +351,14 @@ pass mirrors that with two tiers:
   head/binder commits may later be recovered once extension-member *resolution*
   lands (extension-scope-enumeration-plan.md is the dependency), interior
   spans likely never (P4).
+- **Project-defined builders** (the P2/P6 `OptionBuilder` shape) — out of v1
+  scope entirely (CE-D4): blocked on a project-type member-signature substrate
+  (the same-file `TypeMemberSet` carries names, not signatures) plus
+  constructor typing for project types. Trigger: that substrate landing, which
+  several other piles also want.
+- **`Source`/`Run` builders** — defer on presence (CE-D2); each inserts calls
+  that change the range picture and (`Run`) the whole-CE type. `async` has
+  neither.
 - **`BindReturn` / `BindN` / `MergeSources` ladder** — deferred until CE-6.
 - **`ReturnFromFinal`/`YieldFromFinal`, `[<DefaultValue>]`-`Zero`, implicit
   yield** — defer on presence (CE-D2); revisit on corpus evidence.
@@ -315,18 +373,31 @@ Implement this plan with each stage on its own branch, stacked as necessary on
 previous branches, so that a reviewer can review each branch in isolation.
 Oracle first, then infrastructure, then engine — the OV discipline.
 
-### CE-P0 — prerequisite (separate plan): `Ty` generic args + generic-method wakes
+### CE-P0 — prerequisite (separate plan): the typing substrate
 
 **Dependencies:** none. **Blocks:** CE-4 onward.
 
-The substrate the header names: `Ty::Named` grows an argument list;
-unification, rendering, the assembly-signature bridge, and the member wake
-learn instantiation (a generic method's typars unified from argument/receiver
-types, its return instantiated). Needs its own design doc in the
-overload-plan mould — it also unblocks the OV §5 generic deferrals and is the
-single highest-leverage piece of this whole area. **Oracle:** the existing
-member/overload differentials extended with generic-instantiation cases;
-`AsyncBuilder.Bind`-shaped probes.
+The substrate the header names, three legs, each currently absent:
+
+- **`Ty` generic args + generic-method wakes.** `Ty::Named` grows an argument
+  list; unification, rendering, the assembly-signature bridge, and the member
+  wake learn instantiation (a generic method's typars unified from
+  argument/receiver types, its return instantiated). Also unblocks the OV §5
+  generic deferrals — the single highest-leverage piece of this whole area.
+- **F# argument-group recovery.** OV-6.1 sets `MethodLike::arg_group_count =
+  None` for every F#-assembly method, and the wake's curry gate rejects any
+  multi-parameter candidate not provably `Some(1)` — so `AsyncBuilder.Bind`
+  (one tupled group, two args) would defer even with generics. Recover
+  argument groups from the pickle's arity info for F# members.
+- **Attribute projection.** `MethodLike::custom_attrs` is initialized empty;
+  the CE-D2 `[<CustomOperation>]`/`[<DefaultValue>]` gates need real attribute
+  reads on assembly members **including the extension-member index** (the
+  CE-D2 extension gate keys on them).
+
+Needs its own design doc in the overload-plan mould. **Oracle:** the existing
+member/overload differentials extended with generic-instantiation,
+F#-argument-group, and attribute-read cases; `AsyncBuilder.Bind`-shaped
+probes.
 
 ### CE-0 — probe pinning + the CE differential harness
 
@@ -336,11 +407,14 @@ A new `crates/sema/tests/all/infer_ce_diff.rs` case group (plus its `mod`
 line): runs curated CE snippets through `resolve_file` + `infer_file` with the
 BCL+FSharp.Core `AssemblyEnv` fixture, parses `fcs-dump types`/`uses`, and
 asserts (a) every type we emit inside a CE agrees with FCS's node at that
-range, (b) the §3 probe facts as regressions (no builder-method uses; binder
+range, (b) no `member_resolutions` entry at any synthesized-call span
+(CE-D1's no-record rule — FCS's sink drops synthetic method uses, so must
+we), (c) the §3 probe facts as regressions (no builder-method uses; binder
 DEFs; head-span/binder-span FCS shapes), so an FCS upgrade that changes the
 sink or range conventions fails loudly. Green today because we emit nothing.
-**Oracle:** the harness itself (trivially green on all-defer, direction (a)
-vacuous), plus the probe regressions (direction (b) non-vacuous immediately).
+**Oracle:** the harness itself (trivially green on all-defer, directions
+(a)/(b) vacuous), plus the probe regressions (direction (c) non-vacuous
+immediately).
 
 ### CE-1 — body furniture: expression-level `let` and `Sequential` in infer
 
@@ -358,6 +432,24 @@ generalise); CE bodies are just the loudest victim.
 (`let f x = let y = x + 1 in y * 2` ⇒ `y : Int32` at its span, body typed);
 all existing suites green.
 
+### CE-1b — contextual lambdas and pattern typing
+
+**Dependencies:** CE-1. **Implements:** the continuation shapes §2.2 emits,
+which the current machinery cannot type (review finding, 2026-07-18).
+
+Two gaps: the `Gen` lambda arm only walks its body and returns `None` — it
+never produces a `Ty::Fun` an enclosing call could unify against — and
+parameter typing handles only top-level simple parameters, so a
+deconstruction pattern (`let! (a, b) = …`, `for Ctor x in …`) can never
+receive `def_type`s. Add *checked-mode* lambda/match-lambda typing (an
+expected domain type pushed into the pattern, binders typed from it) — the
+mechanism CE-4 uses to flow `Bind`'s continuation-parameter type into the
+`let!` binders, and independently useful for ordinary
+lambda-as-known-signature-argument positions. **Oracle:** non-CE snippets
+through the types differential (a lambda argument to a known
+single-candidate method types its parameter; tuple-pattern `let` binders get
+types); existing suites green.
+
 ### CE-2 — builder-head callee typing (assembly value refs)
 
 **Dependencies:** none (parallel). **Implements:** CE-D4 tier 1.
@@ -365,8 +457,8 @@ all existing suites green.
 `infer_callee`/value-reference typing learns the case where the resolver
 already resolved an ident to an **assembly module value** with a
 non-generic, bridgeable type: emit that type instead of `mark_incomplete`.
-Scoped deliberately to nullary `Ty` bridges (`AsyncBuilder`,
-`OptionBuilder`-style classes); generic values stay deferred (CE-P0
+Scoped deliberately to nullary `Ty` bridges (`AsyncBuilder`-style classes);
+generic values stay deferred (CE-P0
 territory). **Oracle:** `binder-types` differential — `let b = async` ⇒
 `b : AsyncBuilder` on both sides; existing member-access differentials
 unchanged.
@@ -380,32 +472,43 @@ non-query subset of §2.2 (everything except the CE-D2 defer list).
 `desugar`, with the §2.2 table transcribed — including the range each
 synthesized node carries and its synthetic bit (§2.5), because CE-7's shadow
 mask reads them. No inference wiring. **Oracle:** property tests —
-(1) *splice preservation*: every user sub-expression of the body appears in
-the output exactly once, range untouched; (2) *method-set closure*: every
-emitted `Call.method` ∈ the probe set the `BuilderMethods` affirmed;
-(3) *defer monotonicity*: removing a method from `BuilderMethods` either
-leaves the output identical or turns it into `CeDefer` — never a different
-successful translation; (4) *binder preservation*: the multiset of
-binder-pattern ranges is invariant; (5) determinism. Plus fixture
-transcriptions of §2.2 rows (`let!`+`return` ⇒ `Bind`+`Return` nesting, the
-`use!` `Using`-inside-`Bind` shape, `while!`'s pre-rewrite, …).
+(1) *splice provenance*: every user sub-expression of the body appears in the
+output with exactly the multiplicity its construct's §2.2 rewrite specifies,
+range untouched — 1 for most, but `while!` splices its guard into both the
+initial and the loop bind, and `use!` duplicates its pattern across the outer
+`Bind` and inner `Using` lambdas, so the expectation is per-construct, not a
+blanket "exactly once"; (2) *method-set closure*: every emitted `Call.method`
+∈ the probe set the `BuilderMethods` affirmed; (3) *removal behaviour*, split
+by method class: removing a **required** method turns the translation into
+`CeDefer` naming it (mirroring FCS's `tcRequireBuilderMethod` error), while
+removing an **optional** method (`Delay`, `Source`, `Run`, `BindReturn`, …)
+produces exactly its documented fallback (wrapper dropped, `Bind`+`Return`
+instead of `BindReturn`, …) — a blanket "same output or defer" monotonicity
+is false for the member-directed choices and would reject faithful rewrites;
+(4) *binder provenance*: binder-pattern ranges appear with their
+construct-specified multiplicities (`use!` twice, synthesized binders
+accounted for); (5) determinism. Plus fixture transcriptions of §2.2 rows
+(`let!`+`return` ⇒ `Bind`+`Return` nesting, the `use!` `Using`-inside-`Bind`
+shape, `while!`'s pre-rewrite, …).
 
 ### CE-4 — the straight-line engine: `Bind`/`Return`/`ReturnFrom`/`Delay`
 
-**Dependencies:** CE-P0, CE-1, CE-2, CE-3, CE-0's harness.
+**Dependencies:** CE-P0, CE-1, CE-1b, CE-2, CE-3, CE-0's harness.
 **Implements:** CE-D3 commits 1–2, CE-D4 tier 1.
 
 The `App(head, Computation)` route in generation: head's type ground and
-`Named` ⇒ entity lookup ⇒ `BuilderMethods` probe (CE-D2 gates) ⇒ `desugar` ⇒
-interpret `CeCore` into constraints (each `Call` a `HasMember` method wake on
-the builder type; continuation lambdas typed with the existing lambda
-machinery; binder `def_type`s from the continuation parameter). Commits: head
-span + binder spans only. `async` and in-file-annotated builders with
-`let!`/`do!`(non-final)/`return`/`return!` bodies. **Oracle:** CE-0's
-differential goes non-vacuous — P1/P2-shaped snippets assert head + binder
-agreement both against `types` and (for binders) the resolve-side DEF picture;
-defer-shape tests pin every CE-D2 gate firing silently (task, query,
-BindReturn-present, extension-surface builders).
+`Named` ⇒ assembly-entity lookup ⇒ `BuilderMethods` probe (CE-D2 gates) ⇒
+`desugar` ⇒ interpret `CeCore` into constraints (each `Call` a **no-record**
+`HasMember` method wake on the builder type, per CE-D1; continuation lambdas
+typed with CE-1b's checked-mode machinery; binder `def_type`s from the
+continuation parameter). Commits: head span + binder spans only. Target:
+`async` with `let!`/`do!`(non-final)/`return`/`return!` bodies. **Oracle:**
+CE-0's differential goes non-vacuous — P1-shaped snippets assert head +
+binder agreement against `types` (and the resolve-side DEF picture for
+binders); P2/P6-shaped project-builder snippets pin FCS's side and assert we
+defer; defer-shape tests pin every CE-D2 gate firing silently (task, query,
+BindReturn-present, `Source`/`Run`-present, extension-surface builders); the
+CE-0 synthetic-span `member_resolutions` assertion goes non-vacuous.
 
 ### CE-5 — statement forms: `Zero`/`Combine`/`Delay`, loops, `try`, `use`
 
@@ -423,10 +526,13 @@ required-method absence defers silently (behaviour tests).
 choices; lifts the CE-D2 `BindReturn` defer.
 
 Model `convertSimpleReturnToExpr` (CCE.fs:2704–2792) and the
-`BindNReturn`/`BindN`/`MergeSourcesK` selection. **Oracle:** P6-shaped
-differentials; a builder-method-subset matrix (with/without `BindReturn`,
-varying `MergeSourcesK` depth) asserting we pick FCS's translation — observable
-through the range/type picture — or defer.
+`BindNReturn`/`BindN`/`MergeSourcesK` selection. `and!` is feature-gated, so
+this stage carries the CE-D2 LangVersion wiring: thread the evaluated
+`LangVersion` property into `infer_file`'s inputs, defer `and!` (and the other
+version-sensitive binder shapes) when pinned below the feature. **Oracle:**
+P6-shaped differentials; a builder-method-subset matrix (with/without
+`BindReturn`, varying `MergeSourcesK` depth) asserting we pick FCS's
+translation — observable through the range/type picture — or defer.
 
 ### CE-7 — interior spans via the shadow mask
 
@@ -447,15 +553,20 @@ The suspended `CeExpand` wake for inference-typed builder heads, with the
 restated termination argument. Then the house endgame: a generative
 differential in the `overload_corpus_diff` mould — a bounded grammar of CE
 bodies × builder method subsets, rendered to source, both sides diffed via the
-resident oracle pool; assert the two-sided property (we-commit ⇒ FCS-agrees;
-plus the defer-shape floors so coverage is observed, not assumed).
+resident oracle pool. With project builders out of scope, the generated
+builders live in an **emitted fixture assembly** (the OV-9 pattern — one
+universe, two views; C#-authored builders are legal CE builders and sidestep
+the F#-argument-group leg for the matrix, while `async` snippets keep it
+covered). Assert the two-sided property (we-commit ⇒ FCS-agrees; plus the
+defer-shape floors so coverage is observed, not assumed).
 **Oracle:** the sweep itself, with commit floors à la OV-9's `MIN_COMMITS`.
 
 ### Data-gated tail (no stage numbers; triggers in §5)
 
 Custom-op keyword name resolution; `Source`/`Quote`/`Run` builders beyond the
-`Delay`-only wrap; `task` head-span recovery behind extension-member
-resolution; `seq`/comprehensions; langversion modelling from the `.fsproj`.
+`Delay`-only wrap; project-defined builders behind the member-signature
+substrate; `task` head-span recovery behind extension-member resolution;
+`seq`/comprehensions; the residual langversion shapes beyond CE-6's wiring.
 
 ## 7. Checklist for the implementing agent
 

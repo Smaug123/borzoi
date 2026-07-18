@@ -462,8 +462,9 @@ in [`sema-phase3-impl-plan.md`](sema-phase3-impl-plan.md)):
   constraints) / **computation-expression desugaring** / **units of measure** —
   SRTP and units until the oracle shows a corpus that needs them; CE desugaring
   has been pulled forward (issue #30) and now has its own sub-plan,
-  [`ce-desugaring-plan.md`](ce-desugaring-plan.md), gated on a `Ty`
-  generic-args prerequisite.
+  [`ce-desugaring-plan.md`](ce-desugaring-plan.md), gated on typing-substrate
+  prerequisites (`Ty` generic args, F# argument-group recovery, attribute
+  projection).
   [D9](#d9-scoping-evidence-the-bucket-census) found SRTP/CE/units statistically
   absent, and active-pattern / union *case* resolution to be B1 name resolution,
   not inference — it belongs with Phase 2.3's long tail, not here. Per-pile detail
