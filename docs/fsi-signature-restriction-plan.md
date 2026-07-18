@@ -1,7 +1,8 @@
 # `.fsi` signature files restrict the paired `.fs`'s cross-file exports
 
-> **Status:** design + implementation plan. Not started. Branch
-> `fix-signature-hidden-union-case-names` / worktree `fsi-restricts-exports`.
+> **Status:** Stage 1 implemented (with the §screen correction below —
+> a 2026-07-18 probe refuted one cell of the original Stage-1 matrix);
+> Stages 2/3+ not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -88,8 +89,10 @@ top-level forms) whose `.fsi` exposes only `shown`:
 | use | verdict |
 |---|---|
 | `Shared.shown` (in sig) | resolves to the **`.fsi`** (project) |
+| `Shared.shown` (in sig, **also in the assembly**) | resolves to the **`.fsi`** — the sig-exposed member shadows the merged assembly member (probe 2026-07-18) |
 | `Shared.bar` (hidden by sig, **also in the assembly**) | resolves to the **assembly** — `RefLib`, **no diagnostic** |
 | `Shared.asmOnly` (assembly only) | resolves to the assembly |
+| `Shared.shown` / `Shared.bar` from a file **between** the sig and the impl (assembly collision) | both resolve to the **assembly** — the merged module publishes only at the impl's slot (probe 2026-07-18) |
 
 Confirmed for both a namespaced `namespace ProbeNs; module Shared` and a
 top-level `module Foo`. **A signatured project module merges with a same-named
@@ -225,7 +228,33 @@ plus the ignored corpus differentials.
 ### Stage 1: interleave signatures; drop paired impls' cross-file exports
 
 **Dependencies:** none. **Behaviour change:** removes the over-export bug +
-re-enables the fold; adds no new commits.
+re-enables the fold; adds no new *project* commits (assembly fall-through
+commits are gated by the screen below).
+
+**Correction (2026-07-18, probe-forced): the signature screen.** The original
+Stage-1 matrix had a hole: with every value export dropped and no signature
+identity emitted, a **sig-exposed** name that *also* collides with a merged
+referenced-assembly member would fall through and commit to the assembly —
+but FCS binds the **`.fsi`** there (probe: `Shared.shown` with a colliding
+`RefLib.dll` → the `.fsi`; the original sweep's RefLib exported only
+`bar`/`asmOnly`, so this cell was never probed). Since Stage 1 cannot tell a
+hidden member from an exposed one without reading the signature, it carries a
+**screen** per `.fsi` (`SigScreen`): the module roots the signature constrains
+plus a sound *over-approximation* of every name it could expose (each
+non-trivia token's `idText` and its ident-shaped pieces). An assembly reading
+under a screened root whose residual segments touch the name set **defers**
+(`ProjectItems::sig_screened_path`, consulted by the tiered walk's shadow
+predicate, plus the open-fold counterpart); a residual whose names are absent
+from the whole signature text provably cannot be signature-exposed and falls
+through exactly as FCS does. The screen is pushed at the **signature's**
+Compile slot — which over-defers *intervening* files (FCS resolves those to
+the assembly, probed above); deferral is the sound direction, and it keeps
+the screen inside the signature's own threaded contribution for the
+incremental fold. Bare names after an `open` of a signatured module all defer
+(the module is marked hidden-valued, so the conservative project-module-open
+machinery shadows earlier opens — load-bearing: a sig-exposed name must
+shadow an earlier open's same-named value); the qualified forms keep the
+per-name fall-through.
 
 - Introduce `SourceFile` and rework `resolve_project` / the incremental fold /
   `thread_forward` to iterate `&[(SourceFile, QualifiedName)]`. A
@@ -249,12 +278,15 @@ re-enables the fold; adds no new commits.
   project.
 
 **Why it is sound:** the paired impl's value/case identities are dropped and the
-sig emits none yet, so the fold gains **no new commit**; a hidden member resolves
-to the merged assembly or `Deferred`, exactly as FCS (probe). Timing is free: the
-module publishes no identity, so intervening files (probe L) and self-references
-(probes K/K2) see nothing — FCS's FS0039. Paired modules under-resolve (their
-exposed names go to assembly/`Deferred` until Stage 2) — the honest D5 cost.
-Unsigned modules (probes J, M, X3) fold for the first time.
+sig emits none yet, so the fold gains **no new project commit**; a member the
+signature provably cannot expose resolves to the merged assembly or `Deferred`,
+exactly as FCS (probe), while a possibly-exposed one is screen-deferred (FCS
+binds the `.fsi`; committing the assembly there would be wrong — the
+correction above). Timing is free: the module publishes no identity, so
+intervening files (probe L) and self-references (probes K/K2) see nothing —
+FCS's FS0039. Paired modules under-resolve (their exposed names stay
+`Deferred` until Stage 2) — the honest D5 cost. Unsigned modules (probes J,
+M, X3) fold for the first time.
 
 **Oracle:** FCS-free `resolve_project` unit tests (a hidden `let` no longer
 resolves to the impl binder; a non-`.fsi` sibling still does); an

@@ -50,13 +50,14 @@ use std::sync::Arc;
 
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ImplFile, LongIdent, ModuleDecl,
-    ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SyntaxToken, Type, TypeDefn,
-    TypeDefnRepr,
+    ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile, SyntaxNode,
+    SyntaxToken, Type, TypeDefn, TypeDefnRepr,
 };
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
+use crate::qnof::QualifiedNameOfFile;
 
 mod assembly;
 mod bindings;
@@ -363,39 +364,272 @@ pub fn resolve_file(
     r.finish()
 }
 
+/// One Compile item as the project fold consumes it: an implementation file
+/// (`.fs`) or a **signature file** (`.fsi`), in Compile order
+/// (`docs/fsi-signature-restriction-plan.md`). msbuild and FCS both keep a
+/// signature in the Compile list immediately before (not necessarily
+/// adjacent to) the implementation it constrains; the fold pairs them by
+/// [`QualifiedNameOfFile`].
+#[derive(Debug, Clone)]
+pub enum SourceFile {
+    Impl(ImplFile),
+    Sig(SigFile),
+}
+
+impl SourceFile {
+    pub fn as_impl(&self) -> Option<&ImplFile> {
+        match self {
+            SourceFile::Impl(f) => Some(f),
+            SourceFile::Sig(_) => None,
+        }
+    }
+
+    pub fn as_sig(&self) -> Option<&SigFile> {
+        match self {
+            SourceFile::Sig(f) => Some(f),
+            SourceFile::Impl(_) => None,
+        }
+    }
+
+    /// The file's root syntax node (rowan node equality is *identity*, so this
+    /// is the incremental fold's reuse currency).
+    pub fn syntax(&self) -> &SyntaxNode {
+        match self {
+            SourceFile::Impl(f) => f.syntax(),
+            SourceFile::Sig(f) => f.syntax(),
+        }
+    }
+
+    /// The dotted path of the file's single top-level `module` header, when
+    /// the file is **module-headed** — exactly one fragment, of kind
+    /// [`ModuleOrNamespaceKind::NamedModule`]. The AST-derived half of FCS's
+    /// `QualifiedNameOfFile` (`QualFileNameOfImpls` / `QualFileNameOfSpecs`:
+    /// a singleton module fragment names the file; an anonymous, namespace-
+    /// headed, or multi-fragment file falls back to the filename). A leading
+    /// `global` segment is stripped, as FCS's post-parse does.
+    pub(crate) fn module_header_path(&self) -> Option<Vec<String>> {
+        let fragments: Vec<ModuleOrNamespace> = match self {
+            SourceFile::Impl(f) => f.modules().collect(),
+            SourceFile::Sig(f) => f.modules().collect(),
+        };
+        match &fragments[..] {
+            [only] if only.kind() == ModuleOrNamespaceKind::NamedModule => {
+                header_long_id_path(only)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl From<ImplFile> for SourceFile {
+    fn from(file: ImplFile) -> Self {
+        SourceFile::Impl(file)
+    }
+}
+
+impl From<SigFile> for SourceFile {
+    fn from(file: SigFile) -> Self {
+        SourceFile::Sig(file)
+    }
+}
+
+/// The dotted `idText` path of a top-level header's `LongIdent`, with a
+/// leading `global` segment stripped (FCS's post-parse drops the mangled
+/// global-namespace head). `None` for a header with no (or an empty) name.
+fn header_long_id_path(fragment: &ModuleOrNamespace) -> Option<Vec<String>> {
+    let li = fragment.long_id()?;
+    let mut segments: Vec<String> = li.idents().map(|t| id_text(t.text()).to_string()).collect();
+    if segments.len() > 1 && segments[0] == "global" {
+        segments.remove(0);
+    }
+    (!segments.is_empty()).then_some(segments)
+}
+
+/// One Compile item plus its [`QualifiedNameOfFile`] — the input row of
+/// [`resolve_project_files`]. The QNOF participates only in sig ↔ impl
+/// pairing; compute it with [`crate::qnof::qualified_names`] (the fold cannot
+/// derive it itself — the filename-derived case needs the file's path, which
+/// only the caller holds).
+#[derive(Debug, Clone)]
+pub struct ProjectFile {
+    pub file: SourceFile,
+    pub qnof: QualifiedNameOfFile,
+}
+
+impl ProjectFile {
+    pub fn new(file: SourceFile, qnof: QualifiedNameOfFile) -> Self {
+        ProjectFile { file, qnof }
+    }
+
+    /// Wrap an implementation file for an impl-only fold. Pairing starts at a
+    /// signature, so with no `.fsi` in the input the QNOF is never consulted
+    /// and a placeholder suffices.
+    fn impl_only(file: ImplFile) -> Self {
+        ProjectFile {
+            file: SourceFile::Impl(file),
+            qnof: QualifiedNameOfFile::placeholder(),
+        }
+    }
+}
+
+/// Wrap an impl-only Compile list for the general fold (rowan clones are
+/// reference-counted handles, so this is cheap).
+fn impl_only_files(files: &[ImplFile]) -> Vec<ProjectFile> {
+    files.iter().cloned().map(ProjectFile::impl_only).collect()
+}
+
+/// For each Compile index, the index of the **signature file** the item is
+/// the paired implementation of: a signature pairs with the first following
+/// implementation of equal [`QualifiedNameOfFile`] (probe X3; FCS's
+/// `tcsRootSigs` consumed by the next same-QNOF impl). A later same-QNOF
+/// signature replaces an unconsumed earlier one, and a second same-QNOF
+/// implementation pairs with nothing — both are FCS *errors* (duplicate
+/// signature / implementation); sema is lenient and keeps the deterministic
+/// reading.
+fn paired_signature_of(files: &[ProjectFile]) -> Vec<Option<usize>> {
+    let mut pending: HashMap<&str, usize> = HashMap::new();
+    let mut paired = vec![None; files.len()];
+    for (i, pf) in files.iter().enumerate() {
+        match &pf.file {
+            SourceFile::Sig(_) => {
+                pending.insert(pf.qnof.text(), i);
+            }
+            SourceFile::Impl(_) => {
+                if let Some(sig) = pending.remove(pf.qnof.text()) {
+                    paired[i] = Some(sig);
+                }
+            }
+        }
+    }
+    paired
+}
+
+/// A `.fsi` file's Stage-1 contribution — see
+/// [`SigScreen`](model::SigScreen): the module roots it constrains (top-level
+/// `module` headers; modules directly under a `namespace` fragment), the
+/// signature's `[<AutoOpen>]` verdicts (authoritative — conclusion 6), and
+/// the over-approximated name set (every non-trivia token's `idText` plus its
+/// ident-shaped pieces, so a name inside a composite token — an
+/// active-pattern `(|Even|Odd|)` — is covered however the lexer tokenises
+/// it). Over-approximation only ever defers.
+fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
+    let mut roots = Vec::new();
+    let mut auto_open_nested = Vec::new();
+    for fragment in sig.modules() {
+        match fragment.kind() {
+            ModuleOrNamespaceKind::NamedModule => {
+                if let Some(path) = header_long_id_path(&fragment) {
+                    roots.push(model::SigRoot {
+                        path,
+                        auto_open: attrs_auto_open(fragment.attributes()),
+                    });
+                }
+            }
+            ModuleOrNamespaceKind::DeclaredNamespace | ModuleOrNamespaceKind::GlobalNamespace => {
+                let ns: Vec<String> = fragment
+                    .long_id()
+                    .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
+                    .unwrap_or_default();
+                for decl in fragment.sig_decls() {
+                    if let SigDecl::NestedModule(nm) = decl {
+                        let Some(li) = nm.long_id() else { continue };
+                        let mut path = ns.clone();
+                        path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                        let auto_open = attrs_auto_open(nm.attributes());
+                        if auto_open {
+                            auto_open_nested.push(path.clone());
+                        }
+                        roots.push(model::SigRoot { path, auto_open });
+                    }
+                }
+            }
+            ModuleOrNamespaceKind::Anon => {}
+        }
+    }
+    Arc::new(model::SigScreen {
+        roots,
+        names: sig_token_names(sig),
+        auto_open_nested,
+    })
+}
+
+/// The signature's over-approximated exposable-name set: any name a `.fsi`
+/// can expose (a `val`, a union case, a record field, an exception, an
+/// active-pattern case name, …) necessarily appears in its token stream, so
+/// collecting every non-trivia token's `idText` — plus each token's
+/// ident-shaped pieces — is a sound over-approximation. Trivia (whitespace,
+/// comments, directives, inactive code) is excluded: a name mentioned only in
+/// a comment must not screen.
+fn sig_token_names(sig: &SigFile) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for token in sig
+        .syntax()
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        if token.kind().is_trivia() {
+            continue;
+        }
+        let text = id_text(token.text());
+        names.insert(text.to_string());
+        for piece in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')) {
+            if !piece.is_empty() && piece != text {
+                names.insert(piece.to_string());
+            }
+        }
+    }
+    names
+}
+
 /// Resolve a whole project: fold [`resolve_file`] over the files in Compile
 /// order (F# is order-sensitive across files — a file references only itself
 /// and earlier files), threading each file's exports into the next file's
 /// [`ProjectItems`]. Pure: the caller (the LSP shell) supplies the
 /// Compile-ordered parsed files and the assembly environment.
+///
+/// The impl-only convenience form; a project whose Compile list carries
+/// `.fsi` signature files goes through [`resolve_project_files`].
 pub fn resolve_project(files: &[ImplFile], assemblies: &AssemblyEnv) -> ResolvedProject {
-    resolve_project_impl(files, assemblies, None)
+    resolve_project_files_impl(&impl_only_files(files), assemblies, None)
 }
 
-/// Like [`resolve_project`], but tags each file's per-file `resolve_file` span
-/// with its path (`labels[i]`, parallel to `files`) so a profiling build can
-/// attribute the fold's cost per Compile item in the trace. The resolution
-/// result is identical — `labels` affects only the emitted span. Present only
-/// under the `otel` feature (the sole build that installs a subscriber).
+/// Resolve a whole project whose Compile list may interleave `.fsi`
+/// **signature files** (`docs/fsi-signature-restriction-plan.md` Stage 1).
+/// A signature occupies its Compile slot with an inert [`ResolvedFile`]
+/// (empty resolutions and exports — Stage 2 gives it a real surface) and
+/// contributes its screen; the paired implementation (first following equal
+/// QNOF) resolves exactly as an unsigned file but its value/case identity
+/// exports are dropped at the boundary. Unsigned files are untouched.
+pub fn resolve_project_files(files: &[ProjectFile], assemblies: &AssemblyEnv) -> ResolvedProject {
+    resolve_project_files_impl(files, assemblies, None)
+}
+
+/// Like [`resolve_project_files`], but tags each file's per-file
+/// `resolve_file` span with its path (`labels[i]`, parallel to `files`) so a
+/// profiling build can attribute the fold's cost per Compile item in the
+/// trace. The resolution result is identical — `labels` affects only the
+/// emitted span. Present only under the `otel` feature (the sole build that
+/// installs a subscriber).
 #[cfg(feature = "otel")]
-pub fn resolve_project_labeled(
-    files: &[ImplFile],
+pub fn resolve_project_files_labeled(
+    files: &[ProjectFile],
     labels: &[String],
     assemblies: &AssemblyEnv,
 ) -> ResolvedProject {
-    resolve_project_impl(files, assemblies, Some(labels))
+    resolve_project_files_impl(files, assemblies, Some(labels))
 }
 
 /// The shared Compile-order fold. `_labels`, when present, tags each file's
 /// `resolve_file` span (`file`) for trace attribution; it is read only under
 /// the `otel` feature and never influences the resolution result.
-fn resolve_project_impl(
-    files: &[ImplFile],
+fn resolve_project_files_impl(
+    files: &[ProjectFile],
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> ResolvedProject {
+    let paired = paired_signature_of(files);
     let mut preceding = ProjectItems::default();
-    let mut resolved = Vec::with_capacity(files.len());
+    let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
     // Accumulate the OV-6 cross-file **extension-source** signal in **Compile
     // order**: F# is order-sensitive, so a project extension source (a
     // `[<Extension>]` class or a `type … with` augmentation, which a
@@ -407,33 +641,45 @@ fn resolve_project_impl(
     // namespace defers too) — the honest cost of soundness, with
     // namespace-scoping the OV-9 refinement.
     let mut ext = ExtThreading::default();
-    // The index/labels feed the per-file span below; without `otel` the span is
-    // `#[cfg]`'d out, so both are unused there (silence the enumerate-index lint).
-    #[cfg_attr(not(feature = "otel"), allow(clippy::unused_enumerate_index))]
-    for (_index, file) in files.iter().enumerate() {
-        // Per-file span so the fold's cost is attributable in the LSP's traces:
-        // `file` is the Compile item's path (empty when unlabelled), `index` its
-        // Compile-order position, `bytes` its source length as a size proxy. Only
-        // compiled under `otel`; the default build has no `tracing` dependency.
-        #[cfg(feature = "otel")]
-        let _span = {
-            let file_path = _labels
-                .and_then(|l| l.get(_index))
-                .map(String::as_str)
-                .unwrap_or_default();
-            tracing::info_span!(
-                "resolve_file",
-                index = _index,
-                bytes = u32::from(file.syntax().text_range().len()),
-                file = file_path,
-            )
-            .entered()
+    for (index, pf) in files.iter().enumerate() {
+        let rf = match &pf.file {
+            // A signature file is inert in Stage 1: it owns no `ItemId` range
+            // and records nothing; only its screen crosses the boundary.
+            SourceFile::Sig(sig) => {
+                ResolvedFile::inert_signature(preceding.next_base(), signature_screen(sig))
+            }
+            SourceFile::Impl(file) => {
+                // Per-file span so the fold's cost is attributable in the LSP's
+                // traces: `file` is the Compile item's path (empty when
+                // unlabelled), `index` its Compile-order position, `bytes` its
+                // source length as a size proxy. Only compiled under `otel`; the
+                // default build has no `tracing` dependency.
+                #[cfg(feature = "otel")]
+                let _span = {
+                    let file_path = _labels
+                        .and_then(|l| l.get(index))
+                        .map(String::as_str)
+                        .unwrap_or_default();
+                    tracing::info_span!(
+                        "resolve_file",
+                        index = index,
+                        bytes = u32::from(file.syntax().text_range().len()),
+                        file = file_path,
+                    )
+                    .entered()
+                };
+                let mut rf = resolve_file(file, &preceding, assemblies);
+                rf.preceding_declares_extension_source = ext.wholesale;
+                rf.preceding_augmentation_instance_names = ext.instance_names.clone();
+                rf.preceding_augmentation_static_names = ext.static_names.clone();
+                rf
+            }
         };
-        let mut rf = resolve_file(file, &preceding, assemblies);
-        rf.preceding_declares_extension_source = ext.wholesale;
-        rf.preceding_augmentation_instance_names = ext.instance_names.clone();
-        rf.preceding_augmentation_static_names = ext.static_names.clone();
-        thread_forward(&mut preceding, &mut ext, &rf, assemblies);
+        // The screen of the signature this file is the paired implementation
+        // of, if any — the sig sits strictly earlier in Compile order, so its
+        // resolved slot already exists.
+        let screen = paired[index].and_then(|sig| resolved[sig].sig_screen.clone());
+        thread_forward(&mut preceding, &mut ext, &rf, assemblies, screen.as_deref());
         resolved.push(Arc::new(rf));
     }
     ResolvedProject { files: resolved }
@@ -463,13 +709,19 @@ struct ExtThreading {
 /// The caller stamps `rf`'s `preceding_*` fields from the value of `ext`
 /// *entering* the file before calling this (the fields record the state the
 /// file saw, whereas this bumps `ext` for the *next* file).
+///
+/// `paired_screen` is the screen of the signature `rf` is the paired
+/// implementation of, if any — it parameterises the boundary derivation
+/// (the paired impl's value/case identity exports are dropped; see
+/// [`ProjectItems::extend_with`]).
 fn thread_forward(
     preceding: &mut ProjectItems,
     ext: &mut ExtThreading,
     rf: &ResolvedFile,
     assemblies: &AssemblyEnv,
+    paired_screen: Option<&model::SigScreen>,
 ) {
-    preceding.extend_with(rf);
+    preceding.extend_with(rf, paired_screen);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -498,18 +750,25 @@ fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv)
     rf.augmentation_names_unknowable || rf.attributes_may_declare_extension(assemblies)
 }
 
-/// Whether two parsed files are the **same tree instance** — rowan
-/// [`SyntaxNode`](borzoi_cst::syntax::SyntaxNode) equality is *identity*, not
-/// structural (pinned by the LSP's `syntax_node_equality_is_identity_not_structural`
-/// test): two clones of one parsed tree compare equal, two independent parses of
-/// identical text do not. So this answers "is `new` the very tree that produced
-/// `prev`'s resolution?" — true only when the file was reused verbatim (the LSP's
-/// stage-1 per-file parse cache hands back a clone on a hit). A *false* answer is
-/// always safe (the file is recomputed); a false *positive* is impossible (distinct
-/// instances never compare equal), so a reuse decision built on this can never
-/// serve a resolution from the wrong tree.
-fn same_tree(prev: &ImplFile, new: &ImplFile) -> bool {
-    prev.syntax() == new.syntax()
+/// Whether two Compile items are the **same file**: equal kind and
+/// [`QualifiedNameOfFile`] (a rename can change the QNOF and with it the
+/// pairing, so it must invalidate reuse), and the same **tree instance** —
+/// rowan [`SyntaxNode`] equality is *identity*, not structural (pinned by the
+/// LSP's `syntax_node_equality_is_identity_not_structural` test): two clones
+/// of one parsed tree compare equal, two independent parses of identical text
+/// do not. So this answers "is `new` the very tree that produced `prev`'s
+/// resolution?" — true only when the file was reused verbatim (the LSP's
+/// stage-1 per-file parse cache hands back a clone on a hit). A *false*
+/// answer is always safe (the file is recomputed); a false *positive* is
+/// impossible (distinct instances never compare equal), so a reuse decision
+/// built on this can never serve a resolution from the wrong tree.
+fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
+    prev.qnof == new.qnof
+        && match (&prev.file, &new.file) {
+            (SourceFile::Impl(a), SourceFile::Impl(b)) => a.syntax() == b.syntax(),
+            (SourceFile::Sig(a), SourceFile::Sig(b)) => a.syntax() == b.syntax(),
+            _ => false,
+        }
 }
 
 /// Incrementally re-fold a project after an edit: like [`resolve_project`], but
@@ -547,7 +806,32 @@ pub fn resolve_project_incremental(
     new_files: &[ImplFile],
     assemblies: &AssemblyEnv,
 ) -> ResolvedProject {
-    resolve_project_incremental_impl(prev_files, prev, new_files, assemblies, None).0
+    resolve_project_files_incremental_impl(
+        &impl_only_files(prev_files),
+        prev,
+        &impl_only_files(new_files),
+        assemblies,
+        None,
+    )
+    .0
+}
+
+/// The signature-aware incremental fold: like [`resolve_project_incremental`]
+/// over [`ProjectFile`]s, returning the reuse vector of
+/// [`resolve_project_incremental_with_reuse`]. `prev` must be the result of
+/// folding `prev_files` (with their QNOFs) against `assemblies` — the
+/// [`resolve_project_files`] counterpart of the impl-only preconditions. A
+/// `.fsi` edit re-derives the paired implementation's boundary contribution
+/// (the screen is part of the signature's own threaded contribution, and the
+/// pairing-partner index is part of the reuse condition), so it invalidates
+/// exactly the suffix a cold fold would change.
+pub fn resolve_project_files_incremental(
+    prev_files: &[ProjectFile],
+    prev: &ResolvedProject,
+    new_files: &[ProjectFile],
+    assemblies: &AssemblyEnv,
+) -> (ResolvedProject, Vec<bool>) {
+    resolve_project_files_incremental_impl(prev_files, prev, new_files, assemblies, None)
 }
 
 /// Like [`resolve_project_incremental`], but also returns, per Compile-order
@@ -565,13 +849,19 @@ pub fn resolve_project_incremental_with_reuse(
     new_files: &[ImplFile],
     assemblies: &AssemblyEnv,
 ) -> (ResolvedProject, Vec<bool>) {
-    resolve_project_incremental_impl(prev_files, prev, new_files, assemblies, None)
+    resolve_project_files_incremental_impl(
+        &impl_only_files(prev_files),
+        prev,
+        &impl_only_files(new_files),
+        assemblies,
+        None,
+    )
 }
 
-/// Like [`resolve_project_incremental_with_reuse`], but also tags each
+/// Like [`resolve_project_files_incremental`], but also tags each
 /// *recomputed* file's `resolve_file` span with its path (`labels[i]`, parallel
 /// to `new_files`) for per-Compile-item trace attribution — the incremental
-/// counterpart of [`resolve_project_labeled`]. A *reused* file does no
+/// counterpart of [`resolve_project_files_labeled`]. A *reused* file does no
 /// `resolve_file` work and emits no span, so under a profiling build the spans
 /// that appear are exactly the files the edit forced to re-resolve (and the
 /// reused ones' absence is the signal that the edit didn't touch them). The
@@ -579,39 +869,49 @@ pub fn resolve_project_incremental_with_reuse(
 /// `labels` affects only the emitted spans. Present only under the `otel`
 /// feature (the sole build that installs a subscriber).
 #[cfg(feature = "otel")]
-pub fn resolve_project_incremental_labeled(
-    prev_files: &[ImplFile],
+pub fn resolve_project_files_incremental_labeled(
+    prev_files: &[ProjectFile],
     prev: &ResolvedProject,
-    new_files: &[ImplFile],
+    new_files: &[ProjectFile],
     labels: &[String],
     assemblies: &AssemblyEnv,
 ) -> (ResolvedProject, Vec<bool>) {
-    resolve_project_incremental_impl(prev_files, prev, new_files, assemblies, Some(labels))
+    resolve_project_files_incremental_impl(prev_files, prev, new_files, assemblies, Some(labels))
 }
 
 /// The shared incremental fold, returning the result and a per-file reuse vector
 /// (`reused[i]` = file `i` was reused verbatim). `_labels`, when present, tags
 /// each *recomputed* file's `resolve_file` span (`file`) for trace attribution;
 /// it is read only under the `otel` feature and never influences the result.
-fn resolve_project_incremental_impl(
-    prev_files: &[ImplFile],
+fn resolve_project_files_incremental_impl(
+    prev_files: &[ProjectFile],
     prev: &ResolvedProject,
-    new_files: &[ImplFile],
+    new_files: &[ProjectFile],
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> (ResolvedProject, Vec<bool>) {
+    let paired_prev = paired_signature_of(prev_files);
+    let paired_new = paired_signature_of(new_files);
     let mut preceding = ProjectItems::default();
     let mut ext = ExtThreading::default();
-    let mut resolved = Vec::with_capacity(new_files.len());
+    let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(new_files.len());
     let mut reused = Vec::with_capacity(new_files.len());
     // True while the threaded state (`preceding`, `ext`) entering this file still
     // equals prev's at the same index — the reuse precondition. Monotone
     // true→false: once a recomputed file's contribution differs, every later file
     // sees a different `preceding`, so reuse can never resume.
     let mut in_sync = true;
-    for (i, file) in new_files.iter().enumerate() {
+    for (i, pf) in new_files.iter().enumerate() {
         let have_prev = i < prev.files.len() && i < prev_files.len();
-        let reuse = in_sync && have_prev && same_tree(&prev_files[i], file);
+        // Pairing is an input to the file's boundary *contribution* (a paired
+        // implementation's value/case exports are dropped —
+        // `ProjectItems::extend_with`), so both reuse and sync require the
+        // pairing-partner index to match. While the prefix is in sync an
+        // equal index implies an equal screen: the signature's own
+        // contribution (its screen, `same_export_contribution`) was compared
+        // at the signature's earlier slot.
+        let same_pairing = have_prev && paired_prev[i] == paired_new[i];
+        let reuse = in_sync && same_pairing && same_tree(&prev_files[i], pf);
         reused.push(reuse);
         // Per-file span *only* for a recomputed file (otel): mirrors the cold
         // labeled fold's attribution (`file`/`index`/`bytes`) so an edited
@@ -628,7 +928,7 @@ fn resolve_project_incremental_impl(
             tracing::info_span!(
                 "resolve_file",
                 index = i,
-                bytes = u32::from(file.syntax().text_range().len()),
+                bytes = u32::from(pf.file.syntax().text_range().len()),
                 file = file_path,
             )
             .entered()
@@ -643,20 +943,29 @@ fn resolve_project_incremental_impl(
             // `ext` matches prev's entering value while `in_sync`.
             Arc::clone(&prev.files[i])
         } else {
-            let mut rf = resolve_file(file, &preceding, assemblies);
-            rf.preceding_declares_extension_source = ext.wholesale;
-            rf.preceding_augmentation_instance_names = ext.instance_names.clone();
-            rf.preceding_augmentation_static_names = ext.static_names.clone();
+            let rf = match &pf.file {
+                SourceFile::Sig(sig) => {
+                    ResolvedFile::inert_signature(preceding.next_base(), signature_screen(sig))
+                }
+                SourceFile::Impl(file) => {
+                    let mut rf = resolve_file(file, &preceding, assemblies);
+                    rf.preceding_declares_extension_source = ext.wholesale;
+                    rf.preceding_augmentation_instance_names = ext.instance_names.clone();
+                    rf.preceding_augmentation_static_names = ext.static_names.clone();
+                    rf
+                }
+            };
             if in_sync {
                 // Entering state matched prev's, so the item base matched and the
                 // exports are comparable. Does the recompute leave the threaded
-                // state unchanged (all halves: the export contribution, the
-                // wholesale extension-source signal, and the augmentation name
-                // sets)? If so, the tail stays reusable. The quantities
-                // compared are exactly what `thread_forward` folds, so the
-                // incremental fold can never disagree with the cold one about
-                // a file's downstream contribution.
-                in_sync = have_prev
+                // state unchanged (all halves: the export contribution — a
+                // signature's screen included — the pairing, the wholesale
+                // extension-source signal, and the augmentation name sets)?
+                // If so, the tail stays reusable. The quantities compared are
+                // exactly what `thread_forward` folds, so the incremental
+                // fold can never disagree with the cold one about a file's
+                // downstream contribution.
+                in_sync = same_pairing
                     && rf.same_export_contribution(&prev.files[i])
                     && wholesale_extension_contribution(&rf, assemblies)
                         == wholesale_extension_contribution(&prev.files[i], assemblies)
@@ -665,7 +974,8 @@ fn resolve_project_incremental_impl(
             }
             Arc::new(rf)
         };
-        thread_forward(&mut preceding, &mut ext, &rf, assemblies);
+        let screen = paired_new[i].and_then(|sig| resolved[sig].sig_screen.clone());
+        thread_forward(&mut preceding, &mut ext, &rf, assemblies, screen.as_deref());
         resolved.push(rf);
     }
     (ResolvedProject { files: resolved }, reused)
@@ -884,6 +1194,7 @@ impl<'a> Resolver<'a> {
                 opens: self.trace_opens,
             },
             export_decls: self.export_decls,
+            sig_screen: None,
         }
     }
 
@@ -1273,7 +1584,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf);
+        pi.extend_with(&rf, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -1306,7 +1617,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf);
+        pi.extend_with(&rf, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -1329,7 +1640,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2);
+        pi2.extend_with(&rf2, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -1350,7 +1661,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf);
+            pi.extend_with(&rf, None);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -1371,7 +1682,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf);
+        pi.extend_with(&rf, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

@@ -4,7 +4,7 @@ use borzoi_cst::syntax::{
     AstNode, ModuleDecl, NestedModuleDecl, SyntaxToken, TypeDefn, TypeDefnRepr,
 };
 
-use crate::assembly_env::OpenFoldSurface;
+use crate::assembly_env::{OpenFoldSurface, OpenFoldTarget};
 use crate::def::DefId;
 
 use super::model::{
@@ -1413,6 +1413,29 @@ impl<'a> Resolver<'a> {
                         // tycon-tier names are ENTRIES rather than a reason to defer
                         // the vals.
                         if !surfaces.is_empty() {
+                            // Stage-1 signature screen
+                            // (`docs/fsi-signature-restriction-plan.md`): a
+                            // bare name this open would commit to an assembly
+                            // member, at a path a signatured project module
+                            // *may* expose, must defer instead — FCS binds
+                            // the `.fsi` (probe: bare `shown` after `open
+                            // ProbeNs.Shared` with a colliding `RefLib` → the
+                            // `.fsi`). The entry is demoted to `Opaque` (in
+                            // scope, shadowing by position, naming nothing)
+                            // rather than removed, so an earlier open's
+                            // same-named value cannot wrongly win. Names the
+                            // signature provably cannot expose keep their
+                            // assembly target (probe: bare `bar` → the
+                            // assembly). Runs on the *complete* surface list
+                            // — the namespace half's auto-open contents
+                            // included.
+                            for surface in &mut surfaces {
+                                for entry in &mut surface.entries {
+                                    if self.preceding.sig_screened_open_name(gp, &entry.name) {
+                                        entry.target = OpenFoldTarget::Opaque;
+                                    }
+                                }
+                            }
                             self.open_assembly_module_fold(
                                 surfaces,
                                 pos,

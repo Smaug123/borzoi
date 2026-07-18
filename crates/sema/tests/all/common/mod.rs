@@ -823,6 +823,32 @@ pub fn temp_fs_file(label: &str, source: &str) -> PathBuf {
     path
 }
 
+/// Like [`temp_fs_file`], but materialises a whole **file tree** under a fresh
+/// unique root, with caller-controlled relative paths (file name, extension,
+/// and directory included). The signature fixtures need this: FCS's
+/// `QualifiedNameOfFile` derivation reads the real file *stem* (the
+/// filename-derived case) and *directory* (the deduplication key), so the
+/// per-call random names `temp_fs_file` generates would change the semantics
+/// under test. Returns the root (remove it with `remove_dir_all` when done)
+/// and the absolute path + source of each file, in input order.
+pub fn temp_fs_tree(label: &str, files: &[(&str, &str)]) -> (PathBuf, Vec<(PathBuf, String)>) {
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("borzoi_sema_{label}_{}_{n}", std::process::id()));
+    let written = files
+        .iter()
+        .map(|(rel, src)| {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create temp tree dir");
+            }
+            std::fs::write(&path, src).expect("write temp tree file");
+            (path, (*src).to_string())
+        })
+        .collect();
+    (root, written)
+}
+
 /// Build the sema assembly fixture (`tests/fixtures/assembly_env`,
 /// `SemaAssemblyEnvFixture.dll`) once per test binary and return its `.dll`
 /// path. Shared by the `AssemblyEnv` index tests and the assembly-resolution

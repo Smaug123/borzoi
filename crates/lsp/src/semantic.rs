@@ -18,13 +18,13 @@ use std::sync::Arc;
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity};
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
-use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, ResolvedProject};
+use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile};
 use lsp_types::Url;
 
 use crate::assembly_cache::AssemblyCache;
-use crate::cst_panic_safe::parse_with_symbols;
+use crate::cst_panic_safe::{parse_sig_with_symbols, parse_with_symbols};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
@@ -90,13 +90,17 @@ impl ReferencedAssemblyProjection {
 /// The per-project parses sema folds over. One entry per `<Compile>` file the
 /// project lists, in source order; `paths[i]` is the file's absolute path
 /// (matching `ParsedProject.items[i].include`) and `texts[i]` is whatever
-/// text the parser saw — buffer if open, disk otherwise. A file that
-/// couldn't be read or didn't parse to an [`ImplFile`] is omitted; the file's
-/// index in `files`/`paths`/`texts` is therefore not necessarily its index in
-/// the original `items` list (D5 "under-resolve, never wrong").
+/// text the parser saw — buffer if open, disk otherwise. A `.fs` item parses
+/// under the implementation grammar, a `.fsi` under the signature grammar
+/// ([`SourceFile`]), and each entry carries its
+/// [`QualifiedNameOfFile`](borzoi_sema::QualifiedNameOfFile) (the sig ↔ impl
+/// pairing key, computed over the whole Compile order). A file that couldn't
+/// be read or didn't parse to its grammar's root is omitted; the file's index
+/// in `files`/`paths`/`texts` is therefore not necessarily its index in the
+/// original `items` list (D5 "under-resolve, never wrong").
 #[derive(Debug, Clone)]
 pub struct ProjectParses {
-    pub files: Vec<ImplFile>,
+    pub files: Vec<ProjectFile>,
     pub paths: Vec<PathBuf>,
     pub texts: Vec<Arc<str>>,
 }
@@ -138,19 +142,19 @@ struct CachedParse {
     lang_version_untrusted: bool,
     /// The exact source text that produced `file`.
     text: Arc<str>,
-    /// The reusable parsed impl file (a rowan handle; a hit clones it — an `Arc`
-    /// bump, not a re-parse).
-    file: ImplFile,
+    /// The reusable parsed file — impl or signature, per the path's extension
+    /// (a rowan handle; a hit clones it — an `Arc` bump, not a re-parse).
+    file: SourceFile,
 }
 
 /// The previous Compile-order fold of a project, kept so the *next* fold can be
 /// computed incrementally ([`borzoi_sema::resolve_project_incremental`]) rather
 /// than cold. Stored per project in [`SemanticState::prev_resolved`].
 ///
-/// Holds the exact `ImplFile`s that were folded (so the incremental fold can
-/// compare each new file against the tree that produced its previous
-/// resolution, by rowan identity), the result, and the assembly env [`Arc`] the
-/// fold ran against. The env Arc is the reuse *precondition witness*: reusing a
+/// Holds the exact [`ProjectFile`]s that were folded (so the incremental fold
+/// can compare each new file against the tree that produced its previous
+/// resolution, by rowan identity, and re-derive the sig ↔ impl pairing), the
+/// result, and the assembly env [`Arc`] the fold ran against. The env Arc is the reuse *precondition witness*: reusing a
 /// file's resolution is sound only against the same env it was resolved with, so
 /// [`SemanticState::resolved_project_for`] reuses this only when the current env
 /// is [`Arc::ptr_eq`] to [`Self::env`]. A rebuilt env — structural
@@ -159,7 +163,7 @@ struct CachedParse {
 /// makes "same env" machine-checked rather than a reasoned invariant.
 #[derive(Debug)]
 struct PrevFold {
-    files: Vec<ImplFile>,
+    files: Vec<ProjectFile>,
     resolved: Arc<ResolvedProject>,
     env: Arc<AssemblyEnv>,
 }
@@ -855,7 +859,7 @@ impl SemanticState {
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        borzoi_sema::resolve_project_incremental_labeled(
+                        borzoi_sema::resolve_project_files_incremental_labeled(
                             &prev.files,
                             prev.resolved.as_ref(),
                             files,
@@ -864,7 +868,7 @@ impl SemanticState {
                         )
                     };
                     #[cfg(not(feature = "otel"))]
-                    let (resolved, reused) = borzoi_sema::resolve_project_incremental_with_reuse(
+                    let (resolved, reused) = borzoi_sema::resolve_project_files_incremental(
                         &prev.files,
                         prev.resolved.as_ref(),
                         files,
@@ -883,10 +887,10 @@ impl SemanticState {
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        borzoi_sema::resolve_project_labeled(files, &labels, &env)
+                        borzoi_sema::resolve_project_files_labeled(files, &labels, &env)
                     };
                     #[cfg(not(feature = "otel"))]
-                    let resolved = borzoi_sema::resolve_project(files, &env);
+                    let resolved = borzoi_sema::resolve_project_files(files, &env);
                     (Arc::new(resolved), 0)
                 }
             }
@@ -1073,24 +1077,6 @@ fn build_parses(
         .map(|item| item.include.clone())
         .collect();
 
-    // Signature files (`.fsi`) hide implementation detail the paired `.fs`
-    // exposes, but the CST parser has no signature-file model — every file
-    // parses to an `IMPL_FILE`, its sole file-root node.
-    // Folding a `.fsi`-bearing project would feed sema the raw `.fs`, so
-    // `resolve_project` would export bindings the signature deliberately hides
-    // (a later file could resolve `Foo.hidden` that F# rejects). Until
-    // signatures are modelled, refuse the whole project and let handlers fall
-    // back to single-file resolution — same "under-resolve, never wrong"
-    // discipline as the `items_uncertain` arm above (D5).
-    if let Some(sig) = includes.iter().find(|p| is_signature_file(p)) {
-        tracing::info!(
-            project = %project.display(),
-            signature = %sig.display(),
-            "refusing project parses: F# signature files (.fsi) are not yet modelled"
-        );
-        return None;
-    }
-
     let mut files = Vec::with_capacity(includes.len());
     let mut paths = Vec::with_capacity(includes.len());
     let mut texts = Vec::with_capacity(includes.len());
@@ -1134,15 +1120,24 @@ fn build_parses(
                 })
                 .map(|c| (c.file.clone(), Arc::clone(&c.text)))
         }) {
-            let (impl_file, text) = hit;
-            files.push(impl_file);
+            let (source_file, text) = hit;
+            files.push(source_file);
             paths.push(include);
             texts.push(text);
             continue;
         }
-        let Some(parse) = parse_with_symbols(&text, &symbols, lang) else {
-            // `parse_with_symbols` returns `None` only when the CST parser
-            // panicked. Logged inside the wrapper.
+        // A `.fsi` Compile item parses under the signature grammar
+        // (`docs/fsi-signature-restriction-plan.md` Stage 1); everything else
+        // is an implementation file.
+        let signature = is_signature_file(&include);
+        let parse_result = if signature {
+            parse_sig_with_symbols(&text, &symbols, lang)
+        } else {
+            parse_with_symbols(&text, &symbols, lang)
+        };
+        let Some(parse) = parse_result else {
+            // The wrapper returns `None` only when the CST parser panicked.
+            // Logged inside the wrapper.
             tracing::warn!(
                 file = %include.display(),
                 "Compile item triggered parser panic; refusing to resolve project"
@@ -1171,7 +1166,12 @@ fn build_parses(
             } else {
                 LanguageVersion::DEFAULT
             };
-            let Some(other) = parse_with_symbols(&text, &symbols, other_side) else {
+            let other = if signature {
+                parse_sig_with_symbols(&text, &symbols, other_side)
+            } else {
+                parse_with_symbols(&text, &symbols, other_side)
+            };
+            let Some(other) = other else {
                 tracing::warn!(
                     file = %include.display(),
                     "Compile item triggered parser panic; refusing to resolve project"
@@ -1193,12 +1193,28 @@ fn build_parses(
                 return None;
             }
         }
-        let Some(impl_file) = ImplFile::cast(parse.root) else {
-            tracing::warn!(
-                file = %include.display(),
-                "Compile item parsed to a non-IMPL_FILE root; refusing to resolve project"
-            );
-            return None;
+        let source_file = if signature {
+            match SigFile::cast(parse.root) {
+                Some(sig) => SourceFile::Sig(sig),
+                None => {
+                    tracing::warn!(
+                        file = %include.display(),
+                        "Compile item parsed to a non-SIG_FILE root; refusing to resolve project"
+                    );
+                    return None;
+                }
+            }
+        } else {
+            match ImplFile::cast(parse.root) {
+                Some(impl_file) => SourceFile::Impl(impl_file),
+                None => {
+                    tracing::warn!(
+                        file = %include.display(),
+                        "Compile item parsed to a non-IMPL_FILE root; refusing to resolve project"
+                    );
+                    return None;
+                }
+            }
         };
         // Cache miss resolved: record the freshly parsed tree as this path's
         // variant for the current settings-tuple. Replace the same-tuple variant
@@ -1211,7 +1227,7 @@ fn build_parses(
             lang,
             lang_version_untrusted,
             text: Arc::clone(&text),
-            file: impl_file.clone(),
+            file: source_file.clone(),
         };
         let variants = file_parses.entry(include.clone()).or_default();
         if let Some(slot) = variants.iter_mut().find(|c| {
@@ -1223,10 +1239,21 @@ fn build_parses(
         } else {
             variants.push(variant);
         }
-        files.push(impl_file);
+        files.push(source_file);
         paths.push(include);
         texts.push(text);
     }
+    drop(_parse_all_span);
+
+    // The sig ↔ impl pairing key, derived over the *whole* Compile order (the
+    // deduplication half of FCS's `QualifiedNameOfFile` is stateful across
+    // files, so it cannot be computed — or cached — per file).
+    let qnofs = borzoi_sema::qualified_names(&files, &paths);
+    let files = files
+        .into_iter()
+        .zip(qnofs)
+        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .collect();
 
     Some(ProjectParses {
         files,
@@ -2255,45 +2282,99 @@ mod tests {
         );
     }
 
-    /// Signature files hide implementation symbols: `A.fsi` may export only
-    /// `publicFoo` while `A.fs` also defines `hiddenFoo`. Sema doesn't model
-    /// signatures yet, so it would treat both as implementation files and
-    /// publish `hiddenFoo` as a cross-file Item — a *wrong*
-    /// definition/references/hover answer for a `B.fs` reference to it. We
-    /// refuse the project fold instead and let handlers fall back to single-
-    /// file resolution.
+    /// Stage 1 of `docs/fsi-signature-restriction-plan.md`: a project listing
+    /// a `.fsi` signature **folds**. The
+    /// signature parses under the signature grammar and occupies its Compile
+    /// slot inertly (no exports, no resolutions — Stage 2 gives it a real
+    /// surface); the paired implementation resolves as before, its own
+    /// surface untouched (only the *cross-file boundary* drops its value
+    /// exports, pinned by sema's `resolve_signatures` group).
     #[test]
-    fn project_with_fsi_signature_yields_none() {
+    fn project_with_fsi_signature_folds() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
-        write(&proj, &fsproj(&["A.fsi", "A.fs"]));
+        write(&proj, &fsproj(&["A.fsi", "A.fs", "B.fs"]));
         write(&tmp.path().join("A.fsi"), "module A\nval publicFoo : int\n");
         write(
             &tmp.path().join("A.fs"),
             "module A\nlet publicFoo = 1\nlet hiddenFoo = 2\n",
         );
+        write(
+            &tmp.path().join("B.fs"),
+            "module B\nlet use1 = A.publicFoo\nlet use2 = A.hiddenFoo\n",
+        );
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
+        let parses = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("a .fsi-bearing project folds (Stage 1)")
+            .clone();
+        assert_eq!(parses.len(), 3, "the .fsi keeps its Compile slot");
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &HashMap::new())
-                .is_none(),
-            "a project listing a .fsi signature must under-resolve to None \
-             until signatures are modelled"
+            parses.files[0].file.as_sig().is_some(),
+            "the .fsi parses under the signature grammar"
         );
-        assert!(
-            sema.resolved_project_for(&proj, &mut ws, &HashMap::new())
-                .is_none()
+        assert!(parses.files[1].file.as_impl().is_some());
+
+        let resolved = sema
+            .resolved_project_for(&proj, &mut ws, &HashMap::new())
+            .expect("a .fsi-bearing project resolves (Stage 1)");
+        assert_eq!(resolved.len(), 3);
+        // The signature slot is inert in Stage 1.
+        assert!(resolved.file(0).exports().is_empty());
+        // The implementation's own surface is unchanged (conclusion 2 of the
+        // probe sweep); only its cross-file boundary contribution is dropped.
+        let names: Vec<_> = resolved
+            .file(1)
+            .exports()
+            .iter()
+            .map(|e| e.name().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["publicFoo".to_string(), "hiddenFoo".to_string()]
         );
     }
 
-    /// Codex finding (Stage 7 re-review): the `.fsi` extension check must
-    /// be case-insensitive. On Windows/macOS a project can legitimately list
-    /// `A.FSI` (or any other casing) and the filesystem treats it as the
-    /// same file. A case-sensitive check would miss it and the fold would
-    /// continue, surfacing the impl file's hidden symbols cross-project.
+    /// The namespace-headed shape pairs through the filename-derived
+    /// `QualifiedNameOfFile` (`A.fsi` / `A.fs` → `A`), so it folds too —
+    /// probes G/G2 of the plan's sweep.
     #[test]
-    fn project_with_uppercase_fsi_signature_yields_none() {
+    fn project_with_namespace_headed_fsi_signature_folds() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fsi", "A.fs"]));
+        write(
+            &tmp.path().join("A.fsi"),
+            "namespace N\n\nmodule A =\n    val publicFoo : int\n",
+        );
+        write(
+            &tmp.path().join("A.fs"),
+            "namespace N\n\nmodule A =\n    let publicFoo = 1\n    let hiddenFoo = 2\n",
+        );
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let parses = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("a namespace-headed .fsi project folds (Stage 1)")
+            .clone();
+        assert_eq!(parses.len(), 2);
+        assert!(parses.files[0].file.as_sig().is_some());
+        assert!(
+            sema.resolved_project_for(&proj, &mut ws, &HashMap::new())
+                .is_some()
+        );
+    }
+
+    /// Codex finding (Stage 7 re-review): the `.fsi` extension check is
+    /// case-insensitive. On Windows/macOS a project can
+    /// legitimately list `A.FSI` and the filesystem treats it as the same
+    /// file — it must parse under the *signature* grammar (a case-sensitive
+    /// check would route it to the impl grammar and leak hidden symbols).
+    #[test]
+    fn project_with_uppercase_fsi_signature_folds_as_signature() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("P.fsproj");
         write(&proj, &fsproj(&["A.FSI", "A.fs"]));
@@ -2305,9 +2386,13 @@ mod tests {
 
         let mut ws = Workspace::default();
         let mut sema = SemanticState::new();
+        let parses = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("an uppercase .FSI project folds (Stage 1)")
+            .clone();
         assert!(
-            sema.parses_for_project(&proj, &mut ws, &HashMap::new())
-                .is_none()
+            parses.files[0].file.as_sig().is_some(),
+            "A.FSI must parse under the signature grammar"
         );
     }
 
@@ -2433,7 +2518,10 @@ mod tests {
             .parses_for_project(&proj, &mut ws, &HashMap::new())
             .expect("project parses");
         let resolved = resolve_file(
-            &parses.files[0],
+            parses.files[0]
+                .file
+                .as_impl()
+                .expect("an impl Compile item"),
             &ProjectItems::default(),
             &AssemblyEnv::default(),
         );

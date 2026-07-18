@@ -2536,6 +2536,15 @@ impl<'a> Resolver<'a> {
             // [`Self::path_is_project_shadowed`]. A *nested* module still defers
             // here (its qualified path may root a project type we model later).
             || self.preceding.is_rooted_at_nested_module(names)
+            // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
+            // a path under a signatured module root whose residual the
+            // signature *may* expose must not commit to a merged assembly
+            // member in ANY namespace — FCS binds the `.fsi` (probe:
+            // sig-exposed `Shared.shown` with a colliding `RefLib` → the
+            // `.fsi`), and Stage 1 has no signature identity to commit, so
+            // it defers. A residual absent from the signature text falls
+            // through to the assembly exactly as FCS does.
+            || self.preceding.sig_screened_path(names)
     }
 
     /// Record a qualified in-file enum-case path `Color.Red` (`type_seg`,

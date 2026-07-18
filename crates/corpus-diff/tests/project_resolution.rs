@@ -20,7 +20,9 @@ use borzoi_corpus_diff::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use borzoi_sema::{
+    AssemblyEnv, ProjectFile, Resolution, SourceFile, qualified_names, resolve_project_files,
+};
 use lsp_types::Position;
 use tempfile::TempDir;
 
@@ -94,14 +96,21 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
         parsed.errors
     );
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let files = vec![file];
+    let srcs = vec![SourceFile::Impl(file)];
+    let paths = vec![path];
+    let qnofs = qualified_names(&srcs, &paths);
+    let files: Vec<ProjectFile> = srcs
+        .into_iter()
+        .zip(qnofs)
+        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .collect();
     let env = Arc::new(env);
-    let resolved = Arc::new(resolve_project(&files, env.as_ref()));
+    let resolved = Arc::new(resolve_project_files(&files, env.as_ref()));
     LoadedProject {
         project: PathBuf::from("/tmp/corpus-diff-synthetic/Synthetic.fsproj"),
         parses: ProjectParses {
             files,
-            paths: vec![path],
+            paths,
             texts: vec![Arc::<str>::from(src)],
         },
         resolved,

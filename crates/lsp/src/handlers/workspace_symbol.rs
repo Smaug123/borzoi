@@ -19,10 +19,10 @@
 //! see `docs/workspace-index-plan.md`), so this open-buffers scope stands.
 //!
 //! **Degradation (D5: under-resolve, never wrong, never panic).** A buffer whose
-//! project can't be folded — orphan (no `.fsproj`), partial evaluation, or a
-//! signature-bearing project `parses_for_project` refuses — falls back to
-//! single-file extraction from its own buffer text, exactly as the references
-//! handler degrades. The CST parser runs under `catch_unwind`, so a buffer that
+//! project can't be folded — orphan (no `.fsproj`) or a partial evaluation —
+//! falls back to single-file extraction from its own buffer text, exactly as
+//! the references handler degrades; a `.fsi` buffer does the same (its Compile
+//! slot is inert in Stage 1 of `docs/fsi-signature-restriction-plan.md`). The CST parser runs under `catch_unwind`, so a buffer that
 //! panics the parser contributes nothing rather than crashing the server.
 
 use std::collections::HashSet;
@@ -125,13 +125,19 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
             // `…/A/../Shared.fs` Location. `preferred_uri` still prefers an open
             // buffer's own URI when one is path-equal.
             let path = lexically_normalize(&parses.paths[i]);
+            // A `.fsi` Compile slot has no implementation tree to outline
+            // (Stage 1 keeps signature slots inert). Leave it *uncovered* so
+            // the single-file fallback below serves an open `.fsi` buffer.
+            let Some(impl_file) = parses.files[i].file.as_impl() else {
+                continue;
+            };
             if let Some(uri) = crate::handlers::preferred_uri(&path, &state.docs) {
                 collect_matching(
                     &mut out,
                     &mut seen,
                     &query,
                     parses.texts[i].as_ref(),
-                    &parses.files[i],
+                    impl_file,
                     &uri,
                 );
             }

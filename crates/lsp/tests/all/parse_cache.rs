@@ -50,7 +50,7 @@ fn snapshot(p: &ProjectParses) -> Vec<(PathBuf, String, GreenNode)> {
             (
                 p.paths[i].clone(),
                 p.texts[i].to_string(),
-                p.files[i].syntax().green().into_owned(),
+                p.files[i].file.syntax().green().into_owned(),
             )
         })
         .collect()
@@ -132,13 +132,13 @@ fn edit_reparses_only_the_changed_file() {
         .expect("rebuilt parses");
     assert_eq!(p.len(), 2);
     assert_eq!(
-        p.files[0].syntax(),
-        a0.syntax(),
+        p.files[0].file.syntax(),
+        a0.file.syntax(),
         "unchanged A must be reused, not re-parsed"
     );
     assert_ne!(
-        p.files[1].syntax(),
-        b0.syntax(),
+        p.files[1].file.syntax(),
+        b0.file.syntax(),
         "edited B must be re-parsed to a fresh tree"
     );
     assert_eq!(
@@ -409,8 +409,8 @@ fn linked_file_under_divergent_projects_does_not_thrash() {
         .position(|path| path.ends_with("Shared.fs"))
         .unwrap();
     assert_eq!(
-        p.files[i].syntax(),
-        shared0.syntax(),
+        p.files[i].file.syntax(),
+        shared0.file.syntax(),
         "the linked Shared.fs must be reused, not re-parsed after building the \
          sibling project (no single-entry thrash)"
     );
