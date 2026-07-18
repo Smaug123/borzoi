@@ -270,7 +270,7 @@ pub fn range_definition_source_in_pdb(
         range.file.clone(),
         rid,
         range.start_line,
-        range.start_column + 1,
+        range.start_column.saturating_add(1),
     )
 }
 
@@ -315,7 +315,7 @@ pub fn definition_document_for_range(
     DefinitionDocument {
         document: range.file.clone(),
         line: range.start_line,
-        column: range.start_column + 1,
+        column: range.start_column.saturating_add(1),
     }
 }
 

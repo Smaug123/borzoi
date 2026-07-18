@@ -513,6 +513,22 @@ fn definition_document_for_range_reports_the_pickled_position() {
 }
 
 #[test]
+fn a_pathological_pickled_column_saturates_rather_than_overflowing() {
+    // The pickle is untrusted data: a malformed `u32::MAX` column must not
+    // panic (debug) or wrap to column 0 (release) at the 0→1-based
+    // conversion — it saturates, and the far-end clamp is harmless (the
+    // editor-side conversion saturates back down).
+    let range = FsharpSourceRange {
+        file: "X.fs".into(),
+        start_line: 1,
+        start_column: u32::MAX,
+        end_line: 1,
+        end_column: u32::MAX,
+    };
+    assert_eq!(definition_document_for_range(&range).column, u32::MAX);
+}
+
+#[test]
 fn definition_document_for_a_non_method_token_is_none() {
     let dll = ensure_fsharp_core_dll();
     let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
