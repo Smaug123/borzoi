@@ -620,6 +620,10 @@ impl<'a> Resolver<'a> {
                         self.index_augmentation_members(defn);
                     }
                     self.resolve_type_defn(defn);
+                    // Descend into the type's member bodies (self-id, params,
+                    // ctor params, class fields) — the value-resolution slice
+                    // that `resolve_type_defn` (type uses only) does not cover.
+                    self.resolve_type_member_bodies(defn);
                 }
             }
             ModuleDecl::Exception(exn) => {

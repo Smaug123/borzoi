@@ -381,3 +381,112 @@ fn resolution_agrees_with_fcs_on_generated_programs() {
         assert_matches_fcs(&g.src);
     }
 }
+
+/// Auto-enumerated **soundness** differential for member-body field scoping —
+/// the systematic guard for the static/instance split and source-order
+/// precedence the hand-written `resolve_member_bodies.rs` cases only sample
+/// (both were fixed only after review found wrong-binds by hand; this closes the
+/// loop). It sweeps the matrix of colliding `x` declarations — a module value,
+/// the primary-ctor param, a `static let`, a (non-static) `let` field — against
+/// the reference contexts an instance member, a static member, and a secondary
+/// `new` constructor introduce, and asserts D5 for every `x` occurrence: our
+/// resolution equals FCS's binder, or we defer — never a *different* binder.
+///
+/// Soundness, not completeness: a lenient "match-or-defer" so an FCS-rejected or
+/// as-yet-unmodelled combo can't false-fail, while any *wrong* commit (the whole
+/// bug class both review rounds hit) trips it. The hermetic cases pin the
+/// positive (completeness) side.
+#[test]
+fn member_scope_collisions_never_wrong_resolve() {
+    let mut checked = 0usize;
+    let mut asserted = 0usize;
+    for ctor in [false, true] {
+        for static_let in [false, true] {
+            for inst_let in [false, true] {
+                // `static let x` and `let x` in one type is a duplicate-field
+                // error; skip that genuinely-ambiguous combo (FCS may report an
+                // arbitrary binder for it).
+                if static_let && inst_let {
+                    continue;
+                }
+                for ctx in ["instance", "static", "newctor"] {
+                    // A secondary `new(...)` delegates to the primary ctor, so it
+                    // only type-checks when the type has one.
+                    if ctx == "newctor" && !ctor {
+                        continue;
+                    }
+                    let mut s = String::from("module M\nlet x = 0\n");
+                    s += if ctor {
+                        "type T(x: int) =\n"
+                    } else {
+                        "type T() =\n"
+                    };
+                    if static_let {
+                        s += "    static let x = 1\n";
+                    }
+                    if inst_let {
+                        s += "    let x = 2\n";
+                    }
+                    s += match ctx {
+                        "instance" => "    member _.M() : int = x\n",
+                        "static" => "    static member S() : int = x\n",
+                        "newctor" => "    new(z: int) = T(x + z)\n",
+                        _ => unreachable!(),
+                    };
+
+                    // Skip anything our parser cannot represent (out of subset);
+                    // the soundness claim is only over programs we parse cleanly.
+                    let parsed = parse(&s);
+                    if !parsed.errors.is_empty() {
+                        continue;
+                    }
+                    let file = ImplFile::cast(parsed.root).expect("impl file");
+                    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+                    checked += 1;
+
+                    let path = temp_fs_file(&s);
+                    let json = invoke_fcs_dump("uses", &path);
+                    let _ = std::fs::remove_file(&path);
+                    let uses = parse_fcs_uses(&json, &s);
+
+                    for u in &uses {
+                        if u.is_from_definition || u.start == u.end {
+                            continue;
+                        }
+                        if &s[u.start..u.end] != "x" {
+                            continue; // only the colliding value
+                        }
+                        let use_r = span(u.start, u.end);
+                        let res = rf.resolution_at(use_r);
+                        let Some((ds, de)) = u.decl else {
+                            // FCS bound `x` out-of-file: we must not point at any
+                            // in-file binder.
+                            assert!(
+                                !matches!(res, Some(Resolution::Local(_) | Resolution::Item(_))),
+                                "out-of-file `x` mis-bound to {res:?}; src {s:?}"
+                            );
+                            continue;
+                        };
+                        // FCS bound `x` in-file: if we committed, it must be the
+                        // same binder; deferring is a sound gap.
+                        if let Some(res) = res
+                            && let Some(def) = rf.resolved_def(res)
+                        {
+                            assert_eq!(
+                                def.range,
+                                span(ds, de),
+                                "wrong binder for `x` (ctx {ctx}); src {s:?}"
+                            );
+                            asserted += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 12,
+        "matrix shrank unexpectedly: {checked} programs"
+    );
+    assert!(asserted > 0, "no in-file `x` binder was ever checked");
+}

@@ -1,8 +1,8 @@
 # Hover: F# member/type signatures
 
 > **Status:** landed. `textDocument/hover` renders a referenced entity/member as
-> an F# signature line with declaring-type + assembly provenance context. Two
-> narrow gaps remain (below); everything else is done. Code comments in
+> an F# signature line with declaring-type + assembly provenance context. One
+> narrow gap remains (below); everything else is done. Code comments in
 > `crates/lsp/src/handlers/hover.rs` and `crates/assembly/src/display.rs` point
 > here as the tracker for the remaining items.
 
@@ -77,6 +77,25 @@ resolution layer (`borzoi-sema`), and the F# type pretty-printer
   `ParamDefault` arm produces. It also rides the indexer path: `IndexParameter`
   gained `is_param_array` (threaded from the accessor parameter) so a
   `params`/`[<ParamArray>]` indexer surfaces the marker too.
+- **follow-up 5 (generic residual)** — the generic case of the value-vs-unit
+  -function split: `let empty<'T> = …` (value) and `let f<'T> () = …`
+  (unit-function) both compile to a 0-parameter generic *method* with
+  `module_value: None` (a CLR property cannot be generic), so `format_method`'s
+  old "0-parameter generic module method ⇒ value" heuristic mis-rendered the
+  unit-function as a value. Fixed by consulting `MethodLike::is_module_value_binding`
+  (the pickle's argument-group *count*, already threaded and consumed by the sema
+  classifier `AssemblyEnv::member_class`): 0 groups ⇒ value (`val empty<'T>:
+  'T[]`), one `unit` group ⇒ function (`val f<'T>: unit -> int`). The group
+  *count* — not `val_il_arity`'s *sum*, which is 0 for both since a `unit` group
+  is empty — is the discriminator; the plan's original `val_il_arity` suggestion
+  was insufficient. Grounded end-to-end against real fsc via two new `MiniLibFs`
+  bindings (`projector_source_names::generic_module_value_vs_unit_function_split`).
+  When the host pickle is *absent* (the `il_heuristic` fallback path — a
+  `--standalone`/reference image, or an unreadable signature resource), the count
+  is unavailable, so the projector presumes the ambiguous generic 0-parameter
+  shape is a *value* (the common `Array.empty` case, matching the old default);
+  the pickle merge overwrites that presumption authoritatively wherever it does
+  cover the member (`ecma335_assembly::pickle_less_generic_module_method_is_presumed_a_value`).
 
 All model/reader additions above are additive: the differential normaliser
 renders any optional as `= ?` and reads index/nullable positions through its own
@@ -86,9 +105,9 @@ renderer, so the FCS diff stays byte-identical throughout.
 
 ## Still to do
 
-Two narrow gaps, both deliberately deferred — hover renders the **F# signature**
-view, so a fact with no F# signature syntax plus one rare disambiguation are not
-yet surfaced.
+One narrow gap remains, deliberately deferred — hover renders the **F#
+signature** view, so a not-yet-wired sidecar doc-file lookup is the only fact
+not yet surfaced.
 
 ### 1. XML doc summaries not wired into hover
 
@@ -97,15 +116,3 @@ yet surfaced.
 handler, so no summary text is shown. Requires: locating the companion `.xml`
 next to the resolved assembly, parsing the `<member name="…">` entries, keying
 by `doc_id`, and appending the summary to the hover body.
-
-### 2. Follow-up 5 residual — generic 0-parameter unit-function
-
-A *generic* module value (`let empty<'T> = …`) is emitted by F# as a
-0-parameter generic *method*, not a property, so the rebrand never tags it with
-`MethodLike::module_value`. `format_method` falls back to "0-parameter generic
-module method ⇒ value", which is correct for FSharp.Core values
-(`Array.empty`/`List.empty`) but mis-renders the vanishingly rare generic
-0-parameter *unit-function* (`let f<'T> () = …`) as a value. Closing it needs
-threading the pickle's `ValReprInfo` arity (`val_il_arity`, already decoded in
-`crates/assembly/src/fsharp_pickle_merge.rs`) into this formatter/rebrand
-decision. See the comment at `display.rs` lines ~208–213.

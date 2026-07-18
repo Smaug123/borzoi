@@ -75,6 +75,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
         compiler_feature_required: vec![],
         source_name: None,
         custom_attrs: vec![],
+        abbreviation_target: None,
     }
 }
 
@@ -575,9 +576,10 @@ fn module_unit_function_renders_with_arrow() {
 fn generic_module_value_renders_as_val() {
     // `let empty<'T> = …` is a *generic* value: F# emits it as a 0-parameter
     // generic *method* (not a property), so the property→method rebrand never
-    // tags it `module_value`. It must still render as a value (`val empty<'T>:
-    // 'T[]`), not a unit function (`val empty<'T>: unit -> 'T[]`) — regression
-    // guard for FSharp.Core values like `Array.empty`/`List.empty`.
+    // tags it `module_value`. `is_module_value_binding` (the pickle's zero
+    // argument-group count) is what marks it a value; it must render `val
+    // empty<'T>: 'T[]`, not a unit function — regression guard for FSharp.Core
+    // values like `Array.empty`/`List.empty`.
     let array_of_t = TypeRef::Array {
         element: Box::new(NullableType::oblivious(method_var(0))),
         rank: 1,
@@ -586,12 +588,32 @@ fn generic_module_value_renders_as_val() {
     };
     let mut m = method("empty", sig(vec![], array_of_t));
     m.generic_parameters = vec![typar("T")];
+    m.is_module_value_binding = true;
     assert_eq!(
         format_member(
             &Member::Method(m),
             &entity("Array", EntityKind::Module, &[])
         ),
         "val empty<'T>: 'T[]"
+    );
+}
+
+#[test]
+fn generic_module_unit_function_renders_with_arrow() {
+    // `let f<'T> () = 1` — a *generic* 0-parameter unit-function. Like a generic
+    // value it compiles to a 0-parameter generic method with `module_value: None`,
+    // so the two are structurally identical; only `is_module_value_binding`
+    // separates them, and here it is false (the pickle records one `unit` argument
+    // group, not zero). It must render the function form `val f<'T>: unit -> int`,
+    // not the value form `val f<'T>: int` the old "0-parameter generic module
+    // method ⇒ value" heuristic produced. (Grounded end-to-end against real fsc by
+    // `projector_source_names::generic_module_value_vs_unit_function_split`.)
+    let mut m = method("f", sig(vec![], prim(Primitive::I4)));
+    m.generic_parameters = vec![typar("T")];
+    // is_module_value_binding defaults to false in `method` — the function case.
+    assert_eq!(
+        format_member(&Member::Method(m), &entity("M", EntityKind::Module, &[])),
+        "val f<'T>: unit -> int"
     );
 }
 

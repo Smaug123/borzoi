@@ -70,6 +70,19 @@ module Hello =
     // strip: both sides must keep the Unit parameter for the diff to
     // agree.
     let pingNamed (u: unit) = 1
+    // Generic 0-parameter bindings — the value-vs-unit-function ambiguity that
+    // `MethodLike::is_module_value_binding` resolves. A CLR property cannot be
+    // generic, so fsc emits BOTH as 0-parameter generic *methods* (never the
+    // property the non-generic `module_value` rebrand keys off), leaving
+    // `module_value = None` on each. Only the pickle's argument-group *count*
+    // separates them — the *sum* (`val_il_arity`) is 0 for both, since a `unit`
+    // group is zero-length:
+    //   `genEmpty`    is a value → 0 argument groups → is_module_value_binding = true
+    //   `genPingUnit` is a fn    → 1 (unit) group    → is_module_value_binding = false
+    // The hover formatter reads the flag to render `val genEmpty<'a>: 'a[]` vs
+    // `val genPingUnit<'a>: unit -> int`.
+    let genEmpty<'a> : 'a[] = [||]
+    let genPingUnit<'a> () : int = 1
     // No `let _ (_: unit) = ...` fixture: F# wildcard unit params
     // compile to a real `Microsoft.FSharp.Core.Unit` IL parameter
     // (named `_arg1`), but FCS surfaces them with `Name = None` — same
@@ -257,11 +270,13 @@ type OptionalArgHost() =
 // entity's kind from `Class` to `Measure`. fcs-dump emits
 // `"IsMeasure": true`.
 //
-// (Phase 6c1 deliberately excludes `type X = Y` plain abbreviations:
+// (Phase 6c1 deliberately excluded `type X = Y` plain abbreviations:
 // fsc inlines those at the call site without emitting any ECMA TypeDef
 // row, so there's nothing in the ECMA tree to enrich. Synthesising an
-// entity from the pickle alone is the silent-fallback antipattern that
-// D5 rejects — a later slice will revisit when it has a real consumer.)
+// entity from the pickle alone was the silent-fallback antipattern that
+// D5 rejects — until a real consumer arrived. The abbreviation-marker
+// slice is that consumer: plain abbreviations now appear below
+// (`IntId`/`S`) as name-only markers synthesised from the pickle.)
 [<Measure>]
 type m
 
@@ -329,6 +344,60 @@ module Suffixed =
 // sides — its SRTP member constraint is erased from IL, and the fcs-dump
 // rendering emits the same unconstrained typar, so the diff also pins the
 // erased-constraint agreement.
+// Type ABBREVIATIONS (`type X = Y`). fsc inlines these at every use site and
+// emits NO ECMA TypeDef row — they live only in the F# signature pickle's
+// `type_abbrev` field. The Rust projector synthesises a name-only
+// `EntityKind::Abbreviation` marker for each from the pickle
+// (`apply_abbreviation_markers`), and fcs-dump projects the identical name-only
+// entity through its minimal `IsFSharpAbbreviation` branch, so both normalise to
+// the same entity — which makes `diff_assembly_minilib_fs` a free oracle that the
+// marker shape matches FCS's abbreviation surface. The *target* the two carry
+// (`IntId` → `Microsoft.FSharp.Core.int`; `S` → `System.String`) is elided by the
+// whole-tree normaliser and compared by the dedicated abbreviation-target
+// differential instead. See `docs/abbreviation-target-projection-plan.md`.
+//
+//   - `IntId` is a referenced-assembly (FSharp.Core) primitive alias — the
+//     immediate, unchased logical target is `Microsoft.FSharp.Core.int`.
+//   - `S` targets a BCL type directly, so FCS renders the target `System.String`
+//     (already an `AccessPath`+`LogicalName` FQN, not chased through an alias).
+//   - `ObjId` is a second referenced-assembly alias (`Microsoft.FSharp.Core.obj`).
+//   - `PointAlias` targets a *same-assembly* type (`Point`, above). fsc pickles
+//     even that as a non-local ref back into `MiniLibFs` itself, so the decoded
+//     target is `MiniLibFs.Point` with `ccu = Some("MiniLibFs")` (rendered
+//     path-only — exactly as FCS does; sema resolves the ccu name).
+//   - `SelfVar<'T> = 'T` targets the abbreviation's own type parameter, decoded
+//     to `Var(0)` and rendered `!T0`.
+//
+// The structural-shape slice adds generic instantiations, functions, and tuples
+// (arrays are deferred — they surface differently on the two sides):
+//   - `MyList<'T> = 'T list` / `MyIntList = int list` — a generic app, rendered
+//     `Microsoft.FSharp.Collections.list``1<…>` (the tycon path + backtick arity).
+//   - `IntFn = int -> int` and `NestedFn = (int -> int) -> int` — functions,
+//     right-associative, the domain parenthesised only when it is itself a
+//     function (so the two nested shapes render distinctly).
+//   - `Pair = int * string` — a reference tuple (`(… * …)`). (A struct-tuple
+//     abbreviation `type X = struct (…)` misparses as a struct-type definition,
+//     so the `struct_kind` rendering is pinned by a synthetic unit test instead.)
+type IntId = int
+
+type S = System.String
+
+type ObjId = obj
+
+type PointAlias = Point
+
+type SelfVar<'T> = 'T
+
+type MyList<'T> = 'T list
+
+type MyIntList = int list
+
+type IntFn = int -> int
+
+type NestedFn = (int -> int) -> int
+
+type Pair = int * string
+
 module Witness =
     let inline addThem (x: ^a) (y: ^a) : ^a = x + y
     // A real member whose compiled name merely *embeds* `$W` (it is not a
