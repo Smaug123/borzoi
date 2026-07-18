@@ -917,6 +917,7 @@ fn diff_assembly_minilib_fs_ext() {
 #[test]
 fn sort_tiebreaks_on_generic_arity() {
     let non_generic = MethodLike {
+        definition_range: None,
         name: "M".into(),
         access: Access::Public,
         signature: MethodSignature {
@@ -948,6 +949,7 @@ fn sort_tiebreaks_on_generic_arity() {
         unclassified_impls: Vec::new(),
     };
     let generic = MethodLike {
+        definition_range: None,
         generic_parameters: vec![TypeParameter {
             name: "T".into(),
             variance: Variance::Invariant,
@@ -1207,6 +1209,7 @@ fn fixture_system_object() -> Vec<Entity> {
         abbreviation_target: None,
         members: vec![
             Member::Method(MethodLike {
+                definition_range: None,
                 name: ".ctor".into(),
                 access: Access::Public,
                 signature: MethodSignature {
@@ -1238,6 +1241,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
             }),
             Member::Method(MethodLike {
+                definition_range: None,
                 name: "Equals".into(),
                 access: Access::Public,
                 signature: MethodSignature {
@@ -1269,6 +1273,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
             }),
             Member::Method(MethodLike {
+                definition_range: None,
                 name: "GetHashCode".into(),
                 access: Access::Public,
                 signature: MethodSignature {
@@ -1300,6 +1305,7 @@ fn fixture_system_object() -> Vec<Entity> {
                 unclassified_impls: Vec::new(),
             }),
             Member::Method(MethodLike {
+                definition_range: None,
                 name: "ReferenceEquals".into(),
                 access: Access::Public,
                 signature: MethodSignature {
@@ -1434,6 +1440,7 @@ fn fixture_my_lib() -> Vec<Entity> {
                 custom_attrs: vec![],
             }),
             Member::Method(MethodLike {
+                definition_range: None,
                 name: "Increment".into(),
                 access: Access::Public,
                 signature: MethodSignature {

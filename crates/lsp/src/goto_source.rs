@@ -240,6 +240,85 @@ fn document_for_point(
     })
 }
 
+/// Resolve a definition source from a **pickled source range**
+/// ([`borzoi_assembly::FsharpSourceRange`]) rather than a method token — the navigation path
+/// for an F# module *value*: its getter MethodDef carries no sequence point
+/// (the initialiser lives in the module's `.cctor`), but the assembly's
+/// signature pickle records the binding's `DefinitionRange`, and the PDB
+/// still says how to obtain the file. Resolution order:
+///
+/// 1. the range's file is a PDB document with **embedded source** → offline
+///    [`DefinitionSource::Embedded`];
+/// 2. the file maps through **SourceLink** → [`DefinitionSource::Remote`].
+///    This deliberately does *not* require the file to appear in the PDB's
+///    `Document` table: an `.fsi`-constrained assembly can pickle ranges in
+///    files no sequence point ever names, yet the SourceLink prefix map still
+///    covers them.
+///
+/// The pickled 0-based column becomes the 1-based [`DefinitionSource`]
+/// convention here. `Ok(None)` when the file is neither embedded nor
+/// SourceLink-mapped (D5: say nothing rather than guess). Pure: reads only
+/// `pdb_image`.
+pub fn range_definition_source_in_pdb(
+    pdb_image: &[u8],
+    range: &borzoi_assembly::FsharpSourceRange,
+) -> Result<Option<DefinitionSource>, PdbError> {
+    let pdb = PortablePdb::read(pdb_image)?;
+    let rid = document_rid_by_name(&pdb, &range.file)?;
+    source_for_document(
+        &pdb,
+        range.file.clone(),
+        rid,
+        range.start_line,
+        range.start_column.saturating_add(1),
+    )
+}
+
+/// The `Document` table row whose name is exactly `name`, or `None` when the
+/// PDB records no such document (e.g. an `.fsi` file — signature files carry
+/// no sequence points, so no document row ever names them).
+fn document_rid_by_name(pdb: &PortablePdb<'_>, name: &str) -> Result<Option<u32>, PdbError> {
+    for rid in 1..=pdb.document_count() {
+        if pdb.document_name(rid)? == name {
+            return Ok(Some(rid));
+        }
+    }
+    Ok(None)
+}
+
+/// The token path with the pickled-range fallback: a method that carries a
+/// sequence point resolves exactly as [`definition_source_in_pdb`]; one that
+/// does not (an F# module value's getter) falls back to
+/// [`range_definition_source_in_pdb`] when a range is available. `Ok(None)`
+/// when neither says anything.
+pub fn definition_source_with_range_fallback(
+    pdb_image: &[u8],
+    metadata_token: u32,
+    range: Option<&borzoi_assembly::FsharpSourceRange>,
+) -> Result<Option<DefinitionSource>, PdbError> {
+    if let Some(source) = definition_source_in_pdb(pdb_image, metadata_token)? {
+        return Ok(Some(source));
+    }
+    match range {
+        Some(range) => range_definition_source_in_pdb(pdb_image, range),
+        None => Ok(None),
+    }
+}
+
+/// The [`DefinitionDocument`] view of a pickled range — the hover-side "say
+/// where it is" counterpart of [`range_definition_source_in_pdb`]. No PDB is
+/// needed: the range itself names the document and position; only the
+/// 0-based pickled column is converted to the 1-based document convention.
+pub fn definition_document_for_range(
+    range: &borzoi_assembly::FsharpSourceRange,
+) -> DefinitionDocument {
+    DefinitionDocument {
+        document: range.file.clone(),
+        line: range.start_line,
+        column: range.start_column.saturating_add(1),
+    }
+}
+
 /// The file name of the *sidecar* `.pdb` a DLL points at via its CodeView debug
 /// entry, or `None` for a DLL with no such pointer. Only the file name (not the
 /// recorded absolute build-machine path) is meaningful: the sidecar is looked
@@ -273,10 +352,33 @@ fn source_for_point(
     point: SequencePoint,
 ) -> Result<Option<DefinitionSource>, PdbError> {
     let document = pdb.document_name(point.document)?;
-    let (line, column) = (point.start_line, point.start_column);
+    source_for_document(
+        pdb,
+        document,
+        Some(point.document),
+        point.start_line,
+        point.start_column,
+    )
+}
 
+/// The document-resolution core shared by the sequence-point
+/// ([`source_for_point`]) and pickled-range
+/// ([`range_definition_source_in_pdb`]) paths: embedded source when the
+/// document has a `Document` row carrying it (offline, no network), else a
+/// SourceLink URL, else `None`. `rid` is the document's row when it has one —
+/// a pickled range can name a file no sequence point does (an `.fsi`), which
+/// then can only resolve through SourceLink. `line`/`column` are 1-based.
+fn source_for_document(
+    pdb: &PortablePdb<'_>,
+    document: String,
+    rid: Option<u32>,
+    line: u32,
+    column: u32,
+) -> Result<Option<DefinitionSource>, PdbError> {
     // Prefer embedded source — it needs no network.
-    if let Some(text) = pdb.document_embedded_source(point.document)? {
+    if let Some(rid) = rid
+        && let Some(text) = pdb.document_embedded_source(rid)?
+    {
         return Ok(Some(DefinitionSource::Embedded {
             document,
             text,
