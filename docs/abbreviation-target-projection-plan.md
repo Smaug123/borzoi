@@ -353,12 +353,13 @@ with args, `Fun`, `Tuple`, `UCase` — returns `Ok(None)`. Populate the field in
    signature is written to be read from other assemblies, so fsc pickles a
    reference to the current CCU's own type as a non-local ref whose ccu is the
    assembly *itself* (`FsExtIndex`'s `TalliedAlias`, `MiniLibFs`'s `PointAlias`
-   both do this). The decoder **normalises** a self-ccu to `ccu = None`, so the
-   model's invariant is *`None` iff same-assembly* regardless of the pickle's
-   `Local`/non-local-to-self encoding — one same-assembly path for sema, not two.
-   `decode_abbreviation_target` therefore takes the current assembly's name. (The
-   `Local` decode path stays — exercised by the synthetic unit test — but real
-   fixtures reach the non-local-to-self path.)
+   both do this). The decoder stores that ccu **verbatim** (`Some(host-name)`),
+   *not* folded to `None`: a `CcuRef` carries only a name — no version/PKT — so a
+   name equal to the host cannot be proven to mean the host rather than a
+   same-named referenced assembly (an extern alias), and only sema (with the
+   loaded identities) can tell them apart. `ccu = None` is reserved for the `Local`
+   tcref, the one encoding that proves same-CCU membership. (Codex flagged an
+   earlier by-name normalisation as unsound; this is the fix.)
 2. **The two-sided differential rides entirely on `MiniLibFs`.** `MiniLibFs`
    dumps cleanly through `entities`, so its fixtures were widened to exercise
    *every* decode path two-sided: `IntId`/`ObjId` (referenced NonLocal), `S`

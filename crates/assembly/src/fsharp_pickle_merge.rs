@@ -1497,14 +1497,13 @@ fn decode_abbreviation_target(
     entity: &PickledEntity,
     ty: &PickledType,
     local_fqns: &HashMap<u32, Vec<String>>,
-    self_ccu: &str,
 ) -> Result<Option<AbbreviationTarget>, ImportError> {
     match ty {
         // The generic-abbreviation quantifier: `type MyList<'T> = 'T list` pickles
         // `Forall([T], body)`, whose `Var`s reference the entity's own typars, so
         // decode the body directly.
         PickledType::Forall { body, .. } => {
-            decode_abbreviation_target(pickled, entity, body, local_fqns, self_ccu)
+            decode_abbreviation_target(pickled, entity, body, local_fqns)
         }
         // The abbreviation's own generic parameter, by position into its typars
         // (`type SelfVar<'T> = 'T` ⇒ `Var(0)`). An out-of-scope typar (should not
@@ -1528,28 +1527,27 @@ fn decode_abbreviation_target(
                     index: *simpletyp_index,
                     max: pickled.header.simpletys.len(),
                 })?;
-            Ok(Some(decode_nonlocal_named(pickled, nle_idx, self_ccu)?))
+            Ok(Some(decode_nonlocal_named(pickled, nle_idx)?))
         }
         // A named application; only the NULLARY form is modelled here. A non-empty
         // `args` is a generic instantiation — deferred to the structural slice.
         PickledType::App { tcref, args, .. } if args.is_empty() => {
-            decode_named_tcref(pickled, tcref, local_fqns, self_ccu)
+            decode_named_tcref(pickled, tcref, local_fqns)
         }
         _ => Ok(None),
     }
 }
 
 /// Decode a nullary named head from its tcref: a non-local ref through the
-/// header tables, or a same-assembly `Local` stamp through the pre-built
+/// header tables, or a same-CCU `Local` stamp through the pre-built
 /// [`local_tycon_fqns`] map.
 fn decode_named_tcref(
     pickled: &PickledCcu,
     tcref: &PickledTcRef,
     local_fqns: &HashMap<u32, Vec<String>>,
-    self_ccu: &str,
 ) -> Result<Option<AbbreviationTarget>, ImportError> {
     match tcref {
-        PickledTcRef::NonLocal(idx) => Ok(Some(decode_nonlocal_named(pickled, *idx, self_ccu)?)),
+        PickledTcRef::NonLocal(idx) => Ok(Some(decode_nonlocal_named(pickled, *idx)?)),
         PickledTcRef::Local(stamp) => {
             if let Some(path) = local_fqns.get(stamp) {
                 Ok(Some(AbbreviationTarget::Named {
@@ -1577,19 +1575,21 @@ fn decode_named_tcref(
 /// path the pickle carries, both through the header tables. A dangling nleref,
 /// ccu, or string index is a malformed header — a loud `Err`.
 ///
-/// **Same-assembly normalisation.** F# pickles a reference to the current CCU's
-/// *own* type as a non-local ref whose ccu is the assembly *itself* (a public
-/// signature is written to be read from other assemblies, where the target is
-/// non-local). We fold that back: a resolved ccu name equal to `self_ccu` yields
-/// `ccu = None`, so the model's invariant — `None` **iff** same-assembly — holds
-/// uniformly whether the pickle used `Local` or non-local-to-self, and the sema
-/// resolver has one same-assembly path, not two. (Assembly names are unique
-/// within a compilation, so the name match cannot false-positive a referenced
-/// assembly.)
+/// The ccu is stored **verbatim** (`Some(name)`), never folded to `None` even
+/// when it equals the host assembly's name. fsc pickles a reference to the
+/// current CCU's *own* type as a non-local ref whose ccu is the host name (a
+/// public signature is written to be read from elsewhere), but the pickle's
+/// [`CcuRef`](crate::fsharp_pickle::CcuRef) carries only a *name* — no version or
+/// public-key-token — so a name equal to the host cannot be *proven* to mean the
+/// host: an assembly can reference a different assembly of the same simple name
+/// (an extern alias). Disambiguating host-vs-same-named-reference needs the
+/// loaded assembly identities, which only the sema layer has; a decode-time
+/// name fold would silently misroute that reference. `ccu = None` is reserved
+/// for the pickle's `Local` tcref, the one form that *proves* same-CCU
+/// membership. See `docs/abbreviation-target-projection-plan.md` §3.1.
 fn decode_nonlocal_named(
     pickled: &PickledCcu,
     nle_idx: u32,
-    self_ccu: &str,
 ) -> Result<AbbreviationTarget, ImportError> {
     let nle =
         pickled
@@ -1625,11 +1625,8 @@ fn decode_nonlocal_named(
             )
         })
         .collect::<Result<Vec<_>, _>>()?;
-    // Same-assembly normalisation: a non-local ref back into the current CCU
-    // collapses to `ccu = None` (see the doc comment).
-    let ccu = (ccu != self_ccu).then_some(ccu);
     Ok(AbbreviationTarget::Named {
-        ccu,
+        ccu: Some(ccu),
         path,
         args: Vec::new(),
     })
@@ -1756,13 +1753,8 @@ pub(crate) fn apply_abbreviation_markers(
                 }
                 _ => None,
             };
-            let abbreviation_target = decode_abbreviation_target(
-                pickled,
-                entity,
-                abbrev_ty,
-                &local_fqns,
-                &assembly.name,
-            )?;
+            let abbreviation_target =
+                decode_abbreviation_target(pickled, entity, abbrev_ty, &local_fqns)?;
             targets.push(AbbrevMarkerSite {
                 namespace: namespace.to_vec(),
                 type_chain: type_chain.to_vec(),
@@ -2248,9 +2240,6 @@ mod tests {
     }
 
     const AMB: Nullness = Nullness::Ambivalent;
-    // A current-assembly name distinct from every ccu the fixture references, so
-    // the same-assembly normalisation does not fire on the `FSharp.Core` cases.
-    const SELF: &str = "TestAsm";
 
     fn int_target() -> AbbreviationTarget {
         AbbreviationTarget::Named {
@@ -2278,7 +2267,7 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &app, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &app, &local).unwrap(),
             Some(int_target()),
         );
 
@@ -2288,7 +2277,7 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &simple, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &simple, &local).unwrap(),
             Some(int_target()),
         );
 
@@ -2299,7 +2288,7 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &local_app, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &local_app, &local).unwrap(),
             Some(AbbreviationTarget::Named {
                 ccu: None,
                 path: vec!["Demo".into(), "Point".into()],
@@ -2322,7 +2311,7 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &var, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &var, &local).unwrap(),
             Some(AbbreviationTarget::Var(1)),
         );
 
@@ -2336,7 +2325,7 @@ mod tests {
             }),
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &forall, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &forall, &local).unwrap(),
             Some(AbbreviationTarget::Var(0)),
         );
 
@@ -2346,7 +2335,7 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &oob, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &oob, &local).unwrap(),
             None,
         );
     }
@@ -2381,7 +2370,7 @@ mod tests {
         ];
         for ty in shapes {
             assert_eq!(
-                decode_abbreviation_target(&ccu, &entity, &ty, &local, SELF).unwrap(),
+                decode_abbreviation_target(&ccu, &entity, &ty, &local).unwrap(),
                 None,
                 "{ty:?} is a shape the nullary slice must decline",
             );
@@ -2428,7 +2417,7 @@ mod tests {
         for ty in danglers {
             assert!(
                 matches!(
-                    decode_abbreviation_target(&ccu, &entity, &ty, &local, SELF),
+                    decode_abbreviation_target(&ccu, &entity, &ty, &local),
                     Err(ImportError::OsgnIndexOutOfRange { .. })
                 ),
                 "{ty:?} must fail loud as OsgnIndexOutOfRange",
@@ -2450,37 +2439,8 @@ mod tests {
             nullness: AMB,
         };
         assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &ns_ref, &local, SELF).unwrap(),
+            decode_abbreviation_target(&ccu, &entity, &ns_ref, &local).unwrap(),
             None,
-        );
-    }
-
-    #[test]
-    fn decode_normalises_same_assembly_nonlocal_ccu_to_none() {
-        // fsc pickles a reference to the current CCU's own type as a *non-local*
-        // ref whose ccu is the assembly itself. When `self_ccu` matches, the
-        // target normalises to `ccu = None`, so same-assembly targets have one
-        // representation regardless of the pickle's `Local`/non-local encoding.
-        let ccu = abbrev_test_ccu();
-        let local = local_tycon_fqns(&ccu).unwrap();
-        let entity = alias_entity();
-        let app = PickledType::App {
-            tcref: PickledTcRef::NonLocal(0),
-            args: Vec::new(),
-            nullness: AMB,
-        };
-        assert_eq!(
-            decode_abbreviation_target(&ccu, &entity, &app, &local, "FSharp.Core").unwrap(),
-            Some(AbbreviationTarget::Named {
-                ccu: None,
-                path: vec![
-                    "Microsoft".into(),
-                    "FSharp".into(),
-                    "Core".into(),
-                    "int".into(),
-                ],
-                args: Vec::new(),
-            }),
         );
     }
 
@@ -2562,7 +2522,7 @@ mod tests {
             let local = local_tycon_fqns(&ccu).unwrap();
             let mut entity = alias_entity();
             entity.typars = vec![0, 1, 2];
-            match decode_abbreviation_target(&ccu, &entity, &ty, &local, SELF) {
+            match decode_abbreviation_target(&ccu, &entity, &ty, &local) {
                 Ok(_) => {}
                 Err(ImportError::OsgnIndexOutOfRange { .. }) => {}
                 Err(other) => prop_assert!(false, "unexpected non-index error: {other:?}"),

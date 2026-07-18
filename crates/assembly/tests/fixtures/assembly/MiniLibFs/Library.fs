@@ -349,9 +349,9 @@ module Suffixed =
 //     (already an `AccessPath`+`LogicalName` FQN, not chased through an alias).
 //   - `ObjId` is a second referenced-assembly alias (`Microsoft.FSharp.Core.obj`).
 //   - `PointAlias` targets a *same-assembly* type (`Point`, above). fsc pickles
-//     even that as a non-local ref back into `MiniLibFs` itself, which the decoder
-//     normalises to `MiniLibFs.Point` with `ccu = None` (rendered path-only —
-//     exactly as FCS does).
+//     even that as a non-local ref back into `MiniLibFs` itself, so the decoded
+//     target is `MiniLibFs.Point` with `ccu = Some("MiniLibFs")` (rendered
+//     path-only — exactly as FCS does; sema resolves the ccu name).
 //   - `SelfVar<'T> = 'T` targets the abbreviation's own type parameter, decoded
 //     to `Var(0)` and rendered `!T0`.
 //   - `MyList<'T> = 'T list` is a *generic instantiation* — a structural shape the

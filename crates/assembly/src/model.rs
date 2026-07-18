@@ -186,12 +186,16 @@ impl NullableType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AbbreviationTarget {
-    /// A tycon application. `ccu = None` **iff** the target is same-assembly —
-    /// whether the pickle encoded it as a `Local` stamp or (as fsc does for a
-    /// public signature) a non-local ref back into the current CCU, both of which
-    /// the decoder normalises to `None`. `Some(name)` is a genuinely referenced
-    /// assembly — the CCU **logical name** only (`"FSharp.Core"`), the loader
-    /// resolving the full identity. `path` is the
+    /// A tycon application. `ccu = None` only when the pickle referenced the
+    /// target as a `Local` (same-CCU) tcref — the one encoding that *proves*
+    /// same-assembly membership. `Some(name)` carries the CCU **logical name**
+    /// verbatim (`"FSharp.Core"`) for a non-local ref, and the loader resolves the
+    /// full identity: note fsc pickles a reference to the host's *own* type
+    /// non-locally too (a public signature is read from elsewhere), so a
+    /// `Some(host-name)` is common and legitimate — it is **not** folded to
+    /// `None`, because a `CcuRef` carries only a name (no version/PKT) and an
+    /// assembly can reference a same-named other assembly, which only the sema
+    /// layer can tell apart. `path` is the
     /// unsplit dotted *logical* path the pickle carries
     /// (`["System", "String"]`, `["Microsoft", "FSharp", "Core", "int"]`), and
     /// canonical-renders as `path.join(".")` — the ccu is stored for sema but is
