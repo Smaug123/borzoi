@@ -54,6 +54,7 @@ mod resolve_scoping;
 mod resolve_straddle_gen_diff;
 mod resolve_string_qualifier_repro;
 mod resolve_type_members;
+mod resolve_type_parameters;
 mod resolve_type_qualified_cases;
 mod resolve_types;
 mod resolve_union_cases;

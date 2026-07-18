@@ -2,7 +2,7 @@
 
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, MemberLetBindings, Pat,
-    SyntaxKind, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr,
+    SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, TyparDecls, Type, TypeDefn, TypeDefnRepr,
 };
 
 use super::state::Frame;
@@ -75,6 +75,41 @@ enum AttrCandidate {
     NoMatch,
 }
 
+/// The generic-parameter list of a `let`/`member` binding head, if the head is
+/// a `LongIdent` pattern carrying one (`let f<'T>`, `member _.M<'T>`). A head of
+/// any other shape declares no typars.
+pub(super) fn head_typar_decls(head: &Pat) -> Option<TyparDecls> {
+    match head {
+        Pat::LongIdent(l) => l.typar_decls(),
+        _ => None,
+    }
+}
+
+/// The apostrophe-inclusive source range of a `'T` / `^T` occurrence — the sigil
+/// token's start to the name token's end — and its display text (`"'T"`). Works
+/// on the `TYPAR_DECL` (declaration) and `VAR_TYPE` / `TYPAR_EXPR` (use) nodes,
+/// all shaped `[(QUOTE_TOK | HAT_TOK), IDENT_TOK]`.
+///
+/// Derived from the *tokens*, not `node.text_range()`, because the enclosing node
+/// can span leading whitespace trivia (`type X< 'T>` attaches the space to the
+/// `TYPAR_DECL`), which would put the binder one byte before FCS's span and read
+/// as a spurious divergence. FCS keys typars on the sigil-inclusive name span, so
+/// this reproduces it exactly. `None` for a malformed node missing either token.
+pub(super) fn typar_occurrence(node: &SyntaxNode) -> Option<(TextRange, String)> {
+    let mut sigil = None;
+    let mut name = None;
+    for tok in node.children_with_tokens().filter_map(|c| c.into_token()) {
+        match tok.kind() {
+            SyntaxKind::QUOTE_TOK | SyntaxKind::HAT_TOK if sigil.is_none() => sigil = Some(tok),
+            SyntaxKind::IDENT_TOK if name.is_none() => name = Some(tok),
+            _ => {}
+        }
+    }
+    let (sigil, name) = (sigil?, name?);
+    let range = TextRange::new(sigil.text_range().start(), name.text_range().end());
+    Some((range, format!("{}{}", sigil.text(), name.text())))
+}
+
 impl<'a> Resolver<'a> {
     /// Intern a genuine type definition's name as a first-class
     /// [`DefKind::Type`] binder: record its self-resolution (so the defining
@@ -117,6 +152,85 @@ impl<'a> Resolver<'a> {
             .or_default()
             .insert(key.clone(), access_root_len);
         self.mark_decl(&key).ty = true;
+    }
+
+    /// Push the generic parameters of an optional header (`type Foo<'T>`,
+    /// `let f<'T>`, `member _.M<'T>`) onto the [`typar scope`](Self::typar_scopes),
+    /// if any. Returns `true` iff a frame was pushed — pass it to
+    /// [`Self::leave_typars`] for a symmetric pop. A header with no `<…>` pushes
+    /// nothing (the common, non-generic case keeps the stack empty).
+    pub(super) fn enter_typars(&mut self, decls: Option<TyparDecls>) -> bool {
+        match decls {
+            Some(d) => {
+                let frame = self.intern_typars(&d);
+                self.typar_scopes.push(frame);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Pop the frame [`Self::enter_typars`] pushed (a no-op when it pushed none).
+    pub(super) fn leave_typars(&mut self, pushed: bool) {
+        if pushed {
+            self.typar_scopes.pop();
+        }
+    }
+
+    /// Intern each declared typar as a [`DefKind::TypeParam`] binder and
+    /// self-record its declaring `'T`/`^T` occurrence (FCS reports that
+    /// occurrence as a use pointing at itself). Returns the frame — the bare
+    /// `idText` name keyed to each binder — for the caller to push. The
+    /// mirror of [`Self::define_type`] for the type-parameter namespace.
+    ///
+    /// Returned rather than pushed directly so a two-phase caller (a `let`
+    /// binding, whose head annotations and RHS are resolved in separate passes —
+    /// see [`prepare_binding`](Self::prepare_binding)) can intern once and
+    /// re-activate the same frame without re-interning.
+    pub(super) fn intern_typars(&mut self, decls: &TyparDecls) -> Vec<(String, DefId)> {
+        let mut frame = Vec::new();
+        for decl in decls.typars() {
+            let Some(ident) = decl.ident() else { continue };
+            let Some((range, name)) = typar_occurrence(decl.syntax()) else {
+                continue;
+            };
+            // The lookup key is the bare name (`T`), matching a `Type::Var` use's
+            // `ident()`; the binder's range/name is the sigil-inclusive `'T`
+            // occurrence (trivia-trimmed by `typar_occurrence`), matching FCS.
+            let key = id_text(ident.text()).to_string();
+            let id = self.intern(Def::from_range(&name, range, DefKind::TypeParam));
+            self.record(range, Resolution::Local(id));
+            frame.push((key, id));
+        }
+        frame
+    }
+
+    /// Resolve a bare typar name (`T` of `'T`/`^T`) against the open typar
+    /// frames. Binds only when **exactly one** open generic scope declares the
+    /// name; `None` otherwise — either no scope declares it (implicit
+    /// generalisation, a constraint-only variable) or **more than one** does.
+    ///
+    /// The multi-frame case is a same-name shadow, and F#'s disambiguation is
+    /// *context-dependent*, not a uniform nearest/outermost rule (verified
+    /// against FCS): a `member _.M<'T>` inside `type C<'T>` binds the annotation
+    /// to the **enclosing type**'s `'T` (the member re-declaration does not win),
+    /// whereas a nested generic `let inner<'T>` inside `let outer<'T>` binds to
+    /// the **inner** `'T`. Modelling that split is a later slice; until then a
+    /// collision defers rather than risk a wrong bind (D5). This is why every
+    /// typar-declaring scope (type / member / module-`let` / local-`let` /
+    /// class-`let`) pushes a frame: so a shadowing re-declaration is always
+    /// *visible* here as a collision, never silently leaking the outer binder.
+    pub(super) fn lookup_typar(&self, name: &str) -> Option<DefId> {
+        let mut hit = None;
+        for frame in &self.typar_scopes {
+            if let Some((_, id)) = frame.iter().rev().find(|(n, _)| n == name) {
+                if hit.is_some() {
+                    return None; // declared in >1 open scope — an unmodelled shadow
+                }
+                hit = Some(*id);
+            }
+        }
+        hit
     }
 
     /// Intern the cases of a union `type T = A | B of …` as [`DefKind::UnionCase`]
@@ -742,6 +856,12 @@ impl<'a> Resolver<'a> {
                 // A `static member` and a secondary constructor (`new`) are both
                 // static contexts: no self-id, no access to the instance scope.
                 let is_static = mm.is_static() || mm.leading_keyword() == MemberLeading::New;
+                // The member's *own* generic parameters (`member _.M<'T>`), nested
+                // above the enclosing type's — so a member-signature `'T` use
+                // resolves to the member's decl, shadowing a same-named type typar.
+                // Wraps the whole member: its param annotations (via
+                // `pattern_locals` → `resolve_pat_types`), return type, and body.
+                let pushed_typars = self.enter_typars(b.pat().as_ref().and_then(head_typar_decls));
                 // The field scope is pushed *before* the parameter patterns are
                 // resolved, so a param pattern that uses a class-local active
                 // pattern (`member _.M(Hit y)`) resolves it against the class
@@ -780,6 +900,7 @@ impl<'a> Resolver<'a> {
                 }
                 self.scopes.pop();
                 self.pop_field_scope(depth);
+                self.leave_typars(pushed_typars);
             }
             MemberDefn::GetSetMember(g) => {
                 // A get/set property shares one self-identifier across both
@@ -1025,12 +1146,23 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
             }
+            // A type variable (`'a`/`^a`) resolves to its declaring header's
+            // typar binder, if one is in scope. When none is (implicit
+            // generalisation — `let id (x:'a) = x` with no explicit `<'a>` — or a
+            // constraint-only variable), it stays unrecorded: a sound deferral.
+            Type::Var(t) => {
+                if let Some(tok) = t.ident()
+                    && let Some(id) = self.lookup_typar(id_text(tok.text()))
+                    && let Some((range, _)) = typar_occurrence(t.syntax())
+                {
+                    self.record(range, Resolution::Local(id));
+                }
+            }
             // No in-file type-name use to resolve (or one whose accessor surface
-            // is a later slice): a type variable (`'a`), the wildcard `_`, a
-            // constraint intersection (`#A & #B`), a measure power, or a
-            // type-provider static argument. Left unrecorded — a sound deferral.
-            Type::Var(_)
-            | Type::Anon(_)
+            // is a later slice): the wildcard `_`, a constraint intersection
+            // (`#A & #B`), a measure power, or a type-provider static argument.
+            // Left unrecorded — a sound deferral.
+            Type::Anon(_)
             | Type::Intersection(_)
             | Type::MeasurePower(_)
             | Type::StaticConst(_)
