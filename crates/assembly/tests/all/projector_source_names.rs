@@ -24,7 +24,7 @@
 //! Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
 
 use borzoi_assembly::{
-    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault,
+    Ecma335Assembly, EcmaView, Entity, Member, MethodLike, ModuleValue, ParamDefault, format_member,
 };
 
 use crate::common::ensure_minilib_fs_built;
@@ -91,6 +91,47 @@ fn module_let_value_vs_function_carries_module_value() {
     // genuine methods, not values.
     assert_eq!(method(hello, "inc").module_value, None);
     assert_eq!(method(hello, "ping").module_value, None);
+}
+
+#[test]
+fn generic_module_value_vs_unit_function_split() {
+    // The value/unit-function distinction that `module_value` alone cannot carry,
+    // grounded against real fsc. A CLR property cannot be generic, so a *generic*
+    // module `let` is emitted as a 0-parameter generic *method* whether it is a
+    // value or a function — `module_value` is `None` for both, and they are
+    // otherwise structurally identical (0 IL parameters, one typar). Only the
+    // pickle's argument-group count separates them, surfaced as
+    // `is_module_value_binding`:
+    //
+    //   - `let genEmpty<'a> : 'a[] = [||]`  — a value:   0 groups → flag true
+    //   - `let genPingUnit<'a> () : int = 1` — a function: 1 group → flag false
+    //
+    // This pins that the projector reads the count correctly *and* that the hover
+    // formatter renders each accordingly (`val … : 'a[]` vs `val … : unit -> int`).
+    let entities = load();
+    let hello = entity(&entities, "Hello");
+
+    let gen_empty = method(hello, "genEmpty");
+    assert!(gen_empty.module_value.is_none());
+    assert!(
+        gen_empty.is_module_value_binding,
+        "a generic value has zero argument groups"
+    );
+    assert_eq!(
+        format_member(&Member::Method(gen_empty.clone()), hello),
+        "val genEmpty<'a>: 'a[]"
+    );
+
+    let gen_ping = method(hello, "genPingUnit");
+    assert!(gen_ping.module_value.is_none());
+    assert!(
+        !gen_ping.is_module_value_binding,
+        "a generic 0-parameter unit-function has one (unit) argument group, not zero"
+    );
+    assert_eq!(
+        format_member(&Member::Method(gen_ping.clone()), hello),
+        "val genPingUnit<'a>: unit -> int"
+    );
 }
 
 #[test]

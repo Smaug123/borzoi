@@ -70,6 +70,19 @@ module Hello =
     // strip: both sides must keep the Unit parameter for the diff to
     // agree.
     let pingNamed (u: unit) = 1
+    // Generic 0-parameter bindings — the value-vs-unit-function ambiguity that
+    // `MethodLike::is_module_value_binding` resolves. A CLR property cannot be
+    // generic, so fsc emits BOTH as 0-parameter generic *methods* (never the
+    // property the non-generic `module_value` rebrand keys off), leaving
+    // `module_value = None` on each. Only the pickle's argument-group *count*
+    // separates them — the *sum* (`val_il_arity`) is 0 for both, since a `unit`
+    // group is zero-length:
+    //   `genEmpty`    is a value → 0 argument groups → is_module_value_binding = true
+    //   `genPingUnit` is a fn    → 1 (unit) group    → is_module_value_binding = false
+    // The hover formatter reads the flag to render `val genEmpty<'a>: 'a[]` vs
+    // `val genPingUnit<'a>: unit -> int`.
+    let genEmpty<'a> : 'a[] = [||]
+    let genPingUnit<'a> () : int = 1
     // No `let _ (_: unit) = ...` fixture: F# wildcard unit params
     // compile to a real `Microsoft.FSharp.Core.Unit` IL parameter
     // (named `_arg1`), but FCS surfaces them with `Name = None` — same

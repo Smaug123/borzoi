@@ -327,6 +327,50 @@ fn cross_file_qualified_reference_hovers_target_binder() {
     assert_eq!(body(&hover), "`foo` — value");
 }
 
+/// The project hover folds only the Compile **prefix** up to the cursor's file,
+/// not the whole project: a cross-file hover on file 1 of a three-file project
+/// resolves against files [0, 1] (the target binder is in file 0) and leaves
+/// file 2 unfolded. Pins the resolution-slice wiring
+/// (`resolved_prefix_and_env_for` with the file's index, not `usize::MAX`).
+#[test]
+fn project_hover_folds_only_the_prefix_up_to_the_cursor_file() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    let c = tmp.path().join("C.fs");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+            <Compile Include="C.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    write(&a, "module Shared\nlet foo = 1\n");
+    let b_src = "module Other\nlet bar = Shared.foo\n";
+    write(&b, b_src);
+    write(&c, "module Third\nlet baz = Other.bar\n");
+
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    // Cursor on `foo` in B (file 1) — cross-file `Item` resolving into A (file 0).
+    let foo_col = b_src.find("foo").unwrap() as u32;
+    let hover = run(&mut state, &b_uri, 1, foo_col).expect("cross-file hover");
+    assert_eq!(body(&hover), "`foo` — value");
+
+    // The fold covered only the prefix [A, B]; C (file 2) was never folded.
+    assert_eq!(
+        state.semantic.cached_resolved_len(&proj),
+        Some(2),
+        "hover on file 1 folds the [0, 1] prefix, not file 2"
+    );
+}
+
 #[test]
 fn project_file_literal_hover_shows_inferred_type() {
     // Exercises the inferred-type fallback through the *project* hover path.

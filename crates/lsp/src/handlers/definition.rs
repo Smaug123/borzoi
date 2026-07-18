@@ -199,15 +199,18 @@ fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Locat
         docs,
         ..
     } = state;
-    let resolved = semantic.resolved_project_for(&project, workspace, docs)?;
     // Clone the parses (cheap: `ImplFile`s are rowan handles, `texts` is
     // `Arc<str>`) so the `&mut semantic` borrow can drop and we can keep
-    // using the data while the `Arc<ResolvedProject>` is in hand.
+    // using the data while the `Arc<ResolvedProject>` is in hand. Sizing the
+    // fold to this file's Compile index *first* folds only the prefix up to it:
+    // F# is order-sensitive, so the use under the cursor resolves to a def at an
+    // index `<= file_idx` (`item_def` cross-file targets an earlier file), never
+    // in the suffix.
     let parses = semantic
         .parses_for_project(&project, workspace, docs)?
         .clone();
-
     let file_idx = find_file_idx(&parses, &path)?;
+    let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
     let file = resolved.file(file_idx);
     // The resolver's answer first; where it leaves a member-name as
     // `Deferred(QualifiedAccess)` (a `recv.Name` inference resolves), fall back to
