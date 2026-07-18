@@ -660,6 +660,7 @@ fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
         DefKind::ActivePatternCase => "active pattern case",
         DefKind::EnumCase => "enum case",
         DefKind::Member => "static member",
+        DefKind::TypeParam => "type parameter",
     };
     match ty {
         Some(ty) => format!("`{name} : {}` — {kind_label}", ty.render_fsharp()),

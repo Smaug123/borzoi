@@ -1,6 +1,6 @@
 //! Expression and pattern name resolution.
 
-use borzoi_cst::syntax::{Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
+use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
 
 use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefKind};
@@ -26,13 +26,20 @@ impl<'a> Resolver<'a> {
                 }
             }
             // `'T` (FCS's `SynExpr.Typar`) — a type parameter used as the head of
-            // a statically-resolved `'T.Member` call. The `'T` names a *type*
-            // parameter, which lives in F#'s type namespace, not the value scope
-            // this resolver models — so, like `Const`/`Null`, it references no
-            // value names. (The `.Member` is resolved against `'T`'s constraint
-            // type, which needs type inference we don't do here; the enclosing
-            // `DotGet` already leaves the member path alone.)
-            Expr::Typar(_) => {}
+            // a statically-resolved `'T.Member` call. It names a *type* parameter,
+            // resolved against the open typar frames (a member/type/`let` header's
+            // `<'T>`), exactly like a `Type::Var` use. (The `.Member` is resolved
+            // against `'T`'s constraint type, which needs type inference we don't
+            // do here; the enclosing `DotGet` already leaves the member path
+            // alone.) Unrecorded — a sound deferral — when no header declares it.
+            Expr::Typar(e) => {
+                if let Some(tok) = e.ident()
+                    && let Some(id) = self.lookup_typar(id_text(tok.text()))
+                    && let Some((range, _)) = super::types::typar_occurrence(e.syntax())
+                {
+                    self.record(range, Resolution::Local(id));
+                }
+            }
             Expr::LongIdent(e) => {
                 // A path carrying an active-pattern-name `opName` segment
                 // (`(|Foo|_|)`, the folded `(|Foo|_|).Bar`, the qualified

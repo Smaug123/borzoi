@@ -619,11 +619,19 @@ impl<'a> Resolver<'a> {
                         // emission for the name file-wide.
                         self.index_augmentation_members(defn);
                     }
+                    // The type header's generic parameters (`type Foo<'T>`) are in
+                    // scope throughout its body: the abbreviation/record/union RHS
+                    // resolved by `resolve_type_defn`, and every member signature
+                    // and body reached by `resolve_type_member_bodies`. (An
+                    // augmentation carries no `<…>` on its head, so this pushes
+                    // nothing there.)
+                    let pushed_typars = self.enter_typars(defn.typar_decls());
                     self.resolve_type_defn(defn);
                     // Descend into the type's member bodies (self-id, params,
                     // ctor params, class fields) — the value-resolution slice
                     // that `resolve_type_defn` (type uses only) does not cover.
                     self.resolve_type_member_bodies(defn);
+                    self.leave_typars(pushed_typars);
                 }
             }
             ModuleDecl::Exception(exn) => {

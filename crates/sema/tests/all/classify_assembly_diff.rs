@@ -125,7 +125,9 @@ fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
         | SemanticClass::UnionCase
         | SemanticClass::ExceptionCase
         | SemanticClass::ActivePattern
-        | SemanticClass::Member => false,
+        | SemanticClass::Member
+        // A type parameter is in-file only, never reached cross-assembly.
+        | SemanticClass::TypeParameter => false,
     }
 }
 

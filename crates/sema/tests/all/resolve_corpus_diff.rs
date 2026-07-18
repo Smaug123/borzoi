@@ -72,13 +72,14 @@ use rowan::TextRange;
 /// goes up — bump it after a phase lands. A drop is a regression. Tied to the
 /// default stride; re-measure with `--ignored` if you change `*_STRIDE`.
 ///
-/// Conservative: 21678 was measured 2026-07-17 (355 files compared, stride 13)
-/// after the member-body-resolution slice (`docs/member-body-resolution-plan.md`)
-/// took the count from ~12258; the floor sits a little under it to absorb the
-/// rare FCS isolation-check flake, and parser improvements (which move files out
-/// of `our_errors` into the compared set) only raise the true count, so
-/// re-tighten after they land.
-const MIN_RESOLUTION_MATCHES: usize = 21_400;
+/// Conservative: 22058 was measured 2026-07-18 (355 files compared, stride 13)
+/// after the type-parameter-binding slice
+/// (`docs/type-parameter-binding-plan.md`) moved ~380 `'T` gaps into matches
+/// (was 21678 after the member-body slice, itself up from ~12258); the floor
+/// sits a little under it to absorb the rare FCS isolation-check flake, and
+/// parser improvements (which move files out of `our_errors` into the compared
+/// set) only raise the true count, so re-tighten after they land.
+const MIN_RESOLUTION_MATCHES: usize = 21_800;
 
 /// Upper bound on unambiguous resolution faults (`Unresolved` / assembly entity
 /// / wrong-named binder where FCS found an in-file binder). Gated to zero — each
@@ -114,12 +115,12 @@ const MAX_ALT_BINDERS: usize = 260;
 /// `value:local-or-param`). Tied to the default stride; re-measure with
 /// `--ignored` if you change `*_STRIDE`.
 ///
-/// 867‰ measured 2026-07-17 (21678 / 24984 B1 uses, 355 files, stride 13) after
-/// the member-body-resolution slice moved ~9400 in-member gaps into matches (was
-/// 488‰); the floor sits a little under it to absorb the rare FCS isolation-check
-/// flake and marginal population drift. Raise it after a phase moves gaps into
-/// matches.
-const MIN_B1_COVERAGE_PERMILLE: usize = 850;
+/// 882‰ measured 2026-07-18 (22058 / 24984 B1 uses, 355 files, stride 13) after
+/// the type-parameter-binding slice moved ~380 `'T` gaps into matches (was 867‰
+/// after the member-body slice, itself up from 488‰); the floor sits a little
+/// under it to absorb the rare FCS isolation-check flake and marginal population
+/// drift. Raise it after a phase moves gaps into matches.
+const MIN_B1_COVERAGE_PERMILLE: usize = 865;
 
 /// How many sites of each kind to print for investigation.
 const SAMPLE: usize = 40;
