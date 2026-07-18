@@ -119,6 +119,15 @@ pub enum DefKind {
     /// case it is reachable only through its type's name, never bare — it is
     /// *not* added to any value frame.
     Member,
+    /// A **type parameter** declared by a `type` / `let` / `member` header
+    /// (`type Foo<'T>`, `let f<'T>`, `member _.M<'T>`). Lives in F#'s *type*
+    /// namespace, disjoint from values, and is **definition-scoped** — visible
+    /// only inside the declaring definition, so it is held in a stack of typar
+    /// frames rather than the value scope or the container-keyed type index. Its
+    /// [`range`](Def::range) is the whole `'T` / `^T` occurrence *including the
+    /// sigil* (the `TYPAR_DECL` node range), matching FCS, which reports the
+    /// declaring occurrence and every `'T` use at the apostrophe-inclusive span.
+    TypeParam,
 }
 
 /// What *sort of thing* a resolved name refers to, at the granularity a
@@ -173,6 +182,9 @@ pub enum SemanticClass {
     /// A static member of an in-file type definition or augmentation, of a
     /// flavour [`DefKind::Member`] does not pin down (method vs property).
     Member,
+    /// A type parameter (`'T` / `^T`) declared by a `type` / `let` / `member`
+    /// header — see [`DefKind::TypeParam`].
+    TypeParameter,
     /// A module or namespace-like entity in a referenced assembly (an F#
     /// `module`), the head a qualified assembly path roots at.
     Module,
@@ -200,6 +212,7 @@ impl DefKind {
             DefKind::ActivePattern | DefKind::ActivePatternCase => SemanticClass::ActivePattern,
             DefKind::EnumCase => SemanticClass::EnumCase,
             DefKind::Member => SemanticClass::Member,
+            DefKind::TypeParam => SemanticClass::TypeParameter,
         }
     }
 }
@@ -234,17 +247,25 @@ impl Def {
         }
     }
 
-    /// Build a `Def` for an operator-named union/enum case — its compiled
-    /// `op_Nil` / `op_ColonColon` name and the source range of the operator
-    /// tokens (see `UnionCase::operator_name`). Unlike [`Self::from_token`] there
-    /// is no single identifier token, so the name and range are passed directly.
-    pub(crate) fn from_op_name(name: &str, range: TextRange, kind: DefKind) -> Self {
+    /// Build a definite (non-provisional) `Def` from a name and an explicit
+    /// range, for a binder whose span is not a single identifier token: a
+    /// type parameter's `'T` occurrence (sigil + name, the `TYPAR_DECL` node) or
+    /// an operator-named case (see [`Self::from_op_name`]).
+    pub(crate) fn from_range(name: &str, range: TextRange, kind: DefKind) -> Self {
         Self {
             name: name.to_string(),
             range,
             kind,
             provisional: false,
         }
+    }
+
+    /// Build a `Def` for an operator-named union/enum case — its compiled
+    /// `op_Nil` / `op_ColonColon` name and the source range of the operator
+    /// tokens (see `UnionCase::operator_name`). Unlike [`Self::from_token`] there
+    /// is no single identifier token, so the name and range are passed directly.
+    pub(crate) fn from_op_name(name: &str, range: TextRange, kind: DefKind) -> Self {
+        Self::from_range(name, range, kind)
     }
 
     /// Build a *provisional* maybe-var `Def` (see [`Def::provisional`]).

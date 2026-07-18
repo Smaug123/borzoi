@@ -240,6 +240,16 @@ Two things the single binary made sharp, both handled in
   the whole crate's suite, so `cst` drives a pool of them. Note the cap is a
   process-wide budget, not per-pool.
 
+## Comments
+
+Comments describe the code's *current* state, not the history of how it got
+there. Avoid phrasing framed as a delta from a previous version — "no longer a
+submodule", "rather than the old X", "dropped Y because…". The diff and commit
+message already record what changed; a comment that narrates the change
+becomes stale noise the moment the next change lands. State the present
+rationale instead (e.g. "`contents: read` covers `actions/checkout`", not
+"dropped `pull-requests: read` because we removed dorny").
+
 ## Before you push
 
 Iterate with `cargo test -p <the crate you touched>` — the workspace-wide sweep

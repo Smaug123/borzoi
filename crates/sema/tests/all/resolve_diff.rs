@@ -169,6 +169,20 @@ const CORPUS: &[&str] = &[
     "type A = int\nlet f (x : A) = x\n",
     "type A = int\nlet g = fun (x : A) -> x\n",
     "type A = int\nlet y = (0 : A)\n",
+    // type parameters: a `<'T>` header binds every `'T` use in the binding's
+    // annotations and body to the declared parameter. FCS reports the declaring
+    // `<'T>` occurrence itself as a use pointing at itself (IsFromDefinition=false),
+    // so it too must resolve. A function head's typars:
+    "let f<'T> (x: 'T) = x\n",
+    // …including the return-type annotation position.
+    "let f<'T> (x: 'T) : 'T = x\n",
+    // a type-definition header's typar, used in the abbreviation right-hand side
+    // (both `'T` occurrences resolve to the `<'T>` decl).
+    "type Foo<'T> = 'T -> 'T\n",
+    // a generic union: the case defs `Nothing`/`Just` self-resolve (value-namespace
+    // binders, as in the non-generic union snippets), and the payload `'T` resolves
+    // to the type header's parameter.
+    "type Opt<'T> = Nothing | Just of 'T\n",
     // union cases interned as value binders: the case definitions `Red`/`Green`
     // self-resolve, and a constructor use in an expression resolves to the case.
     "type Color = Red | Green\nlet c = Red\n",

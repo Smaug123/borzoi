@@ -104,7 +104,9 @@ pub fn symbol_kind_for(kind: DefKind) -> Option<SymbolKind> {
         // is properties and single static methods). Not exported as an item, so
         // this arm is reached only once cross-file member export lands.
         DefKind::Member => Some(SymbolKind::PROPERTY),
-        DefKind::Parameter | DefKind::PatternLocal => None,
+        // A type parameter is a definition-scoped binder, never a document-outline
+        // symbol — like parameters and match-clause locals.
+        DefKind::Parameter | DefKind::PatternLocal | DefKind::TypeParam => None,
     }
 }
 

@@ -533,6 +533,20 @@ pub(super) struct Resolver<'a> {
     pub(super) items: Vec<ExportedItem>,
     pub(super) resolutions: HashMap<TextRange, Resolution>,
     pub(super) scopes: Vec<Frame>,
+    /// The **type-parameter** scope: a stack of frames, one per generic
+    /// definition currently open (a `type` header, a generic `let`/function, a
+    /// generic `member`). Each frame maps a typar's `idText` name (the bare `T`
+    /// of `'T`/`^T`) to its [`DefKind::TypeParam`] binder. A `'T` *use* in a type
+    /// position ([`resolve_type`](Self::resolve_type)'s `Type::Var` arm) or a
+    /// `'T.Member` expression looks the name up here, innermost frame first, so a
+    /// member's own `<'T>` shadows an enclosing type's.
+    ///
+    /// Separate from both the value [`scopes`](Self::scopes) stack (typars are in
+    /// F#'s disjoint *type* namespace, so a value lookup must never find one) and
+    /// the container-keyed [`type_defs`](Self::type_defs) (typars are
+    /// definition-scoped and ephemeral, not visible container-wide). Empty
+    /// whenever no generic definition is open.
+    pub(super) typar_scopes: Vec<Vec<(String, DefId)>>,
     /// In-file `type` definitions, keyed by their enclosing container path
     /// (`Self::container_path`) then by `idText` name → defining binder. F#
     /// keeps types in a *separate* namespace from values, so this is queried
