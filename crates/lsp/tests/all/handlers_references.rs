@@ -203,6 +203,59 @@ fn cross_file_item_omits_declaration() {
 }
 
 #[test]
+fn cross_file_active_pattern_case_includes_the_recognizer_declaration() {
+    // References of a cross-file active-pattern case (Stage 3a) must include its
+    // DECLARATION (the recognizer span) when the client asks — the declaration
+    // span self-resolves to the recognizer, not the case's `Item`, so it is added
+    // explicitly. A's `g` uses `Even`, B's `f` uses it cross-file: with the
+    // declaration, three locations (recognizer span in A + A use + B use); without
+    // it, the two uses.
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    let a_src = "module Lib\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\nlet g x = match x with Even -> 1 | Odd -> 0\n";
+    let b_src = "module Other\nopen Lib\nlet f x = match x with Even -> 1 | Odd -> 0\n";
+    write(&a, a_src);
+    write(&b, b_src);
+
+    let a_uri = Url::from_file_path(&a).unwrap();
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(a_uri.clone(), a_src.to_string());
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    // Cursor on A's `g` use of `Even` (line 2, col 23). With the declaration: the
+    // recognizer span in A + the A use + the B use.
+    let with_decl = run(&mut state, &a_uri, 2, 23, true);
+    assert_eq!(with_decl.len(), 3, "{with_decl:#?}");
+    let on_a = with_decl.iter().filter(|l| l.uri == a_uri).count();
+    let on_b = with_decl.iter().filter(|l| l.uri == b_uri).count();
+    assert_eq!(on_a, 2, "recognizer declaration + the A use are in A");
+    assert_eq!(on_b, 1, "the B use is in B");
+    // The recognizer declaration is at the `|Even|Odd|` span (line 1).
+    assert!(
+        with_decl
+            .iter()
+            .any(|l| l.uri == a_uri && l.range.start.line == 1),
+        "the recognizer declaration span is included: {with_decl:#?}"
+    );
+
+    // Without the declaration: just the two uses.
+    let without_decl = run(&mut state, &a_uri, 2, 23, false);
+    assert_eq!(without_decl.len(), 2, "{without_decl:#?}");
+}
+
+#[test]
 fn local_resolution_short_circuits_to_cursor_file() {
     // A `Local` in file 2 of a 4-file project shouldn't even iterate the
     // other files. We can't directly observe the loop, but we can pin the

@@ -1819,15 +1819,37 @@ fn module_qualified_case_defers_on_a_cross_file_companion_submodule() {
 }
 
 #[test]
-fn module_qualified_case_defers_on_a_hidden_cross_file_open_target() {
-    // The cross-file `A.Pal` declares an active pattern, so its value-space
-    // names are not fully enumerable (`modules_with_hidden_values`): a hidden
-    // constructor could own `Color`, so "owns no `Color`" is not provable —
-    // defer rather than backtrack.
-    assert_cross_file_open_target_defers(
-        "namespace A\nmodule Pal =\n    let (|Odd|Even|) n = if n % 2 = 1 then Odd else Even\n",
-        "namespace Client\nmodule Pal =\n    type Color = Red | Blue\nnamespace Client\nopen A\nmodule Use =\n    let x = Pal.Color.Red\n",
+fn module_qualified_case_resolves_to_the_lexical_candidate_over_an_ap_only_open_target() {
+    // FCS-verified (`uses-project`, diagnostics-clean): the cross-file `A.Pal`
+    // declares ONLY an active pattern, so — Stage 3a's narrowed AP hidden trigger
+    // — it is now fully enumerable and provably owns no `Color`. `open A` is
+    // therefore transparent for `Pal.Color.Red`, which backtracks to the lexical
+    // `Client.Pal.Color.Red` (FCS binds it there). Where we used to defer (the AP
+    // made the whole module hidden and "owns no Color" was unprovable), we now
+    // resolve to the lexical case — agreeing with FCS exactly.
+    let src0 =
+        "namespace A\nmodule Pal =\n    let (|Odd|Even|) n = if n % 2 = 1 then Odd else Even\n";
+    let src1 = "namespace Client\nmodule Pal =\n    type Color = Red | Blue\nnamespace Client\nopen A\nmodule Use =\n    let x = Pal.Color.Red\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+
+    let res = proj
+        .file(1)
+        .resolution_at(nth(src1, "Pal.Color.Red", 0))
+        .expect("`Pal.Color.Red` resolves");
+    let (file_idx, def) = proj
+        .item_def(res)
+        .expect("resolves to the lexical `Client.Pal.Color.Red`");
+    assert_eq!(file_idx, 1, "the lexical candidate is in file1");
+    let red = src1.find("Red").expect("`Red` case decl");
+    assert_eq!(
+        def.range,
+        TextRange::new(
+            u32::try_from(red).unwrap().into(),
+            u32::try_from(red + "Red".len()).unwrap().into(),
+        ),
+        "points at the lexical `Client.Pal.Color.Red` case decl"
     );
+    assert_eq!(def.kind, DefKind::UnionCase);
 }
 
 #[test]

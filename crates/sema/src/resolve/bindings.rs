@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr};
+use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr, SyntaxKind};
 
 use crate::binders::{BinderRole, binders};
 use crate::def::DefKind;
@@ -90,6 +90,17 @@ impl<'a> Resolver<'a> {
     /// arguments become interned parameter locals (likewise). Nothing is pushed
     /// into a scope yet — the caller controls visibility timing.
     pub(super) fn prepare_binding(&mut self, binding: &Binding) -> PreparedBinding {
+        // Attribute *presence* on the binding — `let [<Literal>] x` (leading
+        // `ATTRIBUTE_LIST` children of the `BINDING`) or the pre-`let` form
+        // `[<Literal>] let x` (leading children of the enclosing `LET_DECL`).
+        // A multi-`and` decl's pre-`let` run over-approximates onto every
+        // binding of the group — FCS attaches it to the first only, but the
+        // flag only ever widens a pattern-position *defer*, never a commit.
+        let attributed = binding.attributes().next().is_some()
+            || binding.syntax().parent().is_some_and(|p| {
+                p.kind() == SyntaxKind::LET_DECL
+                    && p.children().any(|c| c.kind() == SyntaxKind::ATTRIBUTE_LIST)
+            });
         let mut item_entries = Vec::new();
         let mut param_entries = Vec::new();
         let mut eager_entries = Vec::new();
@@ -111,7 +122,11 @@ impl<'a> Resolver<'a> {
             // active-pattern head itself contributes no binder there).
             if let Some(apn) = active_pat_name_of(&head) {
                 let arity = active_pattern_param_arity(&head);
-                eager_entries = self.define_active_pattern(&apn, true, arity);
+                // A `let private (|Even|Odd|)` scopes its cross-file case handle to
+                // its container, exactly as a `let private` value / `private` case
+                // does (`export_access_root_len`).
+                let is_private = super::decls::header_is_private(binding.syntax());
+                eager_entries = self.define_active_pattern(&apn, true, arity, is_private);
             }
             for def in binders(&head, BinderRole::Let) {
                 // An active-pattern *parameter* argument (`let (Scale divisor) =
@@ -158,6 +173,7 @@ impl<'a> Resolver<'a> {
                         access_root_len: self.export_access_root_len(
                             super::decls::header_is_private(binding.syntax()),
                         ),
+                        attributed,
                     });
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
@@ -174,7 +190,12 @@ impl<'a> Resolver<'a> {
                     );
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
-                    item_entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                    let mut entry = ScopeEntry::binding(name, res, self.open_generation);
+                    // A maybe-literal module-level value contests the pattern
+                    // namespace as a constant pattern (see
+                    // [`ScopeEntry::maybe_constant_pattern`]).
+                    entry.maybe_constant_pattern = attributed;
+                    item_entries.push(entry);
                 } else {
                     // A curried argument of a function binding — a parameter.
                     let res = Resolution::Local(id);
@@ -250,7 +271,9 @@ impl<'a> Resolver<'a> {
                 // sees them as expression constructors (see [`resolve_local_let_rhss`]).
                 if let Some(apn) = active_pat_name_of(&head) {
                     let arity = active_pattern_param_arity(&head);
-                    ap_cases = self.define_active_pattern(&apn, false, arity);
+                    // A *local* active pattern is not a module member — it exports
+                    // no cross-file handle, so its `private`-ness is irrelevant.
+                    ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
                 for def in binders(&head, BinderRole::Let) {

@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::id_text;
 use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
 use super::state::{
-    AssemblyPath, OpenInterpretation, Resolver, SameFileQualified, ScopeEntry, ShadowVeto,
-    TieredResolution,
+    ActivePatternShape, AssemblyPath, OpenInterpretation, Resolver, SameFileQualified, ScopeEntry,
+    ShadowVeto, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -248,7 +248,8 @@ impl<'a> Resolver<'a> {
         let mut entries: Vec<ScopeEntry> = Vec::new();
         for s in &surfaces {
             for e in &s.entries {
-                let res = if demote || (demote_cases && e.is_case) || collided.contains(&e.name) {
+                let demoted = demote || (demote_cases && e.is_case) || collided.contains(&e.name);
+                let res = if demoted {
                     Resolution::Deferred(DeferredReason::UnboundName)
                 } else {
                     match e.target {
@@ -270,6 +271,21 @@ impl<'a> Resolver<'a> {
                     }
                 };
                 entry.opened_case = e.is_case;
+                // A val that may be a CLI literal / decimal constant contests the
+                // pattern namespace as a constant pattern (see
+                // [`OpenFoldName::constant_pattern`]); demoted entries are
+                // `Deferred` and defer in the scan regardless.
+                entry.maybe_constant_pattern = e.constant_pattern;
+                // An assembly active-pattern tag carries its demangled recognizer
+                // shape (Stage 3b): its `Deferred` resolution has no identity to
+                // key the shape on, so the applied-head split reads it from here.
+                // But a **demoted** entry defers precisely because which
+                // constructor occupies the name is unknown — a residue-bearing
+                // open could hide a shadowing case, or two assemblies could
+                // contribute a same-named union case / differently-shaped
+                // recognizer that FCS binds by reference order — so its shape is
+                // untrustworthy and must not drive the split (certain-implies-exact).
+                entry.opened_ap_shape = if demoted { None } else { e.ap_shape };
                 entries.push(entry);
             }
         }
@@ -699,18 +715,25 @@ impl<'a> Resolver<'a> {
             let mut value_names: Vec<String>;
             let mut case_names: Vec<String>;
             if file < current {
-                value_names = self
-                    .preceding
-                    .fragment_value_children(&sub, file, &site)
-                    .into_iter()
-                    .map(|(name, _)| name)
-                    .collect();
+                value_names = Vec::new();
                 case_names = self
                     .preceding
                     .fragment_constructor_children(&sub, file, &site)
                     .into_iter()
                     .map(|(name, _)| name)
                     .collect();
+                for (name, id) in self.preceding.fragment_value_children(&sub, file, &site) {
+                    // A maybe-literal value is a constant-pattern contestant: it
+                    // ALSO feeds the `case` dimension (below), so a direct case
+                    // does not win the constructor slot merely because the case
+                    // index lists no submodule case — FCS folds the submodule's
+                    // vals after the direct tycon tier, and a literal there beats
+                    // the direct case in bare pattern position (codex round 1).
+                    if self.preceding.is_attributed_item(id) {
+                        case_names.push(name.clone());
+                    }
+                    value_names.push(name);
+                }
             } else {
                 value_names = Vec::new();
                 case_names = Vec::new();
@@ -721,7 +744,10 @@ impl<'a> Resolver<'a> {
                         && super::model::accessible_from(item.access_root_len, q, &site)
                     {
                         let name = q.last().expect("non-empty qualified path").clone();
-                        if item.is_case() {
+                        // A case — or a maybe-literal value, a constant-pattern
+                        // contestant in the constructor namespace (see the
+                        // cross-file branch above).
+                        if item.is_case() || item.attributed {
                             case_names.push(name.clone());
                         }
                         value_names.push(name);
@@ -734,13 +760,18 @@ impl<'a> Resolver<'a> {
                 let e = out.entry(name).or_default();
                 e.value_slot = Some(e.value_slot.map_or(file, |v| v.max(file)));
             }
-            // Constructor-namespace children (cases / exceptions). A case is the
-            // dimension a bare *pattern* reads — but it is ALSO a value, so it
-            // feeds `value_slot` too.
+            // Constructor-namespace children (union / exception / active-pattern
+            // cases — plus maybe-literal values, constant-pattern contestants,
+            // added above) feed the `case` dimension only. A value-live
+            // union/exception case is ALSO a value, but it is already in
+            // `value_names` (it is a value), so feeding `value_slot` here would be
+            // redundant — and it MUST NOT, because a **pattern-only**
+            // active-pattern case (Stage 3a) is a case but *not* a value
+            // (`fragment_value_children` excludes it), so it would wrongly claim
+            // the value slot.
             for name in case_names {
                 let e = out.entry(name).or_default();
                 e.case = Some(e.case.map_or(file, |c| c.max(file)));
-                e.value_slot = Some(e.value_slot.map_or(file, |v| v.max(file)));
             }
             // A constructible type takes FCS's unqualified value slot, but sema
             // models no project type constructor — so it can only ever DEFER the
@@ -1070,6 +1101,30 @@ impl<'a> Resolver<'a> {
         let mut seen_ctors: HashSet<String> = HashSet::new();
         let mut pushed_normal: HashSet<ItemId> = HashSet::new();
         let mut entries: Vec<ScopeEntry> = Vec::new();
+        // The opened module's own **maybe-literal** value names (this file's
+        // members, gated exactly like the same-file pass below). FCS folds a
+        // module's vals *after* its tycons (exceptions → tycons → vals), so a
+        // maybe-literal value constant-shadows the module's own same-named case
+        // in bare pattern position REGARDLESS of source order — every case push
+        // below checks this set plus the cross-file history
+        // ([`ProjectItems::module_value_may_be_constant_pattern`]) and defers
+        // the case via [`Self::pattern_suppressed_case_ids`]. An inaccessible
+        // value is filtered exactly as FCS filters the opened environment, so
+        // the case then stays committed. (For a single-fragment fold the
+        // cross-file history spans every file, over-approximating the
+        // fragment's own members — a wider defer, never a commit.)
+        let mut constant_names: HashSet<String> = HashSet::new();
+        for item in &self.items {
+            if item.attributed
+                && let Some(q) = &item.qualified
+                && q.len() == module_path.len() + 1
+                && q.starts_with(module_path)
+                && same_file_folds
+                && super::model::accessible_from(item.access_root_len, q, &site)
+            {
+                constant_names.insert(q.last().expect("non-empty qualified path").clone());
+            }
+        }
         // Same-file pass: push every same-file `[M, …]` child (value **or** case) as
         // an ordinary entry — it serves both namespaces (a union case is a value
         // too). Record value names in `seen_values`, same-file case names in
@@ -1087,17 +1142,20 @@ impl<'a> Resolver<'a> {
                 seen_values.insert(name.clone());
                 if item.is_case() {
                     seen_ctors.insert(name.clone());
-                    if hidden {
+                    if hidden
+                        || constant_names.contains(&name)
+                        || self
+                            .preceding
+                            .module_value_may_be_constant_pattern(q, &site)
+                    {
                         suppressed.push(item.id);
                     }
                 }
                 pushed_normal.insert(item.id);
-                entries.push(ScopeEntry::opened(
-                    name,
-                    Resolution::Item(item.id),
-                    generation,
-                    open_pos,
-                ));
+                let mut entry =
+                    ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
+                entry.maybe_constant_pattern = item.attributed;
+                entries.push(entry);
             }
         }
         // The cross-file member sets. A plain `open M` (`fragment_file == None`)
@@ -1128,16 +1186,23 @@ impl<'a> Resolver<'a> {
         // `seen_values`.
         for (name, id) in value_children {
             if seen_values.insert(name.clone()) {
-                if hidden && self.preceding.is_case_item(id) {
-                    suppressed.push(id);
+                if self.preceding.is_case_item(id) {
+                    let mut q = module_path.to_vec();
+                    q.push(name.clone());
+                    if hidden
+                        || constant_names.contains(&name)
+                        || self
+                            .preceding
+                            .module_value_may_be_constant_pattern(&q, &site)
+                    {
+                        suppressed.push(id);
+                    }
                 }
                 pushed_normal.insert(id);
-                entries.push(ScopeEntry::opened(
-                    name,
-                    Resolution::Item(id),
-                    generation,
-                    open_pos,
-                ));
+                let mut entry =
+                    ScopeEntry::opened(name, Resolution::Item(id), generation, open_pos);
+                entry.maybe_constant_pattern = self.preceding.is_attributed_item(id);
+                entries.push(entry);
             }
         }
         // Cross-file *constructor* pass (for pattern position) — **independent** of
@@ -1149,7 +1214,14 @@ impl<'a> Resolver<'a> {
         // could shadow them).
         for (name, id) in ctor_children {
             if !seen_ctors.contains(&name) && pushed_normal.insert(id) {
-                if hidden {
+                let mut q = module_path.to_vec();
+                q.push(name.clone());
+                if hidden
+                    || constant_names.contains(&name)
+                    || self
+                        .preceding
+                        .module_value_may_be_constant_pattern(&q, &site)
+                {
                     suppressed.push(id);
                 }
                 entries.push(ScopeEntry::opened_pattern_only(
@@ -1337,32 +1409,54 @@ impl<'a> Resolver<'a> {
                 // a strictly later file).
                 let type_present = sub.has_type || direct_types.contains(&name);
 
-                // Value namespace. A constructible type (file-blind) may own the
-                // slot unmodelled → defer. Otherwise the later fold wins: the direct
-                // tier when it strictly out-files every submodule value (re-push),
-                // the submodule when its value folds at or after the direct tier's
-                // file (its natural push already commits it — S1 cross-file, and the
-                // same-file tie, no action).
-                if !type_present && sub.value_slot.is_none_or(|v| direct_file > v) {
-                    // Direct case strictly out-files every submodule value → wins the
-                    // value slot outright, serving both namespaces (`value_slot >=
-                    // case`, so it out-files the case too and wins the ctor).
+                // The two namespaces are decided INDEPENDENTLY (FCS folds each on
+                // its own). The direct case wins a namespace only by strictly
+                // out-filing every submodule contribution to it — a same-file tie
+                // goes to the submodule, which folds after the direct tier within a
+                // file. `value_slot` and `case` can now DIFFER: a value-live
+                // union/exception case feeds both, but a **pattern-only**
+                // active-pattern case (Stage 3a) feeds `case` only (it is not a
+                // value), so the direct case can win the value slot while the
+                // submodule's active pattern wins the constructor slot.
+                let direct_wins_value =
+                    !type_present && sub.value_slot.is_none_or(|v| direct_file > v);
+                let direct_wins_ctor = sub.case.is_none_or(|c| direct_file > c);
+                if direct_wins_value && direct_wins_ctor {
+                    // One ordinary re-push serves both namespaces (the direct value
+                    // is also a case, and it out-files the submodule in both).
                     value_winners.push((name, id));
                     continue;
                 }
-                let submodule_wins_value =
-                    !type_present && sub.value_slot.is_some_and(|v| v >= direct_file);
-                if !submodule_wins_value {
-                    // A constructible type may own the value slot (unmodelled) →
-                    // defer the expression; the constructor namespace is decided
-                    // independently below.
-                    value_deferrals.push(name.clone());
+                // Constructor namespace: the direct case wins by a pattern-only
+                // re-push (so it does not clobber the value slot the submodule /
+                // direct value owns); else the submodule case wins by its natural
+                // (later) push. Types never contest the constructor namespace.
+                if direct_wins_ctor {
+                    ctor_winners.push((name.clone(), id));
                 }
-                // Constructor namespace. The direct case wins (re-push) when it
-                // out-files every submodule case; else the submodule case wins by
-                // its natural push order (no action). Types never contest it.
-                if sub.case.is_none_or(|c| direct_file > c) {
-                    ctor_winners.push((name, id));
+                // Value namespace.
+                if !direct_wins_value {
+                    // A constructible type may own the slot unmodelled → defer;
+                    // otherwise a submodule value wins by its natural push (no
+                    // action).
+                    let submodule_wins_value =
+                        !type_present && sub.value_slot.is_some_and(|v| v >= direct_file);
+                    if !submodule_wins_value {
+                        value_deferrals.push(name.clone());
+                    }
+                } else if !direct_wins_ctor && sub.value_slot.is_some() {
+                    // The direct case wins the value slot but LOSES the constructor
+                    // slot to the submodule (a pattern-only active pattern). When the
+                    // submodule has no value (`value_slot` is None — the common case,
+                    // e.g. an `[<AutoOpen>]` active pattern over a direct exception),
+                    // the direct value already wins by its earlier direct-tier push,
+                    // and re-pushing it would clobber the submodule's constructor
+                    // entry — so do nothing. But when the submodule ALSO has a real
+                    // (earlier) value, that value's later frame push would out-position
+                    // the direct value, which should win — and a value-only re-push is
+                    // not expressible, so DEFER the value (a sound over-defer of an
+                    // exotic collision; the constructor namespace still resolves).
+                    value_deferrals.push(name.clone());
                 }
             }
         }
@@ -1413,12 +1507,12 @@ impl<'a> Resolver<'a> {
         let generation = self.open_generation;
         for (name, id) in value_winners {
             // Ordinary entry: a case serves the value AND constructor namespaces.
-            self.module_frame().entries.push(ScopeEntry::opened(
-                name,
-                Resolution::Item(id),
-                generation,
-                open_pos,
-            ));
+            // A maybe-literal winner keeps its constant-pattern flag; a case
+            // winner's constant-shadow suppression (if any) already fired
+            // id-keyed when its fragment folded, and survives this re-push.
+            let mut entry = ScopeEntry::opened(name, Resolution::Item(id), generation, open_pos);
+            entry.maybe_constant_pattern = self.item_is_attributed(id);
+            self.module_frame().entries.push(entry);
             count += 1;
         }
         for (name, id) in ctor_winners {
@@ -1535,8 +1629,10 @@ impl<'a> Resolver<'a> {
     /// recognizer) — return its resolution: a constructor-shaped pattern head
     /// naming it is a case *reference*, not a binder. In **pattern** position (the
     /// only caller) a case is resolved through F#'s constructor namespace, which
-    /// ordinary values do not enter, so a same-named value does **not** shadow the
-    /// case — unlike an *expression* use, where
+    /// **plain** values do not enter, so a same-named unattributed value does
+    /// **not** shadow the case; a *maybe-literal* (attributed / assembly
+    /// constant-pattern) value DOES contest it and defers the reference (see
+    /// [`ScopeEntry::maybe_constant_pattern`]) — unlike an *expression* use, where
     /// [`resolve_name_use`](Self::resolve_name_use)'s [`lookup`](Self::lookup)
     /// lets the latest binding (value or case) win. So this scans the frames for
     /// the latest *case* entry, skipping value / parameter entries rather than
@@ -1545,6 +1641,44 @@ impl<'a> Resolver<'a> {
     /// sibling namespace), so a caller keeps the decline-and-drop behaviour for a
     /// genuine maybe-var head.
     pub(super) fn case_reference(&self, name: &str) -> Option<Resolution> {
+        // A bare head: a maybe-literal value met before the case defers it
+        // (`constant_shadow_defers` — FCS's `ePatItems` holds literal values
+        // too, latest-wins).
+        self.case_reference_entry(name, true)
+            .map(|entry| entry.resolution)
+    }
+
+    /// Like [`case_reference`](Self::case_reference) but also reports the
+    /// recognizer [`ActivePatternShape`] carried on the matched scope entry —
+    /// non-`None` only for an opened **assembly** active-pattern tag, whose
+    /// `Deferred` resolution has no identity for
+    /// [`resolution_active_pattern_shape`](Self::resolution_active_pattern_shape)
+    /// to key on (Stage 3b). The applied-head split combines the two: this
+    /// entry-carried shape for an assembly case, the resolution-keyed one for a
+    /// same-file / cross-file `Item` / `Local` case.
+    pub(super) fn applied_active_pattern_case(
+        &self,
+        name: &str,
+    ) -> Option<(Resolution, Option<ActivePatternShape>)> {
+        // An *applied* head is exempt from the constant-pattern contest: a
+        // literal pattern takes no arguments (FS3191), so on a clean program an
+        // applied head is never the literal — the case reading is the only
+        // legal one, and committing it stays exact.
+        self.case_reference_entry(name, false)
+            .map(|entry| (entry.resolution, entry.opened_ap_shape))
+    }
+
+    /// The scope entry [`case_reference`](Self::case_reference) resolves a
+    /// pattern-position `name` to — the latest in-scope **case** entry (values do
+    /// not shadow a case in the constructor namespace), or `None` when none is in
+    /// scope or a hidden/stale/opaque open forces a deferral. Split out so both
+    /// `case_reference` and [`applied_active_pattern_case`](Self::applied_active_pattern_case)
+    /// see the *same* entry — no duplicate scan to drift.
+    fn case_reference_entry(
+        &self,
+        name: &str,
+        constant_shadow_defers: bool,
+    ) -> Option<&ScopeEntry> {
         let name = id_text(name);
         for frame in self.scopes.iter().rev() {
             for entry in frame.entries.iter().rev() {
@@ -1585,12 +1719,22 @@ impl<'a> Resolver<'a> {
                 // *reference* — the name provably occupies the constructor
                 // namespace — just one with no committed target.
                 if entry.opened_case {
-                    return Some(entry.resolution);
+                    return Some(entry);
                 }
                 match self.case_classification(entry.resolution) {
-                    Some(true) => return Some(entry.resolution),
-                    // A value does not shadow a case in the constructor namespace:
-                    // keep scanning for an earlier case.
+                    Some(true) => return Some(entry),
+                    // A **maybe-literal** value met before the case: a literal is
+                    // a *constant pattern*, which DOES contest the constructor
+                    // namespace (FCS's `ePatItems` holds cases and literal values,
+                    // latest-wins), so an earlier case may be constant-shadowed —
+                    // defer. Bare heads only: an applied literal pattern is
+                    // FS3191-illegal, so the applied path keeps the case.
+                    Some(false) if constant_shadow_defers && entry.maybe_constant_pattern => {
+                        return None;
+                    }
+                    // A **plain** value does not shadow a case in the constructor
+                    // namespace (and an unattributed `let` provably cannot be a
+                    // literal): keep scanning for an earlier case.
                     Some(false) => continue,
                     // Unclassifiable (cross-file `Item`): could be a shadowing case.
                     None => return None,
@@ -1649,6 +1793,18 @@ impl<'a> Resolver<'a> {
             self.defs[def.index()].kind,
             DefKind::UnionCase | DefKind::ExceptionCase | DefKind::ActivePattern
         ))
+    }
+
+    /// Whether the module-level value behind `id` is **attributed** — a
+    /// maybe-literal constant-pattern contestant
+    /// ([`ExportedItem::attributed`](super::model::ExportedItem)): same-file via
+    /// this file's export arena, cross-file via
+    /// [`ProjectItems::is_attributed_item`].
+    fn item_is_attributed(&self, id: ItemId) -> bool {
+        match id.index().checked_sub(self.item_base as usize) {
+            Some(local) => self.items.get(local).is_some_and(|it| it.attributed),
+            None => self.preceding.is_attributed_item(id),
+        }
     }
 
     /// Resolve a dotted path (`Shared.foo`). When the head is **not** bound in
