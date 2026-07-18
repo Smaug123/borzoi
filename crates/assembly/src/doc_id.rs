@@ -519,6 +519,7 @@ mod tests {
             compiler_feature_required: Vec::new(),
             source_name: None,
             custom_attrs: Vec::new(),
+            abbreviation_target: None,
         }
     }
 

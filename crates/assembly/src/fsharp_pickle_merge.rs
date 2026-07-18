@@ -59,8 +59,8 @@ use crate::fsharp_pickle::model::{
     PickledTyconRepr, PickledType, PickledVal, TyparKind,
 };
 use crate::model::{
-    Access, AssemblyIdentity, Augmentation, Entity, EntityKind, Member, SkippedMember,
-    TypeParameter,
+    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind, Member,
+    SkippedMember, TypeParameter,
 };
 use std::collections::HashMap;
 
@@ -137,7 +137,7 @@ fn walk_entity_tree(
     namespace: &[String],
     type_chain: &[String],
     path: &mut Vec<u32>,
-    visit: &mut impl FnMut(&PickledEntity, bool, &[String], &[String]) -> Result<(), ImportError>,
+    visit: &mut impl FnMut(u32, &PickledEntity, bool, &[String], &[String]) -> Result<(), ImportError>,
 ) -> Result<(), ImportError> {
     if path.contains(&entity_stamp) {
         return Err(ImportError::PickleEntityCycle {
@@ -159,7 +159,7 @@ fn walk_entity_tree(
     // `{namespace, type_chain + clr_name(entity)}`, independent of this
     // entity's own `is_type` (a `[<Measure>] type` pickles with an
     // `IsType::Namespace` `module_type`, yet is a type-chain leaf).
-    visit(entity, is_root, namespace, type_chain)?;
+    visit(entity_stamp, entity, is_root, namespace, type_chain)?;
 
     // Accumulators for *children*: a namespace fragment extends the namespace
     // prefix, a module/type extends the type chain (with its arity-stripped
@@ -244,7 +244,7 @@ pub(crate) fn apply_source_name_overlay(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             // Record a target for every module / type (not namespaces or the
             // synthetic root). A module's vals live in its own
             // `module_type.vals`; index them against this entity's FQN — the
@@ -362,7 +362,7 @@ pub(crate) fn apply_extension_member_index(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             if !is_root
                 && matches!(
                     entity.module_type.is_type,
@@ -443,7 +443,7 @@ pub(crate) fn apply_union_case_names(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             let cases = match &entity.repr {
                 PickledTyconRepr::Union(cases) => Some(cases),
                 PickledTyconRepr::UnionWithStaticFields { cases, .. } => Some(cases),
@@ -714,7 +714,7 @@ pub fn collect_module_member_targets(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             if !is_root
                 && matches!(
                     entity.module_type.is_type,
@@ -1158,7 +1158,7 @@ pub(crate) fn merge_measure_entities(
         &[],
         &[],
         &mut path,
-        &mut |entity, _is_root, namespace, type_chain| {
+        &mut |_stamp, entity, _is_root, namespace, type_chain| {
             // Record a target for every entity that is *both*
             // `typar_kind == Measure` AND carries the standalone-form repr
             // (`FSharpObjectModel`), which confirms a backing ECMA TypeDef
@@ -1284,7 +1284,7 @@ pub(crate) fn apply_declaration_order(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             // This entity's own position in the ECMA tree (empty for the
             // synthetic root / namespace fragments, whose module/type
             // children are TOP-LEVEL ECMA entities).
@@ -1390,8 +1390,6 @@ fn apply_permutation(items: &mut [Entity], order: &[usize]) {
 // Abbreviation shadow markers
 // ---------------------------------------------------------------------------
 
-/// Where one pickled **type abbreviation** lives in the ECMA tree, plus what
-/// the synthesised marker entity needs to carry.
 /// Whether a pickled attribute list carries
 /// `Microsoft.FSharp.Core.AutoOpenAttribute`, resolved through the header's
 /// non-local-entity table (the attribute class lives in FSharp.Core, so its
@@ -1417,7 +1415,11 @@ fn has_auto_open_attribute(pickled: &PickledCcu, attribs: &[PickledAttribute]) -
     })
 }
 
-struct AbbreviationTarget {
+/// Where one pickled type/exception abbreviation lives in the ECMA tree, plus
+/// what the synthesised marker entity needs to carry — collected in one pass of
+/// the entity walk, then placed in a second (a marker's container may be walked
+/// after the marker's own site).
+struct AbbrevMarkerSite {
     namespace: Vec<String>,
     /// The *container* type-nesting chain — empty for a namespace-level
     /// abbreviation, `["Auto"]` for one declared inside `module Auto`.
@@ -1436,6 +1438,198 @@ struct AbbreviationTarget {
     /// marker without the flag would read as a complete, static-less surface
     /// (codex round 22).
     is_auto_open: bool,
+    /// The decoded target of a plain type abbreviation (`type IntId = int` ⇒
+    /// `Named { path: ["Microsoft","FSharp","Core","int"], … }`), or `None` for
+    /// an exception abbreviation and for any target shape the nullary decoder
+    /// slice does not model. Rides onto [`Entity::abbreviation_target`].
+    abbreviation_target: Option<AbbreviationTarget>,
+}
+
+/// Map every same-assembly module/type tycon **stamp** to its full logical FQN
+/// segments (`Point` in MiniLibFs ⇒ `["MiniLibFs", "Point"]`), so a pickle-`Local`
+/// tcref in an abbreviation target resolves to a path. Built in one pass of the
+/// entity walk — a `Local` target can point at a tycon walked *after* the
+/// abbreviation's own site, so the whole map must exist before any decode.
+///
+/// Namespaces and the synthetic root contribute container prefix but are not
+/// recorded: a tcref target is a *type*, never a namespace fragment. (A
+/// `[<Measure>]` type pickles with an `IsType::Namespace` body and is likewise
+/// not recorded — a measure is never a plain type abbreviation's target.)
+fn local_tycon_fqns(pickled: &PickledCcu) -> Result<HashMap<u32, Vec<String>>, ImportError> {
+    let mut map = HashMap::new();
+    let mut path = Vec::new();
+    walk_entity_tree(
+        pickled,
+        pickled.root_entity,
+        true,
+        &[],
+        &[],
+        &mut path,
+        &mut |stamp, entity, is_root, namespace, type_chain| {
+            if !is_root
+                && matches!(
+                    entity.module_type.is_type,
+                    IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
+                )
+            {
+                let mut segs = namespace.to_vec();
+                segs.extend(type_chain.iter().cloned());
+                segs.push(clr_name(entity));
+                map.insert(stamp, segs);
+            }
+            Ok(())
+        },
+    )?;
+    Ok(map)
+}
+
+/// Decode a pickled `type_abbrev` body into the owned logical
+/// [`AbbreviationTarget`], for the nullary-named + typar slice.
+///
+/// Returns `Ok(None)` — a fail-closed **decline** — for any well-formed shape
+/// this slice does not model: a *generic instantiation* (non-empty `args`), a
+/// function, a tuple, a measure, a union case, and a typar that is somehow out of
+/// the entity's own scope. A declined target keeps every consumer deferring, so a
+/// decline can never regress a resolution. Only a genuinely *malformed* pickle (a
+/// dangling table index) is a loud `Err`, per the crate's fail-loud contract.
+fn decode_abbreviation_target(
+    pickled: &PickledCcu,
+    entity: &PickledEntity,
+    ty: &PickledType,
+    local_fqns: &HashMap<u32, Vec<String>>,
+) -> Result<Option<AbbreviationTarget>, ImportError> {
+    match ty {
+        // The generic-abbreviation quantifier: `type MyList<'T> = 'T list` pickles
+        // `Forall([T], body)`, whose `Var`s reference the entity's own typars, so
+        // decode the body directly.
+        PickledType::Forall { body, .. } => {
+            decode_abbreviation_target(pickled, entity, body, local_fqns)
+        }
+        // The abbreviation's own generic parameter, by position into its typars
+        // (`type SelfVar<'T> = 'T` ⇒ `Var(0)`). An out-of-scope typar (should not
+        // occur for a well-formed alias) declines rather than fabricates.
+        PickledType::Var { typar_index, .. } => Ok(entity
+            .typars
+            .iter()
+            .position(|&t| t == *typar_index)
+            .map(|pos| AbbreviationTarget::Var(pos as u16))),
+        // `int`, `string`, … materialised from the `simpletys` table: always a
+        // nullary non-local named head.
+        PickledType::AppSimple {
+            simpletyp_index, ..
+        } => {
+            let nle_idx = *pickled
+                .header
+                .simpletys
+                .get(*simpletyp_index as usize)
+                .ok_or(ImportError::OsgnIndexOutOfRange {
+                    kind: "simplety (abbreviation target)",
+                    index: *simpletyp_index,
+                    max: pickled.header.simpletys.len(),
+                })?;
+            Ok(Some(decode_nonlocal_named(pickled, nle_idx)?))
+        }
+        // A named application; only the NULLARY form is modelled here. A non-empty
+        // `args` is a generic instantiation — deferred to the structural slice.
+        PickledType::App { tcref, args, .. } if args.is_empty() => {
+            decode_named_tcref(pickled, tcref, local_fqns)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Decode a nullary named head from its tcref: a non-local ref through the
+/// header tables, or a same-CCU `Local` stamp through the pre-built
+/// [`local_tycon_fqns`] map.
+fn decode_named_tcref(
+    pickled: &PickledCcu,
+    tcref: &PickledTcRef,
+    local_fqns: &HashMap<u32, Vec<String>>,
+) -> Result<Option<AbbreviationTarget>, ImportError> {
+    match tcref {
+        PickledTcRef::NonLocal(idx) => Ok(Some(decode_nonlocal_named(pickled, *idx)?)),
+        PickledTcRef::Local(stamp) => {
+            if let Some(path) = local_fqns.get(stamp) {
+                Ok(Some(AbbreviationTarget::Named {
+                    ccu: None,
+                    path: path.clone(),
+                    args: Vec::new(),
+                }))
+            } else if (*stamp as usize) < pickled.tables.tycons.len() {
+                // In range, but not a recorded module/type — a well-formed shape
+                // this slice does not model (a namespace or measure leaf). Decline.
+                Ok(None)
+            } else {
+                Err(ImportError::OsgnIndexOutOfRange {
+                    kind: "local tycon (abbreviation target)",
+                    index: *stamp,
+                    max: pickled.tables.tycons.len(),
+                })
+            }
+        }
+    }
+}
+
+/// Resolve a non-local entity-ref index into a nullary
+/// [`AbbreviationTarget::Named`]: the CCU logical name and the dotted logical
+/// path the pickle carries, both through the header tables. A dangling nleref,
+/// ccu, or string index is a malformed header — a loud `Err`.
+///
+/// The ccu is stored **verbatim** (`Some(name)`), never folded to `None` even
+/// when it equals the host assembly's name. fsc pickles a reference to the
+/// current CCU's *own* type as a non-local ref whose ccu is the host name (a
+/// public signature is written to be read from elsewhere), but the pickle's
+/// [`CcuRef`](crate::fsharp_pickle::CcuRef) carries only a *name* — no version or
+/// public-key-token — so a name equal to the host cannot be *proven* to mean the
+/// host: an assembly can reference a different assembly of the same simple name
+/// (an extern alias). Disambiguating host-vs-same-named-reference needs the
+/// loaded assembly identities, which only the sema layer has; a decode-time
+/// name fold would silently misroute that reference. `ccu = None` is reserved
+/// for the pickle's `Local` tcref, the one form that *proves* same-CCU
+/// membership. See `docs/abbreviation-target-projection-plan.md` §3.1.
+fn decode_nonlocal_named(
+    pickled: &PickledCcu,
+    nle_idx: u32,
+) -> Result<AbbreviationTarget, ImportError> {
+    let nle =
+        pickled
+            .header
+            .nlerefs
+            .get(nle_idx as usize)
+            .ok_or(ImportError::OsgnIndexOutOfRange {
+                kind: "nleref (abbreviation target)",
+                index: nle_idx,
+                max: pickled.header.nlerefs.len(),
+            })?;
+    let ccu = pickled
+        .header
+        .ccu_refs
+        .get(nle.ccu as usize)
+        .ok_or(ImportError::OsgnIndexOutOfRange {
+            kind: "ccu ref (abbreviation target)",
+            index: nle.ccu,
+            max: pickled.header.ccu_refs.len(),
+        })?
+        .name
+        .clone();
+    let path = nle
+        .path
+        .iter()
+        .map(|&i| {
+            pickled.header.strings.get(i as usize).cloned().ok_or(
+                ImportError::OsgnIndexOutOfRange {
+                    kind: "string (abbreviation target path)",
+                    index: i,
+                    max: pickled.header.strings.len(),
+                },
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(AbbreviationTarget::Named {
+        ccu: Some(ccu),
+        path,
+        args: Vec::new(),
+    })
 }
 
 /// Synthesise a name-only marker [`Entity`] for each **public** pickle-only
@@ -1485,7 +1679,11 @@ pub(crate) fn apply_abbreviation_markers(
     if assembly.name == "FSharp.Core" {
         return Ok(());
     }
-    let mut targets: Vec<AbbreviationTarget> = Vec::new();
+    // Built before the site walk: a `Local` abbreviation target may reference a
+    // tycon walked *after* the abbreviation's own site, so the whole stamp→FQN
+    // map must exist before any target is decoded.
+    let local_fqns = local_tycon_fqns(pickled)?;
+    let mut targets: Vec<AbbrevMarkerSite> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -1494,7 +1692,7 @@ pub(crate) fn apply_abbreviation_markers(
         &[],
         &[],
         &mut path,
-        &mut |entity, is_root, namespace, type_chain| {
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
             if is_root || !entity.access.is_empty() {
                 return Ok(());
             }
@@ -1507,7 +1705,7 @@ pub(crate) fn apply_abbreviation_markers(
                 entity.exn_repr,
                 PickledExnRepr::Abbrev(_) | PickledExnRepr::Asm(_)
             ) {
-                targets.push(AbbreviationTarget {
+                targets.push(AbbrevMarkerSite {
                     namespace: namespace.to_vec(),
                     type_chain: type_chain.to_vec(),
                     name: clr_name(entity),
@@ -1515,10 +1713,16 @@ pub(crate) fn apply_abbreviation_markers(
                     typar_names: Vec::new(),
                     is_exception: true,
                     is_auto_open: false,
+                    // An exception abbreviation's target is a constructor, not a
+                    // type-position name; the decoder does not model it.
+                    abbreviation_target: None,
                 });
                 return Ok(());
             }
-            if entity.type_abbrev.is_none() || entity.typar_kind == TyparKind::Measure {
+            let Some(abbrev_ty) = &entity.type_abbrev else {
+                return Ok(());
+            };
+            if entity.typar_kind == TyparKind::Measure {
                 return Ok(());
             }
             let typar_names = entity
@@ -1549,7 +1753,9 @@ pub(crate) fn apply_abbreviation_markers(
                 }
                 _ => None,
             };
-            targets.push(AbbreviationTarget {
+            let abbreviation_target =
+                decode_abbreviation_target(pickled, entity, abbrev_ty, &local_fqns)?;
+            targets.push(AbbrevMarkerSite {
                 namespace: namespace.to_vec(),
                 type_chain: type_chain.to_vec(),
                 name: clr_name(entity),
@@ -1557,6 +1763,7 @@ pub(crate) fn apply_abbreviation_markers(
                 typar_names,
                 is_exception: false,
                 is_auto_open: has_auto_open_attribute(pickled, &entity.attribs),
+                abbreviation_target,
             });
             Ok(())
         },
@@ -1606,7 +1813,7 @@ pub(crate) fn apply_abbreviation_markers(
 fn abbreviation_marker(
     assembly: &AssemblyIdentity,
     namespace: Vec<String>,
-    target: &AbbreviationTarget,
+    target: &AbbrevMarkerSite,
 ) -> Entity {
     Entity {
         assembly: assembly.clone(),
@@ -1663,6 +1870,9 @@ fn abbreviation_marker(
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         custom_attrs: Vec::new(),
+        // The decoded RHS of the abbreviation, or `None` for an exception
+        // abbreviation and for any target shape the decoder does not model.
+        abbreviation_target: target.abbreviation_target.clone(),
     }
 }
 
@@ -1730,15 +1940,16 @@ mod tests {
         CcuRef, FSharpTyparConstraint, IsType, Measure, Nullness, PickledAccess,
         PickledArgReprInfo, PickledCPath, PickledConst, PickledExnRepr, PickledHeader,
         PickledILScopeRef, PickledIdent, PickledMemberFlags, PickledMemberInfo, PickledMemberKind,
-        PickledModulType, PickledOsgnTables, PickledParentRef, PickledPos, PickledRange,
-        PickledTcAug, PickledTcRef, PickledTyconObjModelData, PickledTyconObjModelKind,
-        PickledTyconRepr, PickledTyparReprInfo, PickledTyparSpecData, PickledType, PickledVal,
-        PickledValReprInfo, PickledXmlDoc, TupleKind, TyparKind,
+        PickledModulType, PickledNleRef, PickledOsgnTables, PickledParentRef, PickledPos,
+        PickledRange, PickledTcAug, PickledTcRef, PickledTyconObjModelData,
+        PickledTyconObjModelKind, PickledTyconRepr, PickledTyparReprInfo, PickledTyparSpecData,
+        PickledType, PickledVal, PickledValReprInfo, PickledXmlDoc, TupleKind, TyparKind,
     };
     use crate::model::{
-        Access, AssemblyIdentity, EntityKind, Member, MethodLike, MethodSignature, Nullability,
-        Parameter, Primitive, TypeRef, Version,
+        AbbreviationTarget, Access, AssemblyIdentity, EntityKind, Member, MethodLike,
+        MethodSignature, Nullability, Parameter, Primitive, TypeRef, Version,
     };
+    use proptest::prelude::*;
 
     fn dummy_assembly() -> AssemblyIdentity {
         AssemblyIdentity {
@@ -1876,6 +2087,7 @@ mod tests {
             compiler_feature_required: Vec::new(),
             source_name: None,
             custom_attrs: Vec::new(),
+            abbreviation_target: None,
         }
     }
 
@@ -1948,6 +2160,373 @@ mod tests {
                 typars: Vec::new(),
                 vals: Vec::new(),
             },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Abbreviation-target decoder
+    // -----------------------------------------------------------------------
+
+    /// A `PickledModulType` for a real *type* (not a namespace fragment), so the
+    /// walk records it in [`local_tycon_fqns`] and a `Local` tcref resolves.
+    fn type_modul_typ() -> PickledModulType {
+        PickledModulType {
+            is_type: IsType::ModuleOrType,
+            vals: Vec::new(),
+            entities: Vec::new(),
+        }
+    }
+
+    /// A `PickledCcu` with the header tables the decoder reads: a `FSharp.Core`
+    /// ccu ref, the `Microsoft.FSharp.Core.int` string path, three nlerefs (one
+    /// well-formed, one with a dangling ccu index, one with a dangling string
+    /// index), one simplety pointing at the good nleref, and a same-assembly
+    /// `Point` type (stamp 2) under a `Demo` namespace (stamp 1) — so a
+    /// `Local(2)` tcref resolves to `["Demo", "Point"]`.
+    fn abbrev_test_ccu() -> PickledCcu {
+        let point = make_entity("Point", PickledTyconRepr::NoRepr, type_modul_typ());
+        let mut demo_modul = empty_modul_typ();
+        demo_modul.entities = vec![2];
+        let demo = make_entity("Demo", PickledTyconRepr::NoRepr, demo_modul);
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Demo", PickledTyconRepr::NoRepr, root_modul);
+        PickledCcu {
+            header: PickledHeader {
+                ccu_refs: vec![CcuRef {
+                    name: "FSharp.Core".to_string(),
+                }],
+                ntycons: 3,
+                ntypars: 0,
+                nvals: 0,
+                nanoninfos: 0,
+                strings: ["Microsoft", "FSharp", "Core", "int"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                pubpaths: Vec::new(),
+                nlerefs: vec![
+                    PickledNleRef {
+                        ccu: 0,
+                        path: vec![0, 1, 2, 3],
+                    },
+                    // nleref 1: dangling ccu index.
+                    PickledNleRef {
+                        ccu: 99,
+                        path: vec![0],
+                    },
+                    // nleref 2: dangling string index.
+                    PickledNleRef {
+                        ccu: 0,
+                        path: vec![99],
+                    },
+                ],
+                simpletys: vec![0],
+                phase1_bytes: Vec::new(),
+            },
+            root_entity: 0,
+            compile_time_working_dir: String::new(),
+            uses_quotations: false,
+            tables: PickledOsgnTables {
+                tycons: vec![root, demo, point],
+                typars: Vec::new(),
+                vals: Vec::new(),
+            },
+        }
+    }
+
+    fn alias_entity() -> PickledEntity {
+        make_entity("Alias", PickledTyconRepr::NoRepr, empty_modul_typ())
+    }
+
+    const AMB: Nullness = Nullness::Ambivalent;
+
+    fn int_target() -> AbbreviationTarget {
+        AbbreviationTarget::Named {
+            ccu: Some("FSharp.Core".to_string()),
+            path: vec![
+                "Microsoft".into(),
+                "FSharp".into(),
+                "Core".into(),
+                "int".into(),
+            ],
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn decode_resolves_nonlocal_appsimple_and_local_heads() {
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let entity = alias_entity();
+
+        // Nullary NonLocal App: the full nleref path plus the FSharp.Core ccu.
+        let app = PickledType::App {
+            tcref: PickledTcRef::NonLocal(0),
+            args: Vec::new(),
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &app, &local).unwrap(),
+            Some(int_target()),
+        );
+
+        // AppSimple resolves the same nleref through the simpletys table.
+        let simple = PickledType::AppSimple {
+            simpletyp_index: 0,
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &simple, &local).unwrap(),
+            Some(int_target()),
+        );
+
+        // Nullary Local: a same-assembly path with `ccu = None`.
+        let local_app = PickledType::App {
+            tcref: PickledTcRef::Local(2),
+            args: Vec::new(),
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &local_app, &local).unwrap(),
+            Some(AbbreviationTarget::Named {
+                ccu: None,
+                path: vec!["Demo".into(), "Point".into()],
+                args: Vec::new(),
+            }),
+        );
+    }
+
+    #[test]
+    fn decode_resolves_typar_by_position_through_forall() {
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let mut entity = alias_entity();
+        // The typar *stamps* — position, not value, is what the target encodes.
+        entity.typars = vec![7, 9];
+
+        // Bare Var referencing the second typar → position 1.
+        let var = PickledType::Var {
+            typar_index: 9,
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &var, &local).unwrap(),
+            Some(AbbreviationTarget::Var(1)),
+        );
+
+        // A `Forall` quantifier wraps the same body; its `Var` still resolves
+        // against the entity's own typars → position 0.
+        let forall = PickledType::Forall {
+            typars: vec![7, 9],
+            body: Box::new(PickledType::Var {
+                typar_index: 7,
+                nullness: AMB,
+            }),
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &forall, &local).unwrap(),
+            Some(AbbreviationTarget::Var(0)),
+        );
+
+        // An out-of-scope typar declines rather than fabricating a position.
+        let oob = PickledType::Var {
+            typar_index: 99,
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &oob, &local).unwrap(),
+            None,
+        );
+    }
+
+    #[test]
+    fn decode_declines_structural_and_generic_shapes() {
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let entity = alias_entity();
+        let int = || PickledType::AppSimple {
+            simpletyp_index: 0,
+            nullness: AMB,
+        };
+
+        let shapes = [
+            // Generic instantiation (App with args) — the structural slice's job.
+            PickledType::App {
+                tcref: PickledTcRef::NonLocal(0),
+                args: vec![int()],
+                nullness: AMB,
+            },
+            PickledType::Fun {
+                domain: Box::new(int()),
+                range: Box::new(int()),
+                nullness: AMB,
+            },
+            PickledType::Tuple {
+                kind: TupleKind::Reference,
+                elems: vec![int(), int()],
+            },
+            PickledType::Measure(Measure::One),
+        ];
+        for ty in shapes {
+            assert_eq!(
+                decode_abbreviation_target(&ccu, &entity, &ty, &local).unwrap(),
+                None,
+                "{ty:?} is a shape the nullary slice must decline",
+            );
+        }
+    }
+
+    #[test]
+    fn decode_fails_loud_on_dangling_indices() {
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let entity = alias_entity();
+
+        let danglers = [
+            // Dangling nleref index.
+            PickledType::App {
+                tcref: PickledTcRef::NonLocal(999),
+                args: Vec::new(),
+                nullness: AMB,
+            },
+            // Well-formed nleref, but its ccu index dangles (nleref 1).
+            PickledType::App {
+                tcref: PickledTcRef::NonLocal(1),
+                args: Vec::new(),
+                nullness: AMB,
+            },
+            // Well-formed nleref, but a path string index dangles (nleref 2).
+            PickledType::App {
+                tcref: PickledTcRef::NonLocal(2),
+                args: Vec::new(),
+                nullness: AMB,
+            },
+            // Dangling simplety index.
+            PickledType::AppSimple {
+                simpletyp_index: 999,
+                nullness: AMB,
+            },
+            // Local stamp beyond the tycon table.
+            PickledType::App {
+                tcref: PickledTcRef::Local(999),
+                args: Vec::new(),
+                nullness: AMB,
+            },
+        ];
+        for ty in danglers {
+            assert!(
+                matches!(
+                    decode_abbreviation_target(&ccu, &entity, &ty, &local),
+                    Err(ImportError::OsgnIndexOutOfRange { .. })
+                ),
+                "{ty:?} must fail loud as OsgnIndexOutOfRange",
+            );
+        }
+    }
+
+    #[test]
+    fn decode_declines_in_range_local_that_is_not_a_type() {
+        // `Local(1)` is the `Demo` namespace fragment — in range, but not a
+        // recorded module/type. A well-formed shape we do not model: decline,
+        // do not fail loud.
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let entity = alias_entity();
+        let ns_ref = PickledType::App {
+            tcref: PickledTcRef::Local(1),
+            args: Vec::new(),
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &ns_ref, &local).unwrap(),
+            None,
+        );
+    }
+
+    fn arb_nullness() -> impl Strategy<Value = Nullness> {
+        prop_oneof![
+            Just(Nullness::Ambivalent),
+            Just(Nullness::WithNull),
+            Just(Nullness::WithoutNull),
+        ]
+    }
+
+    fn arb_tcref() -> impl Strategy<Value = PickledTcRef> {
+        prop_oneof![
+            (0u32..2000).prop_map(PickledTcRef::Local),
+            (0u32..2000).prop_map(PickledTcRef::NonLocal),
+        ]
+    }
+
+    /// Arbitrary well-typed `PickledType` trees over the decoder-relevant shapes,
+    /// with indices spanning both in-range and dangling values so the property
+    /// exercises every table lookup and every fail-loud path.
+    fn arb_pickled_type() -> impl Strategy<Value = PickledType> {
+        let leaf = prop_oneof![
+            (0u32..2000, arb_nullness()).prop_map(|(typar_index, nullness)| PickledType::Var {
+                typar_index,
+                nullness
+            }),
+            (0u32..2000, arb_nullness()).prop_map(|(simpletyp_index, nullness)| {
+                PickledType::AppSimple {
+                    simpletyp_index,
+                    nullness,
+                }
+            }),
+            Just(PickledType::Measure(Measure::One)),
+        ];
+        leaf.prop_recursive(4, 48, 4, |inner| {
+            prop_oneof![
+                (
+                    arb_tcref(),
+                    prop::collection::vec(inner.clone(), 0..3),
+                    arb_nullness()
+                )
+                    .prop_map(|(tcref, args, nullness)| PickledType::App {
+                        tcref,
+                        args,
+                        nullness
+                    }),
+                (inner.clone(), inner.clone(), arb_nullness()).prop_map(
+                    |(domain, range, nullness)| PickledType::Fun {
+                        domain: Box::new(domain),
+                        range: Box::new(range),
+                        nullness,
+                    }
+                ),
+                prop::collection::vec(inner.clone(), 0..3).prop_map(|elems| PickledType::Tuple {
+                    kind: TupleKind::Reference,
+                    elems
+                }),
+                (prop::collection::vec(0u32..2000, 0..3), inner).prop_map(|(typars, body)| {
+                    PickledType::Forall {
+                        typars,
+                        body: Box::new(body),
+                    }
+                }),
+            ]
+        })
+    }
+
+    proptest! {
+        /// Totality + fail-loud-only-for-malformed: the decoder never panics on an
+        /// arbitrary (possibly dangling) `PickledType`, and the only error it may
+        /// return is a loud `OsgnIndexOutOfRange`. No panic mid-walk means the
+        /// crate's fail-loud contract holds even for adversarial pickle input; a
+        /// clean `Ok(None)` for every unmodelled-but-well-formed shape means the
+        /// decode is fail-closed, never partial.
+        #[test]
+        fn decode_is_total_and_fails_only_loud(ty in arb_pickled_type()) {
+            let ccu = abbrev_test_ccu();
+            let local = local_tycon_fqns(&ccu).unwrap();
+            let mut entity = alias_entity();
+            entity.typars = vec![0, 1, 2];
+            match decode_abbreviation_target(&ccu, &entity, &ty, &local) {
+                Ok(_) => {}
+                Err(ImportError::OsgnIndexOutOfRange { .. }) => {}
+                Err(other) => prop_assert!(false, "unexpected non-index error: {other:?}"),
+            }
         }
     }
 

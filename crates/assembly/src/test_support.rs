@@ -33,9 +33,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    Access, CompilerFeatureRequired, DefaultMember, Entity, EntityKind, Event, Experimental,
-    Member, MethodLike, MethodSignature, Nullability, NullableType, Obsolete, ParamDefault,
-    Parameter, Primitive, Property, TypeParameter, TypeRef, Variance,
+    AbbreviationTarget, Access, CompilerFeatureRequired, DefaultMember, Entity, EntityKind, Event,
+    Experimental, Member, MethodLike, MethodSignature, Nullability, NullableType, Obsolete,
+    ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, Variance,
 };
 use serde::Deserialize;
 
@@ -955,6 +955,63 @@ pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<AbbreviationKey, Option<
     let dump: FcsDump = serde_json::from_str(json).expect("fcs-dump JSON shape");
     let mut out = BTreeMap::new();
     for e in &dump.entities {
+        walk("", e, &mut out);
+    }
+    out
+}
+
+/// Render an owned [`AbbreviationTarget`] into the canonical string the
+/// differential compares against `fcs-dump`'s `renderAbbreviationTargetLogical`:
+/// a `Named` head by its dotted logical `path` (the ccu is stored for sema but
+/// **not** rendered — a same-assembly target renders path-only, exactly as FCS
+/// does), and a `Var` by its positional `!T<pos>`.
+pub fn render_abbreviation_target(t: &AbbreviationTarget) -> String {
+    match t {
+        AbbreviationTarget::Named { path, args, .. } => {
+            // The nullary decoder slice never populates `args`; the structural
+            // slice (plan Stage 3) will, and render them here alongside the
+            // backtick-arity head. Until then, keep the renderer honest.
+            debug_assert!(
+                args.is_empty(),
+                "nullary abbreviation-target slice must not carry args: {args:?}",
+            );
+            path.join(".")
+        }
+        AbbreviationTarget::Var(pos) => format!("!T{pos}"),
+    }
+}
+
+/// The Rust-side twin of [`fcs_abbreviation_targets`]: every
+/// [`EntityKind::Abbreviation`] marker's decoded target, keyed by the same
+/// [`AbbreviationKey`] `(fully-qualified name, generic arity)` so the two maps
+/// compare directly. The value is `Some(rendered)` when the decoder produced a
+/// target and `None` when it declined — mirroring the FCS side's `null`.
+///
+/// Keyed identically to the FCS walk: a top-level marker by its
+/// namespace-qualified name, a nested marker by its container prefix threaded
+/// back in (a nested [`Entity`] carries an empty namespace of its own).
+pub fn our_abbreviation_targets(entities: &[Entity]) -> BTreeMap<AbbreviationKey, Option<String>> {
+    fn walk(prefix: &str, e: &Entity, out: &mut BTreeMap<AbbreviationKey, Option<String>>) {
+        let name = e.source_name.as_deref().unwrap_or(&e.name);
+        let self_fqn = if prefix.is_empty() {
+            fqn(&e.namespace, name)
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if e.kind == EntityKind::Abbreviation {
+            out.insert(
+                (self_fqn.clone(), e.generic_parameters.len()),
+                e.abbreviation_target
+                    .as_ref()
+                    .map(render_abbreviation_target),
+            );
+        }
+        for n in &e.nested_types {
+            walk(&self_fqn, n, out);
+        }
+    }
+    let mut out = BTreeMap::new();
+    for e in entities {
         walk("", e, &mut out);
     }
     out
