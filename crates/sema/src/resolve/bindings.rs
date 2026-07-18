@@ -5,11 +5,12 @@ use std::collections::HashSet;
 use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr, SyntaxKind};
 
 use crate::binders::{BinderRole, binders};
-use crate::def::DefKind;
+use crate::def::{DefId, DefKind};
 use crate::diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 
 use super::model::{ExportedItem, ItemId, Resolution};
 use super::state::{Frame, Resolver, ScopeEntry};
+use super::types::head_typar_decls;
 use super::{active_pat_name_of, active_pattern_param_arity, id_text};
 
 /// The interned binders of one top-level binding, before they are made visible.
@@ -25,8 +26,24 @@ pub(super) struct PreparedBinding {
     /// group (so a `rec` recognizer's body sees its own cases as patterns), after
     /// them otherwise — and they persist for later decls.
     eager_entries: Vec<ScopeEntry>,
+    /// This binding's generic parameters (`let f<'T> …`), interned once and keyed
+    /// by bare `idText` name. Empty for a non-generic binding. Activated as a
+    /// typar frame around the head annotations (in `prepare_binding`) and again
+    /// around the RHS (in `resolve_rhss`), so a `'T` in either position resolves.
+    typar_frame: Vec<(String, DefId)>,
     rhs: Option<Expr>,
 }
+
+/// One prepared block-/class-`let` binding, ready for RHS resolution: its
+/// curried-parameter entries, its active-pattern case entries, its
+/// generic-parameter (typar) frame (interned once, re-activated around the RHS —
+/// mirrors [`PreparedBinding::typar_frame`]), and its RHS expression.
+type PreparedLocalBinding = (
+    Vec<ScopeEntry>,
+    Vec<ScopeEntry>,
+    Vec<(String, DefId)>,
+    Option<Expr>,
+);
 
 impl<'a> Resolver<'a> {
     /// Process a top-level `let` / `let rec [… and …]` group. The head value
@@ -104,6 +121,20 @@ impl<'a> Resolver<'a> {
         let mut item_entries = Vec::new();
         let mut param_entries = Vec::new();
         let mut eager_entries = Vec::new();
+        // A generic binding head (`let f<'T> (x: 'T) : 'T = …`) declares typars
+        // scoped to this binding's annotations *and* its RHS. Intern them once
+        // and activate the frame around the head-pattern / return-type resolution
+        // below; `resolve_rhss` re-activates the stored frame around the RHS.
+        let typar_frame = binding
+            .pat()
+            .as_ref()
+            .and_then(head_typar_decls)
+            .map(|d| self.intern_typars(&d))
+            .unwrap_or_default();
+        let pushed_typars = !typar_frame.is_empty();
+        if pushed_typars {
+            self.typar_scopes.push(typar_frame.clone());
+        }
         if let Some(head) = binding.pat() {
             // Type annotations in the head (`let f (x : T) = …`) name types, not
             // value binders, so they are resolved separately from the binders.
@@ -208,10 +239,14 @@ impl<'a> Resolver<'a> {
         if let Some(ret) = binding.return_type() {
             self.resolve_type(&ret);
         }
+        if pushed_typars {
+            self.typar_scopes.pop();
+        }
         PreparedBinding {
             item_entries,
             param_entries,
             eager_entries,
+            typar_frame,
             rhs: binding.expr(),
         }
     }
@@ -288,19 +323,31 @@ impl<'a> Resolver<'a> {
     /// binder is interned and self-resolved here; the caller controls the `rec`
     /// visibility timing (push the value frame before or after
     /// [`Self::resolve_local_let_rhss`]).
-    #[expect(clippy::type_complexity)]
     pub(super) fn prepare_local_bindings(
         &mut self,
         bindings: impl Iterator<Item = Binding>,
-    ) -> (
-        Vec<ScopeEntry>,
-        Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)>,
-    ) {
+    ) -> (Vec<ScopeEntry>, Vec<PreparedLocalBinding>) {
         let mut value_entries: Vec<ScopeEntry> = Vec::new();
-        let mut per_binding: Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)> = Vec::new();
+        let mut per_binding: Vec<PreparedLocalBinding> = Vec::new();
         for b in bindings {
             let mut params = Vec::new();
             let mut ap_cases = Vec::new();
+            // This binding's generic parameters (`let f<'T> (x: 'T) = …`),
+            // interned once and activated around the head annotations here, then
+            // re-activated around the RHS in `resolve_local_let_rhss` — exactly as
+            // the module-level `prepare_binding`. Pushing it also *shadows* an
+            // enclosing same-named typar to a collision (see `lookup_typar`), so a
+            // nested generic `let` never silently binds the outer parameter.
+            let typar_frame = b
+                .pat()
+                .as_ref()
+                .and_then(head_typar_decls)
+                .map(|d| self.intern_typars(&d))
+                .unwrap_or_default();
+            let pushed_typars = !typar_frame.is_empty();
+            if pushed_typars {
+                self.typar_scopes.push(typar_frame.clone());
+            }
             if let Some(head) = b.pat() {
                 // Annotations in the head (`let (x : T) = …`) are type uses. The
                 // let-head variant suppresses the AP split for a direct
@@ -355,7 +402,10 @@ impl<'a> Resolver<'a> {
             if let Some(ret) = b.return_type() {
                 self.resolve_type(&ret);
             }
-            per_binding.push((params, ap_cases, b.expr()));
+            if pushed_typars {
+                self.typar_scopes.pop();
+            }
+            per_binding.push((params, ap_cases, typar_frame, b.expr()));
         }
         (value_entries, per_binding)
     }
@@ -363,11 +413,14 @@ impl<'a> Resolver<'a> {
     /// Resolve each local-let binding's RHS with that binding's curried
     /// parameters in scope (and nothing else of the group, unless a `let rec`
     /// frame is already pushed by the caller). Mirrors [`Self::resolve_rhss`].
-    pub(super) fn resolve_local_let_rhss(
-        &mut self,
-        per_binding: &[(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)],
-    ) {
-        for (params, ap_cases, rhs) in per_binding {
+    pub(super) fn resolve_local_let_rhss(&mut self, per_binding: &[PreparedLocalBinding]) {
+        for (params, ap_cases, typar_frame, rhs) in per_binding {
+            // Re-activate this binding's generic parameters so a `'T` annotation
+            // inside the RHS resolves (and shadows an enclosing same-named typar).
+            let pushed_typars = !typar_frame.is_empty();
+            if pushed_typars {
+                self.typar_scopes.push(typar_frame.clone());
+            }
             self.scopes.push(Frame {
                 entries: params.clone(),
             });
@@ -380,6 +433,9 @@ impl<'a> Resolver<'a> {
             }
             self.ap_body_case_names = restore;
             self.scopes.pop();
+            if pushed_typars {
+                self.typar_scopes.pop();
+            }
         }
     }
 
@@ -414,6 +470,12 @@ impl<'a> Resolver<'a> {
 
     pub(super) fn resolve_rhss(&mut self, prepared: &[PreparedBinding]) {
         for p in prepared {
+            // Re-activate this binding's generic parameters (interned in
+            // `prepare_binding`) so a `'T` annotation *inside* the RHS resolves.
+            let pushed_typars = !p.typar_frame.is_empty();
+            if pushed_typars {
+                self.typar_scopes.push(p.typar_frame.clone());
+            }
             self.scopes.push(Frame {
                 entries: p.param_entries.clone(),
             });
@@ -431,6 +493,9 @@ impl<'a> Resolver<'a> {
             }
             self.ap_body_case_names = restore;
             self.scopes.pop();
+            if pushed_typars {
+                self.typar_scopes.pop();
+            }
         }
     }
 

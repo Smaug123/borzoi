@@ -84,6 +84,9 @@ const CORPUS: &[&str] = &[
     "let m q = match q with w -> w\n",
     // Type + UnionCase: `T` a type, `A` a union case used as a constructor.
     "type T = A | B\nlet u = A\n",
+    // TypeParameter: a generic function header binds every `'T` use in the
+    // annotations and body to the `<'T>` decl (FCS reports `GenericParameter`).
+    "let f<'T> (x: 'T) = x\n",
     // Type + EnumCase: `Color` a type, `Red` an enum case reached qualified.
     "type Color = Red = 0 | Green = 1\nlet c = Color.Red\n",
     // ExceptionCase: `E` an exception constructor used to construct.
@@ -253,6 +256,8 @@ fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
         SemanticClass::EnumCase => c == "Field",
         // A member of unspecified flavour: FCS sees a member `Mfv`.
         SemanticClass::Member => c == "Mfv" && u.is_member,
+        // A type parameter — FCS's `GenericParameter`.
+        SemanticClass::TypeParameter => c == "GenericParameter",
         // Cross-assembly classes: never produced by this single-file, env-less
         // differential (no `AssemblyEnv`), so committing one would be a bug —
         // fail loudly. They are covered by `resolve_assembly`'s classifier test.
@@ -463,6 +468,7 @@ fn commits_each_in_file_category() {
         SemanticClass::ActivePattern,
         SemanticClass::EnumCase,
         SemanticClass::Member,
+        SemanticClass::TypeParameter,
     ] {
         let covered = match class {
             SemanticClass::Function => cover("let f a = f a\n", "f", class),
@@ -487,6 +493,7 @@ fn commits_each_in_file_category() {
                 "Color2.Red",
                 class,
             ),
+            SemanticClass::TypeParameter => cover("let f<'T> (x: 'T) = x\n", "'T", class),
             // Cross-assembly classes are not in-file; the loop never yields them
             // (they're covered by `resolve_assembly`'s classifier test).
             SemanticClass::Module

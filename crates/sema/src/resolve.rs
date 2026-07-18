@@ -704,6 +704,7 @@ impl<'a> Resolver<'a> {
             items: Vec::new(),
             resolutions: HashMap::new(),
             scopes: Vec::new(),
+            typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
             type_slot_classes: HashMap::new(),
             type_access_roots: HashMap::new(),

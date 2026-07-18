@@ -80,11 +80,12 @@ enum Hl {
     Property,
     Event,
     Namespace,
+    TypeParameter,
 }
 
 impl Hl {
     /// Every kind, in legend order. `Hl::ALL[h.index()] == h`.
-    const ALL: [Hl; 14] = [
+    const ALL: [Hl; 15] = [
         Hl::Keyword,
         Hl::Comment,
         Hl::String,
@@ -99,6 +100,7 @@ impl Hl {
         Hl::Property,
         Hl::Event,
         Hl::Namespace,
+        Hl::TypeParameter,
     ];
 
     /// The standard LSP [`SemanticTokenType`] this kind advertises as.
@@ -118,6 +120,7 @@ impl Hl {
             Hl::Property => SemanticTokenType::PROPERTY,
             Hl::Event => SemanticTokenType::EVENT,
             Hl::Namespace => SemanticTokenType::NAMESPACE,
+            Hl::TypeParameter => SemanticTokenType::TYPE_PARAMETER,
         }
     }
 
@@ -143,6 +146,7 @@ impl Hl {
             SemanticClass::Property => Hl::Property,
             SemanticClass::Event => Hl::Event,
             SemanticClass::Module => Hl::Namespace,
+            SemanticClass::TypeParameter => Hl::TypeParameter,
         }
     }
 
