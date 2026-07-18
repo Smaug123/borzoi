@@ -4640,3 +4640,73 @@ fn non_authoritative_assembly_declines_module_classification() {
         "a non-authoritative assembly's module kind and members are declined"
     );
 }
+
+/// The same authority split governs **module-qualified member ownership**
+/// (`static_lookup` → `qualified_path_occupied`): an *authoritative* module
+/// takes the in-module search domain (no base chain, so `Object`'s members do
+/// not occupy — the `String.Equals` fix), but a *non-authoritative* one is a
+/// plain type to FCS, so it takes the type rule and its base chain occupies
+/// `Object`'s member names. Pinned on `Equals`, an `Object` method absent from
+/// the module's own contents: authoritative ⇒ `Absent` (a lower reading may own
+/// the path), non-authoritative ⇒ `Uncertain` (the base chain occupies it, so
+/// the path stays owned). Same builder as
+/// [`non_authoritative_assembly_declines_module_classification`].
+#[test]
+fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
+    use borzoi_sema::StaticLookup;
+
+    let calc = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc in fixture");
+    let method_tpl = calc
+        .members
+        .iter()
+        .find_map(|m| match m {
+            Member::Method(mm) => Some(mm.clone()),
+            _ => None,
+        })
+        .expect("a method in Demo.Calc");
+
+    // A module `Ns.Mod` with a single value member `Val` — and no member or
+    // child named `Equals`, so the only way `Equals` is occupied is via the
+    // (type-rule) base chain.
+    let mut val = method_tpl;
+    val.name = "Val".to_string();
+    val.source_name = Some("Val".to_string());
+    val.module_value = Some(ModuleValue { is_mutable: false });
+    let mut module = calc;
+    module.namespace = vec!["Ns".to_string()];
+    module.name = "Mod".to_string();
+    module.kind = EntityKind::Module;
+    module.members = vec![Member::Method(val)];
+    module.nested_types = vec![];
+
+    let build = |non_authoritative: bool| {
+        AssemblyEnv::from_assemblies_with_projection_knowability(vec![(
+            std::path::PathBuf::from("Test.dll"),
+            vec![module.clone()],
+            AbbreviationVisibility::Modelled,
+            false,
+            non_authoritative,
+            Vec::new(),
+        )])
+    };
+    let equals = |env: &AssemblyEnv| {
+        let h = env
+            .lookup_type(&["Ns".to_string()], "Mod", 0)
+            .expect("Ns.Mod");
+        env.static_lookup(h, "Equals")
+    };
+
+    assert_eq!(
+        equals(&build(false)),
+        StaticLookup::Absent,
+        "an authoritative module ignores `Object.Equals` — a lower reading may own the path"
+    );
+    assert_eq!(
+        equals(&build(true)),
+        StaticLookup::Uncertain,
+        "a non-authoritative module takes the type rule, whose base chain occupies `Equals`"
+    );
+}
