@@ -1058,7 +1058,7 @@ fn resolve_project_files_impl(
             &rf,
             assemblies,
             screen.as_deref(),
-            partners[index].is_some(),
+            partners[index],
         );
         // An unpaired headerless implementation: its values live under the
         // implicit filename module, which sema's export model cannot address
@@ -1107,19 +1107,20 @@ struct ExtThreading {
 /// `paired_screen` is the screen of the signature `rf` is the paired
 /// implementation of, if any — it parameterises the boundary derivation
 /// (the paired impl's value/case identity exports are dropped; see
-/// [`ProjectItems::extend_with`]). `partnered` is whether `rf`'s Compile
-/// item has a pairing partner at all: a signature publishes its screen only
-/// when a following implementation consumes it (an unpaired signature
-/// constrains nothing — FCS-probed).
+/// [`ProjectItems::extend_with`]). `partner` is `rf`'s pairing-partner
+/// Compile index, if any: a signature publishes its screen only when a
+/// following implementation consumes it (an unpaired signature constrains
+/// nothing — FCS-probed), and the implementation's index is the screen's
+/// materialisation rank.
 fn thread_forward(
     preceding: &mut ProjectItems,
     ext: &mut ExtThreading,
     rf: &ResolvedFile,
     assemblies: &AssemblyEnv,
     paired_screen: Option<&model::SigScreen>,
-    partnered: bool,
+    partner: Option<usize>,
 ) {
-    preceding.extend_with(rf, paired_screen, partnered);
+    preceding.extend_with(rf, paired_screen, partner);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -1444,7 +1445,7 @@ fn resolve_project_files_incremental_impl(
             &rf,
             assemblies,
             screen.as_deref(),
-            partners_new[i].is_some(),
+            partners_new[i],
         );
         // The unpaired-headerless implicit-module shadow — exactly as the
         // cold fold pushes it (see `resolve_project_files_impl`).
@@ -2066,7 +2067,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -2099,7 +2100,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -2122,7 +2123,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, None, false);
+        pi2.extend_with(&rf2, None, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -2143,7 +2144,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, None, false);
+            pi.extend_with(&rf, None, None);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -2164,7 +2165,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

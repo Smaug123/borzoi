@@ -346,7 +346,14 @@ pub struct ProjectItems {
     /// path defers ([`Self::sig_screened_path`]). Pushed at the signature's
     /// own Compile slot, which over-defers *intervening* files (FCS resolves
     /// those to the assembly — probe; deferral is the sound direction).
-    pub(super) sig_screens: Vec<Arc<SigScreen>>,
+    /// Each entry carries the screen and its **materialisation rank** — the
+    /// paired implementation's Compile index, where the signature's surface
+    /// publishes. Precedence between fragments is materialisation order
+    /// (FCS-probed: with `[A.fsi, B.fsi, B.fs, A.fs]` the *A* fragment
+    /// contributes last), which a valid interleaving can reverse relative
+    /// to signature-slot order — so the cross-screen exemption rule ranks
+    /// by this index, never by push order.
+    pub(super) sig_screens: Vec<(Arc<SigScreen>, usize)>,
     /// The implicit filename modules of earlier **unpaired headerless**
     /// implementation files (see [`Self::note_implicit_module_shadow`]).
     pub(super) implicit_module_shadows: HashSet<Vec<String>>,
@@ -790,9 +797,14 @@ impl ProjectItems {
             s.exported_value_paths.contains(names)
                 || (case_exempt && s.exported_case_paths.contains(names))
         };
-        let latest_exempt = self.sig_screens.iter().rposition(|s| exempt(s));
-        self.sig_screens.iter().enumerate().any(|(i, screen)| {
-            if latest_exempt.is_some_and(|j| j >= i) {
+        let latest_exempt = self
+            .sig_screens
+            .iter()
+            .filter(|(s, _)| exempt(s))
+            .map(|(_, rank)| *rank)
+            .max();
+        self.sig_screens.iter().any(|(screen, rank)| {
+            if latest_exempt.is_some_and(|j| j >= *rank) {
                 return false;
             }
             screen.roots.iter().any(|root| {
@@ -835,9 +847,11 @@ impl ProjectItems {
         let latest_exempt = self
             .sig_screens
             .iter()
-            .rposition(|s| s.exported_value_paths.contains(&full));
-        self.sig_screens.iter().enumerate().any(|(i, screen)| {
-            if latest_exempt.is_some_and(|j| j >= i) {
+            .filter(|(s, _)| s.exported_value_paths.contains(&full))
+            .map(|(_, rank)| *rank)
+            .max();
+        self.sig_screens.iter().any(|(screen, rank)| {
+            if latest_exempt.is_some_and(|j| j >= *rank) {
                 return false;
             }
             screen.roots.iter().any(|root| {
@@ -892,14 +906,16 @@ impl ProjectItems {
     /// exports** — the signature restricts them, and Stage 1 emits no
     /// signature identity to replace them — while keeping every defer-only
     /// shadow and marker ([`FileExportIndices::from_decls_screened`]).
-    /// `partnered` is whether the file has a pairing partner: a signature
-    /// publishes its screen only when a following implementation consumes it
-    /// (an unpaired signature constrains nothing — FCS-probed).
+    /// `partner` is the file's pairing-partner Compile index, if any: a
+    /// signature publishes its screen only when a following implementation
+    /// consumes it (an unpaired signature constrains nothing — FCS-probed),
+    /// and that implementation's index is the screen's materialisation rank
+    /// (see [`Self::sig_screens`]).
     pub(super) fn extend_with(
         &mut self,
         file: &ResolvedFile,
         paired_screen: Option<&SigScreen>,
-        partnered: bool,
+        partner: Option<usize>,
     ) {
         // Record this file's id base BEFORE interning its items, so [`Self::file_of`]
         // maps any exported id back to its Compile-order file (the straddle fold's
@@ -912,8 +928,10 @@ impl ProjectItems {
         // A paired signature file's own contribution is its screen alone
         // (Stage 1: it exports nothing; its decl list is empty, so the
         // derivation below folds nothing else from it).
-        if partnered && let Some(screen) = &file.sig_screen {
-            self.sig_screens.push(Arc::clone(screen));
+        if let Some(impl_idx) = partner
+            && let Some(screen) = &file.sig_screen
+        {
+            self.sig_screens.push((Arc::clone(screen), impl_idx));
         }
 
         let idx = match paired_screen {

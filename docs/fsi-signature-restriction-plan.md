@@ -413,11 +413,15 @@ with these mechanics settled in review/probing:
     signed `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC` binds
     the `.fsi` case), so the value-namespace lookups stay vetoed on such a
     path (`Resolver::sig_screens_case_reading_of` vs the plain flavour).
-  - The exemption spans screens **forward only**: an earlier screen's veto
-    is overridden by a later-or-same fragment's exact export (probe: a
-    later `val x` beats an earlier sig's unmodelled mention of `x`), but a
-    later screen's veto stands — its fragment could expose an unmodelled
-    shadowing member, so a commit would be a guess.
+  - The exemption spans screens **forward only, in materialisation order**
+    (the paired implementation's Compile index — codex round 2, probed: a
+    valid interleaving `[A.fsi, B.fsi, B.fs, A.fs]` reverses impl order
+    relative to signature order, and FCS binds the *A* fragment because
+    `A.fs` contributes last): an earlier-materialising screen's veto is
+    overridden by a later-or-same fragment's exact export (probe: a later
+    `val x` beats an earlier sig's unmodelled mention of `x`), but a
+    later-materialising screen's veto stands — its fragment could expose
+    an unmodelled shadowing member, so a commit would be a guess.
 - **Materialisation** (`ResolvedFile::append_signature_exports`): the sig
   slot stashes `SigExport`s (its own `Def` arena holds the `.fsi` idents);
   on reaching the paired impl, they are appended after the impl's own

@@ -1067,3 +1067,99 @@ let u = Md.shown
         assert_sig_matches_fcs(fixture);
     }
 }
+
+/// Codex round 2 (FCS-probed): screen precedence is **materialisation**
+/// (paired-implementation) order, not signature-slot order. With the valid
+/// interleaving `[A.fsi, B.fsi, B.fs, A.fs]`, `A.fs` contributes last, so
+/// FCS binds `N.M.x` to **A**'s signature — whose `val internal x` Stage 2
+/// does not model. B's exactly-exported `x` must NOT override A's veto (its
+/// impl slot is earlier), so the reading defers — never B's stale item.
+#[test]
+fn reversed_interleaving_defers_to_the_later_impl_screen() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule M =\n    val internal x: int\n",
+        ),
+        ("/p/B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+        ("/p/B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+        ("/p/A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+        ("/p/Use.fs", "module Use\n\nlet u = N.M.x\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_uncommitted(
+        res_at(&proj, &files, 4, "N.M.x"),
+        "reversed interleaving: FCS binds A's unmodelled internal val, so \
+         B's earlier-materialising export must not commit",
+    );
+}
+
+/// …and the in-order control: with `[A.fsi, A.fs, B.fsi, B.fs]`, B's impl
+/// contributes last, so its exported `x` wins — FCS binds B's `.fsi` and so
+/// do we.
+#[test]
+fn in_order_interleaving_commits_the_later_fragment_export() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule M =\n    val internal x: int\n",
+        ),
+        ("/p/A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+        ("/p/B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+        ("/p/B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+        ("/p/Use.fs", "module Use\n\nlet u = N.M.x\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 4, "N.M.x"),
+        2,
+        "x",
+        "in-order interleaving: the later-materialising fragment's export",
+    );
+}
+
+/// Both interleavings as live FCS differentials: the reversed one must not
+/// commit B (FCS declares in A.fsi — a B commit fails the exactness check);
+/// the in-order one must commit B exactly.
+#[test]
+fn codex_round2_shapes_agree_with_fcs() {
+    let fixtures = [
+        SigProject {
+            label: "sig2_reversed_interleaving",
+            files: vec![
+                (
+                    "A.fsi",
+                    "namespace N\n\nmodule M =\n    val internal x: int\n",
+                ),
+                ("B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+                ("B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+                ("A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+                ("Use.fs", "module Use\n\nlet u = N.M.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 0,
+            fcs_must_not_declare: vec![],
+        },
+        SigProject {
+            label: "sig2_inorder_interleaving",
+            files: vec![
+                (
+                    "A.fsi",
+                    "namespace N\n\nmodule M =\n    val internal x: int\n",
+                ),
+                ("A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+                ("B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+                ("B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+                ("Use.fs", "module Use\n\nlet u = N.M.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+    ];
+    for fixture in &fixtures {
+        assert_sig_matches_fcs(fixture);
+    }
+}
