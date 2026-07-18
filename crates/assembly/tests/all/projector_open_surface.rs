@@ -18,7 +18,9 @@ use std::path::Path;
 
 use borzoi_assembly::{AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
 
-use crate::common::{ensure_fs_ext_index_built, ensure_minilib_fs_built};
+use crate::common::{
+    ensure_fs_ext_index_built, ensure_minilib_fs_built, ensure_sig_hidden_union_built,
+};
 
 fn load(dll: &Path) -> Vec<Entity> {
     let bytes = std::fs::read(dll).expect("read fixture dll");
@@ -116,6 +118,25 @@ fn a_private_representation_has_knowably_zero_accessible_cases() {
     let concealed = entity_named(&entities, "Concealed");
     assert_eq!(concealed.kind, EntityKind::Union);
     assert_eq!(concealed.union_case_names.as_deref(), Some(&[][..]));
+}
+
+#[test]
+fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
+    // `type Teq<'a,'b>` is exposed opaquely by `Teq.fsi` while `Teq.fs` defines
+    // it as a union: the F# compiler lowers the union repr to `TNoRepr` in the
+    // signature pickle (`SignatureConformance`), so the case-name overlay's
+    // union-repr walk never reaches it — yet the compiled class keeps
+    // `CompilationMapping(SumType)`, so ECMA still classifies it a union. The
+    // projector must seal it to the ACCESSIBLE list — empty, since the
+    // representation is hidden — not `None` (which reads as unknowable and, via
+    // the module-open fold, deferred every dotted head after `open`ing this
+    // namespace: the `TypeEquality.Teq` regression). Distinct from
+    // `Concealed` above, whose union repr IS pickled (with a private case) —
+    // this one has no union repr in the signature at all.
+    let entities = load(ensure_sig_hidden_union_built());
+    let teq = entity_named(&entities, "Teq");
+    assert_eq!(teq.kind, EntityKind::Union);
+    assert_eq!(teq.union_case_names.as_deref(), Some(&[][..]));
 }
 
 #[test]

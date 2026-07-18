@@ -421,6 +421,26 @@ pub fn ensure_fs_ext_index_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the SigHiddenUnion F# fixture once and return the path to the
+/// produced `.dll`. Same build-once pattern as [`ensure_minilib_built`].
+///
+/// SigHiddenUnion is a single generic union `Teq<'a,'b>` whose representation
+/// is hidden by a signature file (`Teq.fsi` exposes only an opaque `type
+/// Teq<'a,'b>`). The F# compiler lowers the union repr to `TNoRepr` in the
+/// signature pickle a cross-assembly consumer reads, yet the compiled class
+/// keeps `CompilationMapping(SumType)`, so ECMA still classifies it a union.
+/// It pins that the projector seals such a signature-hidden union to a
+/// knowably-empty `union_case_names` (`Some(vec![])`) rather than the
+/// unknowable `None` — the regression behind `open`ing such a namespace
+/// deferring every dotted head (the `TypeEquality.Teq` shape).
+pub fn ensure_sig_hidden_union_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("SigHiddenUnion", "SigHiddenUnion.dll"))
+        .1
+        .as_path()
+}
+
 /// Build the MeasureAttrArgs F# fixture once and return the path to the
 /// produced `.dll`. Same build-once pattern as [`ensure_minilib_built`].
 ///
