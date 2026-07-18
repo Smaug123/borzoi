@@ -87,12 +87,6 @@ pub(super) struct SigScreen {
     /// headers, and modules declared directly under a `namespace` fragment.
     pub(super) roots: Vec<SigRoot>,
     /// Every name the signature could possibly expose (over-approximate).
-    /// A `val private`'s name is struck when its own ident is the name's
-    /// sole occurrence in the signature's token stream — a private val is a
-    /// genuine drop (Stage 3, FCS-probed: an earlier public fragment /
-    /// colliding assembly member binds *cleanly*), and the occurrence count
-    /// proves no other decl can expose the name (see
-    /// `sig_token_name_counts` in `resolve.rs`).
     pub(super) names: HashSet<String>,
     /// Paths of `[<AutoOpen>]` modules the signature declares directly under a
     /// `namespace` fragment. Folded (at the paired implementation's slot) into
@@ -154,6 +148,13 @@ pub(super) struct SigExport {
     pub(super) path: Vec<String>,
     /// The defining ident in the signature slot's arena.
     pub(super) def: DefId,
+    /// The export's access root (see [`ExportedItem::access_root_len`]):
+    /// `Some(container.len())` for a `val private` — accessible only from
+    /// within the declaring module's subtree (FCS-probed: a later fragment
+    /// of the same module reads it diagnostics-clean; everywhere else it
+    /// behaves as dropped, falling through to an earlier public fragment or
+    /// the merged assembly). `None` for the public/`internal` surface.
+    pub(super) access_root_len: Option<usize>,
     /// The constructor-case kind, `None` for a plain `val`.
     pub(super) case: Option<CaseKind>,
     /// The case's type-qualified export path, if any.
@@ -478,23 +479,34 @@ impl ProjectItems {
             .collect()
     }
 
-    /// Whether a prefix of `names` is an exported project **value** path —
-    /// i.e. the reference is member access on a project value (`Demo.Calc.x`
-    /// where `Demo.Calc` is a `let`). F# binds the value first (it shadows a
-    /// same-named assembly type), so the assembly index must not be consulted;
-    /// declining (Deferred) avoids a wrong assembly hit on a name collision.
+    /// Whether a prefix of `names` is an exported project **value** path
+    /// *accessible from `site`* — i.e. the reference is member access on a
+    /// project value (`Demo.Calc.x` where `Demo.Calc` is a `let`). F# binds
+    /// the value first (it shadows a same-named assembly type), so the
+    /// assembly index must not be consulted; declining (Deferred) avoids a
+    /// wrong assembly hit on a name collision.
+    ///
+    /// An **inaccessible** value never shadows: F# skips a `private` value
+    /// the site cannot reach and falls through to the merged assembly —
+    /// diagnostics-clean — both for a direct reading of the colliding name
+    /// and for member access through it (FCS-probed 2026-07-18: impl-side
+    /// `let private bar` / `let private Shared = {| bar = … |}` and the
+    /// signature-side `val private bar`, each colliding with `RefLib`, all
+    /// bind the assembly member cleanly).
     ///
     /// All prefixes are checked (`1..=names.len()`), though an *exact* value
     /// path is already caught by the cross-file `Item` branch before the
     /// assembly lookup runs — only proper-prefix value matches reach here.
-    pub(super) fn is_project_value_prefixed(&self, names: &[String]) -> bool {
+    pub(super) fn is_project_value_prefixed(&self, names: &[String], site: &[String]) -> bool {
         // A prefix is a project value only if it holds a *value* export — a
         // pattern-only active-pattern-case path (Stage 3a) is not a dottable value,
         // so it does not make `names` value-prefixed.
         (1..=names.len()).any(|k| {
-            self.value_exports
-                .get(&names[..k])
-                .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
+            self.value_exports.get(&names[..k]).is_some_and(|h| {
+                h.iter().any(|r| {
+                    !r.pattern_only && accessible_from(r.access_root_len, &names[..k], site)
+                })
+            })
         })
     }
 
@@ -2322,9 +2334,7 @@ impl ResolvedFile {
                     def: ex.def,
                 },
                 case: ex.case,
-                // Stage 2 models only the public surface (`val private` /
-                // `internal` and private types are skipped at collection).
-                access_root_len: None,
+                access_root_len: ex.access_root_len,
                 attributed: ex.attributed,
             });
             self.export_decls.push(ExportDecl {

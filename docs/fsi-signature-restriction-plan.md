@@ -465,26 +465,41 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   (project-visible → accessible export), on top of the private→drop of Stage 2,
   via `access_root_len`.
 
-  **Implemented (2026-07-18).** Probes settled it simpler than the sketch:
-  no `access_root_len` plumbing at all. `val internal` / `val public` and
+  **Implemented (2026-07-18).** `val internal` / `val public` and
   `module internal` headers (top-level and namespace-direct, impl header
   annotated or not) resolve cross-file to the `.fsi` **diagnostics-clean**
   — one project is one assembly, so within the fold they export exactly
   like the plain public surface, through the unchanged Stage-2 machinery
-  (`SigValAccess` in `resolve.rs`). `val private` is a genuine **drop**
-  (probes: an earlier public fragment's same-path value binds *cleanly*;
-  a colliding assembly member binds *cleanly*; a direct reading is FS1094,
-  never clean): its name is struck from the screen's token-name set when
-  its own ident is the name's **sole occurrence** in the signature's token
-  stream — reducing "mentioned but provably unexposable" to "unmentioned",
-  which Stage 1 already handles as fall-through. The occurrence count is
-  the soundness guard: a second mention anywhere (e.g. an unmodelled
-  nested `module X` beside a `val private X`) keeps the name screened,
-  because the other mention could be the surface FCS binds. `module
-  private` stays screen-deferred (FCS resolves through it only with
-  FS1092/FS1094 errors). Oracles: the accessibility × collision × site
-  matrix (`accessibility_matrix_agrees_with_fcs`), the widened FCS-free
-  exposure matrix (header × style × access), and the fragment-interleaving
+  (`SigValAccess` in `resolve.rs`). `val private` exports with a
+  **restricted access root** (`SigExport::access_root_len =
+  Some(container.len())`, the impl-side `let private` semantics), and the
+  shared accessibility machinery (`accessible_from` through
+  `latest_accessible_value`) delivers every probed verdict per site: a
+  later fragment of the *same module* reads it diagnostics-clean with the
+  `.fsi` ident as decl (codex round 1 P1 — a first draft dropped the val
+  outright, which committed a stale earlier fragment's public value
+  there); everywhere else it behaves as dropped — an earlier public
+  fragment's same-path value binds *cleanly*, a colliding assembly member
+  binds *cleanly*, and a direct outside reading is FS1094, never clean.
+  The assembly fall-through made the project-value shadow
+  (`ProjectItems::is_project_value_prefixed`) **site-aware**: an
+  inaccessible value never shadows the merged assembly — FCS-probed on
+  both the signature side and the pre-existing impl side (`let private
+  bar` and member access through `let private Shared`, each colliding
+  with `RefLib`, bind the assembly cleanly), so this also removed an
+  impl-side over-deferral. `module private` stays screen-deferred (FCS
+  resolves through it only with FS1092/FS1094 errors). Known
+  over-deferral (codex round 1 P2, probed): after an `open` of the
+  signatured module, a bare reading of the sig-private name colliding
+  with an assembly member defers where FCS binds the assembly — the
+  Stage-1 blanket hidden-valued marking demotes every assembly entry of a
+  signatured root's open, the same documented class as the hidden-name
+  open over-deferral; deferral only, never a wrong commit (pinned by
+  `open_bare_private_collision_defers_but_never_commits_a_project_item`).
+  Oracles: the accessibility × collision × site matrix
+  (`accessibility_matrix_agrees_with_fcs`), the widened FCS-free exposure
+  matrix (header × style × access), the same-module-subtree differentials
+  (`sig3_private_same_module_subtree*`), and the fragment-interleaving
   matrix's exposure axis extended to {modelled, internal, private,
   unmodelled-mention (an `exception X` — still-unmodelled value surface,
   replacing `val internal` which this slice models), hidden}.

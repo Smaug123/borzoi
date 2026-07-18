@@ -1700,14 +1700,13 @@ fn lone_private_val_stays_uncommitted() {
     assert_uncommitted(res_at(&proj, &files, 2, "M.x"), "lone private val");
 }
 
-/// The drop's soundness guard: a private `val X` proves only that *that
-/// decl* exports nothing — when the signature mentions `X` anywhere else
-/// (here an unmodelled nested `module X`), the fall-through must NOT fire,
-/// because the other mention could be the surface FCS actually binds.
-/// The reading defers instead of committing the earlier fragment's stale
-/// public `X`.
+/// A same-name unmodelled mention beside the private val (here a nested
+/// `module X`) does not disturb the fall-through: a module is not a value,
+/// so FCS still binds the earlier public fragment's `X` cleanly
+/// (FCS-probed), and the value-namespace surface at the path stays exactly
+/// modelled by the private export.
 #[test]
-fn private_val_sharing_a_name_with_unmodelled_surface_stays_deferred() {
+fn private_val_beside_an_unmodelled_module_still_falls_through() {
     let files = [
         ("/p/First.fs", "namespace N\n\nmodule A =\n    let X = 1\n"),
         (
@@ -1721,9 +1720,84 @@ fn private_val_sharing_a_name_with_unmodelled_surface_stays_deferred() {
         ("/p/Use.fs", "module Use\n\nlet d = N.A.X\n"),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(
+    assert_def_ident(
+        &proj,
+        &files,
         res_at(&proj, &files, 3, "N.A.X"),
-        "private val whose name has another signature mention",
+        0,
+        "X",
+        "earlier public fragment past a private val with a module-mention sibling",
+    );
+}
+
+/// Codex Stage-3 round 1, P1 (FCS-probed): a `val private` is **not** a
+/// plain drop — it is accessible from within its module's subtree. A later
+/// file's fragment of the same module reads `N.M.x` diagnostics-clean, decl
+/// = the private `.fsi` ident; the earlier fragment's public `x` must NOT
+/// win there. Outside the subtree the restricted export behaves as dropped
+/// (the sibling tests above).
+#[test]
+fn private_val_is_accessible_to_a_later_same_module_fragment() {
+    let files = [
+        ("/p/First.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+        (
+            "/p/P.fsi",
+            "namespace N\n\nmodule M =\n    val private x: int\n    val shown: int\n",
+        ),
+        (
+            "/p/P.fs",
+            "namespace N\n\nmodule M =\n    let x = 2\n    let shown = 3\n",
+        ),
+        (
+            "/p/Later.fs",
+            "namespace N\n\nmodule M =\n    let y = N.M.x\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 3, "N.M.x"),
+        1,
+        "x",
+        "same-module-subtree reading of the sig-private val",
+    );
+}
+
+/// Codex Stage-3 round 1, P2, pinned as a known over-deferral: after `open`
+/// of the signatured module, a bare reading of the sig-private name that
+/// collides with an assembly member binds the **assembly** in FCS
+/// (diagnostics-clean, probed), but the open fold still defers every
+/// assembly entry of a signatured root (the Stage-1 blanket
+/// hidden-valued marking — same class as the documented hidden-name open
+/// over-deferral). Deferral is sound; a *project* commit here would be
+/// wrong, which is what this pins.
+#[test]
+fn open_bare_private_collision_defers_but_never_commits_a_project_item() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\nval shown: int\nval private bar: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet bar = 2\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    let bar = res_at(&proj, &files, 2, "bar");
+    assert!(
+        matches!(
+            bar,
+            None | Some(
+                Resolution::Deferred(_) | Resolution::Member { .. } | Resolution::Entity(_)
+            )
+        ),
+        "FCS binds the assembly member; a project commit is wrong, got {bar:?}"
     );
 }
 
@@ -1839,6 +1913,45 @@ fn sig_accessibility_agrees_with_fcs() {
                 ),
                 ("P.fs", "namespace N\n\nmodule A =\n    let x = 2\n"),
                 ("Use.fs", "module Use\n\nlet d = N.A.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // Codex Stage-3 round 1, P1 (diagnostics-clean, probed): the
+        // private val is accessible from a later fragment of its own
+        // module — FCS declares the use at the private `.fsi` ident, and
+        // so must we (a First.fs commit fails the exactness check).
+        SigProject {
+            label: "sig3_private_same_module_subtree",
+            files: vec![
+                ("First.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+                (
+                    "P.fsi",
+                    "namespace N\n\nmodule M =\n    val private x: int\n    val shown: int\n",
+                ),
+                (
+                    "P.fs",
+                    "namespace N\n\nmodule M =\n    let x = 2\n    let shown = 3\n",
+                ),
+                ("Later.fs", "namespace N\n\nmodule M =\n    let y = N.M.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        SigProject {
+            label: "sig3_private_same_module_subtree_sole_fragment",
+            files: vec![
+                (
+                    "P.fsi",
+                    "namespace N\n\nmodule M =\n    val private x: int\n    val shown: int\n",
+                ),
+                (
+                    "P.fs",
+                    "namespace N\n\nmodule M =\n    let x = 2\n    let shown = 3\n",
+                ),
+                ("Later.fs", "namespace N\n\nmodule M =\n    let y = N.M.x\n"),
             ],
             refs: vec![],
             expected_cross_file: 1,

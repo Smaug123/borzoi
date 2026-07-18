@@ -570,11 +570,17 @@ enum SigValAccess {
     /// see — and a cross-file use binds the `.fsi` ident, clean. The val
     /// exports exactly like a plain public one.
     Exported,
-    /// `private`: the val is **dropped** (hide = drop). FCS resolves a
-    /// direct reading of it only with an FS1094 error, and lets an earlier
+    /// `private`: the val exports with a **restricted access root** (its
+    /// declaring container — [`ExportedItem::access_root_len`](model::ExportedItem)
+    /// semantics, exactly as an impl-side `let private`). FCS-probed both
+    /// ways: a later fragment of the *same module* reads it
+    /// diagnostics-clean (the `.fsi` ident is the decl — codex Stage-3
+    /// round 1), while everywhere else it behaves as dropped — an earlier
     /// public fragment's same-path value or a colliding assembly member
-    /// bind *cleanly* — so no export, and (when nothing else in the
-    /// signature mentions the name) no screen veto either.
+    /// binds *cleanly*, and a direct outside reading is FS1094 (never
+    /// clean). The shared accessibility machinery
+    /// ([`accessible_from`](model::accessible_from) through
+    /// `latest_accessible_value`) delivers all three verdicts per site.
     Private,
     /// An access-token shape we cannot place (more than one token, or one
     /// that does not precede the ident). Skip the decl; its names stay
@@ -619,24 +625,22 @@ fn sig_val_type_is_function(ty: Option<Type>) -> bool {
 }
 
 /// Collect the exactly-modelled exports of one signature container (a module
-/// root's direct `sig_decls`): public/`internal` `val`s (active-pattern and
-/// operator-named `val`s are Stage 3 — a `val` with no plain ident is
-/// skipped) and the cases of visible union/enum representations. A `val
-/// private`'s name is pushed to `hidden` instead — the drop candidates the
-/// caller strikes from the screen's name set when nothing else in the
-/// signature mentions them. Everything else skipped stays covered by the
-/// screen's over-approximated name set, so it defers rather than falling
-/// through.
+/// root's direct `sig_decls`): `val`s of every accessibility (active-pattern
+/// and operator-named `val`s are Stage 3 — a `val` with no plain ident is
+/// skipped; a `val private` exports with its container as access root, see
+/// [`SigValAccess::Private`]) and the cases of visible union/enum
+/// representations. Everything skipped stays covered by the screen's
+/// over-approximated name set, so it defers rather than falling through.
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
     defs: &mut Vec<Def>,
     exports: &mut Vec<model::SigExport>,
-    hidden: &mut Vec<String>,
 ) {
     let mut push = |defs: &mut Vec<Def>,
                     def: Def,
                     qualified: bool,
+                    access_root_len: Option<usize>,
                     case: Option<CaseKind>,
                     type_qualified: Option<Vec<String>>,
                     attributed: bool| {
@@ -651,6 +655,7 @@ fn collect_sig_container_exports(
             qualified: qualified.then(|| path.clone()),
             path,
             def: def_id,
+            access_root_len,
             case,
             type_qualified,
             attributed,
@@ -668,21 +673,18 @@ fn collect_sig_container_exports(
                     continue;
                 }
                 let Some(ident) = vs.ident() else { continue };
-                match sig_val_access(vd.syntax(), &ident) {
-                    SigValAccess::Exported => {}
-                    SigValAccess::Private => {
-                        hidden.push(id_text(ident.text()).to_string());
-                        continue;
-                    }
+                let access_root_len = match sig_val_access(vd.syntax(), &ident) {
+                    SigValAccess::Exported => None,
+                    SigValAccess::Private => Some(container.len()),
                     SigValAccess::Unknown => continue,
-                }
+                };
                 // Any attribute list is a maybe-`[<Literal>]`
                 // (`ExportedItem::attributed` — presence is the sound
                 // over-approximation).
                 let attributed = vd.attributes().next().is_some();
                 let is_function = sig_val_type_is_function(vs.ty());
                 let def = Def::from_token(&ident, DefKind::Value { is_function });
-                push(defs, def, true, None, None, attributed);
+                push(defs, def, true, access_root_len, None, None, attributed);
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
@@ -717,6 +719,7 @@ fn collect_sig_container_exports(
                                     // An RQA union case is not in the value
                                     // namespace — type-qualified only.
                                     !rqa,
+                                    None,
                                     Some(CaseKind::Union {
                                         require_qualified: rqa,
                                     }),
@@ -730,7 +733,15 @@ fn collect_sig_container_exports(
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::EnumCase);
                                 let tq = tq_path(id_text(&def.name));
-                                push(defs, def, false, Some(CaseKind::Enum), Some(tq), false);
+                                push(
+                                    defs,
+                                    def,
+                                    false,
+                                    None,
+                                    Some(CaseKind::Enum),
+                                    Some(tq),
+                                    false,
+                                );
                             }
                         }
                         // Opaque (no repr), abbreviation, record, object
@@ -762,7 +773,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut value_paths = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
-    let mut hidden = Vec::new();
     for fragment in sig.modules() {
         match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => {
@@ -778,7 +788,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             fragment.sig_decls(),
                             &mut defs,
                             &mut exports,
-                            &mut hidden,
                         );
                     }
                     roots.push(model::SigRoot {
@@ -810,7 +819,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                     nm.sig_decls(),
                                     &mut defs,
                                     &mut exports,
-                                    &mut hidden,
                                 );
                             }
                             let auto_open = attrs_auto_open(nm.attributes());
@@ -898,7 +906,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         fragment.sig_decls(),
                         &mut defs,
                         &mut exports,
-                        &mut hidden,
                     );
                     roots.push(model::SigRoot {
                         path,
@@ -919,25 +926,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .iter()
         .filter_map(|e| e.type_qualified.clone())
         .collect();
-    // A `val private x` is a genuine drop, so readings of `x` should fall
-    // through exactly as if the signature never mentioned it — but only
-    // when the signature indeed mentions it nowhere else. The occurrence
-    // count is the proof: if `x`'s sole occurrence is the private val's own
-    // ident, no other decl (modelled or not) can expose `x`, and striking
-    // it from the name set reduces "mentioned but provably unexposable" to
-    // "unmentioned" (Stage 1's fall-through). A second occurrence anywhere
-    // — another decl, a type mention, a composite-token piece — keeps the
-    // name screened: the other mention could be the surface FCS binds.
-    let counts = sig_token_name_counts(sig);
-    let mut names: HashSet<String> = counts.keys().cloned().collect();
-    for name in &hidden {
-        if counts.get(name).copied() == Some(1) {
-            names.remove(name);
-        }
-    }
     let screen = Arc::new(model::SigScreen {
         roots,
-        names,
+        names: sig_token_names(sig),
         auto_open_nested,
         value_paths,
         exported_value_paths,
@@ -950,17 +941,15 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     }
 }
 
-/// The signature's over-approximated exposable-name multiset: any name a
-/// `.fsi` can expose (a `val`, a union case, a record field, an exception,
-/// an active-pattern case name, …) necessarily appears in its token stream,
-/// so counting every non-trivia token's `idText` — plus each token's
-/// ident-shaped pieces — is a sound over-approximation. The keys are the
-/// screen's name set; the counts prove a private val's name unexposable
-/// when its own ident is the sole occurrence. Trivia (whitespace, comments,
-/// directives, inactive code) is excluded: a name mentioned only in a
-/// comment must not screen.
-fn sig_token_name_counts(sig: &SigFile) -> HashMap<String, usize> {
-    let mut names: HashMap<String, usize> = HashMap::new();
+/// The signature's over-approximated exposable-name set: any name a `.fsi`
+/// can expose (a `val`, a union case, a record field, an exception, an
+/// active-pattern case name, …) necessarily appears in its token stream, so
+/// collecting every non-trivia token's `idText` — plus each token's
+/// ident-shaped pieces — is a sound over-approximation. Trivia (whitespace,
+/// comments, directives, inactive code) is excluded: a name mentioned only in
+/// a comment must not screen.
+fn sig_token_names(sig: &SigFile) -> HashSet<String> {
+    let mut names = HashSet::new();
     for token in sig
         .syntax()
         .descendants_with_tokens()
@@ -970,10 +959,10 @@ fn sig_token_name_counts(sig: &SigFile) -> HashMap<String, usize> {
             continue;
         }
         let text = id_text(token.text());
-        *names.entry(text.to_string()).or_default() += 1;
+        names.insert(text.to_string());
         for piece in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')) {
             if !piece.is_empty() && piece != text {
-                *names.entry(piece.to_string()).or_default() += 1;
+                names.insert(piece.to_string());
             }
         }
     }
