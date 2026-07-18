@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi::position::position_to_offset;
 use borzoi::semantic::ProjectParses;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
@@ -12,14 +13,15 @@ use borzoi_assembly::{
 use borzoi_corpus_diff::{
     CorpusSummary, DeclSite, FileUses, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
     ProjectAssetsStatus, ProjectUse, SkippedUses, check_project_corpus_run, compare_project_uses,
-    corpus_runner_config_from_env, invoke_fcs_uses_project, load_lsp_project,
+    corpus_runner_config_from_env, explain_token, invoke_fcs_uses_project, load_lsp_project,
     load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
     project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, resolve_project};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use lsp_types::Position;
 use tempfile::TempDir;
 
 fn write(path: &Path, text: &str) {
@@ -605,4 +607,276 @@ fn write_json_report_if_requested(summary: &CorpusSummary) {
     };
     write_json_report_line(&PathBuf::from(path), summary)
         .expect("write BORZOI_PROJECT_REPORT_JSONL");
+}
+
+/// The resolution-explain tool end to end, over a synthetic project: an
+/// `open type` whose target is unmodelled poisons dotted heads, so a bare
+/// `Foo.Bar.baz` after it defers. [`explain_token`] must surface the token's
+/// `Deferred` resolution AND the file's opaque `open` — the facts the
+/// `open TypeEquality` / bare `List.replicate` investigation this tool
+/// generalises turns on. A plain namespace `open` that brings nothing in stays
+/// `clean`, so the two are distinguishable in the dump.
+#[test]
+fn explain_token_reports_the_opaque_open_of_a_deferred_head() {
+    let src = "module M\nopen System\nopen type Opaque\nlet v = Foo.Bar.baz\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (head, _) = text_range(src, "Foo.Bar.baz");
+    let exp = explain_token(&loaded, 0, head);
+
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the dotted head must defer; got {:?}",
+        exp.resolution
+    );
+    assert_eq!(exp.opens.len(), 2, "two opens in the file");
+
+    let system = &exp.opens[0];
+    assert_eq!(system.path, vec!["System".to_string()]);
+    assert!(!system.is_type);
+    assert!(
+        !system.opacity.perturbs_resolution(),
+        "a bring-nothing namespace open stays clean"
+    );
+
+    let opaque = &exp.opens[1];
+    assert!(opaque.is_type);
+    assert_eq!(opaque.path, vec!["Opaque".to_string()]);
+    assert!(opaque.opacity.perturbs_resolution());
+
+    // The fact the tool commits to: which opens perturb resolution (candidates).
+    // It does NOT claim scope relevance — see the member-tail test below.
+    let perturbing = exp.perturbing_opens();
+    assert_eq!(perturbing.len(), 1);
+    assert_eq!(perturbing[0].path, vec!["Opaque".to_string()]);
+
+    let report = exp.render();
+    assert!(
+        report.contains("open type Opaque") && report.contains("PERTURBS"),
+        "the rendered dump must name the perturbing open:\n{report}"
+    );
+    assert!(
+        report.contains("HEAD") && report.contains("TAIL"),
+        "the note must caveat head vs member tail:\n{report}"
+    );
+    // A no-per-open-effect open (`open System`) must NOT be labelled `clean` —
+    // an all-false open can still take part in a per-token deferral, so the tool
+    // never claims harmlessness (codex review round 4).
+    assert!(
+        report.contains("no modeled per-open effect"),
+        "a no-effect open must read honestly, never `clean`:\n{report}"
+    );
+    assert!(
+        !report.contains("— clean"),
+        "the render must not claim an open is `clean`:\n{report}"
+    );
+}
+
+/// Regression for the two over-claims `codex review` caught, which share a root
+/// — the tool must not present an opaque `open` as the *cause* of a deferral it
+/// cannot substantiate: (1) a member/qualified TAIL (`value.Member`, a resolved
+/// local receiver) is `Deferred(QualifiedAccess)` pending inference regardless
+/// of any open; and (2) an open's lexical scope is its block, not an offset
+/// prefix, so an earlier open by offset may be out of scope entirely. The fix
+/// removes the scope/causal verdict: the tool reports every opaque open as a
+/// *candidate fact* (with ranges) and a caveated note, never a per-token
+/// verdict. Here the member tail defers, the opaque open is still listed as a
+/// candidate, and the note carries the head/tail + block-scope caveats.
+#[test]
+fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
+    let src = "module M\nopen type Opaque\nlet f value = value.Member\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (tail, _) = text_range(src, "Member");
+    let exp = explain_token(&loaded, 0, tail);
+
+    // The member tail defers pending inference — not because of the open.
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the member tail defers; got {:?}",
+        exp.resolution
+    );
+
+    // The perturbing open is still surfaced as a candidate fact (it IS opaque),
+    // but the tool makes no per-token scope or causal claim about it.
+    assert_eq!(
+        exp.perturbing_opens().len(),
+        1,
+        "the perturbing open is listed as a candidate fact"
+    );
+
+    let report = exp.render();
+    assert!(
+        report.contains("TAIL") && report.contains("regardless"),
+        "the note must caveat that a member tail defers regardless of any open:\n{report}"
+    );
+    assert!(
+        report.contains("block"),
+        "the note must caveat that an open's scope is its block, not an offset prefix:\n{report}"
+    );
+}
+
+/// Regression for `codex review` round 5, P2: the deferred-token note must fire
+/// even when the file has NO `open` declarations. A bare member tail
+/// (`value.Member`) in an open-less file still defers pending inference, and the
+/// report must explain that — an early `opens.is_empty()` return used to skip the
+/// note entirely, contradicting the "fires for any deferred token" contract.
+#[test]
+fn explain_token_notes_a_deferred_tail_even_with_no_opens() {
+    let src = "module M\nlet f value = value.Member\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (tail, _) = text_range(src, "Member");
+    let exp = explain_token(&loaded, 0, tail);
+
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the member tail defers; got {:?}",
+        exp.resolution
+    );
+    assert!(exp.opens.is_empty(), "the file has no opens");
+
+    let report = exp.render();
+    assert!(
+        report.contains("opens: (none)"),
+        "the dump must record that there are no opens:\n{report}"
+    );
+    // The note still fires and carries the per-token caveats.
+    assert!(
+        report.contains("Deferred") && report.contains("TAIL") && report.contains("regardless"),
+        "the deferred-token note must fire even with no opens:\n{report}"
+    );
+}
+
+/// A plain namespace `open` that only adds a **reading** / shortening prefix
+/// (`open Demo`, resolving to the assembly namespace) sets no deferral flag and
+/// raises no barrier, yet it re-orders qualified-path precedence and so can defer
+/// a later dotted head. The trace must flag it (`added_reading`) and the render
+/// must name the signal — otherwise the explain tool omits the very open that
+/// could be the cause (codex review P2: the `open Low; open High; M.Mangled`
+/// precedence deferral).
+#[test]
+fn explain_token_flags_a_reading_adding_namespace_open() {
+    let src = "module M\nopen Demo\nlet v = Widget.Value\n";
+    let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
+    let (tok, _) = text_range(src, "Widget.Value");
+    let exp = explain_token(&loaded, 0, tok);
+
+    let demo = exp
+        .opens
+        .iter()
+        .find(|o| o.path == vec!["Demo".to_string()])
+        .expect("open Demo is traced");
+    assert!(
+        demo.opacity.added_reading,
+        "open Demo added the reading `Demo`"
+    );
+    assert!(
+        demo.opacity.perturbs_resolution(),
+        "so it reads as a per-open perturbation candidate"
+    );
+    // Reading-precedence is the only signal for this clean namespace open.
+    assert!(!demo.opacity.opaque_value);
+    assert!(!demo.opacity.opaque_dotted);
+    assert!(!demo.opacity.unmodelled);
+    assert!(!demo.opacity.staled_earlier);
+    assert!(!demo.opacity.imported_deferred);
+
+    let report = exp.render();
+    assert!(
+        report.contains("open Demo") && report.contains("added_reading"),
+        "the render must name the reading signal:\n{report}"
+    );
+}
+
+/// Ad-hoc "why did this token defer?" CLI, as an env-driven ignored test in the
+/// mould of [`project_corpus_resolution_diff`]. Point it at a real project and a
+/// token: it loads the project through the same path the LSP uses, resolves the
+/// token, and dumps the resolution plus every `open`'s opacity to stderr — the
+/// mechanical replacement for hand-tracing a "No definition available" hover.
+///
+/// `BORZOI_EXPLAIN_LINE` / `BORZOI_EXPLAIN_COL` are **1-based** (editor parity;
+/// LSP is 0-based internally). `BORZOI_EXPLAIN_FILE` matches by path suffix or
+/// substring, so a bare filename suffices.
+#[test]
+#[ignore = "explain one token; set BORZOI_EXPLAIN_PROJECT/FILE/LINE/COL"]
+fn explain_token_at_position() {
+    let Some(project) = std::env::var_os("BORZOI_EXPLAIN_PROJECT") else {
+        eprintln!(
+            "set BORZOI_EXPLAIN_PROJECT (a .fsproj), BORZOI_EXPLAIN_FILE (a .fs path or suffix), \
+             and BORZOI_EXPLAIN_LINE / BORZOI_EXPLAIN_COL (1-based)"
+        );
+        return;
+    };
+    // Root the project path: borzoi's MSBuild evaluator rejects a non-rooted
+    // `.fsproj` (a `ParseError`, surfaced as `ProjectEvaluationFailed`), so a
+    // relative `../Foo/Foo.fsproj` would fail to load. Canonicalize to an
+    // absolute path first.
+    let project = std::fs::canonicalize(PathBuf::from(&project))
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", PathBuf::from(&project).display()));
+    let file_arg = std::env::var("BORZOI_EXPLAIN_FILE").expect("set BORZOI_EXPLAIN_FILE");
+    let line: u32 = std::env::var("BORZOI_EXPLAIN_LINE")
+        .expect("set BORZOI_EXPLAIN_LINE")
+        .parse()
+        .expect("BORZOI_EXPLAIN_LINE is a 1-based line number");
+    let col: u32 = std::env::var("BORZOI_EXPLAIN_COL")
+        .expect("set BORZOI_EXPLAIN_COL")
+        .parse()
+        .expect("BORZOI_EXPLAIN_COL is a 1-based column");
+
+    let loaded = load_lsp_project(&project)
+        .unwrap_or_else(|skip| panic!("load {}: {skip:?}", project.display()));
+
+    let file_idx = select_explain_file(&loaded.parses.paths, &file_arg);
+
+    let text = &loaded.parses.texts[file_idx];
+    let pos = Position {
+        line: line.saturating_sub(1),
+        character: col.saturating_sub(1),
+    };
+    let byte = position_to_offset(text, pos);
+    let exp = explain_token(&loaded, file_idx, byte);
+    eprintln!(
+        "{} @ {line}:{col} (byte {byte})\n{}",
+        loaded.parses.paths[file_idx].display(),
+        exp.render()
+    );
+}
+
+/// Select the file index for the explain CLI. Prefer a path **suffix** match
+/// (whole trailing components — `Path::ends_with`, so `Foo.fs` does not match
+/// `MyFoo.fs`), fall back to a substring match only if no suffix matched, and
+/// require the choice to be **unique** at each stage — a duplicate basename or
+/// an ambiguous substring panics with the candidates rather than silently
+/// inspecting the wrong file (codex review round 3).
+fn select_explain_file(paths: &[PathBuf], file_arg: &str) -> usize {
+    let matching = |pred: &dyn Fn(&PathBuf) -> bool| -> Vec<usize> {
+        paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| pred(p))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let names = |idxs: &[usize]| -> Vec<&PathBuf> { idxs.iter().map(|&i| &paths[i]).collect() };
+
+    let suffix = matching(&|p| p.ends_with(file_arg));
+    match suffix.as_slice() {
+        [i] => return *i,
+        [] => {}
+        many => panic!(
+            "BORZOI_EXPLAIN_FILE={file_arg:?} matches {} files by path suffix: {:?}",
+            many.len(),
+            names(many)
+        ),
+    }
+
+    let substr = matching(&|p| p.to_string_lossy().contains(file_arg));
+    match substr.as_slice() {
+        [i] => *i,
+        [] => panic!("no file matching {file_arg:?}; files: {paths:?}"),
+        many => panic!(
+            "BORZOI_EXPLAIN_FILE={file_arg:?} matches {} files by substring: {:?}; \
+             pass a more specific path suffix",
+            many.len(),
+            names(many)
+        ),
+    }
 }

@@ -13,7 +13,9 @@ use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
-use super::model::{ExportDecl, ExportedItem, ItemId, ProjectItems, Resolution, SlotClass};
+use super::model::{
+    ExportDecl, ExportedItem, ItemId, OpenTrace, ProjectItems, Resolution, SlotClass,
+};
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
 /// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
@@ -1182,6 +1184,13 @@ pub(super) struct Resolver<'a> {
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered because the
     /// walk is.
     pub(super) diagnostics: Vec<SemaDiagnostic>,
+    /// The resolution-explain trace — one [`OpenTrace`] per `open` declaration,
+    /// in source order, recording the opaque-open flags it flipped. Accumulated
+    /// across every top-level block (a *file*-level record, deliberately absent
+    /// from the per-block open-state reset), and moved into
+    /// [`ResolvedFile::resolution_trace`](super::model::ResolvedFile). Purely
+    /// diagnostic — nothing the walk consumes reads it.
+    pub(super) trace_opens: Vec<OpenTrace>,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`](super::model::ProjectItems::extend_with) folds
     /// (`docs/export-decl-model-plan.md` Stage 2). Every cross-file index derives

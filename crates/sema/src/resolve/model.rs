@@ -1196,6 +1196,152 @@ pub enum Resolution {
     Unresolved,
 }
 
+/// The ways an `open` declaration **perturbs later name resolution** — the "why
+/// a later name deferred" fact the [`ResolutionTrace`] exposes. Named for its
+/// main constituents, the opacity flags, but it also carries the generation
+/// barrier (see [`staled_earlier`](Self::staled_earlier)).
+///
+/// Each of the first three is a walk-state boolean the use-site resolvers
+/// consult (see the field docs on the private `Resolver`); the fourth is the
+/// `open_generation` bump. An open that triggers none is fully modelled — it
+/// perturbs nothing. One that triggers any defers a category of later names
+/// while it is in scope:
+///
+/// - [`opaque_value`](Self::opaque_value) — bare-name lookup skips every
+///   *opened* entry (the open could shadow a modelled name with an
+///   unenumerable value);
+/// - [`opaque_dotted`](Self::opaque_dotted) — dotted-path *heads* defer (the
+///   open's submodules / nested types are unmodelled, so a head through it
+///   could be project- or assembly-rooted);
+/// - [`unmodelled`](Self::unmodelled) — *qualified* paths defer (an `open
+///   type`, or a plain `open` of an assembly module / class, whose nested
+///   types we cannot enumerate);
+/// - [`staled_earlier`](Self::staled_earlier) — the open raised the
+///   generation barrier, staling every earlier opened name *and local binding*,
+///   so a later dotted head through a staled entry defers even when none of the
+///   three flags is set;
+/// - [`imported_deferred`](Self::imported_deferred) — the open imported a name
+///   that is *itself* `Deferred` (a cross-assembly duplicate, say), so a use of
+///   that name defers with the open as its source — even though the open
+///   modeled its import fully (no flag, no barrier).
+/// - [`added_reading`](Self::added_reading) — the open contributed a namespace
+///   **reading** / shortening prefix, a new qualified-path precedence entry.
+///   Unlike the five above this is not a deferral mechanism in itself — a
+///   reading usually *resolves* a name — but it re-orders qualified-path
+///   precedence: a later dotted head can root at *this* reading in preference to
+///   a lower open's, and if this reading owns the path with an *uncertain*
+///   member (`open Low; open High; M.Mangled`, where `High.M.Mangled` is
+///   undecidable) the head defers where deleting this open would let the lower
+///   reading resolve. It fires far more broadly than the deferral flags (nearly
+///   every meaningful namespace/module open adds a reading), so it marks the open
+///   a *candidate* whose precedence a reader must correlate against the token —
+///   never a proven cause. This is the reason `perturbs_resolution` means
+///   "candidate", not "culprit".
+///
+/// **Attribution is by transition.** The three flags are monotone within a
+/// top-level block (set true, never cleared until the block ends), so this
+/// records the ones this open *flipped false→true* — a later open that would
+/// independently set an already-set flag records `false` for it (the category
+/// was already poisoned), so unblocking a name can need more than one deletion.
+/// The generation is *not* monotone-saturating (it bumps on every barrier), so
+/// `staled_earlier` fires for each open that raises one.
+///
+/// **Scope of the claim.** These are the *per-open* deferral mechanisms the
+/// trace models — each is a property of the open itself. It does *not* enumerate
+/// every deferral cause, and in particular cannot model the **per-token** ones,
+/// which depend on the *use site*, not on any one open: an attribute whose
+/// in-file type precedes a later open (every open advances the open frontier —
+/// `latest_open_pos`), a member/qualified tail pending inference, or
+/// pattern-position case suppression (`pattern_suppressed_case_ids`). So an open
+/// with every field `false` is not *proof* it perturbs nothing — only that it
+/// triggered none of the modeled per-open mechanisms; a caller must not label it
+/// harmless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OpenOpacity {
+    /// Set `opaque_value_open` — bare-name resolution skips opened entries.
+    pub opaque_value: bool,
+    /// Set `opaque_dotted_open` — dotted-path heads defer.
+    pub opaque_dotted: bool,
+    /// Set `unmodelled_open_active` — qualified paths defer.
+    pub unmodelled: bool,
+    /// Raised the `open_generation` barrier — stales earlier opened names and
+    /// local bindings, so a later dotted head through one defers. Fires even
+    /// when the three flags stay `false` (a childless assembly module that also
+    /// names a namespace with a constructible type is one such open).
+    pub staled_earlier: bool,
+    /// Imported a name whose resolution is itself `Deferred` — a scope entry the
+    /// open pushed that resolves to nothing definite (a cross-assembly duplicate
+    /// resolved ambiguously). The open is the *source* of that deferred name,
+    /// though it set no flag and raised no barrier.
+    pub imported_deferred: bool,
+    /// Contributed a namespace **reading** / shortening prefix — a new
+    /// qualified-path precedence entry (`self.imports` and/or
+    /// `self.open_shortening_prefixes` grew). Not a deferral mechanism itself:
+    /// a reading usually *resolves* names. But it re-orders qualified-path
+    /// precedence, so a later dotted head can root at this reading over a lower
+    /// open's, deferring when this reading owns the path with an uncertain
+    /// member. Fires for nearly every meaningful namespace/module open — a
+    /// *candidate* marker, not a proven cause.
+    pub added_reading: bool,
+}
+
+impl OpenOpacity {
+    /// Whether this open perturbs later resolution through any modeled per-open
+    /// mechanism — an opacity flag, the generation barrier, importing a deferred
+    /// name, or adding a namespace-reading precedence entry. The candidate-culprit
+    /// predicate; `false` means "triggered none of the modeled mechanisms", not
+    /// "provably harmless" (see the type docs' scope note). Because
+    /// `added_reading` fires for nearly every meaningful namespace/module open,
+    /// `true` is decisively a *candidate*, not a culprit.
+    pub fn perturbs_resolution(self) -> bool {
+        self.opaque_value
+            || self.opaque_dotted
+            || self.unmodelled
+            || self.staled_earlier
+            || self.imported_deferred
+            || self.added_reading
+    }
+}
+
+/// One `open` declaration's contribution to a file's resolution-perturbing
+/// state — the unit of the resolution-explain [`ResolutionTrace`]. Purely
+/// diagnostic: it carries no resolution the walk consumes, only enough to point
+/// a human at an `open` that could defer a name and say how it perturbs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTrace {
+    /// Source range of the whole `open …` declaration.
+    pub range: TextRange,
+    /// The opened path, `idText`-normalised (`["TypeEquality"]`; the type's
+    /// path for an `open type`). Empty for `open global` or an unparsed target.
+    pub path: Vec<String>,
+    /// Whether this is an `open type …` (vs a plain `open <path>`).
+    pub is_type: bool,
+    /// How this open perturbs later resolution (see [`OpenOpacity`]).
+    pub opacity: OpenOpacity,
+}
+
+/// The **resolution-explain trace** for one file: every `open` declaration in
+/// source order, each with how it perturbs later resolution ([`OpenTrace`]).
+///
+/// It answers "why did this name defer?" — the investigation `open
+/// TypeEquality` poisoning a bare `List.replicate` motivated. Correlate a
+/// token's [`Resolution`](ResolvedFile::resolution_at) (a
+/// `Deferred(QualifiedAccess)`, say) with the perturbing opens
+/// ([`OpenOpacity::perturbs_resolution`]); which one — if any — actually gated
+/// this token is left to the reader, since the trace carries neither the head/
+/// tail distinction nor per-token block scope.
+///
+/// Always computed (opens per file are few); read through
+/// [`ResolvedFile::resolution_trace`]. Deterministic from source — two parses
+/// of the same text trace identically — so it does not perturb the
+/// `incremental ≡ batch` fold differential.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolutionTrace {
+    /// Every `open` in the file, in source order (all top-level blocks and
+    /// nested modules; correlate to a token by comparing [`OpenTrace::range`]).
+    pub opens: Vec<OpenTrace>,
+}
+
 /// The **constructor-case kind** of an [`ExportedItem`] — which flavour of
 /// constructor case it is (all of them also live in the constructor/pattern
 /// namespace). `None` on an item's `case` field is an ordinary `let` value.
@@ -1449,6 +1595,13 @@ pub struct ResolvedFile {
     /// Always-sound semantic diagnostics found while walking the file (today
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered.
     pub(super) diagnostics: Vec<SemaDiagnostic>,
+    /// The **resolution-explain trace**: every `open` in the file with the
+    /// opaque-open flags it set ([`ResolutionTrace`]). Purely diagnostic — no
+    /// cross-file fold or use-site resolver reads it — so it is excluded from
+    /// [`Self::same_export_contribution`]; deterministic from source, so it does
+    /// not perturb the `incremental ≡ batch` value-equality differential. Read
+    /// through [`Self::resolution_trace`].
+    pub(super) resolution_trace: ResolutionTrace,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
@@ -1560,6 +1713,18 @@ impl ResolvedFile {
     /// go-to-definition for both references and definitions.
     pub fn resolution_at(&self, range: TextRange) -> Option<Resolution> {
         self.resolutions.get(&range).copied()
+    }
+
+    /// The file's resolution-explain trace — every `open` with how it perturbs
+    /// later resolution (see [`ResolutionTrace`]). Pair it with
+    /// [`Self::resolution_at`] to investigate *why* a name deferred: a
+    /// `Deferred(QualifiedAccess)` head and an [`OpenTrace`] whose
+    /// [`opacity`](OpenTrace::opacity)
+    /// [`perturbs_resolution()`](OpenOpacity::perturbs_resolution) are the
+    /// candidate correlation (which open — if any — gated it is for the caller
+    /// to judge; see [`ResolutionTrace`]).
+    pub fn resolution_trace(&self) -> &ResolutionTrace {
+        &self.resolution_trace
     }
 
     /// The type the attribute written at `range` resolved to, if the resolver

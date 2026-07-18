@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
+use borzoi::handlers::smallest_resolution_with_range;
 use borzoi::project_assets::resolve_assemblies_root_only;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::{ProjectParses, SemanticState};
@@ -25,7 +26,7 @@ use borzoi_msbuild::{
     Diagnostic, DiagnosticKind, DiagnosticOrigin, ImportFailReason, ParsedProject, SdkVersion,
     StructuralCompileItemUncertainty, VersionSpec,
 };
-use borzoi_sema::{AssemblyEnv, Def, Resolution, ResolvedProject};
+use borzoi_sema::{AssemblyEnv, Def, OpenOpacity, Resolution, ResolvedProject};
 use lsp_types::Url;
 use rowan::TextRange;
 use serde::{Deserialize, Serialize};
@@ -2191,6 +2192,213 @@ fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) 
             )
         }
         Resolution::Deferred(_) | Resolution::Unresolved => format!("{res:?}"),
+    }
+}
+
+/// One `open` declaration in an explained file, lifted from the sema
+/// [`ResolutionTrace`](borzoi_sema::ResolutionTrace) with the byte range
+/// projected to `(start, end)`. A per-open **fact** — its range and opacity —
+/// with no relevance verdict attached (see [`TokenExplanation`] for why the tool
+/// leaves scope correlation to the reader).
+#[derive(Debug, Clone)]
+pub struct ExplainedOpen {
+    /// The `open …` declaration's `(start, end)` byte range.
+    pub range: (usize, usize),
+    /// The opened path, `idText`-normalised (the type's path for `open type`).
+    pub path: Vec<String>,
+    /// Whether this is an `open type …`.
+    pub is_type: bool,
+    /// Which opaque-open flags this open flipped (see [`OpenOpacity`]).
+    pub opacity: OpenOpacity,
+}
+
+/// The resolution-explain result for one token (see [`explain_token`]): its
+/// resolution and every `open` in the file with its opacity, so a human can see
+/// *why* a name deferred — the `open TypeEquality` poisoning a bare
+/// `List.replicate` investigation, as a reusable query rather than a manual dig.
+///
+/// **It states facts, not a relevance verdict.** It reports the token's
+/// resolution and each open's *per-open* opacity + range; it does *not* claim
+/// which open gated *this* token. The [`ResolutionTrace`](borzoi_sema::ResolutionTrace)
+/// is a per-open record, and several deferral causes are *per-token* — they
+/// depend on the token, not on any one open, so a per-open trace cannot attribute
+/// them:
+/// - a member/qualified TAIL (`value.Member`) defers pending inference regardless
+///   of any open (a head-vs-tail distinction the trace lacks);
+/// - an attribute (`[<Attr>]`) whose in-file type precedes *any* later open
+///   defers to that open — every open advances the open frontier, so this is not
+///   a property of one open;
+/// - an open's lexical scope is a *block*, not an offset prefix — the resolver
+///   resets open-state at every top-level block / sibling boundary, so an earlier
+///   open by offset may be out of scope entirely.
+///
+/// So the reader — who has the file — correlates the perturbing opens (with their
+/// line ranges) against the token; the tool supplies the candidates and the
+/// caveats, not the conclusion. It never labels an open harmless (`clean`),
+/// because an all-false open can still take part in a per-token deferral.
+#[derive(Debug, Clone)]
+pub struct TokenExplanation {
+    /// The occurrence `(start, end)` the resolution was recorded at, or `None`
+    /// when nothing resolved at this byte.
+    pub token_range: Option<(usize, usize)>,
+    /// The source text of [`token_range`](Self::token_range) (empty when `None`).
+    pub token_text: String,
+    /// The resolution at the token, if one was recorded.
+    pub resolution: Option<Resolution>,
+    /// A human rendering of [`resolution`](Self::resolution) — a project def
+    /// site, an assembly full name, or a `Deferred(..)` / not-found note.
+    pub resolution_summary: String,
+    /// Every `open` in the file, in source order, with its opacity.
+    pub opens: Vec<ExplainedOpen>,
+}
+
+impl TokenExplanation {
+    /// Every `open` in the file that **perturbs resolution** through a modeled
+    /// *per-open* mechanism (see [`OpenOpacity::perturbs_resolution`]), in source
+    /// order — the candidate culprits a human locates against the token by their
+    /// ranges. A per-open fact, not a per-token verdict: an open with no modeled
+    /// perturbation can still participate in a *per-token* deferral (an attribute
+    /// whose in-file type precedes any later open; a member tail) the per-open
+    /// trace cannot attribute. See the type docs.
+    pub fn perturbing_opens(&self) -> Vec<&ExplainedOpen> {
+        self.opens
+            .iter()
+            .filter(|o| o.opacity.perturbs_resolution())
+            .collect()
+    }
+
+    /// A human-readable multi-line report — the CLI dump.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        match self.token_range {
+            Some((s, e)) => {
+                let _ = writeln!(out, "token {:?} @ {s}..{e}", self.token_text);
+            }
+            None => {
+                let _ = writeln!(out, "(no resolution recorded at this position)");
+            }
+        }
+        let _ = writeln!(out, "  resolution: {}", self.resolution_summary);
+        if self.opens.is_empty() {
+            let _ = writeln!(out, "  opens: (none)");
+        } else {
+            let _ = writeln!(out, "  opens (source order):");
+            for o in &self.opens {
+                let kind = if o.is_type { "open type" } else { "open" };
+                let effect = if o.opacity.perturbs_resolution() {
+                    let mut flags = Vec::new();
+                    if o.opacity.opaque_value {
+                        flags.push("opaque_value");
+                    }
+                    if o.opacity.opaque_dotted {
+                        flags.push("opaque_dotted");
+                    }
+                    if o.opacity.unmodelled {
+                        flags.push("unmodelled");
+                    }
+                    if o.opacity.staled_earlier {
+                        flags.push("staled_earlier");
+                    }
+                    if o.opacity.imported_deferred {
+                        flags.push("imported_deferred");
+                    }
+                    if o.opacity.added_reading {
+                        flags.push("added_reading");
+                    }
+                    format!("PERTURBS [{}]", flags.join(", "))
+                } else {
+                    // Never "clean" — that would claim harmlessness the per-open
+                    // trace cannot prove (an all-false open can still cause a
+                    // per-token deferral). It triggered none of the modeled ones.
+                    "(no modeled per-open effect)".to_string()
+                };
+                let _ = writeln!(
+                    out,
+                    "    {kind} {} @ {}..{} — {effect}",
+                    o.path.join("."),
+                    o.range.0,
+                    o.range.1,
+                );
+            }
+        }
+        // For any deferred token, spell out what the per-open view can and cannot
+        // say — including the per-token deferral causes it does NOT attribute, so
+        // the reader is never misled by a "no modeled effect" open. Fires even
+        // when no open perturbs per-open, and even when the file has no opens at
+        // all (a bare member tail).
+        if matches!(self.resolution, Some(Resolution::Deferred(_))) {
+            let perturbing = self.perturbing_opens();
+            let mut note = String::from("  note: token is Deferred. ");
+            if perturbing.is_empty() {
+                note.push_str("No open triggers a modeled per-open perturbation. ");
+            } else {
+                let list: Vec<String> = perturbing
+                    .iter()
+                    .map(|o| format!("{} @ {}..{}", o.path.join("."), o.range.0, o.range.1))
+                    .collect();
+                note.push_str(&format!(
+                    "{} open(s) trigger a modeled per-open perturbation [{}]; if the token is a \
+                     dotted HEAD (e.g. `List` in `List.replicate`) lexically after one in the SAME \
+                     block/enclosing module, deleting that open may let it resolve. ",
+                    perturbing.len(),
+                    list.join(", "),
+                ));
+            }
+            note.push_str(
+                "This per-open view does NOT attribute per-token deferrals — correlate manually: \
+                 a member/qualified TAIL (`value.Member`) defers pending inference regardless of \
+                 any open; an attribute (`[<Attr>]`) whose in-file type precedes ANY later open \
+                 defers to that open; and an open's scope is its block, not an offset prefix (the \
+                 resolver resets open-state at block boundaries).",
+            );
+            let _ = writeln!(out, "{note}");
+        }
+        out
+    }
+}
+
+/// Explain the token at byte offset `byte` in file `file_idx` of `loaded`: its
+/// resolution and the file's opaque-`open` trace, so a human can see why a name
+/// deferred (the resolution-explain mechanism). A pure query over the
+/// already-resolved project — no refetch, no effects.
+pub fn explain_token(loaded: &LoadedProject, file_idx: usize, byte: usize) -> TokenExplanation {
+    let file = loaded.resolved.file(file_idx);
+    let text = &loaded.parses.texts[file_idx];
+    let (token_range, token_text, resolution, resolution_summary) =
+        match smallest_resolution_with_range(file, byte) {
+            Some((range, res)) => {
+                let (s, e) = range_pair(range);
+                (
+                    Some((s, e)),
+                    text.get(s..e).unwrap_or("").to_string(),
+                    Some(res),
+                    resolution_summary(loaded, file_idx, res),
+                )
+            }
+            None => (
+                None,
+                String::new(),
+                None,
+                "(no resolution recorded here)".to_string(),
+            ),
+        };
+    let opens = file
+        .resolution_trace()
+        .opens
+        .iter()
+        .map(|o| ExplainedOpen {
+            range: range_pair(o.range),
+            path: o.path.clone(),
+            is_type: o.is_type,
+            opacity: o.opacity,
+        })
+        .collect();
+    TokenExplanation {
+        token_range,
+        token_text,
+        resolution,
+        resolution_summary,
+        opens,
     }
 }
 
