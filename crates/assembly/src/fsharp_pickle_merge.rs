@@ -4170,6 +4170,88 @@ mod tests {
         }
     }
 
+    /// Definition ranges ride the claim like source names: preferred from the
+    /// pickled pair's `DefinitionRange` component (`other_range` — the
+    /// implementation range, not the possibly-`.fsi` `val_range`), stamped on
+    /// a unanimous claim group, and under-set when a same-`(name, shape)`
+    /// group's vals disagree (which val claimed which MethodDef is then
+    /// unprovable — a wrong range would navigate to a sibling overload).
+    #[test]
+    fn member_list_stamps_definition_ranges_by_claim_group() {
+        let prange = |file: u32, line: u32| PickledRange {
+            file,
+            start: PickledPos { line, column: 4 },
+            end: PickledPos { line, column: 10 },
+        };
+        // A value binding: `val_range` names the `.fsi`, `other_range` the `.fs`.
+        let mut value = ext_test_val_arity(None, 0, None, &[]);
+        value.logical_name = "answer".to_string();
+        value.range = Some(prange(1, 20));
+        value.other_range = Some(prange(0, 42));
+        // Two same-name same-arity vals with different ranges: conflicted group.
+        let mut a = ext_test_val_arity(Some("Shared"), 0, None, &[1]);
+        a.logical_name = "first".to_string();
+        a.range = Some(prange(0, 1));
+        a.other_range = Some(prange(0, 1));
+        let mut b = ext_test_val_arity(Some("Shared"), 0, None, &[1]);
+        b.logical_name = "second".to_string();
+        b.range = Some(prange(0, 2));
+        b.other_range = Some(prange(0, 2));
+
+        let val_indices: Vec<u32> = vec![0, 1, 2];
+        let module = make_entity("M", PickledTyconRepr::NoRepr, module_with_vals(val_indices));
+        let mut ns_modul = empty_modul_typ();
+        ns_modul.entities = vec![2];
+        let ns = make_entity("NS", PickledTyconRepr::NoRepr, ns_modul);
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
+        let mut ccu = make_ccu(vec![root, ns, module], vec![value, a, b], 0);
+        ccu.header.strings = vec!["/src/Impl.fs".to_string(), "/src/Sig.fsi".to_string()];
+
+        let mut entities = vec![{
+            let mut e = make_ecma_entity(vec!["NS"], "M", EntityKind::Module);
+            e.members = vec![
+                make_ecma_module_value("answer"),
+                make_ecma_method_arity("Shared", 1),
+                make_ecma_method_arity("Shared", 1),
+            ];
+            e
+        }];
+        apply_module_member_projection(&mut entities, &ccu).expect("member projection");
+        let entity = entities.into_iter().next().expect("one entity");
+
+        let method = |name: &str, params: usize| {
+            entity
+                .members
+                .iter()
+                .find_map(|m| match m {
+                    Member::Method(m)
+                        if m.name == name && m.signature.parameters.len() == params =>
+                    {
+                        Some(m)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("method {name}/{params}"))
+        };
+        let range = method("answer", 0)
+            .definition_range
+            .as_deref()
+            .expect("a singleton value group stamps its range");
+        assert_eq!(
+            (range.file.as_str(), range.start_line, range.start_column),
+            ("/src/Impl.fs", 42, 4),
+            "the DefinitionRange (implementation) component wins over val_range"
+        );
+        assert_eq!((range.end_line, range.end_column), (42, 10));
+        assert_eq!(
+            method("Shared", 1).definition_range,
+            None,
+            "a conflicted same-shape group must under-set its ranges"
+        );
+    }
+
     /// A minimal rebranded module-value member: a zero-parameter method
     /// carrying [`ModuleValue`] (what `project_fsharp_members` emits for a
     /// module `let` value's static property).
