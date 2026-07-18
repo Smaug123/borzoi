@@ -646,7 +646,7 @@ fn sig_token_names(sig: &SigFile) -> HashSet<String> {
 /// The impl-only convenience form; a project whose Compile list carries
 /// `.fsi` signature files goes through [`resolve_project_files`].
 pub fn resolve_project(files: &[ImplFile], assemblies: &AssemblyEnv) -> ResolvedProject {
-    resolve_project_files_impl(&impl_only_files(files), assemblies, None)
+    resolve_project_files_impl(&impl_only_files(files), files.len(), assemblies, None)
 }
 
 /// Resolve a whole project whose Compile list may interleave `.fsi`
@@ -657,32 +657,61 @@ pub fn resolve_project(files: &[ImplFile], assemblies: &AssemblyEnv) -> Resolved
 /// QNOF) resolves exactly as an unsigned file but its value/case identity
 /// exports are dropped at the boundary. Unsigned files are untouched.
 pub fn resolve_project_files(files: &[ProjectFile], assemblies: &AssemblyEnv) -> ResolvedProject {
-    resolve_project_files_impl(files, assemblies, None)
+    resolve_project_files_impl(files, files.len(), assemblies, None)
 }
 
-/// Like [`resolve_project_files`], but tags each file's per-file
+/// Fold only the first `len` Compile items of `files` — the cost-bounded
+/// form a per-file query uses (file `i` can reference only files `0..i`) —
+/// while the sig ↔ impl **pairing still derives from the whole list**. A
+/// signature whose implementation lies past the prefix is still *paired*
+/// (its screen publishes), so the prefix fold is prefix-monotone: `file(i)`
+/// equals the full fold's for every `i < len`. Pairing from the sliced list
+/// instead would flip such a signature to unpaired and let the answer for
+/// one file depend on the query depth that populated a cache (codex round
+/// 2).
+///
+/// # Panics
+///
+/// Panics when `len > files.len()`.
+pub fn resolve_project_files_prefix(
+    files: &[ProjectFile],
+    len: usize,
+    assemblies: &AssemblyEnv,
+) -> ResolvedProject {
+    resolve_project_files_impl(files, len, assemblies, None)
+}
+
+/// Like [`resolve_project_files_prefix`], but tags each folded file's
 /// `resolve_file` span with its path (`labels[i]`, parallel to `files`) so a
 /// profiling build can attribute the fold's cost per Compile item in the
 /// trace. The resolution result is identical — `labels` affects only the
 /// emitted span. Present only under the `otel` feature (the sole build that
 /// installs a subscriber).
 #[cfg(feature = "otel")]
-pub fn resolve_project_files_labeled(
+pub fn resolve_project_files_prefix_labeled(
     files: &[ProjectFile],
+    len: usize,
     labels: &[String],
     assemblies: &AssemblyEnv,
 ) -> ResolvedProject {
-    resolve_project_files_impl(files, assemblies, Some(labels))
+    resolve_project_files_impl(files, len, assemblies, Some(labels))
 }
 
-/// The shared Compile-order fold. `_labels`, when present, tags each file's
+/// The shared Compile-order fold over `files[..horizon]`, with pairing from
+/// the whole `files` list. `_labels`, when present, tags each file's
 /// `resolve_file` span (`file`) for trace attribution; it is read only under
 /// the `otel` feature and never influences the resolution result.
 fn resolve_project_files_impl(
     files: &[ProjectFile],
+    horizon: usize,
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> ResolvedProject {
+    assert!(
+        horizon <= files.len(),
+        "fold horizon {horizon} exceeds the Compile list ({})",
+        files.len()
+    );
     let partners = pairing_partners(files);
     let mut preceding = ProjectItems::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
@@ -697,7 +726,7 @@ fn resolve_project_files_impl(
     // namespace defers too) — the honest cost of soundness, with
     // namespace-scoping the OV-9 refinement.
     let mut ext = ExtThreading::default();
-    for (index, pf) in files.iter().enumerate() {
+    for (index, pf) in files.iter().take(horizon).enumerate() {
         let rf = match &pf.file {
             // A signature file is inert in Stage 1: it owns no `ItemId` range
             // and records nothing; only its screen crosses the boundary.
@@ -880,6 +909,7 @@ pub fn resolve_project_incremental(
         &impl_only_files(prev_files),
         prev,
         &impl_only_files(new_files),
+        new_files.len(),
         assemblies,
         None,
     )
@@ -901,7 +931,33 @@ pub fn resolve_project_files_incremental(
     new_files: &[ProjectFile],
     assemblies: &AssemblyEnv,
 ) -> (ResolvedProject, Vec<bool>) {
-    resolve_project_files_incremental_impl(prev_files, prev, new_files, assemblies, None)
+    resolve_project_files_incremental_impl(
+        prev_files,
+        prev,
+        new_files,
+        new_files.len(),
+        assemblies,
+        None,
+    )
+}
+
+/// The prefix form of [`resolve_project_files_incremental`]: fold only
+/// `new_files[..len]`, with pairing derived from the **whole** `prev_files`
+/// / `new_files` lists (see [`resolve_project_files_prefix`] — `prev` may
+/// itself cover a shorter or deeper prefix of `prev_files`; reuse is bounded
+/// by what it holds).
+///
+/// # Panics
+///
+/// Panics when `len > new_files.len()`.
+pub fn resolve_project_files_prefix_incremental(
+    prev_files: &[ProjectFile],
+    prev: &ResolvedProject,
+    new_files: &[ProjectFile],
+    len: usize,
+    assemblies: &AssemblyEnv,
+) -> (ResolvedProject, Vec<bool>) {
+    resolve_project_files_incremental_impl(prev_files, prev, new_files, len, assemblies, None)
 }
 
 /// Like [`resolve_project_incremental`], but also returns, per Compile-order
@@ -923,6 +979,7 @@ pub fn resolve_project_incremental_with_reuse(
         &impl_only_files(prev_files),
         prev,
         &impl_only_files(new_files),
+        new_files.len(),
         assemblies,
         None,
     )
@@ -931,7 +988,7 @@ pub fn resolve_project_incremental_with_reuse(
 /// Like [`resolve_project_files_incremental`], but also tags each
 /// *recomputed* file's `resolve_file` span with its path (`labels[i]`, parallel
 /// to `new_files`) for per-Compile-item trace attribution — the incremental
-/// counterpart of [`resolve_project_files_labeled`]. A *reused* file does no
+/// counterpart of [`resolve_project_files_prefix_labeled`]. A *reused* file does no
 /// `resolve_file` work and emits no span, so under a profiling build the spans
 /// that appear are exactly the files the edit forced to re-resolve (and the
 /// reused ones' absence is the signal that the edit didn't touch them). The
@@ -939,14 +996,22 @@ pub fn resolve_project_incremental_with_reuse(
 /// `labels` affects only the emitted spans. Present only under the `otel`
 /// feature (the sole build that installs a subscriber).
 #[cfg(feature = "otel")]
-pub fn resolve_project_files_incremental_labeled(
+pub fn resolve_project_files_prefix_incremental_labeled(
     prev_files: &[ProjectFile],
     prev: &ResolvedProject,
     new_files: &[ProjectFile],
+    len: usize,
     labels: &[String],
     assemblies: &AssemblyEnv,
 ) -> (ResolvedProject, Vec<bool>) {
-    resolve_project_files_incremental_impl(prev_files, prev, new_files, assemblies, Some(labels))
+    resolve_project_files_incremental_impl(
+        prev_files,
+        prev,
+        new_files,
+        len,
+        assemblies,
+        Some(labels),
+    )
 }
 
 /// The shared incremental fold, returning the result and a per-file reuse vector
@@ -957,21 +1022,27 @@ fn resolve_project_files_incremental_impl(
     prev_files: &[ProjectFile],
     prev: &ResolvedProject,
     new_files: &[ProjectFile],
+    horizon: usize,
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> (ResolvedProject, Vec<bool>) {
+    assert!(
+        horizon <= new_files.len(),
+        "fold horizon {horizon} exceeds the Compile list ({})",
+        new_files.len()
+    );
     let partners_prev = pairing_partners(prev_files);
     let partners_new = pairing_partners(new_files);
     let mut preceding = ProjectItems::default();
     let mut ext = ExtThreading::default();
-    let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(new_files.len());
-    let mut reused = Vec::with_capacity(new_files.len());
+    let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(horizon);
+    let mut reused = Vec::with_capacity(horizon);
     // True while the threaded state (`preceding`, `ext`) entering this file still
     // equals prev's at the same index — the reuse precondition. Monotone
     // true→false: once a recomputed file's contribution differs, every later file
     // sees a different `preceding`, so reuse can never resume.
     let mut in_sync = true;
-    for (i, pf) in new_files.iter().enumerate() {
+    for (i, pf) in new_files.iter().take(horizon).enumerate() {
         let have_prev = i < prev.files.len() && i < prev_files.len();
         // Pairing is an input to the file's boundary *contribution* (a paired
         // implementation's value/case exports are dropped, a paired

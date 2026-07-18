@@ -151,10 +151,12 @@ struct CachedParse {
 /// computed incrementally ([`borzoi_sema::resolve_project_incremental`]) rather
 /// than cold. Stored per project in [`SemanticState::prev_resolved`].
 ///
-/// Holds the exact [`ProjectFile`]s that were folded (so the incremental fold
-/// can compare each new file against the tree that produced its previous
-/// resolution, by rowan identity, and re-derive the sig ↔ impl pairing), the
-/// result, and the assembly env [`Arc`] the fold ran against. The env Arc is the reuse *precondition witness*: reusing a
+/// Holds the project's **full** Compile list of [`ProjectFile`]s at fold time
+/// (so the incremental fold can compare each new file against the tree that
+/// produced its previous resolution, by rowan identity, and re-derive the
+/// sig ↔ impl pairing over the whole list — `resolved` covers only its
+/// folded prefix), the result, and the assembly env [`Arc`] the fold ran
+/// against. The env Arc is the reuse *precondition witness*: reusing a
 /// file's resolution is sound only against the same env it was resolved with, so
 /// [`SemanticState::resolved_project_for`] reuses this only when the current env
 /// is [`Arc::ptr_eq`] to [`Self::env`]. A rebuilt env — structural
@@ -815,9 +817,13 @@ impl SemanticState {
             workspace,
             restore_env,
         );
-        // The Compile prefix to fold: `.file(up_to_index)` and everything it can
-        // reference (files `0..up_to_index`), nothing after.
-        let files = &parses.files[..want_len];
+        // The fold horizon: `.file(up_to_index)` and everything it can
+        // reference (files `0..up_to_index`), nothing after. The *whole*
+        // Compile list is still handed to sema — the sig ↔ impl pairing must
+        // derive from it, so a signature whose implementation lies past the
+        // horizon stays paired and a prefix fold answers exactly like the
+        // full fold's prefix (codex round 2).
+        let files = &parses.files;
         // 3. Fold — incrementally when a previous fold of this project is
         //    reusable, cold otherwise — and cache unless the env was a
         //    transient-failure degradation: caching the resolved project then
@@ -859,19 +865,21 @@ impl SemanticState {
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        borzoi_sema::resolve_project_files_incremental_labeled(
+                        borzoi_sema::resolve_project_files_prefix_incremental_labeled(
                             &prev.files,
                             prev.resolved.as_ref(),
                             files,
+                            want_len,
                             &labels,
                             &env,
                         )
                     };
                     #[cfg(not(feature = "otel"))]
-                    let (resolved, reused) = borzoi_sema::resolve_project_files_incremental(
+                    let (resolved, reused) = borzoi_sema::resolve_project_files_prefix_incremental(
                         &prev.files,
                         prev.resolved.as_ref(),
                         files,
+                        want_len,
                         &env,
                     );
                     (Arc::new(resolved), reused.iter().filter(|&&r| r).count())
@@ -887,10 +895,12 @@ impl SemanticState {
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        borzoi_sema::resolve_project_files_labeled(files, &labels, &env)
+                        borzoi_sema::resolve_project_files_prefix_labeled(
+                            files, want_len, &labels, &env,
+                        )
                     };
                     #[cfg(not(feature = "otel"))]
-                    let resolved = borzoi_sema::resolve_project_files(files, &env);
+                    let resolved = borzoi_sema::resolve_project_files_prefix(files, want_len, &env);
                     (Arc::new(resolved), 0)
                 }
             }
@@ -929,6 +939,10 @@ impl SemanticState {
                 self.prev_resolved.insert(
                     key,
                     PrevFold {
+                        // The FULL Compile list (rowan handles — cheap), not
+                        // just the folded prefix: the incremental fold
+                        // re-derives the sig ↔ impl pairing from it, and a
+                        // pairing computed over a slice could differ.
                         files: files.to_vec(),
                         resolved: Arc::clone(&resolved),
                         env: Arc::clone(&env),

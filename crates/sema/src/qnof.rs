@@ -133,23 +133,44 @@ fn chop_extension(basic: &str) -> String {
 
 /// FCS `String.capitalize`: upper-case the first character with the
 /// invariant **simple** (1:1) mapping — .NET's `ToUpperInvariant` maps
-/// char-for-char, so a character whose only upper-case form expands (`ß`)
-/// stays as it is; Rust's `char::to_uppercase` is the *full* mapping, so an
-/// expanding result means "no simple mapping" and the character is kept.
+/// char-for-char. Rust's `char::to_uppercase` is the *full* mapping, which
+/// agrees with the simple one whenever it yields a single character; where
+/// it expands, [`simple_uppercase`] supplies the cases that still have a
+/// 1:1 mapping.
 fn capitalize_first_invariant(s: &str) -> String {
     let mut chars = s.chars();
     let Some(first) = chars.next() else {
         return String::new();
     };
-    let mut upper = first.to_uppercase();
-    let mapped = match (upper.next(), upper.next()) {
-        (Some(one), None) => one,
-        _ => first,
-    };
     let mut out = String::with_capacity(s.len());
-    out.push(mapped);
+    out.push(simple_uppercase(first));
     out.push_str(chars.as_str());
     out
+}
+
+/// Unicode `Simple_Uppercase_Mapping` for one character, as .NET's
+/// `ToUpperInvariant` applies it. Where the *full* mapping is a single
+/// character the two agree; where it expands, `UnicodeData.txt` still lists
+/// a simple mapping for exactly the Greek iota-subscript block (the
+/// lower-case ypogegrammeni forms map to their prosgegrammeni titlecase
+/// forms — `ᾳ` U+1FB3 → `ᾼ` U+1FBC), while every other expanding character
+/// (`ß`, the ligatures, `ŉ`, …) has none and stays as it is.
+fn simple_uppercase(c: char) -> char {
+    match c {
+        '\u{1F80}'..='\u{1F87}' | '\u{1F90}'..='\u{1F97}' | '\u{1FA0}'..='\u{1FA7}' => {
+            char::from_u32(c as u32 + 8).expect("iota-subscript titlecase forms are valid chars")
+        }
+        '\u{1FB3}' => '\u{1FBC}',
+        '\u{1FC3}' => '\u{1FCC}',
+        '\u{1FF3}' => '\u{1FFC}',
+        _ => {
+            let mut upper = c.to_uppercase();
+            match (upper.next(), upper.next()) {
+                (Some(one), None) => one,
+                _ => c,
+            }
+        }
+    }
 }
 
 /// The deduplication key for a file: its directory, lexically normalised when
@@ -185,6 +206,10 @@ mod tests {
         assert_eq!(canonicalize_filename(Path::new("/a/foo.")), "Foo");
         assert_eq!(canonicalize_filename(Path::new("/a/.gitignore")), "");
         assert_eq!(canonicalize_filename(Path::new("/a/ß.fs")), "ß");
+        // The Greek iota-subscript block has a 1:1 simple mapping even
+        // though the full mapping expands (.NET: `ᾳ` → `ᾼ`, codex round 2).
+        assert_eq!(canonicalize_filename(Path::new("/a/ᾳ.fs")), "ᾼ");
+        assert_eq!(canonicalize_filename(Path::new("/a/ᾀx.fs")), "ᾈx");
     }
 
     #[test]

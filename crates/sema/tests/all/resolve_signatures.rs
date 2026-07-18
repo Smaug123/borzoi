@@ -31,7 +31,7 @@ use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, qualified_names,
-    resolve_project_files, resolve_project_files_incremental,
+    resolve_project_files, resolve_project_files_incremental, resolve_project_files_prefix,
 };
 use rowan::TextRange;
 
@@ -522,6 +522,44 @@ fn intervening_file_between_sig_and_impl_commits_nothing_in_project() {
     assert_uncommitted(
         res_at(&proj, &files, 1, "ProbeNs.Shared.shown"),
         "intervening use of a not-yet-published signatured module",
+    );
+}
+
+/// Codex review round 2: a **prefix** fold derives the pairing from the
+/// whole Compile list, so a signature whose implementation lies past the
+/// horizon still publishes its screen — every folded slot answers exactly
+/// like the full fold's same slot (prefix-monotonicity), instead of the
+/// answer depending on the query depth that populated a cache.
+#[test]
+fn prefix_fold_pairs_from_the_whole_compile_list() {
+    let files = [
+        ("/p/M.fs", "module M\n\nlet x = 0\n"),
+        ("/p/AM.fsi", "module A.M\n\nval x: int\n"),
+        (
+            "/p/Between.fs",
+            "namespace A\n\nmodule Between =\n    let y = M.x\n",
+        ),
+        ("/p/AM.fs", "module A.M\n\nlet x = 1\n"),
+    ];
+    let input = project(&files);
+    let env = AssemblyEnv::default();
+    let full = resolve_project_files(&input, &env);
+    for len in 1..=input.len() {
+        let prefix = resolve_project_files_prefix(&input, len, &env);
+        assert_eq!(prefix.len(), len);
+        for i in 0..len {
+            assert_eq!(
+                prefix.file(i),
+                full.file(i),
+                "prefix fold (len {len}) diverges from the full fold at slot {i}"
+            );
+        }
+    }
+    // The screened intervening use defers — in the full fold and, by the
+    // equality above, in every prefix that contains it.
+    assert_uncommitted(
+        res_at(&full, &files, 2, "M.x"),
+        "intervening M.x under a screen whose impl lies later",
     );
 }
 
