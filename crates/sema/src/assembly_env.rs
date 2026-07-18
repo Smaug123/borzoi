@@ -616,8 +616,12 @@ type TypeKey = (Vec<String>, String, usize);
 /// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it: the source
 /// DLL path, its projected roots, its [`AbbreviationVisibility`], its
 /// [`fsharp_extension_index_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_extension_index_unknowable) bit, its
-/// [`fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative) bit, and its
-/// assembly-level `[<assembly: AutoOpen("…")>]` paths (manifest order).
+/// [`fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative) bit, its
+/// assembly-level `[<assembly: AutoOpen("…")>]` paths (manifest order), and its
+/// manifest identity — supplied explicitly (the caller's `EcmaView` knows it)
+/// so a **rootless** projection still registers a DLL name in
+/// [`AssemblyEnv::assembly_identities`]; `None` falls back to the first root
+/// (issue #150 / codex P2).
 type AssemblyProjectionInput = (
     PathBuf,
     Vec<Entity>,
@@ -625,6 +629,7 @@ type AssemblyProjectionInput = (
     bool,
     bool,
     Vec<String>,
+    Option<AssemblyIdentity>,
 );
 
 /// Whether one referenced assembly's F# type abbreviations are fully
@@ -773,7 +778,9 @@ impl AssemblyEnv {
                 .map(|(path, roots, visibility, auto_opens)| {
                     // `false`/`false`: this constructor assumes an authoritative
                     // pickle (extension index known, F# signature authoritative).
-                    (path, roots, visibility, false, false, auto_opens)
+                    // `None` identity: derived from the first root (this
+                    // constructor's callers do not carry a rootless DLL's identity).
+                    (path, roots, visibility, false, false, auto_opens, None)
                 })
                 .collect(),
         )
@@ -804,17 +811,20 @@ impl AssemblyEnv {
             extension_index_unknowable,
             signature_non_authoritative,
             raw_auto_opens,
+            manifest_identity,
         ) in assemblies
         {
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
-            // Register the DLL's identity (from the first surviving root) so a
-            // referenced-CCU name is counted per loaded DLL. A rootless assembly
-            // here has no identity to register (see [`Self::assembly_identities`]).
+            // Register the DLL's identity so a referenced-CCU name is counted per
+            // loaded DLL. Prefer the caller-supplied `manifest_identity` (known to
+            // its `EcmaView` even when the projection is rootless); fall back to the
+            // first surviving root for callers that do not supply it — a rootless
+            // such assembly is then unregistered (see [`Self::assembly_identities`]).
             env.assembly_identities
-                .push(roots.first().map(|r| r.assembly.clone()));
+                .push(manifest_identity.or_else(|| roots.first().map(|r| r.assembly.clone())));
             // The assembly's manifest identity name, for the FSharp.Core special
             // case — every root carries it. The deref itself keys on `id`.
             if let Some(first) = roots.first() {
@@ -5122,6 +5132,54 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "LocalAlias")),
             None,
             "two indistinguishable same-path candidates must decline, not pick the first",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_counts_a_rootless_sibling_via_the_runtime_constructor() {
+        // The LSP's runtime constructor (`from_assemblies_with_projection_knowability`):
+        // a referenced DLL whose projection is ROOTLESS (all types dropped) still
+        // carries its manifest identity, supplied explicitly because there is no
+        // surviving root to derive it from. Two DLLs named `Lib` — the contributor
+        // with `N.Widget` and a `Some("Lib")` marker, plus a rootless sibling —
+        // must make the CCU name ambiguous and decline (issue #150 / codex P2). A
+        // constructor that ignored the supplied identity would count only the
+        // contributor and resolve into it.
+        let widget = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["N"], "Widget")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "RefAlias",
+            Some(named_target(Some("Lib"), &["N", "Widget"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            (
+                std::path::PathBuf::from("Contributor.dll"),
+                vec![widget, marker],
+                super::AbbreviationVisibility::Modelled,
+                false,
+                false,
+                Vec::new(),
+                Some(ident("Lib")),
+            ),
+            (
+                std::path::PathBuf::from("Rootless.dll"),
+                vec![],
+                super::AbbreviationVisibility::Modelled,
+                false,
+                false,
+                Vec::new(),
+                Some(ident("Lib")),
+            ),
+        ]);
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
+            None,
+            "a rootless same-named sibling still makes the CCU name ambiguous — decline",
         );
     }
 

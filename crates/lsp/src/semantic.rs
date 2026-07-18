@@ -16,7 +16,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity};
+use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
@@ -75,6 +75,15 @@ struct ReferencedAssemblyProjection {
     /// namespaces had no drop still commits. `#[serde(default)]` for old cache entries.
     #[serde(default)]
     dropped_type_namespaces: Vec<Vec<String>>,
+    /// The DLL's manifest identity (`EcmaView::identity`), carried so the env can
+    /// register a **rootless** projection's DLL name for referenced-CCU
+    /// uniqueness: with no surviving roots the identity cannot be derived from an
+    /// entity, and a same-named sibling would otherwise let an abbreviation target
+    /// bind into the wrong DLL (issue #150 / codex P2). `#[serde(default)]` so an
+    /// old cache entry (predating this field) deserialises as `None` — the env
+    /// then falls back to the first root, i.e. the pre-fix behaviour.
+    #[serde(default)]
+    manifest_identity: Option<AssemblyIdentity>,
 }
 
 impl ReferencedAssemblyProjection {
@@ -1991,6 +2000,7 @@ fn build_env_from_dll_paths<'a>(
                 projection.fsharp_extension_index_unknowable,
                 projection.fsharp_signature_non_authoritative,
                 projection.assembly_auto_opens,
+                projection.manifest_identity,
             )
         })
         .collect();
@@ -2117,6 +2127,9 @@ fn enumerate_view_catching<V: EcmaView>(
                 dropped_type_namespaces,
                 fsharp_extension_index_unknowable: skipped.fsharp_extension_index_unknowable,
                 fsharp_signature_non_authoritative: skipped.fsharp_signature_non_authoritative,
+                // Captured even when `types` is empty (rootless), so the env can
+                // still count this DLL's name for referenced-CCU uniqueness.
+                manifest_identity: Some(view.identity().clone()),
             })
         }
         Err(err) => {

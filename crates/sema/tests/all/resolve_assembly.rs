@@ -4754,6 +4754,7 @@ fn non_authoritative_assembly_declines_module_classification() {
             false,
             non_authoritative,
             Vec::new(),
+            None,
         )])
     };
     let classes = |env: &AssemblyEnv| {
@@ -4827,6 +4828,7 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
             false,
             non_authoritative,
             Vec::new(),
+            None,
         )])
     };
     let equals = |env: &AssemblyEnv| {
