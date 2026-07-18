@@ -898,8 +898,22 @@ pub fn parse_fcs_dump(json: &str) -> NormalisedAssembly {
     }
 }
 
+/// Key for [`fcs_abbreviation_targets`]: an abbreviation's fully-qualified name
+/// paired with its generic arity. Both halves are load-bearing:
+///
+/// - The FQN has the *container path threaded back in* (see below), so a
+///   module-nested abbreviation keys by its whole path and two same-named
+///   aliases in different containers do not collide.
+/// - The arity distinguishes the legal pair `type Alias = int` /
+///   `type Alias<'T> = 'T list`, which `fcs-dump` emits under the **same** `Fqn`
+///   but with different `GenericParameters`. A name-only key would let one
+///   overwrite the other's target — and since a generic alias' target is often a
+///   declined `None`, that would replace a renderable `Some` with a `None` the
+///   differential then asserts nothing about.
+pub type AbbreviationKey = (String, usize);
+
 /// Extract every abbreviation entity's rendered immediate-logical target from a
-/// `fcs-dump entities` JSON dump, keyed by fully-qualified name. The value is
+/// `fcs-dump entities` JSON dump, keyed by [`AbbreviationKey`]. The value is
 /// `Some(target)` when `fcs-dump` rendered one and `None` when it *declined* (a
 /// structural/generic-instantiation shape the oracle does not yet model — see
 /// `renderAbbreviationTargetLogical`), which mirrors the Rust decoder's own
@@ -910,22 +924,38 @@ pub fn parse_fcs_dump(json: &str) -> NormalisedAssembly {
 /// whole-tree [`NormalisedEntity`] comparison elides the target (an FCS-`Some` /
 /// our-`None` asymmetry would otherwise break every diff before the decoder
 /// lands), so the abbreviation-target differential reads the target through this
-/// dedicated path instead. Keyed on `Kind == "Abbreviation"` — the plain
-/// type-abbreviation markers this slice decodes; exception abbreviations
-/// (`Kind == "Exception"`) carry no decoded target.
-pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<String, Option<String>> {
-    fn walk(e: &FcsEntity, out: &mut BTreeMap<String, Option<String>>) {
-        if e.kind == "Abbreviation" {
-            out.insert(e.fqn.clone(), e.abbreviated_target.clone());
+/// dedicated path instead.
+pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<AbbreviationKey, Option<String>> {
+    fn walk(prefix: &str, e: &FcsEntity, out: &mut BTreeMap<AbbreviationKey, Option<String>>) {
+        // `fcs-dump`'s `Fqn` is namespace-qualified for a top-level entity but
+        // only the `DisplayName` for a nested one (its parent is carried by the
+        // JSON tree, not repeated into the child's `Fqn`). Rebuild the full path
+        // by threading the container prefix.
+        let fqn = if prefix.is_empty() {
+            e.fqn.clone()
+        } else {
+            format!("{prefix}.{}", e.fqn)
+        };
+        // `entityKindString` renders flag prefixes into the kind string
+        // (`[<AutoOpen>] type A = …` ⇒ `"auto_open Abbreviation"`), so match the
+        // base kind by its final space-separated token rather than by equality —
+        // otherwise every *attributed* abbreviation (the `TalliedAlias` fixture
+        // among them) is silently skipped. Exception abbreviations
+        // (`"Exception"`) carry no decoded target and are not collected.
+        if e.kind.rsplit(' ').next() == Some("Abbreviation") {
+            out.insert(
+                (fqn.clone(), e.generic_parameters.len()),
+                e.abbreviated_target.clone(),
+            );
         }
         for n in &e.nested_types {
-            walk(n, out);
+            walk(&fqn, n, out);
         }
     }
     let dump: FcsDump = serde_json::from_str(json).expect("fcs-dump JSON shape");
     let mut out = BTreeMap::new();
     for e in &dump.entities {
-        walk(e, &mut out);
+        walk("", e, &mut out);
     }
     out
 }
@@ -1073,6 +1103,68 @@ struct FcsGenericParameter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `fcs_abbreviation_targets` must survive the three shapes a real dump
+    /// throws at it: an abbreviation whose kind carries a rendered flag prefix
+    /// (`auto_open Abbreviation`), a *nested* abbreviation whose `Fqn` is only its
+    /// own `DisplayName`, and an arity-overloaded pair sharing one `Fqn`. A
+    /// name-only or exact-kind extraction silently loses coverage on all three.
+    #[test]
+    fn abbreviation_targets_key_by_qualified_name_and_arity() {
+        // `M` is a module (not collected); its three nested abbreviations plus
+        // one top-level abbreviation are. `Dup`/`Dup<'T>` share an `Fqn` and must
+        // not overwrite one another; `AutoAlias` carries the `auto_open` prefix
+        // and a bare nested `Fqn` that must be re-qualified to `N.M.AutoAlias`.
+        let json = r#"{
+          "Assembly": "T",
+          "Entities": [
+            { "Fqn": "N.Top", "Kind": "Abbreviation", "Access": "public",
+              "BaseType": null, "Interfaces": [], "Members": [],
+              "AbbreviatedTarget": "Microsoft.FSharp.Core.int" },
+            { "Fqn": "N.M", "Kind": "Module", "Access": "public",
+              "BaseType": null, "Interfaces": [], "Members": [],
+              "NestedTypes": [
+                { "Fqn": "AutoAlias", "Kind": "auto_open Abbreviation",
+                  "Access": "public", "BaseType": null, "Interfaces": [],
+                  "Members": [], "AbbreviatedTarget": "N.M.Concrete" },
+                { "Fqn": "Dup", "Kind": "Abbreviation", "Access": "public",
+                  "BaseType": null, "Interfaces": [], "Members": [],
+                  "AbbreviatedTarget": "Microsoft.FSharp.Core.int" },
+                { "Fqn": "Dup", "Kind": "Abbreviation", "Access": "public",
+                  "BaseType": null, "Interfaces": [], "Members": [],
+                  "GenericParameters": [ { "Declaration": "T", "Constraints": [] } ],
+                  "AbbreviatedTarget": null }
+              ] }
+          ]
+        }"#;
+        let targets = fcs_abbreviation_targets(json);
+
+        // The module itself is not an abbreviation; exactly the four aliases are.
+        assert_eq!(
+            targets.len(),
+            4,
+            "expected exactly the four abbreviation entries, got {targets:#?}",
+        );
+        assert_eq!(
+            targets.get(&("N.Top".to_string(), 0)),
+            Some(&Some("Microsoft.FSharp.Core.int".to_string())),
+        );
+        // Prefix + nested container: `auto_open Abbreviation` is recognised and
+        // the bare `AutoAlias` is re-qualified to `N.M.AutoAlias`.
+        assert_eq!(
+            targets.get(&("N.M.AutoAlias".to_string(), 0)),
+            Some(&Some("N.M.Concrete".to_string())),
+            "an attributed, nested abbreviation must still be collected under its \
+             full path; got {targets:#?}",
+        );
+        // Arity keys the overloaded pair apart: the nullary `Some` is not
+        // clobbered by the generic `None`.
+        assert_eq!(
+            targets.get(&("N.M.Dup".to_string(), 0)),
+            Some(&Some("Microsoft.FSharp.Core.int".to_string())),
+        );
+        assert_eq!(targets.get(&("N.M.Dup".to_string(), 1)), Some(&None));
+    }
 
     /// An unconstrained invariant `T` — the baseline the per-flag tests tweak.
     fn bare_typar() -> TypeParameter {

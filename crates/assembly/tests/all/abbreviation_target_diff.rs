@@ -44,14 +44,15 @@ fn fcs_dump_renders_immediate_logical_targets_for_minilib_fs() {
     let fcs_json = invoke_fcs_dump("entities", dll_path);
     let targets = fcs_abbreviation_targets(&fcs_json);
 
+    // Keyed by (fully-qualified name, generic arity); both fixtures are nullary.
     assert_eq!(
-        targets.get("MiniLibFs.IntId"),
+        targets.get(&("MiniLibFs.IntId".to_string(), 0)),
         Some(&Some("Microsoft.FSharp.Core.int".to_string())),
         "`type IntId = int` must render the immediate FSharp.Core logical alias, \
          never the chased `System.Int32`. All abbreviation targets: {targets:#?}",
     );
     assert_eq!(
-        targets.get("MiniLibFs.S"),
+        targets.get(&("MiniLibFs.S".to_string(), 0)),
         Some(&Some("System.String".to_string())),
         "`type S = System.String` targets a BCL type directly, rendered by its \
          AccessPath+LogicalName FQN. All abbreviation targets: {targets:#?}",
