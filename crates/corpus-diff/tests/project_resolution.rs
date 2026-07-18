@@ -611,13 +611,13 @@ fn write_json_report_if_requested(summary: &CorpusSummary) {
 
 /// The resolution-explain tool end to end, over a synthetic project: an
 /// `open type` whose target is unmodelled poisons dotted heads, so a bare
-/// `Foo.Bar.baz` after it defers. [`explain_token`] must surface both the
-/// token's `Deferred` resolution AND the opaque `open` in scope before it — the
-/// scope facts the `open TypeEquality` / bare `List.replicate` investigation
-/// this tool generalises. A plain namespace `open` that brings nothing in stays
+/// `Foo.Bar.baz` after it defers. [`explain_token`] must surface the token's
+/// `Deferred` resolution AND the file's opaque `open` — the facts the
+/// `open TypeEquality` / bare `List.replicate` investigation this tool
+/// generalises turns on. A plain namespace `open` that brings nothing in stays
 /// `clean`, so the two are distinguishable in the dump.
 #[test]
-fn explain_token_reports_the_opaque_open_in_scope_of_a_deferred_head() {
+fn explain_token_reports_the_opaque_open_of_a_deferred_head() {
     let src = "module M\nopen System\nopen type Opaque\nlet v = Foo.Bar.baz\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let (head, _) = text_range(src, "Foo.Bar.baz");
@@ -642,16 +642,12 @@ fn explain_token_reports_the_opaque_open_in_scope_of_a_deferred_head() {
     assert!(opaque.is_type);
     assert_eq!(opaque.path, vec!["Opaque".to_string()]);
     assert!(opaque.opacity.is_opaque());
-    assert!(
-        opaque.precedes_token,
-        "the opaque open precedes the deferred head"
-    );
 
-    // The scope fact: the opaque open is reported as in-scope (not a causal
-    // verdict — see the member-tail test below).
-    let in_scope = exp.opaque_opens_in_scope();
-    assert_eq!(in_scope.len(), 1);
-    assert_eq!(in_scope[0].path, vec!["Opaque".to_string()]);
+    // The fact the tool commits to: which opens are opaque (candidates). It does
+    // NOT claim scope relevance — see the member-tail test below.
+    let opaque_opens = exp.opaque_opens();
+    assert_eq!(opaque_opens.len(), 1);
+    assert_eq!(opaque_opens[0].path, vec!["Opaque".to_string()]);
 
     let report = exp.render();
     assert!(
@@ -664,13 +660,16 @@ fn explain_token_reports_the_opaque_open_in_scope_of_a_deferred_head() {
     );
 }
 
-/// Regression for the over-attribution `codex review` caught: a member/qualified
-/// TAIL (`value.Member`, where `value` is a resolved local) is
-/// `Deferred(QualifiedAccess)` pending inference *regardless* of any `open`, yet
-/// an opaque open precedes it. The tool must not present the open as the cause.
-/// It still reports the open as *in scope* (a true scope fact), but there is no
-/// causal verdict method, and the rendered note keeps its explicit head/tail
-/// caveat — so the reader is not misled into deleting an irrelevant open.
+/// Regression for the two over-claims `codex review` caught, which share a root
+/// — the tool must not present an opaque `open` as the *cause* of a deferral it
+/// cannot substantiate: (1) a member/qualified TAIL (`value.Member`, a resolved
+/// local receiver) is `Deferred(QualifiedAccess)` pending inference regardless
+/// of any open; and (2) an open's lexical scope is its block, not an offset
+/// prefix, so an earlier open by offset may be out of scope entirely. The fix
+/// removes the scope/causal verdict: the tool reports every opaque open as a
+/// *candidate fact* (with ranges) and a caveated note, never a per-token
+/// verdict. Here the member tail defers, the opaque open is still listed as a
+/// candidate, and the note carries the head/tail + block-scope caveats.
 #[test]
 fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
     let src = "module M\nopen type Opaque\nlet f value = value.Member\n";
@@ -685,18 +684,22 @@ fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
         exp.resolution
     );
 
-    // The scope fact still holds (the open IS lexically in scope), and it is
-    // reported honestly — the tool does not turn that into a causal claim.
+    // The opaque open is still surfaced as a candidate fact (it IS opaque), but
+    // the tool makes no per-token scope or causal claim about it.
     assert_eq!(
-        exp.opaque_opens_in_scope().len(),
+        exp.opaque_opens().len(),
         1,
-        "the opaque open is reported as in scope (a scope fact)"
+        "the opaque open is listed as a candidate fact"
     );
 
     let report = exp.render();
     assert!(
         report.contains("TAIL") && report.contains("regardless"),
         "the note must caveat that a member tail defers regardless of any open:\n{report}"
+    );
+    assert!(
+        report.contains("block"),
+        "the note must caveat that an open's scope is its block, not an offset prefix:\n{report}"
     );
 }
 
@@ -719,7 +722,12 @@ fn explain_token_at_position() {
         );
         return;
     };
-    let project = PathBuf::from(project);
+    // Root the project path: borzoi's MSBuild evaluator rejects a non-rooted
+    // `.fsproj` (a `ParseError`, surfaced as `ProjectEvaluationFailed`), so a
+    // relative `../Foo/Foo.fsproj` would fail to load. Canonicalize to an
+    // absolute path first.
+    let project = std::fs::canonicalize(PathBuf::from(&project))
+        .unwrap_or_else(|e| panic!("canonicalize {}: {e}", PathBuf::from(&project).display()));
     let file_arg = std::env::var("BORZOI_EXPLAIN_FILE").expect("set BORZOI_EXPLAIN_FILE");
     let line: u32 = std::env::var("BORZOI_EXPLAIN_LINE")
         .expect("set BORZOI_EXPLAIN_LINE")

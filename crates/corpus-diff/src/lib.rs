@@ -2197,9 +2197,9 @@ fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) 
 
 /// One `open` declaration in an explained file, lifted from the sema
 /// [`ResolutionTrace`](borzoi_sema::ResolutionTrace) with the byte range
-/// projected to `(start, end)` and a [`precedes_token`](Self::precedes_token)
-/// flag marking the opens in scope *before* the explained token — the candidate
-/// culprits for a deferred dotted head.
+/// projected to `(start, end)`. A per-open **fact** — its range and opacity —
+/// with no relevance verdict attached (see [`TokenExplanation`] for why the tool
+/// leaves scope correlation to the reader).
 #[derive(Debug, Clone)]
 pub struct ExplainedOpen {
     /// The `open …` declaration's `(start, end)` byte range.
@@ -2210,17 +2210,24 @@ pub struct ExplainedOpen {
     pub is_type: bool,
     /// Which opaque-open flags this open flipped (see [`OpenOpacity`]).
     pub opacity: OpenOpacity,
-    /// Whether this open ends at or before the explained token — so it is
-    /// lexically in scope there. A scope fact only; see
-    /// [`TokenExplanation::opaque_opens_in_scope`] for why it is not a causal
-    /// verdict on the token's deferral.
-    pub precedes_token: bool,
 }
 
 /// The resolution-explain result for one token (see [`explain_token`]): its
-/// resolution and the file's `open`s with their opacity, so a human can see
+/// resolution and every `open` in the file with its opacity, so a human can see
 /// *why* a name deferred — the `open TypeEquality` poisoning a bare
 /// `List.replicate` investigation, as a reusable query rather than a manual dig.
+///
+/// **It states facts, not a relevance verdict.** It reports the token's
+/// resolution and each open's opacity + range; it does *not* claim which open
+/// gated *this* token. Two reasons that would require knowledge the trace does
+/// not carry: a member/qualified TAIL (`value.Member`) defers pending inference
+/// regardless of any open (a head-vs-tail distinction the trace lacks), and an
+/// open's lexical scope is a *block*, not an offset prefix — the resolver resets
+/// open-state at every top-level block / sibling boundary, so an earlier open by
+/// offset may be out of scope entirely. Both would need per-token gate
+/// instrumentation the tool deliberately avoids. So the reader — who has the
+/// file — correlates the opaque opens (with their line ranges) against the
+/// token's position; the tool supplies the candidates, not the conclusion.
 #[derive(Debug, Clone)]
 pub struct TokenExplanation {
     /// The occurrence `(start, end)` the resolution was recorded at, or `None`
@@ -2238,18 +2245,14 @@ pub struct TokenExplanation {
 }
 
 impl TokenExplanation {
-    /// The opaque `open`s lexically **in scope before** the token — those whose
-    /// `open` ends at or before it. A *fact about scope*, not a causal verdict:
-    /// whether one actually gated *this* token depends on the token being a
-    /// dotted HEAD (which an opaque open defers) rather than a member/qualified
-    /// TAIL — a `value.Member` after `open type T` is `Deferred(QualifiedAccess)`
-    /// pending inference *regardless* of the open. The trace does not carry that
-    /// head/tail distinction (it would need per-token gate instrumentation), so
-    /// this reports the candidates and leaves the conclusion to the reader.
-    pub fn opaque_opens_in_scope(&self) -> Vec<&ExplainedOpen> {
+    /// Every **opaque** `open` in the file, in source order — the candidate
+    /// culprits a human then locates against the token by their ranges. A pure
+    /// fact (which opens poison a category), never a per-token scope or causal
+    /// verdict; see the type docs for why the tool stops short of one.
+    pub fn opaque_opens(&self) -> Vec<&ExplainedOpen> {
         self.opens
             .iter()
-            .filter(|o| o.precedes_token && o.opacity.is_opaque())
+            .filter(|o| o.opacity.is_opaque())
             .collect()
     }
 
@@ -2287,32 +2290,35 @@ impl TokenExplanation {
             } else {
                 "clean".to_string()
             };
-            // A *scope* fact — this open precedes the token — never a claim that
-            // it gated the token (see `opaque_opens_in_scope`).
-            let scope = if o.precedes_token && o.opacity.is_opaque() {
-                "  (opaque, in scope before the token)"
-            } else {
-                ""
-            };
             let _ = writeln!(
                 out,
-                "    {kind} {} @ {}..{} — {opacity}{scope}",
+                "    {kind} {} @ {}..{} — {opacity}",
                 o.path.join("."),
                 o.range.0,
                 o.range.1,
             );
         }
-        // A hint with the head/tail caveat explicit — the trace cannot say which
-        // opaque open (if any) gated *this* deferral, so it must not pretend to.
+        // A hint that names the opaque opens by range and states the two caveats
+        // explicitly — the trace cannot say which (if any) gated *this* deferral,
+        // so it must not pretend to. The reader correlates using the ranges.
         if matches!(self.resolution, Some(Resolution::Deferred(_))) {
-            let in_scope = self.opaque_opens_in_scope().len();
-            if in_scope > 0 {
+            let opaque = self.opaque_opens();
+            if !opaque.is_empty() {
+                let list: Vec<String> = opaque
+                    .iter()
+                    .map(|o| format!("{} @ {}..{}", o.path.join("."), o.range.0, o.range.1))
+                    .collect();
                 let _ = writeln!(
                     out,
-                    "  note: token is Deferred with {in_scope} opaque open(s) in scope before it. \
-                     If it is a dotted HEAD (e.g. `List` in `List.replicate`), deleting an in-scope \
-                     opaque open may let it resolve; a member/qualified TAIL (`value.Member`) defers \
-                     pending type inference regardless of any open."
+                    "  note: token is Deferred; {} opaque open(s) in this file [{}]. \
+                     If the token is a dotted HEAD (e.g. `List` in `List.replicate`) lexically \
+                     after an opaque open in the SAME block/enclosing module, deleting that open \
+                     may let it resolve. Caveats: an open's scope is its block, not an offset \
+                     prefix (the resolver resets open-state at block boundaries), and a \
+                     member/qualified TAIL (`value.Member`) defers pending inference regardless \
+                     of any open.",
+                    opaque.len(),
+                    list.join(", "),
                 );
             }
         }
@@ -2345,23 +2351,15 @@ pub fn explain_token(loaded: &LoadedProject, file_idx: usize, byte: usize) -> To
                 "(no resolution recorded here)".to_string(),
             ),
         };
-    let token_start = token_range.map(|(s, _)| s);
     let opens = file
         .resolution_trace()
         .opens
         .iter()
-        .map(|o| {
-            let (s, e) = range_pair(o.range);
-            ExplainedOpen {
-                range: (s, e),
-                path: o.path.clone(),
-                is_type: o.is_type,
-                opacity: o.opacity,
-                // A scope fact: its `open` ends at or before the token's start.
-                // Over-inclusive across blocks (an open in a sibling block still
-                // counts) — sound for a scope hint, never a causal claim.
-                precedes_token: token_start.is_some_and(|ts| e <= ts),
-            }
+        .map(|o| ExplainedOpen {
+            range: range_pair(o.range),
+            path: o.path.clone(),
+            is_type: o.is_type,
+            opacity: o.opacity,
         })
         .collect();
     TokenExplanation {
