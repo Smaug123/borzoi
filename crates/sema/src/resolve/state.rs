@@ -173,6 +173,20 @@ pub(super) enum AssemblyPath<R> {
     /// *proper* prefix does **not** land here — it merges with the assembly
     /// namespace and falls through (see [`Resolver::assembly_path_records`]).
     ProjectShadowed,
+    /// This reading lands on a **generic type-abbreviation child** of a module
+    /// (missed by the arity-0 `nested` walk): the name binds in the module, but
+    /// the abbreviation target is unmodelled and FCS's ownership is
+    /// target-sensitive (a record/union target falls through, a class target
+    /// keeps the module), so this reading can neither resolve nor confidently
+    /// disown the path — it **defers**.
+    ///
+    /// Unlike [`Self::ProjectShadowed`] it is **tier-local**: it does *not* trip
+    /// the preemptive as-written-root veto in
+    /// [`Resolver::resolve_assembly_path_tiered`], because it is a lower-priority
+    /// *assembly* reading, not a lexical project-bound head — a higher-priority
+    /// `open` that resolves the whole path must still win over it (codex review
+    /// 4). Reached in priority order, it defers like `ProjectShadowed`.
+    AbbreviationOpaque,
     /// Not an assembly path at all.
     NoMatch,
 }
