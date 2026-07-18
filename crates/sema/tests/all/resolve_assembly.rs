@@ -2432,11 +2432,11 @@ fn an_undecidable_qualified_member_does_not_fall_through_to_a_lower_open() {
 /// The resolution-explain trace counterpart of the test above. `open High` defers
 /// `M.Mangled` purely by **precedence**: it adds the reading `High`, whose
 /// `High.M` (uncertain member) out-ranks `open Low`'s `Low.M`. It sets none of
-/// the deferral flags and raises no barrier, so before `added_reading` the trace
-/// reported "no modeled per-open effect" for the very open that caused the
-/// deferral — the explain tool would omit the causal open. The reading-precedence
-/// signal must flag it (and `open Low`, which also contributes a reading — the
-/// per-open trace names candidates, not the single culprit).
+/// the deferral flags and raises no barrier, so its only trace signal is
+/// `added_reading` — without which the explain tool would report "no modeled
+/// per-open effect" for the very open that caused the deferral and omit it as a
+/// candidate. `open Low` also contributes a reading, so it too is flagged: the
+/// per-open trace names candidates, not the single culprit.
 #[test]
 fn a_namespace_open_that_reorders_qualified_precedence_is_flagged() {
     let template = {
