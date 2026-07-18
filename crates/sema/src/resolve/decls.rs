@@ -201,7 +201,7 @@ impl<'a> Resolver<'a> {
             name: name.to_string(),
             qualified: Some(qualified.clone()),
             id: item_id,
-            def,
+            def: super::model::ExportDef::Own(def),
             case: Some(kind),
             // A union/exception case inherits its *type*'s accessibility (a case
             // of a `private` type is scoped to the type's container) and any
@@ -289,7 +289,7 @@ impl<'a> Resolver<'a> {
             name: name.to_string(),
             qualified: None,
             id: item_id,
-            def,
+            def: super::model::ExportDef::Own(def),
             case: Some(kind),
             // RQA case: `qualified: None`, so it never enters the open-fold value
             // namespace; the access-root is recorded for consistency (it is

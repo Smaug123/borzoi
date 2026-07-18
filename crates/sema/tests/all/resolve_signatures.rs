@@ -1,17 +1,20 @@
-//! Stage 1 of `docs/fsi-signature-restriction-plan.md`: `.fsi` signature
+//! `docs/fsi-signature-restriction-plan.md` Stages 1–2: `.fsi` signature
 //! files interleave into the Compile-order fold, and a paired
-//! implementation's **value/case identity exports are dropped** at the
+//! implementation's **own value/case identity exports are dropped** at the
 //! cross-file boundary — a signature-hidden member no longer resolves to the
-//! impl binder. The signature itself is inert (Stage 2 exports its surface),
-//! so a signatured module's members resolve to:
+//! impl binder. A signatured module's members resolve to:
 //!
+//! - the **signature identity** (an `Item` whose def is the `.fsi` ident),
+//!   for the exactly-modelled exposed surface — plain public `val`s and
+//!   visible union/enum cases (Stage 2, pinned in detail by the
+//!   `resolve_signature_exports` group);
 //! - the **merged referenced assembly**, when the assembly provides the path
 //!   and the signature provably cannot expose it (the name is absent from the
 //!   signature's token set) — FCS-probed: hidden `Shared.bar` → the assembly;
-//! - **`Deferred`** otherwise — including every name the signature *may*
-//!   expose (the Stage-1 **screen**: FCS binds the `.fsi` even when a
-//!   referenced assembly collides, probe `Shared.shown` → the `.fsi`, so an
-//!   assembly commit there would be wrong).
+//! - **`Deferred`** otherwise — every name the signature *may* expose but
+//!   Stage 2 does not model (the **screen**: FCS binds the `.fsi` even when
+//!   a referenced assembly collides, so an assembly commit there would be
+//!   wrong).
 //!
 //! Pairing is FCS's `QualifiedNameOfFile`: a module-headed file is named by
 //! its module path, anything else by its capitalised filename stem, then the
@@ -38,7 +41,7 @@ use rowan::TextRange;
 use crate::common::{invoke_fcs_dump_project_with_refs, parse_fcs_uses_project, temp_fs_tree};
 
 /// Parse one Compile item under the grammar its path selects and wrap it.
-fn source_file(path: &str, src: &str) -> SourceFile {
+pub(crate) fn source_file(path: &str, src: &str) -> SourceFile {
     if path.ends_with(".fsi") {
         let p = parse_sig(src);
         assert!(
@@ -60,7 +63,7 @@ fn source_file(path: &str, src: &str) -> SourceFile {
 
 /// Build the fold input from `(path, source)` rows: parse each file under its
 /// extension's grammar and derive the QNOFs over the whole Compile order.
-fn project(files: &[(&str, &str)]) -> Vec<ProjectFile> {
+pub(crate) fn project(files: &[(&str, &str)]) -> Vec<ProjectFile> {
     let srcs: Vec<SourceFile> = files.iter().map(|(p, s)| source_file(p, s)).collect();
     let paths: Vec<PathBuf> = files.iter().map(|(p, _)| PathBuf::from(p)).collect();
     let qnofs = qualified_names(&srcs, &paths);
@@ -70,7 +73,7 @@ fn project(files: &[(&str, &str)]) -> Vec<ProjectFile> {
         .collect()
 }
 
-fn span(start: usize, end: usize) -> TextRange {
+pub(crate) fn span(start: usize, end: usize) -> TextRange {
     TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(end).unwrap().into(),
@@ -79,7 +82,7 @@ fn span(start: usize, end: usize) -> TextRange {
 
 /// The resolution recorded over the (unique) occurrence of `needle` in file
 /// `file_idx`'s source.
-fn res_at(
+pub(crate) fn res_at(
     proj: &ResolvedProject,
     files: &[(&str, &str)],
     file_idx: usize,
@@ -97,7 +100,7 @@ fn res_at(
 
 /// Assert the use is *not* committed to any project binder — `None` or
 /// `Deferred`, never `Item`/`Local` (and, with an empty env, never assembly).
-fn assert_uncommitted(res: Option<Resolution>, what: &str) {
+pub(crate) fn assert_uncommitted(res: Option<Resolution>, what: &str) {
     match res {
         None | Some(Resolution::Deferred(_)) => {}
         other => panic!("{what}: expected no commitment, got {other:?}"),
@@ -106,7 +109,12 @@ fn assert_uncommitted(res: Option<Resolution>, what: &str) {
 
 /// Assert the use committed to a cross-file `Item` declared by file
 /// `def_idx`.
-fn assert_item_in(proj: &ResolvedProject, res: Option<Resolution>, def_idx: usize, what: &str) {
+pub(crate) fn assert_item_in(
+    proj: &ResolvedProject,
+    res: Option<Resolution>,
+    def_idx: usize,
+    what: &str,
+) {
     let res = res.unwrap_or_else(|| panic!("{what}: expected an Item, got no resolution"));
     assert!(
         matches!(res, Resolution::Item(_)),
@@ -120,10 +128,10 @@ fn assert_item_in(proj: &ResolvedProject, res: Option<Resolution>, def_idx: usiz
 // FCS-free: the drop, the pairing, and the screen (empty assembly env).
 // ---------------------------------------------------------------------------
 
-/// The core Stage-1 behaviour change: a signatured module's members — hidden
-/// *and* exposed — no longer resolve to the impl binder (the sig exports
-/// nothing yet; the exposed half becomes Stage 2's signature-identity
-/// commit).
+/// The core Stage-1 behaviour change: a signatured module's members no
+/// longer resolve to the **impl binder** — the hidden half is dropped
+/// outright, and the exposed half carries the signature's identity (Stage 2:
+/// the def is the `.fsi` ident, pinned in `resolve_signature_exports`).
 #[test]
 fn signature_drops_paired_impl_value_exports() {
     let files = [
@@ -135,13 +143,19 @@ fn signature_drops_paired_impl_value_exports() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(res_at(&proj, &files, 2, "A.shown"), "sig-exposed A.shown");
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 2, "A.shown"),
+        0,
+        "sig-exposed A.shown (the .fsi identity)",
+    );
     assert_uncommitted(res_at(&proj, &files, 2, "A.hidden"), "sig-hidden A.hidden");
-    // The signature slot itself is inert.
+    // The signature slot owns no exports of its own (the surface rides the
+    // impl's slot).
     assert!(proj.file(0).exports().is_empty());
-    // The impl's own surface is untouched (conclusion 2) — only the boundary
-    // contribution is dropped.
-    assert_eq!(proj.file(1).exports().len(), 2);
+    // The impl's own resolutions are untouched (conclusion 2); its item range
+    // holds its own two items plus the signature's one appended export.
+    assert_eq!(proj.file(1).exports().len(), 3);
 }
 
 /// Control: the identical project without the `.fsi` still exports both
@@ -172,7 +186,12 @@ fn unsigned_sibling_module_still_exports() {
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
     assert_item_in(&proj, res_at(&proj, &files, 3, "C.c"), 2, "C.c");
-    assert_uncommitted(res_at(&proj, &files, 3, "A.shown"), "A.shown");
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 3, "A.shown"),
+        0,
+        "A.shown (the .fsi identity)",
+    );
 }
 
 /// Probe X3: pairing is first-following-impl of equal QNOF. A same-named
@@ -190,7 +209,12 @@ fn pairing_is_first_following_impl_of_equal_qnof() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(res_at(&proj, &files, 3, "M.shown"), "M.shown");
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 3, "M.shown"),
+        0,
+        "M.shown (the .fsi identity)",
+    );
     assert_uncommitted(res_at(&proj, &files, 3, "M.hidden"), "M.hidden");
     assert_item_in(&proj, res_at(&proj, &files, 3, "M.extra"), 2, "M.extra");
 }
@@ -234,7 +258,12 @@ fn namespace_headed_signature_pairs_by_filename() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(res_at(&proj, &files, 2, "N.A.shown"), "N.A.shown");
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 2, "N.A.shown"),
+        0,
+        "N.A.shown (the .fsi identity)",
+    );
     assert_uncommitted(res_at(&proj, &files, 2, "N.A.hidden"), "N.A.hidden");
 }
 
@@ -263,23 +292,30 @@ fn namespace_headed_signature_with_other_stem_does_not_pair() {
 }
 
 /// `open` of a signatured module: the module header survives (the open is not
-/// an unknown-module error path), and bare uses of dropped values defer.
+/// an unknown-module error path), and the sig-exposed value is enumerable
+/// through the open, committing to the `.fsi` identity.
 #[test]
-fn open_of_signatured_module_defers_bare_uses() {
+fn open_of_signatured_module_commits_exposed_bare_uses() {
     let files = [
         ("/p/A.fsi", "module A\n\nval shown: int\n"),
         ("/p/A.fs", "module A\n\nlet shown = 1\n"),
         ("/p/B.fs", "module B\n\nopen A\n\nlet u = shown\n"),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(res_at(&proj, &files, 2, "shown"), "bare shown after open");
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 2, "shown"),
+        0,
+        "bare shown after open (the .fsi identity)",
+    );
 }
 
 /// Codex review P1 (probe 2026-07-18): a signatured *relative* module
 /// outranks a root module of the same simple name. Inside `namespace A`,
 /// `M.x` with a root `module M; let x` and a signatured `module A.M`
-/// exposing `x` binds the `.fsi` in FCS — so the root fallback must not
-/// commit while the relative reading is screened.
+/// exposing `x` binds the `.fsi` in FCS — with the exposed surface now a
+/// real export, the relative reading commits the signature identity (the
+/// root module must not bind).
 #[test]
 fn screened_relative_reading_withholds_root_module_commit() {
     let files = [
@@ -292,9 +328,11 @@ fn screened_relative_reading_withholds_root_module_commit() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
-    assert_uncommitted(
+    assert_item_in(
+        &proj,
         res_at(&proj, &files, 3, "M.x"),
-        "M.x with a screened relative reading (FCS binds the .fsi)",
+        1,
+        "M.x binds the signatured relative module's .fsi, never the root",
     );
 
     // Control: without the signature the relative module commits normally.
@@ -352,7 +390,7 @@ fn impl_only_auto_open_is_not_published() {
 /// identically-motivated bound.
 const BUILD_TIMEOUT: Duration = Duration::from_secs(1800);
 
-fn ensure_reflib_built() -> &'static Path {
+pub(crate) fn ensure_reflib_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {
@@ -373,7 +411,7 @@ fn ensure_reflib_built() -> &'static Path {
         .as_path()
 }
 
-fn reflib_env() -> AssemblyEnv {
+pub(crate) fn reflib_env() -> AssemblyEnv {
     let bytes = std::fs::read(ensure_reflib_built()).expect("read signature RefLib fixture dll");
     let view = Ecma335Assembly::parse(&bytes).expect("parse signature RefLib fixture dll");
     AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
@@ -399,9 +437,9 @@ fn reflib_project_files() -> [(&'static str, &'static str); 3] {
 
 /// The probe matrix (FCS `uses-project`, 2026-07-18, RefLib collision):
 ///
-/// | use | FCS | Stage 1 |
+/// | use | FCS | sema |
 /// |---|---|---|
-/// | `Shared.shown` (sig-exposed, in assembly) | the `.fsi` | **Deferred** (the screen — an assembly commit would be wrong) |
+/// | `Shared.shown` (sig-exposed, in assembly) | the `.fsi` | the `.fsi` `Item` (the exposed surface shadows the merged assembly member) |
 /// | `Shared.bar` (hidden, in assembly) | the assembly | the assembly (`Member`) |
 /// | `Shared.asmOnly` (assembly only) | the assembly | the assembly (`Member`) |
 #[test]
@@ -410,8 +448,10 @@ fn hidden_member_falls_through_to_assembly_and_exposed_member_is_screened() {
     let env = reflib_env();
     let proj = resolve_project_files(&project(&files), &env);
 
-    assert_uncommitted(
+    assert_item_in(
+        &proj,
         res_at(&proj, &files, 2, "ProbeNs.Shared.shown"),
+        0,
         "sig-exposed shown with an assembly collision (FCS binds the .fsi)",
     );
     assert!(
@@ -433,17 +473,13 @@ fn hidden_member_falls_through_to_assembly_and_exposed_member_is_screened() {
 }
 
 /// The `open` half of the same probe. FCS binds bare `shown` to the `.fsi`
-/// and bare `bar`/`asmOnly` to RefLib. Stage 1 commits **none of them**: the
-/// signatured module is hidden-valued (its exports are dropped but the
-/// signature may expose names sema cannot enumerate yet), so opening it takes
-/// the conservative project-module-open path (`opaque_value_open`) and every
-/// later bare name defers. That deferral is load-bearing — a sig-exposed name
-/// must shadow an earlier open's same-named value, and with no signature
-/// exports the opaque/generation machinery is the only lever — and it is
-/// what keeps bare `shown` off the assembly (FCS binds the `.fsi`). The
-/// `bar`/`asmOnly` deferrals are the honest D5 cost on this path (the
-/// *qualified* form does commit them to the assembly — the test above);
-/// Stage 2's signature exports sharpen the open fold.
+/// and bare `bar`/`asmOnly` to RefLib. The sig-exposed `shown` is a real
+/// export now, so the open enumerates it and the bare use commits to the
+/// `.fsi` identity. `bar`/`asmOnly` stay deferred: the signatured module is
+/// still hidden-valued (it may expose names sema cannot enumerate yet), so
+/// the open's generation barrier stales the assembly-folded entries — the
+/// honest D5 cost on this path (the *qualified* form does commit them to the
+/// assembly — the test above).
 #[test]
 fn open_of_signatured_module_screens_bare_names_from_the_assembly() {
     let files = [
@@ -460,8 +496,10 @@ fn open_of_signatured_module_screens_bare_names_from_the_assembly() {
     let env = reflib_env();
     let proj = resolve_project_files(&project(&files), &env);
 
-    assert_uncommitted(
+    assert_item_in(
+        &proj,
         res_at(&proj, &files, 2, "shown"),
+        0,
         "bare sig-exposed shown after open (FCS binds the .fsi — an assembly \
          commit would be wrong)",
     );
@@ -505,9 +543,9 @@ fn namespace_direct_case_screens_assembly_paths() {
 
 /// Codex review round 3: a **headerless** signature restricts the implicit
 /// filename module (FCS's `ComputeAnonModuleName` — the canonicalised stem,
-/// dots splitting into segments), so its screen must root there: a
-/// sig-exposed name colliding with an assembly member defers, while an
-/// assembly-only name still falls through.
+/// dots splitting into segments), so its surface roots there: a sig-exposed
+/// name colliding with an assembly member commits the `.fsi` identity, while
+/// an assembly-only name still falls through.
 #[test]
 fn headerless_signature_screens_the_implicit_module() {
     let files = [
@@ -519,8 +557,10 @@ fn headerless_signature_screens_the_implicit_module() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &reflib_env());
-    assert_uncommitted(
+    assert_item_in(
+        &proj,
         res_at(&proj, &files, 2, "ProbeNs.Shared.shown"),
+        0,
         "sig-exposed shown under a headerless signature's implicit module",
     );
     assert!(
@@ -585,11 +625,18 @@ fn prefix_fold_pairs_from_the_whole_compile_list() {
             );
         }
     }
-    // The screened intervening use defers — in the full fold and, by the
-    // equality above, in every prefix that contains it.
-    assert_uncommitted(
+    // The intervening use binds the ROOT module: the signatured `A.M`
+    // publishes only at its implementation's (later) slot, so `Between.fs`
+    // sees only the root `module M` — in the full fold and, by the equality
+    // above, in every prefix that contains it. (FCS-checked by
+    // `resolve_signature_exports::signature_exports_agree_with_fcs`'s
+    // `sig2_intervening_relative` fixture.)
+    assert_item_in(
+        &full,
         res_at(&full, &files, 2, "M.x"),
-        "intervening M.x under a screen whose impl lies later",
+        0,
+        "intervening M.x binds the root module while the signatured relative \
+         module has not yet published",
     );
 }
 
@@ -677,12 +724,12 @@ fn incremental_matches_cold_when_signature_is_added() {
 /// how many cross-file commits must agree exactly with FCS (non-vacuity), and
 /// which use texts FCS itself must leave *without* an in-project declaration
 /// (pinning that the FCS-side hiding genuinely fired).
-struct SigProject {
-    label: &'static str,
-    files: Vec<(&'static str, &'static str)>,
-    refs: Vec<&'static Path>,
-    expected_cross_file: usize,
-    fcs_must_not_declare: Vec<&'static str>,
+pub(crate) struct SigProject {
+    pub(crate) label: &'static str,
+    pub(crate) files: Vec<(&'static str, &'static str)>,
+    pub(crate) refs: Vec<&'static Path>,
+    pub(crate) expected_cross_file: usize,
+    pub(crate) fcs_must_not_declare: Vec<&'static str>,
 }
 
 /// The signature-aware sibling of `resolve_project_diff`'s
@@ -690,7 +737,7 @@ struct SigProject {
 /// QNOF inputs), feed FCS the interleaved Compile order, resolve with the
 /// signature-aware fold, and assert certain-implies-exact plus the expected
 /// agreement count.
-fn assert_sig_matches_fcs(p: &SigProject) {
+pub(crate) fn assert_sig_matches_fcs(p: &SigProject) {
     let (root, written) = temp_fs_tree(p.label, &p.files);
     let paths: Vec<&Path> = written.iter().map(|(path, _)| path.as_path()).collect();
 
@@ -823,7 +870,8 @@ fn assert_sig_matches_fcs(p: &SigProject) {
 fn signature_pairing_agrees_with_fcs() {
     let fixtures = [
         // Module-headed pair, same directory: `shown` declares in the .fsi
-        // (we defer — allowed); `hidden` is FS0039 (no in-project decl).
+        // (the signature-identity commit — 1 exact cross-file agreement);
+        // `hidden` is FS0039 (no in-project decl).
         SigProject {
             label: "sigdiff_pair",
             files: vec![
@@ -835,11 +883,12 @@ fn signature_pairing_agrees_with_fcs() {
                 ),
             ],
             refs: vec![],
-            expected_cross_file: 0,
+            expected_cross_file: 1,
             fcs_must_not_declare: vec!["M.hidden"],
         },
         // Probe X3: the d2 fragment deduplicates apart and stays unsigned —
-        // `M.extra` must agree exactly (non-vacuity: 1 cross-file commit).
+        // `M.extra` must agree exactly, and the sig-exposed `M.shown`
+        // commits to the .fsi (non-vacuity: 2 cross-file commits).
         SigProject {
             label: "sigdiff_x3",
             files: vec![
@@ -849,7 +898,7 @@ fn signature_pairing_agrees_with_fcs() {
                 ("Use.fs", "module Use\n\nlet a = M.shown\nlet c = M.extra\n"),
             ],
             refs: vec![],
-            expected_cross_file: 1,
+            expected_cross_file: 2,
             fcs_must_not_declare: vec![],
         },
         // Cross-directory module-headed sig/impl: FCS deduplicates them apart
@@ -872,7 +921,8 @@ fn signature_pairing_agrees_with_fcs() {
             fcs_must_not_declare: vec![],
         },
         // Namespace-headed pair (filename-derived QNOF, probes G/G2):
-        // `shown` declares in the .fsi (we defer); `hidden` is FS0039.
+        // `shown` declares in the .fsi (the signature-identity commit);
+        // `hidden` is FS0039.
         SigProject {
             label: "sigdiff_ns",
             files: vec![
@@ -887,7 +937,7 @@ fn signature_pairing_agrees_with_fcs() {
                 ),
             ],
             refs: vec![],
-            expected_cross_file: 0,
+            expected_cross_file: 1,
             fcs_must_not_declare: vec!["N.A.hidden"],
         },
         // Filename-derivation control: a different stem does not pair, so the
@@ -915,8 +965,8 @@ fn signature_pairing_agrees_with_fcs() {
         },
         // Codex review P1: inside `namespace A`, `M.x` binds the signatured
         // relative `A.M` (the `.fsi`), not the root `module M` — the
-        // project-side screen veto (we defer; a root `Item` commit would
-        // fail the exactness check against FCS's `.fsi` decl).
+        // relative reading commits the signature identity (a root `Item`
+        // commit would fail the exactness check against FCS's `.fsi` decl).
         SigProject {
             label: "sigdiff_relative",
             files: vec![
@@ -926,7 +976,7 @@ fn signature_pairing_agrees_with_fcs() {
                 ("Use.fs", "namespace A\n\nmodule Use =\n    let y = M.x\n"),
             ],
             refs: vec![],
-            expected_cross_file: 0,
+            expected_cross_file: 1,
             fcs_must_not_declare: vec![],
         },
         // …and the unsigned control: the relative module commits (1 exact
@@ -1231,21 +1281,25 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
         }
     }
 
-    // Non-vacuity floors: the sweep must exercise all three verdict families.
-    // Unsigned cells commit project Items; SigShownOnly × qualified ×
-    // collision falls through to the assembly for `hidden`; every screened
-    // cell defers.
-    assert!(item_agreements >= 12, "item agreements: {item_agreements}");
+    // Non-vacuity floors: the sweep must exercise all three verdict families,
+    // and the item floor also ratchets the Stage-2 signature-identity commits
+    // (unsigned cells and every sig-exposed `shown` commit project Items —
+    // observed 52; a broken screen exemption collapses that to the unsigned
+    // cells alone). `hidden`/`asmOnly` under a collision fall through to the
+    // assembly (observed 7); hidden names and open-staled assembly entries
+    // defer (observed 31).
+    assert!(item_agreements >= 45, "item agreements: {item_agreements}");
     assert!(
-        assembly_agreements >= 2,
+        assembly_agreements >= 5,
         "assembly agreements: {assembly_agreements}"
     );
-    assert!(deferrals >= 12, "deferrals: {deferrals}");
+    assert!(deferrals >= 20, "deferrals: {deferrals}");
 }
 
 /// Codex round 3's headerless-signature × assembly-collision cell as a live
 /// differential: FCS binds the sig-exposed `shown` of the implicit module to
-/// the `.fsi`; an assembly commit on our side trips the exactness loop.
+/// the `.fsi`, and so do we (the signature-identity commit); an assembly
+/// commit on our side trips the exactness loop.
 #[test]
 fn headerless_signature_collision_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
@@ -1260,7 +1314,7 @@ fn headerless_signature_collision_agrees_with_fcs() {
             ),
         ],
         refs: vec![reflib],
-        expected_cross_file: 0,
+        expected_cross_file: 1,
         fcs_must_not_declare: vec!["ProbeNs.Shared.asmOnly"],
     });
 }
@@ -1287,8 +1341,8 @@ fn namespace_direct_case_collision_agrees_with_fcs() {
 
 /// The assembly-collision matrix as a live differential (the probe that
 /// grounded the Stage-1 screen): FCS binds sig-exposed `shown` to the `.fsi`
-/// and hidden `bar` / `asmOnly` to RefLib; our side defers `shown` (never an
-/// assembly commit — the screen) and commits `bar`/`asmOnly` to the assembly.
+/// and hidden `bar` / `asmOnly` to RefLib; our side commits `shown` to the
+/// `.fsi` identity (never the assembly) and `bar`/`asmOnly` to the assembly.
 #[test]
 fn assembly_fall_through_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
@@ -1307,7 +1361,7 @@ fn assembly_fall_through_agrees_with_fcs() {
         label: "sigdiff_reflib",
         files,
         refs: vec![reflib],
-        expected_cross_file: 0,
+        expected_cross_file: 1,
         fcs_must_not_declare: vec!["ProbeNs.Shared.bar", "ProbeNs.Shared.asmOnly"],
     };
     assert_sig_matches_fcs(&p);

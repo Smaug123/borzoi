@@ -461,7 +461,14 @@ fn top_level_bindings_are_exported_in_order() {
     assert_eq!(names, ["x", "f"]);
     // The function is flagged as such; the value is not; the parameter is not
     // exported.
-    let kinds: Vec<DefKind> = rf.exports().iter().map(|i| rf.def(i.def()).kind).collect();
+    let kinds: Vec<DefKind> = rf
+        .exports()
+        .iter()
+        .map(|i| {
+            rf.def(i.def().expect("own-arena def in a single-file resolve"))
+                .kind
+        })
+        .collect();
     assert_eq!(
         kinds,
         [

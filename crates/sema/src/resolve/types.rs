@@ -609,7 +609,7 @@ impl<'a> Resolver<'a> {
                         name: case_name.clone(),
                         qualified: None,
                         id: item_id,
-                        def: use_id,
+                        def: super::model::ExportDef::Own(use_id),
                         case: None,
                         access_root_len: self.export_access_root_len(is_private),
                         attributed: false,
@@ -2133,7 +2133,7 @@ impl<'a> Resolver<'a> {
                 Some(local) => self
                     .items
                     .get(local)
-                    .and_then(|it| self.active_pattern_shape.get(&it.def).copied()),
+                    .and_then(|it| self.active_pattern_shape.get(&it.def()?).copied()),
                 // Cross-file: the shape crosses the boundary in the side map.
                 None => self.preceding.active_pattern_shape_of(id),
             },

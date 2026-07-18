@@ -59,6 +59,13 @@ pub(super) struct ExportRecord {
 pub(super) struct SigRoot {
     pub(super) path: Vec<String>,
     pub(super) auto_open: bool,
+    /// `true` for the **implicit filename module** of a headerless signature
+    /// (FCS's `ComputeAnonModuleName`). A paired headerless implementation
+    /// publishes no module header of its own (its fragments are anonymous),
+    /// yet FCS treats the implicit module as a real, openable module — so
+    /// the materialisation ([`ResolvedFile::append_signature_exports`])
+    /// publishes a header decl for such a root at the implementation's slot.
+    pub(super) implicit: bool,
 }
 
 /// What a `.fsi` signature file contributes to the Compile-order fold in
@@ -98,6 +105,60 @@ pub(super) struct SigScreen {
     /// `ProbeNs.Shared.shown` → FCS binds `Shared` to the `.fsi` case and
     /// reports FS0039 on `shown`; an assembly commit there is wrong).
     pub(super) value_paths: Vec<Vec<String>>,
+    /// The **value-namespace** half of the signature's exactly-modelled
+    /// surviving surface (Stage 2): every `qualified` path its export list
+    /// carries a real identity for (plain `val`s, non-RQA union cases). A
+    /// reading landing *exactly* on one of these is exempt from the screen:
+    /// the export commits the signature identity (which is what FCS binds),
+    /// or — before the paired implementation's slot, where the surface has
+    /// not published — falls through to the merged assembly / earlier
+    /// project candidate, which is FCS's probed intervening verdict.
+    /// Readings that only pass *through* such a path (a longer residual)
+    /// keep deferring. Cross-screen scope: see
+    /// [`ProjectItems::sig_screened_path`].
+    pub(super) exported_value_paths: HashSet<Vec<String>>,
+    /// The **type-qualified case** half (`[container.., Type, Case]` — RQA
+    /// and non-RQA union cases, enum cases). Exempts only the *case* lookup
+    /// ([`ProjectItems::sig_screened_case_path`]): the value-namespace
+    /// lookups stay vetoed on such a path, because FCS resolves the
+    /// signature's case ahead of a same-path earlier-fragment **value**
+    /// (probe: `module T = let CaseC = 0` in an earlier fragment vs a
+    /// signatured `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC`
+    /// binds the `.fsi` case), so a value commit there would be wrong.
+    pub(super) exported_case_paths: HashSet<Vec<String>>,
+}
+
+/// One export the paired signature contributes **at the implementation's
+/// Compile slot** (`docs/fsi-signature-restriction-plan.md` Stage 2):
+/// everything the materialised [`ExportedItem`] needs except the [`ItemId`],
+/// which is assigned only when the implementation's slot is reached (the
+/// signature owns no id range). The `def` indexes the **signature slot's**
+/// arena — [`ResolvedFile::append_signature_exports`] wraps it in
+/// [`ExportDef::Sig`], so go-to-definition lands on the `.fsi` ident while
+/// provenance stays with the implementation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SigExport {
+    /// The exported name (`idText`).
+    pub(super) name: String,
+    /// The value-namespace qualified path, or `None` for a require-qualified
+    /// case (reachable only through the type-qualified index).
+    pub(super) qualified: Option<Vec<String>>,
+    /// The decl path (container + name) — the materialised [`ExportDecl`]'s
+    /// `path`.
+    pub(super) path: Vec<String>,
+    /// The defining ident in the signature slot's arena.
+    pub(super) def: DefId,
+    /// The constructor-case kind, `None` for a plain `val`.
+    pub(super) case: Option<CaseKind>,
+    /// The case's type-qualified export path, if any.
+    pub(super) type_qualified: Option<Vec<String>>,
+    /// Whether the `val` carried any attribute list (a maybe-`[<Literal>]`,
+    /// like [`ExportedItem::attributed`]).
+    pub(super) attributed: bool,
+    /// Source position of the declaring ident in the `.fsi` (provenance,
+    /// like [`ExportDecl::pos`] — note it is a position in the *signature's*
+    /// coordinate space).
+    pub(super) pos: TextSize,
 }
 
 /// Exported project items visible to a file from *earlier* in Compile order.
@@ -285,7 +346,14 @@ pub struct ProjectItems {
     /// path defers ([`Self::sig_screened_path`]). Pushed at the signature's
     /// own Compile slot, which over-defers *intervening* files (FCS resolves
     /// those to the assembly — probe; deferral is the sound direction).
-    pub(super) sig_screens: Vec<Arc<SigScreen>>,
+    /// Each entry carries the screen and its **materialisation rank** — the
+    /// paired implementation's Compile index, where the signature's surface
+    /// publishes. Precedence between fragments is materialisation order
+    /// (FCS-probed: with `[A.fsi, B.fsi, B.fs, A.fs]` the *A* fragment
+    /// contributes last), which a valid interleaving can reverse relative
+    /// to signature-slot order — so the cross-screen exemption rule ranks
+    /// by this index, never by push order.
+    pub(super) sig_screens: Vec<(Arc<SigScreen>, usize)>,
     /// The implicit filename modules of earlier **unpaired headerless**
     /// implementation files (see [`Self::note_implicit_module_shadow`]).
     pub(super) implicit_module_shadows: HashSet<Vec<String>>,
@@ -700,7 +768,59 @@ impl ProjectItems {
     }
 
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
-        self.sig_screens.iter().any(|screen| {
+        self.screened_path(names, false)
+    }
+
+    /// The **case-lookup** flavour of [`Self::sig_screened_path`]: also
+    /// exempt on an exactly-exported *type-qualified case* path. Only the
+    /// type-qualified case commit sites may use this — a value-namespace
+    /// lookup on such a path must stay vetoed (FCS binds the signature's
+    /// case ahead of a same-path earlier-fragment value; see
+    /// [`SigScreen::exported_case_paths`]).
+    pub(super) fn sig_screened_case_path(&self, names: &[String]) -> bool {
+        self.screened_path(names, true)
+    }
+
+    fn screened_path(&self, names: &[String], case_exempt: bool) -> bool {
+        // A reading landing exactly on a signature's exactly-modelled
+        // exported surface is exempt (Stage 2): the export itself is the
+        // commit FCS makes, and before the impl's slot the fall-through to
+        // the merged assembly / earlier project candidate is FCS's verdict
+        // too (probed). The exemption spans screens **forward only**: an
+        // EARLIER screen's veto is overridden by a later-or-same fragment's
+        // exact export (the later fragment's surface wins the merge, FCS-
+        // probed: a later `val x` beats an earlier sig's unmodelled mention
+        // of `x`), but a LATER screen's veto stands — its fragment could
+        // expose an unmodelled `x` that shadows the earlier export, so a
+        // commit would be a guess.
+        let exempt = |s: &SigScreen| {
+            s.exported_value_paths.contains(names)
+                || (case_exempt && s.exported_case_paths.contains(names))
+        };
+        // Only a **materialised** export (its implementation slot already
+        // folded — `item_file_bases.len()` is the number of folded files,
+        // i.e. the reading file's Compile index) may override ANOTHER
+        // screen's veto: an unmaterialised signature's surface does not
+        // exist yet for this reader, and FCS still binds the latest
+        // materialised fragment (probe: `[First.fs, A.fsi, A.fs, B.fsi,
+        // Between.fs, B.fs]` — Between's `N.M.x` binds A.fsi, so B's
+        // pending export must not cancel A's screen). A screen's OWN exact
+        // export cancels its own veto unconditionally — pre-materialisation
+        // the fall-through to lower candidates is the probed verdict.
+        let now = self.item_file_bases.len();
+        let latest_published_exempt = self
+            .sig_screens
+            .iter()
+            .filter(|(s, rank)| *rank < now && exempt(s))
+            .map(|(_, rank)| *rank)
+            .max();
+        self.sig_screens.iter().any(|(screen, rank)| {
+            if exempt(screen) {
+                return false;
+            }
+            if latest_published_exempt.is_some_and(|j| j >= *rank) {
+                return false;
+            }
             screen.roots.iter().any(|root| {
                 names.len() > root.path.len()
                     && names.starts_with(&root.path)
@@ -728,7 +848,33 @@ impl ProjectItems {
     ///   whose provenance the entry no longer carries): screen on the name
     ///   alone — coarser, deferral-only.
     pub(super) fn sig_screened_open_name(&self, opened: &[String], name: &str) -> bool {
-        self.sig_screens.iter().any(|screen| {
+        // The exactly-modelled exemption (Stage 2), as for
+        // [`Self::sig_screened_path`] (value-namespace half only — a
+        // type-qualified case is never a bare open-fold entry), with the
+        // same forward-only cross-screen scope: the folded entry's
+        // qualified path is `opened + [name]` — when a later-or-same
+        // fragment's signature exports precisely that path, the entry the
+        // project half pushes IS the commit FCS makes (and pre-impl the
+        // assembly entry is FCS's verdict).
+        let mut full = opened.to_vec();
+        full.push(name.to_string());
+        // Same materialisation gate as [`Self::screened_path`]: only a
+        // published export overrides another screen's veto; a screen's own
+        // export always answers its own concern.
+        let now = self.item_file_bases.len();
+        let latest_published_exempt = self
+            .sig_screens
+            .iter()
+            .filter(|(s, rank)| *rank < now && s.exported_value_paths.contains(&full))
+            .map(|(_, rank)| *rank)
+            .max();
+        self.sig_screens.iter().any(|(screen, rank)| {
+            if screen.exported_value_paths.contains(&full) {
+                return false;
+            }
+            if latest_published_exempt.is_some_and(|j| j >= *rank) {
+                return false;
+            }
             screen.roots.iter().any(|root| {
                 if opened.starts_with(&root.path) {
                     opened[root.path.len()..]
@@ -781,14 +927,16 @@ impl ProjectItems {
     /// exports** — the signature restricts them, and Stage 1 emits no
     /// signature identity to replace them — while keeping every defer-only
     /// shadow and marker ([`FileExportIndices::from_decls_screened`]).
-    /// `partnered` is whether the file has a pairing partner: a signature
-    /// publishes its screen only when a following implementation consumes it
-    /// (an unpaired signature constrains nothing — FCS-probed).
+    /// `partner` is the file's pairing-partner Compile index, if any: a
+    /// signature publishes its screen only when a following implementation
+    /// consumes it (an unpaired signature constrains nothing — FCS-probed),
+    /// and that implementation's index is the screen's materialisation rank
+    /// (see [`Self::sig_screens`]).
     pub(super) fn extend_with(
         &mut self,
         file: &ResolvedFile,
         paired_screen: Option<&SigScreen>,
-        partnered: bool,
+        partner: Option<usize>,
     ) {
         // Record this file's id base BEFORE interning its items, so [`Self::file_of`]
         // maps any exported id back to its Compile-order file (the straddle fold's
@@ -801,8 +949,10 @@ impl ProjectItems {
         // A paired signature file's own contribution is its screen alone
         // (Stage 1: it exports nothing; its decl list is empty, so the
         // derivation below folds nothing else from it).
-        if partnered && let Some(screen) = &file.sig_screen {
-            self.sig_screens.push(Arc::clone(screen));
+        if let Some(impl_idx) = partner
+            && let Some(screen) = &file.sig_screen
+        {
+            self.sig_screens.push((Arc::clone(screen), impl_idx));
         }
 
         let idx = match paired_screen {
@@ -1069,11 +1219,17 @@ impl FileExportIndices {
                     item,
                     type_qualified,
                 } => match item {
-                    Some(_) if screen.is_some() => {
-                        // Signature-restricted (Stage 1): the value/case
-                        // identity is dropped, and the container is marked
-                        // hidden — it holds names the boundary no longer
-                        // enumerates.
+                    // Signature-restricted: the implementation's OWN
+                    // value/case identity is dropped, and the container is
+                    // marked hidden — it holds names the boundary no longer
+                    // enumerates. A **signature-derived** identity
+                    // (`ExportDef::Sig`, Stage 2) is exactly what replaces
+                    // the dropped surface, so it survives into the ordinary
+                    // export arm below.
+                    Some(item_idx)
+                        if screen.is_some()
+                            && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
+                    {
                         push_container_hidden(&mut fi, &decl.path);
                     }
                     Some(item_idx) => {
@@ -1199,10 +1355,13 @@ impl FileExportIndices {
                     fi.namespace_paths.push(decl.path.clone());
                 }
                 ExportDeclKind::ActivePatternCase { item, shape } => match item {
-                    Some(_) if screen.is_some() => {
-                        // Signature-restricted (Stage 1): as for `Item` — the
-                        // case identity is dropped, the container marked
-                        // hidden.
+                    // As for `Item`: only the implementation's own identity
+                    // is dropped (a signature never produces an AP case in
+                    // Stage 2, but the guard stays symmetric).
+                    Some(item_idx)
+                        if screen.is_some()
+                            && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
+                    {
                         push_container_hidden(&mut fi, &decl.path);
                     }
                     Some(item_idx) => {
@@ -1668,6 +1827,23 @@ pub enum CaseKind {
     Exception,
 }
 
+/// Where an [`ExportedItem`]'s defining binder lives. Almost always the
+/// declaring file's own arena ([`Self::Own`]); the one exception is a
+/// signature-derived export (`docs/fsi-signature-restriction-plan.md`
+/// Stage 2), whose [`ItemId`] range, provenance, and Compile slot belong to
+/// the paired **implementation** while its def — the go-to-definition target
+/// — is an ident in the **`.fsi`** ([`Self::Sig`]). [`ResolvedProject::item_def`]
+/// follows the redirect; the same-file readers ([`ResolvedFile::resolved_def`]
+/// et al.) treat a redirected def as cross-file and decline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportDef {
+    /// A binder in the declaring file's own arena.
+    Own(DefId),
+    /// The paired signature's ident: `file` is the `.fsi`'s Compile-order
+    /// index, `def` a binder in that slot's arena.
+    Sig { file: usize, def: DefId },
+}
+
 /// A top-level binding a file contributes to files later in Compile order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportedItem {
@@ -1680,8 +1856,9 @@ pub struct ExportedItem {
     pub(super) qualified: Option<Vec<String>>,
     /// This binding's project-global handle.
     pub(super) id: ItemId,
-    /// The defining binder in the resolved file's arena.
-    pub(super) def: DefId,
+    /// The defining binder — this file's arena, or the paired signature's
+    /// (see [`ExportDef`]).
+    pub(super) def: ExportDef,
     /// The **constructor-case kind** of this export ([`CaseKind`]), or `None` for
     /// an ordinary `let` value. `Some(_)` marks the export as also live in the
     /// constructor (pattern) namespace — a union case, an `enum` case, or an
@@ -1743,9 +1920,15 @@ impl ExportedItem {
         self.id
     }
 
-    /// The defining binder, an index into [`ResolvedFile`]'s arena.
-    pub fn def(&self) -> DefId {
-        self.def
+    /// The defining binder in the declaring file's **own** arena, or `None`
+    /// for a signature-derived export whose def lives in the paired `.fsi`
+    /// (reach it through [`ResolvedProject::item_def`], which follows the
+    /// cross-file redirect).
+    pub fn def(&self) -> Option<DefId> {
+        match self.def {
+            ExportDef::Own(d) => Some(d),
+            ExportDef::Sig { .. } => None,
+        }
     }
 
     /// Whether this export is a **constructor case** (a union / `enum` /
@@ -1906,12 +2089,19 @@ pub struct ResolvedFile {
     /// Stage 2). Every cross-file index derives from this list.
     pub(super) export_decls: Vec<ExportDecl>,
     /// `Some` iff this is a `.fsi` **signature file**
-    /// (`docs/fsi-signature-restriction-plan.md` Stage 1): its screen — the
-    /// only thing a signature contributes to the fold today. A signature's
-    /// other fields are all empty/inert (it owns no `ItemId` range, exports
-    /// nothing, and records no resolutions until Stage 2). `None` for every
-    /// implementation file.
+    /// (`docs/fsi-signature-restriction-plan.md`): its screen. A signature
+    /// slot owns no `ItemId` range and records no resolutions; its arena
+    /// holds the exported idents' binders ([`Self::sig_exports`] points into
+    /// it). `None` for every implementation file.
     pub(super) sig_screen: Option<Arc<SigScreen>>,
+    /// The signature's exactly-modelled surviving surface (Stage 2), in
+    /// signature source order — stashed here at the signature's slot and
+    /// materialised **at the paired implementation's slot**
+    /// ([`Self::append_signature_exports`]). Empty for implementation files
+    /// and for signatures with no modelled surface. Part of the file's fold
+    /// contribution ([`Self::same_export_contribution`]): a `.fsi` edit that
+    /// changes the surface must invalidate the incremental fold's suffix.
+    pub(super) sig_exports: Vec<SigExport>,
 }
 
 /// Build the end-offset index a token classifier queries, from a set of
@@ -2021,16 +2211,29 @@ impl ResolvedFile {
             // partner index to match while the prefix (the signature's own
             // contribution included) is in sync.
             && self.sig_screen == other.sig_screen
+            // Stage 2: the signature's stashed export surface is materialised
+            // at the paired implementation's slot, so an edit changing it
+            // changes that later slot's contribution — the suffix must
+            // refold. (Contains the defs' source positions, so a
+            // range-shifting .fsi edit invalidates too — conservative.)
+            && self.sig_exports == other.sig_exports
     }
 
-    /// The inert [`ResolvedFile`] a `.fsi` **signature file** occupies a
-    /// Compile slot with (`docs/fsi-signature-restriction-plan.md` Stage 1):
-    /// no binders, no resolutions, no exports — it owns no `ItemId` range
-    /// (`item_base` is the running count, its range empty) — only its screen.
-    /// Stage 2 replaces this with a real signature surface.
-    pub(super) fn inert_signature(item_base: u32, screen: Arc<SigScreen>) -> ResolvedFile {
+    /// The [`ResolvedFile`] a `.fsi` **signature file** occupies a Compile
+    /// slot with (`docs/fsi-signature-restriction-plan.md`): no resolutions
+    /// and no exports of its own — it owns no `ItemId` range (`item_base` is
+    /// the running count, its range empty) — only its screen, the arena of
+    /// its exported idents' binders, and the stashed surface the paired
+    /// implementation's slot materialises
+    /// ([`Self::append_signature_exports`]).
+    pub(super) fn signature_slot(
+        item_base: u32,
+        screen: Arc<SigScreen>,
+        defs: Vec<Def>,
+        sig_exports: Vec<SigExport>,
+    ) -> ResolvedFile {
         ResolvedFile {
-            defs: Vec::new(),
+            defs,
             resolutions: HashMap::new(),
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
@@ -2052,6 +2255,81 @@ impl ResolvedFile {
             resolution_trace: ResolutionTrace::default(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
+            sig_exports,
+        }
+    }
+
+    /// Materialise the paired signature's stashed surface as **this**
+    /// (implementation) file's contribution (Stage 2, conclusion 4:
+    /// provenance = impl, def = sig): each [`SigExport`] becomes an
+    /// [`ExportedItem`] appended after the implementation's own items — so
+    /// the `ItemId` range, `item_base`, and `item_file_bases` all stay
+    /// impl-attributed and monotonic — with its `def` redirected cross-file
+    /// to the signature slot's arena (`sig_idx`), plus the matching `Item`
+    /// [`ExportDecl`] the boundary derivation folds. Called by the project
+    /// folds when the paired implementation's slot is reached; the screened
+    /// derivation ([`FileExportIndices::derive`]) keeps exactly these
+    /// sig-redirected identities while dropping the implementation's own.
+    pub(super) fn append_signature_exports(&mut self, sig: &ResolvedFile, sig_idx: usize) {
+        // A headerless pair's implicit filename module: publish its header
+        // (FCS's `ComputeAnonModuleName` makes it a real, openable module),
+        // which nothing on the implementation side does — its fragments are
+        // anonymous. The signature's `[<AutoOpen>]` verdict is authoritative
+        // either way (`FileExportIndices::derive` reads the screen), and an
+        // implicit module is never auto-open.
+        if let Some(screen) = &sig.sig_screen {
+            for root in screen.roots.iter().filter(|r| r.implicit) {
+                // The segments before the final module name are namespaces,
+                // exactly as a written dotted `module Pn.Md` header
+                // publishes them (`resolve.rs`'s header walk) — so the
+                // recovery form `open Pn; Md.shown` reaches the export
+                // (FCS-probed: it binds the `.fsi`).
+                for k in 1..root.path.len() {
+                    self.export_decls.push(ExportDecl {
+                        path: root.path[..k].to_vec(),
+                        pos: TextSize::from(0),
+                        anonymous_root: false,
+                        kind: ExportDeclKind::Namespace,
+                    });
+                }
+                self.export_decls.push(ExportDecl {
+                    path: root.path.clone(),
+                    pos: TextSize::from(0),
+                    anonymous_root: false,
+                    kind: ExportDeclKind::Module {
+                        header: true,
+                        auto_open: false,
+                        private: false,
+                    },
+                });
+            }
+        }
+        for ex in &sig.sig_exports {
+            let item_idx = self.exports.items.len();
+            let item_id = ItemId::new(self.item_base as usize + item_idx);
+            self.exports.items.push(ExportedItem {
+                name: ex.name.clone(),
+                qualified: ex.qualified.clone(),
+                id: item_id,
+                def: ExportDef::Sig {
+                    file: sig_idx,
+                    def: ex.def,
+                },
+                case: ex.case,
+                // Stage 2 models only the public surface (`val private` /
+                // `internal` and private types are skipped at collection).
+                access_root_len: None,
+                attributed: ex.attributed,
+            });
+            self.export_decls.push(ExportDecl {
+                path: ex.path.clone(),
+                pos: ex.pos,
+                anonymous_root: false,
+                kind: ExportDeclKind::Item {
+                    item: Some(item_idx),
+                    type_qualified: ex.type_qualified.clone(),
+                },
+            });
         }
     }
 
@@ -2234,7 +2512,13 @@ impl ResolvedFile {
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
                 let item = self.exports.items.get(local)?;
-                Some(self.def(item.def))
+                // A signature-derived export's def lives in the paired
+                // `.fsi`'s arena — cross-file from here, like the handles
+                // outside this file's range.
+                let ExportDef::Own(def) = item.def else {
+                    return None;
+                };
+                Some(self.def(def))
             }
             // `Entity` / `Member` resolve into referenced assemblies, not this
             // file's def arena; reach them through the [`AssemblyEnv`](crate::AssemblyEnv) the
@@ -2263,7 +2547,10 @@ impl ResolvedFile {
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
                 let item = self.exports.items.get(local)?;
-                self.active_pattern_shape.get(&item.def).copied()
+                let ExportDef::Own(def) = item.def else {
+                    return None;
+                };
+                self.active_pattern_shape.get(&def).copied()
             }
             _ => None,
         }
@@ -2333,7 +2620,7 @@ impl ResolvedFile {
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
                 let item = self.exports.items.get(local)?;
-                Some(item.def)
+                item.def()
             }
             Resolution::Entity(_)
             | Resolution::Member { .. }
@@ -2382,18 +2669,29 @@ impl ResolvedProject {
 
     /// The declaring file's Compile-order index and the [`Def`] an item handle
     /// names. Each file owns a contiguous [`ItemId`] range, so the owner is the
-    /// file whose range contains the handle. Returns `None` for a non-`Item`
-    /// resolution or an out-of-range handle.
+    /// file whose range contains the handle; a signature-derived export
+    /// (`docs/fsi-signature-restriction-plan.md` Stage 2) redirects from the
+    /// range-owning implementation to the paired `.fsi`'s def — provenance =
+    /// impl, def = sig. Returns `None` for a non-`Item` resolution or an
+    /// out-of-range handle.
     pub fn item_def(&self, res: Resolution) -> Option<(usize, &Def)> {
         let Resolution::Item(id) = res else {
             return None;
         };
-        self.files.iter().enumerate().find_map(|(idx, f)| {
+        // The per-file ranges partition the id space contiguously in Compile
+        // order, so the first file whose range contains the handle is its
+        // unique owner (an earlier file's `get` fails the upper bound).
+        let (idx, item) = self.files.iter().enumerate().find_map(|(idx, f)| {
             let base = f.item_base() as usize;
-            (id.index() >= base && id.index() < base + f.exports.items.len())
-                .then(|| f.resolved_def(res).map(|def| (idx, def)))
-                .flatten()
-        })
+            let local = id.index().checked_sub(base)?;
+            f.exports.items.get(local).map(|item| (idx, item))
+        })?;
+        match item.def {
+            ExportDef::Own(def) => Some((idx, self.files[idx].defs.get(def.index())?)),
+            ExportDef::Sig { file, def } => {
+                Some((file, self.files.get(file)?.defs.get(def.index())?))
+            }
+        }
     }
 
     /// project and its referenced assemblies**:

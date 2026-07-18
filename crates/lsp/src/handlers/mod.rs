@@ -50,7 +50,9 @@ pub fn file_export_symbols(text: &str, file: &ImplFile) -> Vec<(String, SymbolKi
         .exports()
         .iter()
         .filter_map(|export| {
-            let def = resolved.def(export.def());
+            // A single-file resolve materialises no signature surface, so
+            // every export's def is in this file's own arena.
+            let def = resolved.def(export.def()?);
             // Skip active-pattern **case** handles: these are cross-file identity
             // exports (Stage 3a), each pointing at the shared recognizer span with
             // kind [`DefKind::ActivePattern`], so listing them would advertise
