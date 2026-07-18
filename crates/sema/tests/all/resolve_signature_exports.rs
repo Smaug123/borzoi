@@ -1355,3 +1355,51 @@ fn codex_round3_shape_agrees_with_fcs() {
         fcs_must_not_declare: vec![],
     });
 }
+
+/// Codex round 4: the sig-derived def's **function kind** looks through a
+/// `when …` constraint wrapper (`'T -> 'T when 'T : comparison` is still a
+/// function — FCS's classification), while a *parenthesised* arrow stays a
+/// value of function type (the arity distinction).
+#[test]
+fn sig_val_function_kind_looks_through_constraints_not_parens() {
+    use borzoi_sema::DefKind;
+    let files = [
+        (
+            "/p/A.fsi",
+            "module A\n\nval f: 'T -> 'T when 'T : comparison\nval g: (int -> int)\nval h: int -> int\nval v: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module A\n\nlet f x = x\nlet g = id\nlet h x = x + 1\nlet v = 3\n",
+        ),
+        (
+            "/p/B.fs",
+            "module B\n\nlet u1 = A.f\nlet u2 = A.g\nlet u3 = A.h\nlet u4 = A.v\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let kind_of = |needle: &str| {
+        let res = res_at(&proj, &files, 2, needle).expect("resolved");
+        proj.item_def(res).expect("item def").1.kind
+    };
+    assert_eq!(
+        kind_of("A.f"),
+        DefKind::Value { is_function: true },
+        "constrained arrow is a function"
+    );
+    assert_eq!(
+        kind_of("A.g"),
+        DefKind::Value { is_function: false },
+        "parenthesised arrow is a value of function type"
+    );
+    assert_eq!(
+        kind_of("A.h"),
+        DefKind::Value { is_function: true },
+        "plain arrow is a function"
+    );
+    assert_eq!(
+        kind_of("A.v"),
+        DefKind::Value { is_function: false },
+        "non-arrow is a value"
+    );
+}

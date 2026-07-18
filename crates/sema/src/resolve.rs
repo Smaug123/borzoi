@@ -563,6 +563,21 @@ fn has_access_token(node: &SyntaxNode) -> bool {
         .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
 }
 
+/// Whether a `val`'s declared type makes it a **function** (`int -> int`):
+/// a top-level arrow, looked through a `when …` constraint wrapper
+/// (`'T -> 'T when 'T : comparison` is `Type::Constrained` over the arrow —
+/// FCS still classifies the val as a function). A *parenthesised* arrow is
+/// NOT looked through: `val f : (int -> int)` is a value of function type
+/// (FCS's arity distinction — no curried args), matching the impl-side
+/// `let f = fun …` classification.
+fn sig_val_type_is_function(ty: Option<Type>) -> bool {
+    match ty {
+        Some(Type::Fun(_)) => true,
+        Some(Type::Constrained(c)) => sig_val_type_is_function(c.base()),
+        _ => false,
+    }
+}
+
 /// Collect the exactly-modelled Stage-2 exports of one signature container
 /// (a module root's direct `sig_decls`): plain public `val`s (active-pattern
 /// and operator-named `val`s are Stage 3 — a `val` with no plain ident is
@@ -613,7 +628,7 @@ fn collect_sig_container_exports(
                 // (`ExportedItem::attributed` — presence is the sound
                 // over-approximation).
                 let attributed = vd.attributes().next().is_some();
-                let is_function = matches!(vs.ty(), Some(Type::Fun(_)));
+                let is_function = sig_val_type_is_function(vs.ty());
                 let def = Def::from_token(&ident, DefKind::Value { is_function });
                 push(defs, def, true, None, None, attributed);
             }
