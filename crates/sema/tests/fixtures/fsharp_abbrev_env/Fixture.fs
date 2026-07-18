@@ -42,6 +42,15 @@ type WidgetC = Widget
 module WidgetC =
     let Make () = 2
 
+// A nullary abbreviation ALONGSIDE a generic type of the same source name
+// (codex round 9): `lookup_type(.., 0)` selects the nullary alias, and FCS
+// resolves `AliasO.Make` through `Widget`. The cross-DLL-collision guard must
+// count distinct DLLs at arity 0, not all same-named entities, or it would
+// wrongly defer this legal same-DLL overload.
+type AliasO = Widget
+
+type AliasO<'T> = { OValue: 'T }
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct

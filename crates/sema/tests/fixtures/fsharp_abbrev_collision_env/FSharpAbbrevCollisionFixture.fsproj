@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A SECOND assembly that also exports `Lib.WidgetAlias` — but as a REAL
+       class with a `Make` static, not the abbreviation the main fixture exports.
+       Loaded alongside the main fixture, the two make `Lib.WidgetAlias` a
+       cross-DLL collision whose *target* (`Lib.Widget`) is still unique to the
+       main fixture, so resolve-through must defer on the rooting collision
+       (codex P1), not on target ambiguity. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaFSharpAbbrevCollisionFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

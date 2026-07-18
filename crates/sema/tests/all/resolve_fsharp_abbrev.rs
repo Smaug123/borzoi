@@ -58,6 +58,48 @@ fn fixture_env() -> AssemblyEnv {
     AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
 }
 
+/// The main fixture referenced **twice** — two loaded DLLs exporting the same
+/// FQNs, so every top-level name collides across DLLs (including alias *targets*,
+/// which then also defer via target-uniqueness). A coarse multi-DLL behavioural
+/// pin; [`collision_env`] is the precise cross-DLL-rooting-collision test whose
+/// *target* stays unique.
+fn fixture_env_doubled() -> AssemblyEnv {
+    let bytes = std::fs::read(ensure_fixture_built()).expect("read F# abbreviation fixture dll");
+    let v1 = Ecma335Assembly::parse(&bytes).expect("parse F# abbreviation fixture dll");
+    let v2 = Ecma335Assembly::parse(&bytes).expect("parse F# abbreviation fixture dll");
+    AssemblyEnv::from_views(&[v1, v2]).expect("build AssemblyEnv")
+}
+
+fn ensure_collision_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/fsharp_abbrev_collision_env");
+            dotnet_build(&project, "dotnet build F# abbreviation collision fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaFSharpAbbrevCollisionFixture.dll")
+        })
+        .as_path()
+}
+
+/// The main fixture (which exports `Lib.WidgetAlias` as an abbreviation whose
+/// target `Lib.Widget` it *alone* declares) referenced FIRST, plus a second DLL
+/// exporting `Lib.WidgetAlias` as a real class — so `Lib.WidgetAlias` collides
+/// across DLLs while the alias's target stays unique. This isolates the
+/// rooting-FQN-collision guard: without it, resolve-through would chase the
+/// main fixture's unique target and commit `Widget.Make` (codex P1).
+fn collision_env() -> AssemblyEnv {
+    let main = std::fs::read(ensure_fixture_built()).expect("read main fixture dll");
+    let collision = std::fs::read(ensure_collision_fixture_built()).expect("read collision dll");
+    let main = Ecma335Assembly::parse(&main).expect("parse main fixture dll");
+    let collision = Ecma335Assembly::parse(&collision).expect("parse collision fixture dll");
+    AssemblyEnv::from_views(&[main, collision]).expect("build AssemblyEnv")
+}
+
 /// A *separate* fixture for the ROOT (`namespace global`) tier: its
 /// signature-data flag applies to the empty namespace, which — unlike every
 /// other namespace check here — is not name-scoped in `fsharp_abbrev_env`'s
@@ -207,6 +249,66 @@ fn bare_alias_use_defers_rather_than_naming_a_target() {
             rf.resolution_at(at(src, alias)),
         );
     }
+}
+
+#[test]
+fn cross_dll_collision_at_an_alias_fqn_defers_resolve_through() {
+    // P1 #1 — the alias's own FQN merges across DLLs, target still unique. The
+    // main fixture exports `Lib.WidgetAlias` as an abbreviation (→ its unique
+    // `Lib.Widget`); a second DLL exports `Lib.WidgetAlias` as a real class. FCS
+    // applies reference-order precedence sema does not model, so resolve-through
+    // would chase the main fixture's unique target and commit `Widget.Make` —
+    // whereas single-DLL the SAME access resolves (the sibling test), so the
+    // rooting-collision guard, not a general failure, is what defers here.
+    let env = collision_env();
+    let src = "module M\nopen Lib\nlet _ = WidgetAlias.Make()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        !matches!(
+            rf.resolution_at(at(src, "WidgetAlias.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "a resolve-through at a cross-DLL-colliding alias FQN must defer; got {:?}",
+        rf.resolution_at(at(src, "WidgetAlias.Make")),
+    );
+}
+
+#[test]
+fn arity_overloaded_alias_still_resolves_through() {
+    // `type AliasO = Widget` beside a generic `type AliasO<'T>` in ONE DLL: the
+    // cross-DLL-collision guard counts distinct DLLs at arity 0, so the nullary
+    // alias is unique and `AliasO.Make` resolves through to `Widget.Make` — an
+    // arity-agnostic same-name count would wrongly over-defer it (codex round 9).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet _ = AliasO.Make()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "AliasO.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "a nullary alias beside a generic same-named type must still resolve through; got {:?}",
+        rf.resolution_at(at(src, "AliasO.Make")),
+    );
+}
+
+#[test]
+fn cross_dll_merged_parent_defers_nested_resolve_through() {
+    // P1 #2 — a nested alias below a parent module whose FQN merges across DLLs.
+    // The main fixture referenced twice merges `Lib.Nested`, so `children(parent)`
+    // sees only one contributor; the rooting-collision guard (the parent FQN
+    // collides) defers rather than commit one contributor's `Widget.Make`.
+    let env = fixture_env_doubled();
+    let src = "module M\nlet _ = Lib.Nested.NestedAlias.Make()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        !matches!(
+            rf.resolution_at(at(src, "Lib.Nested.NestedAlias.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "a resolve-through below a cross-DLL-merged parent must defer; got {:?}",
+        rf.resolution_at(at(src, "Lib.Nested.NestedAlias.Make")),
+    );
 }
 
 #[test]

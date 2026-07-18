@@ -62,6 +62,25 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
+        // Whether the rooting's top-level FQN is exported by more than one loaded
+        // DLL, at the **arity `lookup_type` selected** (0). `lookup_type` returns
+        // the first-enumerated entity at a colliding key, so when two referenced
+        // assemblies export the same top-level FQN — an abbreviation in one, a real
+        // type or module in another — FCS applies reference-order/merge precedence
+        // sema does not model, and resolving *through* the first-picked alias would
+        // commit a member from the wrong DLL. Only a **top-level** FQN merges across
+        // DLLs (nested entities are interned within one parent's subtree), so this
+        // rooting count also guards a nested alias reached below a merged parent
+        // module. When it collides an alias chase must defer, as the
+        // pre-resolve-through marker did. Counting *distinct DLLs at arity 0* (not
+        // all same-named entities) avoids over-deferring a legal `type Alias =
+        // Widget` beside a generic `type Alias<'T>` in one DLL — a plain non-alias
+        // reading is unchanged either way (first-wins, out of scope). Codex review.
+        let rooting_fqn_collides =
+            self.assemblies
+                .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
+                > 1;
+
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
         // resolves `Format` on `System.String`). Resolve *through* a resolvable
@@ -70,13 +89,16 @@ impl<'a> Resolver<'a> {
         // (structural, generic, or not loaded) shadow-defers as before (D5: defer,
         // never a wrong target).
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
-            // FCS routes a member access through an alias's ModuleSuffix companion
-            // module, not the abbreviation target (fcs-verified) — a
-            // module-over-target precedence we do not model. Defer rather than
-            // chase into the target and commit its member (codex review).
-            if self
-                .assemblies
-                .alias_has_companion_module(type_handle, None)
+            // Two guards make resolve-through unsafe here — defer, as the marker
+            // did before Stage 4: (1) the alias's own FQN collides across DLLs
+            // (`rooting_fqn_collides` above), so a later-referenced DLL may own the
+            // name; (2) the alias has a ModuleSuffix companion module, whose member
+            // FCS routes `Alias.Member` to, not the target's (fcs-verified) — a
+            // module-over-target precedence we do not model (codex review).
+            if rooting_fqn_collides
+                || self
+                    .assemblies
+                    .alias_has_companion_module(type_handle, None)
             {
                 return AssemblyPath::ProjectShadowed;
             }
@@ -141,11 +163,15 @@ impl<'a> Resolver<'a> {
                 // A nested abbreviation marker: resolve through its target (or
                 // shadow-defer if unresolvable), same as the rooting case above.
                 let child_walk = if self.assemblies.is_abbreviation(child) {
-                    // A companion module beside the nested alias competes for the
-                    // member access, same as the rooting branch — defer.
-                    if self
-                        .assemblies
-                        .alias_has_companion_module(child, Some(parent))
+                    // Defer for the same two reasons as the rooting branch: a merged
+                    // parent module (the rooting FQN collides across DLLs, so
+                    // `children(parent)` sees only one contributor and may miss the
+                    // other's `Alias`/companion), or a companion module beside this
+                    // nested alias (codex review).
+                    if rooting_fqn_collides
+                        || self
+                            .assemblies
+                            .alias_has_companion_module(child, Some(parent))
                     {
                         return AssemblyPath::ProjectShadowed;
                     }

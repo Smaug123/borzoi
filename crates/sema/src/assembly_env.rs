@@ -48,6 +48,15 @@ struct AssemblyId(u32);
 /// provenance. Keying is **homogeneous within an env**: every entity is built
 /// by the same path, so all carry provenance or none do, and two keys therefore
 /// compare iff they name the same loaded DLL.
+///
+/// The [`AssemblyKey::Identity`] fallback is **best-effort**, and only sound when
+/// no two of `from_entities`' ungrouped roots are byte-identical-manifest DLLs:
+/// it then cannot tell a `Local` marker's own DLL from a byte-identical sibling,
+/// so a target present only in the sibling would resolve to it (codex P2). This
+/// is a known limitation of the *test-only* [`AssemblyEnv::from_entities`]
+/// constructor; the runtime builds via [`AssemblyEnv::from_assemblies`] /
+/// [`AssemblyEnv::from_views`], where every entity carries [`AssemblyId`]
+/// provenance and the discrimination is exact.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AssemblyKey<'a> {
     Provenance(AssemblyId),
@@ -1609,6 +1618,39 @@ impl AssemblyEnv {
             }
         }
         out
+    }
+
+    /// The number of **distinct loaded DLLs** that export a public top-level type
+    /// at exactly `(namespace, name, arity)` — matched by the F#-source name (as
+    /// [`Self::public_types_named`]) and grouped by per-DLL provenance. `> 1` is a
+    /// genuine cross-DLL collision at the key `lookup_type` selects from; a
+    /// same-assembly declaration cannot recur at one arity, and a *different*-arity
+    /// same-named type (a nullary abbreviation beside a generic `type Alias<'T>`)
+    /// is not counted — so resolve-through does not over-defer a legal overload
+    /// (codex review). Provenance-less envs ([`Self::from_entities`]) fall back to
+    /// distinct manifest identities.
+    pub fn distinct_dlls_with_public_type(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> usize {
+        let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
+        for &handle in &self.top_level_types {
+            let e = self.entity(handle);
+            let src = e.source_name.as_deref().unwrap_or(e.name.as_str());
+            if e.namespace.as_slice() == namespace
+                && src == name
+                && e.generic_parameters.len() == arity
+                && self.is_public(handle)
+            {
+                let key = self.assembly_key(handle);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+        }
+        keys.len()
     }
 
     /// The public nested **module** named `name` (by its F# *source* name — a suffixed
