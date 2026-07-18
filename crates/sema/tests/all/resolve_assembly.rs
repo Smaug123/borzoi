@@ -2429,6 +2429,98 @@ fn an_undecidable_qualified_member_does_not_fall_through_to_a_lower_open() {
     }
 }
 
+/// The resolution-explain trace counterpart of the test above. `open High` defers
+/// `M.Mangled` purely by **precedence**: it adds the reading `High`, whose
+/// `High.M` (uncertain member) out-ranks `open Low`'s `Low.M`. It sets none of
+/// the deferral flags and raises no barrier, so before `added_reading` the trace
+/// reported "no modeled per-open effect" for the very open that caused the
+/// deferral — the explain tool would omit the causal open. The reading-precedence
+/// signal must flag it (and `open Low`, which also contributes a reading — the
+/// per-open trace names candidates, not the single culprit).
+#[test]
+fn a_namespace_open_that_reorders_qualified_precedence_is_flagged() {
+    let template = {
+        let entities = fixture_entities();
+        entities
+            .iter()
+            .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+            .cloned()
+            .expect("Demo.Calc")
+    };
+    let static_named = |name: &str, augmentation| {
+        let mut m = template
+            .members
+            .iter()
+            .find_map(|m| match m {
+                Member::Method(mm) if mm.name == "Zero" => Some(mm.clone()),
+                _ => None,
+            })
+            .expect("Zero template");
+        m.name = format!("String.{name}");
+        m.source_name = Some(name.to_string());
+        m.augmentation = augmentation;
+        Member::Method(m)
+    };
+    let module = |namespace: &str, member: Member| {
+        let mut e = template.clone();
+        e.namespace = vec![namespace.to_string()];
+        e.name = "M".to_string();
+        e.kind = EntityKind::Module;
+        e.members = vec![member];
+        e.nested_types = vec![];
+        e
+    };
+
+    let env = AssemblyEnv::from_entities(vec![
+        module("High", static_named("Mangled", Augmentation::Possible)),
+        module("Low", static_named("Mangled", Augmentation::No)),
+    ]);
+
+    let src = "open Low\nopen High\nlet x = M.Mangled 1\n";
+    let rf = resolve(src, &env);
+
+    // The token does not resolve to the lower `Low.M.Mangled` (the sibling test
+    // pins the full deferral semantics); it either defers or records nothing.
+    let low = env
+        .lookup_type(&["Low".to_string()], "M", 0)
+        .expect("Low.M in env");
+    if let Some(Resolution::Member { parent, .. }) = rf.resolution_at(at(src, "M.Mangled")) {
+        assert_ne!(
+            parent, low,
+            "must not fall through to the lower Low.M.Mangled"
+        );
+    }
+
+    let opens = &rf.resolution_trace().opens;
+    let high = opens
+        .iter()
+        .find(|o| o.path == vec!["High".to_string()])
+        .expect("open High is traced");
+    assert!(
+        high.opacity.added_reading,
+        "open High added the reading that re-owns M.Mangled"
+    );
+    assert!(
+        high.opacity.perturbs_resolution(),
+        "so it must not read as having no per-open effect"
+    );
+    // Reading-precedence is the ONLY signal — no flag, no barrier, no import of a
+    // Deferred name.
+    assert!(!high.opacity.opaque_value);
+    assert!(!high.opacity.opaque_dotted);
+    assert!(!high.opacity.unmodelled);
+    assert!(!high.opacity.staled_earlier);
+    assert!(!high.opacity.imported_deferred);
+
+    // `open Low` also contributes a reading, so it is a candidate too (the
+    // per-open trace does not single out the one causal open).
+    let low = opens
+        .iter()
+        .find(|o| o.path == vec!["Low".to_string()])
+        .expect("open Low is traced");
+    assert!(low.opacity.added_reading);
+}
+
 /// The mirror image of the test above, and the case the rebase onto the OV-7
 /// ownership fallback (#914) re-opened: a **certainly hidden** augmentation must
 /// *not* own the path — it must fall through to the lower `open`.

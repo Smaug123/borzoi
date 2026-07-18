@@ -1224,6 +1224,19 @@ pub enum Resolution {
 ///   that is *itself* `Deferred` (a cross-assembly duplicate, say), so a use of
 ///   that name defers with the open as its source — even though the open
 ///   modeled its import fully (no flag, no barrier).
+/// - [`added_reading`](Self::added_reading) — the open contributed a namespace
+///   **reading** / shortening prefix, a new qualified-path precedence entry.
+///   Unlike the five above this is not a deferral mechanism in itself — a
+///   reading usually *resolves* a name — but it re-orders qualified-path
+///   precedence: a later dotted head can root at *this* reading in preference to
+///   a lower open's, and if this reading owns the path with an *uncertain*
+///   member (`open Low; open High; M.Mangled`, where `High.M.Mangled` is
+///   undecidable) the head defers where deleting this open would let the lower
+///   reading resolve. It fires far more broadly than the deferral flags (nearly
+///   every meaningful namespace/module open adds a reading), so it marks the open
+///   a *candidate* whose precedence a reader must correlate against the token —
+///   never a proven cause. This is the reason `perturbs_resolution` means
+///   "candidate", not "culprit".
 ///
 /// **Attribution is by transition.** The three flags are monotone within a
 /// top-level block (set true, never cleared until the block ends), so this
@@ -1240,8 +1253,8 @@ pub enum Resolution {
 /// in-file type precedes a later open (every open advances the open frontier —
 /// `latest_open_pos`), a member/qualified tail pending inference, or
 /// pattern-position case suppression (`pattern_suppressed_case_ids`). So an open
-/// with all four `false` is not *proof* it perturbs nothing — only that it
-/// triggered none of the modeled per-open five; a caller must not label it
+/// with every field `false` is not *proof* it perturbs nothing — only that it
+/// triggered none of the modeled per-open mechanisms; a caller must not label it
 /// harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OpenOpacity {
@@ -1261,20 +1274,32 @@ pub struct OpenOpacity {
     /// resolved ambiguously). The open is the *source* of that deferred name,
     /// though it set no flag and raised no barrier.
     pub imported_deferred: bool,
+    /// Contributed a namespace **reading** / shortening prefix — a new
+    /// qualified-path precedence entry (`self.imports` and/or
+    /// `self.open_shortening_prefixes` grew). Not a deferral mechanism itself:
+    /// a reading usually *resolves* names. But it re-orders qualified-path
+    /// precedence, so a later dotted head can root at this reading over a lower
+    /// open's, deferring when this reading owns the path with an uncertain
+    /// member. Fires for nearly every meaningful namespace/module open — a
+    /// *candidate* marker, not a proven cause.
+    pub added_reading: bool,
 }
 
 impl OpenOpacity {
     /// Whether this open perturbs later resolution through any modeled per-open
-    /// mechanism — an opacity flag, the generation barrier, or importing a
-    /// deferred name. The candidate-culprit predicate; `false` means "triggered
-    /// none of the modeled five", not "provably harmless" (see the type docs'
-    /// scope note).
+    /// mechanism — an opacity flag, the generation barrier, importing a deferred
+    /// name, or adding a namespace-reading precedence entry. The candidate-culprit
+    /// predicate; `false` means "triggered none of the modeled mechanisms", not
+    /// "provably harmless" (see the type docs' scope note). Because
+    /// `added_reading` fires for nearly every meaningful namespace/module open,
+    /// `true` is decisively a *candidate*, not a culprit.
     pub fn perturbs_resolution(self) -> bool {
         self.opaque_value
             || self.opaque_dotted
             || self.unmodelled
             || self.staled_earlier
             || self.imported_deferred
+            || self.added_reading
     }
 }
 

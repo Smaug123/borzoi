@@ -2302,6 +2302,9 @@ impl TokenExplanation {
                     if o.opacity.imported_deferred {
                         flags.push("imported_deferred");
                     }
+                    if o.opacity.added_reading {
+                        flags.push("added_reading");
+                    }
                     format!("PERTURBS [{}]", flags.join(", "))
                 } else {
                     // Never "clean" — that would claim harmlessness the per-open

@@ -745,6 +745,47 @@ fn explain_token_notes_a_deferred_tail_even_with_no_opens() {
     );
 }
 
+/// A plain namespace `open` that only adds a **reading** / shortening prefix
+/// (`open Demo`, resolving to the assembly namespace) sets no deferral flag and
+/// raises no barrier, yet it re-orders qualified-path precedence and so can defer
+/// a later dotted head. The trace must flag it (`added_reading`) and the render
+/// must name the signal — otherwise the explain tool omits the very open that
+/// could be the cause (codex review P2: the `open Low; open High; M.Mangled`
+/// precedence deferral).
+#[test]
+fn explain_token_flags_a_reading_adding_namespace_open() {
+    let src = "module M\nopen Demo\nlet v = Widget.Value\n";
+    let loaded = synthetic_loaded_project(src, synthetic_assembly_env());
+    let (tok, _) = text_range(src, "Widget.Value");
+    let exp = explain_token(&loaded, 0, tok);
+
+    let demo = exp
+        .opens
+        .iter()
+        .find(|o| o.path == vec!["Demo".to_string()])
+        .expect("open Demo is traced");
+    assert!(
+        demo.opacity.added_reading,
+        "open Demo added the reading `Demo`"
+    );
+    assert!(
+        demo.opacity.perturbs_resolution(),
+        "so it reads as a per-open perturbation candidate"
+    );
+    // Reading-precedence is the only signal for this clean namespace open.
+    assert!(!demo.opacity.opaque_value);
+    assert!(!demo.opacity.opaque_dotted);
+    assert!(!demo.opacity.unmodelled);
+    assert!(!demo.opacity.staled_earlier);
+    assert!(!demo.opacity.imported_deferred);
+
+    let report = exp.render();
+    assert!(
+        report.contains("open Demo") && report.contains("added_reading"),
+        "the render must name the reading signal:\n{report}"
+    );
+}
+
 /// Ad-hoc "why did this token defer?" CLI, as an env-driven ignored test in the
 /// mould of [`project_corpus_resolution_diff`]. Point it at a real project and a
 /// token: it loads the project through the same path the LSP uses, resolves the

@@ -798,6 +798,17 @@ impl<'a> Resolver<'a> {
                 // enters a nested module), so a new `Deferred` entry after it is
                 // this open's import.
                 let trace_before_entries = self.scopes.last().map_or(0, |f| f.entries.len());
+                // A sixth: a namespace open contributes a **reading** / shortening
+                // prefix — a qualified-path precedence entry — while setting no flag
+                // and raising no barrier. It usually *resolves* names, but it can
+                // re-own a later dotted head against a lower open's reading (`open
+                // Low; open High; M.Mangled`), deferring when the higher reading owns
+                // the path with an uncertain member. Both `imports` (the `OpenGroup`)
+                // and `open_shortening_prefixes` grow only within this arm (it never
+                // enters a nested module), so a strict length increase in either is
+                // this open's own reading contribution.
+                let trace_before_imports = self.imports.len();
+                let trace_before_shortening = self.open_shortening_prefixes.len();
                 // Classify the open. `open <namespace>` brings the namespace's
                 // *types* into scope — record the prefix so later qualified
                 // references retry under it (modelled), no unqualified values.
@@ -1572,6 +1583,8 @@ impl<'a> Resolver<'a> {
                                 .iter()
                                 .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
                         }),
+                        added_reading: self.imports.len() > trace_before_imports
+                            || self.open_shortening_prefixes.len() > trace_before_shortening,
                     },
                 });
             }
