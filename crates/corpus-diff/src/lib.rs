@@ -2210,8 +2210,10 @@ pub struct ExplainedOpen {
     pub is_type: bool,
     /// Which opaque-open flags this open flipped (see [`OpenOpacity`]).
     pub opacity: OpenOpacity,
-    /// Whether this open ends at or before the explained token — so it is in
-    /// scope there and could be the reason a dotted head deferred.
+    /// Whether this open ends at or before the explained token — so it is
+    /// lexically in scope there. A scope fact only; see
+    /// [`TokenExplanation::opaque_opens_in_scope`] for why it is not a causal
+    /// verdict on the token's deferral.
     pub precedes_token: bool,
 }
 
@@ -2236,15 +2238,19 @@ pub struct TokenExplanation {
 }
 
 impl TokenExplanation {
-    /// Whether the token deferred *and* an opaque `open` precedes it — the shape
-    /// of a poisoned dotted head. The candidate culprits are the opens with
-    /// `precedes_token && opacity.defers_dotted_heads()`.
-    pub fn deferred_behind_opaque_open(&self) -> bool {
-        matches!(self.resolution, Some(Resolution::Deferred(_)))
-            && self
-                .opens
-                .iter()
-                .any(|o| o.precedes_token && o.opacity.defers_dotted_heads())
+    /// The opaque `open`s lexically **in scope before** the token — those whose
+    /// `open` ends at or before it. A *fact about scope*, not a causal verdict:
+    /// whether one actually gated *this* token depends on the token being a
+    /// dotted HEAD (which an opaque open defers) rather than a member/qualified
+    /// TAIL — a `value.Member` after `open type T` is `Deferred(QualifiedAccess)`
+    /// pending inference *regardless* of the open. The trace does not carry that
+    /// head/tail distinction (it would need per-token gate instrumentation), so
+    /// this reports the candidates and leaves the conclusion to the reader.
+    pub fn opaque_opens_in_scope(&self) -> Vec<&ExplainedOpen> {
+        self.opens
+            .iter()
+            .filter(|o| o.precedes_token && o.opacity.is_opaque())
+            .collect()
     }
 
     /// A human-readable multi-line report — the CLI dump.
@@ -2281,18 +2287,34 @@ impl TokenExplanation {
             } else {
                 "clean".to_string()
             };
-            let marker = if o.precedes_token && o.opacity.defers_dotted_heads() {
-                "  <-- defers dotted heads in the token's scope"
+            // A *scope* fact — this open precedes the token — never a claim that
+            // it gated the token (see `opaque_opens_in_scope`).
+            let scope = if o.precedes_token && o.opacity.is_opaque() {
+                "  (opaque, in scope before the token)"
             } else {
                 ""
             };
             let _ = writeln!(
                 out,
-                "    {kind} {} @ {}..{} — {opacity}{marker}",
+                "    {kind} {} @ {}..{} — {opacity}{scope}",
                 o.path.join("."),
                 o.range.0,
                 o.range.1,
             );
+        }
+        // A hint with the head/tail caveat explicit — the trace cannot say which
+        // opaque open (if any) gated *this* deferral, so it must not pretend to.
+        if matches!(self.resolution, Some(Resolution::Deferred(_))) {
+            let in_scope = self.opaque_opens_in_scope().len();
+            if in_scope > 0 {
+                let _ = writeln!(
+                    out,
+                    "  note: token is Deferred with {in_scope} opaque open(s) in scope before it. \
+                     If it is a dotted HEAD (e.g. `List` in `List.replicate`), deleting an in-scope \
+                     opaque open may let it resolve; a member/qualified TAIL (`value.Member`) defers \
+                     pending type inference regardless of any open."
+                );
+            }
         }
         out
     }
@@ -2335,9 +2357,9 @@ pub fn explain_token(loaded: &LoadedProject, file_idx: usize, byte: usize) -> To
                 path: o.path.clone(),
                 is_type: o.is_type,
                 opacity: o.opacity,
-                // In scope before the token: its `open` ends at or before the
-                // token's start. Over-inclusive across blocks — sound for a
-                // "candidate culprit" hint (it never hides the real one).
+                // A scope fact: its `open` ends at or before the token's start.
+                // Over-inclusive across blocks (an open in a sibling block still
+                // counts) — sound for a scope hint, never a causal claim.
                 precedes_token: token_start.is_some_and(|ts| e <= ts),
             }
         })

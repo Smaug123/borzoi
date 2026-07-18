@@ -613,11 +613,11 @@ fn write_json_report_if_requested(summary: &CorpusSummary) {
 /// `open type` whose target is unmodelled poisons dotted heads, so a bare
 /// `Foo.Bar.baz` after it defers. [`explain_token`] must surface both the
 /// token's `Deferred` resolution AND the opaque `open` in scope before it — the
-/// culprit shape of the `open TypeEquality` / bare `List.replicate`
-/// investigation this tool generalises. A plain namespace `open` that brings
-/// nothing in stays `clean`, so the two are distinguishable in the dump.
+/// scope facts the `open TypeEquality` / bare `List.replicate` investigation
+/// this tool generalises. A plain namespace `open` that brings nothing in stays
+/// `clean`, so the two are distinguishable in the dump.
 #[test]
-fn explain_token_flags_the_opaque_open_before_a_deferred_head() {
+fn explain_token_reports_the_opaque_open_in_scope_of_a_deferred_head() {
     let src = "module M\nopen System\nopen type Opaque\nlet v = Foo.Bar.baz\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let (head, _) = text_range(src, "Foo.Bar.baz");
@@ -647,15 +647,56 @@ fn explain_token_flags_the_opaque_open_before_a_deferred_head() {
         "the opaque open precedes the deferred head"
     );
 
-    assert!(
-        exp.deferred_behind_opaque_open(),
-        "the tool must recognise a deferred head behind an opaque open"
-    );
+    // The scope fact: the opaque open is reported as in-scope (not a causal
+    // verdict — see the member-tail test below).
+    let in_scope = exp.opaque_opens_in_scope();
+    assert_eq!(in_scope.len(), 1);
+    assert_eq!(in_scope[0].path, vec!["Opaque".to_string()]);
 
     let report = exp.render();
     assert!(
         report.contains("open type Opaque") && report.contains("OPAQUE"),
         "the rendered dump must name the opaque open:\n{report}"
+    );
+    assert!(
+        report.contains("HEAD") && report.contains("TAIL"),
+        "the note must caveat head vs member tail:\n{report}"
+    );
+}
+
+/// Regression for the over-attribution `codex review` caught: a member/qualified
+/// TAIL (`value.Member`, where `value` is a resolved local) is
+/// `Deferred(QualifiedAccess)` pending inference *regardless* of any `open`, yet
+/// an opaque open precedes it. The tool must not present the open as the cause.
+/// It still reports the open as *in scope* (a true scope fact), but there is no
+/// causal verdict method, and the rendered note keeps its explicit head/tail
+/// caveat — so the reader is not misled into deleting an irrelevant open.
+#[test]
+fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
+    let src = "module M\nopen type Opaque\nlet f value = value.Member\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (tail, _) = text_range(src, "Member");
+    let exp = explain_token(&loaded, 0, tail);
+
+    // The member tail defers pending inference — not because of the open.
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the member tail defers; got {:?}",
+        exp.resolution
+    );
+
+    // The scope fact still holds (the open IS lexically in scope), and it is
+    // reported honestly — the tool does not turn that into a causal claim.
+    assert_eq!(
+        exp.opaque_opens_in_scope().len(),
+        1,
+        "the opaque open is reported as in scope (a scope fact)"
+    );
+
+    let report = exp.render();
+    assert!(
+        report.contains("TAIL") && report.contains("regardless"),
+        "the note must caveat that a member tail defers regardless of any open:\n{report}"
     );
 }
 
