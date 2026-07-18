@@ -74,8 +74,11 @@ struct EntityNode {
     entity: Entity,
     children: Vec<EntityHandle>,
     /// The assembly this entity (and its nested subtree) came from, when the env
-    /// was built with provenance ([`AssemblyEnv::from_assemblies`]); `None`
-    /// otherwise.
+    /// was built per-assembly ([`AssemblyEnv::from_assemblies`],
+    /// [`AssemblyEnv::from_views`]); `None` for the synthetic single-group
+    /// [`AssemblyEnv::from_entities`]. The per-DLL discriminator: two loaded
+    /// DLLs get distinct ids even when their manifest `AssemblyIdentity`s are
+    /// byte-identical.
     assembly: Option<AssemblyId>,
     /// Whether this entity's assembly has
     /// [`AbbreviationVisibility::Unknowable`] F# signature data — its pickle
@@ -102,7 +105,7 @@ struct EntityNode {
     /// lose its assembly-level `FSharpInterfaceDataVersionAttribute`, so the
     /// [`Self::extensions_unknowable`] composite would miss it). Carried per
     /// **entity** (not per [`AssemblyId`]) so it is preserved on every build path,
-    /// including [`AssemblyEnv::from_views`], which does not tag entities with an id.
+    /// including [`AssemblyEnv::from_entities`], which tags no ids.
     signature_non_authoritative: bool,
     /// The **top-level** namespace this entity's subtree was declared in. A *nested*
     /// ECMA TypeDef carries no namespace of its own (`Entity::namespace` is empty), so
@@ -488,10 +491,13 @@ pub struct AssemblyEnv {
     /// invisible to this fallback — acceptable for the rare
     /// undecodable-pickle case it now serves.
     unknowable_abbreviation_namespaces: HashSet<Vec<String>>,
-    /// Source DLL path per [`AssemblyId`] — populated by
-    /// [`AssemblyEnv::from_assemblies`], empty otherwise. An entity's
-    /// [`EntityNode::assembly`] indexes this.
-    assemblies: Vec<PathBuf>,
+    /// Source DLL path per [`AssemblyId`] — one entry per loaded assembly, in
+    /// load order. `Some` when the build path knows the DLL's path
+    /// ([`AssemblyEnv::from_assemblies`]); `None` for a path-less view
+    /// ([`AssemblyEnv::from_views`]), which still gets its own id so provenance
+    /// distinguishes same-named views. An entity's [`EntityNode::assembly`]
+    /// indexes this.
+    assemblies: Vec<Option<PathBuf>>,
     /// Every **top-level** type's handle, in interning order — unlike
     /// [`Self::by_type`] this keeps *all* handles at a colliding
     /// `(namespace, name, arity)` (two referenced assemblies can expose the
@@ -535,7 +541,9 @@ pub struct AssemblyEnv {
     /// referenced assembly (narrowing 1), which sema's path-based (assembly-blind)
     /// open machinery cannot apply contributor-scoped, so it applies none of it.
     ///
-    /// Each entry is `(contributing assembly's identity name, namespace path)`.
+    /// Each entry is `(contributing assembly's provenance id, namespace path)` —
+    /// the id, not a name, because two loaded DLLs can share a simple name or
+    /// even a whole manifest identity (issue #150).
     /// The *name-resolution* consequence is unchanged (the open is not applied at
     /// all — the pre-S3 status quo, deferrals only). The **extension gate** reads
     /// them here, and does so contributor-scoped: FCS opens the *contributing
@@ -548,7 +556,7 @@ pub struct AssemblyEnv {
     /// (`Microsoft.Win32.SafeHandles`), so **every** real project has a contested
     /// auto-open, and a wholesale defer here defers every overloaded call in the
     /// codebase.
-    contested_auto_opens: Vec<(String, Vec<String>)>,
+    contested_auto_opens: Vec<(AssemblyId, Vec<String>)>,
     /// Whether the referenced-assembly **extension surface is not fully known** —
     /// a *global* projection failure that could hide an extension in any namespace:
     /// an assembly-level `[<AutoOpen>]` list that could not be read (its implicit
@@ -755,7 +763,7 @@ impl AssemblyEnv {
             bool,
             Entity,
         )> = Vec::new();
-        let mut auto_opens: Vec<(String, Vec<String>)> = Vec::new();
+        let mut auto_opens: Vec<(AssemblyId, String, Vec<String>)> = Vec::new();
         for (
             path,
             roots,
@@ -768,11 +776,11 @@ impl AssemblyEnv {
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
-            env.assemblies.push(path);
-            // The assembly's manifest identity, for the FSharp.Core special
-            // case — every root carries it.
+            env.assemblies.push(Some(path));
+            // The assembly's manifest identity name, for the FSharp.Core special
+            // case — every root carries it. The deref itself keys on `id`.
             if let Some(first) = roots.first() {
-                auto_opens.push((first.assembly.name.clone(), raw_auto_opens));
+                auto_opens.push((id, first.assembly.name.clone(), raw_auto_opens));
             } else if !raw_auto_opens.is_empty() {
                 // An assembly whose types were **all** dropped still declares
                 // `[<AutoOpen>]` targets — with no surviving roots we cannot resolve
@@ -936,8 +944,11 @@ impl AssemblyEnv {
 
     /// Build the env from referenced-assembly views, enumerating each one's
     /// type definitions and reading each one's assembly-level AutoOpen list.
-    /// Propagates the first [`ImportError`] from any view.
+    /// Propagates the first [`ImportError`] from any view. Each view gets its
+    /// own `AssemblyId` (with no source path — [`Self::assembly_path`] stays
+    /// `None`) so the AutoOpen deref can tell same-named views apart.
     pub fn from_views<V: EcmaView>(views: &[V]) -> Result<Self, ImportError> {
+        let mut env = AssemblyEnv::default();
         let mut tagged = Vec::new();
         let mut auto_opens = Vec::new();
         let mut dropped_namespaces = Vec::new();
@@ -957,18 +968,25 @@ impl AssemblyEnv {
             // tree no longer shows, so its namespace is possibly extension-bearing
             // for the OV-6 gate (mirrors the LSP's separate construction path).
             dropped_namespaces.extend(skips.dropped_types.iter().map(|d| d.enclosing_namespace()));
+            let id = AssemblyId(
+                u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
+            );
+            env.assemblies.push(None);
             tagged.extend(roots.into_iter().map(move |r| {
                 (
-                    None,
+                    Some(id),
                     visibility,
                     extension_index_unknowable,
                     signature_non_authoritative,
                     r,
                 )
             }));
-            auto_opens.push((view.identity().name.clone(), view.assembly_auto_opens()?));
+            auto_opens.push((
+                id,
+                view.identity().name.clone(),
+                view.assembly_auto_opens()?,
+            ));
         }
-        let mut env = AssemblyEnv::default();
         env.index_roots(tagged);
         env.record_assembly_auto_opens(auto_opens);
         for namespace in dropped_namespaces {
@@ -980,9 +998,13 @@ impl AssemblyEnv {
     /// Fold the referenced assemblies' assembly-level
     /// `[<assembly: AutoOpen("…")>]` lists into
     /// [`Self::implicit_open_namespace_paths`]. `per_assembly` is
-    /// `(manifest identity name, dotted paths in manifest order)`, in env
-    /// assembly order — the order FCS applies the opens in
-    /// (`CreateInitialTcEnv` folds `AddCcuToTcEnv` over the CCUs).
+    /// `(provenance id, manifest identity name, dotted paths in manifest
+    /// order)`, in env assembly order — the order FCS applies the opens in
+    /// (`CreateInitialTcEnv` folds `AddCcuToTcEnv` over the CCUs). The deref
+    /// keys on the **provenance id**, never the name: two loaded DLLs can share
+    /// a simple name, or a byte-identical manifest identity, and FCS resolves
+    /// each path within the contributing CCU itself (issue #150). The name
+    /// serves only the FSharp.Core special case.
     ///
     /// Mirrors FCS with two deliberate narrowings:
     /// - **FSharp.Core prepend** — FCS opens `Microsoft` for FSharp.Core even
@@ -1021,8 +1043,8 @@ impl AssemblyEnv {
     ///   flag in the model). Opening them would make bare `Bind`/`Source`
     ///   wrongly resolve (a D5 soundness violation); skipping them only costs
     ///   deferrals. Revisit with A4/S4.
-    fn record_assembly_auto_opens(&mut self, per_assembly: Vec<(String, Vec<String>)>) {
-        for (identity_name, raw) in per_assembly {
+    fn record_assembly_auto_opens(&mut self, per_assembly: Vec<(AssemblyId, String, Vec<String>)>) {
+        for (contributor, identity_name, raw) in per_assembly {
             let fslib_prepend = if identity_name == "FSharp.Core" {
                 Some("Microsoft".to_string())
             } else {
@@ -1035,20 +1057,20 @@ impl AssemblyEnv {
                 if segments.iter().any(String::is_empty) {
                     continue;
                 }
-                if let Some(handle) = self.assembly_entity_at_path(&identity_name, &segments) {
+                if let Some(handle) = self.assembly_entity_at_path(contributor, &segments) {
                     // Module/type-shaped: dropped from the namespace opens (its
                     // bare values are not made resolvable), but retained here so the
                     // OV-6 extension-absence gate can fold its extension members.
                     self.auto_open_module_handles.push(handle);
                     continue;
                 }
-                if !self.namespace_declared_only_by(&identity_name, &segments) {
+                if !self.namespace_declared_only_by(contributor, &segments) {
                     // A *contested* namespace (some assembly declares it, but not
                     // only the contributor) is dropped from the opens. Whether it can
                     // be recorded contributor-scoped turns on the **contributor**, not
                     // the env: FCS opens the *contributing CCU's* namespace entity, so
                     // only content that assembly visibly declares can enter scope.
-                    if self.contributor_declares_namespace(&identity_name, &segments) {
+                    if self.contributor_declares_namespace(contributor, &segments) {
                         // The contributor visibly declares the namespace (and so does a
                         // sibling — else `namespace_declared_only_by` would be true).
                         // Record it with its contributor so the extension gate can ask,
@@ -1056,7 +1078,7 @@ impl AssemblyEnv {
                         // declares an extension of it (EX-1); a sibling's content never
                         // enters.
                         self.contested_auto_opens
-                            .push((identity_name.clone(), segments.clone()));
+                            .push((contributor, segments.clone()));
                     } else {
                         // The contributor declares **no visible content** at the target,
                         // yet the attribute names it. Either it is a stale/nonexistent
@@ -1092,7 +1114,7 @@ impl AssemblyEnv {
         }
     }
 
-    /// Whether the assembly whose manifest name is `identity` names an entity
+    /// Whether the assembly with provenance `contributor` names an entity
     /// at the fully-qualified dotted `path` — used to classify that assembly's
     /// AutoOpen path as module/type-shaped (some split of the path names one
     /// of *its* top-level types, possibly descending into nested types)
@@ -1104,14 +1126,21 @@ impl AssemblyEnv {
     /// [`Self::top_level_types`] rather than [`Self::by_type`] because the
     /// deref must be **per-assembly** (see
     /// [`Self::record_assembly_auto_opens`]) and the first-wins `by_type`
-    /// slot may hold a same-FQN entity from a different assembly. Matched by
+    /// slot may hold a same-FQN entity from a different assembly. Candidates
+    /// are filtered by [`Self::assembly_provenance`], never by name: a sibling
+    /// DLL sharing the contributor's simple name — or its whole manifest
+    /// identity — must not have *its* module folded (issue #150). Matched by
     /// the name F# source writes (`source_name` when present — a suffixed
     /// module's AutoOpen path says `List`, never `ListModule`).
-    fn assembly_entity_at_path(&self, identity: &str, path: &[String]) -> Option<EntityHandle> {
+    fn assembly_entity_at_path(
+        &self,
+        contributor: AssemblyId,
+        path: &[String],
+    ) -> Option<EntityHandle> {
         for split in 0..path.len() {
             let candidates = self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
-                e.assembly.name == identity
+                self.assembly_provenance(h) == Some(contributor)
                     && e.namespace.as_slice() == &path[..split]
                     && e.source_name.as_deref().unwrap_or(&e.name) == path[split]
                     && e.generic_parameters.is_empty()
@@ -1138,25 +1167,28 @@ impl AssemblyEnv {
         None
     }
 
-    /// Whether the assembly whose manifest name is `identity` declares a
+    /// Whether the assembly with provenance `contributor` declares a
     /// **public** top-level type in `namespace` (or a nested namespace below
     /// it) — the per-assembly counterpart of [`Self::has_namespace`] — while
     /// **no other assembly** in the env does. Both halves serve the AutoOpen
     /// deref (see [`Self::record_assembly_auto_opens`]): the contributor half
     /// is FCS's own per-CCU deref; the no-sibling half is what makes the
     /// resolver's path-based (assembly-blind) open machinery equivalent to
-    /// FCS's contributor-scoped open for this namespace. Public-only on both
-    /// sides: internal types are not cross-assembly reachable, so a
-    /// sibling with only internal declarations cannot be distinguished
-    /// through any lookup the resolver performs.
-    fn namespace_declared_only_by(&self, identity: &str, namespace: &[String]) -> bool {
+    /// FCS's contributor-scoped open for this namespace. Sibling-ness is
+    /// provenance, not name: a same-named (even identically-manifested)
+    /// sibling DLL is still a sibling, and counting its content as the
+    /// contributor's would record a contested open env-wide (issue #150).
+    /// Public-only on both sides: internal types are not cross-assembly
+    /// reachable, so a sibling with only internal declarations cannot be
+    /// distinguished through any lookup the resolver performs.
+    fn namespace_declared_only_by(&self, contributor: AssemblyId, namespace: &[String]) -> bool {
         let mut contributor_declares = false;
         for &h in &self.top_level_types {
             let e = self.entity(h);
             if !e.namespace.starts_with(namespace) || !self.is_public(h) {
                 continue;
             }
-            if e.assembly.name == identity {
+            if self.assembly_provenance(h) == Some(contributor) {
                 contributor_declares = true;
             } else {
                 return false;
@@ -1165,7 +1197,7 @@ impl AssemblyEnv {
         contributor_declares
     }
 
-    /// Whether the assembly whose manifest name is `identity` declares a **public**
+    /// Whether the assembly with provenance `contributor` declares a **public**
     /// top-level type in `namespace` (or a nested namespace below it) — the
     /// contributor half of [`Self::namespace_declared_only_by`], asked on its own
     /// when a *sibling* is known to declare the namespace too. This decides whether a
@@ -1176,10 +1208,15 @@ impl AssemblyEnv {
     /// [`Self::record_assembly_auto_opens`]). Public-only for the same reason as
     /// [`Self::namespace_declared_only_by`]: an internal declaration is not
     /// cross-assembly reachable.
-    fn contributor_declares_namespace(&self, identity: &str, namespace: &[String]) -> bool {
+    fn contributor_declares_namespace(
+        &self,
+        contributor: AssemblyId,
+        namespace: &[String],
+    ) -> bool {
         self.top_level_types.iter().any(|&h| {
-            let e = self.entity(h);
-            e.assembly.name == identity && self.is_public(h) && e.namespace.starts_with(namespace)
+            self.assembly_provenance(h) == Some(contributor)
+                && self.is_public(h)
+                && self.entity(h).namespace.starts_with(namespace)
         })
     }
 
@@ -1286,16 +1323,26 @@ impl AssemblyEnv {
         }
     }
 
+    /// The per-DLL provenance of the entity `handle` — which loaded assembly it
+    /// was interned from ([`Self::from_assemblies`] / [`Self::from_views`]);
+    /// `None` for an env built without per-assembly grouping
+    /// ([`Self::from_entities`]). The true per-DLL discriminator: unlike a
+    /// simple name or even a whole manifest `AssemblyIdentity`, two loaded DLLs
+    /// never share it (issue #150). A nested type reports its enclosing
+    /// assembly's.
+    fn assembly_provenance(&self, handle: EntityHandle) -> Option<AssemblyId> {
+        self.nodes[handle.index()].assembly
+    }
+
     /// The source DLL path the entity `handle` came from — `Some` only when the
-    /// env was built with provenance ([`Self::from_assemblies`]); `None` for one
+    /// env was built with source paths ([`Self::from_assemblies`]); `None` for one
     /// built via [`Self::from_entities`] / [`Self::from_views`]. A nested type
     /// reports its enclosing assembly. Go-to-definition reads this DLL's portable
     /// PDB for the member's source location.
     pub fn assembly_path(&self, handle: EntityHandle) -> Option<&Path> {
-        self.nodes[handle.index()]
-            .assembly
+        self.assembly_provenance(handle)
             .and_then(|id| self.assemblies.get(id.0 as usize))
-            .map(PathBuf::as_path)
+            .and_then(|p| p.as_deref())
     }
 
     /// The total number of interned entities (top-level + nested).
@@ -1468,11 +1515,11 @@ impl AssemblyEnv {
         // ([`AbbreviationVisibility::Unknowable`]) hides its module-scoped
         // type aliases from the tree walked below — FCS still imports them
         // through the auto-open (codex on stage 4).
-        if self.contested_auto_opens.iter().any(|(identity, ns)| {
+        if self.contested_auto_opens.iter().any(|(contributor, ns)| {
             self.namespace_has_dropped_type(ns)
                 || self.unknowable_abbreviations_in_namespace(ns)
                 || self.types_in_namespace(ns).iter().any(|&h| {
-                    self.entity(h).assembly.name == *identity
+                    self.assembly_provenance(h) == Some(*contributor)
                         && (self.entity_source_name(h) == name
                             || self.entity_tree_has_entity_named(h, name))
                 })
@@ -2331,8 +2378,8 @@ impl AssemblyEnv {
         // scope. Every real project has one of these — FSharp.Core auto-opens
         // `Microsoft`, which the BCL also declares — so answering by name here, rather
         // than deferring wholesale, is what makes the whole refinement bite.
-        if self.contested_auto_opens.iter().any(|(identity, ns)| {
-            self.namespace_has_extension_named_in_assembly(ns, name, is_static, identity)
+        if self.contested_auto_opens.iter().any(|(contributor, ns)| {
+            self.namespace_has_extension_named_in_assembly(ns, name, is_static, *contributor)
         }) {
             return true;
         }
@@ -2356,7 +2403,8 @@ impl AssemblyEnv {
     }
 
     /// [`Self::namespace_has_extension_named`], restricted to the content of **one
-    /// assembly** — the contributor of a *contested* auto-open, whose namespace
+    /// assembly** (by provenance — a same-named sibling DLL's content is still a
+    /// sibling's) — the contributor of a *contested* auto-open, whose namespace
     /// entity is the only one FCS opens (a sibling's same-named namespace stays
     /// closed). A dropped type in the namespace still answers `true` for every name:
     /// we cannot see whose it was, let alone what it declared.
@@ -2365,18 +2413,18 @@ impl AssemblyEnv {
         namespace: &[String],
         name: &str,
         is_static: bool,
-        identity: &str,
+        contributor: AssemblyId,
     ) -> bool {
         self.namespaces_with_dropped_types.contains(namespace)
             || self.types_in_namespace(namespace).iter().any(|&h| {
-                self.entity(h).assembly.name == identity
+                self.assembly_provenance(h) == Some(contributor)
                     && self.entity_tree_has_extension_named(h, name, is_static)
             })
             || self
                 .auto_open_modules_in_namespace(namespace)
                 .iter()
                 .any(|&h| {
-                    self.entity(h).assembly.name == identity
+                    self.assembly_provenance(h) == Some(contributor)
                         && self.entity_tree_has_extension_named(h, name, is_static)
                 })
     }
@@ -4811,6 +4859,165 @@ mod from_views_tests {
         assert!(
             !env.extension_named_in_scope(&other, "Substring", false),
             "an unrelated namespace is unaffected"
+        );
+    }
+
+    // ===== AutoOpen deref provenance (issue #150) =====
+    //
+    // Two loaded DLLs can share a simple name — or a byte-identical manifest
+    // `AssemblyIdentity` — while being distinct assemblies (extern-alias /
+    // duplicate-reference setups). The AutoOpen deref must select the
+    // *contributing DLL's* entity by `AssemblyId` provenance, never by name:
+    // folding a same-named sibling's module both imports a surface FCS keeps
+    // closed AND misses the contributor's own extension members (the gate then
+    // proves a name absent that FCS has in scope — an unsound commit).
+
+    /// A module `namespace.name` owned by manifest identity `assembly`, whose
+    /// instance-extension index is exactly `extensions`.
+    fn extension_module(
+        assembly: &str,
+        namespace: &[&str],
+        name: &str,
+        extensions: &[&str],
+    ) -> Entity {
+        let mut m = module_entity(assembly, namespace, name);
+        m.extension_member_names = extensions.iter().map(|s| (*s).to_string()).collect();
+        m
+    }
+
+    /// **Module-shaped deref, byte-identical manifest identities.** The sibling
+    /// is listed (and interned) first, so a simple-name match finds *its* `Ns.M`
+    /// before the contributor's. The fold must land on the contributor's module:
+    /// its extension enters the gate's surface, the sibling's does not.
+    #[test]
+    fn module_shaped_auto_open_selects_the_contributing_dll_among_identical_identities() {
+        let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![
+            (
+                std::path::PathBuf::from("/refs/sibling/Lib.dll"),
+                vec![extension_module("Lib", &["Ns"], "M", &["FromSibling"])],
+                super::AbbreviationVisibility::Modelled,
+                vec![],
+            ),
+            (
+                std::path::PathBuf::from("/refs/contributor/Lib.dll"),
+                vec![extension_module("Lib", &["Ns"], "M", &["FromContributor"])],
+                super::AbbreviationVisibility::Modelled,
+                vec!["Ns.M".to_string()],
+            ),
+        ]);
+        assert!(
+            env.extension_named_in_scope(&[], "FromContributor", false),
+            "the contributing DLL's module is the auto-open target: its extension is in scope"
+        );
+        assert!(
+            !env.extension_named_in_scope(&[], "FromSibling", false),
+            "the same-named sibling's module is a different DLL's: FCS never opens it"
+        );
+    }
+
+    /// The same-simple-name (but distinct-version) variant of
+    /// [`module_shaped_auto_open_selects_the_contributing_dll_among_identical_identities`]:
+    /// even a full `AssemblyIdentity` comparison could tell these apart, but the
+    /// discriminator must be per-DLL provenance, not any name.
+    #[test]
+    fn module_shaped_auto_open_selects_the_contributing_dll_among_same_named_siblings() {
+        let mut contributor_m = extension_module("Lib", &["Ns"], "M", &["FromContributor"]);
+        contributor_m.assembly.version.major = 2;
+        let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![
+            (
+                std::path::PathBuf::from("/refs/sibling/Lib.dll"),
+                vec![extension_module("Lib", &["Ns"], "M", &["FromSibling"])],
+                super::AbbreviationVisibility::Modelled,
+                vec![],
+            ),
+            (
+                std::path::PathBuf::from("/refs/contributor/Lib.dll"),
+                vec![contributor_m],
+                super::AbbreviationVisibility::Modelled,
+                vec!["Ns.M".to_string()],
+            ),
+        ]);
+        assert!(
+            env.extension_named_in_scope(&[], "FromContributor", false),
+            "the contributing DLL's module is the auto-open target: its extension is in scope"
+        );
+        assert!(
+            !env.extension_named_in_scope(&[], "FromSibling", false),
+            "the same-named sibling's module is a different DLL's: FCS never opens it"
+        );
+    }
+
+    /// **Namespace-shaped deref, same-named siblings.** A simple-name guard
+    /// counts the sibling's `Ns` content as the contributor's own, so
+    /// `namespace_declared_only_by` wrongly reports sole ownership and the open
+    /// is recorded env-wide — making the *sibling's* namespace content
+    /// bare-resolvable where FCS keeps it closed. Provenance must classify it
+    /// as contested: dropped from the env-wide opens, contributor-scoped in the
+    /// extension gate.
+    #[test]
+    fn namespace_auto_open_contested_by_a_same_named_sibling_is_contributor_scoped() {
+        let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![
+            (
+                std::path::PathBuf::from("/refs/sibling/Lib.dll"),
+                vec![extension_module(
+                    "Lib",
+                    &["Ns"],
+                    "SiblingMod",
+                    &["FromSibling"],
+                )],
+                super::AbbreviationVisibility::Modelled,
+                vec![],
+            ),
+            (
+                std::path::PathBuf::from("/refs/contributor/Lib.dll"),
+                vec![extension_module(
+                    "Lib",
+                    &["Ns"],
+                    "ContribMod",
+                    &["FromContributor"],
+                )],
+                super::AbbreviationVisibility::Modelled,
+                vec!["Ns".to_string()],
+            ),
+        ]);
+        let ns: Vec<String> = vec!["Ns".to_string()];
+        assert!(
+            !env.implicit_open_namespace_paths().contains(&ns),
+            "a same-named sibling DLL also declares Ns: the open is contested, not env-wide"
+        );
+        assert!(
+            env.extension_named_in_scope(&[], "FromContributor", false),
+            "the contested open is contributor-scoped: the contributor's extension is in scope"
+        );
+        assert!(
+            !env.extension_named_in_scope(&[], "FromSibling", false),
+            "the sibling's same-named namespace stays closed: its extension never enters scope"
+        );
+    }
+
+    /// The `from_views` build path must distinguish same-named views too — each
+    /// view is a distinct loaded DLL, so it gets its own provenance even though
+    /// no source path is known for it.
+    #[test]
+    fn from_views_module_shaped_auto_open_distinguishes_same_named_views() {
+        let sibling = ConfigView::new(
+            "Lib",
+            vec![extension_module("Lib", &["Ns"], "M", &["FromSibling"])],
+            &[],
+        );
+        let contributor = ConfigView::new(
+            "Lib",
+            vec![extension_module("Lib", &["Ns"], "M", &["FromContributor"])],
+            &["Ns.M"],
+        );
+        let env = AssemblyEnv::from_views(&[sibling, contributor]).expect("build env");
+        assert!(
+            env.extension_named_in_scope(&[], "FromContributor", false),
+            "the contributing view's module is the auto-open target: its extension is in scope"
+        );
+        assert!(
+            !env.extension_named_in_scope(&[], "FromSibling", false),
+            "the same-named sibling view's module is a different DLL's: FCS never opens it"
         );
     }
 }
