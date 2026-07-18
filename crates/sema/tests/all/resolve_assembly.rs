@@ -3913,6 +3913,51 @@ fn a_cross_assembly_namespace_duplicate_defers() {
     );
 }
 
+/// codex review round 5, P2: the `open Ns` above imports `Boom` as an *already*
+/// `Deferred` scope entry (the cross-assembly duplicate) without setting an
+/// opacity flag or bumping the generation — yet it is the SOURCE of that deferred
+/// name. The resolution-explain trace must flag it (`imported_deferred`), or the
+/// explain tool would report "no modeled per-open effect" for the open that
+/// directly introduced the deferral.
+#[test]
+fn an_open_importing_a_deferred_duplicate_is_flagged() {
+    let template = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc");
+    let mut boom_a = template.clone();
+    boom_a.namespace = vec!["Ns".to_string()];
+    boom_a.name = "Boom".to_string();
+    boom_a.kind = EntityKind::Exception;
+    boom_a.members = vec![];
+    boom_a.nested_types = vec![];
+    let mut boom_b = boom_a.clone();
+    boom_b.assembly.name = "OtherAsm".to_string();
+
+    let env = AssemblyEnv::from_entities(vec![boom_a, boom_b]);
+    let src = "open Ns\nlet x = Boom 3\n";
+    let rf = resolve(src, &env);
+
+    let opens = &rf.resolution_trace().opens;
+    let ns = opens
+        .iter()
+        .find(|o| o.path == vec!["Ns".to_string()])
+        .expect("open Ns is traced");
+    assert!(
+        ns.opacity.imported_deferred,
+        "the open imported a Deferred cross-assembly duplicate"
+    );
+    assert!(
+        ns.opacity.perturbs_resolution(),
+        "so it must not read as having no per-open effect"
+    );
+    // `imported_deferred` is the ONLY signal here — no flag, no barrier.
+    assert!(!ns.opacity.opaque_value);
+    assert!(!ns.opacity.opaque_dotted);
+    assert!(!ns.opacity.unmodelled);
+    assert!(!ns.opacity.staled_earlier);
+}
+
 /// codex review round 2, P2: within ONE assembly FCS folds a namespace's `[<AutoOpen>]`
 /// module **after** its tycon tier, so an auto-open value `Zero` wins over a same-named
 /// direct type `Zero`. The type is only a *value-slot contestant*, and a contestant

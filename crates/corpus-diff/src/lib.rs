@@ -2281,44 +2281,48 @@ impl TokenExplanation {
         let _ = writeln!(out, "  resolution: {}", self.resolution_summary);
         if self.opens.is_empty() {
             let _ = writeln!(out, "  opens: (none)");
-            return out;
-        }
-        let _ = writeln!(out, "  opens (source order):");
-        for o in &self.opens {
-            let kind = if o.is_type { "open type" } else { "open" };
-            let effect = if o.opacity.perturbs_resolution() {
-                let mut flags = Vec::new();
-                if o.opacity.opaque_value {
-                    flags.push("opaque_value");
-                }
-                if o.opacity.opaque_dotted {
-                    flags.push("opaque_dotted");
-                }
-                if o.opacity.unmodelled {
-                    flags.push("unmodelled");
-                }
-                if o.opacity.staled_earlier {
-                    flags.push("staled_earlier");
-                }
-                format!("PERTURBS [{}]", flags.join(", "))
-            } else {
-                // Never "clean" — that would claim harmlessness the per-open trace
-                // cannot prove (an all-false open can still cause a per-token
-                // deferral). It triggered none of the modeled per-open mechanisms.
-                "(no modeled per-open effect)".to_string()
-            };
-            let _ = writeln!(
-                out,
-                "    {kind} {} @ {}..{} — {effect}",
-                o.path.join("."),
-                o.range.0,
-                o.range.1,
-            );
+        } else {
+            let _ = writeln!(out, "  opens (source order):");
+            for o in &self.opens {
+                let kind = if o.is_type { "open type" } else { "open" };
+                let effect = if o.opacity.perturbs_resolution() {
+                    let mut flags = Vec::new();
+                    if o.opacity.opaque_value {
+                        flags.push("opaque_value");
+                    }
+                    if o.opacity.opaque_dotted {
+                        flags.push("opaque_dotted");
+                    }
+                    if o.opacity.unmodelled {
+                        flags.push("unmodelled");
+                    }
+                    if o.opacity.staled_earlier {
+                        flags.push("staled_earlier");
+                    }
+                    if o.opacity.imported_deferred {
+                        flags.push("imported_deferred");
+                    }
+                    format!("PERTURBS [{}]", flags.join(", "))
+                } else {
+                    // Never "clean" — that would claim harmlessness the per-open
+                    // trace cannot prove (an all-false open can still cause a
+                    // per-token deferral). It triggered none of the modeled ones.
+                    "(no modeled per-open effect)".to_string()
+                };
+                let _ = writeln!(
+                    out,
+                    "    {kind} {} @ {}..{} — {effect}",
+                    o.path.join("."),
+                    o.range.0,
+                    o.range.1,
+                );
+            }
         }
         // For any deferred token, spell out what the per-open view can and cannot
         // say — including the per-token deferral causes it does NOT attribute, so
         // the reader is never misled by a "no modeled effect" open. Fires even
-        // when no open perturbs per-open (the attribute-position case).
+        // when no open perturbs per-open, and even when the file has no opens at
+        // all (a bare member tail).
         if matches!(self.resolution, Some(Resolution::Deferred(_))) {
             let perturbing = self.perturbing_opens();
             let mut note = String::from("  note: token is Deferred. ");

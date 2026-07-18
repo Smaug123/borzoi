@@ -714,6 +714,37 @@ fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
     );
 }
 
+/// Regression for `codex review` round 5, P2: the deferred-token note must fire
+/// even when the file has NO `open` declarations. A bare member tail
+/// (`value.Member`) in an open-less file still defers pending inference, and the
+/// report must explain that — an early `opens.is_empty()` return used to skip the
+/// note entirely, contradicting the "fires for any deferred token" contract.
+#[test]
+fn explain_token_notes_a_deferred_tail_even_with_no_opens() {
+    let src = "module M\nlet f value = value.Member\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (tail, _) = text_range(src, "Member");
+    let exp = explain_token(&loaded, 0, tail);
+
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the member tail defers; got {:?}",
+        exp.resolution
+    );
+    assert!(exp.opens.is_empty(), "the file has no opens");
+
+    let report = exp.render();
+    assert!(
+        report.contains("opens: (none)"),
+        "the dump must record that there are no opens:\n{report}"
+    );
+    // The note still fires and carries the per-token caveats.
+    assert!(
+        report.contains("Deferred") && report.contains("TAIL") && report.contains("regardless"),
+        "the deferred-token note must fire even with no opens:\n{report}"
+    );
+}
+
 /// Ad-hoc "why did this token defer?" CLI, as an env-driven ignored test in the
 /// mould of [`project_corpus_resolution_diff`]. Point it at a real project and a
 /// token: it loads the project through the same path the LSP uses, resolves the

@@ -1219,7 +1219,11 @@ pub enum Resolution {
 /// - [`staled_earlier`](Self::staled_earlier) — the open raised the
 ///   generation barrier, staling every earlier opened name *and local binding*,
 ///   so a later dotted head through a staled entry defers even when none of the
-///   three flags is set.
+///   three flags is set;
+/// - [`imported_deferred`](Self::imported_deferred) — the open imported a name
+///   that is *itself* `Deferred` (a cross-assembly duplicate, say), so a use of
+///   that name defers with the open as its source — even though the open
+///   modeled its import fully (no flag, no barrier).
 ///
 /// **Attribution is by transition.** The three flags are monotone within a
 /// top-level block (set true, never cleared until the block ends), so this
@@ -1237,7 +1241,7 @@ pub enum Resolution {
 /// `latest_open_pos`), a member/qualified tail pending inference, or
 /// pattern-position case suppression (`pattern_suppressed_case_ids`). So an open
 /// with all four `false` is not *proof* it perturbs nothing — only that it
-/// triggered none of the modeled per-open four; a caller must not label it
+/// triggered none of the modeled per-open five; a caller must not label it
 /// harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OpenOpacity {
@@ -1252,15 +1256,25 @@ pub struct OpenOpacity {
     /// when the three flags stay `false` (a childless assembly module that also
     /// names a namespace with a constructible type is one such open).
     pub staled_earlier: bool,
+    /// Imported a name whose resolution is itself `Deferred` — a scope entry the
+    /// open pushed that resolves to nothing definite (a cross-assembly duplicate
+    /// resolved ambiguously). The open is the *source* of that deferred name,
+    /// though it set no flag and raised no barrier.
+    pub imported_deferred: bool,
 }
 
 impl OpenOpacity {
-    /// Whether this open perturbs later resolution through any modeled mechanism
-    /// — an opacity flag or the generation barrier. The candidate-culprit
-    /// predicate; `false` means "triggered none of the modeled four", not
-    /// "provably harmless" (see the type docs' scope note).
+    /// Whether this open perturbs later resolution through any modeled per-open
+    /// mechanism — an opacity flag, the generation barrier, or importing a
+    /// deferred name. The candidate-culprit predicate; `false` means "triggered
+    /// none of the modeled five", not "provably harmless" (see the type docs'
+    /// scope note).
     pub fn perturbs_resolution(self) -> bool {
-        self.opaque_value || self.opaque_dotted || self.unmodelled || self.staled_earlier
+        self.opaque_value
+            || self.opaque_dotted
+            || self.unmodelled
+            || self.staled_earlier
+            || self.imported_deferred
     }
 }
 

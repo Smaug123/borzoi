@@ -8,7 +8,7 @@ use crate::assembly_env::OpenFoldSurface;
 use crate::def::DefId;
 
 use super::model::{
-    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, SlotClass,
+    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
 };
 use super::state::{AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver};
 use super::{
@@ -790,6 +790,14 @@ impl<'a> Resolver<'a> {
                 // it too. Monotone within the arm (only ever bumped), so a strict
                 // increase is this open's own barrier.
                 let trace_before_gen = self.open_generation;
+                // A fifth: a fully-enumerated open can import a name that is
+                // ITSELF `Deferred` (a cross-assembly duplicate, say), setting no
+                // flag and bumping no generation — yet it is the source of that
+                // deferred name. Opened entries all land in `module_frame()`
+                // (`scopes.last()`), and this arm pushes only its own (it never
+                // enters a nested module), so a new `Deferred` entry after it is
+                // this open's import.
+                let trace_before_entries = self.scopes.last().map_or(0, |f| f.entries.len());
                 // Classify the open. `open <namespace>` brings the namespace's
                 // *types* into scope — record the prefix so later qualified
                 // references retry under it (modelled), no unqualified values.
@@ -1557,6 +1565,13 @@ impl<'a> Resolver<'a> {
                         opaque_dotted: self.opaque_dotted_open && !trace_before.1,
                         unmodelled: self.unmodelled_open_active && !trace_before.2,
                         staled_earlier: self.open_generation > trace_before_gen,
+                        imported_deferred: self.scopes.last().is_some_and(|f| {
+                            f.entries
+                                .get(trace_before_entries..)
+                                .unwrap_or(&[])
+                                .iter()
+                                .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
+                        }),
                     },
                 });
             }
