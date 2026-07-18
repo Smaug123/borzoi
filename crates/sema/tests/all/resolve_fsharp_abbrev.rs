@@ -179,6 +179,32 @@ fn resolve_through_a_same_assembly_abbreviation_binds_the_member_tail() {
 }
 
 #[test]
+fn resolve_through_a_bare_alias_use_binds_the_terminal_type() {
+    // A *bare* value-position use of the alias with no member tail —
+    // `Lib.WidgetAlias()`, the alias as the terminal segment — is resolved by FCS
+    // to the chased TERMINAL type `Lib.Widget`, not the abbreviation marker. The
+    // marker binds only when the alias is a *qualifier* (`Lib.WidgetAlias.Make`,
+    // the sibling test above). Verified against fcs-dump `uses`: a bare
+    // constructor/value occurrence reports the underlying type, a qualifier
+    // reports the abbreviation. (A single unqualified `WidgetAlias()` never
+    // reaches this resolver — it defers as an unbound value — so the divergence
+    // only bites the qualified form.)
+    let env = fixture_env();
+    let src = "module M\nlet _ = Lib.WidgetAlias()\n";
+    let rf = resolve(src, &env);
+
+    let widget = env
+        .lookup_type(&["Lib".into()], "Widget", 0)
+        .expect("fixture must declare Lib.Widget");
+    assert_eq!(
+        rf.resolution_at(at(src, "WidgetAlias")),
+        Some(Resolution::Entity(widget)),
+        "a bare alias use binds the chased terminal type, not the marker; got {:?}",
+        rf.resolution_at(at(src, "WidgetAlias")),
+    );
+}
+
+#[test]
 fn resolve_through_an_alias_owns_the_path_over_a_lower_reading() {
     // `open Lib.Lower` brings a `UAlias` class with a real static `UCase`; `open
     // Lib` (later, so it wins the `UAlias` binding) brings `UAlias = U`, a union

@@ -2890,6 +2890,15 @@ impl AssemblyEnv {
     /// back to the interned entities, keyed by manifest identity.
     fn unique_assembly_key_for_name(&self, name: &str) -> Option<AssemblyKey<'_>> {
         if !self.assembly_identities.is_empty() {
+            // An **unknown** (unregistered) identity — a rootless projection the
+            // shorter constructors could not name — could itself be `name`, so its
+            // mere presence makes referenced-CCU uniqueness *undecidable*: a
+            // matching sibling might not be the sole DLL of that name. Decline
+            // (codex P2). The runtime constructor always supplies an identity, so
+            // this never fires on the LSP's real env.
+            if self.assembly_identities.iter().any(|i| i.is_none()) {
+                return None;
+            }
             let mut found: Option<AssemblyId> = None;
             for (idx, ident) in self.assembly_identities.iter().enumerate() {
                 if ident.as_ref().is_some_and(|a| a.name == name) {
@@ -5180,6 +5189,45 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
             None,
             "a rootless same-named sibling still makes the CCU name ambiguous — decline",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_when_a_rootless_sibling_identity_is_unknown() {
+        // The shorter constructors cannot name a rootless projection, leaving a
+        // `None` registry entry. That unknown identity could itself be `Lib`, so a
+        // `Some("Lib")` target's uniqueness is undecidable — decline, rather than
+        // silently skip the unknown and treat the rooted sibling as the sole DLL of
+        // that name (codex P2).
+        let widget = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["N"], "Widget")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "RefAlias",
+            Some(named_target(Some("Lib"), &["N", "Widget"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![
+            (
+                std::path::PathBuf::from("Rooted.dll"),
+                vec![widget, marker],
+                super::AbbreviationVisibility::Modelled,
+                Vec::new(),
+            ),
+            (
+                std::path::PathBuf::from("Rootless.dll"),
+                vec![],
+                super::AbbreviationVisibility::Modelled,
+                Vec::new(),
+            ),
+        ]);
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
+            None,
+            "an unknown (rootless, unnamed) identity makes the CCU name undecidable — decline",
         );
     }
 

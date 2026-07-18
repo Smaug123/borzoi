@@ -94,9 +94,19 @@ impl<'a> Resolver<'a> {
         }
         recs.push((
             segments[k - base].text_range(),
-            // The alias segment binds to the marker itself (FCS points `S` at the
-            // abbreviation); the tail below walks on `walk_root` (its target).
-            Resolution::Entity(type_handle),
+            // FCS points the alias segment at the marker only when it is a
+            // *qualifier* — a tail follows (`WidgetAlias.Make`), and the tail below
+            // walks on `walk_root` (its target). A *bare* value-position use with no
+            // tail (`let x = WidgetAlias()`, or the alias opened into scope) FCS
+            // resolves to the chased *terminal* type, not the marker, so bind the
+            // target there (verified against fcs-dump `uses`; codex review). A
+            // *type*-position bare use keeps the marker, but that goes through the
+            // type-position sibling [`Self::assembly_type_path_core`], not this resolver.
+            Resolution::Entity(if via_alias && k + 1 == n {
+                walk_root
+            } else {
+                type_handle
+            }),
         ));
 
         // Walk the segments past the rooting type: nested types extend the
