@@ -30,38 +30,38 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::resolve::SourceFile;
 
-/// A file's deduplicated FCS `QualifiedNameOfFile`. Opaque; equality is the
-/// pairing relation (FCS's `qnameOrder` compares the text ordinally).
+/// A file's FCS `QualifiedNameOfFile`: the deduplicated text (the pairing
+/// key — FCS's `qnameOrder` compares it ordinally) plus the raw
+/// pre-deduplication name (the implicit anonymous-module name a headerless
+/// file's contents live under — FCS's `ComputeAnonModuleName` uses the
+/// canonicalised stem; only the QNOF itself is deduplicated, and reversing
+/// the deduped text is ambiguous for a file genuinely named `Foo___2.fs`,
+/// codex round 4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct QualifiedNameOfFile(String);
+pub struct QualifiedNameOfFile {
+    deduped: String,
+    raw: String,
+}
 
 impl QualifiedNameOfFile {
-    /// The deduplicated name text.
+    /// The deduplicated name text — the sig ↔ impl pairing key.
     pub fn text(&self) -> &str {
-        &self.0
+        &self.deduped
     }
 
     /// A placeholder for an impl-only fold, where no signature ever opens a
     /// pairing and the name is never consulted.
     pub(crate) fn placeholder() -> Self {
-        QualifiedNameOfFile(String::new())
+        QualifiedNameOfFile {
+            deduped: String::new(),
+            raw: String::new(),
+        }
     }
 
-    /// The name with any `___<n>` deduplication suffix stripped — the
-    /// **implicit anonymous-module name** a headerless file's contents live
-    /// under (FCS's `ComputeAnonModuleName` uses the *canonicalised* stem;
-    /// only the QNOF itself is deduplicated). Stripping a stem that
-    /// genuinely ends in `___<n>` over-approximates, which its one consumer
-    /// (the signature screen's implicit-module root) is safe under — it
-    /// only defers more.
+    /// The raw pre-deduplication name — the implicit anonymous-module name
+    /// of a headerless file.
     pub(crate) fn undeduplicated_text(&self) -> &str {
-        if let Some(pos) = self.0.rfind("___") {
-            let suffix = &self.0[pos + 3..];
-            if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) {
-                return &self.0[..pos];
-            }
-        }
-        &self.0
+        &self.raw
     }
 }
 
@@ -91,7 +91,10 @@ pub fn qualified_names(files: &[SourceFile], paths: &[PathBuf]) -> Vec<Qualified
             let dir = directory_key(path);
             let seen = dict.entry(raw.clone()).or_default();
             if let Some((_, deduped)) = seen.iter().find(|(d, _)| *d == dir) {
-                return QualifiedNameOfFile(deduped.clone());
+                return QualifiedNameOfFile {
+                    deduped: deduped.clone(),
+                    raw,
+                };
             }
             let count = seen.len() + 1;
             let deduped = if count == 1 {
@@ -100,7 +103,7 @@ pub fn qualified_names(files: &[SourceFile], paths: &[PathBuf]) -> Vec<Qualified
                 format!("{raw}___{count}")
             };
             seen.push((dir, deduped.clone()));
-            QualifiedNameOfFile(deduped)
+            QualifiedNameOfFile { deduped, raw }
         })
         .collect()
 }
@@ -245,5 +248,36 @@ mod tests {
         assert_eq!(directory_key(Path::new("/a/b/../c/f.fs")), "/a/c");
         assert_eq!(directory_key(Path::new("/a/./b/f.fs")), "/a/b");
         assert_eq!(directory_key(Path::new("rel/dir/f.fs")), "rel/dir");
+    }
+
+    /// The raw (pre-deduplication) name rides alongside the deduped text —
+    /// a file genuinely named `Foo___2.fs` keeps `Foo___2` as its implicit
+    /// module, while a second-directory `M.fs`'s deduped `M___2` still
+    /// reports the raw `M` (codex round 4: reversing the deduped text
+    /// cannot tell these apart).
+    #[test]
+    fn raw_name_survives_deduplication() {
+        use borzoi_cst::parser::parse;
+        use borzoi_cst::syntax::{AstNode, ImplFile};
+
+        let anon = |src: &str| {
+            crate::resolve::SourceFile::Impl(ImplFile::cast(parse(src).root).expect("impl"))
+        };
+        let files = vec![
+            anon("let a = 1\n"),
+            anon("let b = 2\n"),
+            anon("let c = 3\n"),
+        ];
+        let paths = vec![
+            PathBuf::from("/d1/Foo___2.fs"),
+            PathBuf::from("/d1/M.fs"),
+            PathBuf::from("/d2/M.fs"),
+        ];
+        let names = qualified_names(&files, &paths);
+        assert_eq!(names[0].text(), "Foo___2");
+        assert_eq!(names[0].undeduplicated_text(), "Foo___2");
+        assert_eq!(names[1].text(), "M");
+        assert_eq!(names[2].text(), "M___2");
+        assert_eq!(names[2].undeduplicated_text(), "M");
     }
 }

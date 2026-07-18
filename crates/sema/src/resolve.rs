@@ -457,14 +457,21 @@ impl From<SigFile> for SourceFile {
 }
 
 /// The dotted `idText` path of a top-level header's `LongIdent`, with a
-/// leading `global` segment stripped (FCS's post-parse drops the mangled
-/// global-namespace head). `None` for a header with no (or an empty) name.
+/// leading `global` **keyword** segment stripped (FCS's post-parse drops the
+/// mangled global-namespace head). The check is on the *raw* token spelling:
+/// `global` is a keyword, so an ordinary module cannot be named it without
+/// backticks, and an escaped `` ``global`` `` head is a genuine identifier
+/// that must survive (codex round 4 — `id_text` conflates the two). `None`
+/// for a header with no (or an empty) name.
 fn header_long_id_path(fragment: &ModuleOrNamespace) -> Option<Vec<String>> {
     let li = fragment.long_id()?;
-    let mut segments: Vec<String> = li.idents().map(|t| id_text(t.text()).to_string()).collect();
-    if segments.len() > 1 && segments[0] == "global" {
-        segments.remove(0);
-    }
+    let idents: Vec<SyntaxToken> = li.idents().collect();
+    let strip_global = idents.len() > 1 && idents[0].text() == "global";
+    let segments: Vec<String> = idents
+        .iter()
+        .skip(usize::from(strip_global))
+        .map(|t| id_text(t.text()).to_string())
+        .collect();
     (!segments.is_empty()).then_some(segments)
 }
 
