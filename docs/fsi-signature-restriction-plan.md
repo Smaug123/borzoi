@@ -214,18 +214,33 @@ The signature can only ever *remove* names from the boundary (the impl must
 implement everything the signature exposes; the signature exposes a subset). So
 every step here moves monotonically toward FCS:
 
-- Suppressing the impl's exports turns previously-committed cross-file `Item`s
-  into `Deferred` — and today, *before* the LSP even calls the fold on a
-  `.fsi` project, those commits don't exist (the project is refused). So there is
-  no regression to fear; there is only the over-export **bug** (a `.fs`-private
-  `hidden` resolving cross-file) to fix and the fold to re-enable for the
-  project's other files.
-- Re-emitting the exports from the signature is a set of *new, certain* commits:
-  emit an `ExportedItem` only when the signature decl's path, identity range, and
-  kind are certain (a plain `val x : T` under `module M` → path `[M, x]`, identity
-  = the `x` ident in the `.fsi`). Any signature decl kind not yet modelled emits
-  nothing, so the name stays `Deferred` downstream — an honest coverage gap, never
-  a wrong answer.
+- Suppressing the impl's *value/case identity* exports turns previously-committed
+  cross-file `Item`s into `Deferred` — and today, *before* the LSP even calls the
+  fold on a `.fsi` project, those commits don't exist (the project is refused).
+  So there is no regression to fear; there is only the over-export **bug** (a
+  `.fs`-private `hidden` resolving cross-file) to fix and the fold to re-enable
+  for the project's other files.
+- Re-emitting the identities from the signature is a set of *new, certain*
+  commits: emit an `ExportedItem` only when the signature decl's path, identity
+  range, and kind are certain (a plain `val x : T` under `module M` → path
+  `[M, x]`, identity = the `x` ident in the `.fsi`). Any signature decl kind not
+  yet modelled emits no *identity*, so the name stays `Deferred` downstream — an
+  honest coverage gap, never a wrong answer.
+
+**But "emit no identity" is not the same as "emit nothing" (codex review,
+finding 1).** The project's `module_headers` / `nested_module_paths` /
+`real_nested_modules` / `type_paths` / `modules_with_hidden_values` indexes are
+also **assembly-shadow tripwires**: when the project declares `Foo.Bar`, they
+stop a downstream `Foo.Bar.X` from *falling through* to a colliding
+referenced-assembly `Foo.Bar.X` (model.rs:110-115, the
+`assembly_path_records` tripwire). A signatured module that contributed *nothing*
+would lose those tripwires, so a downstream use could wrongly commit to the
+assembly symbol where FCS binds the `.fsi` — a real wrong commit, not an honest
+`Deferred`. So the invariant is finer: **a signatured module must still
+contribute its structural / shadow indexes and a `modules_with_hidden_values`
+marker**, only its *value/case identities* are withheld (Stage 1) or
+signature-sourced (Stage 2). Over-blocking (a private nested module the sig
+hides still shadows) only adds `Deferred`s — sound.
 
 ## Implementation plan
 
@@ -239,14 +254,21 @@ the fold; adds no new commits.
 
 - Introduce `SourceFile` and rework `resolve_project` / the incremental fold /
   `thread_forward` to iterate `&[(SourceFile, QualifiedName)]` (the QNOF per
-  file, pairing rule above). A `SourceFile::Sig` produces an **inert**
-  `ResolvedFile`: empty `export_decls`/`exports`, `resolutions` for the
-  signature's own body left `Deferred`/unmodelled (Stage 2 fills them). It
-  contributes nothing to `preceding`.
+  file, pairing rule above). A `SourceFile::Sig` produces an inert-for-*values*
+  `ResolvedFile` (its own `resolutions` left `Deferred`; Stage 2 fills them) and,
+  in Stage 1, contributes nothing itself — the paired impl carries the blockers
+  (next bullet).
 - Compute the signature-paired set by QNOF. A paired `SourceFile::Impl` is
   resolved exactly as today (internal `resolutions` unchanged — probe point 2),
-  but `thread_forward` folds an **empty** export contribution for it (suppress
-  `export_decls`).
+  and `thread_forward` folds a **structural-only** contribution for it: **keep**
+  the impl's structural / shadow decls (`Module`, `Type`, `Namespace`,
+  `ModuleAbbrev`, `ExceptionTycon`, `Extern`) so the assembly-shadow tripwires
+  stay populated, and mark every one of the impl's containers
+  `modules_with_hidden_values`; **drop** the impl's value/case *identity* decls
+  (`Item`, `ActivePatternCase`). This keeps the impl at its own (correct) fold
+  position, so no provenance question arises in Stage 1 (finding 2 is a Stage-2
+  concern). Keeping the impl's *full* structure over-blocks (a private nested
+  module the sig hides still shadows), which only adds `Deferred`s — sound.
 - LSP: delete the `.fsi` refusal (semantic.rs:1085) outright; parse each Compile
   item with the grammar its extension selects (`is_signature_file`,
   semantic.rs:2133 → a new panic-safe `parse_sig_with_symbols` beside
@@ -257,64 +279,88 @@ the fold; adds no new commits.
   assertions for both a `module M`- and a `namespace N; module M`-headed
   `.fsi` project.
 
-**Why it is sound:** the fold strictly loses commits (paired impl exports
-suppressed) and gains none (sig inert). Certain-implies-exact is preserved
-trivially, and the visibility *timing* is free: a signatured module contributes
-nothing at all in Stage 1, so intervening files (probe L) and self-qualified
-references (probes K/K2) both see nothing — exactly FCS's FS0039. Paired modules
-under-resolve (their public names go `Deferred` cross-file) — the honest D5 cost,
-paid until Stage 2. The rest of the project — every unsigned module (probes J,
-M) — folds for the first time.
+**Why it is sound:** the fold strictly loses *value/case* commits (paired impl
+identities withheld) and gains no new commit — the retained structural decls only
+ever *block* (cause `Deferred`s), never resolve to a def, since types/modules
+carry no cross-file identity today (finding 3). The bare-name hazard is closed
+too: `modules_with_hidden_values` on the paired module makes a downstream
+`open Foo; bar` defer rather than mis-resolve. Certain-implies-exact holds, and
+the visibility *timing* is free: the paired module publishes no identity, so
+intervening files (probe L) and self-qualified references (probes K/K2) see
+nothing — exactly FCS's FS0039. Paired modules under-resolve (their public names
+go `Deferred` cross-file) — the honest D5 cost, paid until Stage 2. Every
+unsigned module (probes J, M) folds for the first time.
 
 **Oracle:** FCS-free `resolve_project` unit tests (a hidden `let` no longer
-resolves cross-file; a non-`.fsi` sibling module still does); an LSP e2e that a
-`module M`-headed `.fsi` project folds where it previously returned `None`; the
-ignored `resolve_corpus_diff` / `resolve_project_diff` gates stay green.
+resolves cross-file; a non-`.fsi` sibling module still does); an
+**assembly-collision** fixture — a signatured `module Foo` whose path collides
+with a referenced-assembly symbol, asserting a downstream `Foo.bar` stays
+`Deferred` rather than committing to the assembly (finding 1's regression, gated);
+an LSP e2e that a `module M`-headed `.fsi` project folds where it previously
+returned `None`; the ignored `resolve_corpus_diff` / `resolve_project_diff` gates
+stay green.
 
 ### Stage 2: the signature becomes the exporter (signature identity)
 
 **Dependencies:** Stage 1. **Behaviour change:** first new commits — cross-file
 uses of a signature's surface resolve to the `.fsi`.
 
-- Give `SourceFile::Sig` a real `Def` arena and a real `export_decls` list,
-  produced by walking `sig_decls()` and emitting the *same* `ExportDecl` /
-  `ExportedItem` currency the impl walk emits, with `def` pointing at the
-  signature's own ident ranges (World A). The initial modelled surface, each
-  certain-implies-exact:
+- Give `SourceFile::Sig` a real `Def` arena for its ident ranges, and produce the
+  module's **value/case identity** exports from `sig_decls()` — the surface the
+  existing `Item` currency can carry a def for (probe conclusion 1, World A):
   - `SigDecl::Val` with a plain `ident()` → an `Item` value export at
-    `[module.., name]`. Skip active-pattern-named and operator-named vals for
-    now (Stage 3).
-  - `SigDecl::Types` with a *visible* union/enum/record representation → the
-    type-path export and, for a visible union/enum, the case `Item`s +
-    type-qualified case paths, reusing the existing `CaseKind` /
-    `type_qualified_cases` machinery.
-  - `SigDecl::Types` with an **opaque** representation (bodyless `type Color`,
-    `type R`) → a type-path export but **no** case / no field exports (opaque
-    hides members). This is the crux the impl walk cannot express, and the reason
-    the signature — not the impl — must be the exporter.
-  - Module / namespace headers → the `Module`/`Namespace` decls, so a downstream
-    `open M` and the module-qualifier symbol resolve. The `[<AutoOpen>]` bit is
-    read from the **signature** header (probe conclusion 5).
-- **Fold the sig's exports at the paired impl's Compile position, not the
-  signature's** (probe conclusion 4). Concretely: on reaching a `Sig`, compute
-  and stash its `export_decls`; contribute nothing to `preceding`. On reaching
-  its paired `Impl`, resolve the impl (against a `preceding` that does *not* yet
-  include the sig — so self-qualified refs stay `Deferred`), then fold the
-  **sig's** stashed `export_decls` into `preceding`. The impl stays suppressed.
-  This is the one place the fold's `ItemId`-allocation order stops matching file
-  index order: the sig file's items are numbered when they fold (at the impl's
-  step), so its `item_base` is set then; `item_def` already routes by
-  range-containment (model.rs:1875), not file order, so it keeps working — but the
-  `extend_with` bookkeeping (`item_file_bases`, model.rs:591) must attribute the
-  folded range to the *signature's* file index, not the impl's. Cover this with a
-  test that `item_def` on a cross-file sig export returns the `.fsi`'s index.
+    `[module.., name]`, `def` = the `x` ident in the `.fsi`. Skip
+    active-pattern-named and operator-named vals for now (Stage 3).
+  - `SigDecl::Types` with a *visible* union/enum representation → the case
+    `Item`s + type-qualified case paths, reusing the existing `CaseKind` /
+    `type_qualified_cases` machinery. An **opaque** representation (bodyless
+    `type Color`) emits **no** case identities (opaque hides members) — the crux
+    the impl walk cannot express, and the reason the signature must be the
+    exporter. (The type-path *shadow* index is already emitted structurally in
+    Stage 1; here we withhold the *cases*.)
+  - The `[<AutoOpen>]` bit is read from the **signature** header (probe
+    conclusion 5), so an auto-opened `val` folds as an auto-open value.
+- **Decouple def-ownership from fold-provenance (codex review, finding 2).** The
+  export's *definition* is the signature's binder (`item_def` must return the
+  `.fsi`), but its *fold provenance* — the Compile position that drives
+  `item_file_bases` / `file_of`, auto-open ordering, and direct-tier latest-file
+  collisions — must be the **implementation's** slot, because FCS publishes the
+  module at the impl's position (probe conclusion 4; codex's own probe:
+  `[A.fsi{[<AutoOpen>] val Red}, B.fs{exception Red}, A.fs]` resolves a downstream
+  `Red` to `A`'s auto-open member, so A's contribution is ordered *after* B.fs).
+  So: on reaching a `Sig`, stash its identity `export_decls`; contribute nothing.
+  On reaching the paired `Impl`, resolve the impl against a `preceding` that does
+  *not* include the sig (self-refs stay `Deferred`), then fold the sig's stashed
+  identities **at the impl's slot** — the `ItemId` range, `item_base`, and
+  `item_file_bases` push all stay monotonic and attributed to the *impl's* file
+  index, exactly as an ordinary file. What changes is only the `def` target:
+  `ExportedItem::def` must address the **signature's** file+arena, not the owning
+  file's. Since `ExportedItem::def` is today a bare `DefId` resolved within the
+  owning file (`resolved_def`, model.rs), Stage 2 extends it to an explicit
+  cross-file `(file_idx, DefId)` for signatured exports, and `item_def`
+  (model.rs:1875) follows that pointer instead of assuming the def lives in the
+  `ItemId`-owning file. Cover with a test that a cross-file sig export's
+  `item_def` returns the `.fsi`'s index **and** that a colliding later-file
+  contribution loses to the auto-opened sig member (the provenance direction).
+- **Type-name and module-qualifier go-to-def stays `Deferred` — narrow the claim
+  (codex review, finding 3).** `ExportDeclKind::Type` / `Module` / `Namespace`
+  carry no `ItemId`/`DefId`, and cross-file *type* and *module-qualifier* uses are
+  already `Deferred` for impl files today (the `resolve_project_diff` header notes
+  module qualifiers are "not modelled as a def yet"). Stage 2 therefore makes
+  *value and case* uses resolve to the `.fsi`, and honours *opacity* (via the
+  withheld case identities), but a downstream `A.SomeType` / `open A` /
+  `A` qualifier remains `Deferred` — matching, not regressing, today's impl-file
+  behaviour. Making type/module qualifiers resolve to the `.fsi` binder needs a
+  model extension (identities on the `Type`/`Module`/`Namespace` exports) and is
+  scoped to Stage 3+.
 
 **Oracle:** a new **signature-aware** `resolve_project_diff` harness: extend
 `temp_fs_file` (common/mod.rs:817) to honour a `.fsi` label and feed
 `invoke_fcs_dump_project` (common/mod.rs:257) an interleaved sig/impl path list;
 assert certain-implies-exact against `uses-project` for the whole probe matrix
-(exposed val/case → `.fsi` decl; hidden/opaque → `Deferred`/unrecorded). Keep
-every fixture `uses-project`-diagnostics-clean. Corpus gates green.
+(exposed val/case → `.fsi` decl; hidden/opaque → `Deferred`/unrecorded). Include
+the **non-adjacent auto-open collision** fixture above (provenance = impl slot).
+Keep every fixture `uses-project`-diagnostics-clean. Corpus gates green.
 
 ### Stage 3+: enrich the modelled signature surface
 
@@ -358,10 +404,17 @@ Remaining risks to treat as first-class:
   impl's position — invalidate the impl's downstream contribution when the *sig*
   edits even though the impl's tree is unchanged. A correctness tripwire; cover it
   with an incremental-≡-batch test that edits only the `.fsi`.
-- **`ItemId` order no longer tracks file index** once a sig folds at its impl's
-  position (Stage 2). `item_def` is order-agnostic (range containment), but audit
-  every other reader of `item_file_bases` / `item_base` for a hidden
-  file-order-equals-id-order assumption.
+- **Cross-file `def` addressing (Stage 2).** Extending `ExportedItem::def` to an
+  explicit `(file_idx, DefId)` for signatured exports (so `item_def` reaches the
+  `.fsi` while provenance stays at the impl slot — finding 2) touches every reader
+  of the export's def. Keep `ItemId`/`item_file_bases` monotonic and
+  impl-attributed; the *only* signatured-specific behaviour is the def redirect.
+  Audit `resolved_def` / `token_classifier` for a latent "def lives in the
+  `ItemId`-owning file" assumption.
+- **Type/module identity is a deliberate gap** (finding 3): value/case uses
+  resolve to the `.fsi`; type-name and module-qualifier uses stay `Deferred`
+  (as for impl files today). Do not let a later stage quietly promise more without
+  extending the export/`Resolution` model and its differential.
 - **Bonus surface: `.fsi` buffers as query targets.** Once a signature is a real
   `ResolvedFile`, project queries (hover, document symbols, semantic tokens) on a
   `.fsi` buffer get a real resolution instead of the single-file fallback. Stage 1
