@@ -835,23 +835,23 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
             }
         }
     }
-    // The screen's exemption set: exactly the paths the collected surface
-    // carries an identity for (value-namespace and type-qualified alike).
-    let exported_paths: HashSet<Vec<String>> = exports
+    // The screen's exemption sets: exactly the paths the collected surface
+    // carries an identity for, split by namespace (the case half exempts
+    // only the type-qualified case lookups — see
+    // [`SigScreen::exported_case_paths`](model::SigScreen)).
+    let exported_value_paths: HashSet<Vec<String>> =
+        exports.iter().filter_map(|e| e.qualified.clone()).collect();
+    let exported_case_paths: HashSet<Vec<String>> = exports
         .iter()
-        .flat_map(|e| {
-            e.qualified
-                .clone()
-                .into_iter()
-                .chain(e.type_qualified.clone())
-        })
+        .filter_map(|e| e.type_qualified.clone())
         .collect();
     let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
         auto_open_nested,
         value_paths,
-        exported_paths,
+        exported_value_paths,
+        exported_case_paths,
     });
     SignatureSurface {
         screen,

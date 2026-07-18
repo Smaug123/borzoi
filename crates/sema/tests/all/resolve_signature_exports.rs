@@ -746,3 +746,324 @@ fn intervening_collision_agrees_with_fcs() {
         res_at(&proj, &files, 1, "ProbeNs.Shared.shown"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// Codex round-1 findings, each FCS-probed before fixing (2026-07-18).
+// ---------------------------------------------------------------------------
+
+/// Codex P1 (FCS-probed): a signatured RQA union's type-qualified case beats
+/// an earlier fragment's same-path nested-module VALUE — `M.T.C` binds the
+/// `.fsi` case, so the qualified-value lookup must stay vetoed on a
+/// case-exported path (only the type-qualified case lookup is exempt).
+#[test]
+fn rqa_case_beats_earlier_nested_module_value() {
+    let files = [
+        (
+            "/p/First.fs",
+            "module M
+
+module T =
+    let CaseC = 0
+",
+        ),
+        (
+            "/p/Col.fsi",
+            "module M
+
+[<RequireQualifiedAccess>]
+type T = CaseC | D
+",
+        ),
+        (
+            "/p/Col.fs",
+            "module M
+
+[<RequireQualifiedAccess>]
+type T = CaseC | D
+",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use
+
+let u = M.T.CaseC
+",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 3, "M.T.CaseC"),
+        1,
+        "CaseC",
+        "type-qualified RQA case colliding with an earlier nested-module value",
+    );
+}
+
+/// Codex P2 (FCS-probed): with two paired fragments of one module, a LATER
+/// signature's exactly-exported `val x` overrides an EARLIER screen's
+/// name-set veto (the earlier sig mentions `x` only inside an unmodelled
+/// nested module) — `M.x` binds the later `.fsi`.
+#[test]
+fn later_fragment_exposed_val_overrides_earlier_screen() {
+    let files = [
+        (
+            "/d1/Pair.fsi",
+            "module M
+
+module Inner =
+    val x: int
+",
+        ),
+        (
+            "/d1/Pair.fs",
+            "module M
+
+module Inner =
+    let x = 9
+",
+        ),
+        (
+            "/d2/Pair.fsi",
+            "module M
+
+val x: int
+",
+        ),
+        (
+            "/d2/Pair.fs",
+            "module M
+
+let x = 1
+",
+        ),
+        (
+            "/u/Use.fs",
+            "module Use
+
+let u = M.x
+",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 4, "M.x"),
+        2,
+        "x",
+        "later fragment's exposed val over an earlier fragment's screen",
+    );
+}
+
+/// The sound flip of the above: when the EARLIER fragment exports `x` and a
+/// LATER screen may expose an unmodelled `x`, the later screen's veto stands
+/// — the later fragment could shadow the export, so committing the earlier
+/// identity would be a guess. Deferral only (FCS resolves to one of them).
+#[test]
+fn later_screen_still_vetoes_earlier_export() {
+    let files = [
+        (
+            "/d1/Pair.fsi",
+            "module M
+
+val x: int
+",
+        ),
+        (
+            "/d1/Pair.fs",
+            "module M
+
+let x = 1
+",
+        ),
+        (
+            "/d2/Pair.fsi",
+            "module M
+
+module Inner =
+    val x: int
+",
+        ),
+        (
+            "/d2/Pair.fs",
+            "module M
+
+module Inner =
+    let x = 9
+",
+        ),
+        (
+            "/u/Use.fs",
+            "module Use
+
+let u = M.x
+",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_uncommitted(
+        res_at(&proj, &files, 4, "M.x"),
+        "an earlier export under a later fragment's possibly-exposing screen",
+    );
+}
+
+/// Codex P3 (FCS-probed): a headerless pair's dotted implicit module
+/// (`Pn.Md.fsi`) also establishes its ancestor namespace, so the recovery
+/// form `open Pn; Md.shown` reaches the signature export.
+#[test]
+fn open_of_implicit_ancestor_namespace_reaches_export() {
+    let files = [
+        (
+            "/p/Pn.Md.fsi",
+            "val shown: int
+",
+        ),
+        (
+            "/p/Pn.Md.fs",
+            "let shown = 1
+",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use
+
+open Pn
+
+let u = Md.shown
+",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "Md.shown"),
+        0,
+        "shown",
+        "namespace-opened implicit-module export",
+    );
+}
+
+/// The three shapes as live FCS differentials (certain-implies-exact + the
+/// agreement counts force the commits to exist and land on the right decl).
+#[test]
+fn codex_round1_shapes_agree_with_fcs() {
+    let fixtures = [
+        SigProject {
+            label: "sig2_rqa_vs_value",
+            files: vec![
+                (
+                    "First.fs",
+                    "module M
+
+module T =
+    let CaseC = 0
+",
+                ),
+                (
+                    "Col.fsi",
+                    "module M
+
+[<RequireQualifiedAccess>]
+type T = CaseC | D
+",
+                ),
+                (
+                    "Col.fs",
+                    "module M
+
+[<RequireQualifiedAccess>]
+type T = CaseC | D
+",
+                ),
+                (
+                    "Use.fs",
+                    "module Use
+
+let u = M.T.CaseC
+",
+                ),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        SigProject {
+            label: "sig2_later_fragment_export",
+            files: vec![
+                (
+                    "d1/Pair.fsi",
+                    "module M
+
+module Inner =
+    val x: int
+",
+                ),
+                (
+                    "d1/Pair.fs",
+                    "module M
+
+module Inner =
+    let x = 9
+",
+                ),
+                (
+                    "d2/Pair.fsi",
+                    "module M
+
+val x: int
+",
+                ),
+                (
+                    "d2/Pair.fs",
+                    "module M
+
+let x = 1
+",
+                ),
+                (
+                    "Use.fs",
+                    "module Use
+
+let u = M.x
+",
+                ),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        SigProject {
+            label: "sig2_implicit_ancestor_open",
+            files: vec![
+                (
+                    "Pn.Md.fsi",
+                    "val shown: int
+",
+                ),
+                (
+                    "Pn.Md.fs",
+                    "let shown = 1
+",
+                ),
+                (
+                    "Use.fs",
+                    "module Use
+
+open Pn
+
+let u = Md.shown
+",
+                ),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+    ];
+    for fixture in &fixtures {
+        assert_sig_matches_fcs(fixture);
+    }
+}

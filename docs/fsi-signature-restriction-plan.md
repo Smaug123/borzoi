@@ -393,10 +393,10 @@ gates green.
 **Stage-2 implementation notes (2026-07-18, landed).** The design above,
 with these mechanics settled in review/probing:
 
-- **The screen gains an exemption set** (`SigScreen::exported_paths` — the
-  exactly-modelled surviving surface, value-namespace and type-qualified
-  paths alike). A reading landing *exactly* on an exported path is exempt
-  from every screen veto: after the impl's slot the materialised export
+- **The screen gains exemption sets** (`SigScreen::exported_value_paths` /
+  `exported_case_paths` — the exactly-modelled surviving surface, split by
+  namespace). A reading landing *exactly* on an exported path is exempt
+  from the screen vetoes: after the impl's slot the materialised export
   commits the signature identity (what FCS binds); **before** it, the
   reading falls through — to the merged assembly under a collision, which
   is FCS's probed intervening verdict (row 5), or to whatever
@@ -405,7 +405,19 @@ with these mechanics settled in review/probing:
   `module M` from a file between `AM.fsi` and `AM.fs`). This *removed* the
   Stage-1 known over-deferral for intervening files and for the exposed
   half of codex round 5's finding (1); the hidden-name halves of both
-  remain deferral-only.
+  remain deferral-only. Two refinements from this stage's codex round 1,
+  both probe-confirmed before fixing:
+  - The **case half exempts only the type-qualified case lookups**: FCS
+    resolves a signatured RQA case ahead of a same-path earlier-fragment
+    *value* (probe: `module T = let CaseC = 0` in an earlier fragment vs a
+    signed `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC` binds
+    the `.fsi` case), so the value-namespace lookups stay vetoed on such a
+    path (`Resolver::sig_screens_case_reading_of` vs the plain flavour).
+  - The exemption spans screens **forward only**: an earlier screen's veto
+    is overridden by a later-or-same fragment's exact export (probe: a
+    later `val x` beats an earlier sig's unmodelled mention of `x`), but a
+    later screen's veto stands — its fragment could expose an unmodelled
+    shadowing member, so a commit would be a guess.
 - **Materialisation** (`ResolvedFile::append_signature_exports`): the sig
   slot stashes `SigExport`s (its own `Def` arena holds the `.fsi` idents);
   on reaching the paired impl, they are appended after the impl's own
@@ -420,9 +432,11 @@ with these mechanics settled in review/probing:
   kind) and visible union/enum cases (RQA honoured: type-qualified only)
   directly under a module root — top-level `module`, namespace-direct
   `module … =`, or the **implicit filename module** of a headerless pair,
-  whose header decl the materialisation also publishes (nothing on the
-  impl side does — its fragments are anonymous — yet FCS treats the
-  implicit module as real and openable). Accessibility-annotated decls
+  whose header decl — and, for a dotted stem, its ancestor namespaces, so
+  `open Pn; Md.shown` reaches the export (FCS-probed, codex round 1) — the
+  materialisation also publishes (nothing on the impl side does — its
+  fragments are anonymous — yet FCS treats the implicit module as real and
+  openable). Accessibility-annotated decls
   (`val private/internal`, `module internal`, `type private`, repr-level
   accessibility), active-pattern/operator `val`s, operator-named cases,
   exceptions, abbreviations, records, and nested-module recursion all

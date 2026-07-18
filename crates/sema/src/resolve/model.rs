@@ -105,16 +105,27 @@ pub(super) struct SigScreen {
     /// `ProbeNs.Shared.shown` → FCS binds `Shared` to the `.fsi` case and
     /// reports FS0039 on `shown`; an assembly commit there is wrong).
     pub(super) value_paths: Vec<Vec<String>>,
-    /// The signature's **exactly-modelled surviving surface** (Stage 2):
-    /// every qualified path — value-namespace and type-qualified — the
-    /// signature's own export list carries a real identity for. A reading
-    /// that lands *exactly* on one of these is exempt from the screen: the
-    /// export commits the signature identity (which is what FCS binds), or —
-    /// before the paired implementation's slot, where the surface has not
-    /// published — falls through to the merged assembly, which is FCS's
-    /// verdict for an intervening file (probe row 5). Readings that only pass
-    /// *through* such a path (a longer residual) keep deferring.
-    pub(super) exported_paths: HashSet<Vec<String>>,
+    /// The **value-namespace** half of the signature's exactly-modelled
+    /// surviving surface (Stage 2): every `qualified` path its export list
+    /// carries a real identity for (plain `val`s, non-RQA union cases). A
+    /// reading landing *exactly* on one of these is exempt from the screen:
+    /// the export commits the signature identity (which is what FCS binds),
+    /// or — before the paired implementation's slot, where the surface has
+    /// not published — falls through to the merged assembly / earlier
+    /// project candidate, which is FCS's probed intervening verdict.
+    /// Readings that only pass *through* such a path (a longer residual)
+    /// keep deferring. Cross-screen scope: see
+    /// [`ProjectItems::sig_screened_path`].
+    pub(super) exported_value_paths: HashSet<Vec<String>>,
+    /// The **type-qualified case** half (`[container.., Type, Case]` — RQA
+    /// and non-RQA union cases, enum cases). Exempts only the *case* lookup
+    /// ([`ProjectItems::sig_screened_case_path`]): the value-namespace
+    /// lookups stay vetoed on such a path, because FCS resolves the
+    /// signature's case ahead of a same-path earlier-fragment **value**
+    /// (probe: `module T = let CaseC = 0` in an earlier fragment vs a
+    /// signatured `[<RequireQualifiedAccess>] type T = CaseC` — `M.T.CaseC`
+    /// binds the `.fsi` case), so a value commit there would be wrong.
+    pub(super) exported_case_paths: HashSet<Vec<String>>,
 }
 
 /// One export the paired signature contributes **at the implementation's
@@ -750,12 +761,38 @@ impl ProjectItems {
     }
 
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
-        self.sig_screens.iter().any(|screen| {
-            // A reading landing exactly on the signature's exactly-modelled
-            // exported surface is exempt (Stage 2): the export itself is the
-            // commit FCS makes, and before the impl's slot the fall-through
-            // to the merged assembly is FCS's verdict too (probe row 5).
-            if screen.exported_paths.contains(names) {
+        self.screened_path(names, false)
+    }
+
+    /// The **case-lookup** flavour of [`Self::sig_screened_path`]: also
+    /// exempt on an exactly-exported *type-qualified case* path. Only the
+    /// type-qualified case commit sites may use this — a value-namespace
+    /// lookup on such a path must stay vetoed (FCS binds the signature's
+    /// case ahead of a same-path earlier-fragment value; see
+    /// [`SigScreen::exported_case_paths`]).
+    pub(super) fn sig_screened_case_path(&self, names: &[String]) -> bool {
+        self.screened_path(names, true)
+    }
+
+    fn screened_path(&self, names: &[String], case_exempt: bool) -> bool {
+        // A reading landing exactly on a signature's exactly-modelled
+        // exported surface is exempt (Stage 2): the export itself is the
+        // commit FCS makes, and before the impl's slot the fall-through to
+        // the merged assembly / earlier project candidate is FCS's verdict
+        // too (probed). The exemption spans screens **forward only**: an
+        // EARLIER screen's veto is overridden by a later-or-same fragment's
+        // exact export (the later fragment's surface wins the merge, FCS-
+        // probed: a later `val x` beats an earlier sig's unmodelled mention
+        // of `x`), but a LATER screen's veto stands — its fragment could
+        // expose an unmodelled `x` that shadows the earlier export, so a
+        // commit would be a guess.
+        let exempt = |s: &SigScreen| {
+            s.exported_value_paths.contains(names)
+                || (case_exempt && s.exported_case_paths.contains(names))
+        };
+        let latest_exempt = self.sig_screens.iter().rposition(|s| exempt(s));
+        self.sig_screens.iter().enumerate().any(|(i, screen)| {
+            if latest_exempt.is_some_and(|j| j >= i) {
                 return false;
             }
             screen.roots.iter().any(|root| {
@@ -785,15 +822,22 @@ impl ProjectItems {
     ///   whose provenance the entry no longer carries): screen on the name
     ///   alone — coarser, deferral-only.
     pub(super) fn sig_screened_open_name(&self, opened: &[String], name: &str) -> bool {
-        self.sig_screens.iter().any(|screen| {
-            // The exactly-modelled exemption (Stage 2), as for
-            // [`Self::sig_screened_path`]: the folded entry's qualified path
-            // is `opened + [name]` — when the signature exports precisely
-            // that path, the entry the project half pushes IS the commit FCS
-            // makes (and pre-impl the assembly entry is FCS's verdict).
-            let mut full = opened.to_vec();
-            full.push(name.to_string());
-            if screen.exported_paths.contains(&full) {
+        // The exactly-modelled exemption (Stage 2), as for
+        // [`Self::sig_screened_path`] (value-namespace half only — a
+        // type-qualified case is never a bare open-fold entry), with the
+        // same forward-only cross-screen scope: the folded entry's
+        // qualified path is `opened + [name]` — when a later-or-same
+        // fragment's signature exports precisely that path, the entry the
+        // project half pushes IS the commit FCS makes (and pre-impl the
+        // assembly entry is FCS's verdict).
+        let mut full = opened.to_vec();
+        full.push(name.to_string());
+        let latest_exempt = self
+            .sig_screens
+            .iter()
+            .rposition(|s| s.exported_value_paths.contains(&full));
+        self.sig_screens.iter().enumerate().any(|(i, screen)| {
+            if latest_exempt.is_some_and(|j| j >= i) {
                 return false;
             }
             screen.roots.iter().any(|root| {
@@ -2196,6 +2240,19 @@ impl ResolvedFile {
         // implicit module is never auto-open.
         if let Some(screen) = &sig.sig_screen {
             for root in screen.roots.iter().filter(|r| r.implicit) {
+                // The segments before the final module name are namespaces,
+                // exactly as a written dotted `module Pn.Md` header
+                // publishes them (`resolve.rs`'s header walk) — so the
+                // recovery form `open Pn; Md.shown` reaches the export
+                // (FCS-probed: it binds the `.fsi`).
+                for k in 1..root.path.len() {
+                    self.export_decls.push(ExportDecl {
+                        path: root.path[..k].to_vec(),
+                        pos: TextSize::from(0),
+                        anonymous_root: false,
+                        kind: ExportDeclKind::Namespace,
+                    });
+                }
                 self.export_decls.push(ExportDecl {
                     path: root.path.clone(),
                     pos: TextSize::from(0),
