@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
-use borzoi_oracle_harness::{BatchChild, BoundedCommand};
+use borzoi_oracle_harness::{BatchChild, BoundedCommand, default_timeout};
 use serde::Deserialize;
 
 // ============================================================================
@@ -152,15 +152,22 @@ fn fcs_children_budget() -> usize {
 /// startups. Mirrors `crates/cst/tests/all/common/mod.rs`.
 struct BatchPool {
     subcommand: &'static str,
+    /// Per-request deadline for this pool's children. Snippet pools take the
+    /// harness default; the whole-project pool keeps [`PROJECT_TIMEOUT`] — a
+    /// large compile order (or a loaded machine) legitimately checks for longer
+    /// than the per-snippet default, and a bound tight enough to kill a healthy
+    /// project would be worse than no bound at all.
+    request_timeout: Duration,
     slots: Vec<Mutex<Option<BatchChild>>>,
 }
 
 impl BatchPool {
-    fn new(subcommand: &'static str) -> Self {
+    fn new(subcommand: &'static str, request_timeout: Duration) -> Self {
         let share = fcs_children_budget() / FCS_POOLS;
         let n = std::thread::available_parallelism().map_or(4, |n| n.get());
         Self {
             subcommand,
+            request_timeout,
             slots: (0..n.min(share).max(1)).map(|_| Mutex::new(None)).collect(),
         }
     }
@@ -183,31 +190,46 @@ impl BatchPool {
     }
 
     fn round_trip(&self, slot: &mut Option<BatchChild>, request: &str) -> String {
-        slot.get_or_insert_with(|| spawn_fcs_batch_child(self.subcommand))
+        slot.get_or_insert_with(|| spawn_fcs_batch_child(self.subcommand, self.request_timeout))
             .request(request)
     }
 }
 
-/// Spawn one resident `fcs-dump <subcommand>` child, honouring `BORZOI_FCS_DUMP`
-/// (a prebuilt self-contained binary) exactly as [`fcs_dump_command`] does, and
-/// otherwise `dotnet <fcs-dump.dll>`.
-fn spawn_fcs_batch_child(subcommand: &'static str) -> BatchChild {
-    if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
-        BatchChild::spawn(bin, &[subcommand])
-    } else {
-        let dll = ensure_fcs_dump_built()
-            .to_str()
-            .expect("fcs-dump.dll path is UTF-8");
-        BatchChild::spawn("dotnet", &[dll, subcommand])
-    }
+/// Spawn one resident `fcs-dump <subcommand>` child under `timeout` per request,
+/// honouring `BORZOI_FCS_DUMP` (a prebuilt self-contained binary) exactly as
+/// [`fcs_dump_command`] does, and otherwise `dotnet <fcs-dump.dll>`.
+/// [`BatchChild::with_factory`] (not `spawn`) so the per-request deadline is the
+/// pool's, not the harness's fixed `default_timeout`; `2` attempts matches
+/// `spawn`'s default retry-on-a-fresh-child.
+fn spawn_fcs_batch_child(subcommand: &'static str, timeout: Duration) -> BatchChild {
+    let make: Box<dyn FnMut() -> Command + Send> =
+        if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
+            Box::new(move || {
+                let mut c = Command::new(&bin);
+                c.arg(subcommand);
+                c
+            })
+        } else {
+            let dll = ensure_fcs_dump_built()
+                .to_str()
+                .expect("fcs-dump.dll path is UTF-8")
+                .to_owned();
+            Box::new(move || {
+                let mut c = Command::new("dotnet");
+                c.arg(&dll).arg(subcommand);
+                c
+            })
+        };
+    BatchChild::with_factory(make, format!("fcs-dump {subcommand}"), timeout, 2)
 }
 
 /// The resident single-file oracle pool (`fcs-dump file-batch`): `uses`,
 /// `binder-types`, `types`, `attrs`, `overloads`, each carried as a
-/// `{ kind, path, refs }` JSON request.
+/// `{ kind, path, refs }` JSON request. Snippets, so the harness default
+/// per-request deadline is ample.
 fn fcs_file_batch_pool() -> &'static BatchPool {
     static P: OnceLock<BatchPool> = OnceLock::new();
-    P.get_or_init(|| BatchPool::new("file-batch"))
+    P.get_or_init(|| BatchPool::new("file-batch", default_timeout()))
 }
 
 /// Turn a resident batch handler's `{ "BatchError": <msg> }` failure sentinel
@@ -242,27 +264,50 @@ pub fn invoke_fcs_dump_project(paths: &[&Path]) -> String {
 /// ref-less `uses-project` paths each cover only half of).
 ///
 /// Routes through the resident [`uses-project`](fcs_project_batch_pool) pool: the
-/// whole Compile order rides in one JSON request (`{ paths, refs }`, Compile
-/// order preserved), and the reply is the same `{ Files: [...] }` the one-shot
-/// emits — so [`parse_fcs_uses_project`] is unchanged. A resident child warms one
-/// `FSharpChecker` across projects, so only the first project it serves pays the
-/// FCS assembly-load cost.
+/// whole Compile order rides in one JSON request (`{ paths, refs, defines,
+/// langversion }`, Compile order preserved), and the reply is the same
+/// `{ Files: [...] }` the one-shot emits — so [`parse_fcs_uses_project`] is
+/// unchanged. A resident child warms one `FSharpChecker` across projects, so only
+/// the first project it serves pays the FCS assembly-load cost.
+///
+/// The one-shot `uses-project` read the caller's `#if` symbols and `<LangVersion>`
+/// pin from the child's *environment* (`BORZOI_FCS_DEFINES` /
+/// `BORZOI_FCS_LANGVERSION`); a resident child's env is fixed at spawn, so these
+/// travel in each *request* instead, keeping the differential faithful for a
+/// caller that sets them (the corpus-diff / LSP consumers do — this sema harness
+/// does not, but the helper must not silently drop them).
 pub fn invoke_fcs_dump_project_with_refs(paths: &[&Path], refs: &[&Path]) -> String {
-    let request = serde_json::json!({
+    let mut request = serde_json::json!({
         "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "refs": refs.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-    })
-    .to_string();
-    let line = fcs_project_batch_pool().request(&request);
+    });
+    if let Ok(defines) = std::env::var("BORZOI_FCS_DEFINES") {
+        let list: Vec<String> = defines
+            .split([';', '\n'])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        request["defines"] = serde_json::json!(list);
+    }
+    if let Ok(lang) = std::env::var("BORZOI_FCS_LANGVERSION") {
+        let lang = lang.trim();
+        if !lang.is_empty() {
+            request["langversion"] = serde_json::json!(lang);
+        }
+    }
+    let line = fcs_project_batch_pool().request(&request.to_string());
     reject_batch_error(&line, "uses-project");
     line
 }
 
 /// The resident project oracle pool (`fcs-dump uses-project-batch`): each request
-/// is one Compile-ordered `{ paths, refs }` project.
+/// is one Compile-ordered `{ paths, refs, defines, langversion }` project. Keeps
+/// [`PROJECT_TIMEOUT`] per request — one request type-checks a whole Compile
+/// order, the same scale the one-shot `uses-project` budgeted for.
 fn fcs_project_batch_pool() -> &'static BatchPool {
     static P: OnceLock<BatchPool> = OnceLock::new();
-    P.get_or_init(|| BatchPool::new("uses-project-batch"))
+    P.get_or_init(|| BatchPool::new("uses-project-batch", PROJECT_TIMEOUT))
 }
 
 /// Run `fcs-dump uses-census-batch` over `paths` (any order; **each file is
