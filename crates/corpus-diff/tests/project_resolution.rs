@@ -4,6 +4,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use borzoi::position::position_to_offset;
 use borzoi::semantic::ProjectParses;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
@@ -12,14 +13,15 @@ use borzoi_assembly::{
 use borzoi_corpus_diff::{
     CorpusSummary, DeclSite, FileUses, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
     ProjectAssetsStatus, ProjectUse, SkippedUses, check_project_corpus_run, compare_project_uses,
-    corpus_runner_config_from_env, invoke_fcs_uses_project, load_lsp_project,
+    corpus_runner_config_from_env, explain_token, invoke_fcs_uses_project, load_lsp_project,
     load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
     project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, resolve_project};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use lsp_types::Position;
 use tempfile::TempDir;
 
 fn write(path: &Path, text: &str) {
@@ -605,4 +607,115 @@ fn write_json_report_if_requested(summary: &CorpusSummary) {
     };
     write_json_report_line(&PathBuf::from(path), summary)
         .expect("write BORZOI_PROJECT_REPORT_JSONL");
+}
+
+/// The resolution-explain tool end to end, over a synthetic project: an
+/// `open type` whose target is unmodelled poisons dotted heads, so a bare
+/// `Foo.Bar.baz` after it defers. [`explain_token`] must surface both the
+/// token's `Deferred` resolution AND the opaque `open` in scope before it — the
+/// culprit shape of the `open TypeEquality` / bare `List.replicate`
+/// investigation this tool generalises. A plain namespace `open` that brings
+/// nothing in stays `clean`, so the two are distinguishable in the dump.
+#[test]
+fn explain_token_flags_the_opaque_open_before_a_deferred_head() {
+    let src = "module M\nopen System\nopen type Opaque\nlet v = Foo.Bar.baz\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let (head, _) = text_range(src, "Foo.Bar.baz");
+    let exp = explain_token(&loaded, 0, head);
+
+    assert!(
+        matches!(exp.resolution, Some(Resolution::Deferred(_))),
+        "the dotted head must defer; got {:?}",
+        exp.resolution
+    );
+    assert_eq!(exp.opens.len(), 2, "two opens in the file");
+
+    let system = &exp.opens[0];
+    assert_eq!(system.path, vec!["System".to_string()]);
+    assert!(!system.is_type);
+    assert!(
+        !system.opacity.is_opaque(),
+        "a bring-nothing namespace open stays clean"
+    );
+
+    let opaque = &exp.opens[1];
+    assert!(opaque.is_type);
+    assert_eq!(opaque.path, vec!["Opaque".to_string()]);
+    assert!(opaque.opacity.is_opaque());
+    assert!(
+        opaque.precedes_token,
+        "the opaque open precedes the deferred head"
+    );
+
+    assert!(
+        exp.deferred_behind_opaque_open(),
+        "the tool must recognise a deferred head behind an opaque open"
+    );
+
+    let report = exp.render();
+    assert!(
+        report.contains("open type Opaque") && report.contains("OPAQUE"),
+        "the rendered dump must name the opaque open:\n{report}"
+    );
+}
+
+/// Ad-hoc "why did this token defer?" CLI, as an env-driven ignored test in the
+/// mould of [`project_corpus_resolution_diff`]. Point it at a real project and a
+/// token: it loads the project through the same path the LSP uses, resolves the
+/// token, and dumps the resolution plus every `open`'s opacity to stderr — the
+/// mechanical replacement for hand-tracing a "No definition available" hover.
+///
+/// `BORZOI_EXPLAIN_LINE` / `BORZOI_EXPLAIN_COL` are **1-based** (editor parity;
+/// LSP is 0-based internally). `BORZOI_EXPLAIN_FILE` matches by path suffix or
+/// substring, so a bare filename suffices.
+#[test]
+#[ignore = "explain one token; set BORZOI_EXPLAIN_PROJECT/FILE/LINE/COL"]
+fn explain_token_at_position() {
+    let Some(project) = std::env::var_os("BORZOI_EXPLAIN_PROJECT") else {
+        eprintln!(
+            "set BORZOI_EXPLAIN_PROJECT (a .fsproj), BORZOI_EXPLAIN_FILE (a .fs path or suffix), \
+             and BORZOI_EXPLAIN_LINE / BORZOI_EXPLAIN_COL (1-based)"
+        );
+        return;
+    };
+    let project = PathBuf::from(project);
+    let file_arg = std::env::var("BORZOI_EXPLAIN_FILE").expect("set BORZOI_EXPLAIN_FILE");
+    let line: u32 = std::env::var("BORZOI_EXPLAIN_LINE")
+        .expect("set BORZOI_EXPLAIN_LINE")
+        .parse()
+        .expect("BORZOI_EXPLAIN_LINE is a 1-based line number");
+    let col: u32 = std::env::var("BORZOI_EXPLAIN_COL")
+        .expect("set BORZOI_EXPLAIN_COL")
+        .parse()
+        .expect("BORZOI_EXPLAIN_COL is a 1-based column");
+
+    let loaded = load_lsp_project(&project)
+        .unwrap_or_else(|skip| panic!("load {}: {skip:?}", project.display()));
+
+    let file_idx = loaded
+        .parses
+        .paths
+        .iter()
+        .position(|p| {
+            p.ends_with(file_arg.as_str()) || p.to_string_lossy().contains(file_arg.as_str())
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no file matching {file_arg:?}; files: {:?}",
+                loaded.parses.paths
+            )
+        });
+
+    let text = &loaded.parses.texts[file_idx];
+    let pos = Position {
+        line: line.saturating_sub(1),
+        character: col.saturating_sub(1),
+    };
+    let byte = position_to_offset(text, pos);
+    let exp = explain_token(&loaded, file_idx, byte);
+    eprintln!(
+        "{} @ {line}:{col} (byte {byte})\n{}",
+        loaded.parses.paths[file_idx].display(),
+        exp.render()
+    );
 }

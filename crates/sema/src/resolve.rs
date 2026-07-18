@@ -68,8 +68,8 @@ mod state;
 mod types;
 
 pub use model::{
-    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, ProjectItems, Resolution,
-    ResolvedFile, ResolvedProject,
+    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace,
+    ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{Resolver, implicit_open_groups, implicit_open_namespaces};
@@ -765,6 +765,7 @@ impl<'a> Resolver<'a> {
             excluded_param_ranges: HashSet::new(),
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
+            trace_opens: Vec::new(),
             export_decls: Vec::new(),
         }
     }
@@ -879,6 +880,9 @@ impl<'a> Resolver<'a> {
             open_extension_unknowable: self.open_extension_unknowable,
             active_pattern_shape: self.active_pattern_shape,
             diagnostics: self.diagnostics,
+            resolution_trace: model::ResolutionTrace {
+                opens: self.trace_opens,
+            },
             export_decls: self.export_decls,
         }
     }
@@ -1096,6 +1100,97 @@ mod contribution_tests {
         assert!(
             !before.same_export_contribution(&after),
             "a new top-level export must change the contribution"
+        );
+    }
+}
+
+/// Env-free unit tests for the resolution-explain trace
+/// ([`ResolutionTrace`](model::ResolutionTrace)) — the per-`open` opaque-flag
+/// record. They pin the trace *mechanics* (which flags an open kind flips,
+/// source order, `global.` stripping, transition attribution) against an empty
+/// [`AssemblyEnv`], where an unresolvable `open` deterministically goes opaque;
+/// the end-to-end "an opaque open explains a deferred dotted head" is exercised
+/// by the corpus-diff consumer against a real project.
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+    use borzoi_cst::parser::parse;
+    use borzoi_cst::syntax::{AstNode, ImplFile};
+    use model::ProjectItems;
+
+    fn resolve_one(src: &str) -> ResolvedFile {
+        let parsed = parse(src);
+        assert!(
+            parsed.errors.is_empty(),
+            "snippet has parse errors {src:?}: {:?}",
+            parsed.errors
+        );
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    }
+
+    #[test]
+    fn an_open_type_sets_unmodelled_and_defers_dotted_heads() {
+        // `open type Foo` always sets `unmodelled_open_active` (its nested types
+        // are unmodelled, so qualified paths defer); with `Foo` unresolvable in
+        // an empty env it also sets `opaque_value_open` (bare names). Either way
+        // a dotted head in its scope defers — `defers_dotted_heads()`.
+        let rf = resolve_one("module M\nopen type Foo\n");
+        let opens = &rf.resolution_trace().opens;
+        assert_eq!(opens.len(), 1);
+        let o = &opens[0];
+        assert!(o.is_type);
+        assert_eq!(o.path, vec!["Foo".to_string()]);
+        assert!(o.opacity.unmodelled);
+        assert!(o.opacity.opaque_value);
+        assert!(o.opacity.defers_dotted_heads());
+        assert!(o.opacity.is_opaque());
+    }
+
+    #[test]
+    fn a_namespace_open_that_brings_nothing_is_not_opaque() {
+        // `open System` in an empty env resolves to no entity — it brings
+        // nothing into scope, so it poisons no later resolution: none of the
+        // three opaque flags flips.
+        let rf = resolve_one("module M\nopen System\n");
+        let opens = &rf.resolution_trace().opens;
+        assert_eq!(opens.len(), 1);
+        assert!(!opens[0].is_type);
+        assert_eq!(opens[0].path, vec!["System".to_string()]);
+        assert!(
+            !opens[0].opacity.is_opaque(),
+            "a bring-nothing namespace open must not read as opaque"
+        );
+    }
+
+    #[test]
+    fn opens_are_traced_in_source_order_with_global_stripped() {
+        let rf = resolve_one("module M\nopen System\nopen global.Foo.Bar\n");
+        let opens = &rf.resolution_trace().opens;
+        assert_eq!(opens.len(), 2);
+        assert_eq!(opens[0].path, vec!["System".to_string()]);
+        // `global.` is stripped to the namespace actually opened.
+        assert_eq!(opens[1].path, vec!["Foo".to_string(), "Bar".to_string()]);
+        assert!(
+            opens[0].range.start() < opens[1].range.start(),
+            "opens are recorded in source order"
+        );
+    }
+
+    #[test]
+    fn opaque_flag_attribution_is_by_transition_not_cause() {
+        // Both `open type` opens WOULD set `unmodelled_open_active`, but the flag
+        // is monotone within a block: only the FIRST flips it false→true, so the
+        // second records no transition even though it is opaque in effect. The
+        // trace attributes a poisoned category to the open that first poisoned it
+        // (see `OpenOpacity`); unblocking a name can need more than one deletion.
+        let rf = resolve_one("module M\nopen type A\nopen type B\n");
+        let opens = &rf.resolution_trace().opens;
+        assert_eq!(opens.len(), 2);
+        assert!(opens[0].opacity.unmodelled, "the first open flips the flag");
+        assert!(
+            !opens[1].opacity.is_opaque(),
+            "the second records no transition — the category was already poisoned"
         );
     }
 }

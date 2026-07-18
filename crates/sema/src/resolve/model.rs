@@ -1196,6 +1196,95 @@ pub enum Resolution {
     Unresolved,
 }
 
+/// Which of the resolver's three **opaque-open** flags an `open` declaration
+/// newly set — the "why a later name deferred" fact the [`ResolutionTrace`]
+/// exposes.
+///
+/// Each flag is a walk-state boolean the use-site resolvers consult (see the
+/// field docs on the private `Resolver`). An open that sets none is fully
+/// modelled — it poisons nothing. One that sets any defers a category of later
+/// names while it is in scope:
+///
+/// - [`opaque_value`](Self::opaque_value) — bare-name lookup skips every
+///   *opened* entry (the open could shadow a modelled name with an
+///   unenumerable value);
+/// - [`opaque_dotted`](Self::opaque_dotted) — dotted-path *heads* defer (the
+///   open's submodules / nested types are unmodelled, so a head through it
+///   could be project- or assembly-rooted);
+/// - [`unmodelled`](Self::unmodelled) — *qualified* paths defer (an `open
+///   type`, or a plain `open` of an assembly module / class, whose nested
+///   types we cannot enumerate).
+///
+/// **Attribution is by transition, not by cause.** The flags are monotone
+/// within a top-level block (set true, never cleared until the block ends), so
+/// this records the flags this open *flipped false→true* — the open that first
+/// poisoned that category. A later open that would independently set an
+/// already-set flag records `false` for it (the category was already poisoned):
+/// unblocking a name can therefore need more than one deletion, surfaced one
+/// transition at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OpenOpacity {
+    /// Set `opaque_value_open` — bare-name resolution skips opened entries.
+    pub opaque_value: bool,
+    /// Set `opaque_dotted_open` — dotted-path heads defer.
+    pub opaque_dotted: bool,
+    /// Set `unmodelled_open_active` — qualified paths defer.
+    pub unmodelled: bool,
+}
+
+impl OpenOpacity {
+    /// Whether this open poisoned anything — flipped at least one opaque flag.
+    pub fn is_opaque(self) -> bool {
+        self.opaque_value || self.opaque_dotted || self.unmodelled
+    }
+
+    /// Whether a *dotted head* in scope of this open defers because of it — the
+    /// union the dotted-path gate checks (`opaque_value_open ||
+    /// opaque_dotted_open || unmodelled_open_active`). A bare `List.replicate`
+    /// deferring after `open TypeEquality` is this being `true`.
+    pub fn defers_dotted_heads(self) -> bool {
+        self.opaque_value || self.opaque_dotted || self.unmodelled
+    }
+}
+
+/// One `open` declaration's contribution to a file's opaque-open state — the
+/// unit of the resolution-explain [`ResolutionTrace`]. Purely diagnostic: it
+/// carries no resolution the walk consumes, only enough to point a human at the
+/// `open` that deferred a name and say which category it poisoned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenTrace {
+    /// Source range of the whole `open …` declaration.
+    pub range: TextRange,
+    /// The opened path, `idText`-normalised (`["TypeEquality"]`; the type's
+    /// path for an `open type`). Empty for `open global` or an unparsed target.
+    pub path: Vec<String>,
+    /// Whether this is an `open type …` (vs a plain `open <path>`).
+    pub is_type: bool,
+    /// Which opaque flags this open flipped false→true (see [`OpenOpacity`]).
+    pub opacity: OpenOpacity,
+}
+
+/// The **resolution-explain trace** for one file: every `open` declaration in
+/// source order, each with the opaque-open flags it set ([`OpenTrace`]).
+///
+/// It answers "why did this name defer?" — the investigation `open
+/// TypeEquality` poisoning a bare `List.replicate` motivated. Correlate a
+/// token's [`Resolution`](ResolvedFile::resolution_at) (a
+/// `Deferred(QualifiedAccess)`, say) with the opens whose
+/// [`opacity`](OpenTrace::opacity) explains it: the first opaque open before
+/// the token is the culprit to try deleting.
+///
+/// Always computed (opens per file are few); read through
+/// [`ResolvedFile::resolution_trace`]. Deterministic from source — two parses
+/// of the same text trace identically — so it does not perturb the
+/// `incremental ≡ batch` fold differential.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolutionTrace {
+    /// Every `open` in the file, in source order (all top-level blocks and
+    /// nested modules; correlate to a token by comparing [`OpenTrace::range`]).
+    pub opens: Vec<OpenTrace>,
+}
+
 /// The **constructor-case kind** of an [`ExportedItem`] — which flavour of
 /// constructor case it is (all of them also live in the constructor/pattern
 /// namespace). `None` on an item's `case` field is an ordinary `let` value.
@@ -1449,6 +1538,13 @@ pub struct ResolvedFile {
     /// Always-sound semantic diagnostics found while walking the file (today
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered.
     pub(super) diagnostics: Vec<SemaDiagnostic>,
+    /// The **resolution-explain trace**: every `open` in the file with the
+    /// opaque-open flags it set ([`ResolutionTrace`]). Purely diagnostic — no
+    /// cross-file fold or use-site resolver reads it — so it is excluded from
+    /// [`Self::same_export_contribution`]; deterministic from source, so it does
+    /// not perturb the `incremental ≡ batch` value-equality differential. Read
+    /// through [`Self::resolution_trace`].
+    pub(super) resolution_trace: ResolutionTrace,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
@@ -1560,6 +1656,16 @@ impl ResolvedFile {
     /// go-to-definition for both references and definitions.
     pub fn resolution_at(&self, range: TextRange) -> Option<Resolution> {
         self.resolutions.get(&range).copied()
+    }
+
+    /// The file's resolution-explain trace — every `open` with the opaque-open
+    /// flags it set (see [`ResolutionTrace`]). Pair it with
+    /// [`Self::resolution_at`] to see *why* a name deferred: a
+    /// `Deferred(QualifiedAccess)` head after an [`OpenTrace`] whose
+    /// [`opacity`](OpenTrace::opacity) `defers_dotted_heads()` is that open's
+    /// doing.
+    pub fn resolution_trace(&self) -> &ResolutionTrace {
+        &self.resolution_trace
     }
 
     /// The type the attribute written at `range` resolved to, if the resolver

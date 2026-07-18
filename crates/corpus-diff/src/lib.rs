@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
+use borzoi::handlers::smallest_resolution_with_range;
 use borzoi::project_assets::resolve_assemblies_root_only;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::{ProjectParses, SemanticState};
@@ -25,7 +26,7 @@ use borzoi_msbuild::{
     Diagnostic, DiagnosticKind, DiagnosticOrigin, ImportFailReason, ParsedProject, SdkVersion,
     StructuralCompileItemUncertainty, VersionSpec,
 };
-use borzoi_sema::{AssemblyEnv, Def, Resolution, ResolvedProject};
+use borzoi_sema::{AssemblyEnv, Def, OpenOpacity, Resolution, ResolvedProject};
 use lsp_types::Url;
 use rowan::TextRange;
 use serde::{Deserialize, Serialize};
@@ -2191,6 +2192,162 @@ fn resolution_summary(loaded: &LoadedProject, file_idx: usize, res: Resolution) 
             )
         }
         Resolution::Deferred(_) | Resolution::Unresolved => format!("{res:?}"),
+    }
+}
+
+/// One `open` declaration in an explained file, lifted from the sema
+/// [`ResolutionTrace`](borzoi_sema::ResolutionTrace) with the byte range
+/// projected to `(start, end)` and a [`precedes_token`](Self::precedes_token)
+/// flag marking the opens in scope *before* the explained token — the candidate
+/// culprits for a deferred dotted head.
+#[derive(Debug, Clone)]
+pub struct ExplainedOpen {
+    /// The `open …` declaration's `(start, end)` byte range.
+    pub range: (usize, usize),
+    /// The opened path, `idText`-normalised (the type's path for `open type`).
+    pub path: Vec<String>,
+    /// Whether this is an `open type …`.
+    pub is_type: bool,
+    /// Which opaque-open flags this open flipped (see [`OpenOpacity`]).
+    pub opacity: OpenOpacity,
+    /// Whether this open ends at or before the explained token — so it is in
+    /// scope there and could be the reason a dotted head deferred.
+    pub precedes_token: bool,
+}
+
+/// The resolution-explain result for one token (see [`explain_token`]): its
+/// resolution and the file's `open`s with their opacity, so a human can see
+/// *why* a name deferred — the `open TypeEquality` poisoning a bare
+/// `List.replicate` investigation, as a reusable query rather than a manual dig.
+#[derive(Debug, Clone)]
+pub struct TokenExplanation {
+    /// The occurrence `(start, end)` the resolution was recorded at, or `None`
+    /// when nothing resolved at this byte.
+    pub token_range: Option<(usize, usize)>,
+    /// The source text of [`token_range`](Self::token_range) (empty when `None`).
+    pub token_text: String,
+    /// The resolution at the token, if one was recorded.
+    pub resolution: Option<Resolution>,
+    /// A human rendering of [`resolution`](Self::resolution) — a project def
+    /// site, an assembly full name, or a `Deferred(..)` / not-found note.
+    pub resolution_summary: String,
+    /// Every `open` in the file, in source order, with its opacity.
+    pub opens: Vec<ExplainedOpen>,
+}
+
+impl TokenExplanation {
+    /// Whether the token deferred *and* an opaque `open` precedes it — the shape
+    /// of a poisoned dotted head. The candidate culprits are the opens with
+    /// `precedes_token && opacity.defers_dotted_heads()`.
+    pub fn deferred_behind_opaque_open(&self) -> bool {
+        matches!(self.resolution, Some(Resolution::Deferred(_)))
+            && self
+                .opens
+                .iter()
+                .any(|o| o.precedes_token && o.opacity.defers_dotted_heads())
+    }
+
+    /// A human-readable multi-line report — the CLI dump.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        match self.token_range {
+            Some((s, e)) => {
+                let _ = writeln!(out, "token {:?} @ {s}..{e}", self.token_text);
+            }
+            None => {
+                let _ = writeln!(out, "(no resolution recorded at this position)");
+            }
+        }
+        let _ = writeln!(out, "  resolution: {}", self.resolution_summary);
+        if self.opens.is_empty() {
+            let _ = writeln!(out, "  opens: (none)");
+            return out;
+        }
+        let _ = writeln!(out, "  opens (source order):");
+        for o in &self.opens {
+            let kind = if o.is_type { "open type" } else { "open" };
+            let opacity = if o.opacity.is_opaque() {
+                let mut flags = Vec::new();
+                if o.opacity.opaque_value {
+                    flags.push("opaque_value");
+                }
+                if o.opacity.opaque_dotted {
+                    flags.push("opaque_dotted");
+                }
+                if o.opacity.unmodelled {
+                    flags.push("unmodelled");
+                }
+                format!("OPAQUE [{}]", flags.join(", "))
+            } else {
+                "clean".to_string()
+            };
+            let marker = if o.precedes_token && o.opacity.defers_dotted_heads() {
+                "  <-- defers dotted heads in the token's scope"
+            } else {
+                ""
+            };
+            let _ = writeln!(
+                out,
+                "    {kind} {} @ {}..{} — {opacity}{marker}",
+                o.path.join("."),
+                o.range.0,
+                o.range.1,
+            );
+        }
+        out
+    }
+}
+
+/// Explain the token at byte offset `byte` in file `file_idx` of `loaded`: its
+/// resolution and the file's opaque-`open` trace, so a human can see why a name
+/// deferred (the resolution-explain mechanism). A pure query over the
+/// already-resolved project — no refetch, no effects.
+pub fn explain_token(loaded: &LoadedProject, file_idx: usize, byte: usize) -> TokenExplanation {
+    let file = loaded.resolved.file(file_idx);
+    let text = &loaded.parses.texts[file_idx];
+    let (token_range, token_text, resolution, resolution_summary) =
+        match smallest_resolution_with_range(file, byte) {
+            Some((range, res)) => {
+                let (s, e) = range_pair(range);
+                (
+                    Some((s, e)),
+                    text.get(s..e).unwrap_or("").to_string(),
+                    Some(res),
+                    resolution_summary(loaded, file_idx, res),
+                )
+            }
+            None => (
+                None,
+                String::new(),
+                None,
+                "(no resolution recorded here)".to_string(),
+            ),
+        };
+    let token_start = token_range.map(|(s, _)| s);
+    let opens = file
+        .resolution_trace()
+        .opens
+        .iter()
+        .map(|o| {
+            let (s, e) = range_pair(o.range);
+            ExplainedOpen {
+                range: (s, e),
+                path: o.path.clone(),
+                is_type: o.is_type,
+                opacity: o.opacity,
+                // In scope before the token: its `open` ends at or before the
+                // token's start. Over-inclusive across blocks — sound for a
+                // "candidate culprit" hint (it never hides the real one).
+                precedes_token: token_start.is_some_and(|ts| e <= ts),
+            }
+        })
+        .collect();
+    TokenExplanation {
+        token_range,
+        token_text,
+        resolution,
+        resolution_summary,
+        opens,
     }
 }
 
