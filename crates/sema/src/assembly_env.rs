@@ -25,6 +25,7 @@ use borzoi_assembly::{
 };
 
 use crate::def::SemanticClass;
+use crate::resolve::ActivePatternShape;
 
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
@@ -208,6 +209,22 @@ pub struct OpenFoldName {
     /// constructor, or an active-pattern tag. Pattern-position lookup
     /// (`case_reference`) accepts these where it skips plain values.
     pub is_case: bool,
+    /// The recognizer shape when this entry is an **active-pattern tag** (a
+    /// `space: Pattern`, `is_case: true`, `target: Opaque` entry demangled from a
+    /// `|A|B|` val name); `None` for every other entry. Carried to the scope
+    /// entry so an applied assembly active-pattern head splits its arguments by
+    /// shape (`docs/export-decl-model-plan.md` Stage 3b) — the tag's `Deferred`
+    /// resolution has no identity to key the shape on.
+    pub ap_shape: Option<ActivePatternShape>,
+    /// Whether a **val** entry may be an FCS *constant pattern* — a CLI
+    /// `Literal`-flagged field, a `System.Decimal` field (a C# `const decimal`
+    /// carries `DecimalConstantAttribute` with NO `Literal` flag — Q17), or an
+    /// undecidable target ([`AssemblyEnv`]'s `value_may_be_constant_pattern`).
+    /// A literal enters FCS's pattern namespace (`ePatItems`, latest-wins), so
+    /// such a val met before a case in the bare pattern-position scan defers
+    /// the case rather than being skipped as a plain value. `false` for every
+    /// case / type-shadow entry.
+    pub constant_pattern: bool,
 }
 
 /// The target of an [`OpenFoldName`].
@@ -242,17 +259,58 @@ pub enum OpenFoldSpace {
     Both,
 }
 
-/// The tags of an active-pattern banana name: `|Even|Odd|` → `[Even, Odd]`,
-/// `|Positive|_|` → `[Positive]` (the `_` is the partial marker, not a tag).
-/// `None` when the name starts with `|` but is not a well-formed banana — the
-/// caller must treat the val as name-unknown residue rather than guess.
-fn active_pattern_tags(name: &str) -> Option<Vec<&str>> {
+/// The tags **and** [`ActivePatternShape`] of an active-pattern banana name, for
+/// a recognizer folded into scope from a referenced assembly (Stage 3b of
+/// `docs/export-decl-model-plan.md`): `|Even|Odd|` → total multi-case
+/// `[Even, Odd]`; `|Positive|_|` → partial single-case `[Positive]` (the trailing
+/// `_` is the partial marker, not a tag). `None` when the name starts with `|`
+/// but is not a well-formed banana — the caller must treat the val as
+/// name-unknown residue rather than guess, and attaches no shape.
+///
+/// Follows FCS's `ActivePatternInfoOfValName` (`PrettyNaming.fs`): the recognizer
+/// is **total** unless the *last* `|`-segment is exactly `_`; every remaining
+/// segment is a real case name. The IL method name *is* the mangled logical
+/// name FCS itself demangles, so `total` / `single_case` / the case list are
+/// exactly what FCS computes.
+///
+/// [`ActivePatternShape::arity`] is always `None`. The metadata parameter count
+/// over-counts F#'s type-derived `paramCount` under argument tupling (the
+/// flattened IL signature of an F# assembly cannot distinguish a curried group
+/// from a tupled one — its `arg_group_count` is `None` for the same reason), and
+/// an *over*-estimated arity is a wrong commit (a use at `k = paramCount + 1`
+/// would treat the result binder as a parameter). So arity stays unknown, and
+/// only a **total single-case** recognizer — whose split is `frontAndBack`, arity
+/// -free — changes behaviour; a partial one keeps today's fabricate-a-binder.
+///
+/// Used only by the fold ([`AssemblyEnv::fold_container_into`], for `open
+/// <module>` / `open <namespace>`); the caller has already established the
+/// container is an authoritative F# module.
+fn active_pattern_banana(name: &str) -> Option<(Vec<&str>, ActivePatternShape)> {
     let inner = name.strip_prefix('|')?.strip_suffix('|')?;
     let parts: Vec<&str> = inner.split('|').collect();
-    if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
+    // FCS: partial iff the LAST `|`-segment is the wildcard marker `_`.
+    let (total, tags): (bool, Vec<&str>) = match parts.split_last() {
+        Some((last, front)) if *last == "_" => (false, front.to_vec()),
+        _ => (true, parts),
+    };
+    // Malformed only if a *case* segment is empty (`||`, `|A||B|`) — then attach
+    // no shape. Two forms FCS accepts must NOT be reported malformed, which would
+    // make the caller mark the whole open surface as residue and demote unrelated
+    // members:
+    // - a **zero-tag** recognizer (the quoted `` `|_|` ``, a partial with no case
+    //   names — `ActivePatternInfoOfValName` returns empty tags; codex 5b);
+    // - a **nonterminal `_`** segment (`|_|A|`): FCS treats only the *last* `_` as
+    //   the partial marker, so a `_` before it stays a real tag (codex 6b), which
+    //   `single_case` must count.
+    if tags.iter().any(|t| t.is_empty()) {
         return None;
     }
-    Some(parts.into_iter().filter(|p| *p != "_").collect())
+    let shape = ActivePatternShape {
+        total,
+        single_case: tags.len() == 1,
+        arity: None,
+    };
+    Some((tags, shape))
 }
 
 /// Whether a type of `kind` (with IL value-type-ness `is_struct`) occupies FCS's
@@ -1943,6 +2001,8 @@ impl AssemblyEnv {
                     target: OpenFoldTarget::Entity(child),
                     space: OpenFoldSpace::Both,
                     is_case: true,
+                    ap_shape: None,
+                    constant_pattern: false,
                 });
             }
         }
@@ -1969,6 +2029,8 @@ impl AssemblyEnv {
                     target: OpenFoldTarget::Opaque,
                     space: OpenFoldSpace::Value,
                     is_case: false,
+                    ap_shape: None,
+                    constant_pattern: false,
                 });
             }
             if c.kind == EntityKind::Union && !c.is_require_qualified_access {
@@ -1994,6 +2056,8 @@ impl AssemblyEnv {
                                 target: OpenFoldTarget::Opaque,
                                 space: OpenFoldSpace::Both,
                                 is_case: true,
+                                ap_shape: None,
+                                constant_pattern: false,
                             });
                         }
                     }
@@ -2054,16 +2118,36 @@ impl AssemblyEnv {
             .into_iter()
             .map(|(name, idx)| (name.to_string(), idx))
             .collect();
+        // A banana-named val is an active-pattern recognizer **only in an
+        // authoritative F# module**. On an assembly whose F# signature is
+        // unreliable (`fsc --standalone`, an undecoded pickle) `EntityKind::Module`
+        // is an IL heuristic FCS does not share — it imports the entity through IL,
+        // where a banana-named `let` is an ordinary method group, never a
+        // recognizer (Stage 3b; the same reason [`Self::entity_class`] declines the
+        // kind). So demangle only when the container's signature is authoritative;
+        // otherwise the `|Foo|` is just a value entry.
+        let authoritative_module = !self.fsharp_signature_unreliable(handle);
         for (name, idx) in vals {
-            if name.starts_with('|') {
-                match active_pattern_tags(&name) {
-                    Some(tags) => {
+            if authoritative_module && name.starts_with('|') {
+                match active_pattern_banana(&name) {
+                    Some((tags, shape)) => {
+                        // The tags carry the recognizer shape. Whether that shape
+                        // may actually drive a use-site split is decided at the
+                        // split site, where the full scope is known: a same-named
+                        // `[<Literal>]` / constant value (here, a later `open`, a
+                        // local `let`, or an auto-open child) is a CONSTANT PATTERN
+                        // FCS's latest-wins puts in charge of the name, which
+                        // `case_reference` skips as an ordinary value — so the split
+                        // declines when any same-named value is in scope (codex
+                        // rounds 4c/5a). A zero-tag recognizer contributes no entry.
                         for tag in tags {
                             out.entries.push(OpenFoldName {
                                 name: tag.to_string(),
                                 target: OpenFoldTarget::Opaque,
                                 space: OpenFoldSpace::Pattern,
                                 is_case: true,
+                                ap_shape: Some(shape),
+                                constant_pattern: false,
                             });
                         }
                     }
@@ -2077,11 +2161,14 @@ impl AssemblyEnv {
                 },
                 None => OpenFoldTarget::Opaque,
             };
+            let constant_pattern = self.value_may_be_constant_pattern(&target);
             out.entries.push(OpenFoldName {
                 name,
                 target,
                 space: OpenFoldSpace::Value,
                 is_case: false,
+                ap_shape: None,
+                constant_pattern,
             });
         }
 
@@ -3967,6 +4054,102 @@ mod presence_table_tests {
                 qualified,
                 "qualified presence of {kind:?}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod active_pattern_banana_tests {
+    use super::active_pattern_banana;
+    use crate::resolve::ActivePatternShape;
+    use proptest::prelude::*;
+
+    fn shape(total: bool, single_case: bool) -> ActivePatternShape {
+        ActivePatternShape {
+            total,
+            single_case,
+            arity: None,
+        }
+    }
+
+    /// Every derivation the fold relies on, spelled out — the demangle table that
+    /// `docs/export-decl-model-plan.md` Stage 3b pins. Arity is always `None`
+    /// (the flattened IL parameter count over-counts under tupling).
+    #[test]
+    fn the_derivation_is_this_table() {
+        // (mangled IL name, tags, shape)
+        let ok: &[(&str, &[&str], ActivePatternShape)] = &[
+            ("|Even|Odd|", &["Even", "Odd"], shape(true, false)),
+            ("|Scale|", &["Scale"], shape(true, true)),
+            ("|DivBy|_|", &["DivBy"], shape(false, true)),
+            ("|Nonempty|_|", &["Nonempty"], shape(false, true)),
+            ("|A|B|C|", &["A", "B", "C"], shape(true, false)),
+            ("|A|B|C|_|", &["A", "B", "C"], shape(false, false)),
+            // A zero-tag partial recognizer (the quoted `` `|_|` ``): well-formed,
+            // contributes no case tags, must NOT poison the surface (codex 5b).
+            ("|_|", &[], shape(false, false)),
+            // A nonterminal `_` is a real tag (only the LAST `_` is the partial
+            // marker); the surface must not be poisoned (codex 6b).
+            ("|_|A|", &["_", "A"], shape(true, false)),
+            ("|A|_|B|", &["A", "_", "B"], shape(true, false)),
+        ];
+        for (name, tags, sh) in ok {
+            let expected: Vec<&str> = tags.to_vec();
+            assert_eq!(
+                active_pattern_banana(name),
+                Some((expected, *sh)),
+                "banana {name:?}"
+            );
+        }
+
+        // Malformed → no shape (residue, today's behaviour).
+        for bad in [
+            "",          // empty
+            "|",         // one delimiter
+            "||",        // empty inner
+            "|A||B|",    // empty middle segment
+            "Even|Odd|", // no leading delimiter
+            "|Even|Odd", // no trailing delimiter
+            "Even",      // not a banana at all
+        ] {
+            assert_eq!(active_pattern_banana(bad), None, "malformed {bad:?}");
+        }
+    }
+
+    /// A generator over well-formed banana names: a mangle → demangle round-trip
+    /// recovers the tags, totality and single-case, with arity always `None`.
+    fn tags_and_totality() -> impl Strategy<Value = (Vec<String>, bool)> {
+        (
+            prop::collection::vec("[A-Za-z][A-Za-z0-9]{0,4}", 1..4),
+            any::<bool>(),
+        )
+    }
+
+    proptest! {
+        #[test]
+        fn mangle_roundtrips_through_demangle((tags, total) in tags_and_totality()) {
+            // Mangle exactly as fsc does: `|A|B|` (total) / `|A|B|_|` (partial).
+            let joined = tags.join("|");
+            let mangled = if total {
+                format!("|{joined}|")
+            } else {
+                format!("|{joined}|_|")
+            };
+            let single_case = tags.len() == 1;
+            let recovered = active_pattern_banana(&mangled);
+            prop_assert_eq!(
+                recovered.as_ref().map(|(t, _)| t.clone()),
+                Some(tags.iter().map(String::as_str).collect::<Vec<_>>())
+            );
+            prop_assert_eq!(recovered.map(|(_, s)| s), Some(shape(total, single_case)));
+        }
+
+        /// A name with any empty `|`-segment is malformed and attaches no shape —
+        /// so an unlistable assembly recognizer defers rather than mis-splitting.
+        #[test]
+        fn empty_segment_is_never_a_shape(prefix in "[A-Za-z]{1,3}", suffix in "[A-Za-z]{1,3}") {
+            let mangled = format!("|{prefix}||{suffix}|");
+            prop_assert_eq!(active_pattern_banana(&mangled), None);
         }
     }
 }

@@ -925,6 +925,28 @@ pub fn ensure_qualifier_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **active-pattern** fixture (`tests/fixtures/active_pattern_env`,
+/// `SemaActivePatternFixture.dll`) once per test binary and return its `.dll`
+/// path. A referenced F# library exposing active-pattern recognizers of every
+/// shape, so the assembly-side use-site split (export-decl plan Stage 3b) can be
+/// diffed against FCS. Behind the shared [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_active_pattern_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/active_pattern_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build active-pattern fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaActivePatternFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **OV-9 overload-corpus** fixture
 /// (`tests/fixtures/overload_corpus`, `OverloadCorpus.dll`) once per test binary
 /// and return its `.dll` path. `csharp` is the generated universe

@@ -274,31 +274,303 @@ gone.
 
 **Dependencies**: Stage 2 (and the AP plan's Stages 1–2, already merged).
 
-1. **Case kind at use sites**: `is_case_item` / `case_classification` gain
-   kind access (`case_kind_of(id) -> Option<CaseKind>`), replacing
-   boolean-only classification. This is the prerequisite the
-   `cross-file-constructor-namespace` memory names; the constructor-namespace
-   index itself remains a separate follow-up.
-2. **Active-pattern shape crosses the boundary**: `ActivePatternCase` decls
-   gain `shape: ActivePatternShape`; `open M` folding a module with AP cases
-   can now push *named, shape-carrying, pattern-only* entries (like the
-   assembly fold's opaque `opened_case` entries, but with shape) instead of
-   relying solely on the blunt `modules_with_hidden_values` opacity. Scope
-   control: it is acceptable (and simplest) to keep the value-namespace
-   opacity exactly as-is and add ONLY constructor-namespace entries.
-3. **Implement the AP plan's Stage 3** on top: an applied head resolving to
-   a cross-file/opened AP case with known shape splits its args (same logic
-   as same-file); unknown shape (assembly opaque tags — mark them at the
-   fold, assembly_env.rs:1748-1763) **declines** the name args instead of
-   fabricating binders; cross-file *union* cases (now kind-certain) keep
-   binding their args.
+Restructured (2026-07-17) into three sub-stages, each its own branch/PR. The
+design insight that forces the split: **a blanket decline of an unknown-shape
+active pattern's arguments would *regress* the common case**, so the decline
+(3c) must come *last*, after project (3a) and assembly (3b) shapes have shrunk
+the unknown-shape residue to nearly nothing. An arity-0 total AP like
+`KeyValue (k, v)` fabricates a binder for its argument *today*, and that binder
+is **correct** (the argument is the result sub-pattern) — declining it would
+replace a right commit with a defer. Decline is only right where *wrongness* is
+possible (a parameter that FCS resolves to an outer value), which is exactly the
+case 3a+3b make shape-certain. So the order is 3a → 3b → 3c, not "decline first,
+refine later".
 
-**Oracle**: multi-file FCS differentials (`resolve_project_diff`-style
-fixtures): parameterized AP used cross-file via `open` and via qualified
-path — args resolve/decline per shape, never fabricate; union case `Some x`
-still binds; `dotnet build`-verify every fixture (fcs-dump tolerates type
-errors). The whole-project corpus gates stay green. Each new commit path
-must satisfy certain-implies-exact under `classify_diff`.
+#### Stage 3a: project-side cross-file active-pattern cases, pattern-only, with shape
+
+**Dependencies**: Stage 2 (this PR), the AP plan's Stages 1–2 (merged).
+
+FCS-probed before coding (two files A defines / B uses, `fcs-dump uses-project`,
+every fixture diagnostics-clean — see the branch's probe write-up). The verdicts
+that pin the design:
+
+- `open A; match x with Even` / `DivBy divisor` — FCS **resolves the head
+  cross-file to the recognizer span** (the `|Even|Odd|` name range, parens
+  excluded — identical to `ActivePatName::name_range` and to the same-file
+  `use_def` range), full name `A.(|Even|Odd|).Even`. So go-to-definition points
+  at the recognizer, and the parameterized partial's `divisor` (k = p = 1)
+  resolves to the **outer value**, no fabricated binder.
+- Bare `Even` in *expression* position after `open A` → **FS0039**: AP cases are
+  pattern-namespace-only. Value-namespace queries must never see them.
+- `A.Even` (module-qualified pattern) is *legal* and resolves to the recognizer,
+  **but** it rides the type/module-qualified-case path AP cases do not populate;
+  3a **declines** it (a sound coverage gap), noted as a possible follow-up.
+- In pattern position the AP case **wins over a same-named value** (a local
+  `let Even`, or a module value `A.Even` exported alongside the recognizer):
+  constructor namespace, values do not shadow — matches `case_reference`.
+- Two opened modules both exporting `Even` → **latest-open-wins** (the later
+  `open`), handled by source-ordered frame entries; no generation bump needed
+  once the module is no longer hidden.
+- A module whose *only* hidden-value trigger is its AP cases: with the cases now
+  enumerable, **nothing else about its fold is unenumerable** (its `let`s and its
+  union cases are already indexed). So the AP hidden-trigger can be narrowed, and
+  as a bonus its union/exception cases — today over-suppressed because the AP
+  made the whole module hidden — become trustworthy too.
+
+Design (as implemented — a **history-backed** model reached after a codex review
+of an earlier separate-index draft, whose three defects — no straddle provenance,
+no accessibility recovery, split same-file/cross-file identity — all traced to
+*not* reusing the constructor-namespace machinery):
+
+1. `ExportDeclKind::ActivePatternCase` gains `{ item: Option<usize>, shape:
+   ActivePatternShape }`. `shape` is `define_active_pattern`'s stored shape
+   (module-level recognizers only). `item` indexes `exports.items` for the AP
+   case's own `ExportedItem` — `None` under an anonymous root (no cross-file
+   handle; keeps today's hidden-marker behaviour there).
+2. Each module-level AP case gets an `ExportedItem` with **`qualified: None`**
+   (so the *same-file* `self.items` value queries — `qualified_value_in`, the
+   same-file open value pass, the straddle's current-file branch — never see it,
+   since they filter on `qualified`) and `case: None` (`CaseKind::ActivePattern`
+   is *not* introduced; the AP-ness rides the `DefKind::ActivePattern` def and
+   `case_item_ids`). Its `def` is the per-case `use_def` (ranged at the recognizer
+   span), so a `Resolution::Item` points go-to-def at the recognizer, matching
+   FCS. **One identity, same-file and cross-file**: the same-file case *use* now
+   resolves to that `Resolution::Item` (the union-case precedent), so
+   find-references / rename span both. The case's scope entry is marked
+   **`pattern_only`** so `latest_entry` (expression lookup) skips it while
+   `case_reference` (pattern position) still finds it — an AP case is FS0039 in
+   expression position.
+3. **AP cases ride `value_exports`** as **pattern-only** `ExportRecord`s
+   (`is_case = true`, `pattern_only = true`), keyed by the value-namespace path
+   (`["A", "Even"]`). This is the crux: they inherit the constructor namespace's
+   Compile-order **provenance** (the per-path history's newest-file-wins) and its
+   **accessibility recovery** (a public case under a later inaccessible `private`
+   is still selectable) for free, exactly as a union case does. A side map
+   `ProjectItems::active_pattern_shapes: HashMap<ItemId, ActivePatternShape>`
+   carries the recognizer shape; `case_item_ids` gets the id too. The
+   value-namespace queries (`latest_accessible_value`, `fragment_value_children`,
+   `is_project_value_prefixed`, `ordinary_value_at`) filter `!pattern_only`; the
+   constructor queries (`latest_accessible_case`, `direct`/`fragment_constructor_children`)
+   keep `is_case`, so they include AP naturally.
+4. **Narrow the AP hidden trigger — and only it.** The `ActivePatternCase`
+   derivation stops pushing `modules_with_hidden_values` (the *cross-file*
+   index; the same-file `note_hidden_value_module` at `module_let` is left, a
+   sound same-file-`open` gap). A module hidden for another reason (alias,
+   `extern`, anon-root case, `[<AutoOpen>]`) stays hidden.
+5. **No dedicated AP fold pass** — AP cases flow through the *existing*
+   `direct_constructor_children` (they are `is_case`), pushed as
+   `opened_pattern_only` entries and suppressed exactly like a union case when the
+   module is hidden. In the **namespace straddle**
+   (`open_project_namespace_values`), AP cases now enter `submodule_contributions_at`'s
+   `case` dimension (via `fragment_constructor_children`) but **not** `value_slot`
+   — an AP is a case that is *not* a value, so the case-name loop's redundant
+   `value_slot` feed is dropped (value-live union cases already feed it through
+   `value_names`). The value and constructor namespaces are then decided
+   **independently**: the old "wins the value slot ⇒ wins both" shortcut was
+   false for a case-without-value, so a direct case that out-files the submodule's
+   value but not its (later or tied) AP case wins the value namespace by its
+   natural push while the submodule's active pattern wins the constructor slot.
+6. **Use-site split**: generalise the same-file shape lookup — a helper
+   `resolution_active_pattern_shape(res)` returns the shape for a
+   `Resolution::Local` (anonymous-root/local, keyed in `active_pattern_shape`) or
+   a `Resolution::Item` — same-file mapped through `self.items[..].def` to the
+   shape, cross-file via `ProjectItems::active_pattern_shape_of`. The existing
+   `split_active_pattern_args` then runs unchanged. Unknown shape keeps today's
+   behaviour (no declines — that is 3c). The public `ResolvedFile::active_pattern_shape`
+   accessor maps a same-file `Item` the same way.
+7. **LSP consumers of the new identity**: `file_export_symbols` filters
+   `DefKind::ActivePattern` exports out of the document/workspace-symbol outline
+   (the per-case identity handles would otherwise list `(|Even|Odd|)` as two
+   duplicate `FUNCTION` symbols at the recognizer span; the recognizer's own
+   outline symbol is a separate concern). `textDocument/references` adds the
+   declaration anchor explicitly when the client asks — the AP case's declaration
+   span self-resolves to the recognizer, not the case `Item`, so `matching_in_file`
+   would otherwise omit it.
+
+**Behaviour changes, both FCS-differential-gated**: (a) cross-file AP cases
+resolve in pattern position and split their args by shape; (b) union/exception
+cases of an AP-declaring module stop being over-suppressed.
+
+**Post-review fix — literal constant patterns contest the cases.** A review of
+the shipped 3a found (and probes confirmed, all build-clean) that a
+`[<Literal>]` value *is* a constant pattern: FCS's `ePatItems` holds exactly
+the constructor cases and the literal values, latest-wins, so
+`open A; [<Literal>] let Even = 7; match n with Even` binds the literal where
+sema committed the opened case — an AP case, but equally a **union/exception
+case** (the hole predates 3a). Two rules pin the model: the slot is
+position-ordered (a literal *before* the `open` loses to it), and within ONE
+opened module the literal wins **regardless of source order** (FCS folds a
+module as exceptions → tycons → vals). The fix: attribute-**presence** on a
+module-level `let` marks it maybe-literal (identity is unverifiable — a
+`LiteralAttribute` alias shadow is undetectable; an *unattributed* value
+provably cannot be a literal and still never contests), carried on scope
+entries (`maybe_constant_pattern`) and into `ProjectItems`
+(`ExportedItem::attributed`); the bare pattern scan (`case_reference`) defers
+on meeting one before the case, and the open fold suppresses a case whose own
+module exports an accessible maybe-literal (`pattern_suppressed_case_ids`, the
+vals-after-tycons rule). Assembly-side the CLI `Literal` flag / Q17 decimal
+rule gives the *exact* bit (`OpenFoldName::constant_pattern`). Exemptions,
+both FCS-pinned: an **applied** head is never a literal on a clean program
+(FS3191), so the applied split keeps committing; a **qualified** case pattern
+(`A.Green`) resolves to the case, ignoring the literal (sema currently
+declines that shape either way — committing it is a follow-up).
+
+**Oracle**: FCS-free direct tests (head → recognizer decl; no expression-position
+resolution; `DivBy divisor` → outer value, no binder; `Scale g` still binds `g`;
+value-namespace queries provably exclude AP cases) + multi-file
+`resolve_project_diff`-style fixtures for the whole probe matrix, every fixture
+`uses-project`-diagnostics-clean; certain-implies-exact; the ignored
+`resolve_corpus_diff` gate stays green.
+
+#### Stage 3b: assembly-side active-pattern shape (as shipped)
+
+**Dependencies**: 3a. Derive the assembly AP shape from the mangled `|A|B|` val
+name — cases + totality + single-case — and attach it to the **fold's**
+`opened_case` entries (an *explicit* `open <module>` / `open <namespace>`), so a
+**total single-case** assembly recognizer (`(|Scale|)`) splits an applied use
+frontAndBack exactly as a project one now does. Recognizers reached through the
+*implicit* `[<assembly: AutoOpen>]` auto-open — including FSharp.Core's
+`(|KeyValue|)` / `(|Failure|_|)` — are out of scope here (see "Scope" below).
+
+**The `arity = params − 1` premise was wrong, and is dropped.** The plan hoped
+the signature's curried arity would give the parameter count. It does not: F#
+compiles a recognizer's *tupled* argument groups to **flattened** IL parameters,
+so the metadata parameter count is an **upper bound** on FCS's type-derived
+`paramCount` (`stripFunTy` on the recognizer's F# type — the number
+`TcPatLongIdentActivePatternCase` actually splits on), not equal to it. And an
+F# assembly's methods carry no `arg_group_count` (its `None` is exactly "cannot
+tell curried from tupled from flattened IL"), so the divergence is
+*undetectable* from metadata. An **over-estimated** arity is a wrong commit: a
+use at `k = paramCount + 1` would treat the genuine result binder as a
+parameter, resolving a name FCS binds to an outer value instead — a
+certain-implies-exact violation. So **arity is `None` for every assembly
+recognizer.** (The one metadata-certain case — `params == 1` ⇒ `arity == 0`,
+since a single un-tuple-able parameter must be the matched value — makes no
+observable difference anyway: a partial single-case AP's only legal applied use
+is `k = 1`, which binds the result under both `arity == None` and `arity ==
+0`.)
+
+That leaves a clean, name-only derivation (verified by reading the built DLL
+through the assembly reader, and FCS-probing the use side against it — the probe
+matrix below). It follows FCS's own `ActivePatternInfoOfValName`
+(`PrettyNaming.fs`): the IL method name **is** the mangled logical name, so
+`total`/`single_case`/the case list are exactly what FCS computes.
+
+Derivation (`active_pattern_banana` in `assembly_env.rs`, replacing
+`active_pattern_tags`), for a well-formed `|…|` banana only (a malformed name
+attaches **no** shape — residue, today's behaviour):
+
+| IL metadata name | cases | `total` | `single_case` | `arity` |
+|---|---|---|---|---|
+| `\|Even\|Odd\|` | `[Even, Odd]` | `true` (no trailing `\|_\|`) | `false` | `None` |
+| `\|Scale\|` | `[Scale]` | `true` | `true` | `None` |
+| `\|DivBy\|_\|` | `[DivBy]` | `false` (trailing `\|_\|`) | `true` | `None` |
+| `\|_\|` / `\|\|` / `\|A\|\|B\|` | — | — | — | (malformed → no shape) |
+
+`total` = the **last** `\|`-segment is not `_` (FCS checks only the last
+segment); `single_case` = exactly one remaining case; every case non-empty and
+not `_`.
+
+**Metadata facts pinned by the DLL dump** (params = flattened IL parameter
+count):
+
+| F# recognizer | IL name | params | note |
+|---|---|---|---|
+| `(\|Even\|Odd\|) n` | `\|Even\|Odd\|` | 1 | multi-case (arity irrelevant) |
+| `(\|Scale\|) k n` | `\|Scale\|` | 2 | `params−1 = 1` = paramCount, but arity dropped |
+| `(\|DivBy\|_\|) d n` | `\|DivBy\|_\|` | 2 | `params−1 = 1` = paramCount |
+| `(\|Nonempty\|_\|) s` | `\|Nonempty\|_\|` | 1 | s IS the matched value; paramCount 0 |
+| `(\|InRange\|_\|) (lo,hi) n` | `\|InRange\|_\|` | **3** | **paramCount 1** — `params−1 = 2` OVER-counts (tupling) |
+| `(\|Positive\|_\|) = fun n->` | `\|Positive\|_\|` | 1 | point-free compiled as a 1-param **Method**, not a property |
+| `(\|P3\|) a b n` | `\|P3\|` | 3 | `params−1 = 2` = paramCount |
+
+`InRange` is the counter-example: `params−1 = 2 ≠` FCS's paramCount `1`.
+
+**FCS use-side verdicts** (fsi- and `dotnet build`-verified against the built
+fixture DLL — every consumer compiles clean):
+
+- `open …Recognizers; match n with Scale factor v` → `factor` = the **outer
+  value** (a parameter), `v` = the recognizer result (**binds**). frontAndBack
+  holds cross-assembly, arity-free. *This is the Stage-3b behaviour change.*
+- `Scale g` (k = 1) → `g` **binds** the partially-applied recognizer (`g 5` runs
+  the recognizer, not an outer `g`).
+- `DivBy divisor` (partial, paramCount 1, k = 1) → `divisor` = the outer value in
+  FCS; with `arity == None` sema keeps today's fabricate-a-binder (a status-quo
+  unsoundness, **not** a regression — the 3c residue).
+- `InRange (1, 10) x` → `x` binds; today's behaviour already correct (the `(1,10)`
+  const-tuple binds nothing), and `arity == None` preserves it.
+- FSharp.Core `KeyValue (k, v)` / `Failure msg` are reached through the *implicit*
+  auto-open, which this stage leaves untouched — they keep declining in pattern
+  position (sound; the implicit-path follow-up in "Scope" below). An **explicit**
+  `open Microsoft.FSharp.Core.Operators` folds them through the fold path, where
+  the shape applies.
+
+Wiring: `OpenFoldName` and `ScopeEntry` gain an `Option<ActivePatternShape>`
+(set only on an AP-tag entry); the applied-head split site reads it via
+`applied_active_pattern_case` (a `case_reference` companion), falling back to
+`resolution_active_pattern_shape` for same-file/cross-file `Item`/`Local` heads.
+The demangle stays in sema (`active_pattern_banana`, replacing
+`active_pattern_tags`); no `borzoi-assembly` change, and no signature reading at
+all (arity is `None`).
+
+**Scope — the fold path only.** The shape is attached only for recognizers
+folded in through the fold (`fold_container_into`, i.e. explicit `open <module>`
+/ `open <namespace>`). That path already computes the pattern-namespace winner
+through its demotions, and the shape must ride *every* one of them
+(certain-implies-exact — a shape trusted where the tag is not the definite case
+is a wrong split):
+
+- **demoted / collided** fold entry (residue, cross-surface collision) → the
+  writer drops the shape (`open_assembly_module_fold`, the `demoted` gate);
+- **not an authoritative F# module** (`fsc --standalone` / undecoded pickle, where
+  `EntityKind::Module` is only an IL heuristic and a banana `let` is really a
+  method group) → no demangle (`fsharp_signature_unreliable`);
+- **shadowed by a same-named value** (a `[<Literal>]` / constant is a *constant
+  pattern* FCS's latest-wins puts in charge of the name, which `case_reference`
+  skips as an ordinary value) → the **use-site split declines** whenever `lookup`
+  finds any same-named value in scope — this open, a later open, a local `let`, or
+  an auto-open child. Checked at the split site, not the fold, because the shadow
+  can come from anywhere in the final scope; and only for assembly recognizers,
+  since same-file / cross-file project ones (3a) resolve through the constructor
+  namespace, which already models it. The applied form is FCS-illegal when the
+  constant pattern actually wins, so declining is sound.
+
+A well-formed **zero-tag** recognizer (the quoted `` `|_|` ``, a partial pattern
+with no case names) demangles to an empty tag list — it contributes no case
+entry but is *not* residue, so it never poisons the open surface.
+
+The **implicit `[<assembly: AutoOpen>]` path** (`open_type_statics` — the one
+FSharp.Core's `(|KeyValue|)` / `(|Failure|_|)` actually take) is **deliberately
+left at today's behaviour**: it does not carry the fold's demotions, so trusting
+a shape there could be a wrong commit. Its recognizers keep declining in pattern
+position (sound — a coverage gap, not a regression). Routing that path through
+the fold's demotions — so the named FSharp.Core examples split too — is a
+follow-up, because doing it soundly means giving the implicit path the full
+residue / collision / constant-pattern-shadow machinery the fold has, which is a
+larger structural change than this stage. (This scoping was reached after a codex
+review sequence: an earlier draft wired the implicit path directly and each
+review surfaced another demotion it was missing — guard accretion that the
+retreat to the fold-only core resolves.)
+
+#### Stage 3c: barrier-decline for still-unknown-shape AP-certain heads
+
+**Dependencies**: 3a, 3b. **Last, and only if the residue justifies it.** For an
+applied head that is *certainly* an active pattern but whose shape is still
+unknown (a residue 3a+3b should shrink to nearly nothing), decline its name
+arguments rather than fabricate binders. Two subtleties this stage must honour:
+
+- **Why last** (recorded above): declining an unknown-shape AP's args
+  unconditionally regresses arity-0 total APs (`KeyValue (k, v)`), whose
+  fabricated binders are correct. Decline only where wrongness is possible.
+- **Body-use barrier**: declining a maybe-result binder must push a shadow
+  **barrier** for that name in the arm scope (the `ap_case_barrier` precedent — a
+  `Deferred` scope entry), because merely *skipping* the binder would let an
+  arm-body use of the name wrongly commit an outer same-named value where FCS
+  binds the pattern local.
+
+**Oracle**: a cross-file/assembly parameterized AP used as `Foo bar` no longer
+fabricates a binder for `bar`; a cross-file *union* case `Some x` still binds
+`x`; certain-implies-exact over a multi-file fixture exercising both.
 
 ---
 

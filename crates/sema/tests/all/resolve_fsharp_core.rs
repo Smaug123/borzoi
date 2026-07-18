@@ -68,6 +68,19 @@ fn at(hay: &str, needle: &str) -> TextRange {
     )
 }
 
+/// Range of the `n`th (0-based) occurrence of `needle` in `hay`.
+fn nth(hay: &str, needle: &str, n: usize) -> TextRange {
+    let mut from = 0;
+    for _ in 0..n {
+        from = hay[from..].find(needle).expect("occurrence") + from + needle.len();
+    }
+    let s = hay[from..].find(needle).expect("occurrence") + from;
+    TextRange::new(
+        u32::try_from(s).unwrap().into(),
+        u32::try_from(s + needle.len()).unwrap().into(),
+    )
+}
+
 fn il_name(m: &Member) -> &str {
     match m {
         Member::Method(x) => &x.name,
@@ -178,6 +191,43 @@ fn real_fsharp_core_auto_open_module_shadow_is_name_keyed() {
         Some(Resolution::Deferred(DeferredReason::ShadowableType)),
         "Checked is a real accessible nested module of the auto-open Operators module"
     );
+}
+
+// ===== Assembly active-pattern shape against real FSharp.Core (Stage 3b) =====
+//
+// `(|KeyValue|)` and `(|Failure|_|)` are recognizers in the auto-open
+// `Microsoft.FSharp.Core.Operators` module. Stage 3b attaches a demangled shape
+// to assembly recognizers folded in through an **explicit** `open <module>` /
+// `open <namespace>`. FSharp.Core's Operators is reached instead through the
+// *implicit* `[<assembly: AutoOpen>]` path (`open_type_statics`), which Stage 3b
+// deliberately does NOT touch — that path lacks the fold's residue / collision /
+// constant-pattern-shadow demotions, so trusting a shape there could be a wrong
+// commit (codex round 4). It keeps today's sound behaviour: the recognizer's
+// cases are not folded into pattern scope, so a bare pattern use declines. Making
+// the implicit path fold recognizers soundly is a documented follow-up
+// (`docs/export-decl-model-plan.md` Stage 3b).
+
+#[test]
+fn real_fsharp_core_active_pattern_cases_decline_through_the_implicit_auto_open() {
+    let env = fsharp_core_env();
+    for (src, head) in [
+        (
+            "let f m = match m with KeyValue (key, value) -> key\n",
+            "KeyValue",
+        ),
+        (
+            "let f e = match e with Failure msg -> msg | _ -> \"\"\n",
+            "Failure",
+        ),
+    ] {
+        let rf = resolve(src, &env);
+        assert_eq!(
+            rf.resolution_at(nth(src, head, 0)),
+            None,
+            "`{head}` (implicit-auto-open recognizer) declines in pattern position — the \
+             implicit path is a Stage-3b follow-up"
+        );
+    }
 }
 
 // ===== Data-driven implicit opens (plan A3/S3) =====

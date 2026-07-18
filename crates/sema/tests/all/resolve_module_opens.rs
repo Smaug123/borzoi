@@ -472,7 +472,16 @@ fn open_does_not_leak_into_a_sibling_block() {
 /// once, upfront, before the namespace's own case is even pushed, would stamp
 /// that case with the bumped generation too and it would never go stale.
 #[test]
-fn a_hidden_auto_open_submodule_defers_an_earlier_same_named_case() {
+fn an_auto_open_submodule_active_pattern_wins_over_an_earlier_same_named_exception() {
+    // FCS-verified (`uses-project`, diagnostics-clean): `open Probe` folds the
+    // namespace's `exception Red` and *then* its `[<AutoOpen>] module Sub`'s
+    // active pattern `(|Red|_|)`, which — folded later — WINS in pattern position.
+    // FCS binds the pattern `Red` to `Probe.Sub.(|Red|_|).Red`, not the exception.
+    //
+    // Stage 3a: the AP case is now enumerable cross-file (the narrowed AP
+    // hidden-value trigger), so the AutoOpen-fragment fold brings it into pattern
+    // scope and we resolve to it — where we used to defer (the AP was unenumerable
+    // and staled the exception). The resolution now agrees with FCS exactly.
     let src1 = "namespace Probe\n\nexception Red of int\n\n[<AutoOpen>]\nmodule Sub =\n    let (|Red|_|) (x: int) = if x = 0 then Some () else None\n";
     let src2 = "open Probe\nlet f x =\n    match x with\n    | Red -> 1\n    | _ -> 0\n";
     let proj = resolve_project(&[impl_file(src1), impl_file(src2)], &AssemblyEnv::default());
@@ -482,14 +491,23 @@ fn a_hidden_auto_open_submodule_defers_an_earlier_same_named_case() {
         u32::try_from(i).unwrap().into(),
         u32::try_from(i + "Red".len()).unwrap().into(),
     );
-    match proj.file(1).resolution_at(use_range) {
-        None | Some(Resolution::Deferred(_)) => {}
-        other => panic!(
-            "the namespace's own `exception Red` must defer once a later-folded \
-             `[<AutoOpen>]` submodule brings an unenumerable same-named active pattern \
-             into scope (FCS binds the active pattern) — got {other:?}"
+    let res = proj
+        .file(1)
+        .resolution_at(use_range)
+        .expect("`Red` pattern resolves");
+    let (file_idx, def) = proj
+        .item_def(res)
+        .expect("`Red` resolves to the AutoOpen submodule's active pattern");
+    assert_eq!(file_idx, 0, "the recognizer is declared in file0");
+    let ap = src1.find("|Red|_|").expect("recognizer name span");
+    assert_eq!(
+        def.range,
+        TextRange::new(
+            u32::try_from(ap).unwrap().into(),
+            u32::try_from(ap + "|Red|_|".len()).unwrap().into(),
         ),
-    }
+        "points at `Sub.(|Red|_|)`, not the earlier `exception Red`"
+    );
 }
 
 /// Codex review round 2 of §7's machinery slice: `project_namespace_contestant_names`

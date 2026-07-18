@@ -156,33 +156,51 @@ fn collect_locations(
         _ => 0..resolved.len(),
     };
 
+    // Build a `Location` for a `(file, range)`, or `None` when no URI can be
+    // formed. For the cursor's own file, preserve the request URI (the client may
+    // have it open under a casing that differs from `parses.paths`); for other
+    // files, prefer an open buffer's URI if one matches lexically, else build from
+    // the disk path.
+    let make_loc = |file_idx: usize, range: TextRange| -> Option<Location> {
+        let uri = if same_path(&parses.paths[file_idx], request_uri) {
+            request_uri.clone()
+        } else {
+            preferred_uri(&parses.paths[file_idx], docs)?
+        };
+        Some(Location {
+            uri,
+            range: range_to_lsp(&parses.texts[file_idx], range),
+        })
+    };
+
     let mut out = Vec::new();
+    let mut decl_emitted = false;
     for file_idx in file_range {
         let file = resolved.file(file_idx);
-        for (range, res) in matching_in_file(file, target_res) {
-            if !include_declaration
-                && matches!(decl_anchor, Some((f, r)) if f == file_idx && r == range)
-            {
-                // Skip the binder's own self-range when the client opted out.
-                let _ = res;
-                continue;
+        for (range, _res) in matching_in_file(file, target_res) {
+            if matches!(decl_anchor, Some((f, r)) if f == file_idx && r == range) {
+                decl_emitted = true;
+                if !include_declaration {
+                    // Skip the binder's own self-range when the client opted out.
+                    continue;
+                }
             }
-            // For the cursor's own file, preserve the request URI; the
-            // client may have it open under a casing that differs from
-            // `parses.paths`. For other files, prefer an open buffer's URI
-            // if one matches lexically, else build from disk path.
-            let uri = if same_path(&parses.paths[file_idx], request_uri) {
-                request_uri.clone()
-            } else if let Some(u) = preferred_uri(&parses.paths[file_idx], docs) {
-                u
-            } else {
-                continue;
-            };
-            out.push(Location {
-                uri,
-                range: range_to_lsp(&parses.texts[file_idx], range),
-            });
+            if let Some(loc) = make_loc(file_idx, range) {
+                out.push(loc);
+            }
         }
+    }
+    // An active-pattern case's declaration span (the recognizer name) is recorded
+    // as the *recognizer* (`Resolution::Local`), not the case's `Item`, so
+    // `matching_in_file` never yields it (unlike an ordinary value or union case,
+    // whose declaration self-resolves to the target). When the client wants the
+    // declaration, add the anchor explicitly — deduped by `decl_emitted`.
+    if include_declaration
+        && !decl_emitted
+        && let Some((f, r)) = decl_anchor
+        && let Some(loc) = make_loc(f, r)
+    {
+        out.push(loc);
     }
     out
 }
