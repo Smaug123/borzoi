@@ -13,6 +13,7 @@ mod attr_resolution_sweep;
 mod classify_assembly_diff;
 mod classify_diff;
 mod extension_visibility_matrix;
+mod fcs_dump_refs_absolute;
 mod infer_annotation_entity_diff;
 mod infer_binder_types_diff;
 mod infer_literals_diff;
