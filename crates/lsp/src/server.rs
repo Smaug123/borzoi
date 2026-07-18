@@ -21,8 +21,8 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     Completion, DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-    References, RegisterCapability, Request as RequestTrait, SemanticTokensFullRequest, Shutdown,
-    WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
+    References, RegisterCapability, Request as RequestTrait, SemanticTokensFullRequest,
+    SemanticTokensRefresh, Shutdown, WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     ClientCapabilities, FileChangeType, FileEvent, MessageType, ShowMessageParams, Url,
@@ -138,6 +138,28 @@ pub struct State {
     /// server session, so opening file after file in the same project doesn't
     /// re-toast. See [`warn_compile_uncertainty`].
     warned_uncertain_projects: HashSet<PathBuf>,
+    /// Monotonic counter for the ids of *repeated* server→client requests (the
+    /// `semanticTokens/refresh`es). JSON-RPC ids must distinguish concurrently
+    /// outstanding requests — a client keys pending requests by id — so a fixed
+    /// string would collide if two refreshes were in flight before the first
+    /// reply. (`registerCapability` is one-shot, so it keeps a fixed id.)
+    server_request_seq: u64,
+    /// The id of the `semanticTokens/refresh` currently awaiting the client's
+    /// reply, if any. Bounds server→client refreshes to **at most one
+    /// outstanding at a time**: while this is `Some`, an invalidation keeps
+    /// `SemanticState::wants_refresh` set but sends nothing, and the next refresh
+    /// goes out only once the client's reply clears the slot (`Message::Response`).
+    ///
+    /// This is a concurrency bound, **not** a typing-burst debounce. The reply is
+    /// a bare acknowledgement the client sends promptly (within ~one round trip),
+    /// decoupled from its later, asynchronous token re-requests — so the gate only
+    /// coalesces edits that pile up *before* that reply. Edits spread across normal
+    /// typing (keystrokes slower than the round trip) each still send a refresh.
+    /// That is deliberate: LSP delegates the debounce to the client, which is free
+    /// to delay and coalesce its token re-requests; a refresh request is tiny, and
+    /// correctness never depends on the rate. The `an_edit_after_a_refresh_reply_sends_another`
+    /// test pins this: two edits separated by a reply send two refreshes.
+    pending_refresh_id: Option<RequestId>,
 }
 
 impl State {
@@ -150,6 +172,8 @@ impl State {
             client_capabilities: None,
             workspace_roots: Vec::new(),
             warned_uncertain_projects: HashSet::new(),
+            server_request_seq: 0,
+            pending_refresh_id: None,
         }
     }
 
@@ -182,6 +206,19 @@ impl State {
             .and_then(|c| c.text_document.as_ref())
             .and_then(|td| td.document_symbol.as_ref())
             .and_then(|ds| ds.hierarchical_document_symbol_support)
+            .unwrap_or(false)
+    }
+
+    /// Whether the client accepts server-initiated `workspace/semanticTokens/refresh`
+    /// requests (the `workspace.semanticTokens.refreshSupport` capability). We
+    /// only send one when this holds — a client that didn't advertise it would
+    /// reject the request as unsupported. Absent capability defaults to `false`.
+    pub fn supports_semantic_tokens_refresh(&self) -> bool {
+        self.client_capabilities
+            .as_ref()
+            .and_then(|c| c.workspace.as_ref())
+            .and_then(|w| w.semantic_tokens.as_ref())
+            .and_then(|st| st.refresh_support)
             .unwrap_or(false)
     }
 
@@ -460,7 +497,11 @@ pub fn run_with_fetcher(
     // (only when it supports dynamic registration). Fire-and-forget: the
     // client's response to this request is ignored below.
     if let Some(params) = state.watched_files_registration() {
-        send_request::<RegisterCapability>(&connection, params);
+        send_request::<RegisterCapability>(
+            &connection,
+            RequestId::from("borzoi/register-watched-files".to_string()),
+            params,
+        );
     }
     // The deferred-SourceLink-fetch worker pool, built only when a fetcher is
     // configured — so the default no-`sourcelink-fetch` build (and every
@@ -505,6 +546,7 @@ pub fn run_with_fetcher(
                             dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
                         }
                     }
+                    maybe_send_semantic_tokens_refresh(&mut state, &connection);
                 }
             }
             Message::Notification(not) => {
@@ -515,12 +557,19 @@ pub fn run_with_fetcher(
                 // mutation or diagnostic publishing after `shutdown`.
                 if !shutting_down {
                     handle_notification(&mut state, &connection, not);
+                    // A `didChange`/`didClose`/`didChangeWatchedFiles` invalidates
+                    // caches and may have staled an open buffer's tokens without
+                    // any fold — so drain the refresh here too, not only after
+                    // requests.
+                    maybe_send_semantic_tokens_refresh(&mut state, &connection);
                 }
             }
-            Message::Response(_) => {
-                // The only request we send is the `client/registerCapability`
-                // above; its response carries nothing we act on — and, crucially,
-                // a late one must not abort an in-progress shutdown.
+            Message::Response(resp) => {
+                // A refresh reply clears the in-flight slot and lets the next owed
+                // refresh (if any) go out. Any other response (the one-shot
+                // `registerCapability`, or a late/stray one) carries nothing we act
+                // on, and must not abort a shutdown.
+                handle_refresh_reply(&mut state, &connection, &resp.id, shutting_down);
             }
         }
     }
@@ -1187,17 +1236,66 @@ where
     let _ = conn.sender.send(Message::Notification(notif));
 }
 
-/// Send a server→client request. The only caller is the
-/// `client/registerCapability` at the start of [`run`]; we don't await the
-/// response (the dispatch loop drops it), so the id is a fixed, descriptive
-/// string rather than a counter.
-fn send_request<R>(conn: &Connection, params: R::Params)
+/// If an invalidation owes a `workspace/semanticTokens/refresh`, ask the client
+/// to re-request tokens for its open buffers (an already-open *later* buffer now
+/// resolves differently, but the client only re-requests the buffer it edited).
+///
+/// Sends **at most one refresh at a time** ([`State::pending_refresh_id`]): while
+/// one is outstanding this leaves the owed flag set and sends nothing; the next
+/// refresh goes out when the client replies ([`handle_refresh_reply`]). That
+/// bounds concurrent server→client requests to one and de-duplicates edits queued
+/// before the reply — but it does *not* debounce a typing burst spread over time,
+/// since the client acknowledges the refresh promptly and independently of its
+/// later token re-requests (those re-requests are the client's to debounce; see
+/// [`State::pending_refresh_id`]). When not in flight, the flag is drained whether
+/// or not we send (a client without `refreshSupport` must never accrete a stale
+/// owed-refresh), so `take_wants_refresh()` runs first.
+fn maybe_send_semantic_tokens_refresh(state: &mut State, conn: &Connection) {
+    if state.pending_refresh_id.is_some() {
+        return;
+    }
+    if !state.semantic.take_wants_refresh() || !state.supports_semantic_tokens_refresh() {
+        return;
+    }
+    // A fresh id per refresh — see `server_request_seq`.
+    let id = RequestId::from(format!(
+        "borzoi/semantic-tokens-refresh/{}",
+        state.server_request_seq
+    ));
+    state.server_request_seq += 1;
+    state.pending_refresh_id = Some(id.clone());
+    send_request::<SemanticTokensRefresh>(conn, id, ());
+}
+
+/// Handle a client response. If `resp_id` is the in-flight
+/// `semanticTokens/refresh` ([`State::pending_refresh_id`]), clear the slot and —
+/// unless we're shutting down — let the next owed refresh go out. Any other id
+/// (the one-shot `registerCapability`, or a late/stray reply) is ignored: it
+/// carries nothing we act on, and must not abort an in-progress shutdown.
+fn handle_refresh_reply(
+    state: &mut State,
+    conn: &Connection,
+    resp_id: &RequestId,
+    shutting_down: bool,
+) {
+    if state.pending_refresh_id.as_ref() == Some(resp_id) {
+        state.pending_refresh_id = None;
+        if !shutting_down {
+            maybe_send_semantic_tokens_refresh(state, conn);
+        }
+    }
+}
+
+/// Send a server→client request under a caller-chosen `id`. `registerCapability`
+/// is one-shot and dropped; the refresh keeps its `id` (in
+/// [`State::pending_refresh_id`]) to match the reply and gate the next send.
+fn send_request<R>(conn: &Connection, id: RequestId, params: R::Params)
 where
     R: RequestTrait,
     R::Params: serde::Serialize,
 {
     let request = Request {
-        id: RequestId::from("borzoi/register-watched-files".to_string()),
+        id,
         method: R::METHOD.to_string(),
         params: serde_json::to_value(params).expect("request params serialise"),
     };
@@ -2125,6 +2223,232 @@ mod tests {
         assert!(globs.iter().any(|g| g.contains("fsx")), "{globs:?}");
         assert!(globs.iter().any(|g| g.contains("global.json")), "{globs:?}");
         assert!(globs.iter().any(|g| g.contains("dll")), "{globs:?}");
+    }
+
+    // ---- semantic-tokens refresh ------------------------------------------
+
+    fn caps_with_semantic_tokens_refresh(support: bool) -> ClientCapabilities {
+        ClientCapabilities {
+            workspace: Some(lsp_types::WorkspaceClientCapabilities {
+                semantic_tokens: Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
+                    refresh_support: Some(support),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn semantic_tokens_refresh_capability_gates_on_client_support() {
+        // Absent capability, or explicitly `false`, both read as unsupported.
+        assert!(!State::default().supports_semantic_tokens_refresh());
+        let mut s = State::default();
+        s.set_client_capabilities(caps_with_semantic_tokens_refresh(false));
+        assert!(!s.supports_semantic_tokens_refresh());
+        let mut s = State::default();
+        s.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
+        assert!(s.supports_semantic_tokens_refresh());
+    }
+
+    /// End to end: an edit makes the server send a `workspace/semanticTokens/refresh`
+    /// request, so an already-open later buffer re-requests its tokens; the cold
+    /// warm fold before it sends nothing. Drives real folds through
+    /// `SemanticState`, then the dispatch helper against a memory connection.
+    #[test]
+    fn an_edit_sends_a_semantic_tokens_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        std::fs::write(
+            &proj,
+            "<Project><ItemGroup><Compile Include=\"A.fs\" />\
+             <Compile Include=\"B.fs\" /></ItemGroup></Project>",
+        )
+        .unwrap();
+        std::fs::write(tmp.path().join("A.fs"), "module A\nlet x = 1\n").unwrap();
+        std::fs::write(tmp.path().join("B.fs"), "module B\nlet y = A.x\n").unwrap();
+        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
+
+        // Warm the whole project (a cold fold — flags no refresh).
+        {
+            let State {
+                semantic,
+                workspace,
+                docs,
+                ..
+            } = &mut state;
+            semantic
+                .resolved_project_and_env_for(&proj, workspace, docs)
+                .expect("warm");
+        }
+        maybe_send_semantic_tokens_refresh(&mut state, &server);
+
+        // Export-changing edit to A, then a token request for A itself.
+        state
+            .docs
+            .insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
+        state.semantic.invalidate_project(&proj);
+        {
+            let State {
+                semantic,
+                workspace,
+                docs,
+                ..
+            } = &mut state;
+            semantic
+                .resolved_prefix_and_env_for(&proj, 0, workspace, docs)
+                .expect("fold after edit");
+        }
+        maybe_send_semantic_tokens_refresh(&mut state, &server);
+
+        // Exactly one message reached the client: the refresh request.
+        let msg = client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a message within 5s");
+        match msg {
+            Message::Request(r) => assert_eq!(r.method, SemanticTokensRefresh::METHOD),
+            other => panic!("expected a semanticTokens/refresh request, got {other:?}"),
+        }
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "the warm cold-fold sent nothing; only the edit refreshed"
+        );
+    }
+
+    /// Edits that pile up **while a refresh is already outstanding** coalesce:
+    /// edits 2+ owe a refresh but send nothing until the client replies to the
+    /// first, at which point a single follow-up goes out. This pins the
+    /// concurrency bound (≤1 refresh in flight) for the queued-before-reply
+    /// ordering — the favourable case. The temporally-spread case, where the reply
+    /// lands *between* edits and each edit sends its own refresh, is
+    /// `an_edit_after_a_refresh_reply_sends_another`.
+    #[test]
+    fn refreshes_coalesce_while_one_is_in_flight() {
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
+        let proj = std::path::Path::new("/p/P.fsproj");
+
+        // First edit, nothing in flight: one refresh goes out and is outstanding.
+        state.semantic.invalidate_project(proj);
+        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        let first_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(r) => {
+                assert_eq!(r.method, SemanticTokensRefresh::METHOD);
+                r.id
+            }
+            other => panic!("expected a refresh request, got {other:?}"),
+        };
+        assert_eq!(
+            state.pending_refresh_id.as_ref(),
+            Some(&first_id),
+            "the refresh we sent is the one recorded in flight"
+        );
+
+        // Two more edits while it's outstanding: each owes a refresh, but the
+        // in-flight gate sends nothing — the burst coalesces.
+        for _ in 0..2 {
+            state.semantic.invalidate_project(proj);
+            maybe_send_semantic_tokens_refresh(&mut state, &server);
+        }
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "no second refresh while one is in flight"
+        );
+
+        // The client replies to the first refresh. Driving the real reply path
+        // (`handle_refresh_reply`, exactly what the dispatch loop's
+        // `Message::Response` arm calls) clears the in-flight slot and re-drains,
+        // sending the one coalesced follow-up.
+        handle_refresh_reply(&mut state, &server, &first_id, false);
+        match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(r) => assert_eq!(r.method, SemanticTokensRefresh::METHOD),
+            other => panic!("expected one coalesced follow-up refresh, got {other:?}"),
+        }
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "just one follow-up for the whole burst"
+        );
+    }
+
+    /// The in-flight gate is a concurrency bound, **not** a typing-burst debounce.
+    /// When the client's reply to a refresh lands *between* two edits — the
+    /// realistic ordering, since a client acknowledges the refresh within a round
+    /// trip, well before the next keystroke — each edit sends its own refresh. This
+    /// pins the true guarantee the doc comments claim, so a later "coalesce a burst"
+    /// change can't quietly regress it; `refreshes_coalesce_while_one_is_in_flight`
+    /// only exercises the favourable queued-before-reply ordering.
+    #[test]
+    fn an_edit_after_a_refresh_reply_sends_another() {
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
+        let proj = std::path::Path::new("/p/P.fsproj");
+
+        // Edit 1, nothing in flight: one refresh goes out and is outstanding.
+        state.semantic.invalidate_project(proj);
+        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        let first_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(r) => {
+                assert_eq!(r.method, SemanticTokensRefresh::METHOD);
+                r.id
+            }
+            other => panic!("expected a refresh request, got {other:?}"),
+        };
+
+        // The client acknowledges the refresh *before* the next edit — the ordering
+        // the finding is about. Nothing is owed at the reply, so it sends nothing
+        // and clears the slot.
+        handle_refresh_reply(&mut state, &server, &first_id, false);
+        assert!(
+            state.pending_refresh_id.is_none(),
+            "the reply cleared the in-flight slot"
+        );
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "an ack with nothing owed sends no refresh"
+        );
+
+        // Edit 2, now that the slot is clear: a *second*, distinct refresh. The gate
+        // did not coalesce across the reply boundary — one refresh per edit.
+        state.semantic.invalidate_project(proj);
+        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        let second_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(r) => {
+                assert_eq!(r.method, SemanticTokensRefresh::METHOD);
+                r.id
+            }
+            other => panic!("expected a second refresh request, got {other:?}"),
+        };
+        assert_ne!(
+            first_id, second_id,
+            "each edit's refresh carries a fresh id"
+        );
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "exactly one refresh per temporally-separated edit"
+        );
     }
 
     // ---- deferred SourceLink fetch pool ------------------------------------

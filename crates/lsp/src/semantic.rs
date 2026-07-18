@@ -281,6 +281,19 @@ pub struct SemanticState {
     /// both builds (the `otel` labelled fold returns the same reuse vector), so a
     /// test's assertion holds regardless of feature flags.
     last_fold_reused_files: usize,
+    /// A `workspace/semanticTokens/refresh` is owed to the client: an invalidation
+    /// (a text-sync edit, or a watched structural / referenced-assembly change)
+    /// may have staled an already-open buffer's tokens, but the client only
+    /// re-requests the buffer it touched. Set by **every invalidator** — at the
+    /// invalidation, not at a later fold, so an invalidation with no following
+    /// fold (a `didClose` restoring disk text, a watched-file change, a project
+    /// that now evaluates partially) still refreshes. Drained by
+    /// [`Self::take_wants_refresh`] in the dispatch loop after each request *and*
+    /// notification (it owns the connection and checks `refreshSupport`). A plain
+    /// bool: the refresh is workspace-wide and idempotent, so coalescing several
+    /// invalidations into one refresh is correct — and it can't loop, since the
+    /// refresh's own re-requests are ordinary requests, not invalidations.
+    wants_refresh: bool,
     /// The portable-PDB *metadata image* (embedded, or a validated sidecar) for
     /// each referenced DLL go-to-definition has navigated into, keyed by DLL
     /// path. `None` caches the negative result (a DLL with no usable PDB) so a
@@ -341,6 +354,15 @@ impl SemanticState {
         self.last_fold_reused_files
     }
 
+    /// Take (and clear) the pending `workspace/semanticTokens/refresh` flag — a
+    /// fold since the last check found an edit that changed cross-file state, so
+    /// the client should re-request tokens for its open buffers. Called by the
+    /// dispatch loop after each request; the caller still gates on the client
+    /// advertising `refreshSupport`.
+    pub fn take_wants_refresh(&mut self) -> bool {
+        std::mem::take(&mut self.wants_refresh)
+    }
+
     /// Install the on-disk assembly-projection cache (the server's opt-in, from
     /// [`AssemblyCache::from_env`]). Left [`AssemblyCache::disabled`] by
     /// [`Self::new`], so only the real server touches disk.
@@ -370,6 +392,9 @@ impl SemanticState {
         let key = canonicalise(project);
         self.project_parses.remove(&key);
         self.resolved_projects.remove(&key);
+        // This edit may have staled an open later buffer's tokens; the client
+        // only re-requests the buffer it touched, so owe a workspace refresh.
+        self.wants_refresh = true;
     }
 
     /// Drop **all** semantic caches — parses, resolved projects, *and* assembly
@@ -385,6 +410,9 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        // A structural change can stale open buffers' tokens; owe a workspace
+        // refresh (the next drain sends it, even with no following fold).
+        self.wants_refresh = true;
     }
 
     /// Drop every cache derived from **referenced-assembly bytes** — the
@@ -404,6 +432,9 @@ impl SemanticState {
         self.prev_resolved.clear();
         self.assembly_envs.clear();
         self.pdb_images.clear();
+        // A referenced-assembly change can stale open buffers' cross-assembly
+        // tokens; owe a workspace refresh (sent on the next drain).
+        self.wants_refresh = true;
     }
 
     /// The portable-PDB image for the referenced DLL at `dll`, cached for the
@@ -454,6 +485,9 @@ impl SemanticState {
             self.project_parses.remove(&key);
             self.resolved_projects.remove(&key);
         }
+        // This edit may have staled an open later buffer's tokens; the client
+        // only re-requests the buffer it touched, so owe a workspace refresh.
+        self.wants_refresh = true;
     }
 
     /// The flattened `AssemblyEnv` for the project at `project` — a name
@@ -821,27 +855,22 @@ impl SemanticState {
                             .iter()
                             .map(|p| p.display().to_string())
                             .collect();
-                        let (resolved, reused) = borzoi_sema::resolve_project_incremental_labeled(
+                        borzoi_sema::resolve_project_incremental_labeled(
                             &prev.files,
                             prev.resolved.as_ref(),
                             files,
                             &labels,
                             &env,
-                        );
-                        (resolved, reused.iter().filter(|&&r| r).count())
+                        )
                     };
                     #[cfg(not(feature = "otel"))]
-                    let (resolved, reused) = {
-                        let (resolved, reused) =
-                            borzoi_sema::resolve_project_incremental_with_reuse(
-                                &prev.files,
-                                prev.resolved.as_ref(),
-                                files,
-                                &env,
-                            );
-                        (resolved, reused.iter().filter(|&&r| r).count())
-                    };
-                    (Arc::new(resolved), reused)
+                    let (resolved, reused) = borzoi_sema::resolve_project_incremental_with_reuse(
+                        &prev.files,
+                        prev.resolved.as_ref(),
+                        files,
+                        &env,
+                    );
+                    (Arc::new(resolved), reused.iter().filter(|&&r| r).count())
                 }
                 // Cold fold. Under `otel`, use the path-labelled variant so each
                 // `resolve_file` span is attributable to its Compile item; the
@@ -4744,6 +4773,174 @@ mod tests {
             .resolved_project_for(&proj, &mut cold_ws, &docs)
             .expect("cold");
         assert_eq!(*full2, *cold);
+    }
+
+    // ---- semantic-tokens refresh signal ----
+
+    /// An edit flags a refresh (an already-open later buffer must re-request
+    /// tokens) — but only **once** per edit: the refresh's own re-requests fold
+    /// incrementally again, and must not flag another refresh (the loop guard).
+    #[test]
+    fn edit_flags_a_refresh_once_and_re_requests_do_not_loop() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs", "C.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
+        write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
+        write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
+        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let mut docs: HashMap<Url, String> = HashMap::new();
+
+        // Warm the whole project (as an open editor would): a cold fold, no refresh.
+        sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
+            .expect("warm");
+        assert!(!sema.take_wants_refresh(), "a cold fold flags no refresh");
+
+        // Edit A, then a token request for A itself (an incremental fold).
+        docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
+        sema.invalidate_project(&proj);
+        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
+            .expect("prefix A after edit");
+        assert!(sema.take_wants_refresh(), "the edit flags a refresh");
+        assert!(!sema.take_wants_refresh(), "take clears the flag");
+
+        // The refresh makes the client re-request the later buffer B; that
+        // incremental fold must NOT flag another refresh.
+        sema.resolved_prefix_and_env_for(&proj, 1, &mut ws, &docs)
+            .expect("prefix B after refresh");
+        assert!(
+            !sema.take_wants_refresh(),
+            "one refresh per edit — the re-requests must not loop"
+        );
+    }
+
+    /// The refresh is *conservative*: even a body-only edit (which can't change a
+    /// later buffer's tokens) flags a refresh, because deciding precisely would
+    /// mean re-deriving the whole downstream projection. The cost is bounded — the
+    /// client diffs the re-requested tokens and re-renders only what changed.
+    #[test]
+    fn any_edit_flags_a_refresh_conservatively() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs", "C.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
+        write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
+        write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
+        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let mut docs: HashMap<Url, String> = HashMap::new();
+        sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
+            .expect("warm");
+        assert!(
+            !sema.take_wants_refresh(),
+            "the cold warm fold flags nothing"
+        );
+
+        // Body-only edit to A: `1` -> `(1)`. Still flags a refresh (conservative).
+        docs.insert(a_uri, "module A\nlet x = (1)\n".to_string());
+        sema.invalidate_project(&proj);
+        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
+            .expect("prefix A after body edit");
+        assert!(
+            sema.take_wants_refresh(),
+            "any incremental fold (any edit) conservatively flags a refresh"
+        );
+    }
+
+    /// The refresh tracks *invalidation*, not fold reuse: extending a cached
+    /// prefix to a deeper file (a hover / definition after the token request) is
+    /// an incremental fold with **no** intervening edit, and must not refresh.
+    #[test]
+    fn extending_a_prefix_without_an_edit_flags_no_refresh() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs", "C.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
+        write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
+        write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let docs = HashMap::new();
+
+        // Token request for the first file: a short prefix, cold, no refresh.
+        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
+            .expect("prefix A");
+        assert!(!sema.take_wants_refresh());
+
+        // Now a deeper request (hover in C) *extends* the prefix — an incremental
+        // fold — but nothing was edited, so no refresh is owed.
+        sema.resolved_prefix_and_env_for(&proj, 2, &mut ws, &docs)
+            .expect("extend to C");
+        assert!(
+            !sema.take_wants_refresh(),
+            "extending a prefix without an edit must not refresh"
+        );
+    }
+
+    /// The refresh survives a **cold** fold: after a structural invalidation
+    /// clears the incremental base, a text edit folds cold — yet an open later
+    /// buffer is still stale and must be refreshed. (`took_incremental` would miss
+    /// this; the invalidation-set dirty flag doesn't.)
+    #[test]
+    fn edit_after_structural_invalidation_still_refreshes() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        write(&proj, &fsproj(&["A.fs", "B.fs", "C.fs"]));
+        write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
+        write(&tmp.path().join("B.fs"), "module B\nlet y = A.x\n");
+        write(&tmp.path().join("C.fs"), "module C\nlet z = B.y\n");
+        let a_uri = Url::from_file_path(tmp.path().join("A.fs")).unwrap();
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let mut docs: HashMap<Url, String> = HashMap::new();
+        sema.resolved_project_and_env_for(&proj, &mut ws, &docs)
+            .expect("warm");
+        assert!(!sema.take_wants_refresh());
+
+        // A structural change clears the incremental base, then a text edit.
+        sema.invalidate_all();
+        docs.insert(a_uri, "module A\nlet x = 1\nlet extra = 2\n".to_string());
+        sema.invalidate_project(&proj);
+        // This fold is cold (no prev base), but the edit still owes a refresh.
+        sema.resolved_prefix_and_env_for(&proj, 0, &mut ws, &docs)
+            .expect("cold fold after structural invalidation + edit");
+        assert!(
+            sema.take_wants_refresh(),
+            "a cold fold after an edit must still refresh open later buffers"
+        );
+    }
+
+    /// An invalidation that is *never* followed by a fold still owes a refresh —
+    /// a `didClose` restoring disk text, or a watched-file change, only touches
+    /// the caches, but an open later buffer's tokens can still go stale. The flag
+    /// is set at the invalidation, not deferred to a (possibly-absent) fold.
+    #[test]
+    fn invalidation_without_a_fold_still_owes_a_refresh() {
+        let mut sema = SemanticState::new();
+        assert!(!sema.take_wants_refresh(), "nothing owed initially");
+
+        // No fold anywhere — just the invalidation the notification path performs.
+        sema.invalidate_file(Path::new("/some/project/A.fs"));
+        assert!(
+            sema.take_wants_refresh(),
+            "a fold-less invalidation still owes a refresh"
+        );
+
+        // A structural / referenced-assembly change likewise.
+        sema.invalidate_all();
+        assert!(sema.take_wants_refresh(), "invalidate_all owes a refresh");
+        sema.invalidate_assembly_state();
+        assert!(
+            sema.take_wants_refresh(),
+            "invalidate_assembly_state owes a refresh"
+        );
     }
 
     #[test]
