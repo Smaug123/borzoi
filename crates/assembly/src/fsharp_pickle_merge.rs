@@ -1554,8 +1554,11 @@ fn decode_abbreviation_target(
                 Box::new(range),
             )))
         }
-        // A reference (`a * b`) or struct (`struct (a * b)`) tuple.
-        PickledType::Tuple { kind, elems } => {
+        // A reference (`a * b`) or struct (`struct (a * b)`) tuple. An F# tuple
+        // has at least two elements; the lower-level decoder accepts any array
+        // length, so a crafted/corrupt pickle could carry a 0- or 1-element tuple
+        // tag — decline it rather than commit a valid-looking degenerate target.
+        PickledType::Tuple { kind, elems } if elems.len() >= 2 => {
             match decode_targets(pickled, entity, elems, local_fqns)? {
                 Some(elems) => Ok(Some(AbbreviationTarget::Tuple {
                     struct_kind: *kind == TupleKind::Struct,
@@ -1564,8 +1567,9 @@ fn decode_abbreviation_target(
                 None => Ok(None),
             }
         }
-        // Measure and union-case targets stay unmodelled — a fail-closed decline.
-        PickledType::Measure(_) | PickledType::UCase { .. } => Ok(None),
+        // Measure and union-case targets stay unmodelled — a fail-closed decline;
+        // so does a degenerate (<2-element) tuple.
+        PickledType::Measure(_) | PickledType::UCase { .. } | PickledType::Tuple { .. } => Ok(None),
     }
 }
 
@@ -2464,6 +2468,10 @@ mod tests {
             typar_index: 5,
             nullness: AMB,
         };
+        let good = || PickledType::AppSimple {
+            simpletyp_index: 0,
+            nullness: AMB,
+        };
 
         let declined = [
             PickledType::Measure(Measure::One),
@@ -2481,10 +2489,20 @@ mod tests {
                 args: vec![unmodellable.clone()],
                 nullness: AMB,
             },
-            // Likewise a tuple with an undecodable element.
+            // A well-formed-arity tuple with an undecodable element declines too.
             PickledType::Tuple {
                 kind: TupleKind::Reference,
-                elems: vec![unmodellable],
+                elems: vec![good(), unmodellable],
+            },
+            // Degenerate tuple arities (a crafted/corrupt pickle) decline on arity
+            // even when every element decodes: an F# tuple has at least two.
+            PickledType::Tuple {
+                kind: TupleKind::Reference,
+                elems: vec![],
+            },
+            PickledType::Tuple {
+                kind: TupleKind::Struct,
+                elems: vec![good()],
             },
         ];
         for ty in declined {
