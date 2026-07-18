@@ -38,9 +38,17 @@ impl<'a> Resolver<'a> {
 
         // Decline a path F# resolves within the project (see
         // [`Self::path_is_project_shadowed`]), searched before referenced
-        // assemblies.
+        // assemblies. A path shadowed *only* by the current module's own name is
+        // a self-qualifier FCS does not bind into the current module (`M.x` inside
+        // `M` is FS0039), so an `open` / implicit `[<AutoOpen>]` may still supply
+        // it (`List.fold` inside `module List` → `Microsoft.FSharp.Collections`):
+        // it defers at the *root* but must not preempt the opens tier.
         if self.path_is_project_shadowed(&names) {
-            return AssemblyPath::ProjectShadowed;
+            return if self.self_module_shadow_only(&names) {
+                AssemblyPath::SelfModuleShadowed
+            } else {
+                AssemblyPath::ProjectShadowed
+            };
         }
 
         // Longest prefix whose `(namespace, name)` is a public top-level type
@@ -327,8 +335,14 @@ impl<'a> Resolver<'a> {
                 // as-written-root check above skips it (it is not
                 // `ProjectShadowed`), so a higher-priority `open` resolving the
                 // path is tried first and wins; the abbreviation defers only if
-                // it is the highest reading left (codex review 4).
-                AssemblyPath::ProjectShadowed | AssemblyPath::AbbreviationOpaque => {
+                // it is the highest reading left (codex review 4). A
+                // self-module-shadowed root reading is likewise skipped by the
+                // preemptive check and defers here — after every open has
+                // declined — so the current module's own name still shadows the
+                // same-named *root* namespace's assembly reading.
+                AssemblyPath::ProjectShadowed
+                | AssemblyPath::SelfModuleShadowed
+                | AssemblyPath::AbbreviationOpaque => {
                     return TieredResolution::ShadowDeferred;
                 }
                 AssemblyPath::NoMatch => {

@@ -410,6 +410,37 @@ impl ProjectItems {
         self.nested_module_paths.contains(names)
     }
 
+    /// Whether an earlier file binds **any resolvable entity along `path`** — a
+    /// project value, module, type, or type-qualified case that FCS would resolve
+    /// the reference into. The complete "does the project own this path" test the
+    /// self-qualifier relaxation reads: a self reference through a module the
+    /// project also supplies must NOT commit a referenced-assembly reading
+    /// ([`Resolver::self_module_shadow_only`](super::state::Resolver::self_module_shadow_only)).
+    ///
+    /// The per-member merge (`docs`/[`Self::module_headers`]) fixes the prefix
+    /// semantics: an **exact** match of any kind owns the path, and a value/type at
+    /// a *proper* prefix is genuine member/static access on it — but a *module* at
+    /// a proper prefix does **not** own the path (the module merges with the
+    /// assembly namespace, so `List.rev` beside a project `N.List.fold2` still
+    /// reaches FSharp.Core). Ungated by accessibility on purpose: this only ever
+    /// *withholds* the relaxation (a conservative deferral, never a wrong commit),
+    /// so an inaccessible earlier binding is safe to honour.
+    pub(super) fn binds_along_path(&self, path: &[String]) -> bool {
+        let value_at = |p: &[String]| {
+            self.value_exports
+                .get(p)
+                .is_some_and(|h| h.iter().any(|r| !r.pattern_only))
+        };
+        let exact = value_at(path)
+            || self.module_headers.contains(path)
+            || self.nested_module_paths.contains(path)
+            || self.type_paths.contains_key(path)
+            || self.type_qualified_cases.contains_key(path);
+        exact
+            || (1..path.len())
+                .any(|k| value_at(&path[..k]) || self.type_paths.contains_key(&path[..k]))
+    }
+
     /// Whether an earlier file defines a **real** nested `module X = …` at exactly
     /// `names` (see [`Self::real_nested_modules`] — unlike
     /// [`Self::is_exact_nested_module`]'s shadow set, a type/exception/alias/

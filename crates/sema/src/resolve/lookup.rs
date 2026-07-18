@@ -2225,9 +2225,11 @@ impl<'a> Resolver<'a> {
                             self.assembly_prefixes_by_priority().any(|prefix| {
                                 match self.assembly_path_records(prefix, segments) {
                                     AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    // A higher abbreviation-defer reading is
-                                    // uncertain, so the root binding is unsafe.
+                                    // A higher abbreviation-defer / self-module
+                                    // reading is uncertain, so the root binding is
+                                    // unsafe.
                                     AssemblyPath::ProjectShadowed
+                                    | AssemblyPath::SelfModuleShadowed
                                     | AssemblyPath::AbbreviationOpaque => true,
                                     AssemblyPath::NoMatch => false,
                                 }
@@ -2238,7 +2240,12 @@ impl<'a> Resolver<'a> {
                             Some(root_recs)
                         }
                     }
+                    // A self-module-shadowed root defers here too: an unmodelled
+                    // open in scope could supply the current module's own name
+                    // (which FCS does not bind as a self-qualifier), so — unlike the
+                    // opens-modelled `else` arm — we cannot safely resolve it.
                     AssemblyPath::ProjectShadowed
+                    | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
                     | AssemblyPath::NoMatch => None,
                 }
@@ -2335,6 +2342,170 @@ impl<'a> Resolver<'a> {
             || self.preceding.is_project_value_prefixed(names)
     }
 
+    /// Whether `names` is rooted at the **current module's own path** — the head
+    /// (and any leading segments) is the module the resolver is presently walking,
+    /// written in full (`module_path`-qualified, e.g. `Demo.Calc` inside a
+    /// headerless-file `module Demo`). Kept for the full-path shadow in
+    /// [`Self::path_is_project_type_shadowed`]; the *namespace-relative* self
+    /// reference (`List.fold` inside `namespace N` / `module List`) is
+    /// [`Self::path_rooted_at_self_or_ancestor_module`].
+    pub(super) fn rooted_at_current_module(&self, names: &[String]) -> bool {
+        self.module_path.as_ref().is_some_and(|mp| {
+            !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp.as_slice())
+        })
+    }
+
+    /// If `names` is an enclosing-module **self-qualifier**, the full
+    /// namespace-qualified path of the member it names; else `None`.
+    ///
+    /// FCS does not bind a module's own name from within its body — `M.x` inside
+    /// `M`, `Outer.v` inside `Outer.Inner`, and `Outer.Inner.y` inside `Outer` are
+    /// all FS0039 — so the head, when it is the **simple name** of the current
+    /// module or an enclosing one, resolves nowhere *in the project* and the path
+    /// falls through to whatever an `open` / implicit `[<AutoOpen>]` supplies
+    /// (`Microsoft.FSharp.Collections.List` for bare `List`). The enclosing
+    /// modules are the segments of the module chain
+    /// `container_path[namespace_depth..]`, so the head is a self-qualifier iff it
+    /// equals one of them — a *suffix* test, which (unlike a prefix of the chain)
+    /// also catches a module nested under another module (`List.fold` inside
+    /// `module N` / `module List`, where the chain is `[N, List]`).
+    ///
+    /// The returned path re-roots the reference at that module's **full** path
+    /// (`container_path[..=j]`, the nearest enclosing module of the name) so the
+    /// cross-file index — keyed by full paths — can be probed in the right frame
+    /// regardless of nesting depth ([`Self::self_module_shadow_only`]).
+    fn self_qualified_member_path(&self, names: &[String]) -> Option<Vec<String>> {
+        let head = names.first()?;
+        let depth = self.namespace_depth.min(self.container_path.len());
+        let j = (depth..self.container_path.len())
+            .rev()
+            .find(|&j| &self.container_path[j] == head)?;
+        let mut full = self.container_path[..=j].to_vec();
+        full.extend_from_slice(&names[1..]);
+        Some(full)
+    }
+
+    /// Whether a **same-name non-self module/type** the head binds ahead of self
+    /// is in scope. FCS resolves a self-qualified head to the *nearest non-self*
+    /// entity of that name, searching outward, so the relaxation must decline when
+    /// one exists:
+    /// - a **child** module/type in the *current* container — `module List` (or
+    ///   `type List`) inside `module List` captures `List.rev`
+    ///   (`N.List.List.rev`), never FSharp.Core; and
+    /// - a same-name **module** in an *enclosing* container — an outward
+    ///   `module List` a self reference falls out to (`module Root` with both
+    ///   `module List` and `module Outer.List`, where `List.rev` inside the inner
+    ///   one binds `Root.List.rev`).
+    ///
+    /// A module's own name lives in its *parent's* container, never its own, so
+    /// the current-container check finds only genuine descendants, and the
+    /// enclosing check stops **below the parent** (`< len-1`) so it never matches
+    /// self. The enclosing arm is deliberately restricted to **modules**, not
+    /// types: a same-name enclosing *type* is the `type List` / `module List`
+    /// companion pattern, which FCS resolves per member (`List.length` there is
+    /// FSharp.Core's), so blanket-deferring it would regress a real pattern —
+    /// whereas a same-name enclosing *module* only arises in the pathological
+    /// nested-`module List` shape, where the (sound) over-deferral is never paid by
+    /// real code. Cross-file same-name modules/types need no separate check here:
+    /// they are keyed by full path in `preceding` and caught by
+    /// [`ProjectItems::binds_along_path`](super::model::ProjectItems::binds_along_path)
+    /// at the reconstructed path.
+    fn same_name_entity_shadows_head(&self, head: &str) -> bool {
+        let in_current = self
+            .module_like_names
+            .get(&self.container_path)
+            .is_some_and(|names| names.contains(head))
+            || self
+                .type_defs
+                .get(&self.container_path)
+                .is_some_and(|types| types.contains_key(head));
+        // A same-name MODULE declared in an enclosing container — a genuine
+        // *cousin*, same-file (`module_like_names`) or an earlier file
+        // (`preceding` module headers / nested paths). A level `k` whose own chain
+        // segment *is* the head (`container_path[k] == head`) is skipped: the
+        // module it finds is the self/ancestor named `head` (at
+        // `container_path[..=k]`, part of the current chain), not a cousin — an
+        // ancestor self-qualifier (`List.rev` inside `module List` / `module
+        // Helpers`) must still fall through to FSharp.Core.
+        let depth = self.namespace_depth.min(self.container_path.len());
+        let enclosing_module = (depth..self.container_path.len().saturating_sub(1))
+            .filter(|&k| self.container_path[k] != head)
+            .any(|k| {
+                let prefix = &self.container_path[..k];
+                self.module_like_names
+                    .get(prefix)
+                    .is_some_and(|names| names.contains(head))
+                    || {
+                        let mut full = prefix.to_vec();
+                        full.push(head.to_string());
+                        self.preceding.is_exact_project_module(&full)
+                            || self.preceding.is_exact_nested_module(&full)
+                    }
+            });
+        in_current || enclosing_module
+    }
+
+    /// Whether `names` is project-shadowed **only** because it is an
+    /// enclosing-module self-qualifier ([`Self::self_qualified_member_path`], or a
+    /// fully-qualified [`Self::rooted_at_current_module`] reference) with **no
+    /// reachable project binding** at the path — the one project shadow an `open`
+    /// can still redirect (see
+    /// [`AssemblyPath::SelfModuleShadowed`](super::state::AssemblyPath::SelfModuleShadowed)).
+    ///
+    /// A module can be **split across files**: FCS merges `module N.List` over a
+    /// namespace's files, and an *earlier* fragment's member is reachable through
+    /// the module name — `List.fold2` inside a later `N.List` fragment binds the
+    /// project's `N.List.fold2`, not FSharp.Core's `List.fold2` (fcs-dump: a
+    /// project member resolves to the project, a name only FSharp.Core defines
+    /// falls through to it — the merge is *per member*). So a self-qualifier is
+    /// redirectable only when the project binds nothing the head could reach:
+    /// - the **merged module** does not supply the tail
+    ///   ([`ProjectItems::binds_along_path`](super::model::ProjectItems::binds_along_path)
+    ///   at the reconstructed self path, or the raw fully-qualified spelling) —
+    ///   covering cross-file values, modules, and types (`Operators.Checked` binds
+    ///   a project `type Checked` over FSharp.Core's nested `Checked` module); and
+    /// - no **same-name child** module/type captures the head
+    ///   ([`Self::same_name_entity_shadows_head`] same-file, or a cross-file child
+    ///   under `container_path ++ names`).
+    ///
+    /// Otherwise it stays a plain
+    /// [`ProjectShadowed`](super::state::AssemblyPath::ProjectShadowed) — a
+    /// conservative deferral, never a wrong FSharp.Core commit.
+    pub(super) fn self_module_shadow_only(&self, names: &[String]) -> bool {
+        // In a `module rec` / `namespace rec`, FCS *does* put the module's own name
+        // in scope, so a self-qualified `List.rev` binds the project's own
+        // `N.List.rev` (fcs-dump), not FSharp.Core. The whole "self is FS0039"
+        // premise is void here, so never relax — keep the conservative deferral.
+        if self.recursive_module_active {
+            return false;
+        }
+        let reconstructed = self.self_qualified_member_path(names);
+        if reconstructed.is_none() && !self.rooted_at_current_module(names) {
+            return false;
+        }
+        // The merged current module (cross-file) supplies the tail, at the
+        // reconstructed self path or the raw already-qualified spelling.
+        if reconstructed
+            .as_deref()
+            .is_some_and(|p| self.preceding.binds_along_path(p))
+            || self.preceding.binds_along_path(names)
+        {
+            return false;
+        }
+        // A same-name child module/type binds the head ahead of self — same-file in
+        // the current container, or a cross-file child under `container_path ++ names`.
+        if let Some(head) = names.first() {
+            let child_path: Vec<String> =
+                self.container_path.iter().chain(names).cloned().collect();
+            if self.same_name_entity_shadows_head(head)
+                || self.preceding.binds_along_path(&child_path)
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// The *type-namespace* subset of [`Self::path_is_project_shadowed`]: whether
     /// `names` is a path F# resolves to a project **type** (a `type`/nested
     /// module rooting a type, not a *value* nor a bare top-level *module*) ahead
@@ -2344,12 +2515,7 @@ impl<'a> Resolver<'a> {
     /// even when an earlier `module Demo` has a `let Calc`), and neither does a
     /// bare top-level *module* of the same name (a module is not a type).
     pub(super) fn path_is_project_type_shadowed(&self, names: &[String]) -> bool {
-        let n = names.len();
-        let rooted_at_current_module = self
-            .module_path
-            .as_ref()
-            .is_some_and(|mp| !mp.is_empty() && mp.len() <= n && names.starts_with(mp.as_slice()));
-        rooted_at_current_module
+        self.rooted_at_current_module(names)
             || self
                 .nested_module_locals
                 .iter()
