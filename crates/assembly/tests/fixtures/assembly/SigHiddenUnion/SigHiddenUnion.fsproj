@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches the other assembly fixtures, keeping the test
+         runner on a single runtime pack. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SigHiddenUnion</AssemblyName>
+    <RootNamespace>SigHiddenUnion</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The signature file precedes the implementation: it hides the union's
+         representation from cross-assembly consumers, so the signature pickle
+         carries `NoRepr` even though the implementation is a union. -->
+    <Compile Include="Teq.fsi" />
+    <Compile Include="Teq.fs" />
+  </ItemGroup>
+
+</Project>
