@@ -308,6 +308,13 @@ asserting a hidden `Shared.bar` resolves to the *assembly*, not `Deferred` and
 not the impl — the exact behaviour the earlier draft got backwards; an LSP e2e
 that a `module M`-headed `.fsi` project folds where it returned `None`; the
 ignored `resolve_corpus_diff` / `resolve_project_diff` gates stay green.
+Plus (added with the screen correction) an **exhaustive per-reference matrix
+differential** (`signature_matrix_agrees_with_fcs_per_reference`): header
+shape × signature exposure × use style × assembly collision, each written
+probe reference checked at its *site* against FCS — resolved-in-project must
+match exactly, resolved-to-assembly must not bind a project binder, unbound
+must defer — so a screen hole at any commit surface (the codex round-1
+class) is caught mechanically rather than fixture-by-fixture.
 
 ### Stage 2: the signature exports its surviving surface (signature identity)
 

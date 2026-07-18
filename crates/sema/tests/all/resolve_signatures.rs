@@ -899,6 +899,264 @@ fn signature_pairing_agrees_with_fcs() {
     }
 }
 
+/// The exhaustive Stage-1 matrix, per-reference against FCS: every
+/// combination of header shape × signature exposure × use style × assembly
+/// collision, checked at the two probe references (`shown`, `hidden`) with a
+/// **site-keyed** oracle. Unlike the fixture harness above (which iterates
+/// the uses *FCS resolved*), this reads FCS's answer at each written
+/// reference site, so a wrong commit where FCS is *unbound* (FS0039 — the
+/// hidden-member case) is caught too — the straddle gen-diff's oracle
+/// discipline. The codex round-1 holes (screen applied at some but not all
+/// commit surfaces) are exactly the class this sweep pins mechanically.
+///
+/// Verdict per reference:
+/// - FCS resolved **in-project** → we match the decl exactly, or defer;
+/// - FCS resolved **to the assembly** → we commit the assembly or defer —
+///   never a project binder;
+/// - FCS **unbound** → we defer.
+///
+/// Tally floors keep the sweep non-vacuous in all three verdict families.
+#[test]
+fn signature_matrix_agrees_with_fcs_per_reference() {
+    #[derive(Clone, Copy, Debug)]
+    enum Header {
+        Module,
+        Namespace,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Sig {
+        None,
+        ShownOnly,
+        Both,
+    }
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum UseStyle {
+        Qualified,
+        OpenBare,
+    }
+
+    let reflib = ensure_reflib_built();
+    let reflib_environment = reflib_env();
+    let empty_environment = AssemblyEnv::default();
+
+    let mut item_agreements = 0usize;
+    let mut assembly_agreements = 0usize;
+    let mut deferrals = 0usize;
+
+    for collision in [false, true] {
+        for header in [Header::Module, Header::Namespace] {
+            for sig in [Sig::None, Sig::ShownOnly, Sig::Both] {
+                for style in [UseStyle::Qualified, UseStyle::OpenBare] {
+                    // The module's qualified path: the RefLib-colliding
+                    // `ProbeNs.Shared` when sweeping the merge, a neutral
+                    // `Pn.Md` otherwise.
+                    let (ns, md) = if collision {
+                        ("ProbeNs", "Shared")
+                    } else {
+                        ("Pn", "Md")
+                    };
+                    let dotted = format!("{ns}.{md}");
+
+                    let sig_src = match header {
+                        Header::Module => {
+                            let mut s = format!("module {dotted}\n\nval shown: int\n");
+                            if sig == Sig::Both {
+                                s.push_str("val hidden: int\n");
+                            }
+                            s
+                        }
+                        Header::Namespace => {
+                            let mut s =
+                                format!("namespace {ns}\n\nmodule {md} =\n    val shown: int\n");
+                            if sig == Sig::Both {
+                                s.push_str("    val hidden: int\n");
+                            }
+                            s
+                        }
+                    };
+                    let impl_src = match header {
+                        Header::Module => {
+                            format!("module {dotted}\n\nlet shown = 1\nlet hidden = 2\n")
+                        }
+                        Header::Namespace => format!(
+                            "namespace {ns}\n\nmodule {md} =\n    let shown = 1\n    let hidden = 2\n"
+                        ),
+                    };
+                    // Collision cells also probe `asmOnly` — a name only the
+                    // assembly provides, so FCS's verdict there is the
+                    // merged-assembly member (the fall-through family).
+                    let probe_names: &[&str] = if collision {
+                        &["shown", "hidden", "asmOnly"]
+                    } else {
+                        &["shown", "hidden"]
+                    };
+                    let use_src = match style {
+                        UseStyle::Qualified => {
+                            let mut s = "module Use\n\n".to_string();
+                            for (i, name) in probe_names.iter().enumerate() {
+                                s.push_str(&format!("let u{i} = {dotted}.{name}\n"));
+                            }
+                            s
+                        }
+                        UseStyle::OpenBare => {
+                            let mut s = format!("module Use\n\nopen {dotted}\n\n");
+                            for (i, name) in probe_names.iter().enumerate() {
+                                s.push_str(&format!("let u{i} = {name}\n"));
+                            }
+                            s
+                        }
+                    };
+
+                    let mut rows: Vec<(String, String)> = Vec::new();
+                    if sig != Sig::None {
+                        rows.push((format!("{md}.fsi"), sig_src));
+                    }
+                    rows.push((format!("{md}.fs"), impl_src));
+                    rows.push(("Use.fs".to_string(), use_src));
+                    let row_refs: Vec<(&str, &str)> = rows
+                        .iter()
+                        .map(|(rel, src)| (rel.as_str(), src.as_str()))
+                        .collect();
+
+                    let label = format!(
+                        "sigmatrix_{header:?}_{sig:?}_{style:?}_{}",
+                        if collision { "reflib" } else { "plain" }
+                    )
+                    .to_lowercase();
+                    let (root, written) = temp_fs_tree(&label, &row_refs);
+                    let paths: Vec<&Path> =
+                        written.iter().map(|(path, _)| path.as_path()).collect();
+                    let refs: Vec<&Path> = if collision { vec![reflib] } else { vec![] };
+
+                    let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
+                    let fcs_files = parse_fcs_uses_project(&json, &written);
+
+                    let srcs: Vec<SourceFile> = row_refs
+                        .iter()
+                        .zip(&written)
+                        .map(|((rel, src), _)| source_file(rel, src))
+                        .collect();
+                    let full_paths: Vec<PathBuf> =
+                        written.iter().map(|(path, _)| path.clone()).collect();
+                    let qnofs = qualified_names(&srcs, &full_paths);
+                    let input: Vec<ProjectFile> = srcs
+                        .into_iter()
+                        .zip(qnofs)
+                        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                        .collect();
+                    let env = if collision {
+                        &reflib_environment
+                    } else {
+                        &empty_environment
+                    };
+                    let proj = resolve_project_files(&input, env);
+
+                    let _ = std::fs::remove_dir_all(&root);
+
+                    // The Use.fs slot is always last.
+                    let use_idx = written.len() - 1;
+                    let (use_path, use_source) = &written[use_idx];
+                    let fcs_use_file = fcs_files
+                        .iter()
+                        .find(|f| f.path.file_name() == use_path.file_name());
+
+                    for &name in probe_names {
+                        // The written reference site: the whole dotted path
+                        // (qualified) or the bare name (open) — both are the
+                        // span FCS reports and the span we record.
+                        let needle = match style {
+                            UseStyle::Qualified => format!("{dotted}.{name}"),
+                            UseStyle::OpenBare => name.to_string(),
+                        };
+                        let start = use_source.find(&needle).expect("probe site present");
+                        let site = span(start, start + needle.len());
+
+                        let fcs_at_site = fcs_use_file.and_then(|f| {
+                            f.uses.iter().find(|u| {
+                                u.start == usize::from(site.start())
+                                    && u.end == usize::from(site.end())
+                            })
+                        });
+                        let ours = proj.file(use_idx).resolution_at(site);
+
+                        let what = format!("{label}: {needle}");
+                        match fcs_at_site {
+                            Some(u) if u.decl.is_some() => {
+                                let decl = u.decl.as_ref().expect("checked");
+                                match ours {
+                                    None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                                    Some(res @ (Resolution::Item(_) | Resolution::Local(_))) => {
+                                        let (def_idx, def_range) = match res {
+                                            Resolution::Item(_) => {
+                                                let (idx, def) =
+                                                    proj.item_def(res).expect("item def");
+                                                (idx, def.range)
+                                            }
+                                            _ => (
+                                                use_idx,
+                                                proj.file(use_idx)
+                                                    .resolved_def(res)
+                                                    .expect("local def")
+                                                    .range,
+                                            ),
+                                        };
+                                        assert_eq!(
+                                            written[def_idx].0.file_name(),
+                                            decl.file.file_name(),
+                                            "{what}: wrong declaring file"
+                                        );
+                                        assert_eq!(
+                                            def_range,
+                                            span(decl.start, decl.end),
+                                            "{what}: wrong def range"
+                                        );
+                                        item_agreements += 1;
+                                    }
+                                    other => panic!(
+                                        "{what}: FCS declares in-project at {:?}, we committed {other:?}",
+                                        decl.file
+                                    ),
+                                }
+                            }
+                            Some(u) if u.assembly.is_some() => match ours {
+                                None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                                Some(Resolution::Member { .. } | Resolution::Entity(_)) => {
+                                    assembly_agreements += 1;
+                                }
+                                other => panic!(
+                                    "{what}: FCS resolves to assembly {:?}, we committed a \
+                                     project binder {other:?}",
+                                    u.assembly
+                                ),
+                            },
+                            // FCS unbound (FS0039) or an unclassifiable use:
+                            // we must say nothing.
+                            _ => match ours {
+                                None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                                other => panic!(
+                                    "{what}: FCS leaves the reference unbound, we committed \
+                                     {other:?}"
+                                ),
+                            },
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Non-vacuity floors: the sweep must exercise all three verdict families.
+    // Unsigned cells commit project Items; SigShownOnly × qualified ×
+    // collision falls through to the assembly for `hidden`; every screened
+    // cell defers.
+    assert!(item_agreements >= 12, "item agreements: {item_agreements}");
+    assert!(
+        assembly_agreements >= 2,
+        "assembly agreements: {assembly_agreements}"
+    );
+    assert!(deferrals >= 12, "deferrals: {deferrals}");
+}
+
 /// Codex review P1, the namespace-direct-case × assembly-collision cell as a
 /// live differential: FCS binds `Shared` (of `ProbeNs.Shared.shown`) to the
 /// `.fsi`'s case and FS0039s the member; any assembly commit on our side
