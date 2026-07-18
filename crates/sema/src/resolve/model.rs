@@ -87,6 +87,12 @@ pub(super) struct SigScreen {
     /// headers, and modules declared directly under a `namespace` fragment.
     pub(super) roots: Vec<SigRoot>,
     /// Every name the signature could possibly expose (over-approximate).
+    /// A `val private`'s name is struck when its own ident is the name's
+    /// sole occurrence in the signature's token stream — a private val is a
+    /// genuine drop (Stage 3, FCS-probed: an earlier public fragment /
+    /// colliding assembly member binds *cleanly*), and the occurrence count
+    /// proves no other decl can expose the name (see
+    /// `sig_token_name_counts` in `resolve.rs`).
     pub(super) names: HashSet<String>,
     /// Paths of `[<AutoOpen>]` modules the signature declares directly under a
     /// `namespace` fragment. Folded (at the paired implementation's slot) into

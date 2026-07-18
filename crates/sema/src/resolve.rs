@@ -551,16 +551,56 @@ struct SignatureSurface {
 }
 
 /// Whether the node carries any accessibility token (`private` / `internal` /
-/// `public`) anywhere. Stage 2 models only the unannotated (public) surface:
-/// `val private` is dropped by design (FS1094 cross-file — hide = drop), and
-/// `internal` / repr-level accessibility are Stage-3 refinements — a skipped
-/// decl's names stay in the screen's token set, so readings of them defer.
-/// (An explicit `public` is also skipped — over-conservative but sound.)
+/// `public`) anywhere. Gates the *type* surface: `type private T` and
+/// repr-level accessibility (`type T = private | …`) are a later Stage-3
+/// slice — a skipped decl's names stay in the screen's token set, so
+/// readings of them defer.
 fn has_access_token(node: &SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
     node.descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+}
+
+/// The accessibility classification of one signature `val` (FCS-probed
+/// 2026-07-18; `docs/fsi-signature-restriction-plan.md` Stage 3).
+enum SigValAccess {
+    /// No modifier, `public`, or `internal`: all project-visible — one
+    /// project is one assembly, so `internal` restricts nothing sema can
+    /// see — and a cross-file use binds the `.fsi` ident, clean. The val
+    /// exports exactly like a plain public one.
+    Exported,
+    /// `private`: the val is **dropped** (hide = drop). FCS resolves a
+    /// direct reading of it only with an FS1094 error, and lets an earlier
+    /// public fragment's same-path value or a colliding assembly member
+    /// bind *cleanly* — so no export, and (when nothing else in the
+    /// signature mentions the name) no screen veto either.
+    Private,
+    /// An access-token shape we cannot place (more than one token, or one
+    /// that does not precede the ident). Skip the decl; its names stay
+    /// screened.
+    Unknown,
+}
+
+/// Classify a signature `val`'s accessibility from its head — the one
+/// `ACCESS_TOK` slot before the ident (`val mutable inline private x : T`).
+fn sig_val_access(vd_node: &SyntaxNode, ident: &SyntaxToken) -> SigValAccess {
+    use borzoi_cst::syntax::SyntaxKind;
+    let mut toks = vd_node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::ACCESS_TOK);
+    let Some(tok) = toks.next() else {
+        return SigValAccess::Exported;
+    };
+    if toks.next().is_some() || tok.text_range().start() >= ident.text_range().start() {
+        return SigValAccess::Unknown;
+    }
+    match tok.text() {
+        "private" => SigValAccess::Private,
+        "internal" | "public" => SigValAccess::Exported,
+        _ => SigValAccess::Unknown,
+    }
 }
 
 /// Whether a `val`'s declared type makes it a **function** (`int -> int`):
@@ -578,17 +618,21 @@ fn sig_val_type_is_function(ty: Option<Type>) -> bool {
     }
 }
 
-/// Collect the exactly-modelled Stage-2 exports of one signature container
-/// (a module root's direct `sig_decls`): plain public `val`s (active-pattern
-/// and operator-named `val`s are Stage 3 — a `val` with no plain ident is
-/// skipped) and the cases of visible union/enum representations. Everything
-/// skipped stays covered by the screen's over-approximated name set, so it
-/// defers rather than falling through.
+/// Collect the exactly-modelled exports of one signature container (a module
+/// root's direct `sig_decls`): public/`internal` `val`s (active-pattern and
+/// operator-named `val`s are Stage 3 — a `val` with no plain ident is
+/// skipped) and the cases of visible union/enum representations. A `val
+/// private`'s name is pushed to `hidden` instead — the drop candidates the
+/// caller strikes from the screen's name set when nothing else in the
+/// signature mentions them. Everything else skipped stays covered by the
+/// screen's over-approximated name set, so it defers rather than falling
+/// through.
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
     defs: &mut Vec<Def>,
     exports: &mut Vec<model::SigExport>,
+    hidden: &mut Vec<String>,
 ) {
     let mut push = |defs: &mut Vec<Def>,
                     def: Def,
@@ -616,14 +660,22 @@ fn collect_sig_container_exports(
     for decl in decls {
         match decl {
             SigDecl::Val(vd) => {
-                if has_access_token(vd.syntax()) {
-                    continue;
-                }
                 let Some(vs) = vd.val_sig() else { continue };
+                // Active-pattern / operator-named `val`s are Stage 3,
+                // whatever their accessibility: their case names stay
+                // screened.
                 if vs.active_pat_name().is_some() {
                     continue;
                 }
                 let Some(ident) = vs.ident() else { continue };
+                match sig_val_access(vd.syntax(), &ident) {
+                    SigValAccess::Exported => {}
+                    SigValAccess::Private => {
+                        hidden.push(id_text(ident.text()).to_string());
+                        continue;
+                    }
+                    SigValAccess::Unknown => continue,
+                }
                 // Any attribute list is a maybe-`[<Literal>]`
                 // (`ExportedItem::attributed` — presence is the sound
                 // over-approximation).
@@ -710,18 +762,23 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     let mut value_paths = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
+    let mut hidden = Vec::new();
     for fragment in sig.modules() {
         match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => {
                 if let Some(path) = header_long_id_path(&fragment) {
-                    // `module internal M` / `module private M` headers are
-                    // Stage 3 — skip the surface, keep the screen.
-                    if !header_has_access_token(fragment.syntax()) {
+                    // A `module internal M` header restricts nothing sema
+                    // can see (one project = one assembly; FCS-probed):
+                    // collect the surface. Only `module private M` skips —
+                    // FCS resolves through it with FS1092/FS1094 errors
+                    // only, so the screen keeps it deferred.
+                    if !decls::header_is_private(fragment.syntax()) {
                         collect_sig_container_exports(
                             &path,
                             fragment.sig_decls(),
                             &mut defs,
                             &mut exports,
+                            &mut hidden,
                         );
                     }
                     roots.push(model::SigRoot {
@@ -744,15 +801,16 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
                             // A namespace-direct module is the module *root*
                             // (nesting deeper is Stage 3): collect its direct
-                            // Stage-2 surface — unless its header carries an
-                            // accessibility modifier (`module internal M`,
-                            // Stage 3), where the screen keeps it deferred.
-                            if !header_has_access_token(nm.syntax()) {
+                            // surface — `module internal` included (project-
+                            // visible, FCS-probed), `module private` skipped
+                            // (the screen keeps it deferred).
+                            if !decls::header_is_private(nm.syntax()) {
                                 collect_sig_container_exports(
                                     &path,
                                     nm.sig_decls(),
                                     &mut defs,
                                     &mut exports,
+                                    &mut hidden,
                                 );
                             }
                             let auto_open = attrs_auto_open(nm.attributes());
@@ -840,6 +898,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         fragment.sig_decls(),
                         &mut defs,
                         &mut exports,
+                        &mut hidden,
                     );
                     roots.push(model::SigRoot {
                         path,
@@ -860,9 +919,25 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         .iter()
         .filter_map(|e| e.type_qualified.clone())
         .collect();
+    // A `val private x` is a genuine drop, so readings of `x` should fall
+    // through exactly as if the signature never mentioned it — but only
+    // when the signature indeed mentions it nowhere else. The occurrence
+    // count is the proof: if `x`'s sole occurrence is the private val's own
+    // ident, no other decl (modelled or not) can expose `x`, and striking
+    // it from the name set reduces "mentioned but provably unexposable" to
+    // "unmentioned" (Stage 1's fall-through). A second occurrence anywhere
+    // — another decl, a type mention, a composite-token piece — keeps the
+    // name screened: the other mention could be the surface FCS binds.
+    let counts = sig_token_name_counts(sig);
+    let mut names: HashSet<String> = counts.keys().cloned().collect();
+    for name in &hidden {
+        if counts.get(name).copied() == Some(1) {
+            names.remove(name);
+        }
+    }
     let screen = Arc::new(model::SigScreen {
         roots,
-        names: sig_token_names(sig),
+        names,
         auto_open_nested,
         value_paths,
         exported_value_paths,
@@ -875,32 +950,17 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
     }
 }
 
-/// Whether a module **header** (tokens up to the module name) carries an
-/// accessibility token — `module internal M` / `module private M`. Scans
-/// only up to the `LONG_IDENT`, so accessibility inside the module's *body*
-/// decls (each judged separately) does not spill over. Works for both a
-/// top-level fragment header and a signature nested-module decl.
-fn header_has_access_token(node: &SyntaxNode) -> bool {
-    use borzoi_cst::syntax::SyntaxKind;
-    for el in node.children_with_tokens() {
-        match el {
-            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => return false,
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => return true,
-            _ => {}
-        }
-    }
-    false
-}
-
-/// The signature's over-approximated exposable-name set: any name a `.fsi`
-/// can expose (a `val`, a union case, a record field, an exception, an
-/// active-pattern case name, …) necessarily appears in its token stream, so
-/// collecting every non-trivia token's `idText` — plus each token's
-/// ident-shaped pieces — is a sound over-approximation. Trivia (whitespace,
-/// comments, directives, inactive code) is excluded: a name mentioned only in
-/// a comment must not screen.
-fn sig_token_names(sig: &SigFile) -> HashSet<String> {
-    let mut names = HashSet::new();
+/// The signature's over-approximated exposable-name multiset: any name a
+/// `.fsi` can expose (a `val`, a union case, a record field, an exception,
+/// an active-pattern case name, …) necessarily appears in its token stream,
+/// so counting every non-trivia token's `idText` — plus each token's
+/// ident-shaped pieces — is a sound over-approximation. The keys are the
+/// screen's name set; the counts prove a private val's name unexposable
+/// when its own ident is the sole occurrence. Trivia (whitespace, comments,
+/// directives, inactive code) is excluded: a name mentioned only in a
+/// comment must not screen.
+fn sig_token_name_counts(sig: &SigFile) -> HashMap<String, usize> {
+    let mut names: HashMap<String, usize> = HashMap::new();
     for token in sig
         .syntax()
         .descendants_with_tokens()
@@ -910,10 +970,10 @@ fn sig_token_names(sig: &SigFile) -> HashSet<String> {
             continue;
         }
         let text = id_text(token.text());
-        names.insert(text.to_string());
+        *names.entry(text.to_string()).or_default() += 1;
         for piece in text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '\'')) {
             if !piece.is_empty() && piece != text {
-                names.insert(piece.to_string());
+                *names.entry(piece.to_string()).or_default() += 1;
             }
         }
     }
