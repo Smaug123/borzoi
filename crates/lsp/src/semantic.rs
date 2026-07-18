@@ -4317,6 +4317,7 @@ mod tests {
             source_name: None,
             custom_attrs: vec![],
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 

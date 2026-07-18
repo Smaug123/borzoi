@@ -520,6 +520,7 @@ mod tests {
             source_name: None,
             custom_attrs: Vec::new(),
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 
