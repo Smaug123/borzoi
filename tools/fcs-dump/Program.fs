@@ -806,6 +806,16 @@ let private renderType (t: FSharpType) : string =
     let empty : System.Collections.Generic.IList<FSharpGenericParameter> = upcast ResizeArray<_>()
     renderTypeInScope empty empty t
 
+/// Strip a trailing mangled-arity suffix (`` `N ``) from a tycon FQN's final
+/// segment, so a head whose `LogicalName` already carries its arity
+/// (`` list`1 ``) does not double it when the canonical arity is reapplied.
+let private stripBacktickArity (s: string) : string =
+    let i = s.LastIndexOf '`'
+    if i > 0 && i + 1 < s.Length && s.[i + 1 ..] |> Seq.forall System.Char.IsDigit then
+        s.[.. i - 1]
+    else
+        s
+
 /// The *immediate, unchased, logical* target of a type abbreviation, as a
 /// canonical string the Rust-side `AbbreviationTarget` decoder mirrors — or
 /// `None` when the target is a shape the first decoder slice does not model.
@@ -886,11 +896,19 @@ let rec private renderAbbreviationTargetLogical
         else
             // `int list` ⇒ `Microsoft.FSharp.Collections.list``1<Microsoft.FSharp.Core.int>`:
             // the tycon's logical path, its arity as a backtick suffix, then the
-            // args. (Array types surface as `IsArrayType`, not this App form, so
+            // args. `LogicalName` already carries the mangled arity (`` list`1 ``),
+            // so strip it before reapplying the canonical one — otherwise the arity
+            // doubles. (Array types surface as `IsArrayType`, not this App form, so
             // they fall through to `None` — a deliberate decline for now.)
             match renderAll t.GenericArguments with
             | Some parts ->
-                Some(sprintf "%s`%d<%s>" head t.GenericArguments.Count (String.concat "," parts))
+                Some(
+                    sprintf
+                        "%s`%d<%s>"
+                        (stripBacktickArity head)
+                        t.GenericArguments.Count
+                        (String.concat "," parts)
+                )
             | None -> None
     else
         // Array / measure / anything else structural — declined.

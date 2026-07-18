@@ -960,6 +960,18 @@ pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<AbbreviationKey, Option<
     out
 }
 
+/// Strip a trailing mangled-arity suffix (`` `N ``) from a tycon name segment,
+/// so a head that already carries its arity (`` list`1 ``) does not double it
+/// when the canonical arity is reapplied. Leaves a name without one untouched.
+fn strip_backtick_arity(s: &str) -> &str {
+    match s.rfind('`') {
+        Some(tick) if tick + 1 < s.len() && s[tick + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+            &s[..tick]
+        }
+        _ => s,
+    }
+}
+
 /// Render an owned [`AbbreviationTarget`] into the canonical string the
 /// differential compares against `fcs-dump`'s `renderAbbreviationTargetLogical`.
 /// The ccu is stored for sema but is **not** rendered — a same-assembly target
@@ -969,19 +981,25 @@ pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<AbbreviationKey, Option<
 pub fn render_abbreviation_target(t: &AbbreviationTarget) -> String {
     match t {
         AbbreviationTarget::Named { path, args, .. } => {
-            let head = path.join(".");
             if args.is_empty() {
-                head
+                path.join(".")
             } else {
                 // `int list` ⇒ `Microsoft.FSharp.Collections.list``1<Microsoft.FSharp.Core.int>`:
                 // the tycon's logical path, its arity as a backtick suffix, then
-                // the args. Arrays render the same way through the `[]` tycon.
+                // the args. The pickle's head segment already carries the mangled
+                // arity (`list``1`), so strip it before reapplying the canonical
+                // one — otherwise the arity doubles (`list``1``1`). Arrays render
+                // the same way through the `[]` tycon.
+                let mut segs = path.clone();
+                if let Some(last) = segs.last_mut() {
+                    *last = strip_backtick_arity(last).to_string();
+                }
                 let inner = args
                     .iter()
                     .map(render_abbreviation_target)
                     .collect::<Vec<_>>()
                     .join(",");
-                format!("{head}`{}<{inner}>", args.len())
+                format!("{}`{}<{inner}>", segs.join("."), args.len())
             }
         }
         AbbreviationTarget::Var(pos) => format!("!T{pos}"),
@@ -1273,10 +1291,13 @@ mod tests {
             render_abbreviation_target(&named(&["System", "String"], vec![])),
             "System.String",
         );
-        // Generic app: path + backtick arity + `<args>`.
+        // Generic app: path + backtick arity + `<args>`. The head segment carries
+        // the mangled arity (`` list`1 ``, as the real pickle path does), which the
+        // renderer strips before reapplying the canonical one — so the arity is
+        // never doubled.
         assert_eq!(
             render_abbreviation_target(&named(
-                &["Microsoft", "FSharp", "Collections", "list"],
+                &["Microsoft", "FSharp", "Collections", "list`1"],
                 vec![int()],
             )),
             "Microsoft.FSharp.Collections.list`1<Microsoft.FSharp.Core.int>",

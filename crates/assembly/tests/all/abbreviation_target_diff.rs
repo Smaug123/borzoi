@@ -58,6 +58,18 @@ fn fcs_dump_renders_immediate_logical_targets_for_minilib_fs() {
         "`type S = System.String` targets a BCL type directly, rendered by its \
          AccessPath+LogicalName FQN. All abbreviation targets: {targets:#?}",
     );
+    // A generic app pins the arity is emitted exactly once — the head's logical
+    // name already carries the mangled arity, so a naive append would double it
+    // (`list``1``1`). The differential can't catch that alone (both sides would
+    // double identically), so pin the exact single-arity string here.
+    assert_eq!(
+        targets.get(&("MiniLibFs.MyIntList".to_string(), 0)),
+        Some(&Some(
+            "Microsoft.FSharp.Collections.list`1<Microsoft.FSharp.Core.int>".to_string()
+        )),
+        "`type MyIntList = int list` must render the arity exactly once. \
+         All abbreviation targets: {targets:#?}",
+    );
 }
 
 /// The two-sided differential: certain-implies-exact. For every abbreviation
