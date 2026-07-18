@@ -157,17 +157,17 @@
           src = mkRustSource pkgs craneLib;
         };
 
-        # The default binary enables `sourcelink-fetch`: go-to-definition into a
-        # referenced assembly whose PDB lacks embedded source falls back to
-        # fetching it from the SourceLink URL (see `crates/lsp/Cargo.toml`). The
-        # explicit `--locked` restores crane's default, which overriding
-        # `cargoExtraArgs` would otherwise drop.
-        borzoi = mkBorzoi pkgs craneLib {
-          cargoExtraArgs = "--locked --features sourcelink-fetch";
-        } (sidecarWrap csharp-sidecar);
-        # OpenTelemetry-enabled binary for profiling (`nix build .#otel`). The
-        # HTTP/OTLP exporter compiles without a TLS backend, so no extra system
-        # inputs are needed. See `crates/lsp/src/telemetry.rs`.
+        # The default binary carries `sourcelink-fetch` through the crate's
+        # `default` features: go-to-definition into a referenced assembly whose
+        # PDB lacks embedded source falls back to fetching it from the SourceLink
+        # URL (see `crates/lsp/Cargo.toml`). No `cargoExtraArgs` override, so
+        # crane's default `--locked` (and the on-by-default features) both stay.
+        borzoi = mkBorzoi pkgs craneLib { } (sidecarWrap csharp-sidecar);
+        # OpenTelemetry-enabled binary for profiling (`nix build .#otel`). `otel`
+        # is additive: default features (hence `sourcelink-fetch`) stay on, so
+        # this binary keeps working go-to-definition. The HTTP/OTLP exporter
+        # compiles without a TLS backend, so no extra system inputs are needed.
+        # See `crates/lsp/src/telemetry.rs`.
         borzoi-otel = mkBorzoi pkgs craneLib {
           cargoExtraArgs = "--locked --features otel";
         } (sidecarWrap csharp-sidecar);

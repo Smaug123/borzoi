@@ -139,7 +139,8 @@ pub fn default_source_fetcher() -> Option<Arc<dyn SourceFetcher>> {
     Some(Arc::new(MinreqFetcher))
 }
 
-/// See the feature-gated variant above; this is the default (no network).
+/// See the feature-gated variant above; this is the `--no-default-features`
+/// (no network) variant.
 #[cfg(not(feature = "sourcelink-fetch"))]
 pub fn default_source_fetcher() -> Option<Arc<dyn SourceFetcher>> {
     None
