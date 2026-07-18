@@ -884,6 +884,26 @@ pub struct Entity {
     /// instead of deferring; `None` keeps it deferring, so the field is strictly
     /// additive. See [`AbbreviationTarget`].
     pub abbreviation_target: Option<AbbreviationTarget>,
+    /// Where the entity's source declaration is, per the host CCU's signature
+    /// pickle (`entity_range`): 1-based lines, 0-based columns, spanning exactly
+    /// the source binder identifier. For an `.fsi`-constrained assembly this
+    /// names the `.fsi` — FCS pickles only the single `entity_range` (unlike a
+    /// val's `(sig_range, DefinitionRange)` pair), so the signature position is
+    /// the full cross-assembly fidelity, not a fallback.
+    ///
+    /// Go-to-definition reads it when the entity's methods carry no PDB sequence
+    /// point — or it has no methods at all (a value-only module, a measure, an
+    /// enum, an interface, an exception-abbreviation marker) — the exact shapes
+    /// the token sweep ([`Self::method_def_tokens`]) cannot navigate. Hover's
+    /// "defined in" line uses it too, and needs no PDB (the range names the
+    /// document directly).
+    ///
+    /// `None` for C# assemblies (no signature pickle), decode failures, the
+    /// degenerate `"unknown"`-file range of the synthetic root CCU entity, and
+    /// any entity whose FQN is arity-ambiguous (`type A` / `type A<'T>` both
+    /// project to the ECMA name `A`; the overlay declines rather than stamp the
+    /// wrong twin — see the entity overlay in `fsharp_pickle_merge`).
+    pub definition_range: Option<FsharpSourceRange>,
 }
 
 /// How confidently a projected module member is known to be an **F#-native

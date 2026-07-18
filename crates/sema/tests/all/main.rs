@@ -52,6 +52,7 @@ mod resolve_qualified_values;
 mod resolve_qualifier_precedence_diff;
 mod resolve_scoping;
 mod resolve_self_qualifier_gen_diff;
+mod resolve_signature_exports;
 mod resolve_signatures;
 mod resolve_straddle_gen_diff;
 mod resolve_string_qualifier_repro;

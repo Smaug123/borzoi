@@ -2342,13 +2342,13 @@ mod tests {
         );
     }
 
-    /// Stage 1 of `docs/fsi-signature-restriction-plan.md`: a project listing
-    /// a `.fsi` signature **folds**. The
-    /// signature parses under the signature grammar and occupies its Compile
-    /// slot inertly (no exports, no resolutions — Stage 2 gives it a real
-    /// surface); the paired implementation resolves as before, its own
-    /// surface untouched (only the *cross-file boundary* drops its value
-    /// exports, pinned by sema's `resolve_signatures` group).
+    /// `docs/fsi-signature-restriction-plan.md`: a project listing a `.fsi`
+    /// signature **folds**. The signature parses under the signature grammar
+    /// and occupies its Compile slot with no exports of its own; its exposed
+    /// surface rides the paired implementation's slot with signature
+    /// identity (Stage 2), while the implementation's own resolutions are
+    /// untouched (pinned by sema's `resolve_signatures` /
+    /// `resolve_signature_exports` groups).
     #[test]
     fn project_with_fsi_signature_folds() {
         let tmp = TempDir::new().unwrap();
@@ -2381,10 +2381,12 @@ mod tests {
             .resolved_project_for(&proj, &mut ws, &HashMap::new())
             .expect("a .fsi-bearing project resolves (Stage 1)");
         assert_eq!(resolved.len(), 3);
-        // The signature slot is inert in Stage 1.
+        // The signature slot owns no exports of its own; its surface rides
+        // the implementation's slot (Stage 2).
         assert!(resolved.file(0).exports().is_empty());
-        // The implementation's own surface is unchanged (conclusion 2 of the
-        // probe sweep); only its cross-file boundary contribution is dropped.
+        // The implementation's item range: its own two items (conclusion 2 —
+        // its internal resolutions are untouched) plus the signature's one
+        // appended export.
         let names: Vec<_> = resolved
             .file(1)
             .exports()
@@ -2393,7 +2395,11 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec!["publicFoo".to_string(), "hiddenFoo".to_string()]
+            vec![
+                "publicFoo".to_string(),
+                "hiddenFoo".to_string(),
+                "publicFoo".to_string(),
+            ]
         );
     }
 
@@ -4341,6 +4347,7 @@ mod tests {
             source_name: None,
             custom_attrs: vec![],
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 

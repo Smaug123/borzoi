@@ -1776,7 +1776,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
                 // Same-file: classify via this file's def arena.
-                Some(local) => self.items.get(local)?.def,
+                Some(local) => self.items.get(local)?.def()?,
                 // Cross-file: its def lives in an earlier file's arena, so consult
                 // the exported case-id set instead.
                 None => return Some(self.preceding.is_case_item(id)),
@@ -2179,7 +2179,11 @@ impl<'a> Resolver<'a> {
             // qualified-export block above).
             if !rest.is_empty()
                 && !value_evicted
-                && !sig_screened
+                // The CASE flavour of the veto: an exactly-exported
+                // type-qualified case path is exempt here (this lookup
+                // commits the signature's own case — FCS's binding), while
+                // the value blocks above stay vetoed on it.
+                && !self.sig_screens_case_reading_of(&written_path)
                 && let Some(id) = self.cross_file_type_case(&written_path, false)
             {
                 let whole = TextRange::new(
@@ -2529,17 +2533,40 @@ impl<'a> Resolver<'a> {
     /// [`Self::path_is_project_type_shadowed`]); this is the check the
     /// *project*-side commit sites run before binding.
     pub(super) fn sig_screens_reading_of(&self, written: &[String]) -> bool {
+        self.sig_screens_reading_impl(written, false)
+    }
+
+    /// The **case-lookup** flavour of [`Self::sig_screens_reading_of`], for
+    /// the type-qualified case commit sites only: also exempt on an
+    /// exactly-exported type-qualified case path
+    /// ([`ProjectItems::sig_screened_case_path`]) — the case lookup then
+    /// commits the signature's own case, which is what FCS binds there. The
+    /// value-namespace lookups must keep the plain flavour: on such a path
+    /// FCS resolves the signature's case ahead of a same-path
+    /// earlier-fragment value, so a value commit would be wrong.
+    pub(super) fn sig_screens_case_reading_of(&self, written: &[String]) -> bool {
+        self.sig_screens_reading_impl(written, true)
+    }
+
+    fn sig_screens_reading_impl(&self, written: &[String], for_case: bool) -> bool {
         if !self.preceding.has_sig_screens() {
             return false;
         }
-        self.preceding.sig_screened_path(written)
+        let screened = |names: &[String]| {
+            if for_case {
+                self.preceding.sig_screened_case_path(names)
+            } else {
+                self.preceding.sig_screened_path(names)
+            }
+        };
+        screened(written)
             || self.assembly_prefixes_by_priority().any(|prefix| {
                 let full: Vec<String> = prefix
                     .iter()
                     .cloned()
                     .chain(written.iter().cloned())
                     .collect();
-                self.preceding.sig_screened_path(&full)
+                screened(&full)
             })
     }
 
@@ -3243,10 +3270,12 @@ impl<'a> Resolver<'a> {
             // A leading `global` was deferred above, so `segs` here is an ordinary
             // (unrooted) qualified path.
             let written: Vec<String> = segs.iter().map(|t| id_text(t.text()).to_string()).collect();
-            // Stage-1 signature screen (project side), the pattern-position
-            // twin of the expression gate: a possibly-signature-exposed
-            // reading outranks the cross-file case candidate, so defer.
-            if self.sig_screens_reading_of(&written) {
+            // Signature screen (project side), the pattern-position twin
+            // of the expression gate: a possibly-signature-exposed reading
+            // outranks the cross-file case candidate, so defer — with the
+            // case-flavour exemption, since this site commits exactly the
+            // type-qualified case the signature exports.
+            if self.sig_screens_case_reading_of(&written) {
                 return;
             }
             if let Some(id) = self.cross_file_type_case(&written, false) {
@@ -3297,7 +3326,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => Some(self.defs[id.index()].range),
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                Some(self.defs[self.items.get(local)?.def.index()].range)
+                Some(self.defs[self.items.get(local)?.def()?.index()].range)
             }
             // `lookup` only ever yields in-file `Local` / `Item` value-frame
             // entries; other kinds have no in-file value range to compare.
@@ -3316,7 +3345,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                self.items.get(local)?.def
+                self.items.get(local)?.def()?
             }
             _ => return None,
         };

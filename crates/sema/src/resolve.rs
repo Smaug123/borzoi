@@ -56,7 +56,7 @@ use borzoi_cst::syntax::{
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::def::{Def, DefId};
+use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
 
 mod assembly;
@@ -539,25 +539,195 @@ fn pairing_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
     partner
 }
 
-/// A `.fsi` file's Stage-1 contribution — see
-/// [`SigScreen`](model::SigScreen): the module roots it constrains (top-level
-/// `module` headers; modules directly under a `namespace` fragment), the
+/// A `.fsi` file's whole contribution to the fold
+/// (`docs/fsi-signature-restriction-plan.md`): its screen, and (Stage 2) the
+/// arena + stashed export list of its **exactly-modelled surviving surface**
+/// — plain public `val`s and visible union/enum cases directly under a
+/// module root — which the paired implementation's slot materialises.
+struct SignatureSurface {
+    screen: Arc<model::SigScreen>,
+    defs: Vec<Def>,
+    exports: Vec<model::SigExport>,
+}
+
+/// Whether the node carries any accessibility token (`private` / `internal` /
+/// `public`) anywhere. Stage 2 models only the unannotated (public) surface:
+/// `val private` is dropped by design (FS1094 cross-file — hide = drop), and
+/// `internal` / repr-level accessibility are Stage-3 refinements — a skipped
+/// decl's names stay in the screen's token set, so readings of them defer.
+/// (An explicit `public` is also skipped — over-conservative but sound.)
+fn has_access_token(node: &SyntaxNode) -> bool {
+    use borzoi_cst::syntax::SyntaxKind;
+    node.descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+}
+
+/// Whether a `val`'s declared type makes it a **function** (`int -> int`):
+/// a top-level arrow, looked through a `when …` constraint wrapper
+/// (`'T -> 'T when 'T : comparison` is `Type::Constrained` over the arrow —
+/// FCS still classifies the val as a function). A *parenthesised* arrow is
+/// NOT looked through: `val f : (int -> int)` is a value of function type
+/// (FCS's arity distinction — no curried args), matching the impl-side
+/// `let f = fun …` classification.
+fn sig_val_type_is_function(ty: Option<Type>) -> bool {
+    match ty {
+        Some(Type::Fun(_)) => true,
+        Some(Type::Constrained(c)) => sig_val_type_is_function(c.base()),
+        _ => false,
+    }
+}
+
+/// Collect the exactly-modelled Stage-2 exports of one signature container
+/// (a module root's direct `sig_decls`): plain public `val`s (active-pattern
+/// and operator-named `val`s are Stage 3 — a `val` with no plain ident is
+/// skipped) and the cases of visible union/enum representations. Everything
+/// skipped stays covered by the screen's over-approximated name set, so it
+/// defers rather than falling through.
+fn collect_sig_container_exports(
+    container: &[String],
+    decls: impl Iterator<Item = SigDecl>,
+    defs: &mut Vec<Def>,
+    exports: &mut Vec<model::SigExport>,
+) {
+    let mut push = |defs: &mut Vec<Def>,
+                    def: Def,
+                    qualified: bool,
+                    case: Option<CaseKind>,
+                    type_qualified: Option<Vec<String>>,
+                    attributed: bool| {
+        let name = id_text(&def.name).to_string();
+        let pos = def.range.start();
+        let def_id = DefId::new(defs.len());
+        defs.push(def);
+        let mut path = container.to_vec();
+        path.push(name.clone());
+        exports.push(model::SigExport {
+            name,
+            qualified: qualified.then(|| path.clone()),
+            path,
+            def: def_id,
+            case,
+            type_qualified,
+            attributed,
+            pos,
+        });
+    };
+    for decl in decls {
+        match decl {
+            SigDecl::Val(vd) => {
+                if has_access_token(vd.syntax()) {
+                    continue;
+                }
+                let Some(vs) = vd.val_sig() else { continue };
+                if vs.active_pat_name().is_some() {
+                    continue;
+                }
+                let Some(ident) = vs.ident() else { continue };
+                // Any attribute list is a maybe-`[<Literal>]`
+                // (`ExportedItem::attributed` — presence is the sound
+                // over-approximation).
+                let attributed = vd.attributes().next().is_some();
+                let is_function = sig_val_type_is_function(vs.ty());
+                let def = Def::from_token(&ident, DefKind::Value { is_function });
+                push(defs, def, true, None, None, attributed);
+            }
+            SigDecl::Types(types) => {
+                for defn in types.defns() {
+                    // Accessibility on the type or its representation
+                    // (`type private T`, `type T = private | …`) is Stage 3:
+                    // skip — the screen keeps the cases deferred.
+                    if has_access_token(defn.syntax()) {
+                        continue;
+                    }
+                    let Some(type_ident) = defn.long_id().and_then(single_ident) else {
+                        continue;
+                    };
+                    let type_name = id_text(type_ident.text()).to_string();
+                    let rqa = attrs_require_qualified_access(defn.attributes());
+                    let tq_path = |case: &str| {
+                        let mut p = container.to_vec();
+                        p.push(type_name.clone());
+                        p.push(case.to_string());
+                        p
+                    };
+                    match defn.repr() {
+                        Some(TypeDefnRepr::Union(u)) => {
+                            for case in u.cases() {
+                                // Operator-named cases (`([])` / `(::)`) are
+                                // Stage 3.
+                                let Some(ident) = case.ident() else { continue };
+                                let def = Def::from_token(&ident, DefKind::UnionCase);
+                                let tq = tq_path(id_text(&def.name));
+                                push(
+                                    defs,
+                                    def,
+                                    // An RQA union case is not in the value
+                                    // namespace — type-qualified only.
+                                    !rqa,
+                                    Some(CaseKind::Union {
+                                        require_qualified: rqa,
+                                    }),
+                                    Some(tq),
+                                    false,
+                                );
+                            }
+                        }
+                        Some(TypeDefnRepr::Enum(e)) => {
+                            for case in e.cases() {
+                                let Some(ident) = case.ident() else { continue };
+                                let def = Def::from_token(&ident, DefKind::EnumCase);
+                                let tq = tq_path(id_text(&def.name));
+                                push(defs, def, false, Some(CaseKind::Enum), Some(tq), false);
+                            }
+                        }
+                        // Opaque (no repr), abbreviation, record, object
+                        // model, …: no case identity — opacity hides members
+                        // (the crux), and the richer decl kinds are Stage 3.
+                        _ => {}
+                    }
+                }
+            }
+            // Exceptions, nested modules, abbreviations: Stage 3. Their
+            // names stay screened.
+            _ => {}
+        }
+    }
+}
+
+/// A `.fsi` file's fold contribution — the screen (see
+/// [`SigScreen`](model::SigScreen): the module roots it constrains, the
 /// signature's `[<AutoOpen>]` verdicts (authoritative — conclusion 6), and
-/// the over-approximated name set (every non-trivia token's `idText` plus its
-/// ident-shaped pieces, so a name inside a composite token — an
+/// the over-approximated name set of every non-trivia token's `idText` plus
+/// its ident-shaped pieces, so a name inside a composite token — an
 /// active-pattern `(|Even|Odd|)` — is covered however the lexer tokenises
-/// it). Over-approximation only ever defers.
-fn signature_screen(sig: &SigFile, qnof: &QualifiedNameOfFile) -> Arc<model::SigScreen> {
+/// it; over-approximation only ever defers) — plus the Stage-2 export
+/// surface ([`collect_sig_container_exports`]) whose exact paths are the
+/// screen's exemption set.
+fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurface {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
     let mut value_paths = Vec::new();
+    let mut defs = Vec::new();
+    let mut exports = Vec::new();
     for fragment in sig.modules() {
         match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => {
                 if let Some(path) = header_long_id_path(&fragment) {
+                    // `module internal M` / `module private M` headers are
+                    // Stage 3 — skip the surface, keep the screen.
+                    if !header_has_access_token(fragment.syntax()) {
+                        collect_sig_container_exports(
+                            &path,
+                            fragment.sig_decls(),
+                            &mut defs,
+                            &mut exports,
+                        );
+                    }
                     roots.push(model::SigRoot {
                         path,
                         auto_open: attrs_auto_open(fragment.attributes()),
+                        implicit: false,
                     });
                 }
             }
@@ -572,11 +742,28 @@ fn signature_screen(sig: &SigFile, qnof: &QualifiedNameOfFile) -> Arc<model::Sig
                             let Some(li) = nm.long_id() else { continue };
                             let mut path = ns.clone();
                             path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                            // A namespace-direct module is the module *root*
+                            // (nesting deeper is Stage 3): collect its direct
+                            // Stage-2 surface — unless its header carries an
+                            // accessibility modifier (`module internal M`,
+                            // Stage 3), where the screen keeps it deferred.
+                            if !header_has_access_token(nm.syntax()) {
+                                collect_sig_container_exports(
+                                    &path,
+                                    nm.sig_decls(),
+                                    &mut defs,
+                                    &mut exports,
+                                );
+                            }
                             let auto_open = attrs_auto_open(nm.attributes());
                             if auto_open {
                                 auto_open_nested.push(path.clone());
                             }
-                            roots.push(model::SigRoot { path, auto_open });
+                            roots.push(model::SigRoot {
+                                path,
+                                auto_open,
+                                implicit: false,
+                            });
                         }
                         // Value-namespace members declared *directly under
                         // the namespace* — union/enum case names and
@@ -643,20 +830,66 @@ fn signature_screen(sig: &SigFile, qnof: &QualifiedNameOfFile) -> Arc<model::Sig
                     .map(str::to_string)
                     .collect();
                 if !path.is_empty() {
+                    // The implicit module is the container of the
+                    // headerless signature's decls, so its Stage-2 surface
+                    // collects under it — addressable cross-file even
+                    // though the unsigned headerless impl's own values are
+                    // not.
+                    collect_sig_container_exports(
+                        &path,
+                        fragment.sig_decls(),
+                        &mut defs,
+                        &mut exports,
+                    );
                     roots.push(model::SigRoot {
                         path,
                         auto_open: false,
+                        implicit: true,
                     });
                 }
             }
         }
     }
-    Arc::new(model::SigScreen {
+    // The screen's exemption sets: exactly the paths the collected surface
+    // carries an identity for, split by namespace (the case half exempts
+    // only the type-qualified case lookups — see
+    // [`SigScreen::exported_case_paths`](model::SigScreen)).
+    let exported_value_paths: HashSet<Vec<String>> =
+        exports.iter().filter_map(|e| e.qualified.clone()).collect();
+    let exported_case_paths: HashSet<Vec<String>> = exports
+        .iter()
+        .filter_map(|e| e.type_qualified.clone())
+        .collect();
+    let screen = Arc::new(model::SigScreen {
         roots,
         names: sig_token_names(sig),
         auto_open_nested,
         value_paths,
-    })
+        exported_value_paths,
+        exported_case_paths,
+    });
+    SignatureSurface {
+        screen,
+        defs,
+        exports,
+    }
+}
+
+/// Whether a module **header** (tokens up to the module name) carries an
+/// accessibility token — `module internal M` / `module private M`. Scans
+/// only up to the `LONG_IDENT`, so accessibility inside the module's *body*
+/// decls (each judged separately) does not spill over. Works for both a
+/// top-level fragment header and a signature nested-module decl.
+fn header_has_access_token(node: &SyntaxNode) -> bool {
+    use borzoi_cst::syntax::SyntaxKind;
+    for el in node.children_with_tokens() {
+        match el {
+            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => return false,
+            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// The signature's over-approximated exposable-name set: any name a `.fsi`
@@ -777,13 +1010,20 @@ fn resolve_project_files_impl(
     // namespace-scoping the OV-9 refinement.
     let mut ext = ExtThreading::default();
     for (index, pf) in files.iter().take(horizon).enumerate() {
-        let rf = match &pf.file {
-            // A signature file is inert in Stage 1: it owns no `ItemId` range
-            // and records nothing; only its screen crosses the boundary.
-            SourceFile::Sig(sig) => ResolvedFile::inert_signature(
-                preceding.next_base(),
-                signature_screen(sig, &pf.qnof),
-            ),
+        let mut rf = match &pf.file {
+            // A signature file owns no `ItemId` range and records nothing at
+            // its own slot; it carries its screen, its exported idents'
+            // arena, and the stashed surface the paired implementation's
+            // slot materialises.
+            SourceFile::Sig(sig) => {
+                let surface = signature_surface(sig, &pf.qnof);
+                ResolvedFile::signature_slot(
+                    preceding.next_base(),
+                    surface.screen,
+                    surface.defs,
+                    surface.exports,
+                )
+            }
             SourceFile::Impl(file) => {
                 // Per-file span so the fold's cost is attributable in the LSP's
                 // traces: `file` is the Compile item's path (empty when
@@ -811,6 +1051,15 @@ fn resolve_project_files_impl(
                 rf
             }
         };
+        // Stage 2: materialise the paired signature's stashed surface as
+        // THIS implementation's contribution (provenance = impl slot, def =
+        // the `.fsi` — conclusion 4). The sig sits strictly earlier, so its
+        // resolved slot already exists.
+        if matches!(&pf.file, SourceFile::Impl(_))
+            && let Some(sig_idx) = partners[index].filter(|&p| p < index)
+        {
+            rf.append_signature_exports(&resolved[sig_idx], sig_idx);
+        }
         // The screen of the signature this file is the paired implementation
         // of, if any — the sig sits strictly earlier in Compile order, so its
         // resolved slot already exists. (A signature's own partner is the
@@ -824,7 +1073,7 @@ fn resolve_project_files_impl(
             &rf,
             assemblies,
             screen.as_deref(),
-            partners[index].is_some(),
+            partners[index],
         );
         // An unpaired headerless implementation: its values live under the
         // implicit filename module, which sema's export model cannot address
@@ -873,19 +1122,20 @@ struct ExtThreading {
 /// `paired_screen` is the screen of the signature `rf` is the paired
 /// implementation of, if any — it parameterises the boundary derivation
 /// (the paired impl's value/case identity exports are dropped; see
-/// [`ProjectItems::extend_with`]). `partnered` is whether `rf`'s Compile
-/// item has a pairing partner at all: a signature publishes its screen only
-/// when a following implementation consumes it (an unpaired signature
-/// constrains nothing — FCS-probed).
+/// [`ProjectItems::extend_with`]). `partner` is `rf`'s pairing-partner
+/// Compile index, if any: a signature publishes its screen only when a
+/// following implementation consumes it (an unpaired signature constrains
+/// nothing — FCS-probed), and the implementation's index is the screen's
+/// materialisation rank.
 fn thread_forward(
     preceding: &mut ProjectItems,
     ext: &mut ExtThreading,
     rf: &ResolvedFile,
     assemblies: &AssemblyEnv,
     paired_screen: Option<&model::SigScreen>,
-    partnered: bool,
+    partner: Option<usize>,
 ) {
-    preceding.extend_with(rf, paired_screen, partnered);
+    preceding.extend_with(rf, paired_screen, partner);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -1156,11 +1406,16 @@ fn resolve_project_files_incremental_impl(
             // `ext` matches prev's entering value while `in_sync`.
             Arc::clone(&prev.files[i])
         } else {
-            let rf = match &pf.file {
-                SourceFile::Sig(sig) => ResolvedFile::inert_signature(
-                    preceding.next_base(),
-                    signature_screen(sig, &pf.qnof),
-                ),
+            let mut rf = match &pf.file {
+                SourceFile::Sig(sig) => {
+                    let surface = signature_surface(sig, &pf.qnof);
+                    ResolvedFile::signature_slot(
+                        preceding.next_base(),
+                        surface.screen,
+                        surface.defs,
+                        surface.exports,
+                    )
+                }
                 SourceFile::Impl(file) => {
                     let mut rf = resolve_file(file, &preceding, assemblies);
                     rf.preceding_declares_extension_source = ext.wholesale;
@@ -1169,6 +1424,14 @@ fn resolve_project_files_incremental_impl(
                     rf
                 }
             };
+            // Stage 2: materialise the paired signature's surface — exactly
+            // as the cold fold does, and BEFORE the in-sync comparison (the
+            // prior fold's slot includes the materialised items too).
+            if matches!(&pf.file, SourceFile::Impl(_))
+                && let Some(sig_idx) = partners_new[i].filter(|&p| p < i)
+            {
+                rf.append_signature_exports(&resolved[sig_idx], sig_idx);
+            }
             if in_sync {
                 // Entering state matched prev's, so the item base matched and the
                 // exports are comparable. Does the recompute leave the threaded
@@ -1197,7 +1460,7 @@ fn resolve_project_files_incremental_impl(
             &rf,
             assemblies,
             screen.as_deref(),
-            partners_new[i].is_some(),
+            partners_new[i],
         );
         // The unpaired-headerless implicit-module shadow — exactly as the
         // cold fold pushes it (see `resolve_project_files_impl`).
@@ -1429,6 +1692,7 @@ impl<'a> Resolver<'a> {
             },
             export_decls: self.export_decls,
             sig_screen: None,
+            sig_exports: Vec::new(),
         }
     }
 
@@ -1818,7 +2082,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -1851,7 +2115,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -1874,7 +2138,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, None, false);
+        pi2.extend_with(&rf2, None, None);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -1895,7 +2159,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, None, false);
+            pi.extend_with(&rf, None, None);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -1916,7 +2180,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None, false);
+        pi.extend_with(&rf, None, None);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

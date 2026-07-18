@@ -486,7 +486,7 @@ pub fn run(connection: Connection, state: State) -> Result<(), Box<dyn Error + S
 ///
 /// `fetcher` is the SourceLink fetcher for the deferred-fetch pool — the seam
 /// tests use to inject a fake (or barrier) fetcher and exercise deferral without
-/// a network. `fetcher = None` (the no-`sourcelink-fetch` default) builds no
+/// a network. `fetcher = None` (a `--no-default-features` build) builds no
 /// pool, and go-to-definition never defers, so behaviour is identical to before.
 pub fn run_with_fetcher(
     connection: Connection,
@@ -504,9 +504,10 @@ pub fn run_with_fetcher(
         );
     }
     // The deferred-SourceLink-fetch worker pool, built only when a fetcher is
-    // configured — so the default no-`sourcelink-fetch` build (and every
-    // fetch-free test) spawns zero threads. Dropped on every return path below,
-    // which closes the queue and joins the workers (see `FetchPool::drop`).
+    // configured — so a `--no-default-features` (no-`sourcelink-fetch`) build
+    // (and every fetch-free test) spawns zero threads. Dropped on every return
+    // path below, which closes the queue and joins the workers (see
+    // `FetchPool::drop`).
     let pool = fetcher
         .map(|fetcher| FetchPool::new(&connection, fetcher, FETCH_WORKERS, FETCH_QUEUE_DEPTH));
     // Once the client has sent `shutdown`, the LSP lifecycle forbids servicing
@@ -577,8 +578,8 @@ pub fn run_with_fetcher(
     Ok(())
 }
 
-/// Enqueue a deferred SourceLink fetch on the pool. When there is no pool (the
-/// no-`sourcelink-fetch` build, or a `run_with_fetcher(None)`) or the bounded
+/// Enqueue a deferred SourceLink fetch on the pool. When there is no pool (a
+/// `--no-default-features` build, or a `run_with_fetcher(None)`) or the bounded
 /// queue is full, fall back to **surfacing the SourceLink URL** for the client
 /// to open — never blocking the dispatch loop, and never replying `null` when a
 /// usable URL exists. Whether to fetch is the shell's call (it owns the pool),
@@ -2598,7 +2599,7 @@ mod tests {
 
     #[test]
     fn dispatch_fetch_surfaces_the_url_when_no_pool_exists() {
-        // The no-`sourcelink-fetch` build (or `run_with_fetcher(None)`): the
+        // A `--no-default-features` build (or `run_with_fetcher(None)`): the
         // handler still defers, and dispatch surfaces the SourceLink URL rather
         // than dropping the id or replying `null`.
         let (server, client) = Connection::memory();

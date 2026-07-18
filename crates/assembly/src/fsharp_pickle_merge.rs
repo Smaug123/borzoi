@@ -209,37 +209,78 @@ fn walk_entity_tree(
 // Source-name overlay (Stream-2 PR1)
 // ---------------------------------------------------------------------------
 
-/// Where one entity lives in the ECMA tree, plus the F# source name the host
-/// pickle records for it. Module *member* source names are no longer this
-/// overlay's business: the pickle-driven member list
-/// ([`apply_module_member_projection`]) sets them per claimed member.
-struct SourceNameTarget {
+/// Where one entity lives in the ECMA tree, plus the two host-pickle facts the
+/// entity overlay carries onto it: its F# source name and its declaration
+/// range. Module *member* source names are no longer this overlay's business:
+/// the pickle-driven member list ([`apply_module_member_projection`]) sets them
+/// per claimed member.
+///
+/// The two facts have **different participation**. Source-name stamping records
+/// only module/type entities and always assigns (clearing a stale name is
+/// correct). Range stamping additionally records measure leaves — a standalone
+/// `[<Measure>] type m` pickles with an `IsType::Namespace` body, so it is a
+/// type-chain *leaf* the module/type predicate misses — and a measure leaf's
+/// `entity_source_name` is `None`, so letting it flow through source-name
+/// stamping could *clear* a legitimately-set name on an arity-name-colliding
+/// row. [`Self::is_module_or_type`] gates the source-name half accordingly.
+struct EntityOverlayTarget {
     namespace: Vec<String>,
     type_chain: Vec<String>,
     /// The entity's F# `DisplayName` when it differs from its CLR name —
     /// `Some("Suffixed")` for the `SuffixedModule` module-suffix class,
     /// `Some("Bar")` for a `[<CompiledName("Foo")>] type Bar`, else `None`.
+    /// Always `None` for a measure leaf (its `IsType::Namespace` body maps to
+    /// `None`), which is why measure leaves must not participate in source-name
+    /// stamping.
     entity_source_name: Option<String>,
+    /// `true` for a module/type entity (participates in source-name stamping),
+    /// `false` for a measure leaf (range-only).
+    is_module_or_type: bool,
+    /// The entity's `entity_range`, resolved to a source range. `None` on a bad
+    /// file index or the degenerate `"unknown"` file.
+    definition_range: Option<FsharpSourceRange>,
 }
 
-/// Set `source_name` on each *entity* from the host CCU's signature pickle,
-/// replacing the IL-name attribute heuristic the projector skips on the
-/// authoritative path (`detect_module_suffix_source_name` /
-/// `detect_compilation_source_name`). Module *member* source names come from
-/// the pickle-driven member list ([`apply_module_member_projection`]), which
-/// folds PR1's member half of this overlay inline.
+/// Apply the two per-entity host-pickle facts to the ECMA tree: each entity's
+/// F# `source_name` and its declaration `definition_range`.
 ///
-/// FCS renders an entity by its `DisplayName` (the F# source name); it is
-/// recoverable from the pickle via [`IsType::FSharpModuleWithSuffix`] (strip
-/// the `"Module"` suffix from `logical_name`) or the
-/// `compiled_name`/`logical_name` split. The owned `Entity::name` stays the
-/// IL name (what the Roslyn differential compares); `source_name` is the
-/// *additional* F# name.
+/// **Source name** replaces the IL-name attribute heuristic the projector skips
+/// on the authoritative path (`detect_module_suffix_source_name` /
+/// `detect_compilation_source_name`). FCS renders an entity by its
+/// `DisplayName`; it is recoverable from the pickle via
+/// [`IsType::FSharpModuleWithSuffix`] (strip the `"Module"` suffix from
+/// `logical_name`) or the `compiled_name`/`logical_name` split. The owned
+/// `Entity::name` stays the IL name (what the Roslyn differential compares);
+/// `source_name` is the *additional* F# name. Module *member* source names come
+/// from the pickle-driven member list ([`apply_module_member_projection`]).
 ///
-/// Same per-module FQN scoping ([`find_entity_mut`]) and single-CCU
-/// restriction as [`apply_module_member_projection`] — the caller gates on
-/// the host pickle describing the whole image (see `enumerate_type_defs`).
-pub(crate) fn apply_source_name_overlay(
+/// **Definition range** carries the pickled `entity_range` so go-to-definition
+/// can navigate a method-less or sequence-point-less entity (a value-only
+/// module, a measure, an enum, an interface). Two guards separate it from the
+/// source-name half:
+///
+/// - **Measure leaves are collected for the range only.** A standalone
+///   `[<Measure>] type m` pickles with an `IsType::Namespace` body — a type-chain
+///   leaf the module/type predicate misses — so the range collector also records
+///   the measure-leaf predicate from [`merge_measure_entities`]
+///   (`typar_kind == Measure` with a backing `FSharpObjectModel` repr). Its
+///   `entity_source_name` is `None`, so it must not flow through source-name
+///   stamping (which would clear a legitimately-set name on an arity-name-
+///   colliding row); [`EntityOverlayTarget::is_module_or_type`] gates that.
+/// - **Arity-ambiguous FQNs are declined.** `find_entity_mut` matches by name
+///   alone, and `type A` / `type A<'T>` both project to the ECMA name `A`
+///   (backtick-arity stripped on both sides). Range stamping commits only when
+///   the correspondence is unambiguous in *both* directions: at most one
+///   collected target per FQN key, and — via [`find_entity_unique_mut`] — at
+///   most one ECMA sibling matching the addressed name at each chain step. An
+///   ambiguous FQN under-sets (D5); the twins keep their sequence-point
+///   navigation. (Source-name stamping keeps its pre-existing name-only lookup,
+///   where the lossiness is harmless — arity twins share their source name.)
+///
+/// Same per-module FQN scoping ([`find_entity_mut`]) and single-CCU restriction
+/// as [`apply_module_member_projection`] — the caller gates on the host pickle
+/// describing the whole image (see `enumerate_type_defs`).
+pub(crate) fn apply_entity_overlay(
     entities: &mut [Entity],
     pickled: &PickledCcu,
 ) -> Result<(), ImportError> {
@@ -253,30 +294,66 @@ pub(crate) fn apply_source_name_overlay(
         &[],
         &mut path,
         &mut |_stamp, entity, is_root, namespace, type_chain| {
-            // Record a target for every module / type (not namespaces or the
-            // synthetic root). A module's vals live in its own
-            // `module_type.vals`; index them against this entity's FQN — the
-            // container prefix plus this entity's own CLR name.
-            if !is_root
-                && matches!(
-                    entity.module_type.is_type,
-                    IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
-                )
-            {
+            if is_root {
+                return Ok(());
+            }
+            // A module/type extends the type chain and participates in both
+            // facts. A measure leaf (`typar_kind == Measure` + a backing
+            // TypeDef) is *not* a module/type — it pickles an `IsType::Namespace`
+            // body — but is still a type-chain leaf keyed by the same FQN, so it
+            // contributes a range-only target. The two are disjoint (a measure
+            // never has a module/type body), so an entity is at most one kind.
+            let is_module_or_type = matches!(
+                entity.module_type.is_type,
+                IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
+            );
+            let is_measure_leaf = entity.typar_kind == TyparKind::Measure
+                && matches!(entity.repr, PickledTyconRepr::FSharpObjectModel(_));
+            if is_module_or_type || is_measure_leaf {
                 let mut chain = type_chain.to_vec();
                 chain.push(clr_name(entity));
-                targets.push(SourceNameTarget {
+                targets.push(EntityOverlayTarget {
                     namespace: namespace.to_vec(),
                     type_chain: chain,
-                    entity_source_name: entity_source_name(entity),
+                    entity_source_name: if is_module_or_type {
+                        entity_source_name(entity)
+                    } else {
+                        None
+                    },
+                    is_module_or_type,
+                    definition_range: resolve_entity_range(pickled, entity),
                 });
             }
             Ok(())
         },
     )?;
+    // Source-name half: module/type targets only, name-only lookup, always
+    // assign (clearing a stale name is correct). Unchanged from before.
     for target in &targets {
-        if let Some(ecma) = find_entity_mut(entities, &target.namespace, &target.type_chain) {
+        if target.is_module_or_type
+            && let Some(ecma) = find_entity_mut(entities, &target.namespace, &target.type_chain)
+        {
             ecma.source_name = target.entity_source_name.clone();
+        }
+    }
+    // Range half: decline arity-ambiguous FQNs in both directions. First the
+    // collected-target side — how many targets share each full FQN key.
+    let mut fqn_target_counts: HashMap<(&[String], &[String]), usize> = HashMap::new();
+    for target in &targets {
+        *fqn_target_counts
+            .entry((target.namespace.as_slice(), target.type_chain.as_slice()))
+            .or_insert(0) += 1;
+    }
+    for target in &targets {
+        let Some(range) = &target.definition_range else {
+            continue;
+        };
+        if fqn_target_counts[&(target.namespace.as_slice(), target.type_chain.as_slice())] != 1 {
+            continue; // Two source entities collapse onto this ECMA name.
+        }
+        if let Some(ecma) = find_entity_unique_mut(entities, &target.namespace, &target.type_chain)
+        {
+            ecma.definition_range = Some(range.clone());
         }
     }
     Ok(())
@@ -698,7 +775,7 @@ fn val_il_arity(v: &PickledVal) -> Option<usize> {
 /// classes/unions/records included, with empty `vals` (their member vals live
 /// in `tcaug.adhoc`, not `module_type.vals`; see the plan's §2 table). The
 /// consumer gates on the matched ECMA entity being a module, exactly as
-/// `apply_source_name_overlay` does; keeping the empty entries preserves the
+/// `apply_entity_overlay` does; keeping the empty entries preserves the
 /// distinction between "this module has no member vals" and "this module is
 /// not described by the host pickle at all", which the cutover's
 /// missing-module policy needs.
@@ -839,7 +916,7 @@ impl ModuleMemberVal {
 /// pre-order.
 ///
 /// Read-only — nothing is applied to an ECMA tree here. Same single-CCU
-/// restriction as the overlays (`apply_source_name_overlay` et al.): the
+/// restriction as the overlays (`apply_entity_overlay` et al.): the
 /// pickle describes only its own modules, so on a multi-CCU `--standalone`
 /// image the index is silently partial and the caller must not treat a
 /// missing module as "has no members".
@@ -945,6 +1022,31 @@ fn module_member_vals(
 fn resolve_definition_range(pickled: &PickledCcu, v: &PickledVal) -> Option<FsharpSourceRange> {
     let r = v.other_range.as_ref().or(v.range.as_ref())?;
     let file = pickled.header.strings.get(r.file as usize)?.clone();
+    Some(FsharpSourceRange {
+        file,
+        start_line: r.start.line,
+        start_column: r.start.column,
+        end_line: r.end.line,
+        end_column: r.end.column,
+    })
+}
+
+/// An *entity*'s [`FsharpSourceRange`] from its pickled `entity_range` — the
+/// entity analogue of [`resolve_definition_range`]. Unlike a val, an entity
+/// pickles a single (non-optional) `range`; FCS's `entity_other_range` (the
+/// unpickled `.fs` position) never crosses the assembly boundary, so this is
+/// the full cross-assembly fidelity, matching what FCS itself navigates to.
+///
+/// Declines (`None`) on a malformed string-table index (kept a silent decline
+/// rather than a panic, like the val path) and on the degenerate `"unknown"`
+/// file of the synthetic root CCU entity — belt-and-braces against a
+/// degenerate range ever becoming a bogus navigation target (D5).
+fn resolve_entity_range(pickled: &PickledCcu, entity: &PickledEntity) -> Option<FsharpSourceRange> {
+    let r = &entity.range;
+    let file = pickled.header.strings.get(r.file as usize)?.clone();
+    if file == "unknown" {
+        return None;
+    }
     Some(FsharpSourceRange {
         file,
         start_line: r.start.line,
@@ -1618,6 +1720,11 @@ struct AbbrevMarkerSite {
     /// an exception abbreviation and for any target shape the nullary decoder
     /// slice does not model. Rides onto [`Entity::abbreviation_target`].
     abbreviation_target: Option<AbbreviationTarget>,
+    /// The marker's `entity_range`, resolved from the same `PickledEntity`.
+    /// Rides onto [`Entity::definition_range`] — the only navigable source
+    /// location for a reachable exception-abbreviation marker. `None` on a bad
+    /// file index or the degenerate `"unknown"` file.
+    definition_range: Option<FsharpSourceRange>,
 }
 
 /// Map every same-assembly module/type tycon **stamp** to its full logical FQN
@@ -1943,6 +2050,7 @@ pub(crate) fn apply_abbreviation_markers(
                     // An exception abbreviation's target is a constructor, not a
                     // type-position name; the decoder does not model it.
                     abbreviation_target: None,
+                    definition_range: resolve_entity_range(pickled, entity),
                 });
                 return Ok(());
             }
@@ -1991,6 +2099,7 @@ pub(crate) fn apply_abbreviation_markers(
                 is_exception: false,
                 is_auto_open: has_auto_open_attribute(pickled, &entity.attribs),
                 abbreviation_target,
+                definition_range: resolve_entity_range(pickled, entity),
             });
             Ok(())
         },
@@ -2100,6 +2209,12 @@ fn abbreviation_marker(
         // The decoded RHS of the abbreviation, or `None` for an exception
         // abbreviation and for any target shape the decoder does not model.
         abbreviation_target: target.abbreviation_target.clone(),
+        // The marker's own `entity_range`, resolved at collection time. The
+        // load-bearing consumer is the reachable **exception**-abbreviation
+        // marker (`EntityKind::Exception`): it has no ECMA row and no method
+        // tokens, so this range is its only navigable source location. A
+        // type-abbreviation marker carries it inertly (sema defers a hit on it).
+        definition_range: target.definition_range.clone(),
     }
 }
 
@@ -2172,6 +2287,50 @@ fn find_entity_mut<'a>(
         .iter_mut()
         .find(|e| e.namespace.as_slice() == namespace && e.name == *head)?;
     for segment in rest {
+        current = current
+            .nested_types
+            .iter_mut()
+            .find(|e| e.name == *segment)?;
+    }
+    Some(current)
+}
+
+/// Like [`find_entity_mut`], but returns `None` unless the addressed name is
+/// **unambiguous at every chain step** — exactly one entity matches at the top
+/// level and exactly one nested type matches each subsequent segment. This is
+/// the ECMA-side half of the range overlay's arity-decline: `type A` and
+/// `type A<'T>` both strip to the metadata name `A`, so two ECMA rows can carry
+/// the name a single collected target addresses; stamping either would navigate
+/// to the wrong twin, so we decline (D5). `find_entity_mut`, which takes the
+/// first match, stays for source-name stamping, where the name-only lossiness
+/// is harmless (twins share their source name).
+fn find_entity_unique_mut<'a>(
+    entities: &'a mut [Entity],
+    namespace: &[String],
+    type_chain: &[String],
+) -> Option<&'a mut Entity> {
+    let (head, rest) = type_chain.split_first()?;
+    if entities
+        .iter()
+        .filter(|e| e.namespace.as_slice() == namespace && e.name == *head)
+        .count()
+        != 1
+    {
+        return None;
+    }
+    let mut current = entities
+        .iter_mut()
+        .find(|e| e.namespace.as_slice() == namespace && e.name == *head)?;
+    for segment in rest {
+        if current
+            .nested_types
+            .iter()
+            .filter(|e| e.name == *segment)
+            .count()
+            != 1
+        {
+            return None;
+        }
         current = current
             .nested_types
             .iter_mut()
@@ -2343,6 +2502,7 @@ mod tests {
             source_name: None,
             custom_attrs: Vec::new(),
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 
@@ -4562,7 +4722,7 @@ mod tests {
             "FSharpChoice",
             EntityKind::Class,
         )];
-        apply_source_name_overlay(&mut owned, &ccu).unwrap();
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
         assert_eq!(owned[0].source_name.as_deref(), Some("Choice"));
     }
 
@@ -4632,7 +4792,7 @@ mod tests {
         let root = make_entity("Test", PickledTyconRepr::NoRepr, root_modul);
         let ccu = make_ccu(vec![root, ns], Vec::new(), 0);
 
-        let err = apply_source_name_overlay(&mut [], &ccu).unwrap_err();
+        let err = apply_entity_overlay(&mut [], &ccu).unwrap_err();
         match err {
             ImportError::PickleEntityCycle { stamp } => assert_eq!(stamp, 0),
             other => panic!("expected PickleEntityCycle, got {other:?}"),
@@ -5326,5 +5486,142 @@ mod tests {
         _: PickledILScopeRef,
         _: PickledXmlDoc,
     ) {
+    }
+
+    // -----------------------------------------------------------------
+    // Entity `definition_range` overlay: stamping + arity-decline
+    // -----------------------------------------------------------------
+    //
+    // These pin the range half of `apply_entity_overlay` on *synthetic* pickle
+    // + ECMA trees, where each direction of the ambiguity guard can be isolated
+    // (the F# compiler cannot express "one signature target, two metadata rows"
+    // in source). The EntityRanges fixture pins the end-to-end shapes.
+
+    /// A CCU whose header carries `strings` (so an entity range's file index
+    /// resolves), rooted at stamp 0.
+    fn ccu_with_strings(tycons: Vec<PickledEntity>, strings: Vec<String>) -> PickledCcu {
+        let mut ccu = make_ccu(tycons, Vec::new(), 0);
+        ccu.header.strings = strings;
+        ccu
+    }
+
+    /// A namespace-`N` container holding the given child stamps, wrapped in the
+    /// synthetic root — the `root(0) → N(1) → children` shape the overlay walks.
+    fn root_and_namespace(children: Vec<u32>) -> [PickledEntity; 2] {
+        let mut ns_modul = empty_modul_typ(); // IsType::Namespace
+        ns_modul.entities = children;
+        let ns = make_entity("N", PickledTyconRepr::NoRepr, ns_modul);
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Asm", PickledTyconRepr::NoRepr, root_modul);
+        [root, ns]
+    }
+
+    /// A top-level `type`-shaped pickle entity (`IsType::ModuleOrType`, object-
+    /// model repr, `TyparKind::Type`) with `logical`/`compiled` names and an
+    /// `entity_range` at `(file, line, col)` spanning one column.
+    fn typed_entity_with_range(
+        logical: &str,
+        compiled: Option<&str>,
+        file: u32,
+        line: u32,
+        col: u32,
+    ) -> PickledEntity {
+        let mut e = make_entity(
+            logical,
+            measure_object_model_repr(),
+            module_modul_typ(vec![]),
+        );
+        e.compiled_name = compiled.map(str::to_string);
+        e.range = PickledRange {
+            file,
+            start: PickledPos { line, column: col },
+            end: PickledPos {
+                line,
+                column: col + 1,
+            },
+        };
+        e
+    }
+
+    #[test]
+    fn range_stamps_an_unambiguous_entity() {
+        // stamps: root(0), N(1), A(2)
+        let a = typed_entity_with_range("A", None, 0, 7, 4);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let ccu = ccu_with_strings(vec![root, ns, a], vec!["Lib.fs".to_string()]);
+        let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        let range = owned[0]
+            .definition_range
+            .as_ref()
+            .expect("unambiguous entity is stamped");
+        assert_eq!(range.file, "Lib.fs");
+        assert_eq!((range.start_line, range.start_column), (7, 4));
+        assert_eq!((range.end_line, range.end_column), (7, 5));
+    }
+
+    #[test]
+    fn range_declines_when_two_targets_collapse_onto_one_fqn() {
+        // Collected-target-side guard, isolated: two pickle entities whose CLR
+        // names both strip to `A` (`A`, and `[<CompiledName("A`1")>] B`), but a
+        // *single* ECMA row `A` (so `find_entity_unique_mut` would happily hit
+        // it). The stamp must still decline — two source types cannot both own
+        // the one row. stamps: root(0), N(1), A(2), B(3).
+        let a = typed_entity_with_range("A", None, 0, 1, 0);
+        let b = typed_entity_with_range("B", Some("A`1"), 0, 2, 0);
+        let [root, ns] = root_and_namespace(vec![2, 3]);
+        let ccu = ccu_with_strings(vec![root, ns, a, b], vec!["Lib.fs".to_string()]);
+        let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        assert_eq!(
+            owned[0].definition_range, None,
+            "two collected targets on one FQN must decline"
+        );
+    }
+
+    #[test]
+    fn range_declines_when_two_ecma_rows_share_the_name() {
+        // ECMA-side guard, isolated: a *single* pickle target `A` (collected
+        // count 1), but two arity-stripped ECMA rows both named `A` — the shape
+        // an `.fsi`-exported `type A` alongside a private `A<'T>` produces. The
+        // name-only walk would hit whichever comes first; the unique-match guard
+        // declines both. stamps: root(0), N(1), A(2).
+        let a = typed_entity_with_range("A", None, 0, 1, 0);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let ccu = ccu_with_strings(vec![root, ns, a], vec!["Lib.fs".to_string()]);
+        let mut owned = vec![
+            make_ecma_entity(vec!["N"], "A", EntityKind::Class),
+            make_ecma_entity(vec!["N"], "A", EntityKind::Record),
+        ];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        assert_eq!(owned[0].definition_range, None, "ambiguous ECMA row 0");
+        assert_eq!(owned[1].definition_range, None, "ambiguous ECMA row 1");
+    }
+
+    #[test]
+    fn range_declines_on_the_degenerate_unknown_file() {
+        // A range whose file resolves to the synthetic `"unknown"` is declined
+        // (probe finding 3 / D5), even though the FQN is unambiguous.
+        let a = typed_entity_with_range("A", None, 0, 1, 0);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let ccu = ccu_with_strings(vec![root, ns, a], vec!["unknown".to_string()]);
+        let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        assert_eq!(
+            owned[0].definition_range, None,
+            "unknown-file range declines"
+        );
+    }
+
+    #[test]
+    fn range_declines_on_a_bad_file_index() {
+        // A dangling string-table index is a silent decline, not a panic.
+        let a = typed_entity_with_range("A", None, 9, 1, 0);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let ccu = ccu_with_strings(vec![root, ns, a], vec!["Lib.fs".to_string()]);
+        let mut owned = vec![make_ecma_entity(vec!["N"], "A", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).unwrap();
+        assert_eq!(owned[0].definition_range, None, "bad file index declines");
     }
 }

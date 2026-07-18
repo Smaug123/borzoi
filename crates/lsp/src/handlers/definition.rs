@@ -18,8 +18,11 @@
 //! - [`Resolution::Entity`] (a referenced-assembly *type* or *module*) →
 //!   `assembly_entity_location`: navigates to the entity's first source-mapped
 //!   method through the same PDB machinery, so go-to-definition on `Gen` or
-//!   `NonNull` lands at the declaration. `Ok(None)` if the type has no
-//!   source-mapped method.
+//!   `NonNull` lands at the declaration. An entity with no source-mapped method
+//!   — a value-only module, a measure, an enum, an interface, an
+//!   exception-abbreviation marker — falls back to its pickled
+//!   `definition_range`, exactly as the member path does. `Ok(None)` only when
+//!   neither yields a location.
 //! - [`Resolution::Deferred`] / [`Resolution::Unresolved`] → `Ok(None)`.
 //!   D5 says we say nothing rather than guess.
 //!
@@ -44,7 +47,8 @@ use crate::goto_source::{
     DefinitionDocument, DefinitionSource, SourceFetcher, SourcePlan, SourceTarget,
     definition_document_for_range, definition_document_in_pdb,
     definition_source_with_range_fallback, entity_definition_document_in_pdb,
-    entity_definition_source_in_pdb, plan_source, sidecar_pdb_matches, sidecar_pdb_name,
+    entity_definition_source_with_range_fallback, plan_source, sidecar_pdb_matches,
+    sidecar_pdb_name,
 };
 use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_at};
 use crate::paths::{lexically_normalize, paths_equal};
@@ -139,7 +143,8 @@ pub fn default_source_fetcher() -> Option<Arc<dyn SourceFetcher>> {
     Some(Arc::new(MinreqFetcher))
 }
 
-/// See the feature-gated variant above; this is the default (no network).
+/// See the feature-gated variant above; this is the `--no-default-features`
+/// (no network) variant.
 #[cfg(not(feature = "sourcelink-fetch"))]
 pub fn default_source_fetcher() -> Option<Arc<dyn SourceFetcher>> {
     None
@@ -381,16 +386,24 @@ pub fn entity_definition_document(
     env: &AssemblyEnv,
     handle: EntityHandle,
 ) -> Option<DefinitionDocument> {
-    let tokens = &env.entity(handle).method_def_tokens;
-    if tokens.is_empty() {
-        return None;
-    }
-    let dll = env.assembly_path(handle)?;
-    let pdb_image = semantic.pdb_image(dll, || {
-        let bytes = std::fs::read(dll).ok()?;
-        Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
-    })?;
-    entity_definition_document_in_pdb(&pdb_image, tokens).ok()?
+    let entity = env.entity(handle);
+    let tokens = entity.method_def_tokens.clone();
+    let range = entity.definition_range.clone();
+    let mut from_pdb = || {
+        if tokens.is_empty() {
+            return None;
+        }
+        let dll = env.assembly_path(handle)?;
+        let pdb_image = semantic.pdb_image(dll, || {
+            let bytes = std::fs::read(dll).ok()?;
+            Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
+        })?;
+        entity_definition_document_in_pdb(&pdb_image, &tokens).ok()?
+    };
+    // The sequence point first; an entity without one — or with no methods at
+    // all, or a DLL with no PDB — still reports where it is from its pickled
+    // range, which needs no PDB: the range itself names the document.
+    from_pdb().or_else(|| range.map(|r| definition_document_for_range(&r)))
 }
 
 /// Locate the source of a referenced-assembly **type or module**: navigate to
@@ -418,16 +431,23 @@ fn assembly_entity_location(
         workspace,
     );
 
-    let tokens = &env.entity(handle).method_def_tokens;
-    if tokens.is_empty() {
-        return None; // No methods → no PDB sequence point to navigate to.
+    // The token sweep first; then the pickled `definition_range` when no method
+    // carries a sequence point — or the entity has none (a value-only module, a
+    // measure, an enum, an interface, an exception-abbreviation marker). Clone
+    // both out before touching `semantic` again (the PDB-image cache borrow).
+    let entity = env.entity(handle);
+    let tokens = entity.method_def_tokens.clone();
+    let range = entity.definition_range.clone();
+    if tokens.is_empty() && range.is_none() {
+        return None; // Nothing to navigate to — no methods, no pickled range.
     }
     let dll = env.assembly_path(handle)?;
     let pdb_image = semantic.pdb_image(dll, || {
         let bytes = std::fs::read(dll).ok()?;
         Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
     })?;
-    let source = entity_definition_source_in_pdb(&pdb_image, tokens).ok()??;
+    let source = entity_definition_source_with_range_fallback(&pdb_image, &tokens, range.as_ref())
+        .ok()??;
     locate_source(source)
 }
 

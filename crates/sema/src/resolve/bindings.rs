@@ -194,7 +194,7 @@ impl<'a> Resolver<'a> {
                         name: name.clone(),
                         qualified,
                         id: item_id,
-                        def: id,
+                        def: super::model::ExportDef::Own(id),
                         case: None,
                         // Own `let private` modifier narrows to the value's own
                         // container; otherwise it inherits any `private` enclosing

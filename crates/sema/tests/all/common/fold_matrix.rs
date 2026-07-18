@@ -164,7 +164,9 @@ fn our_resolved(env: &AssemblyEnv, decls: &[&str], src: &str, probe: TextRange) 
     let decl_item_path = |id: ItemId| -> Option<String> {
         decl_files.iter().enumerate().find_map(|(i, f)| {
             f.exports().iter().find(|e| e.id() == id).map(|e| {
-                let r = f.def(e.def()).range;
+                let r = f
+                    .def(e.def().expect("own-arena def in an impl-only fold"))
+                    .range;
                 format!(
                     "pj:{i}:{}..{}",
                     usize::from(r.start()),

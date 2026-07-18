@@ -998,6 +998,7 @@ fn sort_tiebreaks_on_generic_arity() {
         source_name: None,
         custom_attrs: vec![],
         abbreviation_target: None,
+        definition_range: None,
         members: vec![
             Member::Method(non_generic.clone()),
             Member::Method(generic.clone()),
@@ -1053,6 +1054,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
         source_name: None,
         custom_attrs: vec![],
         abbreviation_target: None,
+        definition_range: None,
         members: vec![],
     };
     let generic = Entity {
@@ -1207,6 +1209,7 @@ fn fixture_system_object() -> Vec<Entity> {
         source_name: None,
         custom_attrs: vec![],
         abbreviation_target: None,
+        definition_range: None,
         members: vec![
             Member::Method(MethodLike {
                 definition_range: None,
@@ -1412,6 +1415,7 @@ fn fixture_my_lib() -> Vec<Entity> {
         source_name: None,
         custom_attrs: vec![],
         abbreviation_target: None,
+        definition_range: None,
         members: vec![
             Member::Field(Field {
                 name: "count".into(),

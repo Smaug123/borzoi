@@ -371,7 +371,7 @@ impl Ecma335Assembly {
                     // projection skipped on the authoritative path. These
                     // borrow the CCU, so they run before the measure overlay.
                     if authoritative {
-                        crate::fsharp_pickle_merge::apply_source_name_overlay(&mut out, &ccu)?;
+                        crate::fsharp_pickle_merge::apply_entity_overlay(&mut out, &ccu)?;
                         crate::fsharp_pickle_merge::apply_module_member_projection(&mut out, &ccu)?;
                     }
                     // F# measure overlay (7.8b): use the pickled
@@ -654,7 +654,7 @@ impl Ecma335Assembly {
         //
         // On the authoritative path the host pickle is the source of truth for
         // this (an entity's `IsType::FSharpModuleWithSuffix` / `compiled_name`),
-        // so we leave it `None` and let `apply_source_name_overlay` fill it —
+        // so we leave it `None` and let `apply_entity_overlay` fill it —
         // mirroring how the extension-member flag is left to its overlay. The
         // IL-name attribute heuristic is the fallback when no host pickle
         // applies (`il_heuristic`).
@@ -740,6 +740,9 @@ impl Ecma335Assembly {
             // ECMA TypeDef for a plain abbreviation, so this projector never sees
             // one); `apply_abbreviation_markers` sets it there.
             abbreviation_target: None,
+            // Set later by the entity overlay from the host signature pickle's
+            // `entity_range`; the ECMA projection has no source position.
+            definition_range: None,
         })
     }
 

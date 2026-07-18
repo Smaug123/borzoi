@@ -562,8 +562,9 @@ impl AssemblyEnv {
                 let Some((name, namespace)) = path.split_last() else {
                     return false;
                 };
-                // `public_types_named` scans the *full* top-level set (not the
-                // first-wins index), so a cross-assembly FQN collision shows as ≥ 2.
+                // `public_types_named` keeps the full exact-name bucket (not the
+                // first-wins type-position slot), so a cross-assembly FQN
+                // collision shows as ≥ 2.
                 self.public_types_named(namespace, name).len() > 1
                     || self.namespace_has_dropped_type(namespace)
             }
@@ -867,6 +868,7 @@ mod tests {
             is_extension_container: false,
             custom_attrs: vec![],
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 
