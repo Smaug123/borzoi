@@ -70,6 +70,14 @@ use std::collections::HashMap;
 /// so it survives verbatim into [`crate::fsharp_pickle::model::PickledVal::flags`].
 const VAL_FLAGS_IS_EXTENSION_MEMBER: i64 = 0b1_0000_0000;
 
+/// The `EntityFlags.IsModuleOrNamespace` bit (`TypedTree.fs` `EntityFlags`).
+/// Verified empirically against real fixture pickles: **set** for every F#
+/// module (plain and `…WithSuffix`) and every namespace, **clear** for every
+/// type — union, record, class, struct, exception, `[<Measure>]`, an
+/// abbreviation, and a signature-hidden union. So `flags & this == 0`
+/// positively identifies a *type* node, distinct from a module / namespace.
+const ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE: i64 = 0b1;
+
 /// Depth-first pre-order walk of the pickled entity tree, invoking `visit`
 /// once per entity with its *container* ECMA position: the namespace prefix
 /// and CLR type-nesting chain that precede it, **not** including its own name.
@@ -415,10 +423,29 @@ pub(crate) fn apply_extension_member_index(
 /// and the resulting `Some(vec![])` is a real observation, distinct from the
 /// absent-pickle `None` (codex round 21).
 ///
-/// Host-CCU facts, so this runs even when the source-name overlay is
-/// non-authoritative (foreign pickles present) — like the abbreviation
-/// markers and the extension-member index. Cross-assembly completeness is
-/// bounded by
+/// A union whose representation is **hidden by a signature** (`type Teq<'a,'b>`
+/// exposed opaquely in a `.fsi` while the `.fs` defines the union, or an inline
+/// `[<Sealed>]` signature) pickles its SIGNATURE with `NoRepr` — no union repr
+/// at all — yet the compiled class keeps `CompilationMapping(SumType)`, so the
+/// ECMA projector still classifies it `EntityKind::Union`. Such an entity is not
+/// reached by the repr walk above; the second loop seals it to the same
+/// knowably-empty `Some(vec![])` (a signature-hidden representation exposes zero
+/// accessible cases), keyed on the ECMA `Union` kind and restricted to opaque,
+/// measure-free *type* nodes (never modules / namespaces / abbreviations /
+/// exceptions / measure-parameterised types).
+///
+/// Both passes match by (namespace, container chain, name, `typars.len()`) — the
+/// mangled arity. That projected key is not injective (distinct metadata rows
+/// like `U` and `U`0`, or a measure-erased `U`1`, collapse onto it), so the seal
+/// (second loop) commits ONLY when the key names exactly one ECMA row in the
+/// container — a collision declines. The real-case pass (first loop) does not
+/// seal, so a mismatch there only loses that union's cases (a pre-existing
+/// completeness gap), never misattaches them.
+///
+/// The real-case pass (the first loop) is a host-CCU fact, so it runs even when
+/// the source-name overlay is non-authoritative (foreign pickles present) — like
+/// the abbreviation markers and the extension-member index. Cross-assembly
+/// completeness is bounded by
 /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`](crate::AssemblyProjectionSkips::fsharp_abbreviations_unknowable):
 /// a foreign-CCU union keeps an empty list, which consumers must read as
 /// *unknowable* (a union has at least one case by construction). A union
@@ -435,6 +462,11 @@ pub(crate) fn apply_union_case_names(
     // union the other's cases (codex round 24).
     #[allow(clippy::type_complexity)]
     let mut targets: Vec<(Vec<String>, Vec<String>, String, usize, Vec<String>)> = Vec::new();
+    // A union whose representation is HIDDEN BY A SIGNATURE pickles as `NoRepr`
+    // (see the second loop below) — the union-repr match above never reaches it.
+    // Collect every `NoRepr` entity's identity so a still-`None` ECMA `Union` at
+    // that path can be sealed to a knowably-empty case list.
+    let mut hidden_repr: Vec<(Vec<String>, Vec<String>, String, usize)> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -449,28 +481,60 @@ pub(crate) fn apply_union_case_names(
                 PickledTyconRepr::UnionWithStaticFields { cases, .. } => Some(cases),
                 _ => None,
             };
-            if !is_root && let Some(cases) = cases {
-                targets.push((
-                    namespace.to_vec(),
-                    type_chain.to_vec(),
-                    clr_name(entity),
-                    entity.typars.len(),
-                    cases
-                        .iter()
-                        // Only `TAccess []` (public) cases: a private
-                        // representation (`type U = private | Hidden`) pickles
-                        // each case with a restricted access path, and a
-                        // cross-assembly consumer can never name it — listing
-                        // it would let a hidden case wrongly shadow a
-                        // same-named earlier binding FCS resolves (codex
-                        // round 21). Filtering can leave the list EMPTY,
-                        // which is a real observation ("knowably zero
-                        // accessible cases"), distinct from the absent-pickle
-                        // `None`.
-                        .filter(|c| c.access.is_empty())
-                        .map(|c| c.ident.name.clone())
-                        .collect(),
-                ));
+            // The CCU wrapper (`is_root`) is never a target on either side.
+            if !is_root {
+                if let Some(cases) = cases {
+                    targets.push((
+                        namespace.to_vec(),
+                        type_chain.to_vec(),
+                        clr_name(entity),
+                        // The MANGLED arity (`U`1` for a one-typar union), which
+                        // is how `Entity::generic_parameters.len()` is keyed for a
+                        // *non-measure* union; a measure-parameterised union's real
+                        // cases are lost here (its `U`1` row has zero CLR generic
+                        // parameters — a pre-existing completeness gap), never
+                        // misattached, since no ECMA row carries its `typars.len()`.
+                        entity.typars.len(),
+                        cases
+                            .iter()
+                            // Only `TAccess []` (public) cases: a private
+                            // representation (`type U = private | Hidden`) pickles
+                            // each case with a restricted access path, and a
+                            // cross-assembly consumer can never name it — listing
+                            // it would let a hidden case wrongly shadow a
+                            // same-named earlier binding FCS resolves (codex
+                            // round 21). Filtering can leave the list EMPTY,
+                            // which is a real observation ("knowably zero
+                            // accessible cases"), distinct from the absent-pickle
+                            // `None`.
+                            .filter(|c| c.access.is_empty())
+                            .map(|c| c.ident.name.clone())
+                            .collect(),
+                    ));
+                } else if entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE == 0
+                    && entity.type_abbrev.is_none()
+                    && matches!(entity.exn_repr, PickledExnRepr::None)
+                    && matches!(entity.repr, PickledTyconRepr::NoRepr)
+                    && is_measure_free(pickled, entity)
+                {
+                    // An OPAQUE, MEASURE-FREE TYPE: a *type* (the
+                    // `IsModuleOrNamespace` flag bit is clear — so not a module or
+                    // namespace), not an abbreviation, not an exception (`exn_repr`
+                    // is `None` — an `exception U = …` alias emits no TypeDef of its
+                    // own), whose representation is `NoRepr`, and with no erased
+                    // `[<Measure>]` typar (so its `typars.len()` IS its CLR arity —
+                    // the key names its own ECMA row, not a measure-erased sibling).
+                    // A signature-hidden union is exactly this shape (a hidden class
+                    // / record lands here too, but its ECMA kind is not `Union`, so
+                    // the second loop's filter skips it). The second loop seals only
+                    // when the projected key names EXACTLY ONE ECMA row — see there.
+                    hidden_repr.push((
+                        namespace.to_vec(),
+                        type_chain.to_vec(),
+                        clr_name(entity),
+                        entity.typars.len(),
+                    ));
+                }
             }
             Ok(())
         },
@@ -487,6 +551,76 @@ pub(crate) fn apply_union_case_names(
         };
         if let Some(ecma) = target {
             ecma.union_case_names = Some(names);
+        }
+    }
+    // Signature-hidden unions. `type Teq<'a,'b>` exposed opaquely in a `.fsi`
+    // while the `.fs` has `type Teq<'a,'b> = private Teq of …` (or an inline
+    // `[<Sealed>]` signature) replaces the impl's union repr with `TNoRepr` in
+    // the SIGNATURE data (FCS `SignatureConformance`: `TFSharpTyconRepr r,
+    // TNoRepr`), so the walk above never reached it. But the compiled class
+    // still carries `CompilationMapping(SumType)`, so the ECMA projector
+    // classifies it `EntityKind::Union` — and it kept `union_case_names = None`,
+    // which the module-open fold (`sema` `fold_tycon_tier`) reads as "unknowable
+    // hidden cases" and defers every dotted head over (a bare `List.replicate`
+    // where a file-local union case `List` forces the dotted-path branch). A
+    // representation hidden by the signature exposes ZERO accessible cases, so
+    // the honest answer is a knowably-empty `Some(vec![])`, exactly like the
+    // private-case filter above.
+    //
+    // **Decline any projected-key collision** — the load-bearing soundness guard
+    // (codex review, six rounds). The seal matches a pickle candidate to its ECMA
+    // row by the projected key `(strip_arity(name), generic_parameters.len())`,
+    // which is NOT injective: distinct metadata TypeDefs collapse onto one key
+    // whenever fsc erases or mangles the difference — a `--staticlink` foreign
+    // `U`0` beside a host `U`, a measure-erased `U`1` beside a non-generic `U`, a
+    // `[<CompiledName("U`0")>]`. Enumerating those sources is a losing game (each
+    // review round surfaced a new one, and the pre-existing overlays share the
+    // same latent ambiguity). Instead, seal ONLY when the key names EXACTLY ONE
+    // ECMA row in the candidate's container. `is_measure_free` (above) makes the
+    // candidate's `typars.len()` equal its own CLR arity, so its own row IS at
+    // the key; if that row is the SOLE one there, the row we seal is provably
+    // that own row, never a collision. Any collapse (≥ 2 rows at the key)
+    // declines — the union keeps `None` (unknowable, the safe direction). Sound
+    // without trusting `authoritative`, which a `--nointerfacedata` dependency
+    // defeats (its copied TypeDefs bring no signature resource, so
+    // `foreign_signature_data_present` misses them).
+    //
+    // TWO residual holes remain, shared with the other lossy-key overlays (the
+    // first loop, the measure and source-name overlays) and tracked as the
+    // project-wide soundness item (#145): the uniqueness check covers the leaf
+    // only, not each ambiguous CONTAINER segment; and a DROPPED own row lets a
+    // surviving foreign sibling look unique. Both need pathological
+    // `[<CompiledName>]` / an undecodable type — never ordinary F#. The proper
+    // fix is an injective projection key (retain the exact metadata identity),
+    // which #145 closes for every overlay at once.
+    for (namespace, containers, name, arity) in hidden_repr {
+        let matches_key = |e: &Entity| e.name == name && e.generic_parameters.len() == arity;
+        let is_target = |e: &Entity| {
+            matches_key(e) && e.kind == EntityKind::Union && e.union_case_names.is_none()
+        };
+        if containers.is_empty() {
+            let count = entities
+                .iter()
+                .filter(|e| e.namespace == namespace && matches_key(e))
+                .count();
+            if count == 1
+                && let Some(ecma) = entities
+                    .iter_mut()
+                    .find(|e| e.namespace == namespace && is_target(e))
+            {
+                ecma.union_case_names = Some(Vec::new());
+            }
+        } else if let Some(container) = find_entity_mut(entities, &namespace, &containers) {
+            let count = container
+                .nested_types
+                .iter()
+                .filter(|e| matches_key(e))
+                .count();
+            if count == 1
+                && let Some(ecma) = container.nested_types.iter_mut().find(|e| is_target(e))
+            {
+                ecma.union_case_names = Some(Vec::new());
+            }
         }
     }
     Ok(())
@@ -1949,6 +2083,33 @@ fn clr_name(entity: &PickledEntity) -> String {
         .clone()
         .unwrap_or_else(|| entity.logical_name.clone());
     strip_arity(&raw).to_string()
+}
+
+/// Whether a pickled type has **no erased `[<Measure>]` type parameter**. A
+/// measure typar carries no CLR metadata, so a measure-parameterised type's
+/// mangled name and its CLR generic arity disagree: `type U<[<Measure>] 'u>`
+/// emits `U`1` with **zero** CLR generic parameters, which the projector strips
+/// to `name = "U"`, `generic_parameters = []` — indistinguishable from a
+/// non-generic `type U` and from a same-name foreign union. The hidden-union
+/// seal declines such a type (it keeps `None`, unknowable — the safe direction)
+/// rather than match its `typars.len()` against the wrong ECMA row. A
+/// measure-FREE type's `typars.len()` **is** its CLR arity, so `(name, arity)`
+/// names its own TypeDef unambiguously.
+///
+/// FCS `TyparFlags.Kind` (`TypedTree.fs`): a typar is a measure iff
+/// `flags &&& 0b00001000100000000 == 0b00000000100000000`. An unknown typar
+/// index is treated as a measure — declining (the safe direction) rather than
+/// trusting a `typars.len()` match we cannot validate.
+fn is_measure_free(pickled: &PickledCcu, entity: &PickledEntity) -> bool {
+    const TYPAR_KIND_MASK: i64 = 0b00001000100000000;
+    const TYPAR_KIND_MEASURE: i64 = 0b00000000100000000;
+    entity.typars.iter().all(|&ti| {
+        pickled
+            .tables
+            .typars
+            .get(ti as usize)
+            .is_some_and(|t| t.flags & TYPAR_KIND_MASK != TYPAR_KIND_MEASURE)
+    })
 }
 
 /// Render an FQN for error-message formatting. Matches the
@@ -4716,6 +4877,296 @@ mod tests {
             .map(|e| e.name.as_str())
             .collect();
         assert_eq!(nested, vec!["InnerA", "InnerB"], "nested take pickle order");
+    }
+
+    /// A CCU whose `Ns` namespace holds a type `Teq` and a module `Helpers`,
+    /// both pickled with `NoRepr`. `NoRepr` is the SIGNATURE shape a union gets
+    /// when a signature file (or an inline `[<Sealed>]`) hides its
+    /// representation from cross-assembly consumers — `type Teq<'a,'b>` in the
+    /// `.fsi`, `type Teq<'a,'b> = private Teq of …` in the `.fs`. The signature
+    /// pickle carries no union repr, yet the compiled class still bears
+    /// `CompilationMapping(SumType)`, so the ECMA projector classifies it
+    /// `EntityKind::Union`. A module pickles `NoRepr` too and carries the
+    /// `IsModuleOrNamespace` flag (like the namespace and the root) — the merge
+    /// must seal only the *type*. Slot 0 is the CCU wrapper, 1 the namespace,
+    /// 2 `Teq`, 3 `Helpers`.
+    fn ccu_with_hidden_union() -> PickledCcu {
+        // A TYPE: `IsModuleOrNamespace` clear (`make_entity` defaults `flags` to 0).
+        let teq = make_entity("Teq", PickledTyconRepr::NoRepr, empty_modul_typ());
+        let mut helpers = make_entity(
+            "Helpers",
+            PickledTyconRepr::NoRepr,
+            module_modul_typ(Vec::new()),
+        );
+        helpers.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut ns_modul = empty_modul_typ();
+        ns_modul.entities = vec![2, 3];
+        let mut ns = make_entity("Ns", PickledTyconRepr::NoRepr, ns_modul);
+        ns.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let mut root = make_entity("Ns", PickledTyconRepr::NoRepr, root_modul);
+        root.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        PickledCcu {
+            header: PickledHeader {
+                ccu_refs: vec![CcuRef {
+                    name: "FSharp.Core".to_string(),
+                }],
+                ntycons: 4,
+                ntypars: 0,
+                nvals: 0,
+                nanoninfos: 0,
+                strings: Vec::new(),
+                pubpaths: Vec::new(),
+                nlerefs: Vec::new(),
+                simpletys: Vec::new(),
+                phase1_bytes: Vec::new(),
+            },
+            root_entity: 0,
+            compile_time_working_dir: String::new(),
+            uses_quotations: false,
+            tables: PickledOsgnTables {
+                tycons: vec![root, ns, teq, helpers],
+                typars: Vec::new(),
+                vals: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
+        // Regression: `type Teq<'a,'b>` abstract in a `.fsi`, union in the
+        // `.fs`, pickles the SIGNATURE as `NoRepr`, so `apply_union_case_names`
+        // never reaches it via the union-repr walk and it kept
+        // `union_case_names = None` — read downstream (`assembly_env.rs`
+        // `fold_tycon_tier`) as "unknowable hidden cases", which made `open`ing
+        // the namespace defer every dotted head (e.g. `List.replicate` where a
+        // file-local union case `List` forces the dotted-path branch). But a
+        // representation hidden by the signature exposes ZERO accessible cases,
+        // so the answer is a knowably-empty `Some(vec![])`, exactly like a
+        // private representation's private-case filter. A same-shaped `NoRepr`
+        // module (the `IsModuleOrNamespace` flag set) must stay untouched — it is
+        // never even a candidate.
+        let pickled = ccu_with_hidden_union();
+        let mut entities = vec![
+            make_ecma_entity(vec!["Ns"], "Teq", EntityKind::Union),
+            make_ecma_entity(vec!["Ns"], "Helpers", EntityKind::Module),
+        ];
+        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(
+            entities[0].union_case_names.as_deref(),
+            Some(&[][..]),
+            "a signature-hidden union has knowably zero accessible cases"
+        );
+        assert_eq!(
+            entities[1].union_case_names, None,
+            "a NoRepr module is not a union and must not be sealed"
+        );
+    }
+
+    #[test]
+    fn a_host_namespace_node_never_seals_a_foreign_union_at_its_fqn() {
+        // codex's exact collision: the host declares `namespace Collision.U` (a
+        // namespace — `NoRepr`, `IsModuleOrNamespace` set — in the host pickle),
+        // while a linked dependency's `namespace Collision; type U = A | B` is a
+        // copied foreign union in the ECMA tree at the same FQN (`Collision.U`,
+        // arity 0), unknowable (`None`) because the host pickle does not describe
+        // it. Were the host namespace node a candidate it would match that union
+        // by `(namespace, name, arity)` and ECMA `Union` kind and falsely seal
+        // its real cases empty. The `IsModuleOrNamespace` filter must exclude the
+        // namespace node from `hidden_repr`, leaving the foreign union `None`.
+        // (This is why the seal does not — and must not — trust `authoritative`:
+        // a `--nointerfacedata` dependency's copied types bring no signature
+        // resource, so the image can still read as authoritative here.)
+        let mut ns_u = empty_modul_typ();
+        ns_u.is_type = IsType::Namespace;
+        let mut u = make_entity("U", PickledTyconRepr::NoRepr, ns_u);
+        u.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut collision = empty_modul_typ();
+        collision.entities = vec![2];
+        let mut collision = make_entity("Collision", PickledTyconRepr::NoRepr, collision);
+        collision.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Host", PickledTyconRepr::NoRepr, root_modul);
+        let pickled = PickledCcu {
+            header: PickledHeader {
+                ccu_refs: Vec::new(),
+                ntycons: 3,
+                ntypars: 0,
+                nvals: 0,
+                nanoninfos: 0,
+                strings: Vec::new(),
+                pubpaths: Vec::new(),
+                nlerefs: Vec::new(),
+                simpletys: Vec::new(),
+                phase1_bytes: Vec::new(),
+            },
+            root_entity: 0,
+            compile_time_working_dir: String::new(),
+            uses_quotations: false,
+            tables: PickledOsgnTables {
+                tycons: vec![root, collision, u],
+                typars: Vec::new(),
+                vals: Vec::new(),
+            },
+        };
+        // The copied foreign union at `Collision.U` — unknowable, `None`.
+        let mut entities = vec![make_ecma_entity(vec!["Collision"], "U", EntityKind::Union)];
+        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(
+            entities[0].union_case_names, None,
+            "a host namespace node must never seal a foreign union at its FQN"
+        );
+    }
+
+    #[test]
+    fn an_exception_never_seals_a_foreign_union_at_its_fqn() {
+        // codex round 3: an `exception U = …` alias is a non-module `NoRepr`
+        // entity with no `type_abbrev` — it would satisfy the opaque-type filter
+        // — yet it emits no TypeDef of its own, so in a static-linked image its
+        // FQN can be occupied by a copied foreign union. The `exn_repr` exclusion
+        // must keep it out of `hidden_repr`, leaving that foreign union `None`.
+        // (`Fresh` here stands in for any non-`None` `exn_repr`; the exclusion is
+        // identical for the `Abbrev` alias that is the realistic collision.)
+        let mut u = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        u.exn_repr = PickledExnRepr::Fresh(Vec::new());
+        let mut collision = empty_modul_typ();
+        collision.entities = vec![2];
+        let mut collision = make_entity("Collision", PickledTyconRepr::NoRepr, collision);
+        collision.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let root = make_entity("Host", PickledTyconRepr::NoRepr, root_modul);
+        let pickled = make_ccu(vec![root, collision, u], Vec::new(), 0);
+        let mut entities = vec![make_ecma_entity(vec!["Collision"], "U", EntityKind::Union)];
+        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(
+            entities[0].union_case_names, None,
+            "an exception node must never seal a foreign union at its FQN"
+        );
+    }
+
+    const MEASURE_TYPAR_FLAGS: i64 = 0b00000000100000000;
+
+    fn make_typar(flags: i64) -> PickledTyparSpecData {
+        PickledTyparSpecData {
+            ident: PickledIdent {
+                name: "t".to_string(),
+                range: dummy_range(),
+            },
+            attribs: Vec::new(),
+            flags,
+            constraints: Vec::new(),
+            xmldoc: PickledXmlDoc { lines: Vec::new() },
+        }
+    }
+
+    #[test]
+    fn is_measure_free_detects_measure_typars() {
+        // FCS `TyparFlags.Kind`: a measure typar sets bit 8. Typar 0 is a type
+        // parameter, typar 1 a measure.
+        let mut ccu = make_ccu(Vec::new(), Vec::new(), 0);
+        ccu.tables.typars = vec![make_typar(0), make_typar(MEASURE_TYPAR_FLAGS)];
+
+        let non_generic = make_entity("A", PickledTyconRepr::NoRepr, empty_modul_typ());
+        assert!(
+            is_measure_free(&ccu, &non_generic),
+            "no typars is measure-free"
+        );
+
+        let mut type_param = make_entity("B", PickledTyconRepr::NoRepr, empty_modul_typ());
+        type_param.typars = vec![0];
+        assert!(
+            is_measure_free(&ccu, &type_param),
+            "a type typar is measure-free"
+        );
+
+        let mut measure = make_entity("C", PickledTyconRepr::NoRepr, empty_modul_typ());
+        measure.typars = vec![1];
+        assert!(!is_measure_free(&ccu, &measure), "a measure typar is not");
+
+        // An unknown typar index declines (the safe direction) rather than trust
+        // a `typars.len()` we cannot validate.
+        let mut dangling = make_entity("D", PickledTyconRepr::NoRepr, empty_modul_typ());
+        dangling.typars = vec![99];
+        assert!(
+            !is_measure_free(&ccu, &dangling),
+            "an unknown typar declines"
+        );
+    }
+
+    #[test]
+    fn a_measure_parameterised_hidden_union_is_declined() {
+        // codex round 4: a `[<Measure>]` typar is erased from CLR metadata, so a
+        // signature-hidden `type U<[<Measure>] 'u>` emits `U`1` with ZERO CLR
+        // generic parameters — its `typars.len()` (1) matches no honest ECMA row
+        // and, keyed against a same-name arity-1 overload or foreign union, would
+        // seal the wrong entity. The seal declines a measure-parameterised
+        // candidate (it keeps `None`), while a measure-free hidden union `V` at
+        // the same namespace is still sealed.
+        let mut u = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        u.typars = vec![0]; // one MEASURE typar
+        let v = make_entity("V", PickledTyconRepr::NoRepr, empty_modul_typ()); // measure-free
+        let mut ns_modul = empty_modul_typ();
+        ns_modul.entities = vec![2, 3];
+        let mut ns = make_entity("Ns", PickledTyconRepr::NoRepr, ns_modul);
+        ns.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let mut root = make_entity("Ns", PickledTyconRepr::NoRepr, root_modul);
+        root.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut pickled = make_ccu(vec![root, ns, u, v], Vec::new(), 0);
+        pickled.tables.typars = vec![make_typar(MEASURE_TYPAR_FLAGS)];
+
+        let mut entities = vec![
+            make_ecma_entity(vec!["Ns"], "U", EntityKind::Union),
+            make_ecma_entity(vec!["Ns"], "V", EntityKind::Union),
+        ];
+        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(
+            entities[0].union_case_names, None,
+            "a measure-parameterised hidden union is declined (kept unknowable)"
+        );
+        assert_eq!(
+            entities[1].union_case_names.as_deref(),
+            Some(&[][..]),
+            "a measure-free hidden union is still sealed"
+        );
+    }
+
+    #[test]
+    fn a_projected_key_collision_declines_the_seal() {
+        // codex round 6: borzoi's projected key `(strip_arity(name),
+        // generic_parameters.len())` is not injective. A legal `type U` (opaque
+        // sealed class) beside `[<CompiledName("U`0")>] type Other = A | B` yields
+        // distinct metadata rows `U` and `U`0` that BOTH project to
+        // `(name = "U", arity = 0)` — as do a measure-erased `U`1` beside a
+        // non-generic `U`, and a `--staticlink` foreign union. Rather than
+        // enumerate every such source (each review round found a new one), the
+        // seal commits only when the key names EXACTLY ONE ECMA row; two rows
+        // decline, leaving the real union's cases intact (`None` here — the row a
+        // blind seal would have overwritten).
+        let opaque = make_entity("U", PickledTyconRepr::NoRepr, empty_modul_typ());
+        let mut ns_modul = empty_modul_typ();
+        ns_modul.entities = vec![2];
+        let mut ns = make_entity("Ns", PickledTyconRepr::NoRepr, ns_modul);
+        ns.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let mut root_modul = empty_modul_typ();
+        root_modul.entities = vec![1];
+        let mut root = make_entity("Ns", PickledTyconRepr::NoRepr, root_modul);
+        root.flags = ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE;
+        let pickled = make_ccu(vec![root, ns, opaque], Vec::new(), 0);
+        // Two ECMA rows collapse onto (Ns, "U", 0): the opaque class and a union.
+        let mut entities = vec![
+            make_ecma_entity(vec!["Ns"], "U", EntityKind::Class),
+            make_ecma_entity(vec!["Ns"], "U", EntityKind::Union),
+        ];
+        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        assert_eq!(
+            entities[1].union_case_names, None,
+            "a projected-key collision must decline, leaving the union's cases intact"
+        );
     }
 
     // The following imports keep the symbol mentioned in module-level
