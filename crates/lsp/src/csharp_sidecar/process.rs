@@ -195,20 +195,23 @@ pub fn start_sidecar(
     workspace_root: &Path,
     dotnet_root: &Path,
 ) -> Result<SidecarHandle, SidecarError> {
-    start_sidecar_with_timeout(
+    let request_timeout = crate::spawn::default_timeout();
+    start_sidecar_with_timeouts(
         dotnet_exe,
         sidecar_dll,
         workspace_root,
         dotnet_root,
-        crate::spawn::default_timeout(),
+        request_timeout,
+        request_timeout,
     )
 }
 
-pub(crate) fn start_sidecar_with_timeout(
+pub(crate) fn start_sidecar_with_timeouts(
     dotnet_exe: &Path,
     sidecar_dll: &Path,
     workspace_root: &Path,
     dotnet_root: &Path,
+    initialize_timeout: Duration,
     request_timeout: Duration,
 ) -> Result<SidecarHandle, SidecarError> {
     // Validate the DLL up-front. If we skipped this, `dotnet` would still
@@ -241,7 +244,7 @@ pub(crate) fn start_sidecar_with_timeout(
         child,
         stdin: Some(stdin),
         responses,
-        request_timeout,
+        request_timeout: initialize_timeout,
         next_id: 1,
         // Filled by the handshake below.
         init: InitializeResult {
@@ -272,6 +275,9 @@ pub(crate) fn start_sidecar_with_timeout(
             sidecar: init.protocol_version,
         });
     }
+    // Initialization and steady-state requests have separate deadline policies;
+    // switch only after the handshake has produced a compatible protocol.
+    handle.request_timeout = request_timeout;
     handle.init = init;
     Ok(handle)
 }
@@ -468,6 +474,8 @@ fn read_responses(stdout: ChildStdout) -> Receiver<Result<Vec<u8>, SidecarError>
 mod tests {
     use super::*;
 
+    const TEST_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
+
     #[cfg(unix)]
     fn start_fake_sidecar(
         tmp: &tempfile::TempDir,
@@ -483,14 +491,22 @@ read_request() {
     dd bs=1 count="$length" of=/dev/null 2>/dev/null
 }
 
+sleep 1
 read_request
 body='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"0.4.0","runtimeVersion":"fake","roslynVersion":null}}'
 printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
 "#;
         let script = tmp.path().join("fake-sidecar.sh");
         std::fs::write(&script, format!("{INITIALIZE}\n{after_initialize}\n")).unwrap();
-        start_sidecar_with_timeout(Path::new("sh"), &script, tmp.path(), tmp.path(), timeout)
-            .expect("fake sidecar should complete initialize")
+        start_sidecar_with_timeouts(
+            Path::new("sh"),
+            &script,
+            tmp.path(),
+            tmp.path(),
+            TEST_INITIALIZE_TIMEOUT,
+            timeout,
+        )
+        .expect("fake sidecar should complete initialize")
     }
 
     #[cfg(unix)]
@@ -545,8 +561,14 @@ printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
         std::fs::write(&script, "sleep 1\n").unwrap();
         let timeout = Duration::from_millis(100);
 
-        let result =
-            start_sidecar_with_timeout(Path::new("sh"), &script, tmp.path(), tmp.path(), timeout);
+        let result = start_sidecar_with_timeouts(
+            Path::new("sh"),
+            &script,
+            tmp.path(),
+            tmp.path(),
+            timeout,
+            timeout,
+        );
         assert!(matches!(
             result,
             Err(SidecarError::RequestTimedOut { method, after })

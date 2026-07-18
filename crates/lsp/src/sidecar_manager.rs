@@ -265,7 +265,9 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    use crate::csharp_sidecar::start_sidecar_with_timeout;
+    use crate::csharp_sidecar::start_sidecar_with_timeouts;
+
+    const TEST_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]
     fn transport_errors_are_classified_for_respawn() {
@@ -322,6 +324,7 @@ read_request() {
     dd bs=1 count="$length" of=/dev/null 2>/dev/null
 }
 
+sleep 1
 read_request
 body='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"0.4.0","runtimeVersion":"fake","roslynVersion":null}}'
 printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
@@ -331,9 +334,15 @@ sleep 1
         )
         .unwrap();
         let timeout = Duration::from_millis(100);
-        let handle =
-            start_sidecar_with_timeout(Path::new("sh"), &script, tmp.path(), tmp.path(), timeout)
-                .expect("fake sidecar should complete initialize");
+        let handle = start_sidecar_with_timeouts(
+            Path::new("sh"),
+            &script,
+            tmp.path(),
+            tmp.path(),
+            TEST_INITIALIZE_TIMEOUT,
+            timeout,
+        )
+        .expect("fake sidecar should complete initialize");
         let mut mgr = SidecarManager {
             handle: Some(handle),
             spawned_root: Some(tmp.path().to_path_buf()),

@@ -20,7 +20,7 @@ pub mod protocol;
 
 pub use error::SidecarError;
 #[cfg(test)]
-pub(crate) use process::start_sidecar_with_timeout;
+pub(crate) use process::start_sidecar_with_timeouts;
 pub use process::{SidecarHandle, start_bundled_sidecar, start_sidecar};
 pub use protocol::{
     BuildMetadataResult, CompilerDiagnostic, DiagnosticPosition, DiagnosticRange, InitializeResult,
