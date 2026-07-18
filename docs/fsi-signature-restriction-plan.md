@@ -326,6 +326,21 @@ match exactly, resolved-to-assembly must not bind a project binder, unbound
 must defer — so a screen hole at any commit surface (the codex round-1
 class) is caught mechanically rather than fixture-by-fixture.
 
+**Stage-1 known over-deferrals (codex round 5 — availability only, for
+Stage 2 to refine).** Two places the screen prefers guaranteed-sound
+deferral over precision: (1) `Resolver::sig_screens_reading_of` vetoes on a
+screened reading at *any* priority tier, so a higher-priority open's real
+project item defers too (`open P; M.x` with a signatured root `M` and an
+unsigned `P.M.x` — FCS binds `P.M.x`); tiering the veto requires mapping
+the project commit blocks onto the precedence walk, which the Stage-2
+restructuring (signature exports as real candidates) gets for free.
+(2) `sig_screened_open_name`'s strictly-under-the-open arm screens a
+namespace open's entries by name even when the screened root is not
+auto-open-reachable; narrowing it needs per-entry surface provenance (the
+assembly-side `[<AutoOpen>]`-merge corner makes the sig-side attribute
+alone insufficient). Both directions only ever produce `Deferred` where FCS
+resolves — never a wrong commit.
+
 ### Stage 2: the signature exports its surviving surface (signature identity)
 
 **Dependencies:** Stage 1. **Behaviour change:** first new commits — cross-file
