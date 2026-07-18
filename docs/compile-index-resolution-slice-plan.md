@@ -63,21 +63,25 @@ suffix. Keeping the deeper base is sound: its entry for the edited file is stale
 but the incremental fold recomputes any file whose tree changed (`same_tree`) and
 reuses the rest.
 
-`resolved_project_and_env_for` (the full fold, used by `references` and — for now
-— hover/definition/completion) delegates with `up_to_index = usize::MAX`, so
-`want_len = parses.len()` and behaviour is unchanged. The cache is shared and
-grows to the deepest requester; a full request after a sliced one just extends
-the prefix (incrementally, reusing what's there).
+`resolved_project_and_env_for` (the full fold, used by `references`) delegates
+with `up_to_index = usize::MAX`, so `want_len = parses.len()` and behaviour is
+unchanged. The cache is shared and grows to the deepest requester; a full request
+after a sliced one just extends the prefix (incrementally, reusing what's there).
 
-Only the **semantic-tokens** handler is switched to the prefix method in this
-slice — the hot path, and the one the latency report named. It already computes
-`idx` (position in `parses.paths`); compute it *before* resolving and pass it as
-`up_to_index`. `token_classifier(idx)`'s cross-file `item_def` is unaffected: any
-`Item` file *k* references is declared in `0..k`, inside the prefix.
+**Every single-file handler** is now on the prefix method: **semantic-tokens**
+(the hot path the latency report named), **hover**, **definition**, and
+**completion**. Each computes `idx` (position in `parses.paths`) *before*
+resolving and passes it as `up_to_index` — the token handler and hover through
+`resolved_prefix_and_env_for` (they render `Entity`/`Member` handles, which are
+only meaningful against the fold's env), definition and completion through the
+env-less `resolved_prefix_for`. The cross-file lookups stay in-bounds by F#
+order-sensitivity: any `Item`/binder file *k* references — a `token_classifier`
+`item_def`, a go-to-definition `item_def`, a completion receiver's type, a hover
+target — is declared in `0..=k`, inside the prefix.
 
-`references` stays on the full method (it scans every file for uses). Slicing
-hover / definition / completion is a mechanical follow-up (compute `idx` first,
-call the prefix method) and is intentionally out of scope here.
+`references` stays on the full method (it scans every file for *uses* of the
+symbol, and a use can be in a *later* file — the one direction order-sensitivity
+does not bound).
 
 ## Correctness guards
 
@@ -88,6 +92,11 @@ call the prefix method) and is intentionally out of scope here.
   fold; the cached project's length is exactly `k+1` (not the project size),
   proving the suffix wasn't folded; a later deeper request extends the prefix; an
   edit still reuses the unchanged prefix (stage-2 reuse count).
+- **LSP (hover/definition/completion):** the existing per-handler result tests are
+  unchanged (the slice must not move any answer), and one new test per handler
+  drives a cross-file request from an *early* file of a multi-file project and
+  asserts `cached_resolved_len == idx+1` — the suffix handler was never folded,
+  while the cross-file target (an earlier file, in-prefix) still resolves.
 
 ## Cross-buffer refresh (`workspace/semanticTokens/refresh`)
 
@@ -129,7 +138,9 @@ the refresh is cheap.
   the reply — iff the client advertised
   `workspace.semanticTokens.refreshSupport`.
 
-## Out of scope (next slices)
+## Done in follow-ups
 
-- Slicing hover / definition / completion (mechanical once the prefix method
-  exists — compute `idx` first, call `resolved_prefix_and_env_for`).
+- Slicing hover / definition / completion — each now computes `idx` first and
+  folds only the prefix (`resolved_prefix_and_env_for` / `resolved_prefix_for`).
+  `references` remains the only single-cursor handler on the full fold, and
+  necessarily so (it scans *later* files for uses).

@@ -80,6 +80,52 @@ fn orphan_state(text: &str) -> (State, Url) {
     (state, uri)
 }
 
+/// Go-to-definition folds only the Compile **prefix** up to the cursor's file:
+/// a cross-file jump from file 1 of a three-file project resolves the target in
+/// file 0 (inside the [0, 1] prefix) and never folds file 2. Pins the
+/// resolution-slice wiring (`resolved_prefix_for` with the file's Compile index,
+/// not `usize::MAX`) — a regression to the whole-project fold would cache all
+/// three files.
+#[test]
+fn project_definition_folds_only_the_prefix_up_to_the_cursor_file() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    let c = tmp.path().join("C.fs");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+            <Compile Include="C.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    write(&a, "module A\nlet foo = 1\n");
+    let b_src = "module B\nlet bar = A.foo\n";
+    write(&b, b_src);
+    write(&c, "module C\nlet baz = B.bar\n");
+
+    let a_uri = Url::from_file_path(&a).unwrap();
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    // Cursor on the `foo` use in B (file 1) → its definition in A (file 0).
+    let (l, ch) = cursor_inside(b_src, "foo");
+    let loc = run(&mut state, &b_uri, l, ch).expect("cross-file definition");
+    assert_eq!(loc.uri, a_uri, "definition lands in A");
+
+    // Only the prefix [A, B] was folded; C (file 2) never was.
+    assert_eq!(
+        state.semantic.cached_resolved_len(&proj),
+        Some(2),
+        "definition from file 1 folds the [0, 1] prefix, not file 2"
+    );
+}
+
 // ---- orphan-file fallback ----
 
 #[test]

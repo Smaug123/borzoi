@@ -185,6 +185,18 @@ pub fn minimal_assets_json(package_folder: &Path) -> String {
 /// outlive the returned `State` (test-only). Shared by the Stage 3.3b member-name
 /// hover / go-to-definition / completion integration tests.
 pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Url) {
+    let (state, mut uris) = runtime_project_state_files(&[("Lib.fs", src)]);
+    (state, uris.remove(0))
+}
+
+/// Like [`runtime_project_state`] but with several `Compile` files in order (each
+/// a `(filename, source)`), sharing the same "restored" `System.Runtime.dll`
+/// env. Returns the per-file URIs in Compile order; every file's buffer is seeded
+/// into `docs`. Lets a test put a receiver / definition / hovered name in an
+/// *early* file and assert the resolution slice folds only the prefix up to it.
+pub fn runtime_project_state_files(
+    files: &[(&str, &str)],
+) -> (borzoi::server::State, Vec<lsp_types::Url>) {
     use borzoi::sdk_discovery::SdkDiscoveryEnv;
     use borzoi::server::State;
     use borzoi::workspace::Workspace;
@@ -212,14 +224,14 @@ pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Ur
     let pkgs = root.join("pkgs");
     std::fs::create_dir_all(&pkgs).unwrap();
     let proj = root.join("P.fsproj");
-    let src_path = root.join("Lib.fs");
+    let compiles: String = files
+        .iter()
+        .map(|(name, _)| format!("<Compile Include=\"{name}\" />"))
+        .collect();
     write(
         &proj,
-        r#"<Project>
-          <ItemGroup><Compile Include="Lib.fs" /></ItemGroup>
-        </Project>"#,
+        &format!("<Project><ItemGroup>{compiles}</ItemGroup></Project>"),
     );
-    write(&src_path, src);
     write(
         &root.join("obj").join("project.assets.json"),
         &minimal_assets_json(&pkgs),
@@ -230,9 +242,17 @@ pub fn runtime_project_state(src: &str) -> (borzoi::server::State, lsp_types::Ur
     };
     let mut state = State::default();
     state.workspace = Workspace::with_env(env);
-    let uri = lsp_types::Url::from_file_path(&src_path).unwrap();
-    state.docs.insert(uri.clone(), src.to_string());
-    (state, uri)
+    let uris = files
+        .iter()
+        .map(|(name, src)| {
+            let path = root.join(name);
+            write(&path, src);
+            let uri = lsp_types::Url::from_file_path(&path).unwrap();
+            state.docs.insert(uri.clone(), src.to_string());
+            uri
+        })
+        .collect();
+    (state, uris)
 }
 
 // ============================================================================
