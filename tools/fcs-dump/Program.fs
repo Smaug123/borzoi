@@ -4631,6 +4631,27 @@ let private dumpEntities (dllAbsolute: string) =
 // Symbol-uses dump (sema name-resolution differential test oracle)
 // ============================================================================
 
+/// Turn one caller-supplied ref path into a `-r:` switch, or crash: a relative
+/// path here does not fail, it silently no-ops — FCS's script-reference
+/// resolution treats an unresolvable `-r:` as simply absent, so the assembly
+/// it names never loads and every symbol in it reads back as "FCS couldn't
+/// resolve this", indistinguishable from a genuine resolution gap. Every
+/// caller in this workspace already builds the path it passes here from an
+/// absolute root (`CARGO_MANIFEST_DIR`, the NuGet global-packages folder, the
+/// dotnet install root), so this should never fire; it exists to turn a
+/// regression into a loud failure instead of a silently wrong differential.
+let private refArg (source: string) (p: string) : string =
+    let trimmed = p.Trim()
+    // `Path.IsPathRooted` is not the right check here: on Windows it also
+    // accepts drive-relative (`C:foo.dll`) and current-drive-rooted
+    // (`\foo.dll`) forms, both still resolved against a base directory FCS
+    // does not share with the caller — exactly the silent-no-op failure mode
+    // this guard exists to catch. `IsPathFullyQualified` requires a path that
+    // means the same thing regardless of the current directory or drive.
+    if not (Path.IsPathFullyQualified trimmed) then
+        failwithf "%s: expected an absolute .dll path, got relative path %s" source trimmed
+    "-r:" + trimmed
+
 /// Extra `-r:` reference arguments from `BORZOI_FCS_EXTRA_REFS`
 /// (`;`- or newline-separated absolute `.dll` paths). Lets a `uses` /
 /// `uses-project` caller make a fixture assembly resolvable without putting an
@@ -4641,7 +4662,7 @@ let private extraRefArgs () : string[] =
     | None -> [||]
     | Some paths ->
         paths.Split([| ';'; '\n' |], StringSplitOptions.RemoveEmptyEntries)
-        |> Array.map (fun p -> "-r:" + p.Trim())
+        |> Array.map (refArg "BORZOI_FCS_EXTRA_REFS")
 
 /// `-r:` reference arguments from an explicit list — the resident-batch sibling
 /// of [`extraRefArgs`], which reads them from `BORZOI_FCS_EXTRA_REFS`. A resident
@@ -4651,8 +4672,8 @@ let private extraRefArgs () : string[] =
 /// would have produced from the env var.
 let private extraRefArgsOf (refs: string list) : string[] =
     refs
-    |> List.map (fun p -> "-r:" + p.Trim())
-    |> List.filter (fun s -> s <> "-r:")
+    |> List.filter (fun p -> p.Trim() <> "")
+    |> List.map (refArg "refs")
     |> List.toArray
 
 /// Normalise one symbol use to the JSON shape the sema differential consumes:
