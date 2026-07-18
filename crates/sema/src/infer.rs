@@ -3699,6 +3699,7 @@ mod tests {
             is_extension_container: false,
             custom_attrs: vec![],
             abbreviation_target: None,
+            definition_range: None,
         }
     }
 

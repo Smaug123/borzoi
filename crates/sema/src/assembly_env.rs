@@ -556,8 +556,7 @@ pub struct AssemblyEnv {
     /// chases (codex round 6: O(annotations × loaded types × hops) without
     /// this). Shared across clones via `Arc` (same data ⇒ same results);
     /// `RwLock` because the env is queried from multiple threads.
-    abbreviation_chase_cache:
-        std::sync::Arc<std::sync::RwLock<HashMap<(EntityHandle, bool), Option<EntityHandle>>>>,
+    abbreviation_chase_cache: AbbreviationChaseCache,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -650,6 +649,12 @@ pub struct AssemblyEnv {
 /// The top-level type index key: namespace segments, simple name, and generic
 /// arity (the number of type parameters the type declares).
 type TypeKey = (Vec<String>, String, usize);
+
+/// The abbreviation-chase memo: `(marker, allow_args) → chase result`. `Arc`
+/// so the derived `Clone` shares it (same immutable entity data ⇒ same
+/// results); `RwLock` because the env is queried from multiple threads.
+type AbbreviationChaseCache =
+    std::sync::Arc<std::sync::RwLock<HashMap<(EntityHandle, bool), Option<EntityHandle>>>>;
 
 /// One referenced assembly as
 /// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it.
