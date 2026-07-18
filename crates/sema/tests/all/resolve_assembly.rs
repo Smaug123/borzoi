@@ -4747,15 +4747,18 @@ fn non_authoritative_assembly_declines_module_classification() {
     // The runtime constructor tags entities with an `AssemblyId` and records the
     // per-assembly `fsharp_signature_non_authoritative` bit the gate reads.
     let build = |non_authoritative: bool| {
-        AssemblyEnv::from_assemblies_with_projection_knowability(vec![(
-            std::path::PathBuf::from("Test.dll"),
-            vec![module.clone()],
-            AbbreviationVisibility::Modelled,
-            false,
-            non_authoritative,
-            Vec::new(),
-            None,
-        )])
+        AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            borzoi_sema::AssemblyProjectionInput {
+                path: std::path::PathBuf::from("Test.dll"),
+                roots: vec![module.clone()],
+                abbreviation_visibility: AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: non_authoritative,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+            },
+        ])
     };
     let classes = |env: &AssemblyEnv| {
         let h = env
@@ -4821,15 +4824,18 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
     module.nested_types = vec![];
 
     let build = |non_authoritative: bool| {
-        AssemblyEnv::from_assemblies_with_projection_knowability(vec![(
-            std::path::PathBuf::from("Test.dll"),
-            vec![module.clone()],
-            AbbreviationVisibility::Modelled,
-            false,
-            non_authoritative,
-            Vec::new(),
-            None,
-        )])
+        AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            borzoi_sema::AssemblyProjectionInput {
+                path: std::path::PathBuf::from("Test.dll"),
+                roots: vec![module.clone()],
+                abbreviation_visibility: AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: non_authoritative,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+            },
+        ])
     };
     let equals = |env: &AssemblyEnv| {
         let h = env

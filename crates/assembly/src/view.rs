@@ -13,7 +13,7 @@
 //! without exposing row IDs.
 
 use crate::ImportError;
-use crate::model::{AssemblyIdentity, AssemblyProjectionSkips, Entity};
+use crate::model::{AssemblyIdentity, AssemblyProjectionSkips, Entity, TypeForwarder};
 
 /// Implemented by [`crate::Ecma335Assembly`] (over the in-crate reader's owned
 /// `Image`). Consumers query an assembly entirely through this trait.
@@ -68,6 +68,18 @@ pub trait EcmaView {
     /// must not sink the assembly, it only costs an implicit open, which can
     /// only *reduce* what resolves).
     fn assembly_auto_opens(&self) -> Result<Vec<String>, ImportError>;
+
+    /// The assembly's forwarder-flagged `ExportedType` rows — where each
+    /// forwarded top-level type lives now. Consumers follow these when a
+    /// logical reference names an assembly (a facade like `netstandard`)
+    /// that no longer declares the type itself.
+    ///
+    /// Defaults to empty: a backend that does not surface forwarders only
+    /// costs its consumers declines on facade-routed references, never a
+    /// wrong target.
+    fn type_forwarders(&self) -> Result<Vec<TypeForwarder>, ImportError> {
+        Ok(Vec::new())
+    }
 
     /// All managed resources whose name begins with `FSharp`. Returning
     /// every match (not just those the importer can decode) lets the

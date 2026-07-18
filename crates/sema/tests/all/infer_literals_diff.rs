@@ -756,9 +756,11 @@ proptest! {
         let parsed = parse(&src);
         prop_assume!(parsed.errors.is_empty());
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let env = AssemblyEnv::default();
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
-        let inferred = infer_file(&file, &resolved, &env);
+        // The full BCL env: `int64` types through FSharp.Core's abbreviation
+        // marker and the target chase, not a hard-coded alias table.
+        let env = crate::common::full_bcl_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
         prop_assert!(
             inferred.types().is_empty(),
             "the literal node must stay deferred: {:?}",

@@ -33,11 +33,12 @@ pub struct SidecarManager {
     /// Latched once the bundled sidecar is found to be *structurally*
     /// unavailable this session (built without a .NET SDK, so there is no DLL
     /// to run at all). Stops us re-probing discovery — and re-logging — on every
-    /// C# ref of every build. A *spawn/handshake* fault (a bad `dotnet` path, a
-    /// protocol mismatch) does **not** latch this: it's reported non-retryable
-    /// so the failing project caches its degraded env (no respawn storm), but a
-    /// *different* project resolving to a working SDK root can still spawn — so
-    /// the fast-path latch stays reserved for the genuinely-nothing-to-run case.
+    /// C# ref of every build. A stable *spawn/handshake* fault (a bad `dotnet`
+    /// path, a protocol mismatch) does **not** latch this: the failing project
+    /// caches its degraded env, but a *different* project resolving to a working
+    /// SDK root can still spawn. An initialize timeout is transient and leaves
+    /// even the current project's env uncached. The fast-path latch stays
+    /// reserved for the genuinely-nothing-to-run case.
     unavailable: bool,
 }
 
@@ -47,11 +48,19 @@ pub struct CsharpMetadata {
     /// The metadata DLL paths (entry project + its transitive C# closure).
     /// Empty on any failure.
     pub dlls: Vec<PathBuf>,
-    /// A *transport* failure (broken pipe / dead process) interrupted this
-    /// build — the result is incomplete but a retry after respawn may succeed.
-    /// The caller should therefore avoid caching an env built from it (a
-    /// logical build error, by contrast, is stable and leaves this `false`).
+    /// A *transport* failure (timeout, broken pipe, or dead process) interrupted
+    /// this build — the result is incomplete but a retry after respawn may
+    /// succeed. The caller should therefore avoid caching an env built from it
+    /// (a logical build error, by contrast, is stable and leaves this `false`).
     pub retryable: bool,
+}
+
+/// Whether [`SidecarManager::ensure_handle`] left a usable process, or which
+/// cache policy the caller must apply to its degraded result.
+enum HandleAvailability {
+    Ready,
+    StableFailure,
+    TransientFailure,
 }
 
 // `SidecarHandle` owns process/pipe handles and isn't `Debug`; summarise
@@ -94,25 +103,30 @@ impl SidecarManager {
         target_framework: &str,
         project_tfms: &BTreeMap<PathBuf, String>,
     ) -> CsharpMetadata {
-        if !self.ensure_handle(dotnet_exe, dotnet_root, workspace_root) {
-            // Spawn/handshake failed. Nothing a session can change (the `dotnet`
-            // path, the bundled/overridden DLL, the sidecar's protocol version)
-            // self-heals between one keystroke and the next, so a failed spawn
-            // is a *stable* degradation, not a transient one: report it
-            // non-retryable and let the caller cache the (C#-less) env rather
-            // than re-spawn an unusable sidecar on every request. A genuine
-            // mid-request transport crash is different — handled below, it stays
-            // retryable, leaving the env uncached and the handle dropped for
-            // respawn.
-            return CsharpMetadata {
-                dlls: Vec::new(),
-                retryable: false,
-            };
+        match self.ensure_handle(dotnet_exe, dotnet_root, workspace_root) {
+            HandleAvailability::Ready => {}
+            HandleAvailability::StableFailure => {
+                // A bad executable path, missing sidecar, or protocol mismatch
+                // cannot self-heal between two requests. Cache the C#-less env.
+                return CsharpMetadata {
+                    dlls: Vec::new(),
+                    retryable: false,
+                };
+            }
+            HandleAvailability::TransientFailure => {
+                // An initialize request can time out before a handle is installed.
+                // Its local handle has already been dropped; leave the env
+                // uncached so the next request starts a fresh process.
+                return CsharpMetadata {
+                    dlls: Vec::new(),
+                    retryable: true,
+                };
+            }
         }
         let handle = self
             .handle
             .as_mut()
-            .expect("ensure_handle returned true, so a handle exists");
+            .expect("HandleAvailability::Ready means a handle exists");
         match handle.build_metadata(csproj, configuration, target_framework, project_tfms) {
             Ok(result) => {
                 let mut dlls = Vec::with_capacity(1 + result.transitive_project_refs.len());
@@ -165,15 +179,16 @@ impl SidecarManager {
         }
     }
 
-    /// Ensure a live handle exists, spawning one on first use. Returns whether
-    /// `self.handle` is `Some` afterwards. Never spawns again once
-    /// [`Self::unavailable`] latches.
+    /// Ensure a live handle exists, spawning one on first use. Never spawns
+    /// again once [`Self::unavailable`] latches. The outcome distinguishes a
+    /// stable configuration failure from an initialize timeout that may recover
+    /// on a fresh process.
     fn ensure_handle(
         &mut self,
         dotnet_exe: &Path,
         dotnet_root: &Path,
         workspace_root: &Path,
-    ) -> bool {
+    ) -> HandleAvailability {
         // A live handle bound to a *different* SDK root can't be reused: the
         // sidecar's MSBuild registration is process-wide, so it would evaluate
         // this project under the wrong SDK. Tear it down and respawn.
@@ -187,17 +202,17 @@ impl SidecarManager {
             self.spawned_root = None;
         }
         if self.handle.is_some() {
-            return true;
+            return HandleAvailability::Ready;
         }
         if self.unavailable {
-            return false;
+            return HandleAvailability::StableFailure;
         }
         match start_bundled_sidecar(dotnet_exe, workspace_root, dotnet_root) {
             Ok(handle) => {
                 tracing::info!("started C# sidecar for project-reference metadata");
                 self.handle = Some(handle);
                 self.spawned_root = Some(dotnet_root.to_path_buf());
-                true
+                HandleAvailability::Ready
             }
             Err(SidecarError::BundledSidecarUnavailable) => {
                 // Structural: no DLL to run. Latch so we don't re-probe/re-log.
@@ -206,16 +221,19 @@ impl SidecarManager {
                      will be unresolved this session (F# refs and packages are unaffected)"
                 );
                 self.unavailable = true;
-                false
+                HandleAvailability::StableFailure
             }
             Err(err) => {
-                // Transient (bad `dotnet` path, handshake failure): log, skip
-                // for this build, but leave the door open to a later retry.
+                let retryable = is_retryable_start_error(&err);
                 tracing::warn!(
                     error = %err,
                     "failed to start the C# sidecar; C# project references unresolved this build"
                 );
-                false
+                if retryable {
+                    HandleAvailability::TransientFailure
+                } else {
+                    HandleAvailability::StableFailure
+                }
             }
         }
     }
@@ -228,6 +246,7 @@ fn is_transport_error(err: &SidecarError) -> bool {
     matches!(
         err,
         SidecarError::Io(_)
+            | SidecarError::RequestTimedOut { .. }
             | SidecarError::Framing(_)
             | SidecarError::Json(_)
             | SidecarError::UnexpectedResponseId { .. }
@@ -235,9 +254,20 @@ fn is_transport_error(err: &SidecarError) -> bool {
     )
 }
 
+/// A request timeout during `initialize` is transport-transient even though no
+/// handle has yet been installed for the normal drop-on-error branch to clear.
+fn is_retryable_start_error(err: &SidecarError) -> bool {
+    matches!(err, SidecarError::RequestTimedOut { .. })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    use crate::csharp_sidecar::start_sidecar_with_timeouts;
+
+    const TEST_INITIALIZE_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[test]
     fn transport_errors_are_classified_for_respawn() {
@@ -253,11 +283,86 @@ mod tests {
             expected: 1,
             got: None
         }));
+        assert!(is_transport_error(&SidecarError::RequestTimedOut {
+            method: "buildMetadata".to_string(),
+            after: Duration::from_millis(10),
+        }));
         // Logical per-request failures → keep the healthy handle.
         assert!(!is_transport_error(&SidecarError::Rpc {
             code: -32601,
             message: "no".into()
         }));
+    }
+
+    #[test]
+    fn initialize_timeout_is_retryable() {
+        assert!(is_retryable_start_error(&SidecarError::RequestTimedOut {
+            method: "initialize".to_string(),
+            after: Duration::from_millis(10),
+        }));
+        assert!(!is_retryable_start_error(
+            &SidecarError::ProtocolVersionMismatch {
+                client: "client",
+                sidecar: "server".to_string(),
+            }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_drops_the_handle_and_marks_the_result_retryable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("slow-sidecar.sh");
+        std::fs::write(
+            &script,
+            r#"
+read_request() {
+    IFS= read -r header || exit 1
+    length=${header#Content-Length: }
+    length=${length%?}
+    IFS= read -r blank || exit 1
+    dd bs=1 count="$length" of=/dev/null 2>/dev/null
+}
+
+sleep 1
+read_request
+body='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"0.4.0","runtimeVersion":"fake","roslynVersion":null}}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
+read_request
+sleep 1
+"#,
+        )
+        .unwrap();
+        let timeout = Duration::from_millis(100);
+        let handle = start_sidecar_with_timeouts(
+            Path::new("sh"),
+            &script,
+            tmp.path(),
+            tmp.path(),
+            TEST_INITIALIZE_TIMEOUT,
+            timeout,
+        )
+        .expect("fake sidecar should complete initialize");
+        let mut mgr = SidecarManager {
+            handle: Some(handle),
+            spawned_root: Some(tmp.path().to_path_buf()),
+            unavailable: false,
+        };
+
+        let meta = mgr.metadata_dlls_for_csproj(
+            Path::new("sh"),
+            tmp.path(),
+            tmp.path(),
+            &tmp.path().join("Slow.csproj"),
+            "Debug",
+            "net10.0",
+            &BTreeMap::new(),
+        );
+
+        assert!(meta.dlls.is_empty());
+        assert!(meta.retryable);
+        assert!(mgr.handle.is_none(), "the timed-out handle is poisoned");
+        assert!(mgr.spawned_root.is_none());
     }
 
     #[test]

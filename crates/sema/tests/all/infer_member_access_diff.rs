@@ -51,11 +51,18 @@ fn bcl_env() -> AssemblyEnv {
 /// names it actually declares.
 fn bcl_and_fsharp_core_env() -> AssemblyEnv {
     let bcl = ensure_system_runtime_dll();
+    // The `netstandard` facade beside it: FSharp.Core's pickle names its BCL
+    // abbreviation targets through the `netstandard` CCU, so the
+    // primitive-alias chase (`int` → `int32` → a forwarder → `System.Int32`)
+    // needs the facade loaded — as in a real project's reference closure.
+    let netstd = bcl.parent().expect("ref dir").join("netstandard.dll");
     let core = ensure_fsharp_core_dll();
     let bcl_bytes = std::fs::read(&bcl).expect("read System.Runtime.dll");
+    let netstd_bytes = std::fs::read(&netstd).expect("read netstandard.dll");
     let core_bytes = std::fs::read(&core).expect("read FSharp.Core.dll");
     let views = [
         Ecma335Assembly::parse(&bcl_bytes).expect("parse System.Runtime.dll"),
+        Ecma335Assembly::parse(&netstd_bytes).expect("parse netstandard.dll"),
         Ecma335Assembly::parse(&core_bytes).expect("parse FSharp.Core.dll"),
     ];
     AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
@@ -515,6 +522,23 @@ fn multi_dot_chain_wakes_segment_by_segment() {
 }
 
 // ===== Stage 3.3b: member_resolutions side-table =====
+
+/// [`infer_bcl_full`] over [`bcl_and_fsharp_core_env`] — for tests whose
+/// annotations (`let n : int = …`) type through FSharp.Core's abbreviation
+/// markers, which the BCL-only env cannot supply.
+fn infer_core_full(src: &str) -> (InferredFile, ResolvedFile) {
+    let env = bcl_and_fsharp_core_env();
+    let parsed = parse(src);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let inferred = infer_file(&file, &resolved, &env);
+    (inferred, resolved)
+}
 
 /// Infer `src` against the BCL env, returning the resolved file too so a test can
 /// locate ranges and cross-check `member_resolutions`.
@@ -2227,7 +2251,7 @@ fn annotated_binding_rhs_member_wakes_and_records() {
     // from the annotation and the RHS root emits no node (check mode).
     // Everything we do emit (the receiver `s`) agrees with FCS.
     let src = "module M\nlet s = \"hi\"\nlet n : int = s.Length\n";
-    let (inferred, _) = infer_bcl_full(src);
+    let (inferred, _) = infer_core_full(src);
     assert!(
         matches!(
             inferred.member_resolution_at(ident_range(src, "Length")),
@@ -2235,13 +2259,12 @@ fn annotated_binding_rhs_member_wakes_and_records() {
         ),
         "the annotated binding's member access wakes and records"
     );
-    let (_, def_types) = infer_bcl(src);
+    let def_types = assert_sound_core(src);
     assert_eq!(def_types.get("n").map(String::as_str), Some("System.Int32"));
     assert_eq!(
         def_types.get("s").map(String::as_str),
         Some("System.String")
     );
-    assert_sound(src);
 }
 
 #[test]
@@ -2252,7 +2275,7 @@ fn annotated_binding_rhs_root_stays_silent() {
     // would be wrong. The check-walk suppresses it; the binder `o` types from
     // the annotation.
     let src = "module M\nlet s = \"hi\"\nlet o : obj = s\n";
-    let (inferred, resolved) = infer_bcl_full(src);
+    let (inferred, resolved) = infer_core_full(src);
     let use_at = src.rfind("= s").expect("use") + 2;
     assert!(
         inferred
@@ -2270,7 +2293,7 @@ fn annotated_binding_rhs_root_stays_silent() {
         def_types.get("o").map(String::as_str),
         Some("System.Object")
     );
-    assert_sound(src);
+    assert_sound_core(src);
 }
 
 #[test]
@@ -2280,7 +2303,7 @@ fn ill_typed_annotated_rhs_still_sound() {
     // still recorded (it *is* `String.Length` regardless of the binding
     // error), and nothing wrong is emitted at any range.
     let src = "module M\nlet s = \"hi\"\nlet n : int64 = s.Length\n";
-    let (inferred, resolved) = infer_bcl_full(src);
+    let (inferred, resolved) = infer_core_full(src);
     assert!(
         matches!(
             inferred.member_resolution_at(ident_range(src, "Length")),
@@ -2294,7 +2317,7 @@ fn ill_typed_annotated_rhs_still_sound() {
         .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
         .collect();
     assert_eq!(def_types.get("n").map(String::as_str), Some("System.Int64"));
-    assert_sound(src);
+    assert_sound_core(src);
 }
 
 #[test]
@@ -2302,7 +2325,7 @@ fn typed_pattern_rhs_member_wakes_too() {
     // The trivial typed-pattern form rides the same walk:
     // `let (n : int) = s.Length` records the member and types the binder.
     let src = "module M\nlet s = \"hi\"\nlet (n : int) = s.Length\n";
-    let (inferred, _) = infer_bcl_full(src);
+    let (inferred, _) = infer_core_full(src);
     assert!(
         matches!(
             inferred.member_resolution_at(ident_range(src, "Length")),
@@ -2310,9 +2333,8 @@ fn typed_pattern_rhs_member_wakes_too() {
         ),
         "the typed-pattern binding's member access wakes and records"
     );
-    let (_, def_types) = infer_bcl(src);
+    let def_types = assert_sound_core(src);
     assert_eq!(def_types.get("n").map(String::as_str), Some("System.Int32"));
-    assert_sound(src);
 }
 
 // ===== EX-3 §2(d) stage 5: the gate consumes the attribute resolutions =====

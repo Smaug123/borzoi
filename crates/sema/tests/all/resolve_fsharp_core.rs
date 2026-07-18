@@ -152,26 +152,38 @@ fn bare_sprintf_resolves_into_real_fsharp_core() {
 }
 
 #[test]
-fn bare_primitive_annotation_does_not_defer_against_real_fsharp_core() {
-    // Regression pin (R2-0 V1, codex review on `docs/completed/r2-annotation-typing-plan.md`):
-    // the implicit `Microsoft.FSharp.Core`/`Microsoft.FSharp.Control` opens
-    // always bring `ExtraTopLevelOperators`/`Operators`/`WebExtensions` — real
-    // auto-open modules with dozens of `private` compiler-generated closure
-    // classes as children — into scope for *every* file. A shadow check keyed
-    // on "does an in-scope auto-open module have any children" (rather than an
-    // accessible child named like the annotation) made every bare primitive
-    // annotation in every real project defer, so the R2 alias gate
-    // (`resolution_at(head) == None`) could never fire. `int64` names no
-    // accessible member of any real FSharp.Core auto-open module, so it must
-    // resolve to nothing here — the "no shadow possible" signal a primitive
-    // alias consumer reads.
-    let env = fsharp_core_env();
+fn bare_primitive_annotation_resolves_against_real_fsharp_core() {
+    // A bare `int64` annotation head binds FSharp.Core's own abbreviation
+    // marker under the implicit `Microsoft.FSharp.Core` open — the mechanism
+    // that replaced the hard-coded primitive-alias table. With the full BCL
+    // closure loaded the marker's target chases, so the head records the
+    // marker entity (what FCS names at the use).
+    //
+    // (This supersedes the R2-era pin that `int64` *recorded nothing* here —
+    // that "no shadow possible" signal existed for the alias-table gate,
+    // which is gone. The auto-open shadow regression it guarded — a
+    // children-presence check deferring every bare annotation — would now
+    // surface as a `ShadowableType` defer instead of the marker entity, so
+    // this assertion still catches it.)
+    let env = crate::common::full_bcl_env();
     let src = "module M\nlet f (x : int64) = x\n";
-    let rf = resolve(src, &env);
+    let rf = resolve(src, env);
+    let marker = core(env, "int64");
+    assert!(env.is_abbreviation(marker), "int64 is a marker");
     assert_eq!(
         rf.resolution_at(at(src, "int64")),
-        None,
-        "int64 is not shadowed by any real FSharp.Core auto-open module"
+        Some(Resolution::Entity(marker)),
+        "a bare primitive annotation binds FSharp.Core's abbreviation marker"
+    );
+
+    // Without the BCL half of the closure the target cannot chase, and the
+    // marker honestly defers — bounded uncertainty, never a wrong target.
+    let core_only = fsharp_core_env();
+    let rf = resolve(src, &core_only);
+    assert_eq!(
+        rf.resolution_at(at(src, "int64")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "with FSharp.Core alone the chase declines and the marker defers"
     );
 }
 
@@ -722,4 +734,84 @@ fn plain_auto_open_module_statics_still_resolve() {
         ),
         "bare `id` is a plain auto-open module val and must still resolve"
     );
+}
+/// The morally-load-bearing sweep: the F# primitive aliases' semantics come
+/// from FSharp.Core's own signature pickle — a marker per abbreviation, its
+/// decoded target chased through the abbreviation chain and, for BCL
+/// terminals, through `netstandard`'s type forwarders — with **no hard-coded
+/// alias table anywhere**. This pins that the chase reproduces, name for
+/// name, exactly the FQNs the deleted `fsharp_primitive_alias` table used to
+/// hard-code (including the source synonyms `int8`/`uint8`/`single`/…), so
+/// the table's semantics can never silently drift out of the mechanism that
+/// replaced it.
+///
+/// FCS resolves these the same way: `type int = int32` is ordinary F# source
+/// in FSharp.Core (`prim-types-prelude.fs`), not a compiler special case.
+#[test]
+fn primitive_alias_chases_reproduce_the_old_table() {
+    let env = crate::common::full_bcl_env();
+    let mfc: Vec<String> = ["Microsoft", "FSharp", "Core"].map(String::from).into();
+    let expected: &[(&str, &str)] = &[
+        ("bool", "System.Boolean"),
+        ("char", "System.Char"),
+        ("sbyte", "System.SByte"),
+        ("int8", "System.SByte"),
+        ("byte", "System.Byte"),
+        ("uint8", "System.Byte"),
+        ("int16", "System.Int16"),
+        ("uint16", "System.UInt16"),
+        ("int", "System.Int32"),
+        ("int32", "System.Int32"),
+        ("uint", "System.UInt32"),
+        ("uint32", "System.UInt32"),
+        ("int64", "System.Int64"),
+        ("uint64", "System.UInt64"),
+        ("float32", "System.Single"),
+        ("single", "System.Single"),
+        ("float", "System.Double"),
+        ("double", "System.Double"),
+        ("nativeint", "System.IntPtr"),
+        ("unativeint", "System.UIntPtr"),
+        ("obj", "System.Object"),
+        ("string", "System.String"),
+        ("decimal", "System.Decimal"),
+    ];
+    for (alias, fqn) in expected {
+        let marker = env
+            .lookup_type(&mfc, alias, 0)
+            .unwrap_or_else(|| panic!("FSharp.Core must surface a `{alias}` marker"));
+        assert!(
+            env.is_abbreviation(marker),
+            "`{alias}` must be an abbreviation marker"
+        );
+        let terminal = env
+            .resolve_abbreviation_tycon(marker)
+            .unwrap_or_else(|| panic!("`{alias}`'s target must chase"));
+        assert_eq!(
+            env.entity_full_name(terminal),
+            *fqn,
+            "`{alias}` must chase to exactly the FQN the old alias table hard-coded"
+        );
+    }
+    // The generic abbreviations the old table could never carry — the
+    // motivating gap (`option` hovered as "No definition available") — chase
+    // to their FSharp.Core-internal targets.
+    let mfcoll: Vec<String> = ["Microsoft", "FSharp", "Collections"]
+        .map(String::from)
+        .into();
+    for (ns, alias, arity, fqn) in [
+        (&mfc, "option", 1, "Microsoft.FSharp.Core.Option"),
+        (&mfc, "ref", 1, "Microsoft.FSharp.Core.Ref"),
+        (&mfc, "unit", 0, "Microsoft.FSharp.Core.Unit"),
+        (&mfcoll, "list", 1, "Microsoft.FSharp.Collections.List"),
+        (&mfcoll, "seq", 1, "System.Collections.Generic.IEnumerable"),
+    ] {
+        let marker = env
+            .lookup_type(ns, alias, arity)
+            .unwrap_or_else(|| panic!("FSharp.Core must surface a `{alias}` marker"));
+        let terminal = env
+            .resolve_abbreviation_tycon(marker)
+            .unwrap_or_else(|| panic!("`{alias}`'s target must chase"));
+        assert_eq!(env.entity_full_name(terminal), fqn, "`{alias}` terminal");
+    }
 }

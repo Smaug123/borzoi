@@ -76,10 +76,16 @@ impl<'a> Resolver<'a> {
         // all same-named entities) avoids over-deferring a legal `type Alias =
         // Widget` beside a generic `type Alias<'T>` in one DLL — a plain non-alias
         // reading is unchanged either way (first-wins, out of scope). Codex review.
-        let rooting_fqn_collides =
-            self.assemblies
-                .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
-                > 1;
+        // Computed lazily: consulted only when an alias is actually met, and
+        // the check scans every loaded top-level type (codex round 6).
+        let rooting_collision = std::cell::OnceCell::new();
+        let rooting_fqn_collides = || {
+            *rooting_collision.get_or_init(|| {
+                self.assemblies
+                    .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
+                    > 1
+            })
+        };
 
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
@@ -95,7 +101,7 @@ impl<'a> Resolver<'a> {
             // name; (2) the alias has a ModuleSuffix companion module, whose member
             // FCS routes `Alias.Member` to, not the target's (fcs-verified) — a
             // module-over-target precedence we do not model (codex review).
-            if rooting_fqn_collides
+            if rooting_fqn_collides()
                 || self
                     .assemblies
                     .alias_has_companion_module(type_handle, None)
@@ -168,7 +174,7 @@ impl<'a> Resolver<'a> {
                     // `children(parent)` sees only one contributor and may miss the
                     // other's `Alias`/companion), or a companion module beside this
                     // nested alias (codex review).
-                    if rooting_fqn_collides
+                    if rooting_fqn_collides()
                         || self
                             .assemblies
                             .alias_has_companion_module(child, Some(parent))
@@ -509,16 +515,47 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
+        // Whether the rooting's top-level FQN is exported by more than one
+        // loaded DLL, at the arity `lookup_type` selected. FCS merges same-FQN
+        // roots by reference order, which sema does not model — so any chase
+        // decision at or below a merged rooting could name the wrong DLL's
+        // tree (the first-indexed subtree's `children` may miss the other
+        // DLL's contribution) and must defer instead. It guards both an alias
+        // *at* the root and one nested below a merged non-alias container
+        // (codex round 3; mirrors the value-path walk) — but is consulted
+        // ONLY when an alias is actually met, and the check scans every
+        // loaded top-level type, so it is computed lazily rather than taxing
+        // every ordinary `System.String` path (codex round 6).
+        let rooting_collision = std::cell::OnceCell::new();
+        let rooting_fqn_collides = || {
+            *rooting_collision.get_or_init(|| {
+                self.assemblies
+                    .distinct_dlls_with_public_type(&names[..k], &names[k], arity_at(k))
+                    > 1
+            })
+        };
+
         // A type-abbreviation *marker* (a metadata-invisible F# abbreviation
         // surfaced name-only from the signature pickle): the name is really
-        // taken — FCS binds the abbreviation here — but its target type is
-        // not modelled, so resolving any reading through it would either
-        // fabricate a target or, worse, let a lower-priority reading win.
-        // Shadow-defer the whole path instead (D5: defer, never a wrong
-        // target).
-        if self.assemblies.is_abbreviation(type_handle) {
-            return AssemblyPath::ProjectShadowed;
-        }
+        // taken — FCS binds the abbreviation here — and a decoded, resolvable
+        // target lets the path resolve exactly as FCS does. The marker is the
+        // recorded entity for its own segment (and the leaf, when the path
+        // ends on it — FCS names the abbreviation, not its target); the
+        // chased terminal only carries the walk PAST it. Two things keep the
+        // pre-chase shadow-defer instead: an unchaseable target
+        // ([`AssemblyEnv::resolve_abbreviation_tycon`] declines structural /
+        // unloaded / ambiguous shapes), and the rooting collision above.
+        let walk_root = if self.assemblies.is_abbreviation(type_handle) {
+            if rooting_fqn_collides() {
+                return AssemblyPath::ProjectShadowed;
+            }
+            match self.assemblies.resolve_abbreviation_tycon(type_handle) {
+                Some(terminal) => terminal,
+                None => return AssemblyPath::ProjectShadowed,
+            }
+        } else {
+            type_handle
+        };
 
         let mut idx_recs: Vec<(usize, Resolution)> = Vec::new();
         let deferred = Resolution::Deferred(DeferredReason::QualifiedAccess);
@@ -534,7 +571,18 @@ impl<'a> Resolver<'a> {
         // `owns_path` (see [`AssemblyPath::Resolved`]) holds unless a segment
         // names no public nested type — a type path has no member tail, so that
         // absent-segment case is the only way it fails to capture the whole path.
-        let mut parent = type_handle;
+        // `named` tracks the entity the latest segment NAMES (the marker at an
+        // abbreviation segment), `parent` the entity the walk continues on (its
+        // chased terminal) — they differ only across an abbreviation.
+        // `via_alias`: once the path roots (or descends) through a *resolved*
+        // alias, FCS owns the reading — an absent child past it must DEFER,
+        // never cede ownership to a lower-priority open's same-named type:
+        // the child may exist on a surface the projection dropped, so absence
+        // from the tree does not prove absence (codex round 5; the type-path
+        // mirror of the value walk's `via_alias` rule).
+        let mut via_alias = walk_root != type_handle;
+        let mut named = type_handle;
+        let mut parent = walk_root;
         let mut i = k + 1;
         let mut owns_path = true;
         while i < n {
@@ -544,14 +592,31 @@ impl<'a> Resolver<'a> {
                 .filter(|&h| self.assemblies.is_public(h))
             {
                 // A nested abbreviation marker (`Lib.Auto.Foo` where `Foo` is
-                // a module-scoped abbreviation): same defer as the rooting
-                // case above — the name binds, the target is unmodelled.
-                if self.assemblies.is_abbreviation(child) {
-                    return AssemblyPath::ProjectShadowed;
-                }
+                // a module-scoped abbreviation): same chase-or-defer as the
+                // rooting case above, including the rooting collision guard —
+                // a nested alias below a merged non-alias container is
+                // reached through the first-indexed subtree, which may miss
+                // the other DLL's contribution (codex round 3).
+                let next = if self.assemblies.is_abbreviation(child) {
+                    if rooting_fqn_collides() {
+                        return AssemblyPath::ProjectShadowed;
+                    }
+                    match self.assemblies.resolve_abbreviation_tycon(child) {
+                        Some(terminal) => {
+                            via_alias = true;
+                            terminal
+                        }
+                        None => return AssemblyPath::ProjectShadowed,
+                    }
+                } else {
+                    child
+                };
                 idx_recs.push((i - base, Resolution::Entity(child)));
-                parent = child;
+                named = child;
+                parent = next;
                 i += 1;
+            } else if via_alias {
+                return AssemblyPath::ProjectShadowed;
             } else {
                 owns_path = false;
                 break;
@@ -566,9 +631,10 @@ impl<'a> Resolver<'a> {
             payload: TypePathReading {
                 idx_recs,
                 // The whole-path type, exactly when the reading owns the path
-                // (`parent` walked to the final segment); a partial reading has
-                // no whole-path type to name.
-                leaf: owns_path.then_some(parent),
+                // (the walk reached the final segment); a partial reading has
+                // no whole-path type to name. This is the entity FCS *names*
+                // for the path — an abbreviation itself, never its target.
+                leaf: owns_path.then_some(named),
             },
             owns_path,
         }
@@ -599,7 +665,14 @@ impl<'a> Resolver<'a> {
     ///
     /// Walks like a fully-qualified path: the longest top-level `(namespace,
     /// name)` prefix that is a public type, then the remaining segments as
-    /// public nested types — a type iff that consumes the whole path.
+    /// public nested types — a type iff that consumes the whole path. An
+    /// abbreviation marker at a **non-final** segment descends on its chased
+    /// terminal (`open type Lib.Env.SpecialFolder` where `type Env =
+    /// System.Environment` — FCS chases `Env` before finding the nested
+    /// enum; a marker has no nested types of its own, and an unchaseable one
+    /// keeps the descent failing). A *final*-segment marker is returned
+    /// as-is: each caller decides what a marker leaf means (the `open type`
+    /// consumer chases it, the plain-open classifier keeps it opaque).
     pub(super) fn opened_assembly_type(&self, path: &[String]) -> Option<EntityHandle> {
         let n = path.len();
         let (k, mut handle) = (0..n).rev().find_map(|k| {
@@ -609,9 +682,20 @@ impl<'a> Resolver<'a> {
                 .map(|h| (k, h))
         })?;
         for seg in &path[k + 1..] {
+            let parent = if self.assemblies.is_abbreviation(handle) {
+                // The reference-order collision guard: a chase at or below a
+                // rooting two DLLs export must not descend out of the
+                // first-indexed subtree (codex round 3).
+                if self.assemblies.alias_rooting_collides_across_dlls(handle) {
+                    return None;
+                }
+                self.assemblies.resolve_abbreviation_target(handle)?
+            } else {
+                handle
+            };
             handle = self
                 .assemblies
-                .nested(handle, seg, 0)
+                .nested(parent, seg, 0)
                 .filter(|&h| self.assemblies.is_public(h))?; // not an accessible nested type
         }
         Some(handle)

@@ -1108,6 +1108,34 @@ pub fn ensure_system_runtime_dll() -> PathBuf {
         })
 }
 
+/// The env a real F# project effectively resolves under, shared once per test
+/// binary: the real `FSharp.Core.dll` plus `System.Runtime.dll` and the
+/// `netstandard` facade beside it. The facade matters: FSharp.Core's
+/// signature pickle names its BCL abbreviation targets through the
+/// `netstandard` CCU, so the primitive-alias chase (`int` → `int32` → a
+/// `netstandard` type forwarder → `System.Int32`) needs all three loaded.
+pub fn full_bcl_env() -> &'static borzoi_sema::AssemblyEnv {
+    use std::sync::OnceLock;
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        use borzoi_assembly::Ecma335Assembly;
+        let core = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
+        let sysrt_path = ensure_system_runtime_dll();
+        let netstd_path = sysrt_path
+            .parent()
+            .expect("ref dir")
+            .join("netstandard.dll");
+        let sysrt = std::fs::read(&sysrt_path).expect("read System.Runtime.dll");
+        let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
+        let views = vec![
+            Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
+            Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
+            Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
+        ];
+        borzoi_sema::AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
+    })
+}
+
 // ============================================================================
 // Line/column → byte offset
 // ============================================================================

@@ -46,8 +46,8 @@ mod ty;
 mod unify;
 
 pub use assembly_env::{
-    AbbreviationVisibility, AssemblyEnv, EntityHandle, ExtensionMembers, MemberIndex, OpenFoldName,
-    OpenFoldSpace, OpenFoldSurface, OpenFoldTarget, StaticLookup,
+    AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ExtensionMembers,
+    MemberIndex, OpenFoldName, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget, StaticLookup,
 };
 pub use binders::{BinderRole, binders};
 pub use def::{Def, DefId, DefKind, SemanticClass};

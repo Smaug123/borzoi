@@ -368,6 +368,9 @@ fn decorate_image(image: &mut Image, modifier: CustomMod, scope: Scope) {
         type_refs: _,
         member_refs,
         resources: _,
+        // Name-only rows (namespace/name/target-assembly strings): no
+        // signature to decorate.
+        type_forwarders: _,
     } = image;
     if scope == Scope::Constraints {
         for td in type_defs {

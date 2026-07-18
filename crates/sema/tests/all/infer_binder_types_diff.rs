@@ -17,13 +17,16 @@
 use crate::common::{invoke_fcs_dump, parse_fcs_binder_types, temp_fs_file};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, Ty, infer_file, resolve_file,
-};
+use borzoi_sema::{InferredFile, ProjectItems, ResolvedFile, Ty, infer_file, resolve_file};
 
-/// Resolve and infer `source` (single-file: empty project + no referenced
-/// assemblies), returning both so a binder's `DefId` can be mapped to its
-/// declaration range. Asserts the snippet is in our parseable subset.
+/// Resolve and infer `source` (single-file, over the shared
+/// [`crate::common::full_bcl_env`] — the real FSharp.Core + BCL closure the
+/// primitive-alias chase needs), returning both so a binder's `DefId` can be
+/// mapped to its declaration range. The FCS side of this differential always
+/// compiled against the real FSharp.Core, so this is the honest counterpart
+/// env: primitive annotations type through FSharp.Core's own abbreviation
+/// markers, not a hard-coded table. Asserts the snippet is in our parseable
+/// subset.
 fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
     let parsed = parse(source);
     assert!(
@@ -32,9 +35,9 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
         parsed.errors
     );
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let env = AssemblyEnv::default();
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
-    let inferred = infer_file(&file, &resolved, &env);
+    let env = crate::common::full_bcl_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred)
 }
 
@@ -746,9 +749,12 @@ fn structural_annotations_match_fcs() {
     assert_eq!(assert_binder_sound(source), 3);
 }
 
-/// Every table entry and source synonym, one binding each, all agreeing with
-/// FCS — the 17-arm `fsharp_primitive_alias` table (plus synonyms) is exactly
-/// FCS's abbreviation semantics for these names.
+/// Every primitive alias and source synonym, one binding each, all agreeing
+/// with FCS — end-to-end through the real mechanism: FSharp.Core's
+/// abbreviation markers, the pickled-target chase, and `netstandard`'s type
+/// forwarders. There is no alias table; these semantics come from the same
+/// signature data FCS reads (the chase↔old-table equivalence itself is
+/// pinned in `resolve_fsharp_core.rs`).
 #[test]
 fn alias_table_sweep_matches_fcs() {
     let source = "\

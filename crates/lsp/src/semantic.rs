@@ -84,6 +84,11 @@ struct ReferencedAssemblyProjection {
     /// then falls back to the first root, i.e. the pre-fix behaviour.
     #[serde(default)]
     manifest_identity: Option<AssemblyIdentity>,
+    /// The DLL's forwarder `ExportedType` rows (`EcmaView::type_forwarders`) —
+    /// how an abbreviation-target chase continues out of a facade
+    /// (`netstandard`). `#[serde(default)]` for old cache entries.
+    #[serde(default)]
+    type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
 }
 
 impl ReferencedAssemblyProjection {
@@ -1999,15 +2004,16 @@ fn build_env_from_dll_paths<'a>(
         .into_iter()
         .map(|(_, path, projection)| {
             let visibility = projection.abbreviation_visibility();
-            (
+            borzoi_sema::AssemblyProjectionInput {
                 path,
-                projection.entities,
-                visibility,
-                projection.fsharp_extension_index_unknowable,
-                projection.fsharp_signature_non_authoritative,
-                projection.assembly_auto_opens,
-                projection.manifest_identity,
-            )
+                roots: projection.entities,
+                abbreviation_visibility: visibility,
+                extension_index_unknowable: projection.fsharp_extension_index_unknowable,
+                signature_non_authoritative: projection.fsharp_signature_non_authoritative,
+                auto_opens: projection.assembly_auto_opens,
+                manifest_identity: projection.manifest_identity,
+                type_forwarders: projection.type_forwarders,
+            }
         })
         .collect();
     let mut env = AssemblyEnv::from_assemblies_with_projection_knowability(assemblies);
@@ -2128,6 +2134,23 @@ fn enumerate_view_catching<V: EcmaView>(
                 .iter()
                 .map(|d| d.enclosing_namespace())
                 .collect();
+            // A forwarder read failing degrades to "no forwarders" — that only
+            // costs abbreviation-chase declines, never a wrong target.
+            let type_forwarders = catch_reader_panic(path, "type_forwarders", || {
+                view.type_forwarders()
+            })
+            .and_then(|r| match r {
+                Ok(forwarders) => Some(forwarders),
+                Err(err) => {
+                    tracing::warn!(
+                        dll = %path.display(),
+                        error = %err,
+                        "failed to read type forwarders; treating the assembly as forwarding nothing"
+                    );
+                    None
+                }
+            })
+            .unwrap_or_default();
             Some(ReferencedAssemblyProjection {
                 entities: types,
                 fsharp_abbreviations_unknowable: skipped.fsharp_abbreviations_unknowable,
@@ -2139,6 +2162,7 @@ fn enumerate_view_catching<V: EcmaView>(
                 // Captured even when `types` is empty (rootless), so the env can
                 // still count this DLL's name for referenced-CCU uniqueness.
                 manifest_identity: Some(view.identity().clone()),
+                type_forwarders,
             })
         }
         Err(err) => {

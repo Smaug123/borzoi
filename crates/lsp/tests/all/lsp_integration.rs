@@ -17,21 +17,28 @@ use std::time::Duration;
 
 use borzoi::server::{State, run, server_capabilities};
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::notification::{Exit, Notification as NotificationTrait};
+use lsp_types::notification::{
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument, Exit,
+    Notification as NotificationTrait, PublishDiagnostics,
+};
 use lsp_types::request::{
     DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
     Request as RequestTrait, SemanticTokensFullRequest, Shutdown, WorkspaceDiagnosticRequest,
     WorkspaceSymbolRequest,
 };
 use lsp_types::{
-    ClientCapabilities, DiagnosticServerCapabilities, DidChangeWatchedFilesClientCapabilities,
+    ClientCapabilities, DiagnosticClientCapabilities, DiagnosticServerCapabilities,
+    DidChangeTextDocumentParams, DidChangeWatchedFilesClientCapabilities,
+    DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
     DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
-    DocumentSymbolClientCapabilities, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location,
-    MarkupKind, OneOf, PartialResultParams, Position, ReferenceContext, ReferenceParams,
-    RegistrationParams, SemanticTokenType, SemanticTokensParams, SemanticTokensResult,
-    SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind,
-    TextDocumentClientCapabilities, TextDocumentIdentifier, TextDocumentPositionParams, Url,
+    DocumentSymbolClientCapabilities, DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
+    FileEvent, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
+    Location, MarkupKind, OneOf, PartialResultParams, Position,
+    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, ReferenceContext,
+    ReferenceParams, RegistrationParams, SemanticTokenType, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind,
+    TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
     WorkDoneProgressParams, WorkspaceClientCapabilities, WorkspaceDiagnosticParams,
     WorkspaceDiagnosticReportResult, WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
@@ -47,6 +54,20 @@ fn hierarchical_caps() -> ClientCapabilities {
                 hierarchical_document_symbol_support: Some(true),
                 ..Default::default()
             }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// A client that advertises both diagnostic protocols, as VS Code does. The
+/// presence of `textDocument.diagnostic` selects pull; its inner booleans only
+/// refine which pull features the client supports.
+fn pull_diagnostic_caps() -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(TextDocumentClientCapabilities {
+            diagnostic: Some(DiagnosticClientCapabilities::default()),
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities::default()),
             ..Default::default()
         }),
         ..Default::default()
@@ -137,6 +158,44 @@ impl Server {
         }
     }
 
+    /// Send a typed client notification. A subsequent request acts as an
+    /// ordering barrier: because the server loop is serial, any notification it
+    /// emits while handling this message arrives before that request's response.
+    fn notify<N>(&self, params: N::Params)
+    where
+        N: NotificationTrait,
+        N::Params: serde::Serialize,
+    {
+        let notif = Notification {
+            method: N::METHOD.to_string(),
+            params: serde_json::to_value(params).expect("serialise notification params"),
+        };
+        self.client
+            .sender
+            .send(Message::Notification(notif))
+            .expect("send notification");
+    }
+
+    /// Receive one typed server notification.
+    fn receive_notification<N>(&self) -> N::Params
+    where
+        N: NotificationTrait,
+        N::Params: serde::de::DeserializeOwned,
+    {
+        let msg = self
+            .client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receive notification within 5s");
+        match msg {
+            Message::Notification(not) => {
+                assert_eq!(not.method, N::METHOD, "notification method mismatched");
+                serde_json::from_value(not.params).expect("deserialise notification params")
+            }
+            other => panic!("expected Notification, got {other:?}"),
+        }
+    }
+
     fn fresh_id(&mut self) -> RequestId {
         let id = self.next_id;
         self.next_id += 1;
@@ -177,6 +236,41 @@ fn doc_position_params(uri: &Url, line: u32, character: u32) -> TextDocumentPosi
     TextDocumentPositionParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         position: Position { line, character },
+    }
+}
+
+fn diagnostic_params(uri: &Url) -> DocumentDiagnosticParams {
+    DocumentDiagnosticParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+        identifier: None,
+        previous_result_id: None,
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn did_open(uri: &Url, text: &str) -> DidOpenTextDocumentParams {
+    DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "fsharp".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    }
+}
+
+fn did_change(uri: &Url, version: i32, text: &str) -> DidChangeTextDocumentParams {
+    DidChangeTextDocumentParams {
+        text_document: VersionedTextDocumentIdentifier {
+            uri: uri.clone(),
+            version,
+        },
+        content_changes: vec![TextDocumentContentChangeEvent {
+            range: None,
+            range_length: None,
+            text: text.to_string(),
+        }],
     }
 }
 
@@ -626,6 +720,93 @@ fn document_diagnostic_round_trip() {
         ),
         "echoing the result_id must yield Unchanged: {resp:?}"
     );
+}
+
+/// Regression for #112: once a client advertises the pull model, no document
+/// lifecycle or watched-file notification may make the server publish the same
+/// diagnostics as a push. Each pull request below is also an ordering barrier:
+/// the request helper would observe and reject any earlier unsolicited publish.
+#[test]
+fn pull_client_never_receives_publish_diagnostics() {
+    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let mut server = Server::start_with_caps(vec![], pull_diagnostic_caps());
+
+    server.notify::<DidOpenTextDocument>(did_open(&uri, "#endif\n"));
+    let opened = server.request::<DocumentDiagnosticRequest>(diagnostic_params(&uri));
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(opened)) = opened
+    else {
+        panic!("opening an invalid buffer must produce a Full pull report");
+    };
+    assert!(
+        !opened.full_document_diagnostic_report.items.is_empty(),
+        "the pull response must contain the diagnostic"
+    );
+
+    server.notify::<DidChangeTextDocument>(did_change(&uri, 2, "let x = 1\n"));
+    let changed = server.request::<DocumentDiagnosticRequest>(diagnostic_params(&uri));
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(changed)) = changed
+    else {
+        panic!("changing to a clean buffer must produce a Full pull report");
+    };
+    assert!(changed.full_document_diagnostic_report.items.is_empty());
+
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let watched = server.request::<DocumentDiagnosticRequest>(diagnostic_params(&uri));
+    assert!(matches!(
+        watched,
+        DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(_))
+    ));
+
+    server.notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+    });
+    let closed = server.request::<DocumentDiagnosticRequest>(diagnostic_params(&uri));
+    let DocumentDiagnosticReportResult::Report(DocumentDiagnosticReport::Full(closed)) = closed
+    else {
+        panic!("a closed in-memory buffer must produce an empty Full pull report");
+    };
+    assert!(closed.full_document_diagnostic_report.items.is_empty());
+}
+
+/// Clients without `textDocument.diagnostic` retain the complete stateful push
+/// lifecycle: publish on open/change/watched structural changes, and clear on
+/// close. This is the compatibility half of the one-delivery-mode invariant.
+#[test]
+fn push_client_retains_publish_diagnostics_lifecycle() {
+    let uri = Url::parse("inmemory:///A.fs").unwrap();
+    let server = Server::start_with_caps(vec![], hierarchical_caps());
+
+    server.notify::<DidOpenTextDocument>(did_open(&uri, "#endif\n"));
+    let opened = server.receive_notification::<PublishDiagnostics>();
+    assert_eq!(opened.uri, uri);
+    assert!(!opened.diagnostics.is_empty());
+
+    server.notify::<DidChangeTextDocument>(did_change(&uri, 2, "let x = 1\n"));
+    let changed = server.receive_notification::<PublishDiagnostics>();
+    assert_eq!(changed.uri, uri);
+    assert!(changed.diagnostics.is_empty());
+
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let watched = server.receive_notification::<PublishDiagnostics>();
+    assert_eq!(watched.uri, uri);
+    assert!(watched.diagnostics.is_empty());
+
+    server.notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
+        text_document: TextDocumentIdentifier { uri: uri.clone() },
+    });
+    let closed: PublishDiagnosticsParams = server.receive_notification::<PublishDiagnostics>();
+    assert_eq!(closed.uri, uri);
+    assert!(closed.diagnostics.is_empty());
 }
 
 #[test]

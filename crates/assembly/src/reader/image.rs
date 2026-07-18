@@ -18,7 +18,8 @@
 use super::Error;
 use super::ids::TypeDefId;
 use super::manifest::{
-    AssemblyIdentity, ManifestResource, read_assembly, read_assembly_refs, read_resources,
+    AssemblyIdentity, ManifestResource, RawTypeForwarder, read_assembly, read_assembly_refs,
+    read_resources, read_type_forwarders,
 };
 use super::metadata::MetadataFile;
 use super::model::{MemberRef, RawAttribute, TypeDef, TypeRef};
@@ -51,6 +52,8 @@ pub(crate) struct Image {
     pub(crate) member_refs: Vec<MemberRef>,
     /// Manifest resources embedded in this file (`CurrentFile` implementation).
     pub(crate) resources: Vec<ManifestResource>,
+    /// Forwarder `ExportedType` rows — the facade-assembly redirects.
+    pub(crate) type_forwarders: Vec<RawTypeForwarder>,
 }
 
 /// Read an assembly from its PE bytes into an owned [`Image`].
@@ -61,6 +64,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Image, Error> {
     let assembly = read_assembly(&tables)?;
     let references = read_assembly_refs(&tables)?;
     let resources = read_resources(&tables, &md)?;
+    let type_forwarders = read_type_forwarders(&tables)?;
     // `read_types` builds its own `Tables` (cheap — strides/offsets only) and
     // owns the type/member/attribute walk, returning the assembly-row attributes
     // alongside the type slice.
@@ -75,5 +79,6 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Image, Error> {
         type_refs: types.type_refs,
         member_refs: types.member_refs,
         resources,
+        type_forwarders,
     })
 }
