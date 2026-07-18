@@ -398,6 +398,28 @@ oracle makes cheapest, but keep each behind its own test.
   (rich in `'T list`, `'T[]`, function-typed aliases): certain-implies-exact.
 - The fail-closed property still holds for the residue (`Measure`/`UCase`).
 
+**Status (done, minus arrays).** Landed as `Fun` and `Tuple` model variants plus
+`Named.args` — there is **no separate `Array` variant**: `int list` and (in the
+pickle) `int[]` are both generic *apps*, so they flow through `Named { path, args }`
+with the tycon path carrying the arity. The canonical rendering is
+precedence-explicit and byte-identical on both sides (`render_abbreviation_target`
+⇄ `renderAbbreviationTargetLogical`): a generic app is `path``N<args>`, a function
+`a -> b` with the *domain* parenthesised only when itself a function, a tuple
+`(a * b)` / `struct (a * b)`. MiniLibFs gained `MyIntList`/`IntFn`/`NestedFn`/`Pair`
+(and `MyList<'T>` now decodes instead of declining) — all two-sided green;
+struct-tuple rendering is pinned by a synthetic unit test because
+`type X = struct (…)` misparses as a struct-type definition.
+
+Two deliberate deferrals:
+- **Arrays.** The pickle encodes `int[]` as an `App` of the array tycon (so the
+  Rust side *would* decode it as a `Named`), but FCS surfaces it as `IsArrayType`,
+  a different shape than the `[]`-tycon App — so the two renderings do not yet
+  align. `renderAbbreviationTargetLogical` declines `IsArrayType` (`None`), and no
+  array fixture is added, so no array reaches the differential. Aligning the two
+  representations is a follow-up.
+- **Byref/pointer intrinsics** are not expressible as abbreviation targets in
+  surface F#, so they never arise here.
+
 ---
 
 ### Stage 4 — sema resolve-through (dotted paths + `open type`)

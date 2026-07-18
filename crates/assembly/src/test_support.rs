@@ -961,23 +961,53 @@ pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<AbbreviationKey, Option<
 }
 
 /// Render an owned [`AbbreviationTarget`] into the canonical string the
-/// differential compares against `fcs-dump`'s `renderAbbreviationTargetLogical`:
-/// a `Named` head by its dotted logical `path` (the ccu is stored for sema but
-/// **not** rendered — a same-assembly target renders path-only, exactly as FCS
-/// does), and a `Var` by its positional `!T<pos>`.
+/// differential compares against `fcs-dump`'s `renderAbbreviationTargetLogical`.
+/// The ccu is stored for sema but is **not** rendered — a same-assembly target
+/// renders path-only, exactly as FCS does. The structural forms are
+/// precedence-explicit (parenthesised tuples, a parenthesised function domain) so
+/// the string is unambiguous.
 pub fn render_abbreviation_target(t: &AbbreviationTarget) -> String {
     match t {
         AbbreviationTarget::Named { path, args, .. } => {
-            // The nullary decoder slice never populates `args`; the structural
-            // slice (plan Stage 3) will, and render them here alongside the
-            // backtick-arity head. Until then, keep the renderer honest.
-            debug_assert!(
-                args.is_empty(),
-                "nullary abbreviation-target slice must not carry args: {args:?}",
-            );
-            path.join(".")
+            let head = path.join(".");
+            if args.is_empty() {
+                head
+            } else {
+                // `int list` ⇒ `Microsoft.FSharp.Collections.list``1<Microsoft.FSharp.Core.int>`:
+                // the tycon's logical path, its arity as a backtick suffix, then
+                // the args. Arrays render the same way through the `[]` tycon.
+                let inner = args
+                    .iter()
+                    .map(render_abbreviation_target)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!("{head}`{}<{inner}>", args.len())
+            }
         }
         AbbreviationTarget::Var(pos) => format!("!T{pos}"),
+        AbbreviationTarget::Fun(domain, range) => {
+            // Right-associative: parenthesise a function-typed domain so
+            // `(a -> b) -> c` stays distinct from `a -> b -> c`.
+            let d = render_abbreviation_target(domain);
+            let d = if matches!(**domain, AbbreviationTarget::Fun(..)) {
+                format!("({d})")
+            } else {
+                d
+            };
+            format!("{d} -> {}", render_abbreviation_target(range))
+        }
+        AbbreviationTarget::Tuple { struct_kind, elems } => {
+            let inner = elems
+                .iter()
+                .map(render_abbreviation_target)
+                .collect::<Vec<_>>()
+                .join(" * ");
+            if *struct_kind {
+                format!("struct ({inner})")
+            } else {
+                format!("({inner})")
+            }
+        }
     }
 }
 
@@ -1221,6 +1251,70 @@ mod tests {
             Some(&Some("Microsoft.FSharp.Core.int".to_string())),
         );
         assert_eq!(targets.get(&("N.M.Dup".to_string(), 1)), Some(&None));
+    }
+
+    /// The canonical rendering of each `AbbreviationTarget` shape, pinned
+    /// directly (the differential proves it matches fcs-dump; this proves the
+    /// exact strings, and covers the struct-tuple form that has no `.fs` fixture
+    /// because `type X = struct (…)` misparses as a struct-type definition).
+    #[test]
+    fn render_abbreviation_target_is_precedence_explicit() {
+        fn named(path: &[&str], args: Vec<AbbreviationTarget>) -> AbbreviationTarget {
+            AbbreviationTarget::Named {
+                ccu: None,
+                path: path.iter().map(|s| s.to_string()).collect(),
+                args,
+            }
+        }
+        let int = || named(&["Microsoft", "FSharp", "Core", "int"], vec![]);
+
+        // Nullary named: path only.
+        assert_eq!(
+            render_abbreviation_target(&named(&["System", "String"], vec![])),
+            "System.String",
+        );
+        // Generic app: path + backtick arity + `<args>`.
+        assert_eq!(
+            render_abbreviation_target(&named(
+                &["Microsoft", "FSharp", "Collections", "list"],
+                vec![int()],
+            )),
+            "Microsoft.FSharp.Collections.list`1<Microsoft.FSharp.Core.int>",
+        );
+        // Typar.
+        assert_eq!(
+            render_abbreviation_target(&AbbreviationTarget::Var(0)),
+            "!T0"
+        );
+        // Function — no domain parens for a non-function domain.
+        assert_eq!(
+            render_abbreviation_target(&AbbreviationTarget::Fun(Box::new(int()), Box::new(int()),)),
+            "Microsoft.FSharp.Core.int -> Microsoft.FSharp.Core.int",
+        );
+        // Nested function — the function-typed *domain* is parenthesised, so
+        // `(a -> b) -> c` stays distinct from `a -> b -> c`.
+        assert_eq!(
+            render_abbreviation_target(&AbbreviationTarget::Fun(
+                Box::new(AbbreviationTarget::Fun(Box::new(int()), Box::new(int()))),
+                Box::new(int()),
+            )),
+            "(Microsoft.FSharp.Core.int -> Microsoft.FSharp.Core.int) -> Microsoft.FSharp.Core.int",
+        );
+        // Reference tuple and struct tuple — both parenthesised.
+        assert_eq!(
+            render_abbreviation_target(&AbbreviationTarget::Tuple {
+                struct_kind: false,
+                elems: vec![int(), int()],
+            }),
+            "(Microsoft.FSharp.Core.int * Microsoft.FSharp.Core.int)",
+        );
+        assert_eq!(
+            render_abbreviation_target(&AbbreviationTarget::Tuple {
+                struct_kind: true,
+                elems: vec![int(), int()],
+            }),
+            "struct (Microsoft.FSharp.Core.int * Microsoft.FSharp.Core.int)",
+        );
     }
 
     /// An unconstrained invariant `T` — the baseline the per-flag tests tweak.

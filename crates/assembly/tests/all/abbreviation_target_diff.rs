@@ -100,12 +100,11 @@ fn rust_decoded_targets_agree_with_fcs_over_minilib_fs() {
         checked += 1;
     }
 
-    // Guard against a vacuous pass: MiniLibFs decodes the five non-declined
-    // aliases — `IntId`, `S`, `ObjId` (referenced), `PointAlias` (same-assembly
-    // Local), and `SelfVar` (typar `!T0`); `MyList<'T> = 'T list` declines.
+    // Guard against a vacuous pass: MiniLibFs decodes all ten aliases — the five
+    // nullary/typar ones (`IntId`, `S`, `ObjId`, `PointAlias`, `SelfVar`) plus the
+    // five structural ones (`MyList`, `MyIntList`, `IntFn`, `NestedFn`, `Pair`).
     assert!(
-        checked >= 5,
-        "expected to decode at least the five non-declined aliases; only checked \
-         {checked}. ours: {ours:#?}",
+        checked >= 10,
+        "expected to decode all ten aliases; only checked {checked}. ours: {ours:#?}",
     );
 }
