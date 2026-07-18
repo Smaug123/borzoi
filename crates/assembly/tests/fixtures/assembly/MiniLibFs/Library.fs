@@ -257,11 +257,13 @@ type OptionalArgHost() =
 // entity's kind from `Class` to `Measure`. fcs-dump emits
 // `"IsMeasure": true`.
 //
-// (Phase 6c1 deliberately excludes `type X = Y` plain abbreviations:
+// (Phase 6c1 deliberately excluded `type X = Y` plain abbreviations:
 // fsc inlines those at the call site without emitting any ECMA TypeDef
 // row, so there's nothing in the ECMA tree to enrich. Synthesising an
-// entity from the pickle alone is the silent-fallback antipattern that
-// D5 rejects — a later slice will revisit when it has a real consumer.)
+// entity from the pickle alone was the silent-fallback antipattern that
+// D5 rejects — until a real consumer arrived. The abbreviation-marker
+// slice is that consumer: plain abbreviations now appear below
+// (`IntId`/`S`) as name-only markers synthesised from the pickle.)
 [<Measure>]
 type m
 
@@ -329,6 +331,26 @@ module Suffixed =
 // sides — its SRTP member constraint is erased from IL, and the fcs-dump
 // rendering emits the same unconstrained typar, so the diff also pins the
 // erased-constraint agreement.
+// Type ABBREVIATIONS (`type X = Y`). fsc inlines these at every use site and
+// emits NO ECMA TypeDef row — they live only in the F# signature pickle's
+// `type_abbrev` field. The Rust projector synthesises a name-only
+// `EntityKind::Abbreviation` marker for each from the pickle
+// (`apply_abbreviation_markers`), and fcs-dump projects the identical name-only
+// entity through its minimal `IsFSharpAbbreviation` branch, so both normalise to
+// the same entity — which makes `diff_assembly_minilib_fs` a free oracle that the
+// marker shape matches FCS's abbreviation surface. The *target* the two carry
+// (`IntId` → `Microsoft.FSharp.Core.int`; `S` → `System.String`) is elided by the
+// whole-tree normaliser and compared by the dedicated abbreviation-target
+// differential instead. See `docs/abbreviation-target-projection-plan.md`.
+//
+//   - `IntId` is a referenced-assembly (FSharp.Core) primitive alias — the
+//     immediate, unchased logical target is `Microsoft.FSharp.Core.int`.
+//   - `S` targets a BCL type directly, so FCS renders the target `System.String`
+//     (already an `AccessPath`+`LogicalName` FQN, not chased through an alias).
+type IntId = int
+
+type S = System.String
+
 module Witness =
     let inline addThem (x: ^a) (y: ^a) : ^a = x + y
     // A real member whose compiled name merely *embeds* `$W` (it is not a

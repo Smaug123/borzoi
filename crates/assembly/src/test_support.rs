@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     Access, CompilerFeatureRequired, DefaultMember, Entity, EntityKind, Event, Experimental,
@@ -898,6 +898,38 @@ pub fn parse_fcs_dump(json: &str) -> NormalisedAssembly {
     }
 }
 
+/// Extract every abbreviation entity's rendered immediate-logical target from a
+/// `fcs-dump entities` JSON dump, keyed by fully-qualified name. The value is
+/// `Some(target)` when `fcs-dump` rendered one and `None` when it *declined* (a
+/// structural/generic-instantiation shape the oracle does not yet model — see
+/// `renderAbbreviationTargetLogical`), which mirrors the Rust decoder's own
+/// fail-closed `None`. Nested entities are walked too, since a module-nested
+/// abbreviation is a descendant entity.
+///
+/// This is a *separate extraction* from [`parse_fcs_dump`] on purpose: the
+/// whole-tree [`NormalisedEntity`] comparison elides the target (an FCS-`Some` /
+/// our-`None` asymmetry would otherwise break every diff before the decoder
+/// lands), so the abbreviation-target differential reads the target through this
+/// dedicated path instead. Keyed on `Kind == "Abbreviation"` — the plain
+/// type-abbreviation markers this slice decodes; exception abbreviations
+/// (`Kind == "Exception"`) carry no decoded target.
+pub fn fcs_abbreviation_targets(json: &str) -> BTreeMap<String, Option<String>> {
+    fn walk(e: &FcsEntity, out: &mut BTreeMap<String, Option<String>>) {
+        if e.kind == "Abbreviation" {
+            out.insert(e.fqn.clone(), e.abbreviated_target.clone());
+        }
+        for n in &e.nested_types {
+            walk(n, out);
+        }
+    }
+    let dump: FcsDump = serde_json::from_str(json).expect("fcs-dump JSON shape");
+    let mut out = BTreeMap::new();
+    for e in &dump.entities {
+        walk(e, &mut out);
+    }
+    out
+}
+
 fn json_to_entity(j: FcsEntity) -> NormalisedEntity {
     let mut members: Vec<_> = j.members.into_iter().map(json_to_member).collect();
     sort_members(&mut members);
@@ -992,6 +1024,18 @@ struct FcsEntity {
     /// entity. See [`format_compiler_feature_required`].
     #[serde(rename = "CompilerFeatureRequired", default)]
     compiler_feature_required: Vec<String>,
+    /// The immediate, unchased, *logical* abbreviation target `fcs-dump`
+    /// renders for an `IsFSharpAbbreviation` entity (`type IntId = int` ⇒
+    /// `"Microsoft.FSharp.Core.int"`), or `null` when the target is a shape the
+    /// oracle declines to render (a structural/generic-instantiation shape — see
+    /// `renderAbbreviationTargetLogical` in `tools/fcs-dump/Program.fs`). Always
+    /// `null` for non-abbreviation entities. Deliberately NOT surfaced on
+    /// [`NormalisedEntity`]: the whole-tree diff elides it (an FCS-`Some` /
+    /// our-`None` asymmetry would otherwise break every diff before the Rust
+    /// decoder lands); the abbreviation-target differential reads it through
+    /// [`fcs_abbreviation_targets`] instead.
+    #[serde(rename = "AbbreviatedTarget", default)]
+    abbreviated_target: Option<String>,
 }
 
 #[derive(Deserialize)]
