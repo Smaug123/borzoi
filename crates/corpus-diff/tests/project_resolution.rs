@@ -658,6 +658,17 @@ fn explain_token_reports_the_opaque_open_of_a_deferred_head() {
         report.contains("HEAD") && report.contains("TAIL"),
         "the note must caveat head vs member tail:\n{report}"
     );
+    // A no-per-open-effect open (`open System`) must NOT be labelled `clean` —
+    // an all-false open can still take part in a per-token deferral, so the tool
+    // never claims harmlessness (codex review round 4).
+    assert!(
+        report.contains("no modeled per-open effect"),
+        "a no-effect open must read honestly, never `clean`:\n{report}"
+    );
+    assert!(
+        !report.contains("— clean"),
+        "the render must not claim an open is `clean`:\n{report}"
+    );
 }
 
 /// Regression for the two over-claims `codex review` caught, which share a root

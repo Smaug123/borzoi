@@ -1229,11 +1229,16 @@ pub enum Resolution {
 /// The generation is *not* monotone-saturating (it bumps on every barrier), so
 /// `staled_earlier` fires for each open that raises one.
 ///
-/// **Scope of the claim.** These are the deferral-causing open mechanisms the
-/// trace models; it does *not* enumerate every possible cause (e.g. pattern-
-/// position case suppression via `pattern_suppressed_case_ids` is out of
-/// scope). An open with all four `false` is not *proof* it perturbs nothing —
-/// only that it triggered none of the modeled four.
+/// **Scope of the claim.** These are the *per-open* deferral mechanisms the
+/// trace models — each is a property of the open itself. It does *not* enumerate
+/// every deferral cause, and in particular cannot model the **per-token** ones,
+/// which depend on the *use site*, not on any one open: an attribute whose
+/// in-file type precedes a later open (every open advances the open frontier —
+/// `latest_open_pos`), a member/qualified tail pending inference, or
+/// pattern-position case suppression (`pattern_suppressed_case_ids`). So an open
+/// with all four `false` is not *proof* it perturbs nothing — only that it
+/// triggered none of the modeled per-open four; a caller must not label it
+/// harmless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct OpenOpacity {
     /// Set `opaque_value_open` — bare-name resolution skips opened entries.

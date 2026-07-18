@@ -2218,16 +2218,24 @@ pub struct ExplainedOpen {
 /// `List.replicate` investigation, as a reusable query rather than a manual dig.
 ///
 /// **It states facts, not a relevance verdict.** It reports the token's
-/// resolution and each open's opacity + range; it does *not* claim which open
-/// gated *this* token. Two reasons that would require knowledge the trace does
-/// not carry: a member/qualified TAIL (`value.Member`) defers pending inference
-/// regardless of any open (a head-vs-tail distinction the trace lacks), and an
-/// open's lexical scope is a *block*, not an offset prefix — the resolver resets
-/// open-state at every top-level block / sibling boundary, so an earlier open by
-/// offset may be out of scope entirely. Both would need per-token gate
-/// instrumentation the tool deliberately avoids. So the reader — who has the
-/// file — correlates the perturbing opens (with their line ranges) against the
-/// token's position; the tool supplies the candidates, not the conclusion.
+/// resolution and each open's *per-open* opacity + range; it does *not* claim
+/// which open gated *this* token. The [`ResolutionTrace`](borzoi_sema::ResolutionTrace)
+/// is a per-open record, and several deferral causes are *per-token* — they
+/// depend on the token, not on any one open, so a per-open trace cannot attribute
+/// them:
+/// - a member/qualified TAIL (`value.Member`) defers pending inference regardless
+///   of any open (a head-vs-tail distinction the trace lacks);
+/// - an attribute (`[<Attr>]`) whose in-file type precedes *any* later open
+///   defers to that open — every open advances the open frontier, so this is not
+///   a property of one open;
+/// - an open's lexical scope is a *block*, not an offset prefix — the resolver
+///   resets open-state at every top-level block / sibling boundary, so an earlier
+///   open by offset may be out of scope entirely.
+///
+/// So the reader — who has the file — correlates the perturbing opens (with their
+/// line ranges) against the token; the tool supplies the candidates and the
+/// caveats, not the conclusion. It never labels an open harmless (`clean`),
+/// because an all-false open can still take part in a per-token deferral.
 #[derive(Debug, Clone)]
 pub struct TokenExplanation {
     /// The occurrence `(start, end)` the resolution was recorded at, or `None`
@@ -2245,11 +2253,13 @@ pub struct TokenExplanation {
 }
 
 impl TokenExplanation {
-    /// Every `open` in the file that **perturbs resolution** through any modeled
-    /// mechanism (see [`OpenOpacity::perturbs_resolution`]), in source order —
-    /// the candidate culprits a human then locates against the token by their
-    /// ranges. A pure fact, never a per-token scope or causal verdict; see the
-    /// type docs for why the tool stops short of one.
+    /// Every `open` in the file that **perturbs resolution** through a modeled
+    /// *per-open* mechanism (see [`OpenOpacity::perturbs_resolution`]), in source
+    /// order — the candidate culprits a human locates against the token by their
+    /// ranges. A per-open fact, not a per-token verdict: an open with no modeled
+    /// perturbation can still participate in a *per-token* deferral (an attribute
+    /// whose in-file type precedes any later open; a member tail) the per-open
+    /// trace cannot attribute. See the type docs.
     pub fn perturbing_opens(&self) -> Vec<&ExplainedOpen> {
         self.opens
             .iter()
@@ -2292,7 +2302,10 @@ impl TokenExplanation {
                 }
                 format!("PERTURBS [{}]", flags.join(", "))
             } else {
-                "clean".to_string()
+                // Never "clean" — that would claim harmlessness the per-open trace
+                // cannot prove (an all-false open can still cause a per-token
+                // deferral). It triggered none of the modeled per-open mechanisms.
+                "(no modeled per-open effect)".to_string()
             };
             let _ = writeln!(
                 out,
@@ -2302,29 +2315,36 @@ impl TokenExplanation {
                 o.range.1,
             );
         }
-        // A hint that names the perturbing opens by range and states the caveats
-        // explicitly — the trace cannot say which (if any) gated *this* deferral,
-        // so it must not pretend to. The reader correlates using the ranges.
+        // For any deferred token, spell out what the per-open view can and cannot
+        // say — including the per-token deferral causes it does NOT attribute, so
+        // the reader is never misled by a "no modeled effect" open. Fires even
+        // when no open perturbs per-open (the attribute-position case).
         if matches!(self.resolution, Some(Resolution::Deferred(_))) {
             let perturbing = self.perturbing_opens();
-            if !perturbing.is_empty() {
+            let mut note = String::from("  note: token is Deferred. ");
+            if perturbing.is_empty() {
+                note.push_str("No open triggers a modeled per-open perturbation. ");
+            } else {
                 let list: Vec<String> = perturbing
                     .iter()
                     .map(|o| format!("{} @ {}..{}", o.path.join("."), o.range.0, o.range.1))
                     .collect();
-                let _ = writeln!(
-                    out,
-                    "  note: token is Deferred; {} perturbing open(s) in this file [{}]. \
-                     If the token is a dotted HEAD (e.g. `List` in `List.replicate`) lexically \
-                     after a perturbing open in the SAME block/enclosing module, deleting that \
-                     open may let it resolve. Caveats: an open's scope is its block, not an \
-                     offset prefix (the resolver resets open-state at block boundaries), and a \
-                     member/qualified TAIL (`value.Member`) defers pending inference regardless \
-                     of any open.",
+                note.push_str(&format!(
+                    "{} open(s) trigger a modeled per-open perturbation [{}]; if the token is a \
+                     dotted HEAD (e.g. `List` in `List.replicate`) lexically after one in the SAME \
+                     block/enclosing module, deleting that open may let it resolve. ",
                     perturbing.len(),
                     list.join(", "),
-                );
+                ));
             }
+            note.push_str(
+                "This per-open view does NOT attribute per-token deferrals — correlate manually: \
+                 a member/qualified TAIL (`value.Member`) defers pending inference regardless of \
+                 any open; an attribute (`[<Attr>]`) whose in-file type precedes ANY later open \
+                 defers to that open; and an open's scope is its block, not an offset prefix (the \
+                 resolver resets open-state at block boundaries).",
+            );
+            let _ = writeln!(out, "{note}");
         }
         out
     }
