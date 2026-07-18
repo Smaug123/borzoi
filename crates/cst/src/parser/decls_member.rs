@@ -1256,7 +1256,7 @@ impl<'src> Parser<'src> {
         // `GET_SET_MEMBER`) — kept out of ERROR so the parse is lossless; the
         // normaliser elides accessibility on both sides. Mirrors the signature-side
         // `parse_member_sig`, which consumes the same `opt_access` before the name.
-        if matches!(
+        let access_consumed = if matches!(
             self.peek(),
             Some((
                 Ok(FilteredToken::Raw(
@@ -1266,16 +1266,24 @@ impl<'src> Parser<'src> {
             ))
         ) {
             self.bump_into(SyntaxKind::ACCESS_TOK);
-        }
-        self.parse_member_head_pat();
+            true
+        } else {
+            false
+        };
+        let paren_value_head = self.parse_member_head_pat(access_consumed);
         // A `with` after the head (OWITH, the `WithAsLet` context) is the explicit
         // get/set property form `member this.P with get() = … [and set …]` (9.14)
         // — distinct from a regular member's `=`. The head `LONG_IDENT_PAT` stays
-        // a bare child of the `GET_SET_MEMBER` (no `BINDING` wrapper).
-        if matches!(
-            self.peek(),
-            Some((Ok(FilteredToken::Virtual(Virtual::With)), _))
-        ) {
+        // a bare child of the `GET_SET_MEMBER` (no `BINDING` wrapper). A
+        // paren-pattern value head (`member (y)`) is *not* a property name, so a
+        // `with` after it is an FCS parse error, not a get/set clause: decline here
+        // so the `with` falls into `parse_let_equals_rhs`'s "expected `=`" recovery.
+        if !paren_value_head
+            && matches!(
+                self.peek(),
+                Some((Ok(FilteredToken::Virtual(Virtual::With)), _))
+            )
+        {
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::GET_SET_MEMBER));
             self.parse_get_set_clause();
@@ -1517,7 +1525,14 @@ impl<'src> Parser<'src> {
     /// virtual before the `(`). Return-type annotations
     /// (`member this.M : int = …`), `static`/`abstract` flags, and get/set are
     /// later phase-9 slices.
-    fn parse_member_head_pat(&mut self) {
+    ///
+    /// `access_consumed` reports whether the caller already bumped a name-position
+    /// access modifier (`member private …`); it gates the paren-pattern value-head
+    /// route, which FCS's `opt_access nameop` grammar does *not* reach (`member
+    /// private (y)` is a parse error). Returns `true` iff a paren-pattern value
+    /// head was emitted — the caller uses that to reject a following property
+    /// `with get,set` clause (`member (y) with get` is likewise an FCS error).
+    fn parse_member_head_pat(&mut self, access_consumed: bool) -> bool {
         // A property-style value member whose name is a *lowercase* single
         // identifier with no self-id and no curried arguments is a `SynPat.Named`,
         // not a `SynPat.LongIdent` — FCS routes the member name through the same
@@ -1535,7 +1550,7 @@ impl<'src> Parser<'src> {
                 .start_node(FSharpLang::kind_to_raw(SyntaxKind::NAMED_PAT));
             self.bump_into(SyntaxKind::IDENT_TOK);
             self.builder.finish_node(); // NAMED_PAT
-            return;
+            return false;
         }
         // An active-pattern-named member head — `static member (|Foo|Bar|) (x, y)
         // = …`, `member (|Foo|_|) y = …` (FCS's `opName` active-pattern member
@@ -1547,7 +1562,7 @@ impl<'src> Parser<'src> {
         // head segment. The dotted self-id form (`member x.(|Foo|_|)`) keeps a
         // plain ident head and is a later slice (like the operator member head).
         if self.try_emit_active_pat_head() {
-            return;
+            return false;
         }
         // An operator-named member head — `static member (+) (a, b) = …`,
         // `member (?<-) (a, b, c) = …` (FCS's `opName`, reached through the same
@@ -1569,7 +1584,7 @@ impl<'src> Parser<'src> {
             );
             let has_args = Self::op_head_args_follow(after, raw_after);
             self.emit_operator_head(is_star, has_typars, has_args);
-            return;
+            return false;
         }
         // A *dotted self-id* operator / active-pattern member head — `member
         // x.(+) …`, `member _.(|Foo|_|) …` (FCS folds the self-id and the `opName`
@@ -1588,7 +1603,40 @@ impl<'src> Parser<'src> {
             }
             self.sweep_curried_arg_pats();
             self.builder.finish_node(); // LONG_IDENT_PAT
-            return;
+            return false;
+        }
+        // A parenthesised-*pattern* member head — `static member (y) = 0`,
+        // `static member (y: int) = 0`, `member (Some x) = 0` (the `neg133.fs`
+        // fixtures). FCS's member binding pattern is a full `headBindingPattern`
+        // (`classDefnBindings → defnBindings`, the same production a `let` value
+        // binding uses), so a `(` that is *not* an operator / active-pattern /
+        // glued-star name — all of which are claimed above and `return` — opens an
+        // ordinary paren *pattern* `SynPat.Paren(pat)`, exactly as `let (y) = …`
+        // does; the member name is derived from the pattern in a later phase. A
+        // paren-pattern head is a *value* head (FCS rejects a curried `member (y)
+        // z`), so route it through the shared `let`-head parser
+        // ([`Self::parse_head_binding_pat`]), which handles the paren element and
+        // any top-level tuple / `as` / `::` tail FCS's `headBindingPattern` admits
+        // — rather than the applied `LONG_IDENT_PAT` path below (whose
+        // `parse_long_ident_path_with` would reject the leading `(`). Purely
+        // additive: every `(`-headed member that is not an operator/active/star
+        // name previously fell through to that path and errored.
+        //
+        // Gated on `!access_consumed`: this value-binding form is FCS's
+        // `defnBindings` member, which has no `opt_access` — `member private (y)`
+        // is a parse error there. When an access modifier *was* bumped, decline so
+        // the head falls through to the `LONG_IDENT_PAT` path, which rejects the
+        // leading `(` exactly as before this route existed. Returns `true` so the
+        // caller rejects a following property `with get,set` (equally an error on a
+        // value binding).
+        if !access_consumed
+            && matches!(
+                self.peek(),
+                Some((Ok(FilteredToken::Raw(Token::LParen)), _))
+            )
+        {
+            self.parse_head_binding_pat();
+            return true;
         }
         self.builder
             .start_node(FSharpLang::kind_to_raw(SyntaxKind::LONG_IDENT_PAT));
@@ -1618,6 +1666,7 @@ impl<'src> Parser<'src> {
         // an atomic-pat start) for an arg-less member.
         self.sweep_curried_arg_pats();
         self.builder.finish_node(); // LONG_IDENT_PAT
+        false
     }
 
     /// `true` iff the member head at the cursor is a property-style value member

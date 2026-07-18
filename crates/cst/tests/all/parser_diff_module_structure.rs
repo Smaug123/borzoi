@@ -5,6 +5,7 @@
 use crate::common::{
     assert_asts_match, assert_asts_match_allow_errors, assert_asts_match_fcs_accepts_ours_rejects,
     assert_asts_match_fcs_rejects_ours_accepts, assert_asts_match_with_diagnostic,
+    assert_parse_verdicts_match,
 };
 
 // ---- Phase 8.1: `open` declarations ------------------------------------
@@ -5085,6 +5086,17 @@ fn diff_ast_member_operator_instance() {
     assert_asts_match("type T() =\n  member (+) (a, b) = a\n");
 }
 
+/// A name-position access modifier before an *operator* member head — `member
+/// private (+) (a, b) = a`. FCS's `nameop` member carries `opt_access`, so this
+/// is accepted (unlike a paren-*pattern* head, whose value-binding form has no
+/// access — see `member_access_before_paren_head_is_error`). Pins that the access
+/// gate steers only the paren-pattern route, leaving the operator head reachable
+/// after the modifier.
+#[test]
+fn diff_ast_member_operator_access_modifier() {
+    assert_asts_match("type T() =\n  member private (+) (a, b) = a\n");
+}
+
 /// The index-get funky operator name as a static member
 /// (`static member (.()) (v, i) = v`). FCS's `operatorName: FUNKY_OPERATOR_NAME`
 /// admits `.()` cleanly (`op_ArrayLookup`); the member head shares the binding-head
@@ -5107,6 +5119,92 @@ fn diff_ast_member_operator_funky_index_set() {
 // : …` with any operator name (funky or not) is not yet parsed, since the
 // abstract-slot name path does not reuse the binding-head operator machinery.
 // That is deliberately out of scope for the funky-operator-name slice.
+
+// ---------------------------------------------------------------------------
+// Parenthesised-*pattern* member heads — `static member (y) = 0`. FCS's member
+// binding pattern is a full `headBindingPattern` (the same production a `let`
+// value binding uses), so a `(`-headed member that is *not* an operator /
+// active-pattern / glued-star name (all handled above) opens an ordinary paren
+// *pattern* `Paren(pat)`, exactly as `let (y) = …` does — the member name is
+// derived from the pattern in a later phase (these are the `neg133.fs` fixtures,
+// which parse cleanly and error only at type-check). No curried arguments follow
+// a paren-pattern head (FCS rejects `member (y) z`); it is a value head.
+// ---------------------------------------------------------------------------
+
+/// A single-ident paren-pattern static-member head (`static member (y) = 0`) —
+/// the `neg133.fs` shape. FCS reduces `(y)` through `constrPattern → atomicPattern
+/// → LPAREN parenPattern rparen` to `SynPat.Paren(SynPat.Named "y")`, identical to
+/// the `let (y) = …` value head.
+#[test]
+fn diff_ast_member_paren_named_head() {
+    assert_asts_match("type T =\n    static member (y) = 0\n");
+}
+
+/// A typed paren-pattern static-member head (`static member (y: int) = 0`) — the
+/// second `neg133.fs` fixture. `(y: int)` is `SynPat.Paren(SynPat.Typed(Named "y",
+/// int))`.
+#[test]
+fn diff_ast_member_paren_typed_head() {
+    assert_asts_match("type T =\n    static member (y: int) = 0\n");
+}
+
+/// A constructor-application paren-pattern static-member head
+/// (`static member (Some x) = 0`) — `SynPat.Paren(SynPat.LongIdent "Some" [Named
+/// "x"])`, confirming the general paren-pattern route (not just the bare ident).
+#[test]
+fn diff_ast_member_paren_ctor_head() {
+    assert_asts_match("type T() =\n    static member (Some x) = 0\n");
+}
+
+/// A parenthesised-tuple paren-pattern static-member head
+/// (`static member (x, y) = 0`) — `SynPat.Paren(SynPat.Tuple[Named "x"; Named
+/// "y"])`.
+#[test]
+fn diff_ast_member_paren_tuple_head() {
+    assert_asts_match("type T() =\n    static member (x, y) = 0\n");
+}
+
+/// An *instance* paren-pattern member head (`member (y) = 0`) — same paren
+/// pattern, `member` leading keyword rather than `static member`.
+#[test]
+fn diff_ast_member_paren_instance_head() {
+    assert_asts_match("type T() =\n    member (y) = 0\n");
+}
+
+// A paren-pattern member head is FCS's *value-binding* member form (`member
+// bindingPattern`), reached through `classDefnBindings → defnBindings` — *not*
+// the `nameop`-headed `memberCore`, which alone carries the `opt_access` /
+// property `with get,set` / explicit-typar tails. So those tails, valid after a
+// *name* head (`member private M`, `member M with get`, `member M<'T>`), are
+// parse errors after a paren-pattern head. Each must stay a *shared* reject (we
+// error exactly where FCS does), lest the paren-head leniency leak a
+// we-accept/FCS-reject divergence. `assert_parse_verdicts_match` pins the shared
+// verdict.
+
+/// A name-position access modifier before a paren-pattern head — `member private
+/// (y) = 0` — is an FCS parse error (`opt_access` belongs to the `nameop`
+/// member, not the value binding). Regression guard for the access gate.
+#[test]
+fn member_access_before_paren_head_is_error() {
+    assert_parse_verdicts_match("type C() =\n    member private (y) = 0\n");
+}
+
+/// A `with get`/`set` property clause after a paren-pattern head — `member (y)
+/// with get() = 0` — is an FCS parse error (the get/set form needs a property
+/// name, not a pattern). Regression guard for the get/set gate.
+#[test]
+fn member_get_set_after_paren_head_is_error() {
+    assert_parse_verdicts_match("type C() =\n    member (y) with get() = 0\n");
+}
+
+/// Explicit value-typar declarations after a paren-pattern head — `member (y)<'T>
+/// = 0` — are an FCS parse error (typars ride the `nameop` head). This already
+/// falls out (the `<` is left for the binding tail, which errors), but pin it so
+/// the paren-head route cannot silently start swallowing them.
+#[test]
+fn member_typars_after_paren_head_is_error() {
+    assert_parse_verdicts_match("type C() =\n    member (y)<'T> = 0\n");
+}
 
 // ---------------------------------------------------------------------------
 // Active-pattern-named members — `static member (|Foo|Bar|) (x, y) = …`. FCS's
