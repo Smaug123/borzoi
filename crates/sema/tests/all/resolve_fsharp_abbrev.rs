@@ -179,28 +179,63 @@ fn resolve_through_a_same_assembly_abbreviation_binds_the_member_tail() {
 }
 
 #[test]
-fn resolve_through_a_bare_alias_use_binds_the_terminal_type() {
-    // A *bare* value-position use of the alias with no member tail —
-    // `Lib.WidgetAlias()`, the alias as the terminal segment — is resolved by FCS
-    // to the chased TERMINAL type `Lib.Widget`, not the abbreviation marker. The
-    // marker binds only when the alias is a *qualifier* (`Lib.WidgetAlias.Make`,
-    // the sibling test above). Verified against fcs-dump `uses`: a bare
-    // constructor/value occurrence reports the underlying type, a qualifier
-    // reports the abbreviation. (A single unqualified `WidgetAlias()` never
-    // reaches this resolver — it defers as an unbound value — so the divergence
-    // only bites the qualified form.)
+fn bare_alias_use_defers_rather_than_naming_a_target() {
+    // A *bare* alias use with no member tail — `Lib.WidgetAlias`, the alias as the
+    // terminal segment — defers. Resolve-through chases the target to walk a
+    // member *tail* (`Lib.WidgetAlias.Make`, the sibling test); a bare use FCS
+    // resolves by the target's value/constructor surface, which we do not model. A
+    // constructible class points at the terminal type, but `type UAlias = U` where
+    // `U` is a union without a constructor errors FS1133 with *no* symbol use — we
+    // cannot tell those apart here, so we defer (own-and-defer) rather than commit
+    // either the marker or a possibly-erroneous target (codex review). Both a class
+    // alias and a union alias must therefore defer, never resolve.
     let env = fixture_env();
-    let src = "module M\nlet _ = Lib.WidgetAlias()\n";
-    let rf = resolve(src, &env);
+    for src in [
+        "module M\nlet _ = Lib.WidgetAlias()\n",
+        "module M\nlet _ = Lib.UAlias\n",
+    ] {
+        let rf = resolve(src, &env);
+        let alias = if src.contains("WidgetAlias") {
+            "WidgetAlias"
+        } else {
+            "UAlias"
+        };
+        assert_eq!(
+            rf.resolution_at(at(src, alias)),
+            Some(Resolution::Deferred(DeferredReason::QualifiedAccess)),
+            "a bare alias use must defer, not name a target; got {:?} for {alias}",
+            rf.resolution_at(at(src, alias)),
+        );
+    }
+}
 
-    let widget = env
-        .lookup_type(&["Lib".into()], "Widget", 0)
-        .expect("fixture must declare Lib.Widget");
+#[test]
+fn nested_terminal_alias_defers_but_a_qualifier_through_it_resolves() {
+    // The nested-descent counterpart of the bare/qualifier split (codex round 5):
+    // `Lib.Nested.NestedAlias` (a nested alias as the terminal segment, no tail) is
+    // a bare use and must DEFER exactly like a top-level bare alias, while a
+    // qualifier through it — `Lib.Nested.NestedAlias.Make` — still resolves the
+    // `Make` static on the chased `Widget` target.
+    let env = fixture_env();
+
+    let bare = "module M\nlet _ = Lib.Nested.NestedAlias\n";
+    let rf = resolve(bare, &env);
     assert_eq!(
-        rf.resolution_at(at(src, "WidgetAlias")),
-        Some(Resolution::Entity(widget)),
-        "a bare alias use binds the chased terminal type, not the marker; got {:?}",
-        rf.resolution_at(at(src, "WidgetAlias")),
+        rf.resolution_at(at(bare, "NestedAlias")),
+        Some(Resolution::Deferred(DeferredReason::QualifiedAccess)),
+        "a terminal nested alias (bare) must defer, not name a target; got {:?}",
+        rf.resolution_at(at(bare, "NestedAlias")),
+    );
+
+    let qual = "module M\nlet _ = Lib.Nested.NestedAlias.Make()\n";
+    let rf = resolve(qual, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(qual, "Lib.Nested.NestedAlias.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "a qualifier through a nested alias still resolves the member; got {:?}",
+        rf.resolution_at(at(qual, "Lib.Nested.NestedAlias.Make")),
     );
 }
 

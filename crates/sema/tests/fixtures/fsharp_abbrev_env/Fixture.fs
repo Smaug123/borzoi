@@ -23,6 +23,14 @@ type U =
 
 type UAlias = U
 
+// A nested alias of a loaded same-assembly type (codex round 5): the nested
+// descent branch must treat a *terminal* nested alias (`Lib.Nested.NestedAlias`,
+// no member tail) as a bare use and DEFER it, exactly like the top-level rooting
+// branch, while a *qualifier* through it (`Lib.Nested.NestedAlias.Make`) still
+// resolves the `Make` static on the chased `Widget` target.
+module Nested =
+    type NestedAlias = Widget
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct

@@ -531,6 +531,17 @@ pub struct AssemblyEnv {
     /// [`AssemblyEnv::from_entities`], which registers no per-DLL identities;
     /// [`Self::unique_assembly_key_for_name`] falls back to the entities there.
     assembly_identities: Vec<Option<AssemblyIdentity>>,
+    /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
+    /// env cannot name is present. A referenced CCU is pickled only by simple
+    /// name, so an unnameable DLL could *be* that name: its presence makes
+    /// referenced-CCU uniqueness undecidable, and [`Self::unique_assembly_key_for_name`]
+    /// declines wholesale (correctness over availability). Set when a `None`
+    /// identity is registered (a rootless projection the shorter constructors
+    /// could not name) or by [`Self::mark_referenced_assemblies_incomplete`] (the
+    /// LSP host, when the projector **skipped** a DLL FCS can still load — issue
+    /// #150 / codex P2). The runtime env supplies every identity and skips no
+    /// loadable DLL, so this stays `false` there.
+    assembly_identities_incomplete: bool,
     /// Every **top-level** type's handle, in interning order — unlike
     /// [`Self::by_type`] this keeps *all* handles at a colliding
     /// `(namespace, name, arity)` (two referenced assemblies can expose the
@@ -821,10 +832,15 @@ impl AssemblyEnv {
             // Register the DLL's identity so a referenced-CCU name is counted per
             // loaded DLL. Prefer the caller-supplied `manifest_identity` (known to
             // its `EcmaView` even when the projection is rootless); fall back to the
-            // first surviving root for callers that do not supply it — a rootless
-            // such assembly is then unregistered (see [`Self::assembly_identities`]).
-            env.assembly_identities
-                .push(manifest_identity.or_else(|| roots.first().map(|r| r.assembly.clone())));
+            // first surviving root for callers that do not supply it. An
+            // *unnameable* such assembly (rootless, no supplied identity) makes the
+            // identity set incomplete — it could be any name — so uniqueness must
+            // decline (see [`Self::assembly_identities_incomplete`]).
+            let identity = manifest_identity.or_else(|| roots.first().map(|r| r.assembly.clone()));
+            if identity.is_none() {
+                env.assembly_identities_incomplete = true;
+            }
+            env.assembly_identities.push(identity);
             // The assembly's manifest identity name, for the FSharp.Core special
             // case — every root carries it. The deref itself keys on `id`.
             if let Some(first) = roots.first() {
@@ -2441,6 +2457,17 @@ impl AssemblyEnv {
         self.extension_surface_unknowable = true;
     }
 
+    /// Mark the env's loaded-DLL **identity set incomplete** — the host skipped a
+    /// DLL it could not project at all, so its manifest name is unregistered.
+    /// That name could collide with a referenced CCU, so the abbreviation-target
+    /// resolver can no longer prove any referenced-CCU name unique and declines
+    /// every abbreviation target into a referenced CCU (correctness over
+    /// availability). Called by the host (the LSP) after building the env, since
+    /// which DLLs were skipped is known there.
+    pub fn mark_referenced_assemblies_incomplete(&mut self) {
+        self.assembly_identities_incomplete = true;
+    }
+
     /// Record that a referenced assembly **dropped an undecodable type** in
     /// `namespace` (it may be a C#-style `[<Extension>]` class the entity tree no
     /// longer shows). The OV-6 gate treats `namespace` as possibly-extension-bearing
@@ -2889,16 +2916,15 @@ impl AssemblyEnv {
     /// the synthetic single-group [`Self::from_entities`] (no registry) it falls
     /// back to the interned entities, keyed by manifest identity.
     fn unique_assembly_key_for_name(&self, name: &str) -> Option<AssemblyKey<'_>> {
+        // An **incomplete** identity set — an unnameable rootless projection, or a
+        // DLL the projector skipped entirely — could itself be `name`, so a
+        // matching sibling might not be the sole DLL of that name: uniqueness is
+        // undecidable, decline (codex P2). The runtime env supplies every identity
+        // and skips no loadable DLL, so this never fires there.
+        if self.assembly_identities_incomplete {
+            return None;
+        }
         if !self.assembly_identities.is_empty() {
-            // An **unknown** (unregistered) identity — a rootless projection the
-            // shorter constructors could not name — could itself be `name`, so its
-            // mere presence makes referenced-CCU uniqueness *undecidable*: a
-            // matching sibling might not be the sole DLL of that name. Decline
-            // (codex P2). The runtime constructor always supplies an identity, so
-            // this never fires on the LSP's real env.
-            if self.assembly_identities.iter().any(|i| i.is_none()) {
-                return None;
-            }
             let mut found: Option<AssemblyId> = None;
             for (idx, ident) in self.assembly_identities.iter().enumerate() {
                 if ident.as_ref().is_some_and(|a| a.name == name) {
@@ -5228,6 +5254,41 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
             None,
             "an unknown (rootless, unnamed) identity makes the CCU name undecidable — decline",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_when_a_dll_was_skipped() {
+        // A DLL the projector skipped entirely leaves no registry entry, so its
+        // manifest name is unknown to the env. Once the host marks the env
+        // incomplete, a `Some("Lib")` target must decline — the skipped DLL could
+        // itself be `Lib`, so the sole *registered* `Lib` is no longer provably the
+        // one the pickle meant (codex P2).
+        let widget = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["N"], "Widget")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "RefAlias",
+            Some(named_target(Some("Lib"), &["N", "Widget"])),
+        );
+        let contributor = ConfigView::new("Lib", vec![widget, marker], &[]);
+        let mut env = AssemblyEnv::from_views(&[contributor]).expect("build env");
+
+        // Before any skip, the sole registered `Lib` resolves.
+        assert!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias"))
+                .is_some(),
+            "the sole loaded `Lib` resolves before the env is marked incomplete",
+        );
+        // A skipped DLL makes the identity set incomplete — decline.
+        env.mark_referenced_assemblies_incomplete();
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
+            None,
+            "a skipped DLL makes the CCU name undecidable — decline",
         );
     }
 

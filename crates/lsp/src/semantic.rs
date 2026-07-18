@@ -1982,8 +1982,14 @@ fn build_env_from_dll_paths<'a>(
     // into any namespace) OR a DLL was **skipped entirely** (`indexed` shorter than
     // the input `paths`): either forces the gate to defer wholesale. A **dropped
     // type**, by contrast, is namespace-scoped uncertainty (below).
+    // A DLL FCS can load but our projector skipped entirely leaves no registry
+    // entry, so its manifest name is unknown to referenced-CCU uniqueness — which
+    // must then decline wholesale, as a same-named sibling could be the intended
+    // CCU (issue #150 / codex P2). Distinct from the extension-surface gate below,
+    // which a bad AutoOpen list also trips.
+    let some_dll_skipped = indexed.len() < paths.len();
     let extension_surface_unknowable =
-        indexed.len() < paths.len() || indexed.iter().any(|(_, _, p)| p.auto_opens_unreadable);
+        some_dll_skipped || indexed.iter().any(|(_, _, p)| p.auto_opens_unreadable);
     // Collect the namespaces of every dropped type across all DLLs.
     let dropped_type_namespaces: Vec<Vec<String>> = indexed
         .iter()
@@ -2007,6 +2013,9 @@ fn build_env_from_dll_paths<'a>(
     let mut env = AssemblyEnv::from_assemblies_with_projection_knowability(assemblies);
     if extension_surface_unknowable {
         env.mark_extension_surface_unknowable();
+    }
+    if some_dll_skipped {
+        env.mark_referenced_assemblies_incomplete();
     }
     for namespace in dropped_type_namespaces {
         env.mark_namespace_dropped_type(namespace);

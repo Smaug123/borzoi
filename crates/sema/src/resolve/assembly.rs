@@ -94,19 +94,22 @@ impl<'a> Resolver<'a> {
         }
         recs.push((
             segments[k - base].text_range(),
-            // FCS points the alias segment at the marker only when it is a
-            // *qualifier* — a tail follows (`WidgetAlias.Make`), and the tail below
-            // walks on `walk_root` (its target). A *bare* value-position use with no
-            // tail (`let x = WidgetAlias()`, or the alias opened into scope) FCS
-            // resolves to the chased *terminal* type, not the marker, so bind the
-            // target there (verified against fcs-dump `uses`; codex review). A
-            // *type*-position bare use keeps the marker, but that goes through the
-            // type-position sibling [`Self::assembly_type_path_core`], not this resolver.
-            Resolution::Entity(if via_alias && k + 1 == n {
-                walk_root
+            // Resolve-through chases the target to walk a member *tail*. When the
+            // alias is a *qualifier* (a tail follows: `WidgetAlias.Make`), FCS points
+            // the alias segment at the marker and the tail below walks on `walk_root`
+            // (its target) — bind the marker. But a *bare* alias use with no tail
+            // (`Lib.WidgetAlias`) FCS resolves by the target's value/constructor
+            // surface, which we do not model: a constructible class points at the
+            // terminal type, a `type UAlias = U` union without a constructor errors
+            // FS1133 with no symbol at all (codex review). We cannot tell those apart
+            // here, so *defer* the bare alias — own the path (it is the alias's own
+            // reading) but name no target, never a wrong one. (A *type*-position bare
+            // use is a separate resolver, [`Self::assembly_type_path_core`].)
+            if via_alias && k + 1 == n {
+                deferred
             } else {
-                type_handle
-            }),
+                Resolution::Entity(type_handle)
+            },
         ));
 
         // Walk the segments past the rooting type: nested types extend the
@@ -130,6 +133,16 @@ impl<'a> Resolver<'a> {
                 let child_walk = if self.assemblies.is_abbreviation(child) {
                     match self.assemblies.resolve_abbreviation_target(child) {
                         Some(target) => {
+                            // A *terminal* nested alias (no tail follows) is a bare
+                            // use — defer it exactly as the rooting branch does, for
+                            // the same reason (we do not model the target's
+                            // value/constructor surface; codex review). Only a
+                            // *qualifier* nested alias resolves through to a tail.
+                            if i + 1 == n {
+                                recs.push((src.text_range(), deferred));
+                                i += 1;
+                                break;
+                            }
                             via_alias = true;
                             target
                         }
