@@ -113,7 +113,11 @@ detailed sub-plan yet, so writing one is the first step of each:
   [`interface-walk-plan.md`](interface-walk-plan.md).
 - **Extension members** — currently out of scope for all of 3.3.
 - **SRTP** (statically-resolved type parameters).
-- **Computation-expression desugaring.**
+- **Computation-expression desugaring** — pulled forward (issue #30); sub-plan
+  (the FCS member-directed translation, the probe catalogue, the CE-0–CE-8
+  staging, and the typing-substrate prerequisites it is gated on — `Ty`
+  generic args, F# argument-group recovery, attribute projection):
+  [`ce-desugaring-plan.md`](ce-desugaring-plan.md).
 - **Units of measure.**
 - **Dot-completion of inherited members** — completion is still exact-entity
   only and does not offer members reached via the 3.x-inh base-class walk.
