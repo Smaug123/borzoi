@@ -865,6 +865,7 @@ mod tests {
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],
+            abbreviation_target: None,
         }
     }
 
