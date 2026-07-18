@@ -3023,6 +3023,24 @@ impl Ecma335Assembly {
                 if in_module && !il_heuristic {
                     projected.source_name = None;
                 }
+                // A generic 0-parameter module method is a *value* (`let empty<'T>
+                // = …`) far more often than the vanishingly rare generic
+                // 0-parameter unit-function (`let f<'T> () = …`); both share this
+                // exact IL shape (a CLR property cannot be generic, so neither is
+                // property-rebranded). Presume value here. The host-pickle merge is
+                // the source of truth and *overwrites* `is_module_value_binding` for
+                // every member it claims (from the val's argument-group count — 0 ⇒
+                // value, ≥1 ⇒ function), so this presumption only survives where the
+                // pickle did not cover the member: the `il_heuristic` fallback path,
+                // or an unmatched member. There, value is the better default — it is
+                // what the old display heuristic produced, and dropping it would
+                // regress `Array.empty`-shaped values on pickle-less assemblies.
+                if in_module
+                    && projected.signature.parameters.is_empty()
+                    && !projected.generic_parameters.is_empty()
+                {
+                    projected.is_module_value_binding = true;
+                }
                 Ok(Some(Member::Method(projected)))
             })();
             out.push_or_skip_opt(&m.name, projected);
@@ -4287,6 +4305,64 @@ mod tests {
              must not be treated as fully enumerable — an invisible one would outrank an \
              earlier open's value and produce a wrong target"
         );
+    }
+
+    #[test]
+    fn pickle_less_generic_module_method_is_presumed_a_value() {
+        // The value/function ambiguity of a generic 0-parameter module method
+        // (`let empty<'T> = …` vs `let f<'T> () = …`) is resolved authoritatively by
+        // the host pickle's argument-group count. When the pickle is absent — this
+        // stripped assembly, or a `--standalone`/reference image — that count is
+        // unavailable, so `project_fsharp_members` presumes *value*: the common case
+        // (`Array.empty`-shaped bindings) and what the pre-`is_module_value_binding`
+        // display heuristic produced, so a pickle-less generic value does not regress
+        // into a `unit -> …` function on hover. The rare generic unit-function shares
+        // the IL shape and is presumed a value too — unrecoverable without the pickle,
+        // the accepted limitation.
+        use crate::model::Member;
+        let dll = all_dlls()
+            .into_iter()
+            .find(|path| path.file_name().and_then(|n| n.to_str()) == Some("MiniLibFs.dll"))
+            .expect("MiniLibFs fixture");
+        let bytes = std::fs::read(&dll).expect("fixture");
+        let mut view = Ecma335Assembly::parse(&bytes).expect("parse");
+        view.image
+            .resources
+            .retain(|r| !r.name.starts_with("FSharpSignature"));
+
+        let (entities, _skips) = view
+            .enumerate_with_skips_impl()
+            .expect("a pickle-less F# assembly still projects its IL");
+        let hello = entities
+            .iter()
+            .find(|e| e.name == "Hello" && e.kind == crate::EntityKind::Module)
+            .expect("Hello module");
+        let method = |name: &str| {
+            hello
+                .members
+                .iter()
+                .find_map(|m| match m {
+                    Member::Method(mm) if mm.name == name => Some(mm),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("method {name} on Hello"))
+        };
+
+        // Generic 0-parameter module methods are presumed values without the pickle.
+        assert!(
+            method("genEmpty").is_module_value_binding,
+            "a generic 0-parameter module value must stay a value on the pickle-less path"
+        );
+        assert!(
+            method("genPingUnit").is_module_value_binding,
+            "the presumption cannot distinguish the rare generic unit-function; value is the default"
+        );
+        // The presumption is scoped to the generic 0-parameter shape. A non-generic
+        // unit-function (`let ping () = 1`) is not presumed a value (it stays a
+        // function), and a generic function that *takes a parameter*
+        // (`let identity<'a> (x: 'a)`) never matches the 0-parameter shape either.
+        assert!(!method("ping").is_module_value_binding);
+        assert!(!method("identity").is_module_value_binding);
     }
 
     #[test]
