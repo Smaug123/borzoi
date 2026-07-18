@@ -89,11 +89,12 @@ An open `.fs` buffer's diagnostics depend on its owning project's
 `DefineConstants` (via `symbols_for`), so after a `Structural` change re-run
 `publish_diagnostics` for **every open document** (the changed `.fsproj`
 included, if open). `publish_diagnostics` sends only for push-mode clients;
-pull-mode clients advertising `workspace.diagnostic.refreshSupport` receive a
+pull-mode clients advertising `workspace.diagnostics.refreshSupport` receive a
 `workspace/diagnostic/refresh` request; other pull clients see the fresh caches
 on their next natural document/workspace pull. A `Source`-only change cannot
 alter an open buffer's lexer/parser diagnostics (cross-file sema isn't in the
-diagnostic path yet) → invalidate semantic, **no** republish.
+diagnostic path yet) → invalidate semantic, **no** push republish, but request a
+workspace diagnostic refresh because its own on-disk report changed.
 
 ### W4 — Assembly env must drop too
 A `Structural` change clears `SemanticState.assembly_envs` (a `.fsproj` /
@@ -224,17 +225,20 @@ observe the new (and only the new) surface in the refreshed env.
 
 ### Follow-up — Pull-diagnostic refresh ✅ DONE
 
-After a `Structural` batch, `State` records diagnostic-refresh debt independently
-of its open-buffer republish list. A pull client advertising
-`workspace.diagnostic.refreshSupport` receives `workspace/diagnostic/refresh`;
-source-content, assembly-input, and ignored changes do not incur the global
-request. Diagnostic and semantic-token refreshes share one in-flight slot, with
-diagnostics first and the next owed refresh sent after the matching reply.
+After a `Structural` or source-content change, `State` records
+diagnostic-refresh debt independently of its open-buffer republish list. A pull
+client advertising `workspace.diagnostics.refreshSupport` receives
+`workspace/diagnostic/refresh`.
+Source-content changes record the same debt because workspace diagnostics read
+unopened files from disk; assembly-input and ignored changes do not. Diagnostic
+and semantic-token refreshes share one in-flight slot, with diagnostics first
+and the next owed refresh sent after the matching reply.
 
-**Correctness oracle:** capability and change-class truth tables; a no-open-buffer
-wire regression; negative wire barriers for unsupported clients and source-only
-changes; coalescing while a request is in flight; diagnostic-before-semantic
-ordering; and unmatched-response / shutdown behaviour.
+**Correctness oracle:** raw plural-capability and change-class truth tables;
+no-open-buffer wire regressions for structural and source-content changes; a
+negative wire barrier for unsupported clients; coalescing while a request is in
+flight; diagnostic-before-semantic ordering; and unmatched-response / shutdown
+behaviour.
 
 ## Risks / out of scope
 
@@ -246,8 +250,8 @@ ordering; and unmatched-response / shutdown behaviour.
   notification — but Stage 1's handler is correct and harmless regardless, and
   Stage 2's registration covers dynamic-registration clients.
 - **Client must support diagnostic refresh.** A pull client without
-  `workspace.diagnostic.refreshSupport` receives no global request and observes
-  structural changes on its next natural diagnostic pull.
+  `workspace.diagnostics.refreshSupport` receives no global request and observes
+  structural or source-content changes on its next natural diagnostic pull.
 - **Out of scope:** targeted (per-project / per-subtree) invalidation;
   debouncing bursts of changes; watching arbitrary imported `.props`/`.targets`
   outside the glob set.

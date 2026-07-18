@@ -75,7 +75,7 @@ fn pull_diagnostic_caps() -> ClientCapabilities {
 }
 
 /// A pull-diagnostic client that accepts the global refresh request used after
-/// project-wide changes.
+/// watched diagnostic inputs change.
 fn pull_diagnostic_refresh_caps() -> ClientCapabilities {
     let mut caps = pull_diagnostic_caps();
     caps.workspace = Some(WorkspaceClientCapabilities {
@@ -795,64 +795,59 @@ fn pull_client_never_receives_publish_diagnostics() {
     assert!(closed.full_document_diagnostic_report.items.is_empty());
 }
 
-/// A structural watched-file change can stale diagnostics across the whole
-/// workspace. Pull clients that advertise refresh support are asked to
-/// re-request them, even when the server has no open buffers to republish.
+/// Structural changes and external source-content edits can stale diagnostics
+/// across the whole workspace. Pull clients that advertise refresh support are
+/// asked to re-request them, even when the server has no open buffers to
+/// republish.
 #[test]
-fn structural_watched_change_requests_diagnostic_refresh() {
-    let server = Server::start_with_caps(vec![], pull_diagnostic_refresh_caps());
+fn watched_diagnostic_inputs_request_diagnostic_refresh() {
+    for changed_uri in ["file:///workspace/App.fsproj", "file:///workspace/Other.fs"] {
+        let server = Server::start_with_caps(vec![], pull_diagnostic_refresh_caps());
 
-    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
-        changes: vec![FileEvent {
-            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
-            typ: FileChangeType::CHANGED,
-        }],
-    });
-
-    let request = match server
-        .client
-        .receiver
-        .recv_timeout(Duration::from_secs(5))
-        .expect("diagnostic refresh request within 5s")
-    {
-        Message::Request(request) => request,
-        other => panic!("expected workspace/diagnostic/refresh, got {other:?}"),
-    };
-    assert_eq!(request.method, WorkspaceDiagnosticRefresh::METHOD);
-    assert_eq!(request.params, serde_json::Value::Null);
-    server
-        .client
-        .sender
-        .send(Message::Response(Response {
-            id: request.id,
-            result: Some(serde_json::Value::Null),
-            error: None,
-        }))
-        .unwrap();
-}
-
-/// Both gates are necessary: structural changes do not send the request to a
-/// client without refresh support, and source-content changes do not send a
-/// global request even when the client supports one. The workspace pull is an
-/// ordering barrier that would encounter any stray reverse request first.
-#[test]
-fn diagnostic_refresh_is_capability_and_change_gated() {
-    let cases = [
-        (pull_diagnostic_caps(), "file:///workspace/App.fsproj"),
-        (pull_diagnostic_refresh_caps(), "file:///workspace/Other.fs"),
-    ];
-
-    for (caps, changed_uri) in cases {
-        let mut server = Server::start_with_caps(vec![], caps);
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
             changes: vec![FileEvent {
                 uri: Url::parse(changed_uri).unwrap(),
                 typ: FileChangeType::CHANGED,
             }],
         });
-        let report = server.request::<WorkspaceDiagnosticRequest>(workspace_diagnostic_params());
-        assert!(matches!(report, WorkspaceDiagnosticReportResult::Report(_)));
+
+        let request = match server
+            .client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("diagnostic refresh request within 5s")
+        {
+            Message::Request(request) => request,
+            other => panic!("expected workspace/diagnostic/refresh, got {other:?}"),
+        };
+        assert_eq!(request.method, WorkspaceDiagnosticRefresh::METHOD);
+        assert_eq!(request.params, serde_json::Value::Null);
+        server
+            .client
+            .sender
+            .send(Message::Response(Response {
+                id: request.id,
+                result: Some(serde_json::Value::Null),
+                error: None,
+            }))
+            .unwrap();
     }
+}
+
+/// A structural change does not send the request to a client without refresh
+/// support. The workspace pull is an ordering barrier that would encounter any
+/// stray reverse request first.
+#[test]
+fn diagnostic_refresh_is_capability_gated() {
+    let mut server = Server::start_with_caps(vec![], pull_diagnostic_caps());
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let report = server.request::<WorkspaceDiagnosticRequest>(workspace_diagnostic_params());
+    assert!(matches!(report, WorkspaceDiagnosticReportResult::Report(_)));
 }
 
 /// Clients without `textDocument.diagnostic` retain the complete stateful push

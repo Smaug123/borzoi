@@ -32,10 +32,11 @@ use lsp_types::{
 
 use lsp_types::{
     CompletionOptions, DiagnosticOptions, DiagnosticServerCapabilities,
-    DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern,
-    HoverProviderCapability, OneOf, Registration, RegistrationParams, SemanticTokensFullOptions,
-    SemanticTokensOptions, SemanticTokensServerCapabilities, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind,
+    DiagnosticWorkspaceClientCapabilities, DidChangeWatchedFilesRegistrationOptions,
+    FileSystemWatcher, GlobPattern, HoverProviderCapability, OneOf, Registration,
+    RegistrationParams, SemanticTokensFullOptions, SemanticTokensOptions,
+    SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentSyncCapability,
+    TextDocumentSyncKind,
 };
 
 use crate::diagnostics::FileDiagnostics;
@@ -103,6 +104,41 @@ pub fn server_capabilities() -> ServerCapabilities {
     }
 }
 
+/// Parse client capabilities from the raw initialize object, including the
+/// standard `workspace.diagnostics` field. `lsp-types` 0.95.1 names that field
+/// `diagnostic` (singular), so its derived deserializer otherwise drops the
+/// conforming plural spelling before [`State`] can negotiate refresh requests.
+pub fn client_capabilities_from_initialize(
+    initialize: &serde_json::Value,
+) -> Result<ClientCapabilities, serde_json::Error> {
+    #[derive(serde::Deserialize)]
+    struct InitializeCapabilities {
+        capabilities: CorrectedClientCapabilities,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorrectedClientCapabilities {
+        workspace: Option<CorrectedWorkspaceCapabilities>,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct CorrectedWorkspaceCapabilities {
+        diagnostics: Option<DiagnosticWorkspaceClientCapabilities>,
+    }
+
+    let mut capabilities: ClientCapabilities =
+        serde_json::from_value(initialize["capabilities"].clone())?;
+    let corrected: InitializeCapabilities = serde_json::from_value(initialize.clone())?;
+    if let Some(diagnostics) = corrected
+        .capabilities
+        .workspace
+        .and_then(|workspace| workspace.diagnostics)
+    {
+        capabilities.workspace.get_or_insert_default().diagnostic = Some(diagnostics);
+    }
+    Ok(capabilities)
+}
+
 /// Mutable server state threaded through every request and notification.
 pub struct State {
     pub docs: HashMap<Url, String>,
@@ -145,10 +181,9 @@ pub struct State {
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
     server_request_seq: u64,
-    /// A structural watched-file batch owes a global pull-diagnostic refresh.
-    /// Independent of the open-document republish list: project context can
-    /// change while no buffer is open, and workspace diagnostics can still be
-    /// stale.
+    /// A watched structural or source-content change owes a global
+    /// pull-diagnostic refresh. Independent of the open-document republish
+    /// list: workspace diagnostics include unopened files and can become stale.
     wants_diagnostic_refresh: bool,
     /// The id of the diagnostic or semantic-token refresh currently awaiting
     /// the client's reply, if any. Bounds all server→client refreshes to **at
@@ -213,7 +248,9 @@ impl State {
     /// Whether this pull-diagnostic client accepts the global
     /// `workspace/diagnostic/refresh` request. Both capabilities are required:
     /// refresh support alone does not select pull delivery, and an absent or
-    /// false `workspace.diagnostic.refreshSupport` forbids the request.
+    /// false `workspace.diagnostics.refreshSupport` forbids the request. The
+    /// initialization boundary maps that standard plural wire field into the
+    /// singular slot exposed by `lsp-types` 0.95.1.
     pub fn supports_diagnostic_refresh(&self) -> bool {
         self.supports_pull_diagnostics()
             && self
@@ -308,9 +345,10 @@ impl State {
 
     /// Apply a batch of `workspace/didChangeWatchedFiles` changes to the caches
     /// and return the open-document URIs whose diagnostics the shell must
-    /// republish — empty unless a **structural** file changed. A structural
-    /// batch also records a global pull-diagnostic refresh independently of
-    /// this list, because workspace diagnostics can stale with no open buffers.
+    /// republish — empty unless a **structural** file changed. Structural and
+    /// source-content changes also record a global pull-diagnostic refresh
+    /// independently of this list, because workspace pulls include unopened
+    /// files.
     ///
     /// - A `Structural` change (a `.fsproj` / `Directory.Build.*` /
     ///   `global.json` / `project.assets.json`) invalidates the *whole*
@@ -318,8 +356,9 @@ impl State {
     ///   see `docs/completed/file-watch-invalidation-plan.md` W2), and requests a
     ///   republish of every open buffer — its `DefineConstants` may have moved.
     /// - A `Source` change invalidates just the semantic caches that list the
-    ///   file (no republish: an unopened source edit can't change an open
-    ///   buffer's lexer/parser diagnostics).
+    ///   file and requests a workspace diagnostic refresh (no push republish:
+    ///   an unopened source edit can't change an open buffer's lexer/parser
+    ///   diagnostics, but its own workspace report changed).
     /// - An `AssemblyInput` change (a `.dll` rewritten by a sibling rebuild or
     ///   restore, a `.cs`/`.csproj` edit feeding the C# sidecar) drops the
     ///   referenced-assembly caches
@@ -336,6 +375,7 @@ impl State {
             match classify_change(&change.uri, change.typ) {
                 ChangeClass::Structural => structural = true,
                 ChangeClass::Source => {
+                    self.wants_diagnostic_refresh = true;
                     if let Ok(path) = change.uri.to_file_path() {
                         self.semantic.invalidate_file(&path);
                     }
@@ -1279,11 +1319,12 @@ where
 ///
 /// Sends **at most one refresh at a time** ([`State::pending_refresh_id`]): while
 /// one is outstanding, owed work stays set until [`handle_refresh_reply`] clears
-/// the slot and calls this again. Diagnostic refresh has priority: a structural
-/// change makes the diagnostics the server directly provides stale, while the
-/// semantic-token debt can remain in [`SemanticState`] until the diagnostic
-/// acknowledgement. Unsupported work is drained because capabilities are fixed
-/// for the session and must not accumulate for a request the client forbids.
+/// the slot and calls this again. Diagnostic refresh has priority: a watched
+/// diagnostic input makes the reports the server directly provides stale,
+/// while semantic-token debt can remain in [`SemanticState`] until the
+/// diagnostic acknowledgement. Unsupported work is drained because
+/// capabilities are fixed for the session and must not accumulate for a
+/// request the client forbids.
 fn maybe_send_refresh(state: &mut State, conn: &Connection) {
     if state.pending_refresh_id.is_some() {
         return;
@@ -1471,6 +1512,24 @@ mod tests {
         let mut state = State::default();
         state.set_client_capabilities(caps_with_diagnostic_refresh(true, Some(true)));
         assert!(state.supports_diagnostic_refresh());
+    }
+
+    #[test]
+    fn plural_diagnostics_refresh_capability_survives_initialize_json() {
+        for support in [false, true] {
+            let raw = serde_json::json!({
+                "capabilities": {
+                    "textDocument": { "diagnostic": {} },
+                    "workspace": {
+                        "diagnostics": { "refreshSupport": support }
+                    }
+                }
+            });
+            let caps = client_capabilities_from_initialize(&raw).unwrap();
+            let mut state = State::default();
+            state.set_client_capabilities(caps);
+            assert_eq!(state.supports_diagnostic_refresh(), support);
+        }
     }
 
     #[test]
@@ -2117,11 +2176,11 @@ mod tests {
     }
 
     #[test]
-    fn only_structural_watched_changes_owe_diagnostic_refresh() {
+    fn diagnostic_input_changes_owe_diagnostic_refresh() {
         let cases = [
             ("file:///p/App.fsproj", FileChangeType::CHANGED, true),
             ("file:///p/New.fs", FileChangeType::CREATED, true),
-            ("file:///p/Other.fs", FileChangeType::CHANGED, false),
+            ("file:///p/Other.fs", FileChangeType::CHANGED, true),
             ("file:///p/Lib.dll", FileChangeType::CHANGED, false),
             ("file:///p/README.md", FileChangeType::CHANGED, false),
         ];
