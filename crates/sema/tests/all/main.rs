@@ -40,6 +40,7 @@ mod resolve_export_case_kind;
 mod resolve_fsharp_abbrev;
 mod resolve_fsharp_core;
 mod resolve_incremental_diff;
+mod resolve_member_bodies;
 mod resolve_module_opens;
 mod resolve_nested_modules;
 mod resolve_project;

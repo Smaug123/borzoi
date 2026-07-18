@@ -251,9 +251,54 @@ impl<'a> Resolver<'a> {
         // parameter binders (scope that binding's RHS). Each binder is interned
         // and records its own self-resolution here, regardless of visibility
         // timing — exactly as `prepare_binding` does for the module-level form.
+        let (value_entries, per_binding) = self.prepare_local_bindings(e.bindings());
+
+        // `let rec`: value binders (and active-pattern cases) visible to every RHS
+        // *and* the body, so push the frame before resolving RHSs. Plain `let`:
+        // RHSs resolve first (the group's binders not yet in scope — so a case
+        // used as a *pattern* in a non-`rec` recognizer's own body is a fresh
+        // variable, not the case, matching FCS), then the frame for the body.
+        // Either way exactly one value-binder frame is left on the stack for the
+        // body, popped below. The `if`/`else` (not two sequential `if`s) moves
+        // `value_entries` down exactly one path.
+        if e.is_rec() {
+            self.scopes.push(Frame {
+                entries: value_entries,
+            });
+            self.resolve_local_let_rhss(&per_binding);
+        } else {
+            self.resolve_local_let_rhss(&per_binding);
+            self.scopes.push(Frame {
+                entries: value_entries,
+            });
+        }
+        if let Some(body) = e.body() {
+            self.resolve_expr(&body);
+        }
+        self.scopes.pop();
+    }
+
+    /// Intern the binders of a `let`/`let rec` group (block-`let` or a type's
+    /// class-level `let` fields) — the shared core of [`Self::resolve_local_let`]
+    /// and [`Self::resolve_class_let`](super::Resolver::resolve_class_let).
+    ///
+    /// Returns `(value_entries, per_binding)`: the head-value binders (which the
+    /// caller makes visible to the body / rest of the class) and, per binding,
+    /// its curried-parameter entries, active-pattern case entries, and RHS. Each
+    /// binder is interned and self-resolved here; the caller controls the `rec`
+    /// visibility timing (push the value frame before or after
+    /// [`Self::resolve_local_let_rhss`]).
+    #[expect(clippy::type_complexity)]
+    pub(super) fn prepare_local_bindings(
+        &mut self,
+        bindings: impl Iterator<Item = Binding>,
+    ) -> (
+        Vec<ScopeEntry>,
+        Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)>,
+    ) {
         let mut value_entries: Vec<ScopeEntry> = Vec::new();
         let mut per_binding: Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)> = Vec::new();
-        for b in e.bindings() {
+        for b in bindings {
             let mut params = Vec::new();
             let mut ap_cases = Vec::new();
             if let Some(head) = b.pat() {
@@ -312,30 +357,7 @@ impl<'a> Resolver<'a> {
             }
             per_binding.push((params, ap_cases, b.expr()));
         }
-
-        // `let rec`: value binders (and active-pattern cases) visible to every RHS
-        // *and* the body, so push the frame before resolving RHSs. Plain `let`:
-        // RHSs resolve first (the group's binders not yet in scope — so a case
-        // used as a *pattern* in a non-`rec` recognizer's own body is a fresh
-        // variable, not the case, matching FCS), then the frame for the body.
-        // Either way exactly one value-binder frame is left on the stack for the
-        // body, popped below. The `if`/`else` (not two sequential `if`s) moves
-        // `value_entries` down exactly one path.
-        if e.is_rec() {
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
-            self.resolve_local_let_rhss(&per_binding);
-        } else {
-            self.resolve_local_let_rhss(&per_binding);
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
-        }
-        if let Some(body) = e.body() {
-            self.resolve_expr(&body);
-        }
-        self.scopes.pop();
+        (value_entries, per_binding)
     }
 
     /// Resolve each local-let binding's RHS with that binding's curried
