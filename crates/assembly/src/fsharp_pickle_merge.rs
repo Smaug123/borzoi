@@ -56,7 +56,7 @@ use crate::ecma335_assembly::strip_arity;
 use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
     IsType, PickledAttribute, PickledCcu, PickledEntity, PickledExnRepr, PickledTcRef,
-    PickledTyconRepr, PickledType, PickledVal, TyparKind,
+    PickledTyconRepr, PickledType, PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind, Member,
@@ -1527,33 +1527,88 @@ fn decode_abbreviation_target(
                     index: *simpletyp_index,
                     max: pickled.header.simpletys.len(),
                 })?;
-            Ok(Some(decode_nonlocal_named(pickled, nle_idx)?))
+            Ok(Some(decode_nonlocal_named(pickled, nle_idx, Vec::new())?))
         }
-        // A named application; only the NULLARY form is modelled here. A non-empty
-        // `args` is a generic instantiation — deferred to the structural slice.
-        PickledType::App { tcref, args, .. } if args.is_empty() => {
-            decode_named_tcref(pickled, tcref, local_fqns)
+        // A named application. `int[]` (the array tycon) and `int list` (the list
+        // tycon) both arrive here as generic apps, so there is no special array
+        // handling — decode the head and recurse into the args (fail-closed if any
+        // arg is a shape we cannot model).
+        PickledType::App { tcref, args, .. } => {
+            match decode_targets(pickled, entity, args, local_fqns)? {
+                Some(decoded) => decode_named_tcref(pickled, tcref, local_fqns, decoded),
+                None => Ok(None),
+            }
         }
-        _ => Ok(None),
+        // A function `domain -> range`.
+        PickledType::Fun { domain, range, .. } => {
+            let Some(domain) = decode_abbreviation_target(pickled, entity, domain, local_fqns)?
+            else {
+                return Ok(None);
+            };
+            let Some(range) = decode_abbreviation_target(pickled, entity, range, local_fqns)?
+            else {
+                return Ok(None);
+            };
+            Ok(Some(AbbreviationTarget::Fun(
+                Box::new(domain),
+                Box::new(range),
+            )))
+        }
+        // A reference (`a * b`) or struct (`struct (a * b)`) tuple. An F# tuple
+        // has at least two elements; the lower-level decoder accepts any array
+        // length, so a crafted/corrupt pickle could carry a 0- or 1-element tuple
+        // tag — decline it rather than commit a valid-looking degenerate target.
+        PickledType::Tuple { kind, elems } if elems.len() >= 2 => {
+            match decode_targets(pickled, entity, elems, local_fqns)? {
+                Some(elems) => Ok(Some(AbbreviationTarget::Tuple {
+                    struct_kind: *kind == TupleKind::Struct,
+                    elems,
+                })),
+                None => Ok(None),
+            }
+        }
+        // Measure and union-case targets stay unmodelled — a fail-closed decline;
+        // so does a degenerate (<2-element) tuple.
+        PickledType::Measure(_) | PickledType::UCase { .. } | PickledType::Tuple { .. } => Ok(None),
     }
 }
 
-/// Decode a nullary named head from its tcref: a non-local ref through the
-/// header tables, or a same-CCU `Local` stamp through the pre-built
-/// [`local_tycon_fqns`] map.
+/// Decode a list of pickled types fail-closed: `Ok(Some(vec))` when *every*
+/// element decodes, `Ok(None)` the moment any one declines (a partial arg list
+/// or tuple is never faithful, so the whole shape declines).
+fn decode_targets(
+    pickled: &PickledCcu,
+    entity: &PickledEntity,
+    tys: &[PickledType],
+    local_fqns: &HashMap<u32, Vec<String>>,
+) -> Result<Option<Vec<AbbreviationTarget>>, ImportError> {
+    let mut out = Vec::with_capacity(tys.len());
+    for ty in tys {
+        match decode_abbreviation_target(pickled, entity, ty, local_fqns)? {
+            Some(target) => out.push(target),
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(out))
+}
+
+/// Decode a named head from its tcref, attaching already-decoded `args`: a
+/// non-local ref through the header tables, or a same-CCU `Local` stamp through
+/// the pre-built [`local_tycon_fqns`] map.
 fn decode_named_tcref(
     pickled: &PickledCcu,
     tcref: &PickledTcRef,
     local_fqns: &HashMap<u32, Vec<String>>,
+    args: Vec<AbbreviationTarget>,
 ) -> Result<Option<AbbreviationTarget>, ImportError> {
     match tcref {
-        PickledTcRef::NonLocal(idx) => Ok(Some(decode_nonlocal_named(pickled, *idx)?)),
+        PickledTcRef::NonLocal(idx) => Ok(Some(decode_nonlocal_named(pickled, *idx, args)?)),
         PickledTcRef::Local(stamp) => {
             if let Some(path) = local_fqns.get(stamp) {
                 Ok(Some(AbbreviationTarget::Named {
                     ccu: None,
                     path: path.clone(),
-                    args: Vec::new(),
+                    args,
                 }))
             } else if (*stamp as usize) < pickled.tables.tycons.len() {
                 // In range, but not a recorded module/type — a well-formed shape
@@ -1570,10 +1625,11 @@ fn decode_named_tcref(
     }
 }
 
-/// Resolve a non-local entity-ref index into a nullary
-/// [`AbbreviationTarget::Named`]: the CCU logical name and the dotted logical
-/// path the pickle carries, both through the header tables. A dangling nleref,
-/// ccu, or string index is a malformed header — a loud `Err`.
+/// Resolve a non-local entity-ref index into an
+/// [`AbbreviationTarget::Named`] head carrying the given already-decoded `args`:
+/// the CCU logical name and the dotted logical path the pickle carries, both
+/// through the header tables. A dangling nleref, ccu, or string index is a
+/// malformed header — a loud `Err`.
 ///
 /// The ccu is stored **verbatim** (`Some(name)`), never folded to `None` even
 /// when it equals the host assembly's name. fsc pickles a reference to the
@@ -1590,6 +1646,7 @@ fn decode_named_tcref(
 fn decode_nonlocal_named(
     pickled: &PickledCcu,
     nle_idx: u32,
+    args: Vec<AbbreviationTarget>,
 ) -> Result<AbbreviationTarget, ImportError> {
     let nle =
         pickled
@@ -1628,7 +1685,7 @@ fn decode_nonlocal_named(
     Ok(AbbreviationTarget::Named {
         ccu: Some(ccu),
         path,
-        args: Vec::new(),
+        args,
     })
 }
 
@@ -1943,7 +2000,8 @@ mod tests {
         PickledModulType, PickledNleRef, PickledOsgnTables, PickledParentRef, PickledPos,
         PickledRange, PickledTcAug, PickledTcRef, PickledTyconObjModelData,
         PickledTyconObjModelKind, PickledTyconRepr, PickledTyparReprInfo, PickledTyparSpecData,
-        PickledType, PickledVal, PickledValReprInfo, PickledXmlDoc, TupleKind, TyparKind,
+        PickledType, PickledUCaseRef, PickledVal, PickledValReprInfo, PickledXmlDoc, TupleKind,
+        TyparKind,
     };
     use crate::model::{
         AbbreviationTarget, Access, AssemblyIdentity, EntityKind, Member, MethodLike,
@@ -2341,7 +2399,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_declines_structural_and_generic_shapes() {
+    fn decode_resolves_structural_and_generic_shapes() {
         let ccu = abbrev_test_ccu();
         let local = local_tycon_fqns(&ccu).unwrap();
         let entity = alias_entity();
@@ -2350,29 +2408,108 @@ mod tests {
             nullness: AMB,
         };
 
-        let shapes = [
-            // Generic instantiation (App with args) — the structural slice's job.
+        // Generic instantiation (App with args): the head plus the decoded args.
+        let generic = PickledType::App {
+            tcref: PickledTcRef::NonLocal(0),
+            args: vec![int()],
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &generic, &local).unwrap(),
+            Some(AbbreviationTarget::Named {
+                ccu: Some("FSharp.Core".to_string()),
+                path: vec![
+                    "Microsoft".into(),
+                    "FSharp".into(),
+                    "Core".into(),
+                    "int".into(),
+                ],
+                args: vec![int_target()],
+            }),
+        );
+
+        // Function `int -> int`.
+        let func = PickledType::Fun {
+            domain: Box::new(int()),
+            range: Box::new(int()),
+            nullness: AMB,
+        };
+        assert_eq!(
+            decode_abbreviation_target(&ccu, &entity, &func, &local).unwrap(),
+            Some(AbbreviationTarget::Fun(
+                Box::new(int_target()),
+                Box::new(int_target()),
+            )),
+        );
+
+        // Reference tuple `int * int` and struct tuple `struct (int * int)`.
+        for (kind, struct_kind) in [(TupleKind::Reference, false), (TupleKind::Struct, true)] {
+            let tuple = PickledType::Tuple {
+                kind,
+                elems: vec![int(), int()],
+            };
+            assert_eq!(
+                decode_abbreviation_target(&ccu, &entity, &tuple, &local).unwrap(),
+                Some(AbbreviationTarget::Tuple {
+                    struct_kind,
+                    elems: vec![int_target(), int_target()],
+                }),
+            );
+        }
+    }
+
+    #[test]
+    fn decode_declines_measure_and_union_case_and_partial_args() {
+        let ccu = abbrev_test_ccu();
+        let local = local_tycon_fqns(&ccu).unwrap();
+        let entity = alias_entity();
+        // A Var not in the entity's (empty) typar scope — declines.
+        let unmodellable = PickledType::Var {
+            typar_index: 5,
+            nullness: AMB,
+        };
+        let good = || PickledType::AppSimple {
+            simpletyp_index: 0,
+            nullness: AMB,
+        };
+
+        let declined = [
+            PickledType::Measure(Measure::One),
+            PickledType::UCase {
+                ucref: PickledUCaseRef {
+                    tcref: PickledTcRef::NonLocal(0),
+                    case_name_index: 0,
+                },
+                args: Vec::new(),
+            },
+            // A generic app whose arg declines makes the *whole* shape decline —
+            // fail-closed, never a partial arg list.
             PickledType::App {
                 tcref: PickledTcRef::NonLocal(0),
-                args: vec![int()],
+                args: vec![unmodellable.clone()],
                 nullness: AMB,
             },
-            PickledType::Fun {
-                domain: Box::new(int()),
-                range: Box::new(int()),
-                nullness: AMB,
-            },
+            // A well-formed-arity tuple with an undecodable element declines too.
             PickledType::Tuple {
                 kind: TupleKind::Reference,
-                elems: vec![int(), int()],
+                elems: vec![good(), unmodellable],
             },
-            PickledType::Measure(Measure::One),
+            // Degenerate tuple arities (a crafted/corrupt pickle) decline on arity
+            // even when every element decodes: an F# tuple has at least two.
+            PickledType::Tuple {
+                kind: TupleKind::Reference,
+                elems: vec![],
+            },
+            PickledType::Tuple {
+                kind: TupleKind::Struct,
+                elems: vec![good()],
+            },
         ];
-        for ty in shapes {
+        for ty in declined {
             assert_eq!(
                 decode_abbreviation_target(&ccu, &entity, &ty, &local).unwrap(),
                 None,
-                "{ty:?} is a shape the nullary slice must decline",
+                "{ty:?} must decline",
             );
         }
     }

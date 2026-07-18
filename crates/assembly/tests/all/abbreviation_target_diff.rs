@@ -58,6 +58,18 @@ fn fcs_dump_renders_immediate_logical_targets_for_minilib_fs() {
         "`type S = System.String` targets a BCL type directly, rendered by its \
          AccessPath+LogicalName FQN. All abbreviation targets: {targets:#?}",
     );
+    // A generic app pins the arity is emitted exactly once — the head's logical
+    // name already carries the mangled arity, so a naive append would double it
+    // (`list``1``1`). The differential can't catch that alone (both sides would
+    // double identically), so pin the exact single-arity string here.
+    assert_eq!(
+        targets.get(&("MiniLibFs.MyIntList".to_string(), 0)),
+        Some(&Some(
+            "Microsoft.FSharp.Collections.list`1<Microsoft.FSharp.Core.int>".to_string()
+        )),
+        "`type MyIntList = int list` must render the arity exactly once. \
+         All abbreviation targets: {targets:#?}",
+    );
 }
 
 /// The two-sided differential: certain-implies-exact. For every abbreviation
@@ -100,12 +112,11 @@ fn rust_decoded_targets_agree_with_fcs_over_minilib_fs() {
         checked += 1;
     }
 
-    // Guard against a vacuous pass: MiniLibFs decodes the five non-declined
-    // aliases — `IntId`, `S`, `ObjId` (referenced), `PointAlias` (same-assembly
-    // Local), and `SelfVar` (typar `!T0`); `MyList<'T> = 'T list` declines.
+    // Guard against a vacuous pass: MiniLibFs decodes all ten aliases — the five
+    // nullary/typar ones (`IntId`, `S`, `ObjId`, `PointAlias`, `SelfVar`) plus the
+    // five structural ones (`MyList`, `MyIntList`, `IntFn`, `NestedFn`, `Pair`).
     assert!(
-        checked >= 5,
-        "expected to decode at least the five non-declined aliases; only checked \
-         {checked}. ours: {ours:#?}",
+        checked >= 10,
+        "expected to decode all ten aliases; only checked {checked}. ours: {ours:#?}",
     );
 }

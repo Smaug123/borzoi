@@ -204,15 +204,32 @@ pub enum AbbreviationTarget {
     Named {
         ccu: Option<String>,
         path: Vec<String>,
-        /// Type arguments of the application. Always empty in the nullary decoder
-        /// slice; the structural-shape slice (plan Stage 3) populates it and adds
-        /// the `Array`/`Fun`/`Tuple` variants beside this one.
+        /// Type arguments of the application, outermost-first. Empty for a nullary
+        /// head (`int`); populated for a generic instantiation. **Arrays and other
+        /// intrinsics are generic apps too** — `int[]` is the array tycon applied
+        /// to `int` (`Named { path: [.., "[]"], args: [int] }`), `int list` is the
+        /// list tycon applied to `int` — so there is no separate `Array` variant.
+        /// Canonical-renders as `path.join(".")` + `` `N `` (the arity) + `<args>`
+        /// (`Microsoft.FSharp.Collections.list``1<Microsoft.FSharp.Core.int>`).
         args: Vec<AbbreviationTarget>,
     },
     /// The abbreviation's own generic parameter, by position into the marker's
     /// [`Entity::generic_parameters`] (`type MyList<'T> = 'T list` ⇒ the `'T`
     /// target is `Var(0)`). Canonical-renders as `!T<pos>`.
     Var(u16),
+    /// A function type `domain -> range` (F#'s `TType_fun`), right-associative.
+    /// Canonical-renders as `<domain> -> <range>`, parenthesising the domain when
+    /// it is itself a function so `(a -> b) -> c` stays distinct from
+    /// `a -> b -> c`.
+    Fun(Box<AbbreviationTarget>, Box<AbbreviationTarget>),
+    /// A tuple type (F#'s `TType_tuple`). `struct_kind` is `true` for a
+    /// value-tuple (`struct (a * b)`), `false` for a reference tuple (`a * b`).
+    /// Canonical-renders parenthesised — `(a * b)` / `struct (a * b)` — so a tuple
+    /// element never runs into a neighbouring operator.
+    Tuple {
+        struct_kind: bool,
+        elems: Vec<AbbreviationTarget>,
+    },
 }
 
 /// One of the ECMA-335 `ELEMENT_TYPE_*` primitive codes. Phase 1 carries

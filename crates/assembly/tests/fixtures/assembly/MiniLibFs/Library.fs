@@ -367,10 +367,17 @@ module Suffixed =
 //     path-only — exactly as FCS does; sema resolves the ccu name).
 //   - `SelfVar<'T> = 'T` targets the abbreviation's own type parameter, decoded
 //     to `Var(0)` and rendered `!T0`.
-//   - `MyList<'T> = 'T list` is a *generic instantiation* — a structural shape the
-//     nullary decoder slice declines (`None`), so the two-sided differential
-//     asserts nothing about it (while FCS still renders it). Its marker's arity is
-//     load-bearing: it must not collide with the nullary aliases above.
+//
+// The structural-shape slice adds generic instantiations, functions, and tuples
+// (arrays are deferred — they surface differently on the two sides):
+//   - `MyList<'T> = 'T list` / `MyIntList = int list` — a generic app, rendered
+//     `Microsoft.FSharp.Collections.list``1<…>` (the tycon path + backtick arity).
+//   - `IntFn = int -> int` and `NestedFn = (int -> int) -> int` — functions,
+//     right-associative, the domain parenthesised only when it is itself a
+//     function (so the two nested shapes render distinctly).
+//   - `Pair = int * string` — a reference tuple (`(… * …)`). (A struct-tuple
+//     abbreviation `type X = struct (…)` misparses as a struct-type definition,
+//     so the `struct_kind` rendering is pinned by a synthetic unit test instead.)
 type IntId = int
 
 type S = System.String
@@ -382,6 +389,14 @@ type PointAlias = Point
 type SelfVar<'T> = 'T
 
 type MyList<'T> = 'T list
+
+type MyIntList = int list
+
+type IntFn = int -> int
+
+type NestedFn = (int -> int) -> int
+
+type Pair = int * string
 
 module Witness =
     let inline addThem (x: ^a) (y: ^a) : ^a = x + y
