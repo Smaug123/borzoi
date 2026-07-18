@@ -1602,8 +1602,14 @@ impl<'a> Resolver<'a> {
             // `MAttribute` falls through to a written type `M`). We do not
             // model that fallthrough's interaction with the walk's precedence,
             // so a module leaf declines rather than committing a wrong entity
-            // (codex round 4).
-            TypePathResolution::Assembly { leaf: Some(h), .. } if self.assemblies.is_module(h) => {
+            // (codex round 4). An abbreviation-marker leaf (a chase-able
+            // marker now resolves as a type path) defers too: FCS chases the
+            // abbreviation before the `…Attribute`-suffix candidates apply,
+            // and that interaction is unprobed — committing either the marker
+            // or its terminal here would be a guess.
+            TypePathResolution::Assembly { leaf: Some(h), .. }
+                if self.assemblies.is_module(h) || self.assemblies.is_abbreviation(h) =>
+            {
                 AttrCandidate::Deferred
             }
             TypePathResolution::Assembly { leaf: Some(h), .. } => {

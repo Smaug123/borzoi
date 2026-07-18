@@ -51,6 +51,20 @@ type AliasO = Widget
 
 type AliasO<'T> = { OValue: 'T }
 
+
+// ==== Chase-able abbreviation targets (abbreviation-target projection plan,
+// Stage 4). Each pins one shape of `AssemblyEnv::resolve_abbreviation_tycon`:
+// a same-assembly nominal target, a two-hop chain, a generic head at arity 1,
+// and a BCL target that resolves only when `System.Runtime` is in the env.
+type MarkerAlias = Marker
+type MarkerAliasAlias = MarkerAlias
+
+type GenRec<'T> = { Payload: 'T }
+type GenAlias<'T> = GenRec<'T>
+
+type Str = System.String
+type Env = System.Environment
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct

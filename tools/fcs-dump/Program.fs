@@ -4691,7 +4691,27 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
     let assemblyName : objnull =
         try box u.Symbol.Assembly.SimpleName with _ -> null
     let fullName : objnull =
-        try box u.Symbol.FullName with _ -> null
+        // `FSharpEntity.TryFullName` is `None` for a type-abbreviation entity
+        // (`option`, `int`, a library's `type IntId = int`), so `FullName`
+        // throws — but the use is real and the sema side now resolves it (to
+        // the abbreviation's marker), so the oracle must name it or every
+        // such resolution reads as unconfirmed. Reconstruct the logical FQN
+        // the same way `renderAbbreviationTargetLogical` names abbreviation
+        // tycons: access path + logical name, backtick arity stripped (the
+        // sema side's `entity_full_name` carries no arity suffix).
+        try
+            box u.Symbol.FullName
+        with _ ->
+            match u.Symbol with
+            | :? FSharpEntity as e when e.IsFSharpAbbreviation ->
+                let logical =
+                    match e.LogicalName.LastIndexOf '`' with
+                    | -1 -> e.LogicalName
+                    | i -> e.LogicalName.Substring(0, i)
+                match e.AccessPath with
+                | "" | "global" -> box logical
+                | path -> box (path + "." + logical)
+            | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition

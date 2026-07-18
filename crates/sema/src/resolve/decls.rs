@@ -856,17 +856,32 @@ impl<'a> Resolver<'a> {
                         .ty()
                         .and_then(|t| type_long_ident_path(&t))
                         .and_then(|path| self.opened_type_target(&path))
-                        // An abbreviation *marker* (a metadata-invisible F#
-                        // abbreviation surfaced name-only): FCS opens the
+                        // An abbreviation *marker*: FCS opens the
                         // abbreviation's TARGET type's statics (`open type
                         // Lib.S` where `type S = System.String` opens
-                        // `String`'s statics), and we cannot enumerate them —
-                        // pushing the marker's (empty) statics would let an
-                        // earlier open's same-named value win where FCS binds
-                        // the target's static. Route it to the opaque branch
-                        // instead (codex review on the marker PR).
-                        .filter(|&h| !self.assemblies.is_abbreviation(h))
-                    {
+                        // `String`'s statics), so a chase-able marker opens
+                        // its terminal. An unchaseable one still cannot be
+                        // enumerated — pushing the marker's (empty) statics
+                        // would let an earlier open's same-named value win
+                        // where FCS binds a target static, so it routes to
+                        // the opaque branch (codex review on the marker PR).
+                        .and_then(|h| {
+                            if self.assemblies.is_abbreviation(h) {
+                                // The reference-order collision guard: when
+                                // two loaded DLLs export the alias's rooting
+                                // FQN, FCS picks by reference order — which
+                                // sema does not model — so opening the
+                                // first-indexed pick's target statics could
+                                // import the wrong DLL's surface. Opaque
+                                // instead (codex round 3).
+                                if self.assemblies.alias_rooting_collides_across_dlls(h) {
+                                    return None;
+                                }
+                                self.assemblies.resolve_abbreviation_target(h)
+                            } else {
+                                Some(h)
+                            }
+                        }) {
                         // The target resolves to a public assembly type: push one
                         // source-ordered *opened* entry per distinct public static
                         // name, so a bare name resolves against the type's statics

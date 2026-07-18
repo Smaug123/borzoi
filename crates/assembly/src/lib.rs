@@ -53,7 +53,7 @@ pub use model::{
     Experimental, Field, FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter,
     InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
     NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
-    SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, Variance,
-    Version,
+    SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef,
+    UnclassifiedMethodImpl, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

@@ -1984,21 +1984,19 @@ fn decode_nonlocal_named(
 /// consumer of the projected tree, and a name resolver that trusts the tree
 /// binds a *different* same-named type where FCS binds the abbreviation.
 ///
-/// The markers are deliberately **name-only**: no target type (decoding
-/// `type_abbrev` into the owned [`TypeRef`](crate::TypeRef) model is the
-/// wider-merge slice this module's header defers), no members, no base type.
-/// Their `generic_parameters` carry the pickled typar names so arity-keyed
-/// lookups treat them faithfully. A consumer can recognise them by kind and
-/// treat a hit as "this name is taken by an abbreviation whose target we
-/// cannot see" — a defer signal, not a resolution target.
+/// The markers carry **no members and no base type** — only the name, the
+/// pickled typar names (as `generic_parameters`, so arity-keyed lookups treat
+/// them faithfully), and the decoded **logical target**
+/// ([`Entity::abbreviation_target`], `None` for a shape the decoder cannot
+/// faithfully model). A consumer recognises a marker by kind and either
+/// resolves *through* the target (sema's `resolve_abbreviation_target`) or treats the
+/// hit as "this name is taken by an abbreviation whose target we cannot
+/// see" — a defer signal. FSharp.Core is not special: its primitive aliases
+/// (`type int = int32`, `type 'T option = Option<'T>`, …) are ordinary
+/// pickled abbreviations and get markers like any other assembly's, which is
+/// how `int`/`option` resolve at all (they have no ECMA TypeDef).
 ///
 /// Exclusions, each load-bearing:
-/// - **FSharp.Core** synthesises nothing. Its abbreviations for the primitive
-///   aliases (`Microsoft.FSharp.Core.int64` = `System.Int64`, …) *are* the
-///   alias semantics consumers hard-code (see
-///   `docs/completed/r2-annotation-typing-plan.md` §2 V3); marking them "unseeable"
-///   would defer every bare primitive annotation in every file. Lifting this
-///   needs full abbreviation-target decoding, not markers.
 /// - **Non-public** abbreviations (a non-empty `TAccess` path list) are not
 ///   nameable from a referencing assembly, so they cannot shadow anything.
 /// - **Measure-kind** entities (`typar_kind = Measure`, e.g.
@@ -2015,9 +2013,6 @@ pub(crate) fn apply_abbreviation_markers(
     pickled: &PickledCcu,
     assembly: &AssemblyIdentity,
 ) -> Result<(), ImportError> {
-    if assembly.name == "FSharp.Core" {
-        return Ok(());
-    }
     // Built before the site walk: a `Local` abbreviation target may reference a
     // tycon walked *after* the abbreviation's own site, so the whole stamp→FQN
     // map must exist before any target is decoded.
@@ -4943,16 +4938,37 @@ mod tests {
     }
 
     #[test]
-    fn fsharp_core_synthesises_no_markers() {
+    fn fsharp_core_synthesises_markers_like_any_other_assembly() {
+        // FSharp.Core's abbreviations (`type int = int32`, `type 'T option =
+        // Option<'T>`, …) are ordinary pickled abbreviations: without markers
+        // they resolve to nothing at all (they have no ECMA TypeDef), and the
+        // sema chase through `abbreviation_target` is what gives `int` and
+        // `option` their semantics — not a hard-coded alias table.
         let pickled = ccu_with_abbreviations();
-        let mut entities = abbreviation_ecma_tree();
         let mut core = dummy_assembly();
         core.name = "FSharp.Core".to_string();
-        apply_abbreviation_markers(&mut entities, &pickled, &core).expect("marker synthesis");
+        let mut as_core = abbreviation_ecma_tree();
+        apply_abbreviation_markers(&mut as_core, &pickled, &core).expect("marker synthesis");
+        let mut as_other = abbreviation_ecma_tree();
+        apply_abbreviation_markers(&mut as_other, &pickled, &dummy_assembly())
+            .expect("marker synthesis");
+        // The trees differ only by the host identity every entity carries;
+        // normalising it makes the comparison exact rather than shape-ish.
+        fn stamp(entities: &mut [Entity], identity: &AssemblyIdentity) {
+            for e in entities {
+                e.assembly = identity.clone();
+                stamp(&mut e.nested_types, identity);
+            }
+        }
+        stamp(&mut as_core, &dummy_assembly());
         assert_eq!(
-            entities,
+            as_core, as_other,
+            "FSharp.Core gets exactly the markers any other assembly would"
+        );
+        assert_ne!(
+            as_other,
             abbreviation_ecma_tree(),
-            "FSharp.Core's abbreviations are the primitive-alias semantics, never markers"
+            "the pickle's abbreviations must actually synthesise markers"
         );
     }
 

@@ -1272,30 +1272,27 @@ impl<'a> Gen<'a> {
     }
 
     /// The [`Ty`] an annotation provably denotes, or `None` to defer (Stage
-    /// R2-a). Accepts a **bare single-segment `Type::LongIdent`** whose head is
-    /// a primitive-alias table name ([`fsharp_primitive_alias`]) — gated on the
-    /// resolver's R1 no-record signal — peels transparent parens, and
-    /// **structurally recurses** function, (non-struct, measure-free) tuple,
-    /// and array shapes, whose renderings agree with FCS's canonical forms
-    /// byte-for-byte (plan probe R11). Everything else defers: multi-segment
-    /// paths (only the *single-segment* no-record exit is a meaningful signal —
-    /// `System.Int64` records nothing at either segment on an empty
-    /// `AssemblyEnv`), generic/measure applications (`int64 option`,
-    /// `float<m>` — a measure-applied head reaches the resolver at arity ≥ 1
-    /// where FSharp.Core's abbreviations are invisible, so it *must* be
-    /// deferred by shape), type variables, and every other `Type` shape.
+    /// R2-a). Accepts a **bare single-segment `Type::LongIdent`** whose head
+    /// the resolver resolved to a concrete entity, peels transparent parens,
+    /// and **structurally recurses** function, (non-struct, measure-free)
+    /// tuple, and array shapes, whose renderings agree with FCS's canonical
+    /// forms byte-for-byte (plan probe R11). Everything else defers:
+    /// unresolved/deferred heads, generic/measure applications (`int64
+    /// option`, `float<m>`), type variables, and every other `Type` shape.
     ///
-    /// **The gate**: the alias applies iff
-    /// `resolution_at(head_token_range) == None` — the R1 contract's "no shadow
-    /// possible" proof (any record — `Deferred(ShadowableType)`,
-    /// `Deferred(QualifiedAccess)`, or a concrete `Local`/`Item` — defers).
-    /// Read at the **exact head-token range**, which is where the resolver
-    /// records type-position names. A concrete [`Resolution::Entity`] is
-    /// *usable* (Stage R2-d): it bridges via [`Self::entity_annotation_ty`],
-    /// covering `String` under `open System` at a single-segment head and
-    /// qualified `System.Int64` at a multi-segment head's tail (the one place
-    /// a multi-segment path carries a meaningful record — the bare
-    /// multi-segment *no-record* exit stays a convention, never a signal).
+    /// A concrete [`Resolution::Entity`] bridges via
+    /// [`Self::entity_annotation_ty`] (Stage R2-d) — covering `String` under
+    /// `open System` at a single-segment head, qualified `System.Int64` at a
+    /// multi-segment head's tail, and the F# primitive aliases: `int` records
+    /// its FSharp.Core abbreviation **marker**, which the bridge chases
+    /// through the pickled target chain to `System.Int32`. There is no
+    /// hard-coded alias table — the semantics come from FSharp.Core's own
+    /// signature data, and the real-FSharp.Core sweep in
+    /// `resolve_fsharp_core.rs` pins that the chase reproduces every
+    /// primitive alias exactly. (With no assembly env at all — FSharp.Core
+    /// unreferenced — a primitive annotation records nothing and defers,
+    /// which is honest: the name genuinely has no binding.)
+    ///
     /// Project-defined types (`Local`/`Item`) still defer: their canonical
     /// rendering against the oracle's `<Project>.M.T` form is unprobed (the
     /// plan's R2-d "probe first" rule). Widening any of these qualifiers needs
@@ -1314,19 +1311,10 @@ impl<'a> Gen<'a> {
                     return None;
                 }
                 let idents: Vec<SyntaxToken> = li.idents().collect();
+                // Only a concrete `Entity` recorded at the head's **final**
+                // segment — where the resolver roots both a bare and a
+                // qualified type — bridges (R2-d); anything else defers.
                 match idents.as_slice() {
-                    // A single-segment head: the R2-a alias gate, extended by
-                    // R2-d — a concrete `Entity` record bridges instead of
-                    // deferring.
-                    [head] => match self.resolved.resolution_at(head.text_range()) {
-                        None => fsharp_primitive_alias(crate::resolve::id_text(head.text()))
-                            .map(Ty::named),
-                        Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
-                        Some(_) => None,
-                    },
-                    // A multi-segment head (`System.Int64`): only a concrete
-                    // `Entity` recorded at the **tail** segment — where the
-                    // resolver roots a qualified type — is usable (R2-d).
                     [.., last] => match self.resolved.resolution_at(last.text_range()) {
                         Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
                         _ => None,
@@ -1370,21 +1358,44 @@ impl<'a> Gen<'a> {
     /// Bridge a concrete annotation-head [`Resolution::Entity`] to a
     /// [`Ty::Named`] (Stage R2-d), under the same conventions as the
     /// `member_ty.rs` `TypeRef` bridge: **non-generic** and **non-nested**
-    /// only, with the same defer set. Additionally deferred here:
+    /// only, with the same defer set.
+    ///
+    /// An **abbreviation marker** bridges through its chased terminal
+    /// ([`AssemblyEnv::resolve_abbreviation_target`]): `let x : int = …` records the
+    /// `int` marker, whose chain (`int` → `int32` → `System.Int32`) lands on
+    /// the entity this then bridges exactly like a directly-named one. The
+    /// binder-types oracle strips abbreviation layers (fcs-dump's
+    /// `renderTypeInScope` renders `AbbreviatedType` through), so the
+    /// terminal's FQN is precisely FCS's rendering currency for an annotation
+    /// written through an alias. An unchaseable marker defers as before.
+    ///
+    /// Additionally deferred here:
     ///
     /// - an F# **module** (not a type an annotation can denote — a module
     ///   record at a type head is a resolver artefact to stay silent on);
-    /// - an **abbreviation marker** (an R2-0 pickle-derived, name-only entity
-    ///   whose *target* type is unknown by construction);
     /// - a **measure** (`Ty` has no measure story — plan probe R5);
     /// - a **source-renamed** entity (its FCS rendering uses the F# source
-    ///   name, which the flat `namespace + IL name` path would misrender).
+    ///   name, which the flat `namespace + IL name` path would misrender);
+    /// - the **`unit` terminal** (`Microsoft.FSharp.Core.Unit`): `Ty` has no
+    ///   unit story and 3.3d's void rule assumes its absence, so the one
+    ///   terminal a chase can reach that `Ty` cannot carry stays deferred
+    ///   (revisitable when `Ty` gains a unit story — probe R9 showed the
+    ///   rendering itself would be correct).
     ///
     /// The nested/renamed check is one comparison: the canonical dotted path
     /// must equal [`AssemblyEnv::entity_full_name`], which walks enclosing
     /// entities for nested types and prefers the source name.
     fn entity_annotation_ty(&self, handle: EntityHandle) -> Option<Ty> {
         let entity = self.env.entity(handle);
+        if !entity.generic_parameters.is_empty() {
+            return None;
+        }
+        let (handle, entity) = if entity.kind == EntityKind::Abbreviation {
+            let terminal = self.env.resolve_abbreviation_target(handle)?;
+            (terminal, self.env.entity(terminal))
+        } else {
+            (handle, entity)
+        };
         if !entity.generic_parameters.is_empty() {
             return None;
         }
@@ -1396,6 +1407,9 @@ impl<'a> Gen<'a> {
         }
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
+        if path == ["Microsoft", "FSharp", "Core", "Unit"] {
+            return None;
+        }
         if self.env.entity_full_name(handle) != path.join(".") {
             return None;
         }
@@ -3209,42 +3223,6 @@ impl<'a> Gen<'a> {
     }
 }
 
-/// The canonical BCL FQN an F# **primitive-alias** type name abbreviates
-/// (`"int64"` → `"System.Int64"`) — the inverse of
-/// [`borzoi_assembly::fsharp_alias`] plus the source synonyms FSharp.Core
-/// also declares (`int32`, `int8`, `uint8`, `single`, `double`); a unit test
-/// pins the inverse relation. Stage R2-a's alias table
-/// (`docs/completed/r2-annotation-typing-plan.md` §5): the sealed numerics, `bool`,
-/// `char`, `string`, and `obj` (sound — the annotation is an exact equality on
-/// the *binder* regardless of `obj`'s subsumption-target role).
-///
-/// Deliberate exclusions: `unit` (`Ty` has no unit story and 3.3d's void rule
-/// assumes its absence; `Named("Microsoft.FSharp.Core.Unit")` would render
-/// correctly per probe R9, so this is revisitable deliberately, not
-/// accidentally); `bigint`/`seq`/`list`/`option` (not primitives; generic).
-fn fsharp_primitive_alias(name: &str) -> Option<&'static str> {
-    Some(match name {
-        "bool" => "System.Boolean",
-        "char" => "System.Char",
-        "sbyte" | "int8" => "System.SByte",
-        "byte" | "uint8" => "System.Byte",
-        "int16" => "System.Int16",
-        "uint16" => "System.UInt16",
-        "int" | "int32" => "System.Int32",
-        "uint" | "uint32" => "System.UInt32",
-        "int64" => "System.Int64",
-        "uint64" => "System.UInt64",
-        "float32" | "single" => "System.Single",
-        "float" | "double" => "System.Double",
-        "nativeint" => "System.IntPtr",
-        "unativeint" => "System.UIntPtr",
-        "obj" => "System.Object",
-        "string" => "System.String",
-        "decimal" => "System.Decimal",
-        _ => return None,
-    })
-}
-
 /// The `(x : T)` head of a **trivial typed pattern** — a [`ParenPat`] wrapping
 /// a `TypedPat` wrapping a [`NamedPat`], the `let (x: T) = …` form — as
 /// `(named, ty)`. `None` for every other parenthesised shape (tuple heads,
@@ -3611,8 +3589,124 @@ mod tests {
         );
     }
 
+    /// A synthetic FSharp.Core-shaped [`AssemblyEnv`]: an abbreviation
+    /// **marker** for each primitive alias whose `Local` pickled target
+    /// chases to a BCL-shaped `System.*` entity in the same synthetic
+    /// assembly — the exact runtime mechanism (markers + the target chase),
+    /// hermetically, with no DLL on disk. The identity name `FSharp.Core`
+    /// plus the `Microsoft.FSharp.Core` auto-open make bare `int`/`bool`
+    /// annotation heads resolve the way a real project's do.
+    fn primitive_env() -> AssemblyEnv {
+        use borzoi_assembly::{AbbreviationTarget, EntityKind};
+        let pairs: &[(&str, &str)] = &[
+            ("bool", "Boolean"),
+            ("char", "Char"),
+            ("sbyte", "SByte"),
+            ("byte", "Byte"),
+            ("int16", "Int16"),
+            ("uint16", "UInt16"),
+            ("int", "Int32"),
+            ("int32", "Int32"),
+            ("uint", "UInt32"),
+            ("int64", "Int64"),
+            ("uint64", "UInt64"),
+            ("float32", "Single"),
+            ("float", "Double"),
+            ("nativeint", "IntPtr"),
+            ("unativeint", "UIntPtr"),
+            ("obj", "Object"),
+            ("string", "String"),
+            ("decimal", "Decimal"),
+        ];
+        let mut roots: Vec<borzoi_assembly::Entity> = Vec::new();
+        let mut bcl_done = std::collections::HashSet::new();
+        for (alias, target) in pairs {
+            let mut marker = synthetic_entity(
+                &["Microsoft", "FSharp", "Core"],
+                alias,
+                EntityKind::Abbreviation,
+            );
+            marker.abbreviation_target = Some(AbbreviationTarget::Named {
+                ccu: None,
+                path: vec!["System".to_string(), (*target).to_string()],
+                args: Vec::new(),
+            });
+            roots.push(marker);
+            if bcl_done.insert(*target) {
+                let kind = if *target == "Object" || *target == "String" {
+                    EntityKind::Class
+                } else {
+                    EntityKind::Struct
+                };
+                roots.push(synthetic_entity(&["System"], target, kind));
+            }
+        }
+        AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![(
+            std::path::PathBuf::from("FSharp.Core.dll"),
+            roots,
+            crate::AbbreviationVisibility::Modelled,
+            vec!["Microsoft.FSharp.Core".to_string()],
+        )])
+    }
+
+    fn synthetic_entity(
+        ns: &[&str],
+        name: &str,
+        kind: borzoi_assembly::EntityKind,
+    ) -> borzoi_assembly::Entity {
+        use borzoi_assembly::{Access, AssemblyIdentity, Entity, Version};
+        Entity {
+            assembly: AssemblyIdentity {
+                name: "FSharp.Core".to_string(),
+                version: Version {
+                    major: 0,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                },
+                public_key_token: None,
+            },
+            namespace: ns.iter().map(|s| (*s).to_string()).collect(),
+            name: name.to_string(),
+            kind,
+            access: Access::Public,
+            is_sealed: false,
+            generic_parameters: vec![],
+            base_type: None,
+            interfaces: vec![],
+            members: vec![],
+            skipped_members: vec![],
+            method_def_tokens: vec![],
+            nested_types: vec![],
+            is_readonly: false,
+            is_byref_like: false,
+            is_struct: false,
+            is_auto_open: false,
+            is_require_qualified_access: false,
+            is_no_equality: false,
+            is_no_comparison: false,
+            is_structural_equality: false,
+            is_structural_comparison: false,
+            is_allow_null_literal: false,
+            obsolete: None,
+            experimental: None,
+            default_member: None,
+            compiler_feature_required: vec![],
+            source_name: None,
+            extension_member_names: vec![],
+            union_case_names: None,
+            static_extension_member_names: Vec::new(),
+            is_extension_container: false,
+            custom_attrs: vec![],
+            abbreviation_target: None,
+            definition_range: None,
+        }
+    }
+
     /// Infer `src` (single-file), returning each binder's rendered (canonical)
     /// type keyed by name. Snippet names are unique, so a plain map suffices.
+    /// The env is [`primitive_env`] so annotated snippets (`let x : int = …`)
+    /// type through the marker chase like a real project's would.
     fn def_types(src: &str) -> HashMap<String, String> {
         let parsed = parse(src);
         assert!(
@@ -3621,7 +3715,7 @@ mod tests {
             parsed.errors
         );
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let env = AssemblyEnv::default();
+        let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env);
         let inferred = super::infer_file(&file, &resolved, &env);
         inferred
@@ -3642,7 +3736,7 @@ mod tests {
             parsed.errors
         );
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let env = AssemblyEnv::default();
+        let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env);
         let inferred = super::infer_file(&file, &resolved, &env);
         inferred.types().values().map(super::Ty::render).collect()
@@ -3894,60 +3988,6 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn primitive_alias_table_inverts_fsharp_alias() {
-        // Every table FQN round-trips through `fsharp_alias` (the display
-        // direction): the canonical alias it renders maps back to the same FQN,
-        // so the two tables can never drift apart. `unit`/`System.Void` is the
-        // one deliberate exclusion (v1 has no unit story).
-        let aliases = [
-            "bool",
-            "char",
-            "sbyte",
-            "int8",
-            "byte",
-            "uint8",
-            "int16",
-            "uint16",
-            "int",
-            "int32",
-            "uint",
-            "uint32",
-            "int64",
-            "uint64",
-            "float32",
-            "single",
-            "float",
-            "double",
-            "nativeint",
-            "unativeint",
-            "obj",
-            "string",
-            "decimal",
-        ];
-        for alias in aliases {
-            let fqn = super::fsharp_primitive_alias(alias)
-                .unwrap_or_else(|| panic!("{alias} must be in the table"));
-            let (ns, name) = fqn.rsplit_once('.').expect("dotted FQN");
-            let canonical = borzoi_assembly::fsharp_alias(ns, name)
-                .unwrap_or_else(|| panic!("{fqn} must have a display alias"));
-            assert_eq!(
-                super::fsharp_primitive_alias(canonical),
-                Some(fqn),
-                "the canonical alias {canonical} must map back to {fqn}"
-            );
-        }
-        assert_eq!(
-            super::fsharp_primitive_alias("unit"),
-            None,
-            "unit is deliberately excluded from the v1 table"
-        );
-        assert_eq!(super::fsharp_primitive_alias("option"), None);
-        assert_eq!(super::fsharp_primitive_alias("list"), None);
-        assert_eq!(super::fsharp_primitive_alias("bigint"), None);
-        assert_eq!(super::fsharp_primitive_alias("seq"), None);
-    }
-
-    #[test]
     fn annotated_value_binder_types_from_annotation() {
         // The annotation types the binder; the RHS is never walked, so the
         // literal node stays absent from the expression map.
@@ -4004,13 +4044,6 @@ mod tests {
                 "module M\ntype int64 = A of int\nlet x : int64 = A 1\n",
                 "in-file type shadow",
             ),
-            // Multi-segment head: only the single-segment absence is a signal
-            // (`System.Int64` records nothing at either segment on an empty
-            // AssemblyEnv). Entity-backed annotations are Stage R2-d.
-            (
-                "module M\nlet x : System.Int64 = 42L\n",
-                "multi-segment head",
-            ),
             // Generic application (`int64 option`) is a non-bare head.
             ("module M\nlet x : int64 option = None\n", "generic app"),
             // `unit` is deliberately excluded from the v1 table.
@@ -4039,6 +4072,12 @@ mod tests {
             assert_eq!(types.get("a"), None, "{why}: {src:?}");
             assert_eq!(types.get("b"), None, "{why}: {src:?}");
         }
+        // A multi-segment head whose tail the resolver concretely resolves is
+        // NOT a defer shape: `System.Int64` bridges through the R2-d entity
+        // record (the real-BCL differential `infer_annotation_entity_diff`
+        // pins the same behaviour against System.Runtime).
+        let types = def_types("module M\nlet x : System.Int64 = 42L\n");
+        assert_eq!(types.get("x").map(String::as_str), Some("System.Int64"));
     }
 
     #[test]
@@ -4570,7 +4609,7 @@ mod tests {
         // assertion is range-keyed, not a blanket render scan.)
         let parsed = parse(src);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let env = AssemblyEnv::default();
+        let env = primitive_env();
         let resolved = resolve_file(&file, &ProjectItems::default(), &env);
         let inferred = super::infer_file(&file, &resolved, &env);
         // Key on the exact one-byte `y` token range: the tuple node itself

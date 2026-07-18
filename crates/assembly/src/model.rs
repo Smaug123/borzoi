@@ -499,6 +499,25 @@ pub struct SkippedFsharpOverlay {
     pub reason: String,
 }
 
+/// One ECMA-335 **type forwarder**: a forwarder-flagged `ExportedType` row
+/// (II.22.14) whose implementation is an `AssemblyRef` — "this assembly's
+/// `namespace.name` lives in `assembly` now". Facade assemblies
+/// (`netstandard`) are almost nothing but these, and a logical reference
+/// *into* a facade (FSharp.Core's signature pickle names its BCL targets
+/// through the `netstandard` CCU) resolves only by following them, exactly
+/// as the CLR's and FCS's loaders do.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TypeForwarder {
+    /// Dotted namespace, empty for the global namespace.
+    pub namespace: String,
+    /// The metadata type name — backtick-mangled for generics
+    /// (`IEnumerable`1`).
+    pub name: String,
+    /// Simple name of the assembly the type forwards to.
+    pub assembly: String,
+}
+
 /// Assembly-level projection degradations. Whole-type drops and F# overlay
 /// skips are both assembly-level facts, but they have different semantics and
 /// should be reported separately by consumers.
@@ -507,20 +526,19 @@ pub struct SkippedFsharpOverlay {
 pub struct AssemblyProjectionSkips {
     pub dropped_types: Vec<SkippedProjectionItem>,
     pub skipped_fsharp_overlays: Vec<SkippedFsharpOverlay>,
-    /// `true` when this (non-FSharp.Core) F#-authored assembly may export
-    /// type abbreviations the projection cannot see: its host signature
-    /// pickle failed to decode (so the abbreviation-marker overlay could not
-    /// run — the skip is also recorded in
-    /// [`Self::skipped_fsharp_overlays`]), or it embeds *foreign* CCU pickles
-    /// (an `fsc --standalone` build), whose abbreviations we never decode.
-    /// fsc emits no ECMA TypeDef for a plain abbreviation, so nothing else in
-    /// the projection witnesses them. A name-resolution consumer should treat
-    /// every namespace this assembly declares into as possibly shadowed;
-    /// `false` means the projected tree (including its synthesised
-    /// abbreviation markers) is abbreviation-complete for this assembly.
-    /// Always `false` for FSharp.Core — its primitive-alias abbreviations are
-    /// the semantics consumers hard-code, never a shadow risk (see
-    /// `apply_abbreviation_markers`).
+    /// `true` when this F#-authored assembly may export type abbreviations
+    /// the projection cannot see: its host signature pickle failed to decode
+    /// (so the abbreviation-marker overlay could not run — the skip is also
+    /// recorded in [`Self::skipped_fsharp_overlays`]), or it embeds *foreign*
+    /// CCU pickles (an `fsc --standalone` build), whose abbreviations we
+    /// never decode. fsc emits no ECMA TypeDef for a plain abbreviation, so
+    /// nothing else in the projection witnesses them. A name-resolution
+    /// consumer should treat every namespace this assembly declares into as
+    /// possibly shadowed; `false` means the projected tree (including its
+    /// synthesised abbreviation markers) is abbreviation-complete for this
+    /// assembly. FSharp.Core is not special: its primitive aliases resolve by
+    /// chasing its own markers' targets, so a broken FSharp.Core pickle
+    /// raises this like any other assembly's.
     pub fsharp_abbreviations_unknowable: bool,
     /// `true` when this F#-authored assembly's **F#-native extension-member
     /// index** cannot be trusted complete — its host signature pickle is not
@@ -530,15 +548,14 @@ pub struct AssemblyProjectionSkips {
     /// [`Entity::extension_member_names`] / [`Entity::static_extension_member_names`]
     /// is empty *because it is unread*, not because the assembly declares none.
     ///
-    /// Distinct from [`Self::fsharp_abbreviations_unknowable`] on purpose: that
-    /// flag exempts FSharp.Core (its abbreviations are hard-coded), but the
-    /// exemption is about *abbreviations only* — FSharp.Core's extension members
-    /// are ordinary pickle data, so an undecodable FSharp.Core pickle leaves the
-    /// index just as blind. A name-keyed extension gate must treat such an
-    /// assembly's extension queries as **unknowable** rather than proving a name
-    /// absent from an unread list. `false` for a C#/BCL image (no F#-native
-    /// extension members exist to miss) and for any F# assembly whose pickle
-    /// decoded.
+    /// Distinct from [`Self::fsharp_abbreviations_unknowable`] on purpose: the
+    /// two bits currently coincide at the producer, but they gate different
+    /// consumers (the name-keyed extension gate vs the type-position shadow
+    /// veto) and are kept separate so either can narrow independently. A
+    /// name-keyed extension gate must treat such an assembly's extension
+    /// queries as **unknowable** rather than proving a name absent from an
+    /// unread list. `false` for a C#/BCL image (no F#-native extension
+    /// members exist to miss) and for any F# assembly whose pickle decoded.
     pub fsharp_extension_index_unknowable: bool,
     /// `true` when the host F# signature pickle was **not authoritative** for this
     /// image — absent, undecodable, or a `--standalone` build that embeds foreign

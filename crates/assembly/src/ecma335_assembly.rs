@@ -141,6 +141,19 @@ impl EcmaView for Ecma335Assembly {
         Ok(out)
     }
 
+    fn type_forwarders(&self) -> Result<Vec<crate::model::TypeForwarder>, ImportError> {
+        Ok(self
+            .image
+            .type_forwarders
+            .iter()
+            .map(|f| crate::model::TypeForwarder {
+                namespace: f.namespace.clone(),
+                name: f.name.clone(),
+                assembly: f.assembly.clone(),
+            })
+            .collect())
+    }
+
     fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
         let mut out = Vec::new();
         for r in &self.image.resources {
@@ -327,23 +340,23 @@ impl Ecma335Assembly {
         //
         // Gated on the assembly actually *being* F#: a C# / BCL image has no pickle and no
         // abbreviations, so its absent pickle is no uncertainty at all. FSharp.Core is
-        // exempt for the same reason `apply_abbreviation_markers` exempts it: its
-        // abbreviations are the primitive-alias semantics consumers hard-code, never a
-        // shadow risk.
+        // NOT special: its abbreviations (`type int = int32`, `type 'T option = …`)
+        // are ordinary pickle data whose markers carry the semantics consumers chase,
+        // so a broken FSharp.Core pickle makes them exactly as unknowable as any
+        // other F# assembly's.
         let is_fsharp_assembly = self.fsharp_interface_data_version()?.is_some();
-        let fsharp_abbreviations_unknowable =
-            self.identity.name != "FSharp.Core" && is_fsharp_assembly && !authoritative;
+        let fsharp_abbreviations_unknowable = is_fsharp_assembly && !authoritative;
         // The F#-native extension-member index is complete for an F# assembly only
         // when its host pickle is `authoritative` — decoded *and* describing the whole
         // image. `apply_extension_member_index` (below) runs on any decoded pickle but
         // reads **only the host CCU**, so a decoded-but-non-authoritative `--standalone`
         // image (foreign dependency CCUs present) leaves the foreign modules' extensions
-        // unindexed just as a decode failure leaves everything unindexed. Unlike
-        // abbreviations, FSharp.Core is NOT exempt here — its extension members are
-        // ordinary pickle data — so the name-keyed gate must treat a non-authoritative
-        // F# assembly's extensions as unknowable, independent of the abbreviation flag
-        // above (which exempts FSharp.Core). `!authoritative` is exactly the
-        // completeness predicate the source-name and declaration-order overlays gate on.
+        // unindexed just as a decode failure leaves everything unindexed. The predicate
+        // currently coincides with the abbreviation flag above, but the two bits gate
+        // different consumers (the name-keyed extension gate vs the type-position
+        // shadow veto) and are kept separate so either can narrow independently.
+        // `!authoritative` is exactly the completeness predicate the source-name and
+        // declaration-order overlays gate on.
         let fsharp_extension_index_unknowable = is_fsharp_assembly && !authoritative;
 
         if let Some((resource_name, decoded)) = decoded {
@@ -4454,20 +4467,23 @@ mod tests {
         );
 
         // Pose as FSharp.Core: the host signature resource (named for the fixture) is
-        // now unfindable, so the extension overlay is skipped — yet FSharp.Core is
-        // abbreviation-exempt.
+        // now unfindable, so every pickle-derived overlay — abbreviation markers
+        // included — is unavailable. FSharp.Core is not exempt from either signal:
+        // its abbreviations are ordinary pickle data (the primitive aliases resolve
+        // by chasing its markers, not a hard-coded table), so an unreadable pickle
+        // makes them unknowable like any other F# assembly's.
         view.identity.name = "FSharp.Core".to_string();
         let (_, skips) = view
             .enumerate_with_skips_impl()
             .expect("a pickle-less F# assembly still projects its IL");
         assert!(
-            !skips.fsharp_abbreviations_unknowable,
-            "FSharp.Core is exempt from the abbreviation-unknowable signal"
+            skips.fsharp_abbreviations_unknowable,
+            "a pickle-less FSharp.Core's abbreviations are unknowable — no exemption"
         );
         assert!(
             skips.fsharp_extension_index_unknowable,
-            "…but its extension index is unread, so the name-keyed gate must treat it \
-             as unknowable — the whole point of the separate bit"
+            "…and its extension index is unread, so the name-keyed gate must treat it \
+             as unknowable too"
         );
     }
 
