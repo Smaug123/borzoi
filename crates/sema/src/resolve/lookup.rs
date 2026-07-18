@@ -2514,7 +2514,7 @@ impl<'a> Resolver<'a> {
         true
     }
 
-/// Stage-1 signature screen, **project side**
+    /// Stage-1 signature screen, **project side**
     /// (`docs/fsi-signature-restriction-plan.md`): whether some
     /// precedence-ordered reading of the written path — each open /
     /// enclosing-namespace prefix of [`Self::assembly_prefixes_by_priority`],

@@ -2049,6 +2049,7 @@ impl ResolvedFile {
             open_extension_unknowable: false,
             active_pattern_shape: HashMap::new(),
             diagnostics: Vec::new(),
+            resolution_trace: ResolutionTrace::default(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
         }
