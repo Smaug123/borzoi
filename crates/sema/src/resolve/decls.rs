@@ -784,6 +784,12 @@ impl<'a> Resolver<'a> {
                     self.opaque_dotted_open,
                     self.unmodelled_open_active,
                 );
+                // The generation is a fourth deferral mechanism: an open that
+                // raises the barrier stales earlier entries, deferring a later
+                // head through one even when the three flags stay false. Snapshot
+                // it too. Monotone within the arm (only ever bumped), so a strict
+                // increase is this open's own barrier.
+                let trace_before_gen = self.open_generation;
                 // Classify the open. `open <namespace>` brings the namespace's
                 // *types* into scope — record the prefix so later qualified
                 // references retry under it (modelled), no unqualified values.
@@ -1550,6 +1556,7 @@ impl<'a> Resolver<'a> {
                         opaque_value: self.opaque_value_open && !trace_before.0,
                         opaque_dotted: self.opaque_dotted_open && !trace_before.1,
                         unmodelled: self.unmodelled_open_active && !trace_before.2,
+                        staled_earlier: self.open_generation > trace_before_gen,
                     },
                 });
             }

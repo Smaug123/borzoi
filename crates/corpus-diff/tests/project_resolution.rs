@@ -634,25 +634,25 @@ fn explain_token_reports_the_opaque_open_of_a_deferred_head() {
     assert_eq!(system.path, vec!["System".to_string()]);
     assert!(!system.is_type);
     assert!(
-        !system.opacity.is_opaque(),
+        !system.opacity.perturbs_resolution(),
         "a bring-nothing namespace open stays clean"
     );
 
     let opaque = &exp.opens[1];
     assert!(opaque.is_type);
     assert_eq!(opaque.path, vec!["Opaque".to_string()]);
-    assert!(opaque.opacity.is_opaque());
+    assert!(opaque.opacity.perturbs_resolution());
 
-    // The fact the tool commits to: which opens are opaque (candidates). It does
-    // NOT claim scope relevance — see the member-tail test below.
-    let opaque_opens = exp.opaque_opens();
-    assert_eq!(opaque_opens.len(), 1);
-    assert_eq!(opaque_opens[0].path, vec!["Opaque".to_string()]);
+    // The fact the tool commits to: which opens perturb resolution (candidates).
+    // It does NOT claim scope relevance — see the member-tail test below.
+    let perturbing = exp.perturbing_opens();
+    assert_eq!(perturbing.len(), 1);
+    assert_eq!(perturbing[0].path, vec!["Opaque".to_string()]);
 
     let report = exp.render();
     assert!(
-        report.contains("open type Opaque") && report.contains("OPAQUE"),
-        "the rendered dump must name the opaque open:\n{report}"
+        report.contains("open type Opaque") && report.contains("PERTURBS"),
+        "the rendered dump must name the perturbing open:\n{report}"
     );
     assert!(
         report.contains("HEAD") && report.contains("TAIL"),
@@ -684,12 +684,12 @@ fn explain_token_does_not_blame_an_open_for_a_member_tail_defer() {
         exp.resolution
     );
 
-    // The opaque open is still surfaced as a candidate fact (it IS opaque), but
-    // the tool makes no per-token scope or causal claim about it.
+    // The perturbing open is still surfaced as a candidate fact (it IS opaque),
+    // but the tool makes no per-token scope or causal claim about it.
     assert_eq!(
-        exp.opaque_opens().len(),
+        exp.perturbing_opens().len(),
         1,
-        "the opaque open is listed as a candidate fact"
+        "the perturbing open is listed as a candidate fact"
     );
 
     let report = exp.render();
@@ -741,19 +741,7 @@ fn explain_token_at_position() {
     let loaded = load_lsp_project(&project)
         .unwrap_or_else(|skip| panic!("load {}: {skip:?}", project.display()));
 
-    let file_idx = loaded
-        .parses
-        .paths
-        .iter()
-        .position(|p| {
-            p.ends_with(file_arg.as_str()) || p.to_string_lossy().contains(file_arg.as_str())
-        })
-        .unwrap_or_else(|| {
-            panic!(
-                "no file matching {file_arg:?}; files: {:?}",
-                loaded.parses.paths
-            )
-        });
+    let file_idx = select_explain_file(&loaded.parses.paths, &file_arg);
 
     let text = &loaded.parses.texts[file_idx];
     let pos = Position {
@@ -767,4 +755,45 @@ fn explain_token_at_position() {
         loaded.parses.paths[file_idx].display(),
         exp.render()
     );
+}
+
+/// Select the file index for the explain CLI. Prefer a path **suffix** match
+/// (whole trailing components — `Path::ends_with`, so `Foo.fs` does not match
+/// `MyFoo.fs`), fall back to a substring match only if no suffix matched, and
+/// require the choice to be **unique** at each stage — a duplicate basename or
+/// an ambiguous substring panics with the candidates rather than silently
+/// inspecting the wrong file (codex review round 3).
+fn select_explain_file(paths: &[PathBuf], file_arg: &str) -> usize {
+    let matching = |pred: &dyn Fn(&PathBuf) -> bool| -> Vec<usize> {
+        paths
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| pred(p))
+            .map(|(i, _)| i)
+            .collect()
+    };
+    let names = |idxs: &[usize]| -> Vec<&PathBuf> { idxs.iter().map(|&i| &paths[i]).collect() };
+
+    let suffix = matching(&|p| p.ends_with(file_arg));
+    match suffix.as_slice() {
+        [i] => return *i,
+        [] => {}
+        many => panic!(
+            "BORZOI_EXPLAIN_FILE={file_arg:?} matches {} files by path suffix: {:?}",
+            many.len(),
+            names(many)
+        ),
+    }
+
+    let substr = matching(&|p| p.to_string_lossy().contains(file_arg));
+    match substr.as_slice() {
+        [i] => *i,
+        [] => panic!("no file matching {file_arg:?}; files: {paths:?}"),
+        many => panic!(
+            "BORZOI_EXPLAIN_FILE={file_arg:?} matches {} files by substring: {:?}; \
+             pass a more specific path suffix",
+            many.len(),
+            names(many)
+        ),
+    }
 }

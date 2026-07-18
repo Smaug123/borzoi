@@ -1105,12 +1105,13 @@ mod contribution_tests {
 }
 
 /// Env-free unit tests for the resolution-explain trace
-/// ([`ResolutionTrace`](model::ResolutionTrace)) — the per-`open` opaque-flag
-/// record. They pin the trace *mechanics* (which flags an open kind flips,
-/// source order, `global.` stripping, transition attribution) against an empty
-/// [`AssemblyEnv`], where an unresolvable `open` deterministically goes opaque;
-/// the end-to-end "an opaque open explains a deferred dotted head" is exercised
-/// by the corpus-diff consumer against a real project.
+/// ([`ResolutionTrace`](model::ResolutionTrace)) — the per-`open`
+/// perturbs-resolution record. They pin the trace *mechanics* (which mechanisms
+/// an open kind triggers, source order, `global.` stripping, transition
+/// attribution, the generation barrier) against an empty [`AssemblyEnv`], where
+/// an unresolvable `open` deterministically perturbs resolution; the end-to-end
+/// "a perturbing open explains a deferred dotted head" is exercised by the
+/// corpus-diff consumer against a real project.
 #[cfg(test)]
 mod trace_tests {
     use super::*;
@@ -1130,11 +1131,11 @@ mod trace_tests {
     }
 
     #[test]
-    fn an_open_type_sets_unmodelled_and_defers_dotted_heads() {
+    fn an_open_type_sets_unmodelled_and_perturbs_resolution() {
         // `open type Foo` always sets `unmodelled_open_active` (its nested types
         // are unmodelled, so qualified paths defer); with `Foo` unresolvable in
-        // an empty env it also sets `opaque_value_open` (bare names). Either way
-        // a dotted head in its scope defers — `defers_dotted_heads()`.
+        // an empty env it also sets `opaque_value_open` (bare names) and raises
+        // the generation barrier. So it perturbs resolution.
         let rf = resolve_one("module M\nopen type Foo\n");
         let opens = &rf.resolution_trace().opens;
         assert_eq!(opens.len(), 1);
@@ -1143,23 +1144,22 @@ mod trace_tests {
         assert_eq!(o.path, vec!["Foo".to_string()]);
         assert!(o.opacity.unmodelled);
         assert!(o.opacity.opaque_value);
-        assert!(o.opacity.defers_dotted_heads());
-        assert!(o.opacity.is_opaque());
+        assert!(o.opacity.perturbs_resolution());
     }
 
     #[test]
-    fn a_namespace_open_that_brings_nothing_is_not_opaque() {
+    fn a_namespace_open_that_brings_nothing_does_not_perturb_resolution() {
         // `open System` in an empty env resolves to no entity — it brings
-        // nothing into scope, so it poisons no later resolution: none of the
-        // three opaque flags flips.
+        // nothing into scope and raises no barrier, so it perturbs no later
+        // resolution: none of the four mechanisms triggers.
         let rf = resolve_one("module M\nopen System\n");
         let opens = &rf.resolution_trace().opens;
         assert_eq!(opens.len(), 1);
         assert!(!opens[0].is_type);
         assert_eq!(opens[0].path, vec!["System".to_string()]);
         assert!(
-            !opens[0].opacity.is_opaque(),
-            "a bring-nothing namespace open must not read as opaque"
+            !opens[0].opacity.perturbs_resolution(),
+            "a bring-nothing namespace open must not read as perturbing"
         );
     }
 
@@ -1178,19 +1178,30 @@ mod trace_tests {
     }
 
     #[test]
-    fn opaque_flag_attribution_is_by_transition_not_cause() {
-        // Both `open type` opens WOULD set `unmodelled_open_active`, but the flag
-        // is monotone within a block: only the FIRST flips it false→true, so the
-        // second records no transition even though it is opaque in effect. The
-        // trace attributes a poisoned category to the open that first poisoned it
-        // (see `OpenOpacity`); unblocking a name can need more than one deletion.
+    fn a_generation_only_barrier_is_not_labelled_clean() {
+        // The three opaque flags are monotone within a block, so of two `open
+        // type`s only the FIRST flips them false→true; the SECOND records no
+        // boolean transition. But the generation barrier bumps on EVERY such
+        // open, so the second's `staled_earlier` fires — and it perturbs
+        // resolution (it stales earlier entries). Capturing the barrier is what
+        // stops the second open being mislabelled `clean` (codex review round 3:
+        // an all-false-boolean open that still defers a later head).
         let rf = resolve_one("module M\nopen type A\nopen type B\n");
         let opens = &rf.resolution_trace().opens;
         assert_eq!(opens.len(), 2);
         assert!(opens[0].opacity.unmodelled, "the first open flips the flag");
+        // The second flips no boolean flag (monotone) …
+        assert!(!opens[1].opacity.opaque_value);
+        assert!(!opens[1].opacity.opaque_dotted);
+        assert!(!opens[1].opacity.unmodelled);
+        // … yet it raised the barrier, so it is not clean.
         assert!(
-            !opens[1].opacity.is_opaque(),
-            "the second records no transition — the category was already poisoned"
+            opens[1].opacity.staled_earlier,
+            "the generation barrier bumps on the second open too"
+        );
+        assert!(
+            opens[1].opacity.perturbs_resolution(),
+            "a barrier-only open must not read as clean"
         );
     }
 }

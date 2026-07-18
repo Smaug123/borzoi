@@ -2226,7 +2226,7 @@ pub struct ExplainedOpen {
 /// open-state at every top-level block / sibling boundary, so an earlier open by
 /// offset may be out of scope entirely. Both would need per-token gate
 /// instrumentation the tool deliberately avoids. So the reader — who has the
-/// file — correlates the opaque opens (with their line ranges) against the
+/// file — correlates the perturbing opens (with their line ranges) against the
 /// token's position; the tool supplies the candidates, not the conclusion.
 #[derive(Debug, Clone)]
 pub struct TokenExplanation {
@@ -2245,14 +2245,15 @@ pub struct TokenExplanation {
 }
 
 impl TokenExplanation {
-    /// Every **opaque** `open` in the file, in source order — the candidate
-    /// culprits a human then locates against the token by their ranges. A pure
-    /// fact (which opens poison a category), never a per-token scope or causal
-    /// verdict; see the type docs for why the tool stops short of one.
-    pub fn opaque_opens(&self) -> Vec<&ExplainedOpen> {
+    /// Every `open` in the file that **perturbs resolution** through any modeled
+    /// mechanism (see [`OpenOpacity::perturbs_resolution`]), in source order —
+    /// the candidate culprits a human then locates against the token by their
+    /// ranges. A pure fact, never a per-token scope or causal verdict; see the
+    /// type docs for why the tool stops short of one.
+    pub fn perturbing_opens(&self) -> Vec<&ExplainedOpen> {
         self.opens
             .iter()
-            .filter(|o| o.opacity.is_opaque())
+            .filter(|o| o.opacity.perturbs_resolution())
             .collect()
     }
 
@@ -2275,7 +2276,7 @@ impl TokenExplanation {
         let _ = writeln!(out, "  opens (source order):");
         for o in &self.opens {
             let kind = if o.is_type { "open type" } else { "open" };
-            let opacity = if o.opacity.is_opaque() {
+            let effect = if o.opacity.perturbs_resolution() {
                 let mut flags = Vec::new();
                 if o.opacity.opaque_value {
                     flags.push("opaque_value");
@@ -2286,38 +2287,41 @@ impl TokenExplanation {
                 if o.opacity.unmodelled {
                     flags.push("unmodelled");
                 }
-                format!("OPAQUE [{}]", flags.join(", "))
+                if o.opacity.staled_earlier {
+                    flags.push("staled_earlier");
+                }
+                format!("PERTURBS [{}]", flags.join(", "))
             } else {
                 "clean".to_string()
             };
             let _ = writeln!(
                 out,
-                "    {kind} {} @ {}..{} — {opacity}",
+                "    {kind} {} @ {}..{} — {effect}",
                 o.path.join("."),
                 o.range.0,
                 o.range.1,
             );
         }
-        // A hint that names the opaque opens by range and states the two caveats
+        // A hint that names the perturbing opens by range and states the caveats
         // explicitly — the trace cannot say which (if any) gated *this* deferral,
         // so it must not pretend to. The reader correlates using the ranges.
         if matches!(self.resolution, Some(Resolution::Deferred(_))) {
-            let opaque = self.opaque_opens();
-            if !opaque.is_empty() {
-                let list: Vec<String> = opaque
+            let perturbing = self.perturbing_opens();
+            if !perturbing.is_empty() {
+                let list: Vec<String> = perturbing
                     .iter()
                     .map(|o| format!("{} @ {}..{}", o.path.join("."), o.range.0, o.range.1))
                     .collect();
                 let _ = writeln!(
                     out,
-                    "  note: token is Deferred; {} opaque open(s) in this file [{}]. \
+                    "  note: token is Deferred; {} perturbing open(s) in this file [{}]. \
                      If the token is a dotted HEAD (e.g. `List` in `List.replicate`) lexically \
-                     after an opaque open in the SAME block/enclosing module, deleting that open \
-                     may let it resolve. Caveats: an open's scope is its block, not an offset \
-                     prefix (the resolver resets open-state at block boundaries), and a \
+                     after a perturbing open in the SAME block/enclosing module, deleting that \
+                     open may let it resolve. Caveats: an open's scope is its block, not an \
+                     offset prefix (the resolver resets open-state at block boundaries), and a \
                      member/qualified TAIL (`value.Member`) defers pending inference regardless \
                      of any open.",
-                    opaque.len(),
+                    perturbing.len(),
                     list.join(", "),
                 );
             }
