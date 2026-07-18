@@ -806,6 +806,16 @@ let private renderType (t: FSharpType) : string =
     let empty : System.Collections.Generic.IList<FSharpGenericParameter> = upcast ResizeArray<_>()
     renderTypeInScope empty empty t
 
+/// Strip a trailing mangled-arity suffix (`` `N ``) from a tycon FQN's final
+/// segment, so a head whose `LogicalName` already carries its arity
+/// (`` list`1 ``) does not double it when the canonical arity is reapplied.
+let private stripBacktickArity (s: string) : string =
+    let i = s.LastIndexOf '`'
+    if i > 0 && i + 1 < s.Length && s.[i + 1 ..] |> Seq.forall System.Char.IsDigit then
+        s.[.. i - 1]
+    else
+        s
+
 /// The *immediate, unchased, logical* target of a type abbreviation, as a
 /// canonical string the Rust-side `AbbreviationTarget` decoder mirrors — or
 /// `None` when the target is a shape the first decoder slice does not model.
@@ -821,19 +831,26 @@ let private renderType (t: FSharpType) : string =
 /// abbreviation entity's own `GenericParameters`, so a `'T` on the RHS renders
 /// by its positional index (`!T0`).
 ///
-/// **Scope: nullary Named + in-scope typar only.** This is the exact currency
-/// for the first decoder slice, which decodes those two shapes. Everything else
-/// — a generic *instantiation* (`int list`, `int[]`), a function, a tuple, a
-/// measure — is **declined** (`None`), not rendered. Declining is what keeps the
-/// oracle unambiguous: a precedence-free string for `int -> int -> int` cannot
-/// distinguish `(int -> int) -> int` from `int -> (int -> int)`, so a decoder
-/// with wrong associativity could pass. The structural shapes get a
-/// precedence-correct rendering — on this side *and* the Rust side together —
-/// in the structural-shape slice (plan Stage 3); until then the differential
-/// asserts nothing about them.
-let private renderAbbreviationTargetLogical
+/// **Scope: named apps (any arity), in-scope typars, functions, tuples.** The
+/// structural forms are rendered **precedence-explicitly** — a function's domain
+/// is parenthesised when it is itself a function, and tuples are always
+/// parenthesised — so the string is unambiguous (a precedence-free
+/// `int -> int -> int` could not distinguish `(int -> int) -> int` from
+/// `int -> (int -> int)`, letting a decoder with wrong associativity pass). This
+/// side and the Rust `render_abbreviation_target` produce byte-identical strings.
+/// Still declined (`None`): **array types** (they surface as `IsArrayType`, not
+/// the `[]`-tycon App the pickle encodes, so the two representations do not yet
+/// align), measures, and union cases.
+let rec private renderAbbreviationTargetLogical
     (typeTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
     (t: FSharpType) : string option =
+    // Render every element of a composite, declining the whole if any declines.
+    let renderAll (ts: seq<FSharpType>) : string list option =
+        let rendered = ts |> Seq.map (renderAbbreviationTargetLogical typeTypars) |> Seq.toList
+        if rendered |> List.forall Option.isSome then
+            Some(rendered |> List.map Option.get)
+        else
+            None
     if t.IsGenericParameter then
         let tp = t.GenericParameter
         let mutable found = -1
@@ -845,19 +862,56 @@ let private renderAbbreviationTargetLogical
         // declined rather than rendered as a bare `'name` that could collide
         // with a real type.
         if found >= 0 then Some(sprintf "!T%d" found) else None
-    elif t.HasTypeDefinition && t.GenericArguments.Count = 0 then
-        // A NULLARY named tycon — the only Named shape this slice handles. Do
-        // NOT branch on `t.IsAbbreviation` (that is the chase `renderTypeInScope`
-        // does). `TryFullName` is `None` for abbreviation entities, so build the
-        // logical FQN from `AccessPath` + `LogicalName`, which is the form the
-        // pickle's nleref path carries.
+    elif t.IsFunctionType then
+        // `domain -> range`, right-associative. The `GenericArguments` of a
+        // function type are `[domain; range]`. Parenthesise a function-typed
+        // domain so `(a -> b) -> c` stays distinct from `a -> b -> c`.
+        let dom = t.GenericArguments.[0]
+        let rng = t.GenericArguments.[1]
+        match renderAbbreviationTargetLogical typeTypars dom,
+              renderAbbreviationTargetLogical typeTypars rng
+            with
+        | Some d, Some r ->
+            let d = if dom.IsFunctionType then sprintf "(%s)" d else d
+            Some(sprintf "%s -> %s" d r)
+        | _ -> None
+    elif t.IsTupleType || t.IsStructTupleType then
+        match renderAll t.GenericArguments with
+        | Some parts ->
+            let prefix = if t.IsStructTupleType then "struct " else ""
+            Some(sprintf "%s(%s)" prefix (String.concat " * " parts))
+        | None -> None
+    elif t.HasTypeDefinition then
+        // A named tycon. Do NOT branch on `t.IsAbbreviation` (that is the chase
+        // `renderTypeInScope` does). `TryFullName` is `None` for abbreviation
+        // entities, so build the logical FQN from `AccessPath` + `LogicalName`,
+        // which is the form the pickle's nleref path carries.
         let td = t.TypeDefinition
-        match td.AccessPath with
-        | "" -> Some td.LogicalName
-        | ap -> Some(sprintf "%s.%s" ap td.LogicalName)
+        let head =
+            match td.AccessPath with
+            | "" -> td.LogicalName
+            | ap -> sprintf "%s.%s" ap td.LogicalName
+        if t.GenericArguments.Count = 0 then
+            Some head
+        else
+            // `int list` ⇒ `Microsoft.FSharp.Collections.list``1<Microsoft.FSharp.Core.int>`:
+            // the tycon's logical path, its arity as a backtick suffix, then the
+            // args. `LogicalName` already carries the mangled arity (`` list`1 ``),
+            // so strip it before reapplying the canonical one — otherwise the arity
+            // doubles. (Array types surface as `IsArrayType`, not this App form, so
+            // they fall through to `None` — a deliberate decline for now.)
+            match renderAll t.GenericArguments with
+            | Some parts ->
+                Some(
+                    sprintf
+                        "%s`%d<%s>"
+                        (stripBacktickArity head)
+                        t.GenericArguments.Count
+                        (String.concat "," parts)
+                )
+            | None -> None
     else
-        // Generic instantiation / function / tuple / measure — deferred to the
-        // structural-shape slice (see the doc comment above).
+        // Array / measure / anything else structural — declined.
         None
 
 /// Whether an [`FSharpType`] position can meaningfully carry a nullable

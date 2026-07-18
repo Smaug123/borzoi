@@ -360,9 +360,43 @@ module Suffixed =
 //     immediate, unchased logical target is `Microsoft.FSharp.Core.int`.
 //   - `S` targets a BCL type directly, so FCS renders the target `System.String`
 //     (already an `AccessPath`+`LogicalName` FQN, not chased through an alias).
+//   - `ObjId` is a second referenced-assembly alias (`Microsoft.FSharp.Core.obj`).
+//   - `PointAlias` targets a *same-assembly* type (`Point`, above). fsc pickles
+//     even that as a non-local ref back into `MiniLibFs` itself, so the decoded
+//     target is `MiniLibFs.Point` with `ccu = Some("MiniLibFs")` (rendered
+//     path-only — exactly as FCS does; sema resolves the ccu name).
+//   - `SelfVar<'T> = 'T` targets the abbreviation's own type parameter, decoded
+//     to `Var(0)` and rendered `!T0`.
+//
+// The structural-shape slice adds generic instantiations, functions, and tuples
+// (arrays are deferred — they surface differently on the two sides):
+//   - `MyList<'T> = 'T list` / `MyIntList = int list` — a generic app, rendered
+//     `Microsoft.FSharp.Collections.list``1<…>` (the tycon path + backtick arity).
+//   - `IntFn = int -> int` and `NestedFn = (int -> int) -> int` — functions,
+//     right-associative, the domain parenthesised only when it is itself a
+//     function (so the two nested shapes render distinctly).
+//   - `Pair = int * string` — a reference tuple (`(… * …)`). (A struct-tuple
+//     abbreviation `type X = struct (…)` misparses as a struct-type definition,
+//     so the `struct_kind` rendering is pinned by a synthetic unit test instead.)
 type IntId = int
 
 type S = System.String
+
+type ObjId = obj
+
+type PointAlias = Point
+
+type SelfVar<'T> = 'T
+
+type MyList<'T> = 'T list
+
+type MyIntList = int list
+
+type IntFn = int -> int
+
+type NestedFn = (int -> int) -> int
+
+type Pair = int * string
 
 module Witness =
     let inline addThem (x: ^a) (y: ^a) : ^a = x + y

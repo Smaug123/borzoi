@@ -48,11 +48,11 @@ pub use error::ImportError;
 pub use fsharp_pickle::{CcuRef, PickledCcu, PickledHeader, PickledNleRef, unpickle_signature};
 pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_module_member_targets};
 pub use model::{
-    Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    ConstantValue, CustomAttr, DefaultMember, Entity, EntityKind, Event, Experimental, Field,
-    FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike,
-    MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
-    Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter,
-    TypeRef, UnclassifiedMethodImpl, Variance, Version,
+    AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
+    CompilerFeatureRequired, ConstantValue, CustomAttr, DefaultMember, Entity, EntityKind, Event,
+    Experimental, Field, FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl,
+    Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete,
+    ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember,
+    SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

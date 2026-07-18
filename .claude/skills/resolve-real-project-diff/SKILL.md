@@ -1,6 +1,6 @@
 ---
 name: resolve-real-project-diff
-description: How to run the end-to-end whole-project name-resolution differential (`resolve_real_project_diff`) against a real, restored F# project, comparing the LSP's full runtime chain (Compile order + assets-file assembly closure + sema fold) to FCS. Use whenever you want to answer "can the LSP correctly analyse a real project?", validate the runtime resolution chain against a new project, or triage a real-world resolution divergence.
+description: How to run `resolve_real_project_diff` (in the `borzoi` LSP crate): the whole-project name-resolution differential over **one** `dotnet restore`d F# project. It drives the LSP's full runtime chain — Compile order + assets-file assembly closure (real referenced DLLs read into an `AssemblyEnv`) + the `resolve_project` fold — and gates every divergence and alt-binder to zero against FCS's `uses-project` oracle. Use to answer "can the LSP correctly analyse this specific project?", validate the runtime resolution chain (including imported-assembly target identity) against a new project, or triage a real-world resolution divergence. This is the single-project, real-assembly gate — not the corpus-wide, per-file-isolation worklist sweeps (see resolve-divergence-sweep / parser-divergence-sweep).
 ---
 
 # Whole-project resolution differential vs FCS
@@ -21,6 +21,15 @@ FCS (`fcs-dump uses-project`) is the oracle: it type-checks the same
 Compile-ordered files as one project with the project's NuGet DLLs injected.
 This is the sharpest single test for "does dependency resolution actually work
 on a real project", because it exercises the whole chain, not a unit slice.
+
+> **This is the single-project gate, not a corpus sweep.** It points at **one**
+> restored project, reads its **real** referenced assemblies, and **gates
+> divergences and alt-binders to zero** — so it can adjudicate imported-assembly
+> target identity, which a per-file run cannot. If instead you want the
+> corpus-wide *worklist* of what we still get wrong or defer — resolved
+> per-file, in isolation, with an empty `AssemblyEnv`, as a measurement rather
+> than a gate — that is [[resolve-divergence-sweep]] (name resolution) or
+> `parser-divergence-sweep` (the parser layer below it).
 
 ## Prerequisites
 

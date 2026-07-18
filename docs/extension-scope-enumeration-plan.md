@@ -10,14 +10,18 @@
 > `ResolvedFile::attribute_resolutions` and gated by the `attrs` differential +
 > the generative matrix + the corpus sweep): an attribute resolving to a
 > concrete non-`ExtensionAttribute` type no longer defers the file. §2(a)/(b)
-> (the augmentation name sets, own- and cross-file — #1011/#1010) and **AO-2**
+> (the augmentation name sets, own- and cross-file — #1011/#1010), **AO-2**
 > (the attribute side's project-auto-open presence defer deleted as redundant;
-> see "§2(c) revisited") have landed since. Remaining EX-3 work: AO-1 (the
-> extension gate's auto-open presence triggers, stacked on AO-2), §2(c)'s
-> remnant (an attribute resolving *to* `ExtensionAttribute` still
-> presence-defers — name-keying its container's members), and the documented
-> §2(d) coverage frontiers — multi-segment attribute paths and bare cross-file
-> project attribute types defer wholesale. An `open` the resolver cannot
+> see "§2(c) revisited" — #1014) and **AO-1** (the extension gate's auto-open
+> presence triggers deleted — #1015) have landed since. Remaining EX-3 work:
+> the **EA stages** (planned below, "§2(d) endgame" — the successor of the item
+> previously listed as §2(c)'s remnant): an attribute the resolver cannot
+> prove is no `[<Extension>]` still defers the **whole file**; probing shows
+> FCS confers C#-style extension-ness per **member**, so EA-1/EA-2 defer only
+> the decorated member names. After EA the documented §2(d) coverage
+> frontiers — multi-segment attribute paths and bare cross-file project
+> attribute types — still record `Deferred`, but stop costing the gate
+> anything except when they decorate a member. An `open` the resolver cannot
 > name-key — a project module/namespace, an assembly module / `open type`, or
 > an opaque / dropped-path open — still defers the whole file.
 >
@@ -432,10 +436,182 @@ over-approximation on top of signals 1–2.
   open machinery that deserves its own plan and its own FCS differentials.
   Explicitly not part of this one.
 
-Adjacent follow-up (unblocked by §2(d), independent of AO-1/2): a container
-the attribute machinery *resolves to* `[<Extension>]` currently keeps the
-wholesale defer; collecting its static-member names with the §2(a) walk would
-name-key the last presence-based project trigger.
+#### §2(d) endgame — the may-be-`[<Extension>]` defer goes per-member (EA; planned 2026-07-17)
+
+Implement each stage on its own branch, stacked on the AO stack, so that a
+reviewer can review each branch in isolation.
+
+**The reframe (probed, not assumed).** Stage 5 refined *which attributes*
+defer — only those the resolver cannot prove are no `ExtensionAttribute` —
+but a firing attribute still defers the **whole file**. The right unit is the
+*member*. FCS confers C#-style extension-ness per member:
+`GetCSharpStyleIndexedExtensionMembersForTyconRef` /
+`IsMethInfoPlainCSharpStyleExtensionMember` (`NameResolution.fs`) admit a
+member into the extension index iff it is **static, not already an F#-style
+extension member, non-curried with ≥ 1 argument, and itself carries the
+resolved `ExtensionAttribute`** (`ValHasWellKnownAttribute`, matched on the
+resolved attribute type's full path); and under
+`CSharpExtensionAttributeNotRequired` (the language default on the toolchains
+FCS runs here) **every local non-abbreviation type is an eligible
+container**, so the type-level attribute plays no role for project source.
+The question "what can this may-be-`[<Extension>]` attribute contribute?"
+therefore has a name-keyed answer: **the name of the member it decorates —
+and nothing at all when it decorates anything that is not a member.** That
+converts the last project-side presence trigger into the §2(a)/(b) shape — a
+name set plus an unknowable bit — and collapses the practical cost of the
+§2(d) coverage frontiers: a bare cross-file project attribute or a
+multi-segment path (`[<Foo.Bar>]`, `[<System.Obsolete>]`) still records
+`Deferred`, but on a `let`, a type, a module, or a parameter it now
+contributes no extension surface. Today any such attribute anywhere in a
+file — and they are everywhere in real code — zeroes the file's overload
+commits.
+
+Probed 2026-07-17 (`fcs-dump overloads` / `uses-project`; every row becomes a
+pinned differential fixture):
+
+| # | shape | FCS |
+|---|-------|-----|
+| P1/P2 | `[<Extension>]` static member, with or without the type-level attribute | confers — the extension call binds |
+| P3 | type-level `[<Extension>]` only, members bare | confers nothing (the call errors) |
+| P4 | `[<Extension>]` on an *instance* member | confers nothing |
+| P5 | `[<Extension>]` on a module and/or a module-level `let`, even `open`ed | confers nothing — a value, not an extension (re-pins `CoreExtAttrLets` from the source side) |
+| P6 | `[<Extension>] static member get_Len2` | **no property surfacing**: `"hi".Len2` errors, `"hi".get_Len2()` binds — the deferred name is the member's literal name; no `get_`/`set_` stripping |
+| P7 | colliding extension vs a *static-qualified* call | never joins the static group — collected names key the **instance** side only, matching EX-0's assembly-side pin |
+| P8 | colliding extension vs an instance call | the landmine: `"hi".Substring 1` → intrinsic, `"hi".Substring true` → the extension — a colliding name must defer |
+| P9 | preceding Compile-order file, same namespace, **no `open`** | in scope — cross-file threading needed (EA-2) |
+| P11 | `[<Extension>] static member` inside `type … with` | confers nothing — the member is F#-style, excluded by `not vref.IsExtensionMember`; the instance-style call errors |
+| P12 | extension type inside an un-`open`ed nested module | not in scope — file-global collection is a sound over-approximation |
+| P13 | project-declared concrete `System.Runtime.CompilerServices.ExtensionAttribute` homonym | does **not** confer — the Local-concrete "provably not the marker" arm survives its adversarial corner |
+| P14/P15 | `[<Extension>]` (or `[<method: Extension>]`) on an explicit static **property** `static member Chars with get (s: string, b: bool)` | confers under the **generated accessor name**: `"hi".get_Chars true` binds the extension while `"hi".get_Chars 0` binds the intrinsic `String.get_Chars` — a real collision group the source name `Chars` would miss (GPT-5.6 round-1 finding, probe-confirmed) |
+| P17 | `[<Extension>] static abstract member Chars : string * bool -> float with get` (inferred-interface IWSAM slot) | confers under `get_Chars` too — the §2(a) `AbstractSlot` arm records only the source name, so accessor variants must be recorded for **every** member shape (GPT-5.6 round-2 finding, probe-confirmed) |
+| P18 | `[<CLIEvent; Extension>] static abstract member Ev : IEvent<…>` | `add_Ev` did **not** bind on this toolchain — but the unconditional accessor-variant rule covers the event accessors regardless, so no toolchain fact is load-bearing |
+
+- **Stage EA-1 — own-file: attachment classification + gate consumption.**
+  *Dependencies: AO-1.* At the end of `resolve_file` — verdict map complete,
+  file and env in hand — classify **every `AttributeList` in the file** (the
+  same enumeration the resolution walk uses, with a shared name-range helper,
+  so the two passes cannot disagree about which range a verdict lives at). A
+  list containing at least one **may-be-marker** attribute is classified by
+  its nearest classifiable ancestor. May-be-marker is per-verdict, the same
+  disjunction `attributes_may_declare_extension` applies today (extracted to
+  a per-verdict helper): `Deferred`; `Entity` that `is_extension_attribute`;
+  `Local` naming an in-file abbreviation; **plus a keyable attribute with no
+  verdict at all**. That last case is new: today "no record" is read as
+  decline-by-absence (FCS errors and sinks nothing), which silently assumes
+  the resolution walk visited every list — an assumption nothing enforces
+  for the *gate* (the attrs differential permits absent records as
+  no-claim). Treating no-record as may-be makes the classification
+  deferral-only even against an unvisited list; the only cost is deferring
+  the decorated member's name in files whose attribute genuinely resolves
+  nowhere, and those files are already erroring. The attachment map:
+
+  - a **member definition** → the member's name into a new
+    `extension_attr_names` set, extracted by the same member-name walk §2(a)
+    uses (shared, not parallel); an un-extractable name (an operator head, …)
+    sets a new `extension_attr_unknowable` bit. **Every** collected member
+    name additionally records its four **generated accessor variants** —
+    `get_{name}` / `set_{name}` / `add_{name}` / `remove_{name}` —
+    unconditionally, because FCS indexes a property-shaped extension under
+    the accessor's compiled name (P14/P15; and P17 shows a *static
+    abstract* property slot — an inferred-interface IWSAM shape whose
+    §2(a) `AbstractSlot` arm records only the source name — confers the
+    same way): recording only `Chars` would let the intrinsic `get_Chars`
+    commit against a competing extension accessor. Unconditional beats
+    shape-keyed: exactly which member shapes generate which accessors
+    (explicit `with get/set`, auto-properties, abstract slots,
+    `[<CLIEvent>]` and its abbreviation aliases — the static-abstract
+    event flavour did not bind on this toolchain, P18, but nothing needs
+    to depend on that) is the kind of per-shape FCS fact this plan keeps
+    off the load-bearing list, and four spare names per attributed member
+    defer only calls literally spelt like accessors. (P6 is the inverse
+    case and needs no stripping: a member literally named `get_Len2` is
+    indexed as `get_Len2`.)
+    Staticness-**blind** by choice: P4 would license skipping
+    classifiably-instance members, but collecting them costs one spurious
+    name and makes one fewer FCS fact load-bearing — a later narrowing if
+    corpus numbers ever care. Parameter- and return-position attributes
+    under a member land here too: over-approximate, sound.
+  - a **`let` binding** (module-level or class-local), a **type definition**
+    reached without passing a member (the type's own attribute list), a
+    **module / namespace declaration**, an **exception / union case /
+    field** → contributes nothing (P3/P4/P5 and the conferral law above).
+  - **anything else** → `extension_attr_unknowable = true`. Deferral-only:
+    an attachment the classifier does not model can only over-defer, never
+    license a commit. (`[<assembly:` / `[<module:` target lists land
+    wherever their CST parent puts them — classify them as contributing
+    nothing only after verifying the parent shape; until then they stay
+    wholesale, which costs nothing, since AssemblyInfo-style files hold no
+    overloaded calls.)
+
+  A nameless `[<>]` (`attribute_shape_unknowable`) keeps today's wholesale
+  defer — parse-recovery noise, not worth classifying.
+
+  Consumption: the per-file boolean
+  `ResolvedFile::attributes_may_declare_extension` is **deleted**;
+  `ExtensionScope::of`'s `project_source_present` reads
+  `extension_attr_unknowable` instead, and the **instance-side** name check
+  (P7) unions `extension_attr_names` with the augmentation instance names.
+  The fold's `wholesale_extension_contribution` keeps preceding files sound
+  in the interim with one term EA-2 deletes: `extension_attr_unknowable ||
+  !extension_attr_names.is_empty()`. While here: `ResolvedFile::
+  augmentation_declares_extension_named` has no callers — extend it to the
+  new set if the LSP is about to consume it, else delete it.
+
+  *Oracle.* A new FCS-diffed case group in the `infer_member_access_diff`
+  mould (share `assert_sound_core`): every probe row above as a fixture,
+  plus the floors that give the stage its value — the non-colliding
+  overloaded call next to a `[<Extension>]` member **commits**; the
+  overloaded call in a file whose only attributes sit on `let`s / types /
+  parameters (bare-project *and* multi-segment spellings — today's frontier
+  defers both) **commits**; the colliding call defers; the
+  local-abbreviation chain (`type MyExt = ExtensionAttribute`, `[<MyExt>]`
+  on a member) defers exactly that member's name while FCS's extension call
+  binds; the **accessor collisions** (P14: an attributed static property
+  `Chars` vs an intrinsic `"hi".get_Chars 0` call, and P17: the static
+  abstract slot flavour) defer `get_Chars`. Plus a bounded generative sweep in the attr-matrix mould —
+  {attachment} × {verdict class} × {colliding / non-colliding call} — each
+  cell diffed against the overloads/types oracle, certain-implies-exact,
+  with a ratcheted commit floor. And the standing non-negotiables:
+  `overload_corpus_diff` (OV-9) re-measured with its floors ratcheted
+  **up** — the expected mover is exactly the real-project files whose only
+  project-side trigger is a `Deferred` attribute on a non-member
+  construct — and `extension_visibility_matrix` green.
+
+- **Stage EA-2 — cross-file: thread the names, delete the interim term.**
+  *Dependencies: EA-1.* P9: a preceding file's extension member is in scope
+  with no `open`, so `ExtThreading` gains the accumulated
+  `extension_attr_names` (namespace-blind like the augmentation sets — the
+  honest over-approximation), stamped onto each file as
+  `preceding_extension_attr_names` and unioned into the gate's instance-side
+  check; `wholesale_extension_contribution` drops the
+  `!extension_attr_names.is_empty()` term, keeping only the unknowable bits.
+  **The incremental fold must keep lockstep** (GPT-5.6 round-1 finding):
+  `resolve_project_incremental`'s `in_sync` comparison re-derives every
+  `ExtThreading` contribution — `wholesale_extension_contribution` equality
+  plus the two augmentation name sets — before reusing a suffix. Under EA-1
+  the names ride inside the wholesale term, so the existing comparison
+  covers them; the moment EA-2 moves them into their own threaded set, the
+  comparison must gain `extension_attr_names` equality, or an edit adding an
+  attributed member leaves later files holding a stale empty
+  `preceding_extension_attr_names` and committing unsoundly.
+  *Oracle:* two-file FCS-diffed fixtures — a preceding colliding member
+  defers the later file's call; a preceding non-colliding member leaves the
+  later file's overloaded call **committing** (the floor); a preceding file
+  whose attributes sit on `let`s stops poisoning followers (commit floor); a
+  *later* file's `[<Extension>]` does not defer an *earlier* file
+  (Compile-order control); an un-nameable preceding member (an operator)
+  threads wholesale. The generative incremental differential
+  (`resolve_incremental_diff`) gains a **member-attribute toggle** in its
+  edit alphabet — its existing `let`-attribute toggle flips today's
+  extension-source signal but becomes non-contributing under EA-1, so
+  without the new toggle the suite would stop exercising the extension half
+  of the `in_sync` comparison entirely. Corpus + OV-9 re-measured again,
+  floors ratcheted.
+
+Non-goals, unchanged: AO-3 (value names / open-machinery deopaquing) stays
+out of scope; multi-segment and bare-cross-file attribute *type resolution*
+stays deferred (EA makes the gate stop caring except on members); the
+project-side sets stay namespace-blind (over-deferral only).
 
 #### §2(d) revisited — the salvage plan (2026-07-17)
 

@@ -68,13 +68,21 @@ use crate::common::{
 /// initialiser-less `member val` (`Auto property 04.fs`) was dropped as too
 /// context-sensitive (see the note in `parser_diff_module_structure.rs`).
 /// 2026-07-18: 5458, +1 from group D's parenthesised-pattern member head
-/// (`static member (y) …` — `neg133.fs`). The two-token range-step operator name
-/// `(.. ..)` (`productioncoverage01.fs`) was explored then **dropped**: a
-/// merged-token spelling can't be canonicalised from source text without
-/// conflating a comment between the dots (`(.. (*c*) ..)`) or a quoted identifier
-/// spelled ``` ``....`` ```; a faithful fix needs a distinct token *kind* threaded
-/// through the CST accessors and sema, disproportionate for one grammar-coverage
-/// file. Left a documented `we_reject_fcs_accepts` divergence.
+/// (`static member (y) …` — `neg133.fs`). The other group-D file — the two-token
+/// range-step operator name `(.. ..)` = `op_RangeStep` (FCS's `operatorName:
+/// DOT_DOT DOT_DOT`, `productioncoverage01.fs`) — was implemented then **dropped**
+/// as a deliberate doom-loop exit, and stays a documented `we_reject_fcs_accepts`
+/// divergence. The parser can *accept* it (the differential matched at 5459), but
+/// it is the one paren operator name spanning two lexer tokens, so a faithful
+/// representation is a wrapper *node* (`RANGE_STEP_OP`, like the active-pattern
+/// name) — and, exactly like an active-pattern name, that node is invisible to
+/// `LongIdent::idents()`, so **every** `idents()` consumer must add a parallel
+/// `range_step_op()` guard or silently drop the segment: ~15–20 sites across
+/// `infer.rs` / `resolve/types.rs` (else a path like `"hi".(.. ..).Length`
+/// mis-infers to `"hi".Length`), plus a leading-trivia-excluding node range and a
+/// multi-segment accessor for `(.. ..).(.. ..)`. (Three review rounds each
+/// surfaced a deeper layer.) That is active-pattern-scale plumbing across the whole
+/// semantic engine for an operator no real code redefines — not worth it.
 const MIN_AST_MATCHES: usize = 5458;
 
 /// Upper bound on files that normalise on both sides but disagree. Drive this
