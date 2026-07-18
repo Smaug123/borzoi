@@ -8,6 +8,7 @@ use crate::def::{Def, DefKind};
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
 use super::state::{Frame, Resolver, ScopeEntry};
+use super::types::TypePathResolution;
 
 impl<'a> Resolver<'a> {
     pub(super) fn resolve_expr(&mut self, expr: &Expr) {
@@ -22,7 +23,12 @@ impl<'a> Resolver<'a> {
             Expr::Null(_) => {}
             Expr::Ident(e) => {
                 if let Some(tok) = e.ident() {
-                    self.resolve_name_use(&tok);
+                    // A genuinely bare ident: allow the opened-type constructor
+                    // fallback (`Thing ()`). A dotted-path head reaching
+                    // `resolve_name_use` is member access on a *value* and must
+                    // not fall through to an opened type — see the call in
+                    // [`Self::resolve_long_ident`].
+                    self.resolve_name_use(&tok, true);
                 }
             }
             // `'T` (FCS's `SynExpr.Typar`) — a type parameter used as the head of
@@ -214,7 +220,18 @@ impl<'a> Resolver<'a> {
                 // `f<T>` — resolve the type-applied head expression (the value
                 // reference `f`) and each type argument (a type use).
                 if let Some(head) = e.expr() {
-                    self.resolve_expr(&head);
+                    // A bare-ident head under explicit type arguments (`Pair<int>
+                    // ()`) must not take the opened-type constructor fallback: that
+                    // tier does an arity-0 lookup, so it would name the non-generic
+                    // sibling rather than the arity-matched generic type. Defer the
+                    // fallback (the value frame still resolves a genuine value).
+                    if let Expr::Ident(id) = &head
+                        && let Some(tok) = id.ident()
+                    {
+                        self.resolve_name_use(&tok, false);
+                    } else {
+                        self.resolve_expr(&head);
+                    }
                 }
                 for ty in e.type_args() {
                     self.resolve_type(&ty);
@@ -759,7 +776,7 @@ impl<'a> Resolver<'a> {
         entries
     }
 
-    pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken) {
+    pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
         // The `base` keyword reaches here as the receiver of a direct
         // `base.[i]` indexer (parsed as a bare `Ident("base")` head). Like the
         // `base`-headed long-ident path, it is the reserved base-class receiver,
@@ -786,11 +803,83 @@ impl<'a> Resolver<'a> {
         // [`Self::top_level`] and [`Self::open_type_statics`]). So the ordinary
         // [`lookup`](Self::lookup) — innermost frame first, latest entry within a
         // frame — resolves opened statics, opened module values, locals, and cases
-        // uniformly by source order, the latest in scope winning. An unbound name
-        // (or one shadowed away by an opaque open) falls back to `Deferred`.
+        // uniformly by source order, the latest in scope winning.
+        let name = id_text(tok.text());
         let res = self
-            .lookup(id_text(tok.text()))
+            .lookup(name)
+            .or_else(|| self.opened_constructor_target(name, allow_opened_type))
+            // An unbound name (or one shadowed away by an opaque open) falls back
+            // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
         self.record(tok.text_range(), res);
+    }
+
+    /// The opened-type **constructor** fallback for a bare expression name that
+    /// missed the value frame: a type used as a constructor (`StringBuilder ()`,
+    /// `Thing ()`) — FCS resolves the occurrence to the type symbol, not a `.ctor`
+    /// member, and uses the *same* type-name resolution it uses in type position.
+    /// So this delegates to [`Self::decide_type_path`], the fully-vetoed
+    /// type-position resolver, and commits only its unambiguous assembly leaf — a
+    /// wrong go-to-def is worse than "no definition":
+    ///
+    /// - `decide_type_path` already defers every shadow channel its tiered walk
+    ///   covers — an opaque/unmodelled `open`, a nested-module descent, an in-scope
+    ///   auto-open module's nested type of the same name, an unknowable-abbreviation
+    ///   namespace — and returns
+    ///   [`InFileType`](super::types::TypePathResolution::InFileType) (not an
+    ///   assembly leaf) when a project `type` shadows the name. We commit **only**
+    ///   the `Assembly { leaf: Some(_) }` case, so all of those defer here;
+    /// - `allow_opened_type` is false for a dotted-path head (member access on a
+    ///   *value*) and under an explicit type application (`Pair<int> ()`, whose
+    ///   arity the arity-0 resolution cannot honour);
+    /// - a value-frame miss is only *conservative*, not a genuine unbound — the
+    ///   crux, since `lookup` returns `None` for names FCS still binds as values.
+    ///   Two channels cover that, both invisible to `decide_type_path` (type
+    ///   position): [`own_binder_simple_names`](Self::own_binder_simple_names) — the
+    ///   file's whole binder-name set, so a would-be-shadowed local or a
+    ///   *provisional* uppercase parameter (`let f (Thing: int) = Thing`) FCS binds
+    ///   but `lookup` dropped defers rather than naming the opened type — and
+    ///   [`head_entry_staled`](Self::head_entry_staled), a staled *opened* value
+    ///   (which is not a file binder);
+    /// - the leaf must be a bare-expression-constructible class
+    ///   ([`AssemblyEnv::bare_expr_constructible`]): a static class, union, record,
+    ///   abbreviation, or generic type is not, so it defers.
+    ///
+    /// Limitations shared, by design, with type-position resolution — they live in
+    /// `decide_type_path` (or its absence of a channel) and are not patched
+    /// asymmetrically here, because the constructor position must resolve a bare
+    /// type name identically to type position:
+    ///
+    /// - a same-simple-name **type contest across referenced assemblies** —
+    ///   `lookup_type`'s first-wins slot vs FCS's latest-reference-wins. A
+    ///   `distinct_dlls == 1` guard was tried and reverted: benign duplication (a
+    ///   BCL type with real TypeDefs in *both* `netstandard` and `System.Runtime`,
+    ///   which FCS unifies and the slot resolves correctly) reads as a contest, so
+    ///   the guard deferred the common case — `StringBuilder` included. Telling a
+    ///   benign duplicate from a genuine rival needs the assembly-unification the
+    ///   shared layer owns;
+    /// - a **manifest** `[<assembly: AutoOpen("N.Ops")>]` surface omitted from the
+    ///   prefix walk can let a root type resolve where FCS binds the auto-opened
+    ///   `N.Ops.C`;
+    /// - an F# **named-argument label** (`M(arg = 1)`) reaches this as a bare ident
+    ///   just as it already reaches value-frame lookup, since named arguments are
+    ///   unmodelled.
+    ///
+    /// Each needs a pathological shape to matter and belongs at the shared layer.
+    fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
+        if !allow_opened_type
+            || self.own_binder_simple_names.contains(name)
+            || self.head_entry_staled(name)
+        {
+            return None;
+        }
+        match self.decide_type_path(std::slice::from_ref(&name.to_string()), 0) {
+            TypePathResolution::Assembly {
+                leaf: Some(handle), ..
+            } if self.assemblies.bare_expr_constructible(handle) => {
+                Some(Resolution::Entity(handle))
+            }
+            _ => None,
+        }
     }
 }

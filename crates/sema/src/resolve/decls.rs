@@ -698,7 +698,7 @@ impl<'a> Resolver<'a> {
                     // differential oracle (never checked by the corpus); direct
                     // tests pin it.
                     if let Some(target) = exn.abbrev_path().and_then(single_ident) {
-                        self.resolve_name_use(&target);
+                        self.resolve_name_use(&target, false);
                     }
                     self.define_exception_case(&name, header_is_private(exn.syntax()));
                 }

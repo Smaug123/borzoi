@@ -476,10 +476,6 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
         "an assembly union case folds opaque (Q1)",
     ),
     (
-        "class / unique type, expression",
-        "a bare namespace-type constructor is the eviction/type channel, not the value fold",
-    ),
-    (
         "class / colliding value-vs-type, expression",
         "value vs constructor-slot type — a reference-order contest (codex P1-A)",
     ),
