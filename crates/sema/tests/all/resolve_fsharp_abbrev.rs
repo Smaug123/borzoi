@@ -210,6 +210,28 @@ fn bare_alias_use_defers_rather_than_naming_a_target() {
 }
 
 #[test]
+fn member_access_through_an_alias_with_a_companion_module_defers() {
+    // `type WidgetC = Widget` with a `[<ModuleSuffix>] module WidgetC` that also
+    // defines `Make` (codex round 6): FCS routes `WidgetC.Make` to the *companion
+    // module's* `Make`, not the target `Widget`'s static — a module-over-target
+    // member precedence we do not model. The resolve-through must DEFER, never
+    // commit `Widget.Make` (verified against fcs-dump: `WidgetC.Make` resolves to
+    // `WidgetCModule.Make`).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet _ = WidgetC.Make()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        !matches!(
+            rf.resolution_at(at(src, "WidgetC.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "a member access through an alias with a companion module must defer, not \
+         commit the target's member; got {:?}",
+        rf.resolution_at(at(src, "WidgetC.Make")),
+    );
+}
+
+#[test]
 fn nested_terminal_alias_defers_but_a_qualifier_through_it_resolves() {
     // The nested-descent counterpart of the bare/qualifier split (codex round 5):
     // `Lib.Nested.NestedAlias` (a nested alias as the terminal segment, no tail) is

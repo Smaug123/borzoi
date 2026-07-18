@@ -31,6 +31,17 @@ type UAlias = U
 module Nested =
     type NestedAlias = Widget
 
+// An abbreviation with BOTH a loaded target AND a ModuleSuffix companion module
+// (codex round 6): FCS routes `WidgetC.Make` to the companion module's `Make`,
+// NOT the target `Widget`'s static `Make` — a module-over-target member
+// precedence we do not model, so a member access through such an alias must
+// DEFER rather than commit the target's member.
+type WidgetC = Widget
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module WidgetC =
+    let Make () = 2
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct

@@ -2842,6 +2842,46 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Abbreviation
     }
 
+    /// Whether the abbreviation alias `alias` has a
+    /// `[<CompilationRepresentation(ModuleSuffix)>]` **companion module** — a
+    /// sibling module F# source writes under the same name (`type List` +
+    /// `module List`). `parent` is the alias's enclosing type when it is nested,
+    /// `None` when it is top-level (the siblings are then the top-level set).
+    ///
+    /// FCS resolves a *member access* `Alias.Member` to the companion module's
+    /// member, not the abbreviation *target*'s static — even when both define the
+    /// name (fcs-verified). We do not model that module-over-target member
+    /// precedence, so a resolve-through must **defer** a member access through an
+    /// alias that has a companion module rather than commit the target's member
+    /// (codex review). Matched by the F#-source name (a suffixed module's
+    /// `source_name`) and namespace, public only — the surface a consumer sees.
+    pub fn alias_has_companion_module(
+        &self,
+        alias: EntityHandle,
+        parent: Option<EntityHandle>,
+    ) -> bool {
+        let alias_e = self.entity(alias);
+        let alias_name = alias_e
+            .source_name
+            .clone()
+            .unwrap_or_else(|| alias_e.name.clone());
+        let alias_ns = alias_e.namespace.clone();
+        let is_companion = |&h: &EntityHandle| {
+            if h == alias {
+                return false;
+            }
+            let e = self.entity(h);
+            e.kind == EntityKind::Module
+                && self.is_public(h)
+                && e.namespace == alias_ns
+                && e.source_name.as_deref().unwrap_or(&e.name) == alias_name
+        };
+        match parent {
+            Some(p) => self.children(p).iter().any(is_companion),
+            None => self.top_level_types.iter().any(is_companion),
+        }
+    }
+
     /// Resolve an abbreviation marker to the entity its target *names*, so a
     /// consumer can resolve *through* the alias (`type S = System.String` lets
     /// `S.Format` bind the member on `System.String`) instead of deferring.

@@ -70,6 +70,16 @@ impl<'a> Resolver<'a> {
         // (structural, generic, or not loaded) shadow-defers as before (D5: defer,
         // never a wrong target).
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
+            // FCS routes a member access through an alias's ModuleSuffix companion
+            // module, not the abbreviation target (fcs-verified) — a
+            // module-over-target precedence we do not model. Defer rather than
+            // chase into the target and commit its member (codex review).
+            if self
+                .assemblies
+                .alias_has_companion_module(type_handle, None)
+            {
+                return AssemblyPath::ProjectShadowed;
+            }
             match self.assemblies.resolve_abbreviation_target(type_handle) {
                 Some(target) => target,
                 None => return AssemblyPath::ProjectShadowed,
@@ -131,6 +141,14 @@ impl<'a> Resolver<'a> {
                 // A nested abbreviation marker: resolve through its target (or
                 // shadow-defer if unresolvable), same as the rooting case above.
                 let child_walk = if self.assemblies.is_abbreviation(child) {
+                    // A companion module beside the nested alias competes for the
+                    // member access, same as the rooting branch — defer.
+                    if self
+                        .assemblies
+                        .alias_has_companion_module(child, Some(parent))
+                    {
+                        return AssemblyPath::ProjectShadowed;
+                    }
                     match self.assemblies.resolve_abbreviation_target(child) {
                         Some(target) => {
                             // A *terminal* nested alias (no tail follows) is a bare
