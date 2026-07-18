@@ -2,8 +2,9 @@
 
 > **Status:** Stages 1 and 2 implemented (Stage 1 with the §screen
 > correction below — a 2026-07-18 probe refuted one cell of the original
-> Stage-1 matrix; Stage 2 with the implementation notes in its section);
-> Stage 3+ not started.
+> Stage-1 matrix; Stage 2 with the implementation notes in its section).
+> Of Stage 3+, the **accessibility slice** is implemented (see its notes);
+> the rest not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -447,11 +448,11 @@ with these mechanics settled in review/probing:
   `open Pn; Md.shown` reaches the export (FCS-probed, codex round 1) — the
   materialisation also publishes (nothing on the impl side does — its
   fragments are anonymous — yet FCS treats the implicit module as real and
-  openable). Accessibility-annotated decls
-  (`val private/internal`, `module internal`, `type private`, repr-level
-  accessibility), active-pattern/operator `val`s, operator-named cases,
-  exceptions, abbreviations, records, and nested-module recursion all
-  stay screen-deferred (Stage 3).
+  openable). Val/module accessibility is the landed Stage-3 slice (see
+  its notes below); `type private` / repr-level accessibility,
+  active-pattern/operator `val`s, operator-named cases, exceptions,
+  abbreviations, records, and nested-module recursion all stay
+  screen-deferred (Stage 3+).
 - **Incremental fold:** the stash joins `same_export_contribution`, so a
   `.fsi` surface edit invalidates the suffix; the impl-slot append runs in
   both folds before the in-sync comparison.
@@ -463,6 +464,45 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
 - **Accessibility (finer half)** — `val internal` / `module internal`
   (project-visible → accessible export), on top of the private→drop of Stage 2,
   via `access_root_len`.
+
+  **Implemented (2026-07-18).** `val internal` / `val public` and
+  `module internal` headers (top-level and namespace-direct, impl header
+  annotated or not) resolve cross-file to the `.fsi` **diagnostics-clean**
+  — one project is one assembly, so within the fold they export exactly
+  like the plain public surface, through the unchanged Stage-2 machinery
+  (`SigValAccess` in `resolve.rs`). `val private` exports with a
+  **restricted access root** (`SigExport::access_root_len =
+  Some(container.len())`, the impl-side `let private` semantics), and the
+  shared accessibility machinery (`accessible_from` through
+  `latest_accessible_value`) delivers every probed verdict per site: a
+  later fragment of the *same module* reads it diagnostics-clean with the
+  `.fsi` ident as decl (codex round 1 P1 — a first draft dropped the val
+  outright, which committed a stale earlier fragment's public value
+  there); everywhere else it behaves as dropped — an earlier public
+  fragment's same-path value binds *cleanly*, a colliding assembly member
+  binds *cleanly*, and a direct outside reading is FS1094, never clean.
+  The assembly fall-through made the project-value shadow
+  (`ProjectItems::is_project_value_prefixed`) **site-aware**: an
+  inaccessible value never shadows the merged assembly — FCS-probed on
+  both the signature side and the pre-existing impl side (`let private
+  bar` and member access through `let private Shared`, each colliding
+  with `RefLib`, bind the assembly cleanly), so this also removed an
+  impl-side over-deferral. `module private` stays screen-deferred (FCS
+  resolves through it only with FS1092/FS1094 errors). Known
+  over-deferral (codex round 1 P2, probed): after an `open` of the
+  signatured module, a bare reading of the sig-private name colliding
+  with an assembly member defers where FCS binds the assembly — the
+  Stage-1 blanket hidden-valued marking demotes every assembly entry of a
+  signatured root's open, the same documented class as the hidden-name
+  open over-deferral; deferral only, never a wrong commit (pinned by
+  `open_bare_private_collision_defers_but_never_commits_a_project_item`).
+  Oracles: the accessibility × collision × site matrix
+  (`accessibility_matrix_agrees_with_fcs`), the widened FCS-free exposure
+  matrix (header × style × access), the same-module-subtree differentials
+  (`sig3_private_same_module_subtree*`), and the fragment-interleaving
+  matrix's exposure axis extended to {modelled, internal, private,
+  unmodelled-mention (an `exception X` — still-unmodelled value surface,
+  replacing `val internal` which this slice models), hidden}.
 - **Active-pattern `val`s** — `val (|Even|Odd|)` / `val (|DivBy|_|)`, wired to the
   Stage-3a active-pattern-case export path (`docs/export-decl-model-plan.md`),
   recognizer span in the `.fsi` as identity.
