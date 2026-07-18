@@ -2351,7 +2351,9 @@ impl<'a> Resolver<'a> {
         // not gate the type path.
         self.path_is_project_type_shadowed(names)
             || self.preceding.is_exact_project_module(names)
-            || self.preceding.is_project_value_prefixed(names)
+            || self
+                .preceding
+                .is_project_value_prefixed(names, &self.container_path)
     }
 
     /// Whether `names` is rooted at the **current module's own path** — the head
