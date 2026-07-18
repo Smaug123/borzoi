@@ -473,12 +473,20 @@ fn presence(kind: ExtensionKind, channel: Channel) -> Presence {
 
 /// The top-level entities declared directly in one exact namespace, indexed by
 /// the name F# source writes. Both vectors keep interning order and every
-/// cross-assembly/arity collision; the first-wins type-position index is
-/// [`AssemblyEnv::by_type`].
+/// cross-assembly/arity collision.
 #[derive(Debug, Default, Clone)]
 struct NamespaceTypes {
     all: Vec<EntityHandle>,
-    by_source_name: HashMap<String, Vec<EntityHandle>>,
+    by_source_name: HashMap<String, NamedTypes>,
+}
+
+/// Every top-level entity at one exact `(namespace, source name)`. `all` is the
+/// collision-preserving query population; `first_by_arity` is the deterministic
+/// type-position slot used by [`AssemblyEnv::lookup_type`].
+#[derive(Debug, Default, Clone)]
+struct NamedTypes {
+    all: Vec<EntityHandle>,
+    first_by_arity: HashMap<usize, EntityHandle>,
 }
 
 /// A flattened, name-indexed view over referenced assemblies' entities. See the
@@ -486,23 +494,6 @@ struct NamespaceTypes {
 #[derive(Debug, Default, Clone)]
 pub struct AssemblyEnv {
     nodes: Vec<EntityNode>,
-    /// `(namespace, name, generic arity) → handle` for **top-level** types
-    /// only; nested types (whose namespace is empty) are reached by descent
-    /// from their encloser. Keyed by the segment-structured namespace rather
-    /// than a dotted string so a quoted identifier containing a `.` cannot
-    /// collide with a multi-segment namespace. Arity is part of the key
-    /// because CLR metadata distinguishes types that share a namespace and
-    /// simple name but differ in generic arity (`` Func`1 `` vs `` Func`2 ``);
-    /// `Entity.name` strips the `` `n `` suffix into `generic_parameters`, so
-    /// without arity those distinct types would collapse onto one handle.
-    ///
-    /// Keyed by the name F# *source* uses: the IL name for an ordinary entity, or
-    /// the stripped source name for a module-suffix module (`ListModule` is keyed
-    /// as `List`, never as `ListModule` — F# source never writes the compiled
-    /// name). A suffixed module's source-name key never displaces a same-named
-    /// type (see [`AssemblyEnv::from_entities`]); for every non-suffixed entity
-    /// the IL name *is* the source name.
-    by_type: HashMap<TypeKey, EntityHandle>,
     /// `namespace` → handles of its top-level `[<AutoOpen>]` modules. F# opens
     /// these into unqualified scope whenever their enclosing namespace is open
     /// (FSharp.Core's `Operators` / `ExtraTopLevelOperators`, which carry
@@ -563,8 +554,8 @@ pub struct AssemblyEnv {
     assembly_identities_incomplete: bool,
     /// Every **top-level** type's handle, in interning order. Whole-environment
     /// operations use this; exact namespace/name queries use
-    /// [`Self::types_by_namespace`]. Unlike [`Self::by_type`], both collections
-    /// keep *all* handles at a colliding `(namespace, name, arity)`.
+    /// [`Self::types_by_namespace`]. Both collections keep *all* handles at a
+    /// colliding `(namespace, name, arity)`.
     top_level_types: Vec<EntityHandle>,
     /// [`Self::top_level_types`] grouped first by exact namespace and then by F#
     /// source name. The namespace-wide vector feeds extension-surface queries;
@@ -992,6 +983,7 @@ impl AssemblyEnv {
                 .by_source_name
                 .entry(key.1.clone())
                 .or_default()
+                .all
                 .push(handle);
             if is_public {
                 for length in 0..=namespace.len() {
@@ -1000,7 +992,7 @@ impl AssemblyEnv {
                 }
             }
             if !deferred {
-                self.by_type.entry(key).or_insert(handle);
+                self.index_first_type(key, handle);
             } else if is_module {
                 source_named_module_keys.push((key, handle));
             } else {
@@ -1044,8 +1036,25 @@ impl AssemblyEnv {
             .into_iter()
             .chain(source_named_module_keys)
         {
-            self.by_type.entry(key).or_insert(handle);
+            self.index_first_type(key, handle);
         }
+    }
+
+    /// Fill the first-wins type-position slot for one already-interned root.
+    /// The namespace/name buckets are populated before this runs; treating a
+    /// missing bucket as an invariant violation keeps the two views in sync by
+    /// construction.
+    fn index_first_type(&mut self, key: TypeKey, handle: EntityHandle) {
+        let (namespace, name, arity) = key;
+        self.types_by_namespace
+            .get_mut(namespace.as_slice())
+            .expect("type namespace was indexed before its first-wins slot")
+            .by_source_name
+            .get_mut(name.as_str())
+            .expect("type source name was indexed before its first-wins slot")
+            .first_by_arity
+            .entry(arity)
+            .or_insert(handle);
     }
 
     /// Build the env from referenced-assembly views, enumerating each one's
@@ -1232,10 +1241,10 @@ impl AssemblyEnv {
     /// (`Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicOperators` is
     /// namespace × type × nested-type). Arity 0 throughout: an AutoOpen path
     /// names a module, and modules are non-generic. Scans
-    /// [`Self::top_level_types`] rather than [`Self::by_type`] because the
+    /// [`Self::top_level_types`] rather than [`Self::lookup_type`] because the
     /// deref must be **per-assembly** (see
-    /// [`Self::record_assembly_auto_opens`]) and the first-wins `by_type`
-    /// slot may hold a same-FQN entity from a different assembly. Candidates
+    /// [`Self::record_assembly_auto_opens`]) and the first-wins lookup slot may
+    /// hold a same-FQN entity from a different assembly. Candidates
     /// are filtered by [`Self::assembly_provenance`], never by name: a sibling
     /// DLL sharing the contributor's simple name — or its whole manifest
     /// identity — must not have *its* module folded (issue #150). Matched by
@@ -1580,8 +1589,19 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> Option<EntityHandle> {
-        self.by_type
-            .get(&(namespace.to_vec(), name.to_string(), arity))
+        self.indexed_type(namespace, name, arity)
+    }
+
+    /// The first-wins top-level type-position slot at
+    /// `(namespace, source name, generic arity)`. Every lookup is borrowed: the
+    /// construction-owned namespace/name keys are never recreated on this path.
+    fn indexed_type(&self, namespace: &[String], name: &str, arity: usize) -> Option<EntityHandle> {
+        self.types_by_namespace
+            .get(namespace)?
+            .by_source_name
+            .get(name)?
+            .first_by_arity
+            .get(&arity)
             .copied()
     }
 
@@ -1602,7 +1622,7 @@ impl AssemblyEnv {
     /// exactly when this returns `true` for it.
     ///
     /// `public_namespace_paths` is built from the **full top-level set**,
-    /// not the first-wins `by_type` index. `by_type` keeps one handle per
+    /// not the first-wins type-position slots. A slot keeps one handle per
     /// `(namespace, name, arity)`, so an inaccessible type enumerated first must
     /// not hide a public same-keyed type from another assembly and make its
     /// namespace disappear.
@@ -1620,9 +1640,9 @@ impl AssemblyEnv {
     /// evicts a bare `Color` too (probe Ageneric). Only *public* types are
     /// cross-assembly reachable and so can occupy the slot.
     pub fn public_types_named(&self, namespace: &[String], name: &str) -> Vec<(EntityKind, bool)> {
-        // Keep every collision rather than consulting first-wins `by_type`: a
-        // constructible class indexed after a non-constructible collision still
-        // occupies FCS's head slot.
+        // Keep every collision rather than consulting the first-wins
+        // type-position slot: a constructible class indexed after a
+        // non-constructible collision still occupies FCS's head slot.
         self.types_named(namespace, name)
             .iter()
             .copied()
@@ -2680,7 +2700,7 @@ impl AssemblyEnv {
         self.types_by_namespace
             .get(namespace)
             .and_then(|types| types.by_source_name.get(name))
-            .map_or(&[], Vec::as_slice)
+            .map_or(&[], |types| types.all.as_slice())
     }
 
     /// The per-namespace half of [`Self::extension_named_in_scope`]: whether any
@@ -2775,7 +2795,7 @@ impl AssemblyEnv {
         let children = self.children(handle);
         let matches =
             |e: &Entity, candidate: &str| candidate == name && e.generic_parameters.len() == arity;
-        // Match by the name F# source uses, mirroring [`Self::by_type`]'s
+        // Match by the name F# source uses, mirroring [`Self::lookup_type`]'s
         // tiers: an ordinary child by its IL name first (a real type keeps
         // the bare name), then source-named TYPES (a `[<CompiledName>]`-
         // renamed type or a renamed-abbreviation marker), then source-named
@@ -4102,7 +4122,7 @@ impl AssemblyEnv {
             }
         }
         // `System.Object` is the universal member source an interface receiver also
-        // sees. Look it up by name — but only trust the first-wins `by_type` slot
+        // sees. Look it up by name — but only trust the first-wins lookup slot
         // when it really holds the universal root, **not** a same-FQN impostor a
         // user assembly happens to define (and enumerate) first. The
         // assembly-identity guard that protects [`Self::base_chain`] (via
@@ -4130,10 +4150,11 @@ impl AssemblyEnv {
     /// generic base (its members may mention type parameters we cannot yet
     /// substitute), a nested base, a primitive, or an absent one yields `None`.
     ///
-    /// Honours **assembly identity**: `by_type` keeps only the first-enumerated
-    /// definition per `(namespace, name, arity)`, so when two referenced assemblies
-    /// define the same full type name — or the base's assembly is absent while a
-    /// same-named type from another is present — that slot may be the *wrong* type.
+    /// Honours **assembly identity**: [`Self::lookup_type`] keeps only the
+    /// first-enumerated definition per `(namespace, name, arity)`, so when two
+    /// referenced assemblies define the same full type name — or the base's
+    /// assembly is absent while a same-named type from another is present — that
+    /// slot may be the *wrong* type.
     /// The base `TypeRef` names its assembly (or is `assembly: None`, meaning the
     /// *declaring* type's own assembly `declaring_assembly`); resolution declines
     /// unless the candidate's assembly **name** matches. Name — not the full
@@ -4157,10 +4178,7 @@ impl AssemblyEnv {
                 && segment_arities.iter().all(|&a| a == 0)
                 && !name.contains('/') =>
             {
-                let candidate = self
-                    .by_type
-                    .get(&(namespace.clone(), name.clone(), 0))
-                    .copied()?;
+                let candidate = self.indexed_type(namespace, name, 0)?;
                 let expected = assembly
                     .as_ref()
                     .map_or(declaring_assembly, |a| a.name.as_str());
@@ -4603,7 +4621,7 @@ mod from_views_tests {
     use borzoi_assembly::{
         AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
         EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
-        SkippedProjectionItem, TypeRef, Version,
+        SkippedProjectionItem, TypeParameter, TypeRef, Variance, Version,
     };
     use proptest::prelude::*;
 
@@ -4783,6 +4801,7 @@ mod from_views_tests {
         public: bool,
         module: bool,
         is_struct: bool,
+        arity: u8,
     }
 
     fn name_index_specs() -> impl Strategy<Value = Vec<NameIndexSpec>> {
@@ -4794,15 +4813,19 @@ mod from_views_tests {
                 any::<bool>(),
                 any::<bool>(),
                 any::<bool>(),
+                0_u8..3,
             )
                 .prop_map(
-                    |(namespace, name, source_named, public, module, is_struct)| NameIndexSpec {
-                        namespace,
-                        name,
-                        source_named,
-                        public,
-                        module,
-                        is_struct,
+                    |(namespace, name, source_named, public, module, is_struct, arity)| {
+                        NameIndexSpec {
+                            namespace,
+                            name,
+                            source_named,
+                            public,
+                            module,
+                            is_struct,
+                            arity,
+                        }
                     },
                 ),
             0..40,
@@ -4815,7 +4838,22 @@ mod from_views_tests {
             1 => vec!["A".to_string()],
             2 => vec!["A".to_string(), "B".to_string()],
             3 => vec!["C".to_string()],
-            _ => vec!["C".to_string(), "D".to_string()],
+            4 => vec!["C".to_string(), "D".to_string()],
+            _ => vec!["Priority".to_string()],
+        }
+    }
+
+    fn type_parameter(index: usize) -> TypeParameter {
+        TypeParameter {
+            name: format!("T{index}"),
+            variance: Variance::Invariant,
+            reference_type_constraint: false,
+            value_type_constraint: false,
+            default_constructor_constraint: false,
+            is_unmanaged: false,
+            allows_ref_struct: false,
+            nullability: Nullability::Oblivious,
+            type_constraints: vec![],
         }
     }
 
@@ -4834,6 +4872,7 @@ mod from_views_tests {
             Access::Internal
         };
         entity.is_struct = spec.is_struct;
+        entity.generic_parameters = (0..usize::from(spec.arity)).map(type_parameter).collect();
         if spec.source_named {
             entity.name = format!("IlName{index}");
             entity.source_name = Some(source_name);
@@ -4861,6 +4900,7 @@ mod from_views_tests {
                     public: false,
                     module: true,
                     is_struct: false,
+                    arity: 0,
                 },
                 NameIndexSpec {
                     namespace: 2,
@@ -4869,6 +4909,75 @@ mod from_views_tests {
                     public: true,
                     module: false,
                     is_struct: true,
+                    arity: 0,
+                },
+                // A plain IL-named entity wins even though it is enumerated
+                // after both source-named priority classes.
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 5,
+                    source_named: true,
+                    public: true,
+                    module: true,
+                    is_struct: false,
+                    arity: 1,
+                },
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 5,
+                    source_named: true,
+                    public: true,
+                    module: false,
+                    is_struct: false,
+                    arity: 1,
+                },
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 5,
+                    source_named: false,
+                    public: true,
+                    module: false,
+                    is_struct: false,
+                    arity: 1,
+                },
+                // With no plain entity, a source-named type wins over an
+                // earlier source-named module.
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 6,
+                    source_named: true,
+                    public: true,
+                    module: true,
+                    is_struct: false,
+                    arity: 0,
+                },
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 6,
+                    source_named: true,
+                    public: true,
+                    module: false,
+                    is_struct: false,
+                    arity: 0,
+                },
+                // Within one priority class, enumeration remains first-wins.
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 7,
+                    source_named: true,
+                    public: true,
+                    module: true,
+                    is_struct: false,
+                    arity: 2,
+                },
+                NameIndexSpec {
+                    namespace: 5,
+                    name: 7,
+                    source_named: true,
+                    public: true,
+                    module: true,
+                    is_struct: false,
+                    arity: 2,
                 },
             ];
             let roots: Vec<Entity> = mandatory
@@ -4932,8 +5041,42 @@ mod from_views_tests {
                 prop_assert_eq!(env.public_types_named(&namespace, &name), expected_shapes);
                 prop_assert_eq!(
                     env.distinct_dlls_with_public_type(&namespace, &name, 0),
-                    expected_public.len(),
+                    matching
+                        .iter()
+                        .filter(|entity| {
+                            entity.access == Access::Public
+                                && entity.generic_parameters.is_empty()
+                        })
+                        .count(),
                 );
+
+                for arity in 0..=3 {
+                    let expected = roots
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, entity)| {
+                            entity.namespace == namespace
+                                && source_name(entity) == name
+                                && entity.generic_parameters.len() == arity
+                        })
+                        .min_by_key(|(index, entity)| {
+                            let priority = match (&entity.source_name, entity.kind) {
+                                (None, _) => 0,
+                                (Some(_), EntityKind::Module) => 2,
+                                (Some(_), _) => 1,
+                            };
+                            (priority, *index)
+                        })
+                        .map(|(_, entity)| entity.assembly.name.as_str());
+                    let indexed = env
+                        .indexed_type(&namespace, &name, arity)
+                        .map(|handle| env.entity(handle).assembly.name.as_str());
+                    prop_assert_eq!(indexed, expected);
+                    let public = env
+                        .lookup_type(&namespace, &name, arity)
+                        .map(|handle| env.entity(handle).assembly.name.as_str());
+                    prop_assert_eq!(public, expected);
+                }
             }
 
             let mut namespace_queries = vec![vec!["Missing".to_string()]];
@@ -5746,12 +5889,12 @@ mod from_views_tests {
     }
 
     /// A same-FQN `System.Object` **impostor** a user assembly defines (and
-    /// first-wins into `by_type`) must not be trusted as the universal root: it
-    /// extends the real `Object`, so it carries a `base_type`, whereas the genuine
-    /// root is base-less. Without the rootness guard the interface chain would
-    /// append it and publish its arbitrary members for *every* interface receiver —
-    /// resolutions FCS (which uses the CLR root) never exposes. The guard caps
-    /// instead. (`codex` review, IW P2.)
+    /// first-wins into the type-position slot) must not be trusted as the universal
+    /// root: it extends the real `Object`, so it carries a `base_type`, whereas the
+    /// genuine root is base-less. Without the rootness guard the interface chain
+    /// would append it and publish its arbitrary members for *every* interface
+    /// receiver — resolutions FCS (which uses the CLR root) never exposes. The
+    /// guard caps instead. (`codex` review, IW P2.)
     #[test]
     fn interface_chain_rejects_impostor_system_object() {
         let impostor = Entity {
