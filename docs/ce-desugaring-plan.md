@@ -218,15 +218,27 @@ rowan node synthesis, no framework: data in, data out, and the translation is
 inspectable and property-testable in isolation (per `gospel.md`,
 data descriptions over behavioural abstractions).
 
-One wrinkle the wake reuse must not inherit: `wake_member` records a
-`member_resolutions` entry at its `use_range`, and a synthesized call's
-coordinates are a *user-visible* span (§2.5 — the `Return` call sits at the
-returned expression's range). Hover consults `member_resolutions` before
-expression types, so the plain wake would show `AsyncBuilder.Return` at a
-literal — precisely the synthetic resolutions FCS's sink drops. `CeCore`
-`Call`s therefore use a **no-record** variant of the wake (a flag or a
-sibling constraint), and CE-0 asserts the absence: no `member_resolutions`
-entry may appear at any synthesized-call span.
+Two wrinkles the wake reuse must not inherit:
+
+- `wake_member` records a `member_resolutions` entry at its `use_range`, and
+  a synthesized call's coordinates are a *user-visible* span (§2.5 — the
+  `Return` call sits at the returned expression's range). Hover consults
+  `member_resolutions` before expression types, so the plain wake would show
+  `AsyncBuilder.Return` at a literal — precisely the synthetic resolutions
+  FCS's sink drops. `CeCore` `Call`s therefore use a **no-record** variant of
+  the wake (a flag or a sibling constraint), and CE-0 asserts the absence: no
+  `member_resolutions` entry may appear at any synthesized-call span.
+- `wake_member`'s extension gate is **name-keyed but receiver-blind** — and
+  FSharp.Core auto-opens `TaskBuilderExtensions.*`, which includes an
+  extension named `Bind`. A plain wake on `AsyncBuilder.Bind` would therefore
+  defer in *every* project referencing FSharp.Core, and the completion gate
+  (CE-D3) would blank every `async` CE — structurally zero coverage, the
+  OV-6 presence-gate story replayed. The CE `Call` wake instead carries
+  **CE-D2's receiver-aware completeness proof**: `BuilderMethods` already had
+  to enumerate the builder-targeted extension surface with attributes, and
+  that same evidence shows `TaskBuilderExtensions.Bind` targets task
+  builders, not `AsyncBuilder` — so the CE wake substitutes this proof for
+  the receiver-blind `ExtensionScope` check rather than running both.
 
 ### CE-D2. `BuilderMethods`: probe the builder like FCS does, or defer
 
@@ -245,11 +257,15 @@ scope entirely — see CE-D4). Two further gates protect it:
   by-name gate suffices. Here an in-scope extension of **any** name can carry
   `[<CustomOperation>]` and flip the whole CE query-like (§2.4) — so a
   name-keyed check is unsound. Rule: if the builder type has *any* in-scope
-  extension surface whose members' **attributes** cannot be completely
-  enumerated, defer the whole CE. Once CE-P0's attribute projection covers the
-  extension-member index, a `Known` surface with no `[<CustomOperation>]`
-  carrier re-admits the CE (and its members then join the by-name existence
-  probes). This gate is what makes `task` defer naturally (its builder surface
+  extension surface whose members' **attributes and target types** cannot be
+  completely enumerated, defer the whole CE. Once CE-P0's attribute projection
+  covers the extension-member index, a `Known` surface with no
+  `[<CustomOperation>]` carrier re-admits the CE, and its members join the
+  by-name existence probes **receiver-filtered** — an extension counts only if
+  its target type is (or could be) the builder type, which is what keeps
+  FSharp.Core's auto-opened `TaskBuilderExtensions.Bind` (targeting task
+  builders) from poisoning `AsyncBuilder` probes. Target types not
+  determinable ⇒ defer. This gate is what makes `task` defer naturally (its builder surface
   lives in `TaskBuilderExtensions` priority extensions —
   [`resolve_fsharp_core.rs`](../crates/sema/tests/all/resolve_fsharp_core.rs)
   already pins them unmodelled) while `async`/`option`-style builders pass.
@@ -283,11 +299,13 @@ of it: a project pinned to an older `<LangVersion>` rejects `and!` outright,
 and typed (`let! x : T = …`) and wildcard (`use! _ = …`) binders are
 feature-gated too, so "assume latest" can commit types for code the project's
 own compiler rejects. `infer_file` currently receives no language version.
-Rule: the version-sensitive shapes (`and!` in CE-6; typed/wildcard bang
-binders wherever they first commit) land **only alongside** LangVersion
-threading from the `.fsproj` evaluation (the property is already in the
-evaluated table; an unpinned project means latest), with "pinned below the
-feature" ⇒ defer that shape.
+Rule: **every version-gated shape defers at every stage until the LangVersion
+plumbing exists** — typed bang binders (which CE-4 already meets), wildcard
+`use!` and `while!` (CE-5), `and!` (CE-6). The plumbing itself — threading the
+evaluated `LangVersion` property from the `.fsproj` table into `infer_file`'s
+inputs (unpinned means latest) — is a small standalone slice, landable any
+time from CE-4 on and required by CE-6; once present, a shape publishes only
+when the effective version supports it.
 
 ### CE-D3. The commit discipline: head + binders first, shadow-masked interiors later
 
@@ -393,8 +411,13 @@ The substrate the header names, four legs, each currently absent:
 - **`Ty` generic args + generic-method wakes.** `Ty::Named` grows an argument
   list; unification, rendering, the assembly-signature bridge, and the member
   wake learn instantiation (a generic method's typars unified from
-  argument/receiver types, its return instantiated). Also unblocks the OV §5
-  generic deferrals — the single highest-leverage piece of this whole area.
+  argument/receiver types, its return instantiated) — **and constraint
+  affirmation**: a generic method's declared typar constraints must be
+  affirmed over ground types or the wake defers (`AsyncBuilder.Using`
+  constrains `'T :> IDisposable`; an unchecked wake would discharge
+  `async { use o = new obj() … }` and publish types FCS rejects). Also
+  unblocks the OV §5 generic deferrals — the single highest-leverage piece of
+  this whole area.
 - **F# argument-group recovery.** OV-6.1 sets `MethodLike::arg_group_count =
   None` for every F#-assembly method, and the wake's curry gate rejects any
   multi-parameter candidate not provably `Some(1)` — so `AsyncBuilder.Bind`
@@ -440,10 +463,18 @@ immediately).
 CE continuations expose; independently valuable outside CEs.
 
 `infer_expr_inner` learns plain (non-`use`, non-`rec`, non-bang)
-`Expr::LetOrUse` — binder typed from its RHS (reusing the `let_binding`
-machinery's monomorphic path, no generalisation for locals) — and
-`Expr::Sequential` — typed as its continuation, first component walked in
-check-mode. Today both catch-all-defer, which means *any* function body with a
+`Expr::LetOrUse` and `Expr::Sequential` (typed as its continuation, first
+component walked in check-mode). Local `let` binders are **not** blanket
+monomorphic — F# generalises eligible local bindings, so grounding
+`let local = id` to `int -> int` from a later use publishes a wrong hover at
+the binder (review finding, round 3; the completion gate cannot catch it
+because everything discharges). Rule: a local binder's type publishes only
+when its RHS grounds it *by itself* — before the continuation is walked
+(literals, annotated shapes, calls with ground returns); a binder whose type
+is still open at the binding point stays un-emitted (FCS may have generalised
+it), while the continuation still types through the variable as usual. Full
+nested Algorithm-W generalisation is the data-gated upgrade if corpus hovers
+demand it. Today both catch-all-defer, which means *any* function body with a
 local `let` loses its binder and body types (and its enclosing binding cannot
 generalise); CE bodies are just the loudest victim.
 **Oracle:** non-CE snippets through the existing types differential, over
@@ -499,7 +530,12 @@ non-query subset of §2.2 (everything except the CE-D2 defer list).
 `crates/sema/src/ce.rs`: `BuilderMethods`, `CeCore`, `CeDefer`, and
 `desugar`, with the §2.2 table transcribed — including the range each
 synthesized node carries and its synthetic bit (§2.5), because CE-7's shadow
-mask reads them. No inference wiring. **Oracle:** property tests —
+mask reads them. The desugarer also enforces the pattern-shape rules FCS
+checks *before* translating, deferring what FCS rejects: `use`/`use!` accept
+only a single identifier (optionally parenthesised/typed; wildcard is
+version-gated) — a tuple `use! (a, b) = …` is FS1228, and desugaring it
+against a permissive builder would publish types for rejected code
+(CCE.fs:1945–1968). No inference wiring. **Oracle:** property tests —
 (1) *splice provenance*: every user sub-expression of the body appears in the
 output with exactly the multiplicity its construct's §2.2 rewrite specifies,
 range untouched — 1 for most, but `while!` splices its guard into both the
@@ -532,7 +568,9 @@ typed with CE-1b's checked-mode machinery; binder `def_type`s from the
 continuation parameter), all behind CE-D3's **completion gate** — the CE's
 spans publish only when every synthesized call discharged. Commits: head span
 + binder spans only. Target:
-`async` with `let!`/`do!`(non-final)/`return`/`return!` bodies. **Oracle:**
+`async` with `let!`/`do!`(non-final)/`return`/`return!` bodies; typed bang
+binders (`let! x : T = …`) defer per CE-D2's version-gate rule until the
+LangVersion plumbing lands. **Oracle:**
 CE-0's differential goes non-vacuous — P1-shaped snippets assert head +
 binder agreement against `types` (and the resolve-side DEF picture for
 binders); P2/P6-shaped project-builder snippets pin FCS's side and assert we
@@ -548,9 +586,13 @@ the CE-0 synthetic-span `member_resolutions` assertion goes non-vacuous.
 
 Sequential CE statements (`Combine`+`Delay`), `if`-no-else (`Zero`), `while`,
 `for`, `try/with`, `try/finally`, `use`, `use!`, `match!`, final-`do!` (the
-non-`Final`, non-`[<DefaultValue>]` branch), `while!`'s pre-rewrite.
+non-`Final`, non-`[<DefaultValue>]` branch). The version-gated shapes —
+wildcard `use!` and the `while!` pre-rewrite — follow CE-D2's rule (defer
+until the LangVersion plumbing lands); `use`/`use!` additionally ride on
+CE-P0's constraint-affirmation leg (`Using`'s `'T :> IDisposable`).
 **Oracle:** P5-shaped differential snippets per construct; each construct's
-required-method absence defers silently (behaviour tests).
+required-method absence defers silently (behaviour tests); a
+non-disposable-`use` snippet pins the constraint defer.
 
 ### CE-6 — the applicative ladder: `and!`, `BindReturn`, `MergeSources`
 
@@ -559,9 +601,9 @@ choices; lifts the CE-D2 `BindReturn` defer.
 
 Model `convertSimpleReturnToExpr` (CCE.fs:2704–2792) and the
 `BindNReturn`/`BindN`/`MergeSourcesK` selection. `and!` is feature-gated, so
-this stage carries the CE-D2 LangVersion wiring: thread the evaluated
-`LangVersion` property into `infer_file`'s inputs, defer `and!` (and the other
-version-sensitive binder shapes) when pinned below the feature. **Oracle:**
+this stage **requires** the CE-D2 LangVersion plumbing (landable any time
+from CE-4 on): `and!` and the other version-sensitive binder shapes publish
+only when the effective version supports them. **Oracle:**
 P6-shaped differentials; a builder-method-subset matrix (with/without
 `BindReturn`, varying `MergeSourcesK` depth) asserting we pick FCS's
 translation — observable through the range/type picture — or defer.
