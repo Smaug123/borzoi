@@ -96,7 +96,9 @@ fn member_candidates(
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
     let resolved = semantic.resolved_prefix_for(&project, file_idx, workspace, docs)?;
     let file = resolved.file(file_idx);
-    let impl_file = &parses.files[file_idx];
+    // Completion needs the file's implementation tree; a `.fsi` Compile slot
+    // is inert in Stage 1, so decline (no member completion on signatures).
+    let impl_file = parses.files[file_idx].file.as_impl()?;
 
     let byte = position_to_offset(text, pos);
     // Find the receiver expression whose member is being completed at `byte`.

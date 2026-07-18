@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for the .fsi signature-restriction Stage-1 screen
+       (docs/fsi-signature-restriction-plan.md): a referenced assembly whose
+       module path collides with a signatured project module, so hidden
+       members fall through to it and signature-exposed members must not. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaSignatureRefLib</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="RefLib.fs" />
+  </ItemGroup>
+
+</Project>

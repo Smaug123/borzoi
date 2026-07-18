@@ -40,6 +40,7 @@ mod diagnostics;
 mod infer;
 mod member_ty;
 mod overload;
+mod qnof;
 mod resolve;
 mod ty;
 mod unify;
@@ -53,17 +54,22 @@ pub use def::{Def, DefId, DefKind, SemanticClass};
 pub use diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 pub use infer::{InferredFile, infer_file};
 pub use overload::{ArityWindow, arity_window};
+pub use qnof::{QualifiedNameOfFile, qualified_names};
 pub use resolve::{
     ActivePatternShape, CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity,
-    OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
-    resolve_file, resolve_project, resolve_project_incremental,
+    OpenTrace, ProjectFile, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
+    ResolvedProject, SourceFile, resolve_file, resolve_project, resolve_project_files,
+    resolve_project_files_incremental, resolve_project_files_prefix,
+    resolve_project_files_prefix_incremental, resolve_project_incremental,
     resolve_project_incremental_with_reuse,
 };
 // The path-labelled fold variants exist only in profiling builds; the LSP calls
-// them (in place of `resolve_project` / `resolve_project_incremental`) to tag
-// each file's span with its path.
+// them (in place of the prefix fold variants) to tag each file's span with its
+// path.
 #[cfg(feature = "otel")]
-pub use resolve::{resolve_project_incremental_labeled, resolve_project_labeled};
+pub use resolve::{
+    resolve_project_files_prefix_incremental_labeled, resolve_project_files_prefix_labeled,
+};
 // `TyVid` is re-exported because it appears in the public `Ty::Var` variant; it
 // is an inference-internal handle that never surfaces in `infer_file` output.
 pub use ty::{Ty, TyVid};

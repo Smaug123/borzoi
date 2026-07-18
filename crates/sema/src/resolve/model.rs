@@ -52,6 +52,54 @@ pub(super) struct ExportRecord {
     pattern_only: bool,
 }
 
+/// One module root a signature file constrains: the module's qualified path
+/// and whether the *signature* marks it `[<AutoOpen>]` (conclusion 6 of the
+/// probe sweep: the signature's attribute is authoritative).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SigRoot {
+    pub(super) path: Vec<String>,
+    pub(super) auto_open: bool,
+}
+
+/// What a `.fsi` signature file contributes to the Compile-order fold in
+/// Stage 1 of `docs/fsi-signature-restriction-plan.md`: not exports (Stage 2),
+/// but a **screen** — the roots it constrains plus a deliberately
+/// over-approximated set of every name it could expose (each non-trivia
+/// token's `idText`, plus its ident-shaped pieces). The screen's one job is to
+/// keep the fold from committing a *referenced-assembly* member at a path the
+/// signature may expose: FCS binds the `.fsi` there (probe: sig-exposed
+/// `Shared.shown` with a colliding `RefLib.dll` → the `.fsi`), and Stage 1
+/// has no signature identity to commit, so the honest verdict is `Deferred`.
+/// A name absent from the whole signature text provably cannot be exposed, so
+/// it falls through to the merged assembly exactly as FCS does (probe:
+/// hidden `Shared.bar` → the assembly). Over-approximation errs toward
+/// deferral — availability, never a wrong commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SigScreen {
+    /// The module paths the signature constrains: top-level `module M.N`
+    /// headers, and modules declared directly under a `namespace` fragment.
+    pub(super) roots: Vec<SigRoot>,
+    /// Every name the signature could possibly expose (over-approximate).
+    pub(super) names: HashSet<String>,
+    /// Paths of `[<AutoOpen>]` modules the signature declares directly under a
+    /// `namespace` fragment. Folded (at the paired implementation's slot) into
+    /// [`ProjectItems::auto_open_module_paths`] so a later file's `open` of
+    /// the namespace sees the auto-open even when only the signature carries
+    /// the attribute (conclusion 6).
+    pub(super) auto_open_nested: Vec<Vec<String>>,
+    /// Qualified paths of **value-namespace members the signature declares
+    /// directly under a `namespace` fragment** — union/enum case names and
+    /// exception constructors (a `val` cannot sit directly under a
+    /// namespace). These are outside every module root, so the root+token
+    /// rule cannot see them; yet the signature *exposes* them, so an
+    /// assembly reading **at or under** one must defer — FCS binds the
+    /// signature's case and member-errors on any residual (probe: sig
+    /// `namespace ProbeNs; type Color = Shared` + `RefLib`'s
+    /// `ProbeNs.Shared.shown` → FCS binds `Shared` to the `.fsi` case and
+    /// reports FS0039 on `shown`; an assembly commit there is wrong).
+    pub(super) value_paths: Vec<Vec<String>>,
+}
+
 /// Exported project items visible to a file from *earlier* in Compile order.
 ///
 /// F# resolution is order-sensitive across files: a file may reference
@@ -225,6 +273,22 @@ pub struct ProjectItems {
     /// file can decide whether `open`ing this type's container EVICTS a
     /// same-named local value from FCS's unqualified slot (probes M20h–M20o).
     pub(super) type_paths: HashMap<Vec<String>, (bool, SlotClass)>,
+    /// The **signature screens** of earlier `.fsi` files, in Compile order
+    /// (`docs/fsi-signature-restriction-plan.md` Stage 1). Each records the
+    /// module roots a signature constrains and an over-approximation of every
+    /// name the signature could expose. A dropped (signature-hidden) member
+    /// falls through to a merged referenced-assembly member (FCS-probed:
+    /// `Shared.bar` → the assembly), but a member the signature *may* expose
+    /// must not — FCS binds the `.fsi` even when the assembly also provides
+    /// the name (probe: `Shared.shown` with a colliding `RefLib` → the
+    /// `.fsi`), and Stage 1 has no signature identity to commit, so such a
+    /// path defers ([`Self::sig_screened_path`]). Pushed at the signature's
+    /// own Compile slot, which over-defers *intervening* files (FCS resolves
+    /// those to the assembly — probe; deferral is the sound direction).
+    pub(super) sig_screens: Vec<Arc<SigScreen>>,
+    /// The implicit filename modules of earlier **unpaired headerless**
+    /// implementation files (see [`Self::note_implicit_module_shadow`]).
+    pub(super) implicit_module_shadows: HashSet<Vec<String>>,
     /// Count of items interned across all earlier files. The next file's items
     /// receive project-global [`ItemId`]s starting here, so handles are unique
     /// across the whole project and a single-file caller (`default()`, count 0)
@@ -595,6 +659,101 @@ impl ProjectItems {
             .collect()
     }
 
+    /// Whether an assembly reading of the qualified path `names` is withheld
+    /// by a **signature screen** (see [`Self::sig_screens`]): some signatured
+    /// module root is a proper prefix of `names` and a segment past the root
+    /// appears in that signature's name set — so the signature *may* expose
+    /// the path, FCS would bind the `.fsi`, and Stage 1 (which commits no
+    /// signature identity) must defer rather than commit the merged assembly
+    /// member. A residual whose every segment is absent from the signature
+    /// text provably cannot be signature-exposed and falls through.
+    /// Whether any signature screen is in force — the cheap pre-check that
+    /// lets the per-candidate screen walks short-circuit in the (typical)
+    /// signature-free project.
+    pub(super) fn has_sig_screens(&self) -> bool {
+        !self.sig_screens.is_empty()
+    }
+
+    /// Record a headerless implementation file's **implicit filename
+    /// module** as a defer-only assembly shadow. Sema's export model keeps
+    /// anonymous-root values un-addressable, yet FCS exposes them under the
+    /// implicit module — so a colliding assembly path rooted there must
+    /// defer, never commit the assembly member FCS would shadow with the
+    /// project value (surfaced by the signature matrix's headerless axis;
+    /// a *paired* headerless impl is covered per-name by its signature's
+    /// screen instead, which keeps the hidden-member assembly fall-through).
+    /// Joins `nested_module_paths` (the qualified-path shadow) and its own
+    /// set (the `open`-fold demotion — kept apart so real nested modules,
+    /// whose members *are* modelled, keep their definite open entries).
+    pub(super) fn note_implicit_module_shadow(&mut self, path: Vec<String>) {
+        self.nested_module_paths.insert(path.clone());
+        self.implicit_module_shadows.insert(path);
+    }
+
+    /// Whether an `open` of `opened` reaches into an implicit-module shadow
+    /// (at or under it): the merged project half's values cannot be
+    /// enumerated, so every assembly entry the open folds must defer.
+    pub(super) fn implicit_module_open_screened(&self, opened: &[String]) -> bool {
+        self.implicit_module_shadows
+            .iter()
+            .any(|p| opened.starts_with(p.as_slice()))
+    }
+
+    pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
+        self.sig_screens.iter().any(|screen| {
+            screen.roots.iter().any(|root| {
+                names.len() > root.path.len()
+                    && names.starts_with(&root.path)
+                    && names[root.path.len()..]
+                        .iter()
+                        .any(|seg| screen.names.contains(seg))
+            })
+            // A namespace-direct case/exception the signature exposes owns
+            // its path outright: any reading at or under it defers (FCS
+            // binds the case and member-errors on a residual).
+            || screen
+                .value_paths
+                .iter()
+                .any(|vp| names.starts_with(vp))
+        })
+    }
+
+    /// The open-fold counterpart of [`Self::sig_screened_path`]: whether the
+    /// bare name `name`, folded into scope by opening the assembly surface at
+    /// `opened`, is screened. Two reaches:
+    /// - `opened` at or under a signatured root: the entry's qualified path is
+    ///   `opened + [name]`, so the ordinary path screen applies;
+    /// - a signatured root strictly *under* `opened` (the surface of an
+    ///   `open <namespace>` can fold an `[<AutoOpen>]` submodule's members,
+    ///   whose provenance the entry no longer carries): screen on the name
+    ///   alone — coarser, deferral-only.
+    pub(super) fn sig_screened_open_name(&self, opened: &[String], name: &str) -> bool {
+        self.sig_screens.iter().any(|screen| {
+            screen.roots.iter().any(|root| {
+                if opened.starts_with(&root.path) {
+                    opened[root.path.len()..]
+                        .iter()
+                        .any(|seg| screen.names.contains(seg))
+                        || screen.names.contains(name)
+                } else {
+                    root.path.len() > opened.len()
+                        && root.path.starts_with(opened)
+                        && screen.names.contains(name)
+                }
+            })
+            // A namespace-direct case/exception: the folded entry's
+            // qualified path is `opened + [name]` — screened when it sits at
+            // or under an exposed value path (and when the opened surface
+            // itself is under one, every entry of it is).
+            || screen.value_paths.iter().any(|vp| {
+                opened.starts_with(vp)
+                    || (vp.len() == opened.len() + 1
+                        && vp.starts_with(opened)
+                        && vp.last().is_some_and(|last| last == name))
+            })
+        })
+    }
+
     /// Fold one resolved file's exports into the accumulator: index its
     /// module-qualified value paths (for cross-file lookup *and* the project
     /// value-shadow check) and record its declared module headers (from the
@@ -615,7 +774,22 @@ impl ProjectItems {
     /// [`ExportDecl`](super::model::ExportDecl) list
     /// ([`FileExportIndices::from_decls`]); the derivation reproduces the legacy
     /// per-feature export fields exactly (`docs/export-decl-model-plan.md` Stage 2).
-    pub(super) fn extend_with(&mut self, file: &ResolvedFile) {
+    ///
+    /// `paired_screen` is the screen of the signature this file is the paired
+    /// implementation of, if any (`docs/fsi-signature-restriction-plan.md`
+    /// Stage 1): the derivation then **drops the file's value/case identity
+    /// exports** — the signature restricts them, and Stage 1 emits no
+    /// signature identity to replace them — while keeping every defer-only
+    /// shadow and marker ([`FileExportIndices::from_decls_screened`]).
+    /// `partnered` is whether the file has a pairing partner: a signature
+    /// publishes its screen only when a following implementation consumes it
+    /// (an unpaired signature constrains nothing — FCS-probed).
+    pub(super) fn extend_with(
+        &mut self,
+        file: &ResolvedFile,
+        paired_screen: Option<&SigScreen>,
+        partnered: bool,
+    ) {
         // Record this file's id base BEFORE interning its items, so [`Self::file_of`]
         // maps any exported id back to its Compile-order file (the straddle fold's
         // per-name provenance).
@@ -624,7 +798,17 @@ impl ProjectItems {
         // fold reads (the base was just pushed, so `len - 1` is this file).
         let file_idx = self.item_file_bases.len() - 1;
 
-        let idx = FileExportIndices::from_decls(file);
+        // A paired signature file's own contribution is its screen alone
+        // (Stage 1: it exports nothing; its decl list is empty, so the
+        // derivation below folds nothing else from it).
+        if partnered && let Some(screen) = &file.sig_screen {
+            self.sig_screens.push(Arc::clone(screen));
+        }
+
+        let idx = match paired_screen {
+            None => FileExportIndices::from_decls(file),
+            Some(screen) => FileExportIndices::from_decls_screened(file, screen),
+        };
         for module in idx.module_headers {
             self.module_headers.insert(module);
         }
@@ -845,6 +1029,38 @@ impl FileExportIndices {
     /// Derive the file's cross-file index contributions from its source-ordered
     /// [`ExportDecl`] list.
     fn from_decls(file: &ResolvedFile) -> Self {
+        Self::derive(file, None)
+    }
+
+    /// Like [`Self::from_decls`], but for the **paired implementation of a
+    /// signature file** (`docs/fsi-signature-restriction-plan.md` Stage 1).
+    /// The signature restricts the file's cross-file surface, and Stage 1
+    /// emits no signature identity to replace it, so the derivation:
+    ///
+    /// - **drops every value/case identity export** (`Item`,
+    ///   `ActivePatternCase`) — a hidden member then falls through to a
+    ///   merged referenced-assembly member exactly as FCS does (probe:
+    ///   `Shared.bar` → the assembly), while a possibly-exposed one is
+    ///   deferred by the screen ([`ProjectItems::sig_screened_path`]); each
+    ///   dropped export marks its container hidden, so opens stay
+    ///   conservative;
+    /// - **keeps every defer-only shadow** (module headers, nested-module /
+    ///   type / abbreviation / extern paths, hidden-value markers) — those
+    ///   only ever withhold a commit;
+    /// - **demotes type payloads to unprovable** (`(false,
+    ///   SlotClass::Unknown)`): a signature can hide a representation
+    ///   (opacity), so neither a case-completeness proof nor a slot-class
+    ///   eviction verdict derived from the implementation may survive;
+    /// - **honours the signature's `[<AutoOpen>]`** (conclusion 6): a header
+    ///   root the signature attributes stays auto-open even when the
+    ///   implementation header is bare, and signature-declared auto-open
+    ///   nested modules join `auto_open_module_paths` (marked hidden, so the
+    ///   fold's generation barrier fires for them).
+    fn from_decls_screened(file: &ResolvedFile, screen: &SigScreen) -> Self {
+        Self::derive(file, Some(screen))
+    }
+
+    fn derive(file: &ResolvedFile, screen: Option<&SigScreen>) -> Self {
         let mut fi = Self::default();
         for decl in &file.export_decls {
             let anon = decl.anonymous_root;
@@ -853,6 +1069,13 @@ impl FileExportIndices {
                     item,
                     type_qualified,
                 } => match item {
+                    Some(_) if screen.is_some() => {
+                        // Signature-restricted (Stage 1): the value/case
+                        // identity is dropped, and the container is marked
+                        // hidden — it holds names the boundary no longer
+                        // enumerates.
+                        push_container_hidden(&mut fi, &decl.path);
+                    }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
                         if let Some(path) = it.qualified_path() {
@@ -900,8 +1123,18 @@ impl FileExportIndices {
                     if !anon {
                         fi.nested_module_paths.push(decl.path.clone());
                         if let Some((cases_enumerable, slot)) = info {
-                            fi.type_paths
-                                .push((decl.path.clone(), (*cases_enumerable, *slot)));
+                            // Signature-restricted: the signature may declare
+                            // the type opaquely (or not at all), so neither
+                            // the implementation's case-completeness proof
+                            // nor its slot class may survive — both could
+                            // turn a defer into a wrong commit. The path
+                            // itself stays (a defer-only shadow).
+                            let payload = if screen.is_some() {
+                                (false, SlotClass::Unknown)
+                            } else {
+                                (*cases_enumerable, *slot)
+                            };
+                            fi.type_paths.push((decl.path.clone(), payload));
                         }
                     }
                     if *auto_open {
@@ -922,7 +1155,20 @@ impl FileExportIndices {
                             fi.real_nested_modules.push(decl.path.clone());
                             fi.nested_module_paths.push(decl.path.clone());
                         }
-                        if *auto_open && !*private {
+                        // The signature's `[<AutoOpen>]` verdict is
+                        // authoritative in **both** directions (conclusion 6
+                        // + probe 2026-07-18: an implementation-only
+                        // attribute is ignored by FCS — the bare use is
+                        // FS0039). For a screened file the implementation's
+                        // own flag is therefore discarded: a root the
+                        // signature attributes is auto-open (even with a
+                        // bare impl header), any other module publishes
+                        // none.
+                        let effective_auto_open = match screen {
+                            None => *auto_open,
+                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                        };
+                        if effective_auto_open && !*private {
                             fi.auto_open_module_paths.push(decl.path.clone());
                         }
                     }
@@ -953,6 +1199,12 @@ impl FileExportIndices {
                     fi.namespace_paths.push(decl.path.clone());
                 }
                 ExportDeclKind::ActivePatternCase { item, shape } => match item {
+                    Some(_) if screen.is_some() => {
+                        // Signature-restricted (Stage 1): as for `Item` — the
+                        // case identity is dropped, the container marked
+                        // hidden.
+                        push_container_hidden(&mut fi, &decl.path);
+                    }
                     Some(item_idx) => {
                         // Stage 3a: the AP case rides `value_exports` as a
                         // **pattern-only** case record (`is_case = true`,
@@ -986,6 +1238,22 @@ impl FileExportIndices {
                         push_container_hidden(&mut fi, &decl.path);
                     }
                 },
+            }
+        }
+        if let Some(screen) = screen {
+            // Every constrained root is hidden-valued: the signature may
+            // expose members Stage 1 does not enumerate, so opens of the
+            // root must shadow conservatively (the generation bump) even
+            // when the implementation's own decls produced no marker.
+            for root in &screen.roots {
+                fi.modules_with_hidden_values.push(root.path.clone());
+            }
+            // Signature-declared `[<AutoOpen>]` nested modules (conclusion 6)
+            // — auto-open even when the implementation carries no attribute,
+            // and hidden so the namespace fold's barrier fires for them.
+            for path in &screen.auto_open_nested {
+                fi.auto_open_module_paths.push(path.clone());
+                fi.modules_with_hidden_values.push(path.clone());
             }
         }
         fi
@@ -1637,6 +1905,13 @@ pub struct ResolvedFile {
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
     pub(super) export_decls: Vec<ExportDecl>,
+    /// `Some` iff this is a `.fsi` **signature file**
+    /// (`docs/fsi-signature-restriction-plan.md` Stage 1): its screen — the
+    /// only thing a signature contributes to the fold today. A signature's
+    /// other fields are all empty/inert (it owns no `ItemId` range, exports
+    /// nothing, and records no resolutions until Stage 2). `None` for every
+    /// implementation file.
+    pub(super) sig_screen: Option<Arc<SigScreen>>,
 }
 
 /// Build the end-offset index a token classifier queries, from a set of
@@ -1737,6 +2012,47 @@ impl ResolvedFile {
         self.exports.items.len() == other.exports.items.len()
             && FileExportIndices::from_decls(self) == FileExportIndices::from_decls(other)
             && self.own_type_simple_names == other.own_type_simple_names
+            // A signature file's whole contribution is its screen
+            // (`extend_with` pushes it into `ProjectItems::sig_screens`), so
+            // a `.fsi` edit that changes the screen must invalidate the
+            // suffix. The screen also parameterises the *paired
+            // implementation's* derivation (`from_decls_screened`) — the
+            // incremental fold covers that side by requiring the pairing
+            // partner index to match while the prefix (the signature's own
+            // contribution included) is in sync.
+            && self.sig_screen == other.sig_screen
+    }
+
+    /// The inert [`ResolvedFile`] a `.fsi` **signature file** occupies a
+    /// Compile slot with (`docs/fsi-signature-restriction-plan.md` Stage 1):
+    /// no binders, no resolutions, no exports — it owns no `ItemId` range
+    /// (`item_base` is the running count, its range empty) — only its screen.
+    /// Stage 2 replaces this with a real signature surface.
+    pub(super) fn inert_signature(item_base: u32, screen: Arc<SigScreen>) -> ResolvedFile {
+        ResolvedFile {
+            defs: Vec::new(),
+            resolutions: HashMap::new(),
+            attribute_resolutions: HashMap::new(),
+            own_type_simple_names: HashSet::new(),
+            own_abbrev_type_simple_names: HashSet::new(),
+            attribute_shape_unknowable: false,
+            augmentation_instance_names: HashSet::new(),
+            augmentation_static_names: HashSet::new(),
+            augmentation_names_unknowable: false,
+            preceding_augmentation_instance_names: HashSet::new(),
+            preceding_augmentation_static_names: HashSet::new(),
+            exports: ExportedItems::default(),
+            item_base,
+            namespace_paths: Vec::new(),
+            preceding_declares_extension_source: false,
+            open_extension_namespaces: Vec::new(),
+            open_extension_unknowable: false,
+            active_pattern_shape: HashMap::new(),
+            diagnostics: Vec::new(),
+            resolution_trace: ResolutionTrace::default(),
+            export_decls: Vec::new(),
+            sig_screen: Some(screen),
+        }
     }
 
     /// The resolution recorded at `range`, if any occurrence was resolved

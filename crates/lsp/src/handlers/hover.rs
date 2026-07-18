@@ -141,7 +141,13 @@ fn project_unavailable(
         return ProjectClassify::NotInProject;
     };
     let file = resolved.file(idx);
-    let root = parses.files[idx].syntax();
+    // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl
+    // tree); classify as out-of-project so the caller serves the degraded
+    // single-file answer for a signature buffer.
+    let Some(impl_file) = parses.files[idx].file.as_impl() else {
+        return ProjectClassify::NotInProject;
+    };
+    let root = impl_file.syntax();
     ProjectClassify::InProject(unavailable_hover(file, root, text, byte, false))
 }
 
@@ -212,6 +218,10 @@ fn project_hover(
     let (resolved, env) =
         semantic.resolved_prefix_and_env_for(&project, target_file_idx, workspace, docs)?;
     let file = resolved.file(target_file_idx);
+    // A `.fsi` Compile slot is inert in Stage 1 (no resolutions, no impl tree
+    // to infer over) — decline so the caller's single-file fallback answers
+    // for a signature buffer.
+    let impl_file = parses.files[target_file_idx].file.as_impl()?;
 
     // Inference is per-file and pure (no IO — it reads only the parsed file, its
     // resolution, and the assembly env), so run it once up front: it enriches a
@@ -219,7 +229,7 @@ fn project_hover(
     // member-access fallback below.
     let inferred = {
         let _span = tracing::info_span!("infer_file").entered();
-        infer_file(&parses.files[target_file_idx], file, &env)
+        infer_file(impl_file, file, &env)
     };
 
     // A name resolution under the cursor takes precedence (it's the more specific
@@ -257,7 +267,7 @@ fn project_hover(
     // Fallback: an inferred expression type (a literal or a tuple), where no
     // name resolution surfaced a hover.
     let (range, ty) = smallest_inferred_type_with_range(&inferred, byte)?;
-    let root = parses.files[target_file_idx].syntax();
+    let root = impl_file.syntax();
     Some(make_hover(
         literal_hover_body(text, root, range, ty),
         text,

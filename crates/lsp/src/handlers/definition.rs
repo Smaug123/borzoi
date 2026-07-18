@@ -219,19 +219,26 @@ fn project_definition(state: &mut State, uri: &Url, byte: usize) -> Option<Locat
     let res = match smallest_resolution_at(file, byte) {
         Some(res) if !matches!(res, Resolution::Deferred(_)) => res,
         deferred_or_none => {
-            let dotnet_root = workspace.dotnet_root_for_project(&project);
-            let target_framework = workspace.served_tfm_for_project(&project);
-            let env = semantic.assembly_env_for_project(
-                &project,
-                dotnet_root.as_deref(),
-                &target_framework,
-                workspace,
-            );
-            let inferred = {
-                let _span = tracing::info_span!("infer_file").entered();
-                infer_file(&parses.files[file_idx], file, &env)
-            };
-            match smallest_member_resolution_at(&inferred, byte) {
+            // A `.fsi` Compile slot has no implementation tree to infer over
+            // (Stage 1 keeps signature slots inert), so the member-resolution
+            // enrichment is impl-only; a signature buffer falls straight
+            // through to the resolver's verdict.
+            let member_res = parses.files[file_idx].file.as_impl().and_then(|impl_file| {
+                let dotnet_root = workspace.dotnet_root_for_project(&project);
+                let target_framework = workspace.served_tfm_for_project(&project);
+                let env = semantic.assembly_env_for_project(
+                    &project,
+                    dotnet_root.as_deref(),
+                    &target_framework,
+                    workspace,
+                );
+                let inferred = {
+                    let _span = tracing::info_span!("infer_file").entered();
+                    infer_file(impl_file, file, &env)
+                };
+                smallest_member_resolution_at(&inferred, byte)
+            });
+            match member_res {
                 Some(member_res) => member_res,
                 // No member resolution: honour the resolver's (deferred / absent)
                 // verdict — D5 silence, unless it was a concrete resolution.

@@ -26,8 +26,27 @@ pub fn parse_with_symbols(
     symbols: &HashSet<String>,
     lang: LanguageVersion,
 ) -> Option<Parse> {
+    parse_kind_with_symbols(text, symbols, lang, FileKind::Impl)
+}
+
+/// The `.fsi` counterpart of [`parse_with_symbols`]: the signature-file
+/// grammar (`SIG_FILE` root), same panic guard.
+pub fn parse_sig_with_symbols(
+    text: &str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+) -> Option<Parse> {
+    parse_kind_with_symbols(text, symbols, lang, FileKind::Sig)
+}
+
+fn parse_kind_with_symbols(
+    text: &str,
+    symbols: &HashSet<String>,
+    lang: LanguageVersion,
+    file_kind: FileKind,
+) -> Option<Parse> {
     let opts = ParseOptions {
-        file_kind: FileKind::Impl,
+        file_kind,
         symbols,
         lang,
     };

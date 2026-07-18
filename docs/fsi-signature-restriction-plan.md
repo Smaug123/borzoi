@@ -1,7 +1,8 @@
 # `.fsi` signature files restrict the paired `.fs`'s cross-file exports
 
-> **Status:** design + implementation plan. Not started. Branch
-> `fix-signature-hidden-union-case-names` / worktree `fsi-restricts-exports`.
+> **Status:** Stage 1 implemented (with the §screen correction below —
+> a 2026-07-18 probe refuted one cell of the original Stage-1 matrix);
+> Stages 2/3+ not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -88,8 +89,10 @@ top-level forms) whose `.fsi` exposes only `shown`:
 | use | verdict |
 |---|---|
 | `Shared.shown` (in sig) | resolves to the **`.fsi`** (project) |
+| `Shared.shown` (in sig, **also in the assembly**) | resolves to the **`.fsi`** — the sig-exposed member shadows the merged assembly member (probe 2026-07-18) |
 | `Shared.bar` (hidden by sig, **also in the assembly**) | resolves to the **assembly** — `RefLib`, **no diagnostic** |
 | `Shared.asmOnly` (assembly only) | resolves to the assembly |
+| `Shared.shown` / `Shared.bar` from a file **between** the sig and the impl (assembly collision) | both resolve to the **assembly** — the merged module publishes only at the impl's slot (probe 2026-07-18) |
 
 Confirmed for both a namespaced `namespace ProbeNs; module Shared` and a
 top-level `module Foo`. **A signatured project module merges with a same-named
@@ -225,7 +228,56 @@ plus the ignored corpus differentials.
 ### Stage 1: interleave signatures; drop paired impls' cross-file exports
 
 **Dependencies:** none. **Behaviour change:** removes the over-export bug +
-re-enables the fold; adds no new commits.
+re-enables the fold; adds no new *project* commits (assembly fall-through
+commits are gated by the screen below).
+
+**Correction (2026-07-18, probe-forced): the signature screen.** The original
+Stage-1 matrix had a hole: with every value export dropped and no signature
+identity emitted, a **sig-exposed** name that *also* collides with a merged
+referenced-assembly member would fall through and commit to the assembly —
+but FCS binds the **`.fsi`** there (probe: `Shared.shown` with a colliding
+`RefLib.dll` → the `.fsi`; the original sweep's RefLib exported only
+`bar`/`asmOnly`, so this cell was never probed). Since Stage 1 cannot tell a
+hidden member from an exposed one without reading the signature, each
+*paired* `.fsi` carries a **screen** (`SigScreen` — an unpaired signature
+constrains nothing, FCS-probed, and publishes none): the module roots the
+signature constrains, the value-namespace paths it declares **directly under
+a namespace** (union/enum cases, exceptions, and single-ident abbreviation
+targets FCS may read as cases), plus a sound *over-approximation* of every
+name it could expose (each non-trivia token's `idText` and its ident-shaped
+pieces). A reading under a screened root whose residual segments touch the
+name set — or at/under an exposed namespace-direct value path — **defers**;
+a residual whose names are absent from the whole signature text provably
+cannot be signature-exposed and falls through exactly as FCS does. The veto
+runs at *both* commit surfaces (codex round 1): the assembly tier
+(`ProjectItems::sig_screened_path` via the tiered walk's shadow predicate,
+plus the open-fold counterpart) *and* the project-side qualified lookups
+(`Resolver::sig_screens_reading_of` — a screened precedence-ordered reading
+outranks every lower-priority candidate, so a root/other-file `Item` must
+not bind either; probe: inside `namespace A`, `M.x` with a signatured
+`module A.M` exposing `x` binds the `.fsi`, not a root `module M`). The
+screen is pushed at the **signature's** Compile slot — which over-defers
+*intervening* files (FCS resolves those to the assembly, probed above);
+deferral is the sound direction, and it keeps the screen inside the
+signature's own threaded contribution for the incremental fold. The
+signature's `[<AutoOpen>]` verdict is authoritative in **both** directions
+(probe: an implementation-only attribute is FS0039-ignored by FCS), so a
+screened file publishes exactly the signature's auto-opens. Bare names after
+an `open` of a signatured module all defer (the module is marked
+hidden-valued, so the conservative project-module-open machinery shadows
+earlier opens — load-bearing: a sig-exposed name must shadow an earlier
+open's same-named value); the qualified forms keep the per-name
+fall-through. A **headerless** signature roots its screen at the implicit
+filename module (codex round 3), and the same sweep surfaced a
+*pre-existing, signature-independent* hole the fold now also closes: an
+**unpaired headerless implementation**'s values live under the implicit
+module yet are un-addressable in sema's export model, so a colliding
+assembly member used to commit where FCS binds the project value — the
+implicit path is now a defer-only shadow (qualified reads and the open
+fold). QNOF fidelity corners pinned along the way: the Greek
+iota-subscript block's 1:1 simple uppercase mappings, and FCS capitalising
+only the first UTF-16 code unit (a supplementary-plane initial stays
+lowercase).
 
 - Introduce `SourceFile` and rework `resolve_project` / the incremental fold /
   `thread_forward` to iterate `&[(SourceFile, QualifiedName)]`. A
@@ -249,12 +301,15 @@ re-enables the fold; adds no new commits.
   project.
 
 **Why it is sound:** the paired impl's value/case identities are dropped and the
-sig emits none yet, so the fold gains **no new commit**; a hidden member resolves
-to the merged assembly or `Deferred`, exactly as FCS (probe). Timing is free: the
-module publishes no identity, so intervening files (probe L) and self-references
-(probes K/K2) see nothing — FCS's FS0039. Paired modules under-resolve (their
-exposed names go to assembly/`Deferred` until Stage 2) — the honest D5 cost.
-Unsigned modules (probes J, M, X3) fold for the first time.
+sig emits none yet, so the fold gains **no new project commit**; a member the
+signature provably cannot expose resolves to the merged assembly or `Deferred`,
+exactly as FCS (probe), while a possibly-exposed one is screen-deferred (FCS
+binds the `.fsi`; committing the assembly there would be wrong — the
+correction above). Timing is free: the module publishes no identity, so
+intervening files (probe L) and self-references (probes K/K2) see nothing —
+FCS's FS0039. Paired modules under-resolve (their exposed names stay
+`Deferred` until Stage 2) — the honest D5 cost. Unsigned modules (probes J,
+M, X3) fold for the first time.
 
 **Oracle:** FCS-free `resolve_project` unit tests (a hidden `let` no longer
 resolves to the impl binder; a non-`.fsi` sibling still does); an
@@ -263,6 +318,28 @@ asserting a hidden `Shared.bar` resolves to the *assembly*, not `Deferred` and
 not the impl — the exact behaviour the earlier draft got backwards; an LSP e2e
 that a `module M`-headed `.fsi` project folds where it returned `None`; the
 ignored `resolve_corpus_diff` / `resolve_project_diff` gates stay green.
+Plus (added with the screen correction) an **exhaustive per-reference matrix
+differential** (`signature_matrix_agrees_with_fcs_per_reference`): header
+shape × signature exposure × use style × assembly collision, each written
+probe reference checked at its *site* against FCS — resolved-in-project must
+match exactly, resolved-to-assembly must not bind a project binder, unbound
+must defer — so a screen hole at any commit surface (the codex round-1
+class) is caught mechanically rather than fixture-by-fixture.
+
+**Stage-1 known over-deferrals (codex round 5 — availability only, for
+Stage 2 to refine).** Two places the screen prefers guaranteed-sound
+deferral over precision: (1) `Resolver::sig_screens_reading_of` vetoes on a
+screened reading at *any* priority tier, so a higher-priority open's real
+project item defers too (`open P; M.x` with a signatured root `M` and an
+unsigned `P.M.x` — FCS binds `P.M.x`); tiering the veto requires mapping
+the project commit blocks onto the precedence walk, which the Stage-2
+restructuring (signature exports as real candidates) gets for free.
+(2) `sig_screened_open_name`'s strictly-under-the-open arm screens a
+namespace open's entries by name even when the screened root is not
+auto-open-reachable; narrowing it needs per-entry surface provenance (the
+assembly-side `[<AutoOpen>]`-merge corner makes the sig-side attribute
+alone insufficient). Both directions only ever produce `Deferred` where FCS
+resolves — never a wrong commit.
 
 ### Stage 2: the signature exports its surviving surface (signature identity)
 

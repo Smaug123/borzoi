@@ -2054,6 +2054,19 @@ impl<'a> Resolver<'a> {
             // resolved relative to the *enclosing namespace* could be the wrong
             // target — we cannot prove otherwise, so we conservatively defer while
             // any project-module open is in scope (correctness over availability).
+            // Stage-1 signature screen (project side): when some
+            // precedence-ordered reading of this path may be
+            // signature-exposed, FCS binds the signature, so none of the
+            // project lookups below may bind a lower-priority candidate —
+            // they are skipped and the reference defers (the assembly tier
+            // repeats the veto internally). See
+            // [`Self::sig_screens_reading_of`].
+            let written_path: Vec<String> = segments
+                .iter()
+                .map(|t| id_text(t.text()).to_string())
+                .collect();
+            let sig_screened = self.sig_screens_reading_of(&written_path);
+
             if let Some((value_seg, prefix_segs)) = segments.split_last() {
                 let mut prefix: Vec<String> = prefix_segs
                     .iter()
@@ -2063,7 +2076,8 @@ impl<'a> Resolver<'a> {
                 if rooted {
                     prefix.remove(0);
                 }
-                if !prefix.is_empty()
+                if !sig_screened
+                    && !prefix.is_empty()
                     // An `open type T` / `open <assembly type>` whose nested types we
                     // do not model could supply the head (`open type T; M.value` where
                     // `T` has a nested type `M`), shadowing the project-module
@@ -2120,25 +2134,21 @@ impl<'a> Resolver<'a> {
             // parse in expression position yet — see the parser's
             // `global_headed_app_source_does_not_panic` — so it never reaches here;
             // it can be handled when the parser supports `global` as an expr atom.)
-            if let Some(last) = rest.last() {
-                let written: Vec<String> = segments
-                    .iter()
-                    .map(|t| id_text(t.text()).to_string())
-                    .collect();
-                if let Some(id) = self
+            if let Some(last) = rest.last()
+                && !sig_screened
+                && let Some(id) = self
                     .preceding
-                    .lookup_qualified_path(&written, &self.container_path)
-                {
-                    let whole = TextRange::new(first.text_range().start(), last.text_range().end());
-                    self.record(whole, Resolution::Item(id));
-                    for seg in segments.iter().take(segments.len() - 1) {
-                        self.record(
-                            seg.text_range(),
-                            Resolution::Deferred(DeferredReason::QualifiedAccess),
-                        );
-                    }
-                    return;
+                    .lookup_qualified_path(&written_path, &self.container_path)
+            {
+                let whole = TextRange::new(first.text_range().start(), last.text_range().end());
+                self.record(whole, Resolution::Item(id));
+                for seg in segments.iter().take(segments.len() - 1) {
+                    self.record(
+                        seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+                    );
                 }
+                return;
             }
 
             // The TYPE-SIDE fallbacks below are barred for an EVICTED head
@@ -2167,25 +2177,23 @@ impl<'a> Resolver<'a> {
             // wrong resolution). A leading `global.` does not parse in expression
             // position yet, so `rooted` is always false here (matching the
             // qualified-export block above).
-            if !rest.is_empty() && !value_evicted {
-                let written: Vec<String> = segments
-                    .iter()
-                    .map(|t| id_text(t.text()).to_string())
-                    .collect();
-                if let Some(id) = self.cross_file_type_case(&written, false) {
-                    let whole = TextRange::new(
-                        first.text_range().start(),
-                        segments.last().expect("non-empty path").text_range().end(),
+            if !rest.is_empty()
+                && !value_evicted
+                && !sig_screened
+                && let Some(id) = self.cross_file_type_case(&written_path, false)
+            {
+                let whole = TextRange::new(
+                    first.text_range().start(),
+                    segments.last().expect("non-empty path").text_range().end(),
+                );
+                self.record(whole, Resolution::Item(id));
+                for seg in segments.iter().take(segments.len() - 1) {
+                    self.record(
+                        seg.text_range(),
+                        Resolution::Deferred(DeferredReason::QualifiedAccess),
                     );
-                    self.record(whole, Resolution::Item(id));
-                    for seg in segments.iter().take(segments.len() - 1) {
-                        self.record(
-                            seg.text_range(),
-                            Resolution::Deferred(DeferredReason::QualifiedAccess),
-                        );
-                    }
-                    return;
                 }
+                return;
             }
 
             // …or a referenced-assembly path, resolved through the shared F#
@@ -2506,6 +2514,35 @@ impl<'a> Resolver<'a> {
         true
     }
 
+    /// Stage-1 signature screen, **project side**
+    /// (`docs/fsi-signature-restriction-plan.md`): whether some
+    /// precedence-ordered reading of the written path — each open /
+    /// enclosing-namespace prefix of [`Self::assembly_prefixes_by_priority`],
+    /// the root included — lands on a path a paired signature may expose. A
+    /// screened reading outranks or equals every candidate the qualified
+    /// project lookups could commit, and FCS binds the *signature* there
+    /// (probe: root `module M; let x` + signatured `module A.M` exposing
+    /// `x`: inside `namespace A`, `M.x` binds the `.fsi`, not the root
+    /// module), so every lower-priority binding — a project `Item` as much
+    /// as an assembly member — must be withheld. The assembly tier repeats
+    /// the veto internally ([`ProjectItems::sig_screened_path`] via
+    /// [`Self::path_is_project_type_shadowed`]); this is the check the
+    /// *project*-side commit sites run before binding.
+    pub(super) fn sig_screens_reading_of(&self, written: &[String]) -> bool {
+        if !self.preceding.has_sig_screens() {
+            return false;
+        }
+        self.preceding.sig_screened_path(written)
+            || self.assembly_prefixes_by_priority().any(|prefix| {
+                let full: Vec<String> = prefix
+                    .iter()
+                    .cloned()
+                    .chain(written.iter().cloned())
+                    .collect();
+                self.preceding.sig_screened_path(&full)
+            })
+    }
+
     /// The *type-namespace* subset of [`Self::path_is_project_shadowed`]: whether
     /// `names` is a path F# resolves to a project **type** (a `type`/nested
     /// module rooting a type, not a *value* nor a bare top-level *module*) ahead
@@ -2536,6 +2573,15 @@ impl<'a> Resolver<'a> {
             // [`Self::path_is_project_shadowed`]. A *nested* module still defers
             // here (its qualified path may root a project type we model later).
             || self.preceding.is_rooted_at_nested_module(names)
+            // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
+            // a path under a signatured module root whose residual the
+            // signature *may* expose must not commit to a merged assembly
+            // member in ANY namespace — FCS binds the `.fsi` (probe:
+            // sig-exposed `Shared.shown` with a colliding `RefLib` → the
+            // `.fsi`), and Stage 1 has no signature identity to commit, so
+            // it defers. A residual absent from the signature text falls
+            // through to the assembly exactly as FCS does.
+            || self.preceding.sig_screened_path(names)
     }
 
     /// Record a qualified in-file enum-case path `Color.Red` (`type_seg`,
@@ -3197,6 +3243,12 @@ impl<'a> Resolver<'a> {
             // A leading `global` was deferred above, so `segs` here is an ordinary
             // (unrooted) qualified path.
             let written: Vec<String> = segs.iter().map(|t| id_text(t.text()).to_string()).collect();
+            // Stage-1 signature screen (project side), the pattern-position
+            // twin of the expression gate: a possibly-signature-exposed
+            // reading outranks the cross-file case candidate, so defer.
+            if self.sig_screens_reading_of(&written) {
+                return;
+            }
             if let Some(id) = self.cross_file_type_case(&written, false) {
                 let (first, last) = (
                     segs.first().expect("non-empty"),

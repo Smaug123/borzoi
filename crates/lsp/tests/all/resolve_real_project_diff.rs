@@ -36,9 +36,11 @@
 //! the injected NuGet DLLs and parses under the caller's `#if` symbols. It is a
 //! faithful differential for projects that are:
 //!
-//! * **signature-free** — the LSP refuses any project whose Compile set includes
-//!   a `.fsi` (the CST parser has no signature model yet), so those panic at the
-//!   Compile-order step until signatures land;
+//! * **signature-light** — a `.fsi`-bearing project folds (Stage 1 of
+//!   `docs/fsi-signature-restriction-plan.md`), but a signatured module's
+//!   members resolve to `Deferred`/the merged assembly until Stage 2 exports
+//!   the signature surface, so heavy `.fsi` use shows up as gaps, not
+//!   divergences;
 //! * **SDK-default framework** — a non-default `<FrameworkReference>`
 //!   (`Microsoft.AspNetCore.App`, `WindowsDesktop`) is *not* handed to FCS, which
 //!   would then fail to resolve those framework symbols our `AssemblyEnv` (built
@@ -86,7 +88,7 @@ use borzoi::semantic::SemanticState;
 use borzoi::workspace::Workspace;
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, Resolution, resolve_project};
+use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, Resolution, resolve_project_files};
 use rowan::TextRange;
 
 /// How many sites of each kind to print for triage.
@@ -226,10 +228,9 @@ fn project_resolution_matches_fcs() {
         .unwrap_or_else(|| {
             panic!(
                 "the LSP declined to resolve {project:?}. Common causes: the \
-                 project contains `.fsi` signature files (not yet modelled — the \
-                 whole project is refused), the evaluated Compile order is \
-                 untrustworthy (`items_uncertain`), or a Compile file tripped a \
-                 CST parser limit. Pick a signature-free, cleanly-evaluated project."
+                 evaluated Compile order is untrustworthy (`items_uncertain`), \
+                 or a Compile file tripped a CST parser limit. Pick a \
+                 cleanly-evaluated project."
             )
         })
         .clone();
@@ -327,8 +328,10 @@ fn project_resolution_matches_fcs() {
     drop(_silence);
     let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(assemblies);
 
-    // 3. Our whole-project resolution.
-    let proj = resolve_project(&parses.files, &env);
+    // 3. Our whole-project resolution — the signature-aware fold, exactly as
+    //    the LSP runs it (a `.fsi`-bearing project folds since Stage 1 of
+    //    `docs/fsi-signature-restriction-plan.md`).
+    let proj = resolve_project_files(&parses.files, &env);
 
     // FCS oracle over the same Compile order. We inject the project's genuinely
     // *external* NuGet DLLs (so FCS can resolve references to them) but let FCS
