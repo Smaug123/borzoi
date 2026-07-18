@@ -187,26 +187,37 @@ a second addressing scheme.
 ### Pairing rule (by `QualifiedNameOfFile`)
 
 Pair each impl with the *earlier* signature that shares its **QNOF** (probe
-conclusion 3):
+conclusion 3). QNOF is **not** something to hand-approximate — it is FCS's
+`QualifiedNameOfFile`, and the plan must port it faithfully, because a mismatch
+in either direction is a correctness bug (over-pairing suppresses an unrelated
+impl; under-pairing leaks names the signature hides). FCS's rule
+(`ParseAndCheckInputs.fs`):
 
 - A file that **leads with `module M`** has QNOF = the module's qualified name
   `M` (`ModuleOrNamespaceKind::NamedModule`, syntax/mod.rs:211; via
   `modules().long_id()`). sema derives this from the AST alone.
-- Any other file (namespace-headed, multi-fragment, anonymous) has QNOF = its
-  **filename stem**. sema cannot see filenames, so the fold input must carry it.
+- Any other file (namespace-headed, multi-fragment, anonymous) has QNOF derived
+  from the **filename**, via FCS's `CanonicalizeFilename` — which **capitalises**
+  the stem (so `foo.fsi` and `Foo.fs` both → `Foo` and *do* pair, codex review
+  finding 3) — followed by `DeduplicateModuleName`, which **disambiguates equal
+  names by containing directory** (so `d1/Part.fsi` pairs `d1/Part.fs` but *not*
+  `d2/Part.fs`, codex review finding 4). The raw path stem is wrong on both
+  counts.
 
 Therefore the fold's per-file input is a `(SourceFile, qnof: QualifiedName)`
-pair, where the caller supplies QNOF: the LSP already holds both the parse and
-the path (`ProjectParses.paths`, semantic.rs:97), so it computes QNOF =
-module-qualified-name-if-module-headed-else-path-stem — a faithful port of FCS's
-own rule. A signature-paired impl contributes **no** cross-file exports; its
-paired signature contributes them instead (Stage 2). An unpaired signature (no
-impl with a matching QNOF) is inert, and an unsigned impl exports normally
-(probes J, M). Because the QNOF is an explicit input rather than a guess, the
-narrowed-refusal fallback the earlier draft reserved for namespace files is
-**not needed** — namespace-headed signatures pair and restrict correctly through
-the same QNOF path (probes G, G2), so the blanket `.fsi` refusal is removed
-outright.
+pair; the caller supplies QNOF because the filename-derived case needs the path,
+which the LSP holds (`ProjectParses.paths`, semantic.rs:97). **The QNOF
+computation is itself FCS-differential-tested**, not reasoned: a fixture sweep
+feeds FCS a file set and asserts sema's sig/impl pairing matches FCS's (observed
+through which names a downstream file can and cannot resolve) — the systematic
+guard that turns "reproduce `CanonicalizeFilename`/`DeduplicateModuleName`
+correctly" from a judgement call into a checked property, so cases like the two
+above are caught by construction rather than by review. A signature-paired impl
+contributes **no** cross-file *identities*; its paired signature contributes them
+instead (Stage 2). An unpaired signature (no impl with a matching QNOF) is inert,
+and an unsigned impl exports normally (probes J, M). Namespace-headed signatures
+pair through the same QNOF path (probes G, G2), so the blanket `.fsi` refusal is
+removed outright — no narrowed-refusal fallback is needed.
 
 ### Correctness-over-availability framing
 
@@ -227,20 +238,36 @@ every step here moves monotonically toward FCS:
   yet modelled emits no *identity*, so the name stays `Deferred` downstream — an
   honest coverage gap, never a wrong answer.
 
-**But "emit no identity" is not the same as "emit nothing" (codex review,
-finding 1).** The project's `module_headers` / `nested_module_paths` /
-`real_nested_modules` / `type_paths` / `modules_with_hidden_values` indexes are
-also **assembly-shadow tripwires**: when the project declares `Foo.Bar`, they
-stop a downstream `Foo.Bar.X` from *falling through* to a colliding
-referenced-assembly `Foo.Bar.X` (model.rs:110-115, the
-`assembly_path_records` tripwire). A signatured module that contributed *nothing*
-would lose those tripwires, so a downstream use could wrongly commit to the
-assembly symbol where FCS binds the `.fsi` — a real wrong commit, not an honest
-`Deferred`. So the invariant is finer: **a signatured module must still
-contribute its structural / shadow indexes and a `modules_with_hidden_values`
-marker**, only its *value/case identities* are withheld (Stage 1) or
-signature-sourced (Stage 2). Over-blocking (a private nested module the sig
-hides still shadows) only adds `Deferred`s — sound.
+**Hiding a value means recording it *inaccessible*, not dropping it (codex
+review, findings 1 + 2 — one mechanism).** Two failure modes rule out simply
+deleting a hidden value's export:
+
+1. **Assembly fallthrough.** `value_exports` is the *only* per-path tripwire that
+   stops a qualified value reference from falling through to a colliding
+   referenced-assembly symbol: `module_headers` blocks only the *exact* module
+   path (not `Foo.bar`), and `modules_with_hidden_values` is a bare-`open`
+   generation bump, not consulted for a qualified `Foo.bar`. Drop the `Item` for a
+   signature-hidden `let bar` and a downstream `Foo.bar` wrongly binds the
+   assembly's `Foo.bar` where FCS binds the `.fsi`/errors.
+2. **Multi-fragment recovery.** A module `N.A` split across an unsigned `First.fs`
+   (public `let x`) and a signatured `Pair.fs` (private `x`) must resolve a
+   downstream `N.A.x` to **`First.fs`** — FCS skips the private binder and takes
+   the earlier public one (probe: decl = `First.fs`). Emitting the later private
+   `x` as an accessible latest-wins `Item` would mis-resolve to `Pair`.
+
+Both fall out of the machinery the codebase already built for exactly this: the
+per-path `value_exports` **history** plus `access_root_len`. Record a
+signature-hidden value as an `ExportRecord` with a **module-scoped access root**
+(`access_root_len = Some(module_len)` — private to its own module). Then
+`is_project_value_prefixed` (model.rs:352), which is **accessibility-independent**
+(it asks only "is there a value at this path"), still fires → the assembly is
+blocked; while `latest_accessible_value`, which *is* accessibility-gated, skips
+the hidden entry → it never commits cross-file, and recovers an accessible
+earlier-fragment public export if one exists (failure mode 2, exactly the
+"public export under a later inaccessible private is still selectable" property,
+model.rs:82-85). Structural decls (`Module`, `Type`, `Namespace`, …) are still
+kept as shadow tripwires for the *non*-value paths (nested modules, types) the
+same way.
 
 ## Implementation plan
 
@@ -260,36 +287,37 @@ the fold; adds no new commits.
   (next bullet).
 - Compute the signature-paired set by QNOF. A paired `SourceFile::Impl` is
   resolved exactly as today (internal `resolutions` unchanged — probe point 2),
-  and `thread_forward` folds a **structural-only** contribution for it: **keep**
-  the impl's structural / shadow decls (`Module`, `Type`, `Namespace`,
-  `ModuleAbbrev`, `ExceptionTycon`, `Extern`) so the assembly-shadow tripwires
-  stay populated, and mark every one of the impl's containers
-  `modules_with_hidden_values`; **drop** the impl's value/case *identity* decls
-  (`Item`, `ActivePatternCase`). This keeps the impl at its own (correct) fold
-  position, so no provenance question arises in Stage 1 (finding 2 is a Stage-2
-  concern). Keeping the impl's *full* structure over-blocks (a private nested
-  module the sig hides still shadows), which only adds `Deferred`s — sound.
+  and `thread_forward` folds a **hidden** contribution for it: its value/case
+  exports are re-stamped with a **module-scoped `access_root_len`** (inaccessible
+  cross-file — the framing above) rather than dropped, so they shadow the
+  assembly and recover earlier public fragments but never commit; its structural
+  decls (`Module`, `Type`, `Namespace`, `ModuleAbbrev`, `ExceptionTycon`,
+  `Extern`) are kept verbatim as shadow tripwires for the non-value paths. This
+  keeps the impl at its own (correct) fold position, so no provenance question
+  arises in Stage 1 (finding 2 of the first round is a Stage-2 concern). The
+  over-approximation (a private nested module the sig hides still shadows) only
+  adds `Deferred`s — sound.
 - LSP: delete the `.fsi` refusal (semantic.rs:1085) outright; parse each Compile
   item with the grammar its extension selects (`is_signature_file`,
   semantic.rs:2133 → a new panic-safe `parse_sig_with_symbols` beside
-  `cst_panic_safe.rs:24`), compute each file's QNOF (module name or path stem),
-  and build the interleaved input. `ProjectParses` (semantic.rs:97) carries
+  `cst_panic_safe.rs:24`), compute each file's QNOF (module name, or the
+  canonicalised + directory-disambiguated filename per the pairing rule), and
+  build the interleaved input. `ProjectParses` (semantic.rs:97) carries
   `SourceFile` + QNOF instead of `ImplFile`.
 - Replace the pinned refusal tests (semantic.rs:2266/2296) with folds-correctly
   assertions for both a `module M`- and a `namespace N; module M`-headed
   `.fsi` project.
 
 **Why it is sound:** the fold strictly loses *value/case* commits (paired impl
-identities withheld) and gains no new commit — the retained structural decls only
-ever *block* (cause `Deferred`s), never resolve to a def, since types/modules
-carry no cross-file identity today (finding 3). The bare-name hazard is closed
-too: `modules_with_hidden_values` on the paired module makes a downstream
-`open Foo; bar` defer rather than mis-resolve. Certain-implies-exact holds, and
-the visibility *timing* is free: the paired module publishes no identity, so
-intervening files (probe L) and self-qualified references (probes K/K2) see
-nothing — exactly FCS's FS0039. Paired modules under-resolve (their public names
-go `Deferred` cross-file) — the honest D5 cost, paid until Stage 2. Every
-unsigned module (probes J, M) folds for the first time.
+identities re-stamped inaccessible) and gains no new commit — the hidden entries
+and structural decls only ever *block* (cause `Deferred`s), never resolve to a
+def, since types/modules carry no cross-file identity today (first-round finding
+3). Certain-implies-exact holds, and the visibility *timing* is free: the paired
+module publishes no *accessible* identity, so intervening files (probe L) and
+self-qualified references (probes K/K2) see nothing — exactly FCS's FS0039.
+Paired modules under-resolve (their public names go `Deferred` cross-file) — the
+honest D5 cost, paid until Stage 2. Every unsigned module (probes J, M) folds for
+the first time.
 
 **Oracle:** FCS-free `resolve_project` unit tests (a hidden `let` no longer
 resolves cross-file; a non-`.fsi` sibling module still does); an
@@ -311,6 +339,16 @@ uses of a signature's surface resolve to the `.fsi`.
   - `SigDecl::Val` with a plain `ident()` → an `Item` value export at
     `[module.., name]`, `def` = the `x` ident in the `.fsi`. Skip
     active-pattern-named and operator-named vals for now (Stage 3).
+    **Read the `private` marker here, not in Stage 3 (codex review, finding 2).**
+    A `val private x` must be emitted with a module-scoped `access_root_len` (the
+    same inaccessible shape Stage 1 gives a hidden value), *not* as an accessible
+    public `Item` — otherwise, when an earlier fragment exports a public `x` at
+    the same path, the accessible latest-wins query would mis-resolve the
+    downstream use to the private `.fsi` binder where FCS takes the earlier public
+    one. Emitting it inaccessible makes `latest_accessible_value` recover the
+    public fragment, exactly as in Stage 1's framing. (The finer `internal`-vs-
+    public distinction can wait for Stage 3; only the private→inaccessible bit is
+    load-bearing for soundness and must land with the first identities.)
   - `SigDecl::Types` with a *visible* union/enum representation → the case
     `Item`s + type-qualified case paths, reusing the existing `CaseKind` /
     `type_qualified_cases` machinery. An **opaque** representation (bodyless
@@ -359,20 +397,24 @@ uses of a signature's surface resolve to the `.fsi`.
 `invoke_fcs_dump_project` (common/mod.rs:257) an interleaved sig/impl path list;
 assert certain-implies-exact against `uses-project` for the whole probe matrix
 (exposed val/case → `.fsi` decl; hidden/opaque → `Deferred`/unrecorded). Include
-the **non-adjacent auto-open collision** fixture above (provenance = impl slot).
-Keep every fixture `uses-project`-diagnostics-clean. Corpus gates green.
+the **non-adjacent auto-open collision** fixture (provenance = impl slot) and the
+**public-fragment recovery** fixture — an earlier unsigned `First.fs` public `x`
+plus a later signatured `Pair` private `x`, asserting `N.A.x` resolves to
+`First.fs`, not the `.fsi` (finding 2). Keep every fixture
+`uses-project`-diagnostics-clean. Corpus gates green.
 
 ### Stage 3+: enrich the modelled signature surface
 
 Each its own FCS-differential-gated slice; the semantics are already pinned by
 the sweep above, so these are landing order, not open questions:
 
-- **Accessibility** — `val internal` / `module internal` (project-visible →
-  exported) vs `val private` / `module private` (→ access-root = the module),
-  threaded through the existing `access_root_len` machinery. A private cross-file
-  use is always an FS1094 error, so it never rides a clean differential fixture;
-  the sound behaviour is to export with the access-root and let the accessibility
-  filter decline the outside use.
+- **Accessibility (finer half)** — `val internal` / `module internal`
+  (project-visible → exported as *accessible*, distinct from the
+  private→inaccessible bit already landed in Stage 2), threaded through the
+  existing `access_root_len` machinery. A private cross-file use is always an
+  FS1094 error, so it never rides a clean differential fixture; Stage 2 already
+  exports private-sig values with the module access-root, so the filter declines
+  the outside use — this stage adds the `internal` accessibility level on top.
 - **Active-pattern `val`s** — `val (|Even|Odd|) : …` and partial/parameterized
   `val (|DivBy|_|) : …`, wired to the Stage-3a active-pattern-case export path
   (`docs/export-decl-model-plan.md`), with the recognizer span in the `.fsi` as
@@ -392,9 +434,10 @@ Two design questions the earlier draft left open are now settled by the sweep:
   (probes K/K2). The rule that makes intervening files correct (probe L) makes
   self-references correct for free.
 - **Namespace-file pairing** works through the same QNOF path as module files
-  (probes G, G2, I) — namespace-headed files pair by filename stem, module-headed
-  by module name. No refusal is needed; the only cost is threading the QNOF from
-  the LSP (which has the path).
+  (probes G, G2, I) — namespace-headed files pair by their FCS-canonicalised,
+  directory-disambiguated filename (see the pairing rule), module-headed by module
+  name. No refusal is needed; the only cost is threading the QNOF from the LSP
+  (which has the path), and differential-testing that computation against FCS.
 
 Remaining risks to treat as first-class:
 
