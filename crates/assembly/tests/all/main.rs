@@ -7,6 +7,7 @@
 
 mod common;
 
+mod abbreviation_target_diff;
 mod assembly_auto_opens;
 mod assembly_diff;
 mod bcl_ref_pack_sweep;
