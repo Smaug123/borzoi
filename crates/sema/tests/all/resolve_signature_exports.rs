@@ -1989,11 +1989,15 @@ fn sig_accessibility_agrees_with_fcs() {
 }
 
 /// The systematic sweep for this slice: accessibility × assembly collision ×
-/// reading site, site-keyed against FCS. For every access flavour the
+/// reading site (intervening / outside-after / **inside the module's own
+/// subtree** — the site codex round 1 P1 showed the point fixtures had
+/// missed), site-keyed against FCS. For every access flavour the
 /// intervening reading falls through (assembly under a collision, unbound
 /// otherwise); after the impl's slot the exposed flavours bind the `.fsi`
-/// and `private` falls through — including the **clean** private+collision
-/// assembly binding this slice exists to commit.
+/// everywhere, and `private` splits by site — the inside reader binds the
+/// `.fsi` (accessible), the outside one falls through — including the
+/// **clean** private+collision assembly binding this slice exists to
+/// commit.
 #[test]
 fn accessibility_matrix_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
@@ -2011,6 +2015,13 @@ fn accessibility_matrix_agrees_with_fcs() {
                 ),
                 ("A.fs", "module ProbeNs.Shared\n\nlet bar = 2\n"),
                 ("After.fs", "module After\n\nlet h = ProbeNs.Shared.bar\n"),
+                // A later unsigned fragment of the same module: its reading
+                // site lies inside the module's subtree, where a private
+                // val is accessible.
+                (
+                    "Inside.fs",
+                    "namespace ProbeNs\n\nmodule Shared =\n    let g2 = ProbeNs.Shared.bar\n",
+                ),
             ];
             let label = format!(
                 "sig3acc_{}_{}",
@@ -2045,7 +2056,11 @@ fn accessibility_matrix_agrees_with_fcs() {
             // Site-keyed: for each reading site, our verdict must match
             // FCS's — in-project decl ⇒ exact Item or deferral; assembly ⇒
             // assembly member or deferral; unbound ⇒ nothing.
-            for (site_idx, needle_owner) in [(1usize, "Between.fs"), (3usize, "After.fs")] {
+            for (site_idx, needle_owner) in [
+                (1usize, "Between.fs"),
+                (3usize, "After.fs"),
+                (4usize, "Inside.fs"),
+            ] {
                 let (site_path, site_src) = &written[site_idx];
                 assert_eq!(
                     site_path.file_name().and_then(|n| n.to_str()),
@@ -2107,11 +2122,19 @@ fn accessibility_matrix_agrees_with_fcs() {
             }
         }
     }
-    // Non-vacuity floors: the exposed-after cells commit the sig identity
-    // (6: three exposed flavours × both collision states), the collision
-    // fall-throughs commit the assembly (4: three exposed intervening + the
-    // private cells), the unbound cells defer.
-    assert!(sig_commits >= 6, "sig-identity commits: {sig_commits}");
+    // Non-vacuity floors: the exposed after/inside cells commit the sig
+    // identity, and the private inside cells do too — the site where the
+    // restricted export is accessible, even under a collision (observed
+    // 14 = 3 exposed flavours × {after, inside} × 2 collision states + the
+    // 2 private inside cells); the collision fall-throughs commit the
+    // assembly (observed 5: the exposed intervening cells + the private
+    // after cell + the private intervening cell); the unbound cells defer
+    // (observed 5).
+    println!(
+        "accessibility matrix: {sig_commits} sig commits, {assembly_commits} assembly commits, \
+         {deferrals} deferrals"
+    );
+    assert!(sig_commits >= 12, "sig-identity commits: {sig_commits}");
     assert!(
         assembly_commits >= 4,
         "assembly commits: {assembly_commits}"
