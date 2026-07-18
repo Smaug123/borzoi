@@ -969,6 +969,75 @@ fn static_lookup_occupies_a_name_it_cannot_select() {
         "a name on no member of the type — nor of its base chain — is genuinely absent, \
          and only that lets a lower-priority reading own the path"
     );
+
+    // A CLASS receiver owns `Object`'s member names through the base chain: FCS's
+    // type-qualified lookup is inheritance-aware, and it errors on (or resolves) an
+    // inherited member rather than re-rooting the path (probed 2026-07-10). This is
+    // exactly the rule that must NOT leak to module receivers (the test below).
+    assert_eq!(
+        env.static_lookup(thing, "ToString"),
+        StaticLookup::Uncertain,
+        "`ToString` is inherited from `Object`: a class-qualified path is occupied by it"
+    );
+}
+
+/// A **module** receiver takes FCS's *module* lookup, not its type-member lookup:
+/// `ResolveExprLongIdentInModuleOrNamespace` (NameResolution.fs) consults the
+/// module's own contents — vals, exception constructors, union cases, nested
+/// types, submodules — and never the compiled class's base chain, so `Object`'s
+/// members do NOT occupy a module-qualified name. On no match FCS razes
+/// `UndefinedName`, and `AtMostOneResultQuery` lets the *type* search re-root the
+/// path — which is how `String.Equals` under `open System; open
+/// Microsoft.FSharp.Core` is `System.String.Equals(…)`, not the FSharp.Core
+/// `String` module (the `resolve_string_qualifier_repro` divergence: the old
+/// base-chain rule made `Equals` "occupied" via `Object`, so the module reading
+/// wrongly owned the path and the `open System` tier was never consulted).
+#[test]
+fn static_lookup_on_a_module_ignores_object_members() {
+    let dll = crate::common::ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let view = Ecma335Assembly::parse(&bytes).expect("parse FSharp.Core.dll");
+    let env = AssemblyEnv::from_views(std::slice::from_ref(&view))
+        .expect("FSharp.Core must project end-to-end into an AssemblyEnv");
+    let string_module = env
+        .lookup_type(&ns(&["Microsoft", "FSharp", "Core"]), "String", 0)
+        .expect("the FSharp.Core `String` module in env");
+    assert_eq!(env.entity(string_module).kind, EntityKind::Module);
+
+    // `Object`'s public members — instance (`Equals(obj)`, `ToString`,
+    // `GetHashCode`, `GetType`) and static (`Equals(obj, obj)`,
+    // `ReferenceEquals`) alike — are unreachable through a module qualifier, so
+    // the name is genuinely absent and a lower-priority reading may own the path.
+    for name in [
+        "Equals",
+        "ToString",
+        "GetHashCode",
+        "GetType",
+        "ReferenceEquals",
+    ] {
+        assert_eq!(
+            env.static_lookup(string_module, name),
+            StaticLookup::Absent,
+            "`{name}` is an `Object` member: FCS's in-module lookup cannot reach it, \
+             so it must not occupy the module-qualified name"
+        );
+    }
+
+    // The module's own vals still resolve (`String.length` — a
+    // `[<CompiledName>]`-renamed method, so this also pins the source-name
+    // matching) and still occupy names they cannot uniquely select.
+    assert!(matches!(
+        env.static_lookup(string_module, "length"),
+        StaticLookup::Resolved(_)
+    ));
+    // The val's *source* name is `length`; its IL name `Length` is not an F#
+    // name at this position (FCS's `AllValsByLogicalName` is keyed by logical
+    // name), so it must be absent — the same rule that lets `String.Concat`
+    // re-root to `System.String.Concat` past the module's `concat`.
+    assert_eq!(
+        env.static_lookup(string_module, "Length"),
+        StaticLookup::Absent,
+    );
 }
 
 fn entities_of(dll: &Path) -> Vec<Entity> {

@@ -99,10 +99,13 @@ about resolution *precedence*. A genuine dependency-resolution failure shows up
 instead as `asm_match == 0`, an empty env, or the vacuity assertion firing.
 
 Validated (zero divergences) against `WoofWare.{WeakHashTable, LiangHyphenation,
-Expect}`; `WoofWare.PawPrint.Domain` surfaced one `String`-abbreviation
-precedence divergence (FSharp.Core `Microsoft.FSharp.Core.String` vs
-`System.String`) — a sema precedence bug, with dependency resolution otherwise
-matching FCS across ~4.8k in-project + ~1.4k imported-assembly uses.
+Expect, PawPrint.Domain}` (the last across ~5.1k in-project + ~1.4k
+imported-assembly uses). `PawPrint.Domain` originally surfaced one `String`
+qualifier-precedence divergence (the FSharp.Core `String` *module* picked over
+`System.String` for `String.Equals`) — a sema precedence bug, fixed by making
+module-qualified member lookup follow FCS's in-module search domain
+(`module_qualified_occupied`; pinned by `crates/sema`'s
+`resolve_string_qualifier_repro` and `resolve_qualifier_precedence_diff`).
 
 ## What this test does *not* cover
 

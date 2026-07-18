@@ -136,9 +136,11 @@ pub enum StaticLookup {
     /// The name **is** occupied, but we decline to name a target — defer, and keep the
     /// path owned. Either it is not *selectable* through a qualified path (an
     /// instance-only member, an inherited static, an unknowable base chain — FCS finds
-    /// the name and errors rather than re-rooting the path), or it is selectable but
-    /// not *uniquely* (an overload set, a metadata ambiguity), or we cannot decide it
-    /// at all (an undecidable augmentation — an `Augmentation` of `Possible` certainty).
+    /// the name and errors rather than re-rooting the path; for a *module* receiver
+    /// only its own contents count, never the compiled class's base chain — see
+    /// `module_qualified_occupied`), or it is selectable but not *uniquely* (an
+    /// overload set, a metadata ambiguity), or we cannot decide it at all (an
+    /// undecidable augmentation — an `Augmentation` of `Possible` certainty).
     Uncertain,
 }
 
@@ -2504,6 +2506,31 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Abbreviation
     }
 
+    /// Whether `handle` has a **public type-abbreviation child** named `name`, at
+    /// **any** arity — the generic-arity gap the arity-0 [`Self::nested`] walk
+    /// misses. A qualified path landing on such a child must defer: the
+    /// abbreviation's target is unmodelled, and FCS *chases* it before deciding
+    /// ownership — a record/union target falls through to a lower reading, a
+    /// class target keeps this module (probed) — so we can commit neither
+    /// direction and decline instead (D5, correctness over availability). Mirrors
+    /// the [`Self::is_abbreviation`] defer the arity-0 `nested` branch of
+    /// `assembly_path_records` already applies; this closes it for a *generic*
+    /// abbreviation, which `nested(.., 0)` skips on arity.
+    ///
+    /// `assembly_path_records` consults this only in the `Uncertain` arm of its
+    /// `static_lookup` — *after* a resolvable module value would have won (a
+    /// module legally declaring both `let X` and `type X<'a>` resolves to the
+    /// val, codex review 4) — and returns its `AbbreviationOpaque` reading so the
+    /// defer is tier-local rather than a preemptive lexical shadow.
+    pub fn has_public_abbreviation_child(&self, handle: EntityHandle, name: &str) -> bool {
+        self.children(handle).iter().copied().any(|c| {
+            self.is_public(c) && self.is_abbreviation(c) && {
+                let e = self.entity(c);
+                e.source_name.as_deref().unwrap_or(&e.name) == name
+            }
+        })
+    }
+
     /// Find a member of `handle` by its display name, returning its
     /// [`MemberIndex`]. The first member with that name wins (overloads share a
     /// name; disambiguating them needs signatures, a later concern). `None` if
@@ -2608,10 +2635,12 @@ impl AssemblyEnv {
     ///   overload set, a metadata ambiguity, or an undecidable augmentation (whose
     ///   name is *occupied*, we simply cannot say by what) ⇒ [`StaticLookup::Uncertain`];
     /// - no own-level static candidate, but the name is still reachable by FCS's
-    ///   **inheritance-aware, kind-agnostic** member lookup (`qualified_path_occupied`)
-    ///   ⇒ [`StaticLookup::Uncertain`] as well: FCS finds it and errors (or resolves an
-    ///   inherited static) rather than re-rooting the path, so falling through would
-    ///   hand the path to a reading FCS never consults;
+    ///   qualified lookup (`qualified_path_occupied` — for a *type*, the
+    ///   inheritance-aware, kind-agnostic member lookup; for a *module*, the
+    ///   in-module search over its own contents, which never sees the compiled
+    ///   class's base chain) ⇒ [`StaticLookup::Uncertain`] as well: FCS finds it
+    ///   and errors (or resolves) rather than re-rooting the path, so falling
+    ///   through would hand the path to a reading FCS never consults;
     /// - nothing anywhere ⇒ [`StaticLookup::Absent`], and only then may a lower tier
     ///   own the path.
     pub fn static_lookup(&self, handle: EntityHandle, name: &str) -> StaticLookup {
@@ -2705,14 +2734,28 @@ impl AssemblyEnv {
     /// what makes the two incapable of disagreeing about whether a member exists,
     /// which is exactly what review rounds 3 and 4 caught them doing.
     ///
-    /// FCS's lookup is inheritance-aware and kind-agnostic (probed 2026-07-10: an
-    /// *inherited static* resolves through the derived name, and an *instance-only*
-    /// member of the name makes FCS error rather than re-root the path at a
-    /// lower-priority reading), so this walks the base chain — the receiver's own
-    /// level included — for **any public member** of the name that FCS can see
-    /// ([`Presence`] on [`Channel::Qualified`], so a certainly-hidden augmentation
-    /// does not count: fsi, `CoreExts.ExtStatic "x"` is FS0039, and with `High.M`'s
-    /// only `X` an augmentation, `open Low; open High; M.X` is `Low.M.X`).
+    /// A **module** receiver — one whose `EntityKind::Module` is *authoritative*
+    /// (its F# signature decoded; see [`Self::fsharp_signature_unreliable`]) — is
+    /// answered by [`Self::module_qualified_occupied`] instead, because FCS
+    /// resolves a module-qualified name through
+    /// `ResolveExprLongIdentInModuleOrNamespace`, whose search domain is the
+    /// module's own contents, never the compiled class's inheritance chain. A
+    /// module whose signature is **non-authoritative** (a pickle-less or
+    /// `--standalone` image) is only an IL heuristic — FCS imports it as a plain
+    /// type — so it takes the type rule below, exactly as
+    /// [`Self::entity_class`](AssemblyEnv) declines to classify it as a module.
+    /// Everything below is the **type**-receiver rule
+    /// (`ResolveLongIdentInTyconRefs`).
+    ///
+    /// FCS's type-member lookup is inheritance-aware and kind-agnostic (probed
+    /// 2026-07-10: an *inherited static* resolves through the derived name, and an
+    /// *instance-only* member of the name makes FCS error rather than re-root the
+    /// path at a lower-priority reading), so this walks the base chain — the
+    /// receiver's own level included — for **any public member** of the name that
+    /// FCS can see ([`Presence`] on [`Channel::Qualified`], so a certainly-hidden
+    /// augmentation does not count: fsi, `CoreExts.ExtStatic "x"` is FS0039, and
+    /// with `High.M`'s only `X` an augmentation, `open Low; open High; M.X` is
+    /// `Low.M.X`).
     ///
     /// A chain whose membership cannot be enumerated counts as *possible* (own and
     /// defer, never fall through to a reading FCS would not reach): an **interface**
@@ -2729,6 +2772,14 @@ impl AssemblyEnv {
     /// reading in both shapes, so counting them would defer (and un-resolve)
     /// paths FCS resolves.
     fn qualified_path_occupied(&self, handle: EntityHandle, name: &str) -> bool {
+        // A genuine (authoritative) module takes the in-module search domain; a
+        // non-authoritative one is really a plain type to FCS, so it falls
+        // through to the base-chain rule below (mirroring `entity_class`).
+        if self.entity(handle).kind == EntityKind::Module
+            && !self.fsharp_signature_unreliable(handle)
+        {
+            return self.module_qualified_occupied(handle, name);
+        }
         // An interface-rooted reading owns conservatively: its member surface
         // (inherited interfaces + `Object`) is not enumerable through
         // `base_chain`, and FCS owns such a reading even for a base-interface
@@ -2756,6 +2807,141 @@ impl AssemblyEnv {
                         && self.presence_of(level, m, Channel::Qualified) != Presence::Absent
                 })
         })
+    }
+
+    /// Whether FCS's **module-qualified lookup** could find `name` in module
+    /// `handle` — the module half of [`Self::qualified_path_occupied`], consulted
+    /// only when no own-level static of the name is selectable.
+    ///
+    /// FCS resolves `Module.name` through `ResolveExprLongIdentInModuleOrNamespace`
+    /// (NameResolution.fs), whose search domain is the module's own contents —
+    /// vals (`AllValsByLogicalName`), exception constructors, union cases
+    /// (`TryFindTypeWithUnionCase`), nested types, submodules — and **never** the
+    /// compiled class's base chain: `Object`'s members (`Equals`, `ToString`,
+    /// `GetHashCode`, …) are unreachable through a module qualifier. On no match it
+    /// razes `UndefinedName`, and `AtMostOneResultQuery` then lets the *type*
+    /// search re-root the path (`moduleSearch +++ tyconSearch`,
+    /// `ResolveExprLongIdentPrim`) — the exact opposite of the type-receiver rule:
+    /// `open System; open Microsoft.FSharp.Core; String.Equals ("a", "b")` is
+    /// `System.String.Equals`, not the FSharp.Core `String` module, because the
+    /// module's failed member lookup does not own the path (the
+    /// `resolve_string_qualifier_repro` divergence — the base-chain rule made
+    /// `Equals` "occupied" via `Object`, so the later-open module reading wrongly
+    /// owned the path and the `open System` tier was never consulted).
+    ///
+    /// Each clause maps to one FCS in-module search; vals are already covered by
+    /// [`Self::static_lookup`]'s own-level candidate scan (a module's vals compile
+    /// to own-level statics, matched by *source* name exactly as
+    /// `AllValsByLogicalName` is keyed by logical name — so an IL
+    /// `[<CompiledName>]` spelling does not occupy). The remainder:
+    ///
+    /// - an **undecodable member** of the name ([`Self::has_skipped_member`] —
+    ///   same IL-name-keyed precision as the type-receiver rule, and the same
+    ///   vanishingly-rare renamed-skip miss);
+    /// - an **unknowable pickle** ([`ExtensionMembers::Unknowable`]): the vals'
+    ///   source names cannot be enumerated at all (a rename is invisible), so any
+    ///   name may be occupied — own and defer, mirroring the open fold's residue;
+    /// - a public **child type** of the name that FCS resolves in the module —
+    ///   [`Self::child_type_keeps_module_qualifier`]. The arity-0 children FCS
+    ///   *would* resolve here (a non-generic nested type, a submodule, an
+    ///   exception) were already consumed by the path walk's arity-0
+    ///   [`Self::nested`] step, so the only child that reaches this clause is a
+    ///   **generic** one — and FCS keeps the module for *every* generic type kind
+    ///   except a **record** or **union**, whose bare name is not an expression
+    ///   and which FCS re-roots to a lower-priority reading (probed exhaustively:
+    ///   class, struct, interface, and delegate children keep the module even
+    ///   with no accessible constructor, while `Collide.GenRec` / `Collide.GenUni`
+    ///   fall through to a lower same-named type's static). A kind-blind check
+    ///   would occupy the record/union and wrongly retain the module qualifier
+    ///   (codex review). A generic **abbreviation** is *not* decided here — its
+    ///   target is unmodelled and FCS's answer is target-sensitive, so
+    ///   `assembly_path_records` defers the whole path via
+    ///   [`Self::has_public_abbreviation_child`] before this runs (codex review
+    ///   3). The non-authoritative-signature gate on
+    ///   [`Self::qualified_path_occupied`] keeps this kind test on trustworthy
+    ///   pickle data — a `--standalone` record misread as a class never reaches
+    ///   here;
+    /// - a public child **union**'s accessible **case** of the name —
+    ///   `[<RequireQualifiedAccess>]` unions included (their cases resolve at the
+    ///   lowest in-module priority, but still *in the module* — the final
+    ///   `tyconSearch +++ moduleSearch +++ unionSearch` arm); a union whose case
+    ///   names the pickle did not supply (`union_case_names` of `None`) may hide
+    ///   any name, so it occupies conservatively. **Bounded residual** (codex
+    ///   review, unmodelled): FCS's `TryFindTypeWithUnionCase` stops at the
+    ///   *first* child union declaring the case and only then checks
+    ///   representation accessibility, so two child unions sharing a case name
+    ///   where the first has a private representation would make FCS fall through
+    ///   — but a private representation contributes no names to `union_case_names`
+    ///   at all, so we cannot see the first union declared it, and this `any`
+    ///   accepts the later union. The scenario (two module-level unions with a
+    ///   shared case name, the first private, colliding with a same-named type's
+    ///   static) is vanishingly rare and unmodellable from the accessible-case
+    ///   list alone.
+    ///
+    /// **Public-only is deliberate**, as in the type rule: FCS filters
+    /// accessibility during the module search (`IsValAccessible` /
+    /// `IsTyconReprAccessible` / `AccessibleEntityRef`) and re-roots past an
+    /// inaccessible match. A *dropped* (undecodable) child type is NOT consulted:
+    /// like the open fold, drops are a property of a path's other split partners,
+    /// and counting the namespace-coarse signal here would occupy every name in
+    /// every module of an affected namespace.
+    fn module_qualified_occupied(&self, handle: EntityHandle, name: &str) -> bool {
+        if self.has_skipped_member(handle, name) {
+            return true;
+        }
+        if matches!(
+            self.module_extension_members(handle),
+            ExtensionMembers::Unknowable
+        ) {
+            return true;
+        }
+        self.children(handle).iter().copied().any(|child| {
+            if !self.is_public(child) {
+                return false;
+            }
+            let c = self.entity(child);
+            if c.source_name.as_deref().unwrap_or(&c.name) == name
+                && self.child_type_keeps_module_qualifier(c)
+            {
+                return true;
+            }
+            c.kind == EntityKind::Union
+                && match &c.union_case_names {
+                    None => true,
+                    Some(cases) => cases.iter().any(|case| case == name),
+                }
+        })
+    }
+
+    /// Whether FCS keeps the **module qualifier** on `Module.Name` when a public
+    /// child type of the module is named `Name` — the child-type arm of
+    /// [`Self::module_qualified_occupied`]. FCS's in-module type lookup
+    /// (`LookupTypeNameInEntityMaybeHaveArity`) resolves the bare name to the
+    /// child for *every* type kind **except a record or union**, whose bare name
+    /// is not an expression: those two alone FCS re-roots to a lower-priority
+    /// reading (probed exhaustively — a class with only a private constructor, a
+    /// struct with only the implicit default constructor, a non-constructible
+    /// interface, and a delegate all keep the module; a record and a union do
+    /// not). So the rule is purely kind-based, *not* constructibility.
+    ///
+    /// An **abbreviation** child returns `true` here (it is not a record/union),
+    /// making the module-qualified name [`StaticLookup::Uncertain`] — but
+    /// `assembly_path_records` then intercepts it (via
+    /// [`Self::has_public_abbreviation_child`], in the `Uncertain` arm, after a
+    /// resolvable val would have won) and defers the whole path tier-locally
+    /// (`AbbreviationOpaque`): FCS's ownership is target-sensitive and the target
+    /// is unmodelled, so neither committing the module nor falling through is
+    /// safe.
+    ///
+    /// Only a **generic** child reaches this test — the arity-0 [`Self::nested`]
+    /// step consumes non-generic children first — so `Enum` / `Measure` /
+    /// `Exception` / `Module` (none of which can be generic) are unreachable
+    /// here; they map to "keeps" (the safe side: keeping the qualifier defers the
+    /// leaf, never a wrong target, whereas falling through could re-root a path
+    /// FCS owns). The gate keeps this on authoritative pickle data, so the kind
+    /// is trustworthy.
+    fn child_type_keeps_module_qualifier(&self, entity: &Entity) -> bool {
+        !matches!(entity.kind, EntityKind::Record | EntityKind::Union)
     }
 
     /// The type of the **single unambiguous public instance field / non-indexer

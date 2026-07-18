@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Fixture for crates/sema's module-vs-type qualifier precedence
+       differential (tests/all/resolve_qualifier_precedence_diff.rs). A real
+       F# library declaring a deliberate bare-name collision: `QP.ModHalf`
+       holds a MODULE `Collide` (vals, a union whose cases collide with
+       `Object` member names) and `QP.TypeHalf` a TYPE `Collide` (statics),
+       so an `open` pair puts both candidates in scope and the qualifier
+       pick — FCS's `moduleSearch +++ tyconSearch` — is what the snippets
+       exercise. Read through Ecma335Assembly::enumerate_type_defs and fed
+       to FCS via BORZOI_FCS_EXTRA_REFS. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaQualifierFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>

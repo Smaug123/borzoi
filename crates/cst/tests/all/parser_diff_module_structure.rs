@@ -197,6 +197,44 @@ fn diff_ast_namespace_rec_dotted() {
     assert_asts_match("namespace rec A.B\nlet x = 1\n");
 }
 
+/// A *nameless* `namespace` (`Namespace 05.fs`) — FCS accepts it as a
+/// `DeclaredNamespace` with an empty `longId` (the name is deferred to a later
+/// phase, not a parse error). The header parser must not demand an identifier.
+#[test]
+fn diff_ast_namespace_bare_no_name() {
+    assert_asts_match("namespace\n");
+}
+
+/// A nameless `namespace rec` (`Namespace 08.fs`) — an empty-`longId`
+/// `DeclaredNamespace` with `isRecursive` set.
+#[test]
+fn diff_ast_namespace_rec_no_name() {
+    assert_asts_match("namespace rec\n");
+}
+
+/// A nameless namespace is legal *only when empty*: a `namespace` whose name is
+/// missing but which is followed by a *declaration* (`Namespace 02/04/06/07/09.fs`)
+/// is rejected by FCS ("Unexpected start of structured construct … Expected
+/// identifier, 'global'"), so we must reject it too — the empty-name acceptance
+/// must not leak into the bodied case.
+#[test]
+fn diff_ast_namespace_no_name_then_decl_is_error() {
+    assert_asts_match_allow_errors("namespace\n\n()\n");
+    assert_asts_match_allow_errors("namespace\n\ntype T = int\n");
+    assert_asts_match_allow_errors("namespace rec\n\n()\n");
+}
+
+/// A benign trailing comment after a nameless `namespace` is still clean end of
+/// input — both sides accept the empty `DeclaredNamespace`. (A pathological
+/// trailing mid-file BOM or out-of-first-line `#!` shebang instead reads as clean
+/// *here* while FCS's stricter lexer errors — a we-accept divergence on invalid
+/// input that inherits the lexer's documented BOM/shebang-position leniency; see
+/// `parse_namespace_header`. Not asserted: it never fires on valid source.)
+#[test]
+fn diff_ast_namespace_no_name_trailing_comment_is_ok() {
+    assert_asts_match("namespace\n// trailing comment\n");
+}
+
 /// Phase 8.2 — a namespace whose body is an `open` (rather than a `let`),
 /// exercising the header + the phase-8.1 decl together.
 #[test]
@@ -2322,6 +2360,16 @@ fn diff_ast_override_val_auto_property() {
 fn diff_ast_default_val_auto_property() {
     assert_asts_match("type T() =\n  default val P = 0 with get, set\n");
 }
+
+// NB: an initialiser-less `member val P` (`Auto property 04.fs`) — which FCS
+// recovers as a clean `AutoProperty` with a `SynExpr.ArbitraryAfterError`
+// placeholder — is *not* handled here. A first attempt (silent no-`=` recovery)
+// proved too context-sensitive: the shared auto-property parser also runs inside
+// object expressions and `with` augmentations, where FCS rejects `member val`
+// outright, and the recovery leaked clean parses across those contexts (see the
+// review history). A faithful version needs the enclosing context threaded in
+// and property-based coverage over (context × trailing token), so it is deferred;
+// the file stays in `we_reject_fcs_accepts` for now.
 
 /// Phase 9.10a — `override val P = 0` with no get/set clause (`propKind=Member`).
 #[test]
