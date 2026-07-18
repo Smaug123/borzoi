@@ -286,6 +286,9 @@ pub struct ProjectItems {
     /// own Compile slot, which over-defers *intervening* files (FCS resolves
     /// those to the assembly — probe; deferral is the sound direction).
     pub(super) sig_screens: Vec<Arc<SigScreen>>,
+    /// The implicit filename modules of earlier **unpaired headerless**
+    /// implementation files (see [`Self::note_implicit_module_shadow`]).
+    pub(super) implicit_module_shadows: HashSet<Vec<String>>,
     /// Count of items interned across all earlier files. The next file's items
     /// receive project-global [`ItemId`]s starting here, so handles are unique
     /// across the whole project and a single-file caller (`default()`, count 0)
@@ -669,6 +672,31 @@ impl ProjectItems {
     /// signature-free project.
     pub(super) fn has_sig_screens(&self) -> bool {
         !self.sig_screens.is_empty()
+    }
+
+    /// Record a headerless implementation file's **implicit filename
+    /// module** as a defer-only assembly shadow. Sema's export model keeps
+    /// anonymous-root values un-addressable, yet FCS exposes them under the
+    /// implicit module — so a colliding assembly path rooted there must
+    /// defer, never commit the assembly member FCS would shadow with the
+    /// project value (surfaced by the signature matrix's headerless axis;
+    /// a *paired* headerless impl is covered per-name by its signature's
+    /// screen instead, which keeps the hidden-member assembly fall-through).
+    /// Joins `nested_module_paths` (the qualified-path shadow) and its own
+    /// set (the `open`-fold demotion — kept apart so real nested modules,
+    /// whose members *are* modelled, keep their definite open entries).
+    pub(super) fn note_implicit_module_shadow(&mut self, path: Vec<String>) {
+        self.nested_module_paths.insert(path.clone());
+        self.implicit_module_shadows.insert(path);
+    }
+
+    /// Whether an `open` of `opened` reaches into an implicit-module shadow
+    /// (at or under it): the merged project half's values cannot be
+    /// enumerated, so every assembly entry the open folds must defer.
+    pub(super) fn implicit_module_open_screened(&self, opened: &[String]) -> bool {
+        self.implicit_module_shadows
+            .iter()
+            .any(|p| opened.starts_with(p.as_slice()))
     }
 
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {

@@ -1429,9 +1429,13 @@ impl<'a> Resolver<'a> {
                             // assembly). Runs on the *complete* surface list
                             // — the namespace half's auto-open contents
                             // included.
+                            let implicit_screened =
+                                self.preceding.implicit_module_open_screened(gp);
                             for surface in &mut surfaces {
                                 for entry in &mut surface.entries {
-                                    if self.preceding.sig_screened_open_name(gp, &entry.name) {
+                                    if implicit_screened
+                                        || self.preceding.sig_screened_open_name(gp, &entry.name)
+                                    {
                                         entry.target = OpenFoldTarget::Opaque;
                                     }
                                 }

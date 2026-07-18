@@ -267,7 +267,17 @@ an `open` of a signatured module all defer (the module is marked
 hidden-valued, so the conservative project-module-open machinery shadows
 earlier opens — load-bearing: a sig-exposed name must shadow an earlier
 open's same-named value); the qualified forms keep the per-name
-fall-through.
+fall-through. A **headerless** signature roots its screen at the implicit
+filename module (codex round 3), and the same sweep surfaced a
+*pre-existing, signature-independent* hole the fold now also closes: an
+**unpaired headerless implementation**'s values live under the implicit
+module yet are un-addressable in sema's export model, so a colliding
+assembly member used to commit where FCS binds the project value — the
+implicit path is now a defer-only shadow (qualified reads and the open
+fold). QNOF fidelity corners pinned along the way: the Greek
+iota-subscript block's 1:1 simple uppercase mappings, and FCS capitalising
+only the first UTF-16 code unit (a supplementary-plane initial stays
+lowercase).
 
 - Introduce `SourceFile` and rework `resolve_project` / the incremental fold /
   `thread_forward` to iterate `&[(SourceFile, QualifiedName)]`. A

@@ -503,6 +503,36 @@ fn namespace_direct_case_screens_assembly_paths() {
     );
 }
 
+/// Codex review round 3: a **headerless** signature restricts the implicit
+/// filename module (FCS's `ComputeAnonModuleName` — the canonicalised stem,
+/// dots splitting into segments), so its screen must root there: a
+/// sig-exposed name colliding with an assembly member defers, while an
+/// assembly-only name still falls through.
+#[test]
+fn headerless_signature_screens_the_implicit_module() {
+    let files = [
+        ("/p/ProbeNs.Shared.fsi", "val shown: int\n"),
+        ("/p/ProbeNs.Shared.fs", "let shown = 1\nlet bar = 2\n"),
+        (
+            "/p/Use.fs",
+            "module Use\n\nlet a = ProbeNs.Shared.shown\nlet c = ProbeNs.Shared.asmOnly\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_uncommitted(
+        res_at(&proj, &files, 2, "ProbeNs.Shared.shown"),
+        "sig-exposed shown under a headerless signature's implicit module",
+    );
+    assert!(
+        matches!(
+            res_at(&proj, &files, 2, "ProbeNs.Shared.asmOnly"),
+            Some(Resolution::Member { .. })
+        ),
+        "assembly-only asmOnly still falls through, got {:?}",
+        res_at(&proj, &files, 2, "ProbeNs.Shared.asmOnly"),
+    );
+}
+
 /// Timing (probe L + the intervening-collision probe): between the sig and
 /// the impl the module has not published, and FCS resolves an assembly
 /// collision to the assembly. The Stage-1 screen is pushed at the *sig's*
@@ -960,6 +990,9 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
     enum Header {
         Module,
         Namespace,
+        /// Headerless: the contents live under the implicit filename module
+        /// (codex round 3 — the screen must root there).
+        Anon,
     }
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum Sig {
@@ -982,7 +1015,7 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
     let mut deferrals = 0usize;
 
     for collision in [false, true] {
-        for header in [Header::Module, Header::Namespace] {
+        for header in [Header::Module, Header::Namespace, Header::Anon] {
             for sig in [Sig::None, Sig::ShownOnly, Sig::Both] {
                 for style in [UseStyle::Qualified, UseStyle::OpenBare] {
                     // The module's qualified path: the RefLib-colliding
@@ -1011,6 +1044,13 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
                             }
                             s
                         }
+                        Header::Anon => {
+                            let mut s = "val shown: int\n".to_string();
+                            if sig == Sig::Both {
+                                s.push_str("val hidden: int\n");
+                            }
+                            s
+                        }
                     };
                     let impl_src = match header {
                         Header::Module => {
@@ -1019,6 +1059,7 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
                         Header::Namespace => format!(
                             "namespace {ns}\n\nmodule {md} =\n    let shown = 1\n    let hidden = 2\n"
                         ),
+                        Header::Anon => "let shown = 1\nlet hidden = 2\n".to_string(),
                     };
                     // Collision cells also probe `asmOnly` — a name only the
                     // assembly provides, so FCS's verdict there is the
@@ -1045,11 +1086,18 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
                         }
                     };
 
+                    // A headerless file's implicit module comes from its
+                    // stem, so the Anon rows carry the whole dotted path as
+                    // the filename.
+                    let stem = match header {
+                        Header::Anon => dotted.clone(),
+                        _ => md.to_string(),
+                    };
                     let mut rows: Vec<(String, String)> = Vec::new();
                     if sig != Sig::None {
-                        rows.push((format!("{md}.fsi"), sig_src));
+                        rows.push((format!("{stem}.fsi"), sig_src));
                     }
-                    rows.push((format!("{md}.fs"), impl_src));
+                    rows.push((format!("{stem}.fs"), impl_src));
                     rows.push(("Use.fs".to_string(), use_src));
                     let row_refs: Vec<(&str, &str)> = rows
                         .iter()
@@ -1193,6 +1241,28 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
         "assembly agreements: {assembly_agreements}"
     );
     assert!(deferrals >= 12, "deferrals: {deferrals}");
+}
+
+/// Codex round 3's headerless-signature × assembly-collision cell as a live
+/// differential: FCS binds the sig-exposed `shown` of the implicit module to
+/// the `.fsi`; an assembly commit on our side trips the exactness loop.
+#[test]
+fn headerless_signature_collision_agrees_with_fcs() {
+    let reflib = ensure_reflib_built();
+    assert_sig_matches_fcs(&SigProject {
+        label: "sigdiff_anon",
+        files: vec![
+            ("ProbeNs.Shared.fsi", "val shown: int\n"),
+            ("ProbeNs.Shared.fs", "let shown = 1\nlet bar = 2\n"),
+            (
+                "Use.fs",
+                "module Use\n\nlet a = ProbeNs.Shared.shown\nlet c = ProbeNs.Shared.asmOnly\n",
+            ),
+        ],
+        refs: vec![reflib],
+        expected_cross_file: 0,
+        fcs_must_not_declare: vec!["ProbeNs.Shared.asmOnly"],
+    });
 }
 
 /// Codex review P1, the namespace-direct-case × assembly-collision cell as a

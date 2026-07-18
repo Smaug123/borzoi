@@ -419,6 +419,29 @@ impl SourceFile {
             _ => None,
         }
     }
+
+    /// Whether the file is **headerless** — its whole body lives in the
+    /// implicit anonymous module (exactly one fragment, of kind
+    /// [`ModuleOrNamespaceKind::Anon`]).
+    fn is_headerless(&self) -> bool {
+        let fragments: Vec<ModuleOrNamespace> = match self {
+            SourceFile::Impl(f) => f.modules().collect(),
+            SourceFile::Sig(f) => f.modules().collect(),
+        };
+        matches!(&fragments[..], [only] if only.kind() == ModuleOrNamespaceKind::Anon)
+    }
+}
+
+/// The implicit anonymous-module path a headerless file's contents live
+/// under: the QNOF's undeduplicated text, dots splitting into segments
+/// (FCS's `ComputeAnonModuleName`). Empty for an impl-only wrapper's
+/// placeholder QNOF.
+fn implicit_module_path(qnof: &QualifiedNameOfFile) -> Vec<String> {
+    qnof.undeduplicated_text()
+        .split('.')
+        .filter(|seg| !seg.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 impl From<ImplFile> for SourceFile {
@@ -517,7 +540,7 @@ fn pairing_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
 /// ident-shaped pieces, so a name inside a composite token — an
 /// active-pattern `(|Even|Odd|)` — is covered however the lexer tokenises
 /// it). Over-approximation only ever defers.
-fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
+fn signature_screen(sig: &SigFile, qnof: &QualifiedNameOfFile) -> Arc<model::SigScreen> {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
     let mut value_paths = Vec::new();
@@ -598,7 +621,27 @@ fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
                     }
                 }
             }
-            ModuleOrNamespaceKind::Anon => {}
+            ModuleOrNamespaceKind::Anon => {
+                // A headerless signature restricts the **implicit filename
+                // module** (FCS's `ComputeAnonModuleName`: the canonicalised
+                // stem, dots splitting into path segments — which the QNOF
+                // carries, dedup suffix stripped). Without this root a
+                // paired headerless `A.fsi` would screen nothing and a
+                // sig-exposed name could commit to a colliding assembly
+                // member (codex round 3).
+                let path: Vec<String> = qnof
+                    .undeduplicated_text()
+                    .split('.')
+                    .filter(|seg| !seg.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if !path.is_empty() {
+                    roots.push(model::SigRoot {
+                        path,
+                        auto_open: false,
+                    });
+                }
+            }
         }
     }
     Arc::new(model::SigScreen {
@@ -730,9 +773,10 @@ fn resolve_project_files_impl(
         let rf = match &pf.file {
             // A signature file is inert in Stage 1: it owns no `ItemId` range
             // and records nothing; only its screen crosses the boundary.
-            SourceFile::Sig(sig) => {
-                ResolvedFile::inert_signature(preceding.next_base(), signature_screen(sig))
-            }
+            SourceFile::Sig(sig) => ResolvedFile::inert_signature(
+                preceding.next_base(),
+                signature_screen(sig, &pf.qnof),
+            ),
             SourceFile::Impl(file) => {
                 // Per-file span so the fold's cost is attributable in the LSP's
                 // traces: `file` is the Compile item's path (empty when
@@ -775,6 +819,20 @@ fn resolve_project_files_impl(
             screen.as_deref(),
             partners[index].is_some(),
         );
+        // An unpaired headerless implementation: its values live under the
+        // implicit filename module, which sema's export model cannot address
+        // — shadow the path so a colliding assembly member defers rather
+        // than committing where FCS binds the project value. (A paired
+        // headerless impl is screened per-name by its signature instead.)
+        if partners[index].is_none()
+            && matches!(&pf.file, SourceFile::Impl(_))
+            && pf.file.is_headerless()
+        {
+            let path = implicit_module_path(&pf.qnof);
+            if !path.is_empty() {
+                preceding.note_implicit_module_shadow(path);
+            }
+        }
         resolved.push(Arc::new(rf));
     }
     ResolvedProject { files: resolved }
@@ -1052,7 +1110,13 @@ fn resolve_project_files_incremental_impl(
         // screen: the signature's own contribution (its screen,
         // `same_export_contribution`) was compared at the signature's
         // earlier slot.
-        let same_pairing = have_prev && partners_prev[i] == partners_new[i];
+        let same_pairing = have_prev
+            && partners_prev[i] == partners_new[i]
+            // The implicit-module shadow of an unpaired headerless file
+            // derives from its QNOF, so a rename must invalidate exactly
+            // like a pairing change (reuse already requires it via
+            // `same_tree`; this covers the recomputed-but-in-sync path).
+            && prev_files[i].qnof == pf.qnof;
         let reuse = in_sync && same_pairing && same_tree(&prev_files[i], pf);
         reused.push(reuse);
         // Per-file span *only* for a recomputed file (otel): mirrors the cold
@@ -1086,9 +1150,10 @@ fn resolve_project_files_incremental_impl(
             Arc::clone(&prev.files[i])
         } else {
             let rf = match &pf.file {
-                SourceFile::Sig(sig) => {
-                    ResolvedFile::inert_signature(preceding.next_base(), signature_screen(sig))
-                }
+                SourceFile::Sig(sig) => ResolvedFile::inert_signature(
+                    preceding.next_base(),
+                    signature_screen(sig, &pf.qnof),
+                ),
                 SourceFile::Impl(file) => {
                     let mut rf = resolve_file(file, &preceding, assemblies);
                     rf.preceding_declares_extension_source = ext.wholesale;
@@ -1127,6 +1192,17 @@ fn resolve_project_files_incremental_impl(
             screen.as_deref(),
             partners_new[i].is_some(),
         );
+        // The unpaired-headerless implicit-module shadow — exactly as the
+        // cold fold pushes it (see `resolve_project_files_impl`).
+        if partners_new[i].is_none()
+            && matches!(&pf.file, SourceFile::Impl(_))
+            && pf.file.is_headerless()
+        {
+            let path = implicit_module_path(&pf.qnof);
+            if !path.is_empty() {
+                preceding.note_implicit_module_shadow(path);
+            }
+        }
         resolved.push(rf);
     }
     (ResolvedProject { files: resolved }, reused)

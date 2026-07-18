@@ -46,6 +46,23 @@ impl QualifiedNameOfFile {
     pub(crate) fn placeholder() -> Self {
         QualifiedNameOfFile(String::new())
     }
+
+    /// The name with any `___<n>` deduplication suffix stripped — the
+    /// **implicit anonymous-module name** a headerless file's contents live
+    /// under (FCS's `ComputeAnonModuleName` uses the *canonicalised* stem;
+    /// only the QNOF itself is deduplicated). Stripping a stem that
+    /// genuinely ends in `___<n>` over-approximates, which its one consumer
+    /// (the signature screen's implicit-module root) is safe under — it
+    /// only defers more.
+    pub(crate) fn undeduplicated_text(&self) -> &str {
+        if let Some(pos) = self.0.rfind("___") {
+            let suffix = &self.0[pos + 3..];
+            if !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()) {
+                return &self.0[..pos];
+            }
+        }
+        &self.0
+    }
 }
 
 /// Derive each file's [`QualifiedNameOfFile`], in Compile order. `files` and
@@ -142,6 +159,13 @@ fn capitalize_first_invariant(s: &str) -> String {
     let Some(first) = chars.next() else {
         return String::new();
     };
+    // FCS slices the first UTF-16 **code unit** (`s[0..0]` in F#): a
+    // supplementary-plane initial contributes its lone high surrogate, which
+    // `ToUpperInvariant` maps to itself — so such a name is left
+    // uncapitalised (codex round 3).
+    if first as u32 > 0xFFFF {
+        return s.to_string();
+    }
     let mut out = String::with_capacity(s.len());
     out.push(simple_uppercase(first));
     out.push_str(chars.as_str());
@@ -210,6 +234,10 @@ mod tests {
         // though the full mapping expands (.NET: `ᾳ` → `ᾼ`, codex round 2).
         assert_eq!(canonicalize_filename(Path::new("/a/ᾳ.fs")), "ᾼ");
         assert_eq!(canonicalize_filename(Path::new("/a/ᾀx.fs")), "ᾈx");
+        // A supplementary-plane initial stays uncapitalised: FCS upper-cases
+        // only the first UTF-16 code unit — a lone high surrogate — which
+        // maps to itself (codex round 3; Deseret 𐐨 would otherwise become 𐐀).
+        assert_eq!(canonicalize_filename(Path::new("/a/𐐨.fs")), "𐐨");
     }
 
     #[test]
