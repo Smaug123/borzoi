@@ -1,14 +1,13 @@
 # File-watch invalidation plan (`workspace/didChangeWatchedFiles`)
 
-> **Status: implemented.** Both stages landed — Stage 1 (notification handler +
-> invalidation + republish, PR #353) and Stage 2 (dynamic watcher registration,
-> PR #355). `State::apply_watched_file_changes` / `classify_change` /
-> `Workspace::invalidate_projects` / `SemanticState::invalidate_all` /
-> `State::watched_files_registration` are all in place with their oracles. The
-> items under "Risks / out of scope" (targeted per-project invalidation,
-> debouncing, `workspace/diagnostic/refresh` server→client push) were
-> *deliberately deferred*, not left unfinished — each is a measured optimization
-> or a separate enhancement, not a stage of this plan. Kept as the design record.
+> **Status: implemented.** The notification handler, dynamic watcher
+> registration, referenced-assembly invalidation, and capability-gated pull
+> diagnostic refresh are in place. `State::apply_watched_changes` /
+> `classify_change` / `Workspace::invalidate_projects` /
+> `SemanticState::invalidate_all` / `State::watched_files_registration` are all
+> in place with their oracles. The remaining items under "Risks / out of scope"
+> are deliberately deferred optimizations or separate enhancements, not
+> unfinished stages. Kept as the design record.
 
 > Closes the "stale until restart" gap flagged across the codebase
 > (`semantic.rs`, `workspace.rs`, `workspace_symbol.rs`,
@@ -90,10 +89,12 @@ An open `.fs` buffer's diagnostics depend on its owning project's
 `DefineConstants` (via `symbols_for`), so after a `Structural` change re-run
 `publish_diagnostics` for **every open document** (the changed `.fsproj`
 included, if open). `publish_diagnostics` sends only for push-mode clients;
-pull-mode clients rely on their next document/workspace pull over the freshly
-invalidated caches. A `Source`-only change cannot alter an open buffer's
-lexer/parser diagnostics (cross-file sema isn't in the diagnostic path yet) →
-invalidate semantic, **no** republish.
+pull-mode clients advertising `workspace.diagnostics.refreshSupport` receive a
+`workspace/diagnostic/refresh` request; other pull clients see the fresh caches
+on their next natural document/workspace pull. A `Source`-only change cannot
+alter an open buffer's lexer/parser diagnostics (cross-file sema isn't in the
+diagnostic path yet) → invalidate semantic, **no** push republish, but request a
+workspace diagnostic refresh because its own on-disk report changed.
 
 ### W4 — Assembly env must drop too
 A `Structural` change clears `SemanticState.assembly_envs` (a `.fsproj` /
@@ -222,6 +223,23 @@ survival test on `apply_watched_changes`; and the end-to-end
 rebuild the sibling with a changed public surface, deliver the DLL event, and
 observe the new (and only the new) surface in the refreshed env.
 
+### Follow-up — Pull-diagnostic refresh ✅ DONE
+
+After a `Structural` or source-content change, `State` records
+diagnostic-refresh debt independently of its open-buffer republish list. A pull
+client advertising `workspace.diagnostics.refreshSupport` receives
+`workspace/diagnostic/refresh`.
+Source-content changes record the same debt because workspace diagnostics read
+unopened files from disk; assembly-input and ignored changes do not. Diagnostic
+and semantic-token refreshes share one in-flight slot, with diagnostics first
+and the next owed refresh sent after the matching reply.
+
+**Correctness oracle:** raw plural-capability and change-class truth tables;
+no-open-buffer wire regressions for structural and source-content changes; a
+negative wire barrier for unsupported clients; coalescing while a request is in
+flight; diagnostic-before-semantic ordering; and unmatched-response / shutdown
+behaviour.
+
 ## Risks / out of scope
 
 - **Over-invalidation (W2).** A single `.fsproj` edit clears all cached
@@ -231,8 +249,9 @@ observe the new (and only the new) surface in the refreshed env.
   (Stage 2) nor watches via its own static configuration never sends the
   notification — but Stage 1's handler is correct and harmless regardless, and
   Stage 2's registration covers dynamic-registration clients.
+- **Client must support diagnostic refresh.** A pull client without
+  `workspace.diagnostics.refreshSupport` receives no global request and observes
+  structural or source-content changes on its next natural diagnostic pull.
 - **Out of scope:** targeted (per-project / per-subtree) invalidation;
   debouncing bursts of changes; watching arbitrary imported `.props`/`.targets`
-  outside the glob set; reacting to changes by *pushing* fresh
-  `workspace/diagnostic` refreshes (a `workspace/diagnostic/refresh` server→client
-  request is a separate, later enhancement).
+  outside the glob set.
