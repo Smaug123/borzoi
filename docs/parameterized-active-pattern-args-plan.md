@@ -396,30 +396,50 @@ not as a divergence).
 
 ---
 
-### Stage 3 (optional follow-up): degrade unknown-shape heads
+### Stage 3: cross-file / assembly shapes, then degrade the residue
 
-**Dependencies**: Stage 2. **May be deferred** — it is a *separate* pre-existing
-gap (cross-file active patterns are barely modelled) and requires new cross-file
-metadata.
+**Dependencies**: Stage 2. Split into three sub-stages, tracked in
+`docs/export-decl-model-plan.md` Stage 3 (which owns the enabling boundary
+model). The key insight is that the *degrade* (originally the whole of Stage 3)
+must come **last**: a blanket decline of an unknown-shape active pattern's
+arguments would regress arity-0 total APs (`KeyValue (k, v)`), whose fabricated
+binders are *correct* (the argument is the result). So shapes cross the boundary
+first, shrinking the unknown-shape residue, and only the remainder is declined.
 
-**Implements**: "Degrade for unknown shape".
+- **3a — project side (delivered by `export-ap-cross-file`).** `ActivePatternCase`
+  export decls carry `shape: ActivePatternShape`; a module's AP cases become
+  cross-file-visible in the **pattern (constructor) namespace only**. They ride
+  `value_exports` as **pattern-only** `ExportRecord`s (never a *value*: every
+  value-namespace query filters `!pattern_only`, so a bare use stays FS0039), so
+  they inherit the constructor namespace's Compile-order provenance and
+  accessibility recovery — reusing the existing case machinery rather than a
+  separate index (the design the export plan's Stage 3a settled on after review).
+  Each case gets a per-case `ExportedItem` (`qualified: None`) whose def is the
+  recognizer span, giving **one identity** shared by same-file and cross-file uses
+  (find-references spans both); its scope entry is `pattern_only` so expression
+  lookup skips it. The AP hidden-value trigger is narrowed so the module is
+  enumerable (which also stops over-suppressing its union/exception cases). The
+  use-site split (`split_active_pattern_args`) is reused verbatim: the shape lookup
+  generalises from `active_pattern_shape` (`Local`) to a `Resolution::Item` —
+  same-file via `self.items[..].def`, cross-file via
+  `ProjectItems::active_pattern_shape_of`. **Unknown shape still keeps today's
+  fabricate-a-binder behaviour — no declines in 3a.**
+- **3b — assembly side.** Derive assembly AP shape from metadata (mangled
+  `|A|B|` name → cases + totality; signature arity → `arity = params − 1`) and
+  attach it to the assembly fold's `opened_case` entries, so `(|KeyValue|)` /
+  `(|Failure|_|)` split too.
+- **3c — degrade the residue.** *Then* decline the name arguments of a
+  still-unknown-shape AP-certain head, pushing an `ap_case_barrier`-style shadow
+  barrier for a declined maybe-result binder so an arm-body use does not wrongly
+  commit an outer value. Blocked-on note (now resolved by 3a/3b for the common
+  cases): telling a cross-file *active pattern* apart from a *union case* — a
+  union case's arguments genuinely bind, so the decline must fire only on the
+  shape-unknown-*AP* residue, which 3a+3b make small.
 
-For an applied head that resolves to an active pattern whose shape we cannot see
-(cross-file `Item`, opaque assembly case, deferred/qualified head), decline its
-name arguments rather than fabricate binders. **Blocked on** being able to tell a
-cross-file *active pattern* apart from a cross-file *union case* at the use site —
-today the boundary records only `is_case` (`model.rs:447`; `assembly_env.rs`
-opaque tags), and a union case's arguments genuinely bind, so a blanket decline
-would regress `Some x`-style cross-file union patterns. The enabling infrastructure
-is exporting the case *kind* (and ideally the shape) across the Compile-order /
-assembly boundary — a prerequisite sub-stage.
-
-**Correctness oracle**:
-- A cross-file / opened parameterized active pattern used as `Foo bar` no longer
-  fabricates a `PatternLocal` for `bar` (it declines); a cross-file *union* case
-  `Some x` still binds `x`.
-- FCS differential over a multi-file fixture exercising both: certain-implies-agree
-  holds; no fabricated-binder commitment survives.
+**Correctness oracle** (3c): a cross-file / opened parameterized active pattern
+used as `Foo bar` no longer fabricates a `PatternLocal` for `bar`; a cross-file
+*union* case `Some x` still binds `x`; FCS differential over a multi-file fixture
+exercising both, certain-implies-agree.
 
 ## References
 

@@ -72,11 +72,13 @@ use rowan::TextRange;
 /// goes up — bump it after a phase lands. A drop is a regression. Tied to the
 /// default stride; re-measure with `--ignored` if you change `*_STRIDE`.
 ///
-/// Conservative: 12016 was measured 2026-06-29 (348 files compared, stride 13);
-/// the floor sits a little under it to absorb the rare FCS isolation-check
-/// flake, and parser improvements (which move files out of `our_errors` into the
-/// compared set) only raise the true count, so re-tighten after they land.
-const MIN_RESOLUTION_MATCHES: usize = 11_800;
+/// Conservative: 21678 was measured 2026-07-17 (355 files compared, stride 13)
+/// after the member-body-resolution slice (`docs/member-body-resolution-plan.md`)
+/// took the count from ~12258; the floor sits a little under it to absorb the
+/// rare FCS isolation-check flake, and parser improvements (which move files out
+/// of `our_errors` into the compared set) only raise the true count, so
+/// re-tighten after they land.
+const MIN_RESOLUTION_MATCHES: usize = 21_400;
 
 /// Upper bound on unambiguous resolution faults (`Unresolved` / assembly entity
 /// / wrong-named binder where FCS found an in-file binder). Gated to zero — each
@@ -85,9 +87,12 @@ const MAX_RESOLUTION_DIVERGENCES: usize = 0;
 
 /// Upper bound on alt-binder disagreements (same-named in-file binder, different
 /// range — OR-pattern canonicalisation / isolation-bias recovery, not bugs).
-/// Loosely ceilinged to catch an explosion, not to drive to zero: 147 measured
-/// 2026-06-29, with headroom for parser improvements surfacing more OR-patterns.
-const MAX_ALT_BINDERS: usize = 220;
+/// Loosely ceilinged to catch an explosion, not to drive to zero: 230 measured
+/// 2026-07-17. The member-body slice surfaced ~83 more (member-body OR-patterns
+/// like `member c.StartPos`'s `| CtxtA p | CtxtB p …`, and nested-shadow uses in
+/// walker methods) — same-named, all against a `0` divergence count, so benign
+/// coverage growth, not a fault. Headroom left for parser work surfacing more.
+const MAX_ALT_BINDERS: usize = 260;
 
 /// Floor on **in-file B1 coverage**, in permille — the fraction of pure-lexical
 /// uses FCS resolves to an in-file binder that we *also* bind
@@ -109,10 +114,12 @@ const MAX_ALT_BINDERS: usize = 220;
 /// `value:local-or-param`). Tied to the default stride; re-measure with
 /// `--ignored` if you change `*_STRIDE`.
 ///
-/// 488‰ measured 2026-07-17 (12258 / 25069 B1 uses, 355 files, stride 13); the
-/// floor sits a little under it to absorb the rare FCS isolation-check flake and
-/// marginal population drift. Raise it after a phase moves gaps into matches.
-const MIN_B1_COVERAGE_PERMILLE: usize = 480;
+/// 867‰ measured 2026-07-17 (21678 / 24984 B1 uses, 355 files, stride 13) after
+/// the member-body-resolution slice moved ~9400 in-member gaps into matches (was
+/// 488‰); the floor sits a little under it to absorb the rare FCS isolation-check
+/// flake and marginal population drift. Raise it after a phase moves gaps into
+/// matches.
+const MIN_B1_COVERAGE_PERMILLE: usize = 850;
 
 /// How many sites of each kind to print for investigation.
 const SAMPLE: usize = 40;

@@ -843,6 +843,109 @@ fn cross_file_resolution_agrees_with_fcs() {
             ],
             expected_cross_file: 1,
         },
+        // Stage 3a — a cross-file **active-pattern case**, opened: `open A; match
+        // n with Even | Odd` resolves both case heads cross-file to file0's
+        // recognizer span (two cross-file references). The recognizer-body
+        // constructions (`then Even else Odd`) are same-file and we decline them
+        // (the `ap_case_barrier`), which the allowed Deferred bucket covers.
+        Project {
+            files: vec![
+                (
+                    "ap_open_1",
+                    "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n",
+                ),
+                (
+                    "ap_open_2",
+                    "module B\nopen A\nlet f n = match n with Even -> 1 | Odd -> 0\n",
+                ),
+            ],
+            expected_cross_file: 2,
+        },
+        // …a **partial parameterized** cross-file AP (`DivBy`, arity 1): the head
+        // resolves cross-file; its parameter `divisor` (k = 1 = paramCount)
+        // resolves to the outer `let divisor` in file1 (same-file, not counted),
+        // never a fabricated binder.
+        Project {
+            files: vec![
+                (
+                    "ap_divby_1",
+                    "module A\nlet (|DivBy|_|) (d: int) (n: int) = if n % d = 0 then Some () else None\n",
+                ),
+                (
+                    "ap_divby_2",
+                    "module B\nopen A\nlet divisor = 3\nlet f n = match n with DivBy divisor -> 1 | _ -> 0\n",
+                ),
+            ],
+            expected_cross_file: 1,
+        },
+        // …a **parameter then result** cross-file AP (`DivBy divisor q`, k = 2 =
+        // paramCount + 1): `divisor` is the parameter (outer value, same-file),
+        // `q` the result binder (same-file); only the `DivBy` head is cross-file.
+        Project {
+            files: vec![
+                (
+                    "ap_dbr_1",
+                    "module A\nlet (|DivBy|_|) (d: int) (n: int) = if n % d = 0 then Some (n / d) else None\n",
+                ),
+                (
+                    "ap_dbr_2",
+                    "module B\nopen A\nlet divisor = 3\nlet f n = match n with DivBy divisor q -> q | _ -> 0\n",
+                ),
+            ],
+            expected_cross_file: 1,
+        },
+        // …a **total single-case** cross-file AP (`Scale g`, k = 1): frontAndBack
+        // binds `g` (the partially-applied result) at its own occurrence, not the
+        // outer `let g`; only the `Scale` head is cross-file.
+        Project {
+            files: vec![
+                (
+                    "ap_scale_1",
+                    "module A\nlet (|Scale|) (k: int) (x: int) = k * x\n",
+                ),
+                (
+                    "ap_scale_2",
+                    "module B\nopen A\nlet g = 7\nlet s n = match n with Scale g -> g\n",
+                ),
+            ],
+            expected_cross_file: 1,
+        },
+        // …**latest-open-wins**: two modules both export `Even`; `open A1; open A2`
+        // binds the later one's case (file1).
+        Project {
+            files: vec![
+                (
+                    "ap_2op_a",
+                    "module A1\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n",
+                ),
+                (
+                    "ap_2op_b",
+                    "module A2\nlet (|Even|NotEven|) n = if n % 2 = 0 then Even else NotEven\n",
+                ),
+                (
+                    "ap_2op_c",
+                    "module B\nopen A1\nopen A2\nlet f n = match n with Even -> 1 | _ -> 0\n",
+                ),
+            ],
+            expected_cross_file: 1,
+        },
+        // …the **sibling union un-suppression**: a module hidden ONLY by its AP
+        // cases becomes enumerable when they cross the boundary, so its union
+        // cases (today over-suppressed) resolve cross-file too — Even, Odd, Red,
+        // Green all resolve to file0 (four cross-file references).
+        Project {
+            files: vec![
+                (
+                    "ap_sib_1",
+                    "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\ntype Color = Red | Green\n",
+                ),
+                (
+                    "ap_sib_2",
+                    "module B\nopen A\nlet f n = match n with Even -> 1 | Odd -> 0\nlet name c = match c with Red -> 1 | Green -> 0\n",
+                ),
+            ],
+            expected_cross_file: 4,
+        },
     ];
 
     for project in &corpus {
@@ -875,6 +978,46 @@ fn chained_open_prefers_prior_open_namespace_over_enclosing_module() {
             (
                 "chain_use",
                 "namespace Demo\n\nmodule M =\n    open X\n    open Sub\n    open Y\n    let z = marker\n",
+            ),
+        ],
+        expected_cross_file: 1,
+    });
+}
+
+#[test]
+fn literal_constant_patterns_shadow_cases_like_fcs() {
+    // `[<Literal>]` values are constant patterns: unlike plain values they
+    // contest the pattern namespace against constructor cases (latest-wins in
+    // FCS's `ePatItems`; within ONE opened module the vals fold after the
+    // tycons, so the module's own literal wins regardless of source order —
+    // `g`/`h` below). Sema defers each contested bare head (FCS binds the
+    // literal, which we do not commit to — the harness allows the decline and
+    // would fail on the old wrong commit of the case), while `Odd`, which no
+    // maybe-literal contests, still commits cross-file to the recognizer.
+    assert_matches_fcs(&Project {
+        files: vec![
+            (
+                "LitA.fs",
+                "module LitA\n\
+                 let (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n\
+                 type C =\n    | Red\n    | Blue\n\
+                 [<Literal>]\n\
+                 let Red = 9\n\
+                 [<Literal>]\n\
+                 let Shadow = 5\n\
+                 type D =\n    | Shadow\n    | Teal\n",
+            ),
+            (
+                "LitB.fs",
+                "module LitB\n\
+                 open LitA\n\
+                 [<Literal>]\n\
+                 let Even = 7\n\
+                 let f (n: int) = match n with Even -> 1 | _ -> 0\n\
+                 let g (n: int) = match n with Red -> 2 | _ -> 0\n\
+                 let h (n: int) = match n with Shadow -> 3 | _ -> 0\n\
+                 let q (d: D) = match d with LitA.Shadow -> 4 | _ -> 0\n\
+                 let before (n: int) = match n with Odd -> 5 | _ -> 6\n",
             ),
         ],
         expected_cross_file: 1,

@@ -1,9 +1,11 @@
 //! Type definitions (`define_*`) and type-position name resolution.
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, Pat, SyntaxKind, SyntaxToken,
-    TupleSegment, Type, TypeDefn, TypeDefnRepr,
+    ActivePatName, AstNode, LongIdentPat, MemberDefn, MemberLeading, MemberLetBindings, Pat,
+    SyntaxKind, SyntaxToken, TupleSegment, Type, TypeDefn, TypeDefnRepr,
 };
+
+use super::state::Frame;
 
 use rowan::TextRange;
 
@@ -12,7 +14,9 @@ use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
-use super::model::{CaseKind, DeferredReason, ExportDeclKind, Resolution, SlotClass};
+use super::model::{
+    CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, Resolution, SlotClass,
+};
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
 };
@@ -395,6 +399,7 @@ impl<'a> Resolver<'a> {
         apn: &ActivePatName,
         at_module_level: bool,
         arity: Option<usize>,
+        is_private: bool,
     ) -> Vec<ScopeEntry> {
         let Some(range) = apn.name_range() else {
             // A malformed name with no `|` (recovery): nothing to intern.
@@ -458,8 +463,8 @@ impl<'a> Resolver<'a> {
             };
             let use_id = self.intern(use_def);
             // Every case of one recognizer shares its shape, keyed by the *use*
-            // identity `case_reference` returns, so a same-file applied head can
-            // look it up (Stage 2). No consumer reads it yet.
+            // identity — the case's `use_id` def, which is also the `ExportedItem`'s
+            // `def` below, so a same-file `Item` maps back to it (Stage 3a).
             self.active_pattern_shape.insert(use_id, shape);
             // A *module-level* case name occupies the value/pattern namespace of its
             // container; record it so a same-named type is seen as contention for the
@@ -468,23 +473,62 @@ impl<'a> Resolver<'a> {
             // cannot reach it — so it must not touch `container_decls`, or a later
             // `match … with Pal.Color.Red` would wrongly defer instead of resolving the
             // union case.
-            if at_module_level {
+            //
+            // Stage 3a: a non-anonymous-root module-level case gets ONE
+            // project-global identity — a `Resolution::Item` shared by same-file AND
+            // cross-file uses (find-references/rename span both — the union-case
+            // precedent) — via an [`ExportedItem`] with `qualified: None` (so
+            // value-namespace queries never see it; it rides `value_exports` as a
+            // pattern-only case through the decl derivation) whose `def` is the
+            // recognizer-span `use_id`, pointing go-to-def at the recognizer. A
+            // distinct `ItemId` per case keeps find-references per-case. An
+            // anonymous-root or *local* case has no cross-file handle: it stays a
+            // file-local `Resolution::Local(use_id)`.
+            let case_res = if at_module_level {
                 self.mark_decl(&case_name).active_pattern = true;
-                // The export-decl-list twin of the module-level hidden-value
-                // marker (legacy `note_hidden_value_module` at the `module_let`
-                // group level): each module-level case decl makes its container
-                // derive into `modules_with_hidden_values`. Its `path` (container +
-                // case name) is the hidden-container anchor; Stage 3 attaches the
-                // recognizer shape.
+                let item = if self.anonymous_root {
+                    None
+                } else {
+                    let item_idx = self.items.len();
+                    let item_id = ItemId::new(self.item_base as usize + item_idx);
+                    self.items.push(ExportedItem {
+                        name: case_name.clone(),
+                        qualified: None,
+                        id: item_id,
+                        def: use_id,
+                        case: None,
+                        access_root_len: self.export_access_root_len(is_private),
+                        attributed: false,
+                    });
+                    Some((item_idx, item_id))
+                };
                 let mut path = self.container_path.clone();
                 path.push(case_name.clone());
-                self.push_export_decl(path, token_range.start(), ExportDeclKind::ActivePatternCase);
-            }
-            entries.push(ScopeEntry::binding(
-                case_name,
-                Resolution::Local(use_id),
-                self.open_generation,
-            ));
+                self.push_export_decl(
+                    path,
+                    token_range.start(),
+                    ExportDeclKind::ActivePatternCase {
+                        item: item.map(|(idx, _)| idx),
+                        shape,
+                    },
+                );
+                match item {
+                    Some((_, item_id)) => Resolution::Item(item_id),
+                    None => Resolution::Local(use_id),
+                }
+            } else {
+                Resolution::Local(use_id)
+            };
+            // The case entry is **pattern-namespace-only** — an active-pattern case
+            // is not a value in expression position (`let v = Even` is FS0039). Mark
+            // it so `latest_entry` (expression lookup) skips it regardless of whether
+            // it is `Item`- (module-level, Stage 3a) or `Local`-backed (anonymous
+            // root / a local recognizer); `case_reference` (pattern position) still
+            // finds it. Without this an `Item`-backed case would leak into
+            // expression lookup and shadow a same-named ordinary value.
+            let mut entry = ScopeEntry::binding(case_name, case_res, self.open_generation);
+            entry.pattern_only = true;
+            entries.push(entry);
         }
         entries
     }
@@ -564,6 +608,304 @@ impl<'a> Resolver<'a> {
             | Some(TypeDefnRepr::InlineIl(_))
             | None => {}
         }
+    }
+
+    /// Resolve the value uses **inside a type's member bodies** — the slice that
+    /// lets a `member` / `new` / property body see its self-identifier, its
+    /// parameters, the type's primary-constructor parameters, and the type's
+    /// class-level `let`/`do` fields. Before this the resolver indexed member
+    /// *names* (so `Type.Member` resolves from outside) but never descended into
+    /// the bodies, so every local/parameter use inside a member deferred.
+    ///
+    /// The scope is layered, innermost last:
+    /// * a **type frame** — the primary-ctor params (and `as self`), visible to
+    ///   every field RHS and member body;
+    /// * a **field frame** — the class-level `let`/`do` bindings, accumulated in
+    ///   source order (a field RHS sees ctor params + earlier fields) and visible
+    ///   to every member body;
+    /// * a per-member **member frame** — the member's self-id + curried params.
+    ///
+    /// Only **genuine** definitions are walked: an *augmentation* (`type T with
+    /// …`) lacks the original type's ctor-param / field scope, so walking its
+    /// bodies blind could bind a same-named module value where FCS binds the
+    /// type's private field — a D5 divergence. Augmentation bodies defer wholesale
+    /// (sound under-resolution), a later slice.
+    pub(super) fn resolve_type_member_bodies(&mut self, defn: &TypeDefn) {
+        if super::is_type_augmentation(defn) {
+            return;
+        }
+        // The same member union `define_type_members` files: object-model repr
+        // members plus any trailing members.
+        let mut members: Vec<MemberDefn> = defn.members().collect();
+        if let Some(TypeDefnRepr::ObjectModel(om)) = defn.repr() {
+            members.extend(om.members());
+        }
+
+        // F# splits a type's field scope by staticness. Two owned accumulators,
+        // built in source order:
+        //  * `instance_entries` — the ctor params, `as self`, then *every* field
+        //    (static and instance) in source order; the scope an *instance* body
+        //    sees. A static field is added here too, at its source position, so
+        //    latest-wins gives the right precedence (a later `static let x`
+        //    shadows an earlier ctor param `x`).
+        //  * `static_entries` — the static fields only; the scope a *static* body
+        //    (a `static member` / `static let` / static auto-property initialiser
+        //    / secondary `new`) sees. The instance scope is unavailable there:
+        //    such a body runs before/without an instance, so binding its uses
+        //    against the ctor params / instance fields would wrong-resolve a name
+        //    that shadows an outer binding (`let x = 0; type T(x) = static member
+        //    S = x` is `M.x`, not the ctor param).
+        let mut instance_entries: Vec<ScopeEntry> = Vec::new();
+        if let Some(ctor) = defn.implicit_ctor() {
+            instance_entries
+                .extend(self.pattern_locals(ctor.args().into_iter(), BinderRole::Param));
+            if let Some(self_tok) = ctor.self_id()
+                && let Some(entry) = self.bind_self_ident(&self_tok)
+            {
+                instance_entries.push(entry);
+            }
+        }
+        let mut static_entries: Vec<ScopeEntry> = Vec::new();
+
+        // Class-level `let`/`do`, in source order — each RHS/body sees the fields
+        // (of matching or wider staticness) declared before it.
+        for m in &members {
+            match m {
+                MemberDefn::LetBindings(lb) => {
+                    self.resolve_class_let(lb, &mut static_entries, &mut instance_entries);
+                }
+                MemberDefn::Do(d) => {
+                    let depth =
+                        self.push_field_scope(d.is_static(), &static_entries, &instance_entries);
+                    if let Some(e) = d.expr() {
+                        self.resolve_expr(&e);
+                    }
+                    self.pop_field_scope(depth);
+                }
+                _ => {}
+            }
+        }
+
+        // Member bodies, each against its own (static or instance) field scope.
+        for m in &members {
+            self.resolve_member_body(m, &static_entries, &instance_entries);
+        }
+    }
+
+    /// Push the single field frame a body/RHS of the given staticness resolves
+    /// against — the **static** field list for a static context, or the
+    /// **instance** field list for an instance context. One frame, not two, so
+    /// within-frame latest-wins reproduces F#'s source-order precedence: the
+    /// instance list holds the ctor params, `as self`, and *every* field
+    /// (static and instance) in source order, so a later `static let x` correctly
+    /// shadows an earlier ctor param `x` in an instance body. The static list
+    /// holds only the static fields. Returns the frame count (always 1) for
+    /// [`Self::pop_field_scope`].
+    fn push_field_scope(
+        &mut self,
+        is_static: bool,
+        static_entries: &[ScopeEntry],
+        instance_entries: &[ScopeEntry],
+    ) -> usize {
+        let entries = if is_static {
+            static_entries
+        } else {
+            instance_entries
+        };
+        self.scopes.push(Frame {
+            entries: entries.to_vec(),
+        });
+        1
+    }
+
+    fn pop_field_scope(&mut self, depth: usize) {
+        for _ in 0..depth {
+            self.scopes.pop();
+        }
+    }
+
+    /// Resolve one type-member's body against the field scope of its staticness,
+    /// pushing a per-member frame for its self-identifier and parameters. The
+    /// class-level `let`/`do` fields are handled by the caller (they scope *all*
+    /// members of matching staticness).
+    fn resolve_member_body(
+        &mut self,
+        m: &MemberDefn,
+        static_entries: &[ScopeEntry],
+        instance_entries: &[ScopeEntry],
+    ) {
+        match m {
+            MemberDefn::Member(mm) => {
+                let Some(b) = mm.binding() else {
+                    return;
+                };
+                // A `static member` and a secondary constructor (`new`) are both
+                // static contexts: no self-id, no access to the instance scope.
+                let is_static = mm.is_static() || mm.leading_keyword() == MemberLeading::New;
+                // The field scope is pushed *before* the parameter patterns are
+                // resolved, so a param pattern that uses a class-local active
+                // pattern (`member _.M(Hit y)`) resolves it against the class
+                // fields, not a same-named module recognizer.
+                let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+                let mut entries = Vec::new();
+                if let Some(Pat::LongIdent(l)) = b.pat() {
+                    // The self-identifier is the first head segment on an
+                    // *instance* member — before the member name (`member
+                    // this.Name`), or, on the invalid active-pattern-named form
+                    // (`member x.(|Hit|)`), the only ident, the name being a
+                    // sibling `ActivePatName`. Static members / constructors have
+                    // none.
+                    if !is_static && let Some(head) = l.head() {
+                        let idents: Vec<SyntaxToken> = head.idents().collect();
+                        let name_is_active_pattern = l
+                            .syntax()
+                            .children()
+                            .any(|c| ActivePatName::can_cast(c.kind()));
+                        let self_len = if name_is_active_pattern { 1 } else { 2 };
+                        if idents.len() >= self_len
+                            && let Some(first) = idents.first()
+                            && let Some(entry) = self.bind_self_ident(first)
+                        {
+                            entries.push(entry);
+                        }
+                    }
+                    entries.extend(self.pattern_locals(l.args(), BinderRole::Param));
+                }
+                if let Some(ret) = b.return_type() {
+                    self.resolve_type(&ret);
+                }
+                self.scopes.push(Frame { entries });
+                if let Some(body) = b.expr() {
+                    self.resolve_expr(&body);
+                }
+                self.scopes.pop();
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::GetSetMember(g) => {
+                // A get/set property shares one self-identifier across both
+                // accessors; each accessor has its own parameter list + body. The
+                // field scope wraps the whole property so the self-id and every
+                // accessor parameter pattern resolve against the class fields.
+                let is_static = g.is_static();
+                let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+                let self_entry = (!is_static)
+                    .then(|| {
+                        g.head_pat().and_then(|p| p.head()).and_then(|h| {
+                            let idents: Vec<SyntaxToken> = h.idents().collect();
+                            (idents.len() >= 2).then(|| idents[0].clone())
+                        })
+                    })
+                    .flatten()
+                    .and_then(|tok| self.bind_self_ident(&tok));
+                for acc in [g.getter(), g.setter()].into_iter().flatten() {
+                    let mut entries = Vec::new();
+                    if let Some(e) = &self_entry {
+                        entries.push(e.clone());
+                    }
+                    entries.extend(self.pattern_locals(acc.args(), BinderRole::Param));
+                    if let Some(ret) = acc.return_type() {
+                        self.resolve_type(&ret);
+                    }
+                    self.scopes.push(Frame { entries });
+                    if let Some(body) = acc.body() {
+                        self.resolve_expr(&body);
+                    }
+                    self.scopes.pop();
+                }
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::AutoProperty(a) => {
+                // `member val P = init`: the initialiser runs in the constructor
+                // — an instance context (ctor params + fields) unless declared
+                // `static`. No self-id / params either way.
+                if let Some(ty) = a.ty() {
+                    self.resolve_type(&ty);
+                }
+                let depth = self.push_field_scope(a.is_static(), static_entries, instance_entries);
+                if let Some(e) = a.expr() {
+                    self.resolve_expr(&e);
+                }
+                self.pop_field_scope(depth);
+            }
+            MemberDefn::Interface(i) => {
+                // `interface I with member …`: resolve the interface type and
+                // recurse into the implementing members (each a normal member).
+                if let Some(ty) = i.interface_type() {
+                    self.resolve_type(&ty);
+                }
+                for inner in i.members() {
+                    self.resolve_member_body(&inner, static_entries, instance_entries);
+                }
+            }
+            // `let`/`do` fields are handled by the caller; abstract slots, val
+            // fields, member signatures, and `inherit` carry no resolvable body.
+            MemberDefn::LetBindings(_)
+            | MemberDefn::Do(_)
+            | MemberDefn::AbstractSlot(_)
+            | MemberDefn::ValField(_)
+            | MemberDefn::MemberSig(_)
+            | MemberDefn::Inherit(_) => {}
+        }
+    }
+
+    /// Process a type's class-level `let` / `let rec` field group, mirroring
+    /// [`Self::resolve_local_let`](super::Resolver::resolve_local_let) but routing
+    /// the value binders into the caller's field accumulators (by the group's
+    /// staticness) so they scope the right member bodies. Both the group's heads
+    /// (annotations, active-pattern-arg patterns) and its RHSs resolve against the
+    /// fields declared *before* this group, so a later class-`let` that uses an
+    /// earlier class-local active pattern binds the class recognizer, not a
+    /// same-named module one.
+    fn resolve_class_let(
+        &mut self,
+        lb: &MemberLetBindings,
+        static_entries: &mut Vec<ScopeEntry>,
+        instance_entries: &mut Vec<ScopeEntry>,
+    ) {
+        let is_static = lb.is_static();
+        // The prior-field scope covers head interning *and* RHS resolution.
+        let depth = self.push_field_scope(is_static, static_entries, instance_entries);
+        let (value_entries, per_binding) = self.prepare_local_bindings(lb.bindings());
+        if lb.is_rec() {
+            // A `rec` field is in scope for every RHS in the group (mutually
+            // recursive fields), so make the value binders visible for the RHSs.
+            self.scopes.push(Frame {
+                entries: value_entries.clone(),
+            });
+            self.resolve_local_let_rhss(&per_binding);
+            self.scopes.pop();
+        } else {
+            self.resolve_local_let_rhss(&per_binding);
+        }
+        self.pop_field_scope(depth);
+        // Accumulate in source order. A static field enters *both* scopes (an
+        // instance body sees it too, at this position); an instance field only
+        // the instance scope.
+        if is_static {
+            static_entries.extend(value_entries.iter().cloned());
+        }
+        instance_entries.extend(value_entries);
+    }
+
+    /// Intern a member's self-identifier token (`this` in `member this.M`) as a
+    /// local value, record its self-resolution, and return the scope entry the
+    /// caller pushes for the body. A wildcard self (`member _.M`) binds nothing.
+    fn bind_self_ident(&mut self, tok: &SyntaxToken) -> Option<ScopeEntry> {
+        let raw = tok.text();
+        if raw == "_" {
+            return None;
+        }
+        let name = id_text(raw).to_string();
+        let range = tok.text_range();
+        let id = self.intern(Def {
+            name: raw.to_string(),
+            range,
+            kind: DefKind::Value { is_function: false },
+            provisional: false,
+        });
+        let res = Resolution::Local(id);
+        self.record(range, res);
+        Some(ScopeEntry::binding(name, res, self.open_generation))
     }
 
     /// Resolve the type-name uses inside a [`Type`], recursing structurally
@@ -1469,7 +1811,8 @@ impl<'a> Resolver<'a> {
                         self.record_qualified_case_pattern(&segs);
                     } else if applied
                         && let [single] = segs.as_slice()
-                        && let Some(res) = self.case_reference(single.text())
+                        && let Some((res, opened_shape)) =
+                            self.applied_active_pattern_case(single.text())
                     {
                         // An *applied* single-segment head (`B n`, `Some x`) is a
                         // constructor / active-pattern reference that `binders` drops;
@@ -1477,15 +1820,43 @@ impl<'a> Resolver<'a> {
                         // head (`Red`) is a provisional binder, resolved in the
                         // binders loop, so it is skipped here.
                         self.record(single.text_range(), res);
-                        // When the head is a *same-file active pattern* with a stored
-                        // shape, its curried arguments split into parameters
-                        // (expressions) and the result sub-pattern (a binder) — FCS's
+                        // When the head is an active pattern with a stored shape —
+                        // same-file (`Local`) or cross-file opened (`Item`, Stage
+                        // 3a) via `resolution_active_pattern_shape`, or an **opened
+                        // assembly** tag (Stage 3b) whose `Deferred` resolution
+                        // carries the shape on its scope entry (`opened_shape`) — its
+                        // curried arguments split into parameters (expressions) and
+                        // the result sub-pattern (a binder) — FCS's
                         // `TcPatLongIdentActivePatternCase`. A named-field group
                         // (`Case (field = pat)`) is never an active-pattern applied
                         // head, so restrict to the curried form and leave the group to
                         // the default recursion below.
-                        if let Resolution::Local(use_id) = res
-                            && let Some(shape) = self.active_pattern_shape.get(&use_id).copied()
+                        //
+                        // An **opened assembly** recognizer's tag shares the pattern
+                        // namespace with any same-named value: a `[<Literal>]` /
+                        // constant value there is a CONSTANT PATTERN FCS's latest-wins
+                        // puts in charge of the name (`case_reference` skips it as an
+                        // ordinary value and still returns the recognizer's shape). So
+                        // when the name has *any* same-named value binding in scope —
+                        // this open, a later open, a local `let`, an auto-open child —
+                        // decline the split (`Foo x` is FCS-illegal when the constant
+                        // pattern wins, so declining is sound; codex rounds 4c/5a).
+                        // Project recognizers (`opened_shape` absent) resolve through
+                        // the constructor namespace, whose **bare**-head scan defers a
+                        // maybe-literal contest itself
+                        // ([`ScopeEntry::maybe_constant_pattern`]); the *applied* head
+                        // resolved here is exempt from that contest — an applied
+                        // literal pattern is FS3191-illegal, so on a clean program the
+                        // case reading is the only legal one — hence this coarser
+                        // any-value guard stays scoped to `opened_shape`.
+                        // `lookup` keys on the *normalized* name (scope entries are
+                        // `id_text`-stripped), so a quoted head `` `Scale` `` must be
+                        // normalized too or the guard silently misses the shadow.
+                        let shadowed =
+                            opened_shape.is_some() && self.lookup(id_text(single.text())).is_some();
+                        if let Some(shape) =
+                            opened_shape.or_else(|| self.resolution_active_pattern_shape(res))
+                            && !shadowed
                             && p.name_pat_pairs().is_none()
                         {
                             let args: Vec<Pat> = p.args().collect();
@@ -1607,6 +1978,37 @@ impl<'a> Resolver<'a> {
     /// FS0722-illegal, and the only legal applied use binds correctly by default)
     /// or a **partial point-free** one (`arity == None`, no parameter count to
     /// split on). See `docs/parameterized-active-pattern-args-plan.md`.
+    /// The [`ActivePatternShape`] of the recognizer an applied pattern head
+    /// resolved to, if it is an active pattern with a known shape (Stage 3a of
+    /// `docs/export-decl-model-plan.md`):
+    ///
+    /// - a **same-file** case resolves to [`Resolution::Item`] (or, under an
+    ///   anonymous root, [`Resolution::Local`]) — its shape is keyed by the case's
+    ///   use-def in [`Self::active_pattern_shape`]; an `Item` is mapped to that def
+    ///   through this file's `items`;
+    /// - a **cross-file** case resolves to [`Resolution::Item`] whose handle is
+    ///   out of this file's range — its shape comes from
+    ///   [`ProjectItems::active_pattern_shape_of`].
+    ///
+    /// `None` for any other resolution — an ordinary value, a union/exception case,
+    /// a referenced-assembly tag, a deferred/qualified head — which keeps today's
+    /// fabricate-a-binder behaviour (the unknown-shape decline is Stage 3c).
+    fn resolution_active_pattern_shape(&self, res: Resolution) -> Option<ActivePatternShape> {
+        match res {
+            Resolution::Local(id) => self.active_pattern_shape.get(&id).copied(),
+            Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
+                // Same-file: map the handle to its defining use-def, then the shape.
+                Some(local) => self
+                    .items
+                    .get(local)
+                    .and_then(|it| self.active_pattern_shape.get(&it.def).copied()),
+                // Cross-file: the shape crosses the boundary in the side map.
+                None => self.preceding.active_pattern_shape_of(id),
+            },
+            _ => None,
+        }
+    }
+
     fn split_active_pattern_args(&mut self, shape: ActivePatternShape, args: &[Pat]) -> bool {
         // An applied head always has ≥ 1 arg; guard the degenerate case anyway.
         if args.is_empty() {

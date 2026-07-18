@@ -119,32 +119,53 @@ fn build_entry(fsproj: &Path) {
         ));
 }
 
-/// MSBuild's resolved reference set for the entry, as assembly simple names.
+/// Build the entry (implicit restore + the `Build` target) *and* read MSBuild's
+/// resolved reference set, as assembly simple names, in a single `dotnet`
+/// invocation.
 ///
-/// `ReferencePath` (populated by `ResolveReferences`) is the item fsc's
-/// command line is derived from — `ReferencePathWithRefAssemblies` merely
-/// swaps each item for its reference assembly where one exists, preserving
-/// membership and filenames, so the simpler target suffices for a
-/// name-set comparison.
-fn msbuild_reference_names(fsproj: &Path) -> BTreeSet<String> {
-    let mut cmd = dotnet_command(fsproj.parent().unwrap());
+/// `-restore -t:Build` does exactly what [`build_entry`] does — materialises
+/// `obj/project.assets.json` and the referenced projects' output DLLs — while
+/// `-getItem:ReferencePath` reports the set `ResolveReferences` (a `Build`
+/// dependency) populated. Reporting it costs nothing extra: the resolve has
+/// already run inside `Build`, so the separate `-t:ResolveReferences` evaluation
+/// the entry used to pay was pure process overhead (a whole second `dotnet`
+/// startup per fixture). The item JSON is written to a result file
+/// (`-getResultOutputFile`) rather than stdout, so the interleaved build log
+/// can't corrupt it. Leaves the tree built for [`our_reference_names`].
+///
+/// `ReferencePath` (populated by `ResolveReferences`) is the item fsc's command
+/// line is derived from — `ReferencePathWithRefAssemblies` merely swaps each item
+/// for its reference assembly where one exists, preserving membership and
+/// filenames, so it suffices for a name-set comparison.
+fn build_and_msbuild_reference_names(fsproj: &Path) -> BTreeSet<String> {
+    let dir = fsproj.parent().unwrap();
+    let result_file = dir.join("borzoi-reference-path.json");
+    let mut cmd = dotnet_command(dir);
     cmd.args([
         "msbuild",
         "-nologo",
-        "-t:ResolveReferences",
+        "-restore",
+        "-t:Build",
         "-getItem:ReferencePath",
     ])
+    .arg(format!("-getResultOutputFile:{}", result_file.display()))
     .arg(fsproj);
-    let out = BoundedCommand::new(cmd)
+    BoundedCommand::new(cmd)
         .timeout(MSBUILD_TIMEOUT)
         .run_ok(format_args!(
-            "dotnet msbuild -getItem:ReferencePath for {}",
+            "`dotnet msbuild -restore -t:Build -getItem:ReferencePath` of {} \
+             (run under `nix develop`)",
             fsproj.display()
         ));
-    let stdout = String::from_utf8(out.stdout).expect("msbuild stdout is UTF-8");
-    let parsed: MsbuildOutput = serde_json::from_str(&stdout).unwrap_or_else(|e| {
+    let json = std::fs::read_to_string(&result_file).unwrap_or_else(|e| {
         panic!(
-            "could not parse msbuild JSON for {}: {e}\n--- stdout ---\n{stdout}",
+            "read reference-path result file {}: {e}",
+            result_file.display()
+        )
+    });
+    let parsed: MsbuildOutput = serde_json::from_str(&json).unwrap_or_else(|e| {
+        panic!(
+            "could not parse msbuild getItem JSON for {}: {e}\n--- json ---\n{json}",
             fsproj.display()
         )
     });
@@ -217,9 +238,8 @@ fn our_reference_names(fsproj: &Path) -> BTreeSet<String> {
 /// test non-vacuous — equality alone could also mean both sides missed a
 /// fixture project, which would silently prove nothing about the ref folds.
 fn assert_reference_sets_match(fsproj: &Path, expected: &[&str]) {
-    build_entry(fsproj);
+    let theirs = build_and_msbuild_reference_names(fsproj);
     let ours = our_reference_names(fsproj);
-    let theirs = msbuild_reference_names(fsproj);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -432,9 +452,8 @@ fn fsharp_reference_output_assembly_false_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -481,9 +500,8 @@ fn fsharp_reference_output_assembly_vocabulary_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -527,9 +545,8 @@ fn fsharp_exclude_assets_compile_keeps_direct_output_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -574,9 +591,8 @@ fn fsharp_transitive_private_assets_matches_msbuild() {
     .expect("write Mid.fsproj");
     std::fs::write(mid_dir.join("Mid.fs"), "module Mid\n\nlet marker = 1\n").expect("write Mid.fs");
     let app = write_fsproj(&root, "App", &["../Mid/Mid.fsproj"]);
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -620,9 +636,8 @@ fn fsharp_project_reference_update_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -670,9 +685,8 @@ fn fsharp_build_suppressing_reference_metadata_matches_msbuild() {
         .expect("write App.fsproj");
         std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
         let app = dir.join("App.fsproj");
-        build_entry(&app);
+        let theirs = build_and_msbuild_reference_names(&app);
         let ours = our_reference_names(&app);
-        let theirs = msbuild_reference_names(&app);
         let missing: Vec<&String> = theirs.difference(&ours).collect();
         let extra: Vec<&String> = ours.difference(&theirs).collect();
         assert!(
@@ -716,9 +730,8 @@ fn fsharp_empty_include_assets_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -766,9 +779,8 @@ fn fsharp_item_definition_default_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -814,9 +826,8 @@ fn fsharp_condition_gated_reference_update_matches_msbuild() {
     .expect("write App.fsproj");
     std::fs::write(dir.join("App.fs"), "module App\n\nlet marker = 1\n").expect("write App.fs");
     let app = dir.join("App.fsproj");
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert!(
@@ -888,9 +899,8 @@ fn fsharp_behind_csharp_boundary_is_a_pinned_gap() {
     write_fsproj(&root, "FsLeaf", &[]);
     write_csproj(&root, "CsMid", &["../FsLeaf/FsLeaf.fsproj"]);
     let app = write_fsproj(&root, "App", &["../CsMid/CsMid.csproj"]);
-    build_entry(&app);
+    let theirs = build_and_msbuild_reference_names(&app);
     let ours = our_reference_names(&app);
-    let theirs = msbuild_reference_names(&app);
     let missing: Vec<&String> = theirs.difference(&ours).collect();
     let extra: Vec<&String> = ours.difference(&theirs).collect();
     assert_eq!(

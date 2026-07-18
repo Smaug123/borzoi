@@ -2,7 +2,7 @@
 
 use std::collections::HashSet;
 
-use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr};
+use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr, SyntaxKind};
 
 use crate::binders::{BinderRole, binders};
 use crate::def::DefKind;
@@ -90,6 +90,17 @@ impl<'a> Resolver<'a> {
     /// arguments become interned parameter locals (likewise). Nothing is pushed
     /// into a scope yet — the caller controls visibility timing.
     pub(super) fn prepare_binding(&mut self, binding: &Binding) -> PreparedBinding {
+        // Attribute *presence* on the binding — `let [<Literal>] x` (leading
+        // `ATTRIBUTE_LIST` children of the `BINDING`) or the pre-`let` form
+        // `[<Literal>] let x` (leading children of the enclosing `LET_DECL`).
+        // A multi-`and` decl's pre-`let` run over-approximates onto every
+        // binding of the group — FCS attaches it to the first only, but the
+        // flag only ever widens a pattern-position *defer*, never a commit.
+        let attributed = binding.attributes().next().is_some()
+            || binding.syntax().parent().is_some_and(|p| {
+                p.kind() == SyntaxKind::LET_DECL
+                    && p.children().any(|c| c.kind() == SyntaxKind::ATTRIBUTE_LIST)
+            });
         let mut item_entries = Vec::new();
         let mut param_entries = Vec::new();
         let mut eager_entries = Vec::new();
@@ -111,7 +122,11 @@ impl<'a> Resolver<'a> {
             // active-pattern head itself contributes no binder there).
             if let Some(apn) = active_pat_name_of(&head) {
                 let arity = active_pattern_param_arity(&head);
-                eager_entries = self.define_active_pattern(&apn, true, arity);
+                // A `let private (|Even|Odd|)` scopes its cross-file case handle to
+                // its container, exactly as a `let private` value / `private` case
+                // does (`export_access_root_len`).
+                let is_private = super::decls::header_is_private(binding.syntax());
+                eager_entries = self.define_active_pattern(&apn, true, arity, is_private);
             }
             for def in binders(&head, BinderRole::Let) {
                 // An active-pattern *parameter* argument (`let (Scale divisor) =
@@ -158,6 +173,7 @@ impl<'a> Resolver<'a> {
                         access_root_len: self.export_access_root_len(
                             super::decls::header_is_private(binding.syntax()),
                         ),
+                        attributed,
                     });
                     // The export-decl-list twin of the `ExportedItem` push: an
                     // ordinary `let` value (no case, no type-qualified path). Its
@@ -174,7 +190,12 @@ impl<'a> Resolver<'a> {
                     );
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
-                    item_entries.push(ScopeEntry::binding(name, res, self.open_generation));
+                    let mut entry = ScopeEntry::binding(name, res, self.open_generation);
+                    // A maybe-literal module-level value contests the pattern
+                    // namespace as a constant pattern (see
+                    // [`ScopeEntry::maybe_constant_pattern`]).
+                    entry.maybe_constant_pattern = attributed;
+                    item_entries.push(entry);
                 } else {
                     // A curried argument of a function binding — a parameter.
                     let res = Resolution::Local(id);
@@ -230,9 +251,54 @@ impl<'a> Resolver<'a> {
         // parameter binders (scope that binding's RHS). Each binder is interned
         // and records its own self-resolution here, regardless of visibility
         // timing — exactly as `prepare_binding` does for the module-level form.
+        let (value_entries, per_binding) = self.prepare_local_bindings(e.bindings());
+
+        // `let rec`: value binders (and active-pattern cases) visible to every RHS
+        // *and* the body, so push the frame before resolving RHSs. Plain `let`:
+        // RHSs resolve first (the group's binders not yet in scope — so a case
+        // used as a *pattern* in a non-`rec` recognizer's own body is a fresh
+        // variable, not the case, matching FCS), then the frame for the body.
+        // Either way exactly one value-binder frame is left on the stack for the
+        // body, popped below. The `if`/`else` (not two sequential `if`s) moves
+        // `value_entries` down exactly one path.
+        if e.is_rec() {
+            self.scopes.push(Frame {
+                entries: value_entries,
+            });
+            self.resolve_local_let_rhss(&per_binding);
+        } else {
+            self.resolve_local_let_rhss(&per_binding);
+            self.scopes.push(Frame {
+                entries: value_entries,
+            });
+        }
+        if let Some(body) = e.body() {
+            self.resolve_expr(&body);
+        }
+        self.scopes.pop();
+    }
+
+    /// Intern the binders of a `let`/`let rec` group (block-`let` or a type's
+    /// class-level `let` fields) — the shared core of [`Self::resolve_local_let`]
+    /// and [`Self::resolve_class_let`](super::Resolver::resolve_class_let).
+    ///
+    /// Returns `(value_entries, per_binding)`: the head-value binders (which the
+    /// caller makes visible to the body / rest of the class) and, per binding,
+    /// its curried-parameter entries, active-pattern case entries, and RHS. Each
+    /// binder is interned and self-resolved here; the caller controls the `rec`
+    /// visibility timing (push the value frame before or after
+    /// [`Self::resolve_local_let_rhss`]).
+    #[expect(clippy::type_complexity)]
+    pub(super) fn prepare_local_bindings(
+        &mut self,
+        bindings: impl Iterator<Item = Binding>,
+    ) -> (
+        Vec<ScopeEntry>,
+        Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)>,
+    ) {
         let mut value_entries: Vec<ScopeEntry> = Vec::new();
         let mut per_binding: Vec<(Vec<ScopeEntry>, Vec<ScopeEntry>, Option<Expr>)> = Vec::new();
-        for b in e.bindings() {
+        for b in bindings {
             let mut params = Vec::new();
             let mut ap_cases = Vec::new();
             if let Some(head) = b.pat() {
@@ -250,7 +316,9 @@ impl<'a> Resolver<'a> {
                 // sees them as expression constructors (see [`resolve_local_let_rhss`]).
                 if let Some(apn) = active_pat_name_of(&head) {
                     let arity = active_pattern_param_arity(&head);
-                    ap_cases = self.define_active_pattern(&apn, false, arity);
+                    // A *local* active pattern is not a module member — it exports
+                    // no cross-file handle, so its `private`-ness is irrelevant.
+                    ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
                 for def in binders(&head, BinderRole::Let) {
@@ -289,30 +357,7 @@ impl<'a> Resolver<'a> {
             }
             per_binding.push((params, ap_cases, b.expr()));
         }
-
-        // `let rec`: value binders (and active-pattern cases) visible to every RHS
-        // *and* the body, so push the frame before resolving RHSs. Plain `let`:
-        // RHSs resolve first (the group's binders not yet in scope — so a case
-        // used as a *pattern* in a non-`rec` recognizer's own body is a fresh
-        // variable, not the case, matching FCS), then the frame for the body.
-        // Either way exactly one value-binder frame is left on the stack for the
-        // body, popped below. The `if`/`else` (not two sequential `if`s) moves
-        // `value_entries` down exactly one path.
-        if e.is_rec() {
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
-            self.resolve_local_let_rhss(&per_binding);
-        } else {
-            self.resolve_local_let_rhss(&per_binding);
-            self.scopes.push(Frame {
-                entries: value_entries,
-            });
-        }
-        if let Some(body) = e.body() {
-            self.resolve_expr(&body);
-        }
-        self.scopes.pop();
+        (value_entries, per_binding)
     }
 
     /// Resolve each local-let binding's RHS with that binding's curried
