@@ -478,17 +478,21 @@ fn impl_only_files(files: &[ImplFile]) -> Vec<ProjectFile> {
     files.iter().cloned().map(ProjectFile::impl_only).collect()
 }
 
-/// For each Compile index, the index of the **signature file** the item is
-/// the paired implementation of: a signature pairs with the first following
-/// implementation of equal [`QualifiedNameOfFile`] (probe X3; FCS's
-/// `tcsRootSigs` consumed by the next same-QNOF impl). A later same-QNOF
-/// signature replaces an unconsumed earlier one, and a second same-QNOF
-/// implementation pairs with nothing — both are FCS *errors* (duplicate
-/// signature / implementation); sema is lenient and keeps the deterministic
-/// reading.
-fn paired_signature_of(files: &[ProjectFile]) -> Vec<Option<usize>> {
+/// For each Compile index, the index of its pairing **partner**: for an
+/// implementation, the signature that constrains it; for a signature, the
+/// implementation that consumes it. A signature pairs with the first
+/// following implementation of equal [`QualifiedNameOfFile`] (probe X3;
+/// FCS's `tcsRootSigs` consumed by the next same-QNOF impl). A later
+/// same-QNOF signature replaces an unconsumed earlier one, and a second
+/// same-QNOF implementation pairs with nothing — both are FCS *errors*
+/// (duplicate signature / implementation); sema is lenient and keeps the
+/// deterministic reading. An **unpaired** signature constrains nothing: its
+/// screen is not published (FCS-probed: an unpaired `module M` sig leaves a
+/// same-QNOF-deduplicated impl's members resolving to the impl), and its
+/// partner stays `None`.
+fn pairing_partners(files: &[ProjectFile]) -> Vec<Option<usize>> {
     let mut pending: HashMap<&str, usize> = HashMap::new();
-    let mut paired = vec![None; files.len()];
+    let mut partner = vec![None; files.len()];
     for (i, pf) in files.iter().enumerate() {
         match &pf.file {
             SourceFile::Sig(_) => {
@@ -496,12 +500,13 @@ fn paired_signature_of(files: &[ProjectFile]) -> Vec<Option<usize>> {
             }
             SourceFile::Impl(_) => {
                 if let Some(sig) = pending.remove(pf.qnof.text()) {
-                    paired[i] = Some(sig);
+                    partner[i] = Some(sig);
+                    partner[sig] = Some(i);
                 }
             }
         }
     }
-    paired
+    partner
 }
 
 /// A `.fsi` file's Stage-1 contribution — see
@@ -515,6 +520,7 @@ fn paired_signature_of(files: &[ProjectFile]) -> Vec<Option<usize>> {
 fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
+    let mut value_paths = Vec::new();
     for fragment in sig.modules() {
         match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => {
@@ -531,15 +537,64 @@ fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
                     .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
                     .unwrap_or_default();
                 for decl in fragment.sig_decls() {
-                    if let SigDecl::NestedModule(nm) = decl {
-                        let Some(li) = nm.long_id() else { continue };
-                        let mut path = ns.clone();
-                        path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
-                        let auto_open = attrs_auto_open(nm.attributes());
-                        if auto_open {
-                            auto_open_nested.push(path.clone());
+                    match decl {
+                        SigDecl::NestedModule(nm) => {
+                            let Some(li) = nm.long_id() else { continue };
+                            let mut path = ns.clone();
+                            path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                            let auto_open = attrs_auto_open(nm.attributes());
+                            if auto_open {
+                                auto_open_nested.push(path.clone());
+                            }
+                            roots.push(model::SigRoot { path, auto_open });
                         }
-                        roots.push(model::SigRoot { path, auto_open });
+                        // Value-namespace members declared *directly under
+                        // the namespace* — union/enum case names and
+                        // exception constructors (a `val` cannot sit there).
+                        // These live outside every module root, so they get
+                        // their own exposed value paths (RQA-blind: an
+                        // over-collected RQA case only defers more).
+                        SigDecl::Types(types) => {
+                            for defn in types.defns() {
+                                let case_idents: Vec<SyntaxToken> = match defn.repr() {
+                                    Some(TypeDefnRepr::Union(u)) => {
+                                        u.cases().filter_map(|c| c.ident()).collect()
+                                    }
+                                    Some(TypeDefnRepr::Enum(e)) => {
+                                        e.cases().filter_map(|c| c.ident()).collect()
+                                    }
+                                    // `type Color = Shared` parses as an
+                                    // abbreviation, but FCS reads a
+                                    // single-ident target that names no type
+                                    // as a nullary union case
+                                    // (`TyconCoreAbbrevThatIsReallyAUnion`).
+                                    // Over-approximate: treat any
+                                    // single-ident target as possibly a
+                                    // case (a genuine abbreviation target
+                                    // only defers more).
+                                    Some(TypeDefnRepr::Abbrev(a)) => a
+                                        .ty()
+                                        .as_ref()
+                                        .and_then(abbrev_target_single_ident)
+                                        .into_iter()
+                                        .collect(),
+                                    _ => Vec::new(),
+                                };
+                                for ident in case_idents {
+                                    let mut path = ns.clone();
+                                    path.push(id_text(ident.text()).to_string());
+                                    value_paths.push(path);
+                                }
+                            }
+                        }
+                        SigDecl::Exception(exn) => {
+                            if let Some(ident) = exn.union_case().and_then(|c| c.ident()) {
+                                let mut path = ns.clone();
+                                path.push(id_text(ident.text()).to_string());
+                                value_paths.push(path);
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -550,6 +605,7 @@ fn signature_screen(sig: &SigFile) -> Arc<model::SigScreen> {
         roots,
         names: sig_token_names(sig),
         auto_open_nested,
+        value_paths,
     })
 }
 
@@ -627,7 +683,7 @@ fn resolve_project_files_impl(
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> ResolvedProject {
-    let paired = paired_signature_of(files);
+    let partners = pairing_partners(files);
     let mut preceding = ProjectItems::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(files.len());
     // Accumulate the OV-6 cross-file **extension-source** signal in **Compile
@@ -677,9 +733,19 @@ fn resolve_project_files_impl(
         };
         // The screen of the signature this file is the paired implementation
         // of, if any — the sig sits strictly earlier in Compile order, so its
-        // resolved slot already exists.
-        let screen = paired[index].and_then(|sig| resolved[sig].sig_screen.clone());
-        thread_forward(&mut preceding, &mut ext, &rf, assemblies, screen.as_deref());
+        // resolved slot already exists. (A signature's own partner is the
+        // *later* impl, so for a sig this is always `None`.)
+        let screen = partners[index]
+            .filter(|&p| p < index)
+            .and_then(|sig| resolved[sig].sig_screen.clone());
+        thread_forward(
+            &mut preceding,
+            &mut ext,
+            &rf,
+            assemblies,
+            screen.as_deref(),
+            partners[index].is_some(),
+        );
         resolved.push(Arc::new(rf));
     }
     ResolvedProject { files: resolved }
@@ -713,15 +779,19 @@ struct ExtThreading {
 /// `paired_screen` is the screen of the signature `rf` is the paired
 /// implementation of, if any — it parameterises the boundary derivation
 /// (the paired impl's value/case identity exports are dropped; see
-/// [`ProjectItems::extend_with`]).
+/// [`ProjectItems::extend_with`]). `partnered` is whether `rf`'s Compile
+/// item has a pairing partner at all: a signature publishes its screen only
+/// when a following implementation consumes it (an unpaired signature
+/// constrains nothing — FCS-probed).
 fn thread_forward(
     preceding: &mut ProjectItems,
     ext: &mut ExtThreading,
     rf: &ResolvedFile,
     assemblies: &AssemblyEnv,
     paired_screen: Option<&model::SigScreen>,
+    partnered: bool,
 ) {
-    preceding.extend_with(rf, paired_screen);
+    preceding.extend_with(rf, paired_screen, partnered);
     ext.wholesale |= wholesale_extension_contribution(rf, assemblies);
     ext.instance_names
         .extend(rf.augmentation_instance_names.iter().cloned());
@@ -890,8 +960,8 @@ fn resolve_project_files_incremental_impl(
     assemblies: &AssemblyEnv,
     _labels: Option<&[String]>,
 ) -> (ResolvedProject, Vec<bool>) {
-    let paired_prev = paired_signature_of(prev_files);
-    let paired_new = paired_signature_of(new_files);
+    let partners_prev = pairing_partners(prev_files);
+    let partners_new = pairing_partners(new_files);
     let mut preceding = ProjectItems::default();
     let mut ext = ExtThreading::default();
     let mut resolved: Vec<Arc<ResolvedFile>> = Vec::with_capacity(new_files.len());
@@ -904,13 +974,14 @@ fn resolve_project_files_incremental_impl(
     for (i, pf) in new_files.iter().enumerate() {
         let have_prev = i < prev.files.len() && i < prev_files.len();
         // Pairing is an input to the file's boundary *contribution* (a paired
-        // implementation's value/case exports are dropped —
-        // `ProjectItems::extend_with`), so both reuse and sync require the
-        // pairing-partner index to match. While the prefix is in sync an
-        // equal index implies an equal screen: the signature's own
-        // contribution (its screen, `same_export_contribution`) was compared
-        // at the signature's earlier slot.
-        let same_pairing = have_prev && paired_prev[i] == paired_new[i];
+        // implementation's value/case exports are dropped, a paired
+        // signature publishes its screen — `ProjectItems::extend_with`), so
+        // both reuse and sync require the pairing-partner index to match.
+        // While the prefix is in sync an equal index implies an equal
+        // screen: the signature's own contribution (its screen,
+        // `same_export_contribution`) was compared at the signature's
+        // earlier slot.
+        let same_pairing = have_prev && partners_prev[i] == partners_new[i];
         let reuse = in_sync && same_pairing && same_tree(&prev_files[i], pf);
         reused.push(reuse);
         // Per-file span *only* for a recomputed file (otel): mirrors the cold
@@ -974,8 +1045,17 @@ fn resolve_project_files_incremental_impl(
             }
             Arc::new(rf)
         };
-        let screen = paired_new[i].and_then(|sig| resolved[sig].sig_screen.clone());
-        thread_forward(&mut preceding, &mut ext, &rf, assemblies, screen.as_deref());
+        let screen = partners_new[i]
+            .filter(|&p| p < i)
+            .and_then(|sig| resolved[sig].sig_screen.clone());
+        thread_forward(
+            &mut preceding,
+            &mut ext,
+            &rf,
+            assemblies,
+            screen.as_deref(),
+            partners_new[i].is_some(),
+        );
         resolved.push(rf);
     }
     (ResolvedProject { files: resolved }, reused)
@@ -1584,7 +1664,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None);
+        pi.extend_with(&rf, None, false);
         assert!(
             pi.modules_with_hidden_values
                 .contains(&Vec::<String>::new()),
@@ -1617,7 +1697,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None);
+        pi.extend_with(&rf, None, false);
         assert!(
             pi.auto_open_module_paths.is_empty(),
             "a private auto-open module must not be exportable: {:?}",
@@ -1640,7 +1720,7 @@ mod export_decl_tests {
             rf2.export_decls
         );
         let mut pi2 = ProjectItems::default();
-        pi2.extend_with(&rf2, None);
+        pi2.extend_with(&rf2, None, false);
         assert_eq!(pi2.auto_open_module_paths, vec![(segs(&["M"]), 0)]);
     }
 
@@ -1661,7 +1741,7 @@ mod export_decl_tests {
                 rf.export_decls
             );
             let mut pi = ProjectItems::default();
-            pi.extend_with(&rf, None);
+            pi.extend_with(&rf, None, false);
             assert!(
                 !pi.nested_module_paths.contains(&segs(&["M"])),
                 "nameless type spuriously shadowed its container for {src:?}"
@@ -1682,7 +1762,7 @@ mod export_decl_tests {
         );
 
         let mut pi = ProjectItems::default();
-        pi.extend_with(&rf, None);
+        pi.extend_with(&rf, None, false);
         assert!(pi.is_namespace(&segs(&["A"])));
         assert!(pi.is_namespace(&segs(&["A", "B"])));
         assert!(

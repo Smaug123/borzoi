@@ -238,23 +238,36 @@ referenced-assembly member would fall through and commit to the assembly —
 but FCS binds the **`.fsi`** there (probe: `Shared.shown` with a colliding
 `RefLib.dll` → the `.fsi`; the original sweep's RefLib exported only
 `bar`/`asmOnly`, so this cell was never probed). Since Stage 1 cannot tell a
-hidden member from an exposed one without reading the signature, it carries a
-**screen** per `.fsi` (`SigScreen`): the module roots the signature constrains
-plus a sound *over-approximation* of every name it could expose (each
-non-trivia token's `idText` and its ident-shaped pieces). An assembly reading
-under a screened root whose residual segments touch the name set **defers**
-(`ProjectItems::sig_screened_path`, consulted by the tiered walk's shadow
-predicate, plus the open-fold counterpart); a residual whose names are absent
-from the whole signature text provably cannot be signature-exposed and falls
-through exactly as FCS does. The screen is pushed at the **signature's**
-Compile slot — which over-defers *intervening* files (FCS resolves those to
-the assembly, probed above); deferral is the sound direction, and it keeps
-the screen inside the signature's own threaded contribution for the
-incremental fold. Bare names after an `open` of a signatured module all defer
-(the module is marked hidden-valued, so the conservative project-module-open
-machinery shadows earlier opens — load-bearing: a sig-exposed name must
-shadow an earlier open's same-named value); the qualified forms keep the
-per-name fall-through.
+hidden member from an exposed one without reading the signature, each
+*paired* `.fsi` carries a **screen** (`SigScreen` — an unpaired signature
+constrains nothing, FCS-probed, and publishes none): the module roots the
+signature constrains, the value-namespace paths it declares **directly under
+a namespace** (union/enum cases, exceptions, and single-ident abbreviation
+targets FCS may read as cases), plus a sound *over-approximation* of every
+name it could expose (each non-trivia token's `idText` and its ident-shaped
+pieces). A reading under a screened root whose residual segments touch the
+name set — or at/under an exposed namespace-direct value path — **defers**;
+a residual whose names are absent from the whole signature text provably
+cannot be signature-exposed and falls through exactly as FCS does. The veto
+runs at *both* commit surfaces (codex round 1): the assembly tier
+(`ProjectItems::sig_screened_path` via the tiered walk's shadow predicate,
+plus the open-fold counterpart) *and* the project-side qualified lookups
+(`Resolver::sig_screens_reading_of` — a screened precedence-ordered reading
+outranks every lower-priority candidate, so a root/other-file `Item` must
+not bind either; probe: inside `namespace A`, `M.x` with a signatured
+`module A.M` exposing `x` binds the `.fsi`, not a root `module M`). The
+screen is pushed at the **signature's** Compile slot — which over-defers
+*intervening* files (FCS resolves those to the assembly, probed above);
+deferral is the sound direction, and it keeps the screen inside the
+signature's own threaded contribution for the incremental fold. The
+signature's `[<AutoOpen>]` verdict is authoritative in **both** directions
+(probe: an implementation-only attribute is FS0039-ignored by FCS), so a
+screened file publishes exactly the signature's auto-opens. Bare names after
+an `open` of a signatured module all defer (the module is marked
+hidden-valued, so the conservative project-module-open machinery shadows
+earlier opens — load-bearing: a sig-exposed name must shadow an earlier
+open's same-named value); the qualified forms keep the per-name
+fall-through.
 
 - Introduce `SourceFile` and rework `resolve_project` / the incremental fold /
   `thread_forward` to iterate `&[(SourceFile, QualifiedName)]`. A

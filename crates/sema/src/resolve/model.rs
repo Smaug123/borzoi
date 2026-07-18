@@ -87,6 +87,17 @@ pub(super) struct SigScreen {
     /// the namespace sees the auto-open even when only the signature carries
     /// the attribute (conclusion 6).
     pub(super) auto_open_nested: Vec<Vec<String>>,
+    /// Qualified paths of **value-namespace members the signature declares
+    /// directly under a `namespace` fragment** — union/enum case names and
+    /// exception constructors (a `val` cannot sit directly under a
+    /// namespace). These are outside every module root, so the root+token
+    /// rule cannot see them; yet the signature *exposes* them, so an
+    /// assembly reading **at or under** one must defer — FCS binds the
+    /// signature's case and member-errors on any residual (probe: sig
+    /// `namespace ProbeNs; type Color = Shared` + `RefLib`'s
+    /// `ProbeNs.Shared.shown` → FCS binds `Shared` to the `.fsi` case and
+    /// reports FS0039 on `shown`; an assembly commit there is wrong).
+    pub(super) value_paths: Vec<Vec<String>>,
 }
 
 /// Exported project items visible to a file from *earlier* in Compile order.
@@ -653,6 +664,13 @@ impl ProjectItems {
     /// signature identity) must defer rather than commit the merged assembly
     /// member. A residual whose every segment is absent from the signature
     /// text provably cannot be signature-exposed and falls through.
+    /// Whether any signature screen is in force — the cheap pre-check that
+    /// lets the per-candidate screen walks short-circuit in the (typical)
+    /// signature-free project.
+    pub(super) fn has_sig_screens(&self) -> bool {
+        !self.sig_screens.is_empty()
+    }
+
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
         self.sig_screens.iter().any(|screen| {
             screen.roots.iter().any(|root| {
@@ -662,6 +680,13 @@ impl ProjectItems {
                         .iter()
                         .any(|seg| screen.names.contains(seg))
             })
+            // A namespace-direct case/exception the signature exposes owns
+            // its path outright: any reading at or under it defers (FCS
+            // binds the case and member-errors on a residual).
+            || screen
+                .value_paths
+                .iter()
+                .any(|vp| names.starts_with(vp))
         })
     }
 
@@ -687,6 +712,16 @@ impl ProjectItems {
                         && root.path.starts_with(opened)
                         && screen.names.contains(name)
                 }
+            })
+            // A namespace-direct case/exception: the folded entry's
+            // qualified path is `opened + [name]` — screened when it sits at
+            // or under an exposed value path (and when the opened surface
+            // itself is under one, every entry of it is).
+            || screen.value_paths.iter().any(|vp| {
+                opened.starts_with(vp)
+                    || (vp.len() == opened.len() + 1
+                        && vp.starts_with(opened)
+                        && vp.last().is_some_and(|last| last == name))
             })
         })
     }
@@ -718,7 +753,15 @@ impl ProjectItems {
     /// exports** — the signature restricts them, and Stage 1 emits no
     /// signature identity to replace them — while keeping every defer-only
     /// shadow and marker ([`FileExportIndices::from_decls_screened`]).
-    pub(super) fn extend_with(&mut self, file: &ResolvedFile, paired_screen: Option<&SigScreen>) {
+    /// `partnered` is whether the file has a pairing partner: a signature
+    /// publishes its screen only when a following implementation consumes it
+    /// (an unpaired signature constrains nothing — FCS-probed).
+    pub(super) fn extend_with(
+        &mut self,
+        file: &ResolvedFile,
+        paired_screen: Option<&SigScreen>,
+        partnered: bool,
+    ) {
         // Record this file's id base BEFORE interning its items, so [`Self::file_of`]
         // maps any exported id back to its Compile-order file (the straddle fold's
         // per-name provenance).
@@ -727,10 +770,10 @@ impl ProjectItems {
         // fold reads (the base was just pushed, so `len - 1` is this file).
         let file_idx = self.item_file_bases.len() - 1;
 
-        // A signature file's own contribution is its screen alone (Stage 1:
-        // it exports nothing; its decl list is empty, so the derivation below
-        // folds nothing else from it).
-        if let Some(screen) = &file.sig_screen {
+        // A paired signature file's own contribution is its screen alone
+        // (Stage 1: it exports nothing; its decl list is empty, so the
+        // derivation below folds nothing else from it).
+        if partnered && let Some(screen) = &file.sig_screen {
             self.sig_screens.push(Arc::clone(screen));
         }
 
@@ -1084,14 +1127,20 @@ impl FileExportIndices {
                             fi.real_nested_modules.push(decl.path.clone());
                             fi.nested_module_paths.push(decl.path.clone());
                         }
-                        // The signature's `[<AutoOpen>]` on a constrained
-                        // root is authoritative (conclusion 6): the module is
-                        // auto-open even when the implementation header
-                        // carries no attribute.
-                        let sig_auto_open = screen.is_some_and(|s| {
-                            s.roots.iter().any(|r| r.auto_open && r.path == decl.path)
-                        });
-                        if (*auto_open || sig_auto_open) && !*private {
+                        // The signature's `[<AutoOpen>]` verdict is
+                        // authoritative in **both** directions (conclusion 6
+                        // + probe 2026-07-18: an implementation-only
+                        // attribute is ignored by FCS — the bare use is
+                        // FS0039). For a screened file the implementation's
+                        // own flag is therefore discarded: a root the
+                        // signature attributes is auto-open (even with a
+                        // bare impl header), any other module publishes
+                        // none.
+                        let effective_auto_open = match screen {
+                            None => *auto_open,
+                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                        };
+                        if effective_auto_open && !*private {
                             fi.auto_open_module_paths.push(decl.path.clone());
                         }
                     }

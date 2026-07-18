@@ -275,6 +275,74 @@ fn open_of_signatured_module_defers_bare_uses() {
     assert_uncommitted(res_at(&proj, &files, 2, "shown"), "bare shown after open");
 }
 
+/// Codex review P1 (probe 2026-07-18): a signatured *relative* module
+/// outranks a root module of the same simple name. Inside `namespace A`,
+/// `M.x` with a root `module M; let x` and a signatured `module A.M`
+/// exposing `x` binds the `.fsi` in FCS — so the root fallback must not
+/// commit while the relative reading is screened.
+#[test]
+fn screened_relative_reading_withholds_root_module_commit() {
+    let files = [
+        ("/p/M.fs", "module M\n\nlet x = 0\n"),
+        ("/p/AM.fsi", "module A.M\n\nval x: int\n"),
+        ("/p/AM.fs", "module A.M\n\nlet x = 1\n"),
+        (
+            "/p/Use.fs",
+            "namespace A\n\nmodule Use =\n    let y = M.x\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "M.x"),
+        "M.x with a screened relative reading (FCS binds the .fsi)",
+    );
+
+    // Control: without the signature the relative module commits normally.
+    let control = [
+        ("/p/M.fs", "module M\n\nlet x = 0\n"),
+        ("/p/AM.fs", "module A.M\n\nlet x = 1\n"),
+        (
+            "/p/Use.fs",
+            "namespace A\n\nmodule Use =\n    let y = M.x\n",
+        ),
+    ];
+    let cproj = resolve_project_files(&project(&control), &AssemblyEnv::default());
+    assert_item_in(
+        &cproj,
+        res_at(&cproj, &control, 2, "M.x"),
+        1,
+        "unsigned relative M.x",
+    );
+}
+
+/// Codex review P2 (probe 2026-07-18): an implementation-only `[<AutoOpen>]`
+/// is ignored by FCS (the bare use is FS0039 — the signature's verdict is
+/// authoritative in both directions), so the paired module publishes no
+/// auto-open and an earlier open's value must stay committed rather than be
+/// staled by a phantom auto-open fold.
+#[test]
+fn impl_only_auto_open_is_not_published() {
+    let files = [
+        ("/p/Lib.fs", "module Lib\n\nlet marker = 1\n"),
+        ("/p/A.fsi", "namespace N\n\nmodule A =\n    val x: int\n"),
+        (
+            "/p/A.fs",
+            "namespace N\n\n[<AutoOpen>]\nmodule A =\n    let x = 1\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module U\n\nopen Lib\nopen N\n\nlet y = marker\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_item_in(
+        &proj,
+        res_at(&proj, &files, 3, "marker"),
+        0,
+        "marker after `open N` (the impl-only auto-open publishes nothing)",
+    );
+}
+
 // ---------------------------------------------------------------------------
 // The assembly merge: fall-through for provably-hidden names, the screen for
 // possibly-exposed ones (the built RefLib fixture; FCS-probed 2026-07-18).
@@ -405,6 +473,33 @@ fn open_of_signatured_module_screens_bare_names_from_the_assembly() {
     assert_uncommitted(
         res_at(&proj, &files, 2, "asmOnly"),
         "bare assembly-only asmOnly after open (deferred on the open path)",
+    );
+}
+
+/// Codex review P1 (FCS-checked in review): a **namespace-direct case** the
+/// signature exposes owns its path outright. With sig/impl `namespace
+/// ProbeNs; type Color = Shared` and RefLib's `ProbeNs.Shared.shown`, FCS
+/// binds `Shared` to the `.fsi` case and FS0039s the member — an assembly
+/// commit anywhere at or under the case path is wrong. (The sig spelling
+/// parses as an abbreviation whose single-ident target FCS reads as a
+/// nullary case, so the screen's value-path collection must cover that
+/// shape too.)
+#[test]
+fn namespace_direct_case_screens_assembly_paths() {
+    let files = [
+        ("/p/A.fsi", "namespace ProbeNs\n\ntype Color = Shared\n"),
+        ("/p/A.fs", "namespace ProbeNs\n\ntype Color = Shared\n"),
+        ("/p/Use.fs", "module Use\n\nlet a = ProbeNs.Shared.shown\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_uncommitted(
+        res_at(&proj, &files, 2, "ProbeNs.Shared.shown"),
+        "member path under a sig-exposed namespace-direct case",
+    );
+    // The `Shared` segment itself must not carry an assembly Entity either.
+    assert_uncommitted(
+        res_at(&proj, &files, 2, "Shared"),
+        "the case segment under a sig-exposed namespace-direct case",
     );
 }
 
@@ -750,10 +845,78 @@ fn signature_pairing_agrees_with_fcs() {
             expected_cross_file: 2,
             fcs_must_not_declare: vec![],
         },
+        // Codex review P1: inside `namespace A`, `M.x` binds the signatured
+        // relative `A.M` (the `.fsi`), not the root `module M` — the
+        // project-side screen veto (we defer; a root `Item` commit would
+        // fail the exactness check against FCS's `.fsi` decl).
+        SigProject {
+            label: "sigdiff_relative",
+            files: vec![
+                ("M.fs", "module M\n\nlet x = 0\n"),
+                ("AM.fsi", "module A.M\n\nval x: int\n"),
+                ("AM.fs", "module A.M\n\nlet x = 1\n"),
+                ("Use.fs", "namespace A\n\nmodule Use =\n    let y = M.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 0,
+            fcs_must_not_declare: vec![],
+        },
+        // …and the unsigned control: the relative module commits (1 exact
+        // agreement — catches an over-screening regression).
+        SigProject {
+            label: "sigdiff_relative_unsigned",
+            files: vec![
+                ("M.fs", "module M\n\nlet x = 0\n"),
+                ("AM.fs", "module A.M\n\nlet x = 1\n"),
+                ("Use.fs", "namespace A\n\nmodule Use =\n    let y = M.x\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // Codex review P2 (probe): an implementation-only `[<AutoOpen>]` is
+        // ignored by FCS, so `open N` publishes nothing and the earlier
+        // open's `marker` stays bound (1 exact agreement — catches a phantom
+        // auto-open staling it into a defer).
+        SigProject {
+            label: "sigdiff_impl_autoopen",
+            files: vec![
+                ("Lib.fs", "module Lib\n\nlet marker = 1\n"),
+                ("A.fsi", "namespace N\n\nmodule A =\n    val x: int\n"),
+                (
+                    "A.fs",
+                    "namespace N\n\n[<AutoOpen>]\nmodule A =\n    let x = 1\n",
+                ),
+                ("Use.fs", "module U\n\nopen Lib\nopen N\n\nlet y = marker\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
     ];
     for fixture in &fixtures {
         assert_sig_matches_fcs(fixture);
     }
+}
+
+/// Codex review P1, the namespace-direct-case × assembly-collision cell as a
+/// live differential: FCS binds `Shared` (of `ProbeNs.Shared.shown`) to the
+/// `.fsi`'s case and FS0039s the member; any assembly commit on our side
+/// trips the exactness loop's assembly arm.
+#[test]
+fn namespace_direct_case_collision_agrees_with_fcs() {
+    let reflib = ensure_reflib_built();
+    assert_sig_matches_fcs(&SigProject {
+        label: "sigdiff_ns_case",
+        files: vec![
+            ("A.fsi", "namespace ProbeNs\n\ntype Color = Shared\n"),
+            ("A.fs", "namespace ProbeNs\n\ntype Color = Shared\n"),
+            ("Use.fs", "module Use\n\nlet a = ProbeNs.Shared.shown\n"),
+        ],
+        refs: vec![reflib],
+        expected_cross_file: 0,
+        fcs_must_not_declare: vec![],
+    });
 }
 
 /// The assembly-collision matrix as a live differential (the probe that
