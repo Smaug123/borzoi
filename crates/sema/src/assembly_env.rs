@@ -540,6 +540,23 @@ pub struct AssemblyEnv {
     /// [`AssemblyEnv::from_entities`], which registers no per-DLL identities;
     /// [`Self::unique_assembly_key_for_name`] falls back to the entities there.
     assembly_identities: Vec<Option<AssemblyIdentity>>,
+    /// Per-[`AssemblyId`] type forwarders, `(dotted namespace, metadata
+    /// name) → target assembly simple name`, in lockstep with
+    /// [`Self::assemblies`]. A facade assembly (`netstandard`) declares no
+    /// TypeDefs — an abbreviation-target chase that lands in one continues
+    /// through its forwarder, exactly as the CLR's loader does (FSharp.Core's
+    /// pickle names its BCL targets through the `netstandard` CCU).
+    assembly_forwarders: Vec<HashMap<(String, String), String>>,
+    /// Memo for [`Self::resolve_abbreviation_target`] /
+    /// [`Self::resolve_abbreviation_tycon`], keyed by `(marker, allow_args)`.
+    /// The chase is a pure function of the env's immutable entity data, but
+    /// each uncached hop scans `top_level_types` per path split — and with
+    /// FSharp.Core's markers live, *every* `int`/`string` annotation head
+    /// chases (codex round 6: O(annotations × loaded types × hops) without
+    /// this). Shared across clones via `Arc` (same data ⇒ same results);
+    /// `RwLock` because the env is queried from multiple threads.
+    abbreviation_chase_cache:
+        std::sync::Arc<std::sync::RwLock<HashMap<(EntityHandle, bool), Option<EntityHandle>>>>,
     /// Whether the set of loaded-DLL identities is **incomplete** — some DLL the
     /// env cannot name is present. A referenced CCU is pickled only by simple
     /// name, so an unnameable DLL could *be* that name: its presence makes
@@ -633,32 +650,51 @@ pub struct AssemblyEnv {
 type TypeKey = (Vec<String>, String, usize);
 
 /// One referenced assembly as
-/// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it: the source
-/// DLL path, its projected roots, its [`AbbreviationVisibility`], its
-/// [`fsharp_extension_index_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_extension_index_unknowable) bit, its
-/// [`fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative) bit, its
-/// assembly-level `[<assembly: AutoOpen("…")>]` paths (manifest order), and its
-/// manifest identity — supplied explicitly (the caller's `EcmaView` knows it)
-/// so a **rootless** projection still registers a DLL name in
-/// [`AssemblyEnv::assembly_identities`]; `None` falls back to the first root
-/// (issue #150 / codex P2).
-type AssemblyProjectionInput = (
-    PathBuf,
-    Vec<Entity>,
-    AbbreviationVisibility,
-    bool,
-    bool,
-    Vec<String>,
-    Option<AssemblyIdentity>,
-);
+/// [`AssemblyEnv::from_assemblies_with_projection_knowability`] takes it.
+pub struct AssemblyProjectionInput {
+    /// The source DLL path (for go-to-definition's `AssemblyId → path` map).
+    pub path: PathBuf,
+    /// The projected top-level entities.
+    pub roots: Vec<Entity>,
+    pub abbreviation_visibility: AbbreviationVisibility,
+    /// [`fsharp_extension_index_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_extension_index_unknowable).
+    pub extension_index_unknowable: bool,
+    /// [`fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative).
+    pub signature_non_authoritative: bool,
+    /// Assembly-level `[<assembly: AutoOpen("…")>]` paths (manifest order).
+    pub auto_opens: Vec<String>,
+    /// The manifest identity — supplied explicitly (the caller's `EcmaView`
+    /// knows it) so a **rootless** projection still registers a DLL name in
+    /// the env's per-DLL identity registry (`assembly_identities`); `None`
+    /// falls back to the first root (issue #150 / codex P2).
+    pub manifest_identity: Option<AssemblyIdentity>,
+    /// The assembly's type forwarders
+    /// ([`borzoi_assembly::EcmaView::type_forwarders`]) — how an abbreviation
+    /// target chase continues out of a facade assembly (`netstandard`).
+    pub type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+}
 
-/// Whether the nullary entity `e`'s **logical name** — its IL `name` or its
-/// `source_name` — is `seg`. The domain an abbreviation-target path is matched in
-/// (a `[<CompilationRepresentation(ModuleSuffix)>]` module contributes its
+/// Whether entity `e`'s **logical name** — its IL `name` or its `source_name` —
+/// is `seg`. The domain an abbreviation-target path is matched in (a
+/// `[<CompilationRepresentation(ModuleSuffix)>]` module contributes its
 /// suffixed IL name *or* its source name; a `[<CompiledName>]` type its source
-/// name). Arity 0: a target-path segment is always non-generic here.
+/// name). A bare segment names a nullary entity; a **backtick-mangled**
+/// segment (`Option`1`) is FCS's logical name for a generic tycon and carries
+/// its own arity — the pickle spells every generic target head this way. Raw
+/// is tried first: a quoted F# identifier may itself contain a backtick, and
+/// the mangle must not swallow it.
 fn seg_name_matches(e: &Entity, seg: &str) -> bool {
-    e.generic_parameters.is_empty() && (e.name == seg || e.source_name.as_deref() == Some(seg))
+    if e.generic_parameters.is_empty() && (e.name == seg || e.source_name.as_deref() == Some(seg)) {
+        return true;
+    }
+    if let Some((base, digits)) = seg.rsplit_once('`')
+        && !base.is_empty()
+        && let Ok(n) = digits.parse::<usize>()
+    {
+        return e.generic_parameters.len() == n
+            && (e.name == base || e.source_name.as_deref() == Some(base));
+    }
+    false
 }
 
 /// Whether one referenced assembly's F# type abbreviations are fully
@@ -805,11 +841,21 @@ impl AssemblyEnv {
             assemblies
                 .into_iter()
                 .map(|(path, roots, visibility, auto_opens)| {
-                    // `false`/`false`: this constructor assumes an authoritative
-                    // pickle (extension index known, F# signature authoritative).
-                    // `None` identity: derived from the first root (this
-                    // constructor's callers do not carry a rootless DLL's identity).
-                    (path, roots, visibility, false, false, auto_opens, None)
+                    // This constructor assumes an authoritative pickle
+                    // (extension index known, F# signature authoritative), an
+                    // identity derivable from the first root (its callers do
+                    // not carry a rootless DLL), and no forwarder surface —
+                    // the runtime path supplies all three.
+                    AssemblyProjectionInput {
+                        path,
+                        roots,
+                        abbreviation_visibility: visibility,
+                        extension_index_unknowable: false,
+                        signature_non_authoritative: false,
+                        auto_opens,
+                        manifest_identity: None,
+                        type_forwarders: Vec::new(),
+                    }
                 })
                 .collect(),
         )
@@ -833,20 +879,27 @@ impl AssemblyEnv {
             Entity,
         )> = Vec::new();
         let mut auto_opens: Vec<(AssemblyId, String, Vec<String>)> = Vec::new();
-        for (
-            path,
-            roots,
-            visibility,
-            extension_index_unknowable,
-            signature_non_authoritative,
-            raw_auto_opens,
-            manifest_identity,
-        ) in assemblies
-        {
+        for input in assemblies {
+            let AssemblyProjectionInput {
+                path,
+                roots,
+                abbreviation_visibility: visibility,
+                extension_index_unknowable,
+                signature_non_authoritative,
+                auto_opens: raw_auto_opens,
+                manifest_identity,
+                type_forwarders,
+            } = input;
             let id = AssemblyId(
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
+            env.assembly_forwarders.push(
+                type_forwarders
+                    .into_iter()
+                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .collect(),
+            );
             // Register the DLL's identity so a referenced-CCU name is counted per
             // loaded DLL. Prefer the caller-supplied `manifest_identity` (known to
             // its `EcmaView` even when the projection is rootless); fall back to the
@@ -1057,6 +1110,12 @@ impl AssemblyEnv {
             // Every view is a distinct loaded DLL with a known identity — register
             // it (even a rootless one) so a referenced-CCU name is counted per DLL.
             env.assembly_identities.push(Some(view.identity().clone()));
+            env.assembly_forwarders.push(
+                view.type_forwarders()?
+                    .into_iter()
+                    .map(|f| ((f.namespace, f.name), f.assembly))
+                    .collect(),
+            );
             tagged.extend(roots.into_iter().map(move |r| {
                 (
                     Some(id),
@@ -1281,6 +1340,21 @@ impl AssemblyEnv {
         path: &[String],
         assembly_matches: impl Fn(EntityHandle) -> bool,
     ) -> Option<EntityHandle> {
+        self.abbreviation_target_at_path_splits(path, None, assembly_matches)
+    }
+
+    /// [`Self::abbreviation_target_at_path`] with the namespace/type split
+    /// optionally **pinned**: a type forwarder names its type at one exact
+    /// `(namespace, name)` split, so the post-hop lookup must honour that
+    /// split rather than re-deriving one — re-searching every split in the
+    /// destination could accept an unrelated same-FQN type at another split,
+    /// or decline a path the forwarder just disambiguated (codex round 4).
+    fn abbreviation_target_at_path_splits(
+        &self,
+        path: &[String],
+        pinned_split: Option<usize>,
+        assembly_matches: impl Fn(EntityHandle) -> bool,
+    ) -> Option<EntityHandle> {
         let last = path.len().checked_sub(1)?; // an empty path names nothing
         // Collect every terminal the path can reach, then commit only a *uniquely*
         // determined one. More than one arises from: an ambiguous top-level
@@ -1297,7 +1371,12 @@ impl AssemblyEnv {
         // of an internal type (FS0044) but rejects a consumer reaching a member
         // through it (FS0491), so an inaccessible entity declines the target.
         let mut terminals: Vec<EntityHandle> = Vec::new();
-        for split in 0..path.len() {
+        let splits: Vec<usize> = match pinned_split {
+            Some(k) if k < path.len() => vec![k],
+            Some(_) => Vec::new(),
+            None => (0..path.len()).collect(),
+        };
+        for split in splits {
             for top in self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
                 self.is_public(h)
@@ -2500,6 +2579,13 @@ impl AssemblyEnv {
     /// which DLLs were skipped is known there.
     pub fn mark_referenced_assemblies_incomplete(&mut self) {
         self.assembly_identities_incomplete = true;
+        // Chase results depend on this flag (a `CcuRef` hop declines on an
+        // incomplete identity set), so memoised entries computed before the
+        // mark are stale for THIS env — replace the whole cache handle. A
+        // pre-mark clone keeps the old `Arc` and its own (unmarked) flag
+        // copy, so it correctly goes on serving pre-mark answers; this env
+        // starts fresh under the new flag.
+        self.abbreviation_chase_cache = Default::default();
     }
 
     /// Record that a referenced assembly **dropped an undecodable type** in
@@ -2929,17 +3015,51 @@ impl AssemblyEnv {
     /// then keeps deferring, so this can only turn a defer into a *correct*
     /// resolution, never a wrong one.
     pub fn resolve_abbreviation_target(&self, marker: EntityHandle) -> Option<EntityHandle> {
-        self.resolve_abbreviation_target_fueled(marker, ABBREV_CHASE_FUEL)
+        self.resolve_abbreviation_cached(marker, false)
+    }
+
+    /// [`Self::resolve_abbreviation_target`]'s **tycon** sibling for
+    /// *type-position* consumers: additionally follows a target carrying type
+    /// arguments (`type 'T option = Option<'T>` — a type path names the head
+    /// tycon; the instantiation stays unmodelled), whose head arrives as the
+    /// backtick-mangled logical name (`Option`1`) carrying its own arity. The
+    /// value-path fn above keeps its nullary contract: a generic alias cannot
+    /// qualify a member path, and committing a member through one would risk
+    /// a wrong target.
+    pub fn resolve_abbreviation_tycon(&self, marker: EntityHandle) -> Option<EntityHandle> {
+        self.resolve_abbreviation_cached(marker, true)
+    }
+
+    fn resolve_abbreviation_cached(
+        &self,
+        marker: EntityHandle,
+        allow_args: bool,
+    ) -> Option<EntityHandle> {
+        if let Some(&hit) = self
+            .abbreviation_chase_cache
+            .read()
+            .expect("chase cache poisoned")
+            .get(&(marker, allow_args))
+        {
+            return hit;
+        }
+        let result = self.resolve_abbreviation_target_fueled(marker, ABBREV_CHASE_FUEL, allow_args);
+        self.abbreviation_chase_cache
+            .write()
+            .expect("chase cache poisoned")
+            .insert((marker, allow_args), result);
+        result
     }
 
     fn resolve_abbreviation_target_fueled(
         &self,
         marker: EntityHandle,
         fuel: u32,
+        allow_args: bool,
     ) -> Option<EntityHandle> {
         let fuel = fuel.checked_sub(1)?;
         match self.entity(marker).abbreviation_target.as_ref()? {
-            AbbreviationTarget::Named { ccu, path, args } if args.is_empty() => {
+            AbbreviationTarget::Named { ccu, path, args } if args.is_empty() || allow_args => {
                 let target = match ccu {
                     // Proven same-CCU (the pickle used a `Local` tcref): resolve
                     // within the marker's OWN DLL, matched by per-DLL provenance —
@@ -2952,27 +3072,140 @@ impl AssemblyEnv {
                             self.assembly_key(h) == marker_key
                         })?
                     }
-                    // A referenced CCU, known only by simple name. If two *distinct*
-                    // loaded DLLs share that name we cannot tell which the pickle
-                    // meant, so decline rather than guess (correctness over
-                    // availability); the consumer keeps deferring. Distinctness is
-                    // by DLL, so byte-identical siblings count as two, not one.
-                    Some(name) => {
-                        let key = self.unique_assembly_key_for_name(name)?;
-                        self.abbreviation_target_at_path(path, |h| self.assembly_key(h) == key)?
-                    }
+                    // A referenced CCU, known only by simple name — resolved in
+                    // that sole DLL, following type forwarders out of a facade.
+                    Some(name) => self.forwarded_target_at_path(name, path, fuel)?,
                 };
                 // Chase a chained alias; a non-marker target is the terminus.
                 if self.is_abbreviation(target) {
-                    self.resolve_abbreviation_target_fueled(target, fuel)
+                    self.resolve_abbreviation_target_fueled(target, fuel, allow_args)
                 } else {
                     Some(target)
                 }
             }
-            // `Var` / function / tuple / generic-instantiation targets do not name
-            // a single member-bearing entity — keep deferring.
+            // `Var` / function / tuple targets never name a tycon; a
+            // generic instantiation does not name a single member-bearing
+            // entity for the value-path (nullary) contract — keep deferring.
             _ => None,
         }
+    }
+
+    /// Resolve an abbreviation-target `path` within the sole loaded DLL whose
+    /// manifest simple name is `ccu_name`, following **type forwarders** when
+    /// that DLL does not declare it: FSharp.Core's pickle names its BCL
+    /// targets through the `netstandard` CCU — a facade whose forwarder rows
+    /// say where each type lives now (`int32`'s `System.Int32` forwards to
+    /// `System.Runtime`) — so a chase that stops at the facade would decline
+    /// every primitive alias. Each hop re-applies the same uniqueness
+    /// discipline ([`Self::unique_assembly_key_for_name`]: two same-named
+    /// DLLs, or an incomplete identity set, decline), the forwarder key is
+    /// the **raw** metadata name (mangled for generics — exactly the raw path
+    /// segment), and the walk is bounded by `fuel` (facade chains are 1–2
+    /// hops in practice). Forwarders are stored per provenance id, so an
+    /// [`AssemblyKey::Identity`]-keyed env (the test-only
+    /// [`Self::from_entities`]) has none and stops at the direct miss.
+    fn forwarded_target_at_path(
+        &self,
+        ccu_name: &str,
+        path: &[String],
+        fuel: u32,
+    ) -> Option<EntityHandle> {
+        // Breadth-first over `(DLL simple name, split constraint)` states,
+        // following **every** matching forwarder split: the logical path does
+        // not encode its namespace/nested split, so one facade can redirect
+        // it at two splits (`(A, B) → X` and `(A.B, C) → Y` both cover
+        // `A.B.C`) — every route is explored and the terminal must be
+        // **unique** across them, else decline (codex round 3; mirrors
+        // `abbreviation_target_at_path`'s own all-splits discipline). A
+        // forwarder names its type at one exact split, so the redirect
+        // **pins** that split for the destination lookup and any further hop
+        // — re-searching every split there could accept an unrelated
+        // same-FQN type or decline a path the forwarder just disambiguated
+        // (codex round 4). A DLL name that is itself ambiguous — two distinct
+        // loaded DLLs share it, or the identity set is incomplete — declines
+        // the whole walk: the unresolvable route could have been the intended
+        // one. The `visited` set bounds the walk (states are finite), with
+        // `fuel` as a belt against a pathological table.
+        //
+        // Matching by **simple name** (not the AssemblyRef's full identity —
+        // version and public-key token are read but deliberately not
+        // compared) is a considered choice, not an omission: the correctness
+        // oracle is FCS, whose import layer binds assembly references by
+        // simple name within the compilation closure, so identity-strict
+        // matching would *diverge from the oracle* (decline where FCS
+        // binds). Cross-identity collisions are already handled by
+        // unique-or-decline: two same-named DLLs decline the hop.
+        let mut queue: Vec<(String, Option<usize>)> = vec![(ccu_name.to_string(), None)];
+        let mut visited: HashSet<(String, Option<usize>)> = HashSet::new();
+        let mut found: Option<EntityHandle> = None;
+        while let Some((name, pinned)) = queue.pop() {
+            if !visited.insert((name.clone(), pinned)) {
+                continue;
+            }
+            if visited.len() > fuel as usize {
+                return None;
+            }
+            let key = self.unique_assembly_key_for_name(&name)?;
+            if let Some(target) = self
+                .abbreviation_target_at_path_splits(path, pinned, |h| self.assembly_key(h) == key)
+            {
+                match found {
+                    None => found = Some(target),
+                    Some(prev) if prev != target => return None,
+                    Some(_) => {}
+                }
+            }
+            // Forwarders are stored per provenance id; an
+            // [`AssemblyKey::Identity`]-keyed env (the test-only
+            // [`Self::from_entities`]) has none and stops at the direct miss.
+            if let AssemblyKey::Provenance(id) = key {
+                let candidate_splits: Vec<usize> = match pinned {
+                    Some(k) => vec![k],
+                    None => (0..path.len()).collect(),
+                };
+                for split in candidate_splits {
+                    if let Some(redirect) = self.assembly_forwarders[id.0 as usize]
+                        .get(&(path[..split].join("."), path[split].clone()))
+                    {
+                        queue.push((redirect.clone(), Some(split)));
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    /// Whether the **top-level rooting FQN above `handle`** is exported by
+    /// more than one loaded DLL — the reference-order collision guard for a
+    /// chase that starts at `handle`. FCS merges same-FQN roots by reference
+    /// order, which sema does not model: a merged rooting means the
+    /// first-indexed subtree's `children` may miss the other DLL's
+    /// contribution, so any chase decision at or below it could name the
+    /// wrong DLL's tree and must defer instead. `handle` itself when
+    /// top-level; found by tree search otherwise (entities carry no parent
+    /// pointer) — an unfindable ancestor conservatively counts as colliding.
+    pub fn alias_rooting_collides_across_dlls(&self, handle: EntityHandle) -> bool {
+        fn subtree_contains(env: &AssemblyEnv, root: EntityHandle, target: EntityHandle) -> bool {
+            root == target
+                || env
+                    .children(root)
+                    .iter()
+                    .any(|&c| subtree_contains(env, c, target))
+        }
+        let Some(root) = self
+            .top_level_types
+            .iter()
+            .copied()
+            .find(|&r| subtree_contains(self, r, handle))
+        else {
+            return true;
+        };
+        let e = self.entity(root);
+        self.distinct_dlls_with_public_type(
+            &e.namespace,
+            e.source_name.as_deref().unwrap_or(&e.name),
+            e.generic_parameters.len(),
+        ) > 1
     }
 
     /// The [`AssemblyKey`] of the sole loaded DLL whose manifest simple name is
@@ -5264,25 +5497,19 @@ mod from_views_tests {
             "RefAlias",
             Some(named_target(Some("Lib"), &["N", "Widget"])),
         );
+        let input = |path: &str, roots: Vec<Entity>| super::AssemblyProjectionInput {
+            path: std::path::PathBuf::from(path),
+            roots,
+            abbreviation_visibility: super::AbbreviationVisibility::Modelled,
+            extension_index_unknowable: false,
+            signature_non_authoritative: false,
+            auto_opens: Vec::new(),
+            manifest_identity: Some(ident("Lib")),
+            type_forwarders: Vec::new(),
+        };
         let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
-            (
-                std::path::PathBuf::from("Contributor.dll"),
-                vec![widget, marker],
-                super::AbbreviationVisibility::Modelled,
-                false,
-                false,
-                Vec::new(),
-                Some(ident("Lib")),
-            ),
-            (
-                std::path::PathBuf::from("Rootless.dll"),
-                vec![],
-                super::AbbreviationVisibility::Modelled,
-                false,
-                false,
-                Vec::new(),
-                Some(ident("Lib")),
-            ),
+            input("Contributor.dll", vec![widget, marker]),
+            input("Rootless.dll", vec![]),
         ]);
 
         assert_eq!(
@@ -5411,6 +5638,179 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "Alias")),
             None,
             "two distinct nested `X` terminals via same-named `Foo` children must decline",
+        );
+    }
+
+    /// One `AssemblyProjectionInput` for the forwarder unit tests below.
+    fn forwarder_input(
+        dll: &str,
+        roots: Vec<Entity>,
+        forwarders: Vec<borzoi_assembly::TypeForwarder>,
+    ) -> super::AssemblyProjectionInput {
+        super::AssemblyProjectionInput {
+            path: std::path::PathBuf::from(format!("{dll}.dll")),
+            roots,
+            abbreviation_visibility: super::AbbreviationVisibility::Modelled,
+            extension_index_unknowable: false,
+            signature_non_authoritative: false,
+            auto_opens: Vec::new(),
+            manifest_identity: Some(ident(dll)),
+            type_forwarders: forwarders,
+        }
+    }
+
+    fn forwarder(ns: &str, name: &str, to: &str) -> borzoi_assembly::TypeForwarder {
+        borzoi_assembly::TypeForwarder {
+            namespace: ns.to_string(),
+            name: name.to_string(),
+            assembly: to.to_string(),
+        }
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_follows_a_type_forwarder_out_of_a_facade() {
+        // FSharp.Core's pickle names its BCL targets through `netstandard` — a
+        // facade with no TypeDefs, only forwarder rows. The chase must follow
+        // the forwarder to the declaring DLL: `type int32 = System.Int32`
+        // (ccu `Facade`) → the facade's `(System, Int32) → Real` row → the
+        // `Real` DLL's `System.Int32`.
+        let int32 = Entity {
+            kind: EntityKind::Struct,
+            ..module_entity("Real", &["System"], "Int32")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "IntAlias",
+            Some(named_target(Some("Facade"), &["System", "Int32"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            forwarder_input("Lib", vec![marker], Vec::new()),
+            forwarder_input("Facade", vec![], vec![forwarder("System", "Int32", "Real")]),
+            forwarder_input("Real", vec![int32], Vec::new()),
+        ]);
+        let target = env
+            .resolve_abbreviation_target(handle_of(&env, &["Lib"], "IntAlias"))
+            .expect("the facade forwarder must be followed");
+        assert_eq!(env.entity(target).name, "Int32");
+        assert_eq!(env.entity(target).assembly.name, "Real");
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_ambiguous_forwarder_splits() {
+        // A logical path does not encode its namespace-vs-nested split, so a
+        // facade can match a path at TWO splits — `(A, B) → X` (namespace `A`,
+        // type `B`, nested `C`) and `(A.B, C) → Y` (namespace `A.B`, type
+        // `C`) both cover `A.B.C`. When both redirects reach a terminal, the
+        // reference is ambiguous and must decline, never commit the
+        // first-split pick (codex round 3).
+        let c_in_b = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("X", &[], "C")
+        };
+        let b_in_x = Entity {
+            kind: EntityKind::Class,
+            nested_types: vec![c_in_b],
+            ..module_entity("X", &["A"], "B")
+        };
+        let c_in_y = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Y", &["A", "B"], "C")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "CAlias",
+            Some(named_target(Some("Facade"), &["A", "B", "C"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            forwarder_input("Lib", vec![marker], Vec::new()),
+            forwarder_input(
+                "Facade",
+                vec![],
+                vec![forwarder("A", "B", "X"), forwarder("A.B", "C", "Y")],
+            ),
+            forwarder_input("X", vec![b_in_x], Vec::new()),
+            forwarder_input("Y", vec![c_in_y], Vec::new()),
+        ]);
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "CAlias")),
+            None,
+            "two forwarder splits both reaching a terminal are ambiguous — decline",
+        );
+    }
+
+    #[test]
+    fn forwarder_hop_pins_the_split_that_selected_it() {
+        // The `(A, B) → X` forwarder names the TYPE `A.B` (namespace `A`,
+        // type `B`); the destination lookup must honour exactly that split.
+        // `X` declares an unrelated top-level `C` in namespace `A.B` — the
+        // OTHER split of the same dotted path — and no nested `C` under its
+        // `A.B` type, so the forwarded route resolves nothing: accepting the
+        // unrelated `A.B.C` would be a wrong target (codex round 4).
+        let b_without_c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("X", &["A"], "B")
+        };
+        let unrelated_c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("X", &["A", "B"], "C")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "CAlias",
+            Some(named_target(Some("Facade"), &["A", "B", "C"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            forwarder_input("Lib", vec![marker], Vec::new()),
+            forwarder_input("Facade", vec![], vec![forwarder("A", "B", "X")]),
+            forwarder_input("X", vec![b_without_c, unrelated_c], Vec::new()),
+        ]);
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "CAlias")),
+            None,
+            "the hop pinned split (A, B): X's unrelated top-level A.B.C must not bind",
+        );
+    }
+
+    #[test]
+    fn forwarder_hop_split_disambiguates_the_destination() {
+        // The complement: the destination declares BOTH shapes — type `A.B`
+        // with nested `C`, and an unrelated top-level `A.B.C`. Unpinned, the
+        // two splits would collide and decline; the forwarder's split names
+        // the type `A.B` exactly, so the nested `C` resolves.
+        let nested_c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("X", &[], "C")
+        };
+        let b_with_c = Entity {
+            kind: EntityKind::Class,
+            nested_types: vec![nested_c],
+            ..module_entity("X", &["A"], "B")
+        };
+        let unrelated_c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("X", &["A", "B"], "C")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "CAlias",
+            Some(named_target(Some("Facade"), &["A", "B", "C"])),
+        );
+        let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            forwarder_input("Lib", vec![marker], Vec::new()),
+            forwarder_input("Facade", vec![], vec![forwarder("A", "B", "X")]),
+            forwarder_input("X", vec![b_with_c, unrelated_c], Vec::new()),
+        ]);
+        let target = env
+            .resolve_abbreviation_target(handle_of(&env, &["Lib"], "CAlias"))
+            .expect("the pinned split must disambiguate the destination");
+        assert_eq!(env.entity(target).name, "C");
+        assert!(
+            env.entity_full_name(target).starts_with("A.B"),
+            "the nested C under the forwarded type must bind, not the unrelated top-level"
         );
     }
 

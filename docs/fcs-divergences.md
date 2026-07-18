@@ -172,9 +172,16 @@ The public view is the in-crate `Ecma335Assembly`, over
 existed only because of bugs in a previous reader are gone with the move to the
 owned reader — see [Resolved since introduction](#resolved-since-introduction).
 
-- **Type abbreviations not projected from the pickle merge** — `type IntId = int`
-  is inlined by fsc (no ECMA TypeDef row), so the measure-overlay merge emits
-  nothing for it; deferred. (`ffb2dd4`)
+- **Type abbreviations: unresolvable/structural targets defer** — every public
+  metadata-invisible abbreviation (FSharp.Core's included) is projected as an
+  `EntityKind::Abbreviation` marker carrying its decoded logical target, which
+  sema chases to a terminal entity (following `netstandard`-style type
+  forwarders); `x : IntId`, `x : option<_>` and the primitive aliases resolve
+  through it. What still defers: a target the decoder declines (measure,
+  union-case, anon-record shapes), a `Fun`/`Tuple`/`Var` target head (no
+  nominal terminal), a target CCU the env has not loaded, and an ambiguous
+  logical path (two loaded assemblies both declaring it). (`ffb2dd4`,
+  abbreviation-target projection plan)
 - **Incomplete-unpickler decode failures are recorded F#-overlay skips** — when
   the host signature pickle can't be decoded, enumeration returns the
   un-enriched ECMA tree and records a skipped F# overlay for source names,

@@ -1,19 +1,21 @@
 //! Assembly identity, external references, and manifest resources — the
 //! manifest-level projection.
 //!
-//! Three reads on top of the [`Tables`] layout:
+//! Four reads on top of the [`Tables`] layout:
 //! - [`read_assembly`] projects the single `Assembly` row (II.22.2);
 //! - [`read_assembly_refs`] projects every `AssemblyRef` row (II.22.5);
+//! - [`read_type_forwarders`] projects the forwarder `ExportedType` rows
+//!   (II.22.14) — the facade-assembly redirects;
 //! - [`read_resources`] projects every `ManifestResource` row (II.22.24),
 //!   extracting the bytes of file-embedded resources and refusing any resource
 //!   that lives in another file or assembly.
 //!
-//! All three are pure functions of the parsed metadata; later stages assemble
+//! All four are pure functions of the parsed metadata; later stages assemble
 //! their results onto the owned `Image`.
 
 use super::Error;
 use super::metadata::MetadataFile;
-use super::tables::{Tables, table};
+use super::tables::{Coded, Tables, table};
 
 /// ECMA-335 `assemblyFlags` bit 0 (`afPublicKey`): the `PublicKey`/
 /// `PublicKeyOrToken` blob is the full (unhashed) public key rather than an
@@ -105,6 +107,65 @@ pub(crate) fn read_assembly_refs(tables: &Tables) -> Result<Vec<AssemblyIdentity
         });
     }
     Ok(refs)
+}
+
+/// One `ExportedType` row (II.22.14) carrying the `Forwarder` flag whose
+/// `Implementation` is an `AssemblyRef`: "this assembly's `namespace.name`
+/// lives in `assembly`". Facade assemblies (`netstandard`) consist almost
+/// entirely of these; a reference into a facade resolves only by following
+/// them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RawTypeForwarder {
+    /// Dotted namespace, empty for the global namespace.
+    pub(crate) namespace: String,
+    /// The metadata type name — mangled for generics (`IEnumerable`1`).
+    pub(crate) name: String,
+    /// Simple name of the assembly the type forwards to.
+    pub(crate) assembly: String,
+}
+
+/// Project every **forwarder** `ExportedType` row (II.22.14). Non-forwarder
+/// rows (types exported from other modules of a multi-module assembly) and
+/// forwarders of *nested* types (`Implementation` = `ExportedType`, the
+/// enclosing forwarder) are skipped: the consumers resolve top-level names,
+/// and a skipped row only costs a decline downstream, never a wrong target.
+pub(crate) fn read_type_forwarders(tables: &Tables) -> Result<Vec<RawTypeForwarder>, Error> {
+    /// `tdForwarder` (II.23.1.15).
+    const TD_FORWARDER: u32 = 0x0020_0000;
+    let count = tables.row_count(table::EXPORTED_TYPE);
+    let mut out = Vec::new();
+    for r in 0..count {
+        // Columns: Flags(0), TypeDefId(1), TypeName(2), TypeNamespace(3),
+        // Implementation(4).
+        let row = tables.row(table::EXPORTED_TYPE, r)?;
+        if row.int(0) & TD_FORWARDER == 0 {
+            continue;
+        }
+        let Some(token) = tables.decode_coded(Coded::Implementation, row.coded(4))? else {
+            continue;
+        };
+        if token.table != table::ASSEMBLY_REF {
+            continue;
+        }
+        // `AssemblyRef` columns: …, Name(6), … (see `read_assembly_refs`);
+        // rids are 1-based.
+        let target = tables
+            .row(
+                table::ASSEMBLY_REF,
+                token
+                    .rid
+                    .checked_sub(1)
+                    .ok_or(Error::TableIndexOutOfRange)?,
+            )?
+            .string(6)?
+            .to_string();
+        out.push(RawTypeForwarder {
+            namespace: row.string(3)?.to_string(),
+            name: row.string(2)?.to_string(),
+            assembly: target,
+        });
+    }
+    Ok(out)
 }
 
 /// Project every `ManifestResource` row (II.22.24).

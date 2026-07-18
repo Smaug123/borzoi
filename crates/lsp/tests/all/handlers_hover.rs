@@ -135,32 +135,40 @@ fn hover_shows_binder_type_not_coerced_use_type() {
     let hover = run(&mut state, &uri, 1, s_use_col).expect("hover for the use `s`");
     assert_eq!(body(&hover), "`s : string` — value");
 
-    // The annotated binder `o` types from its annotation (Stage R2-a): the
-    // annotation is an exact equality on the *binder* regardless of `obj`'s
-    // subsumption-target role on the RHS.
+    // The annotated binder `o` shows no type: an orphan file references no
+    // assemblies, so `obj` has no binding to type through — primitive-alias
+    // semantics come from FSharp.Core's own abbreviation markers (chased by
+    // `entity_annotation_ty`), not a hard-coded table, and an orphan env has
+    // no FSharp.Core. A project-owned file types this via its real
+    // reference closure.
     let o_col = "let ".len() as u32;
     let o_hover = run(&mut state, &uri, 1, o_col).expect("hover for `o`");
-    assert_eq!(body(&o_hover), "`o : obj` — value");
+    assert_eq!(body(&o_hover), "`o` — value");
 }
 
 #[test]
 fn hovers_an_annotated_value_binder() {
-    // `let x : int64 = 42`: the binder types from the annotation (Stage R2-a),
-    // rendered in the F# display form.
+    // `let x : int64 = 42` in an *orphan* file: no referenced assemblies, so
+    // `int64` has nothing to bind to and the binder shows untyped — the
+    // primitive aliases type through FSharp.Core's abbreviation markers (see
+    // `entity_annotation_ty`), which an orphan env does not carry. The typed
+    // rendering for a project-owned file is pinned by the sema differentials
+    // (`infer_binder_types_diff.rs` over the real FSharp.Core closure).
     let src = "let x : int64 = 42\n";
     let (mut state, uri) = orphan_state(src);
     let hover = run(&mut state, &uri, 0, 4).expect("hover for `x`");
-    assert_eq!(body(&hover), "`x : int64` — value");
+    assert_eq!(body(&hover), "`x` — value");
 }
 
 #[test]
 fn hovers_a_return_annotated_function() {
-    // `let h x : int = x`: the return annotation grounds the parameter through
-    // the body (Stage R2-c), so the function hovers `int -> int`.
+    // `let h x : int = x` in an orphan file: as with the value binder above,
+    // `int` has no binding without FSharp.Core, so the function defers rather
+    // than typing `int -> int` from a conjured alias.
     let src = "let h x : int = x\n";
     let (mut state, uri) = orphan_state(src);
     let hover = run(&mut state, &uri, 0, 4).expect("hover for `h`");
-    assert_eq!(body(&hover), "`h : int -> int` — function");
+    assert_eq!(body(&hover), "`h` — function");
 }
 
 #[test]

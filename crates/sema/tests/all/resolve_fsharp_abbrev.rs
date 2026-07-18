@@ -718,6 +718,202 @@ fn non_rec_later_module_does_not_veto_the_assembly_path() {
     );
 }
 
+// ==== Stage 4 of `docs/abbreviation-target-projection-plan.md`: resolving
+// *through* a marker via its decoded `abbreviation_target`. The marker itself
+// is what the name binds (FCS reports the abbreviation entity at the use), so
+// a chase-able marker records `Resolution::Entity(marker)`; the chase's
+// *terminal* only steers what a path may do PAST the abbreviation (nested
+// types, static members). A target we cannot chase — undeclared assembly,
+// structural shape, `None` — keeps the pre-chase shadow-defer exactly.
+
+fn env_with_bcl() -> AssemblyEnv {
+    let fixture = std::fs::read(ensure_fixture_built()).expect("read F# abbreviation fixture dll");
+    let bcl =
+        std::fs::read(crate::common::ensure_system_runtime_dll()).expect("read System.Runtime.dll");
+    let views = vec![
+        Ecma335Assembly::parse(&fixture).expect("parse F# abbreviation fixture dll"),
+        Ecma335Assembly::parse(&bcl).expect("parse System.Runtime.dll"),
+    ];
+    AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
+}
+
+#[test]
+fn same_assembly_abbreviation_resolves_to_its_marker() {
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet f (x : MarkerAlias) = x\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "MarkerAlias", 0)
+        .expect("fixture must surface the MarkerAlias marker");
+    assert!(
+        env.is_abbreviation(marker),
+        "MarkerAlias must be a pickle-synthesised marker"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "MarkerAlias")),
+        Some(Resolution::Entity(marker)),
+        "a marker whose target chases to a same-assembly TypeDef must resolve, not defer"
+    );
+}
+
+#[test]
+fn abbreviation_chain_resolves_through_two_markers() {
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet f (x : MarkerAliasAlias) = x\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "MarkerAliasAlias", 0)
+        .expect("fixture must surface the MarkerAliasAlias marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "MarkerAliasAlias")),
+        Some(Resolution::Entity(marker)),
+        "a marker → marker → TypeDef chain must chase to the terminal and resolve"
+    );
+}
+
+#[test]
+fn generic_abbreviation_resolves_at_its_arity() {
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet f (x : GenAlias<int>) = x\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "GenAlias", 1)
+        .expect("fixture must surface the arity-1 GenAlias marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "GenAlias")),
+        Some(Resolution::Entity(marker)),
+        "a generic marker (the `option` shape) must resolve at its own arity"
+    );
+}
+
+#[test]
+fn qualified_abbreviation_path_resolves_at_the_tail() {
+    let env = fixture_env();
+    let src = "module M\nlet f (x : Lib.MarkerAlias) = x\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "MarkerAlias", 0)
+        .expect("fixture must surface the MarkerAlias marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "MarkerAlias")),
+        Some(Resolution::Entity(marker)),
+        "a fully-qualified path ending at a chase-able marker must resolve its tail"
+    );
+}
+
+#[test]
+fn bcl_target_without_the_target_assembly_still_defers() {
+    // `Str = System.String`, but the fixture-only env has no assembly named
+    // `System.Runtime`: the chase must decline and the marker keep its
+    // shadow-defer (D5 — a chase that cannot finish never resolves).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet x : Str = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Str")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an unloadable target assembly must keep the marker deferring"
+    );
+}
+
+#[test]
+fn bcl_target_resolves_with_the_target_assembly_loaded() {
+    let env = env_with_bcl();
+    let src = "module M\nopen Lib\nlet x : Str = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    let marker = env
+        .lookup_type(&["Lib".into()], "Str", 0)
+        .expect("fixture must surface the Str marker");
+    assert_eq!(
+        rf.resolution_at(at(src, "Str")),
+        Some(Resolution::Entity(marker)),
+        "a cross-assembly BCL target must chase once System.Runtime is loaded"
+    );
+}
+
+#[test]
+fn static_member_tail_through_an_abbreviation_resolves() {
+    // The plan's §2 row 1: `S.Format` where `type S = System.String` resolves
+    // the member tail on the TARGET. `Empty` is a (non-overloaded) static
+    // field, so the tail commits a `Member` whose parent is the terminal.
+    let env = env_with_bcl();
+    let src = "module M\nopen Lib\nlet y = Str.Empty\n";
+    let rf = resolve(src, &env);
+    let string_entity = env
+        .lookup_type(&["System".into()], "String", 0)
+        .expect("System.Runtime must declare System.String");
+    let use_start = src.find("Str.Empty").expect("use site");
+    let whole = TextRange::new(
+        u32::try_from(use_start).unwrap().into(),
+        u32::try_from(use_start + "Str.Empty".len()).unwrap().into(),
+    );
+    match rf.resolution_at(whole) {
+        Some(Resolution::Member { parent, .. }) => assert_eq!(
+            parent, string_entity,
+            "the static tail must resolve on the chased terminal (System.String)"
+        ),
+        other => panic!("expected a Member on System.String, got {other:?}"),
+    }
+}
+
+#[test]
+fn open_type_through_an_abbreviation_segment_is_modelled() {
+    // codex review (this slice): the `open type` path may pass THROUGH an
+    // abbreviation at a non-final segment — `open type Lib.Env.SpecialFolder`
+    // where `type Env = System.Environment`. FCS chases `Env` and opens the
+    // real nested enum's cases; a walk that descends on the marker's (empty)
+    // nested types goes opaque instead, wrongly suppressing earlier opens'
+    // values. Pin the non-opacity: `openedValue` (shadowed by nothing the
+    // enum brings in) must keep resolving.
+    let env = env_with_bcl();
+    let src = "module M\nmodule Opened =\n    let openedValue = 1\nopen Opened\nopen type Lib.Env.SpecialFolder\nlet y = openedValue\n";
+    let rf = resolve(src, &env);
+    let use_start = src.rfind("openedValue").expect("use site");
+    let range = TextRange::new(
+        u32::try_from(use_start).unwrap().into(),
+        u32::try_from(use_start + "openedValue".len())
+            .unwrap()
+            .into(),
+    );
+    assert!(
+        matches!(rf.resolution_at(range), Some(Resolution::Item(_))),
+        "an open-type path through a chase-able abbreviation segment must be \
+         modelled, not opaque — `openedValue` binds the project module's own \
+         item — got {:?}",
+        rf.resolution_at(range)
+    );
+}
+
+#[test]
+fn chase_terminal_is_never_a_marker() {
+    // The chase's own contract, pinned over every marker the fixture
+    // surfaces: whatever `resolve_abbreviation_tycon` returns is a real (non-marker)
+    // entity — a chain never stops half-way — and a decline is `None`, never
+    // a partial hop.
+    let env = env_with_bcl();
+    for (ns, name, arity) in [
+        ("Lib", "MarkerAlias", 0),
+        ("Lib", "MarkerAliasAlias", 0),
+        ("Lib", "GenAlias", 1),
+        ("Lib", "Str", 0),
+        ("Lib", "int64", 0),
+        ("Lib", "Companion", 0),
+    ] {
+        let marker = env
+            .lookup_type(&[ns.into()], name, arity)
+            .unwrap_or_else(|| panic!("fixture must surface {ns}.{name}"));
+        if !env.is_abbreviation(marker) {
+            continue;
+        }
+        if let Some(terminal) = env.resolve_abbreviation_tycon(marker) {
+            assert!(
+                !env.is_abbreviation(terminal),
+                "chase({ns}.{name}) stopped on a marker"
+            );
+        }
+    }
+}
+
 #[test]
 fn nested_rec_module_forward_path_defers_too() {
     // The nested `module rec Outer = …` entry point (a fresh rec block inside
@@ -730,5 +926,188 @@ fn nested_rec_module_forward_path_defers_too() {
         rf.resolution_at(at(src, "Marker")),
         None,
         "a nested rec block's forward module path must not bind the assembly type"
+    );
+}
+
+// ==== Cross-DLL collision guards on the chase (codex round 3) ====
+//
+// FCS applies reference-order precedence when two loaded DLLs export the same
+// public FQN, and sema does not model reference order — so a chase that starts
+// at (or below) a colliding rooting must defer, never resolve out of the
+// first-indexed DLL's subtree.
+
+/// A minimal synthetic entity for the hand-built two-DLL envs below.
+fn synth_entity(
+    assembly: &str,
+    ns: &[&str],
+    name: &str,
+    kind: borzoi_assembly::EntityKind,
+) -> borzoi_assembly::Entity {
+    use borzoi_assembly::{Access, AssemblyIdentity, Entity, Version};
+    Entity {
+        assembly: AssemblyIdentity {
+            name: assembly.to_string(),
+            version: Version {
+                major: 1,
+                minor: 0,
+                build: 0,
+                revision: 0,
+            },
+            public_key_token: None,
+        },
+        namespace: ns.iter().map(|s| (*s).to_string()).collect(),
+        name: name.to_string(),
+        kind,
+        access: Access::Public,
+        is_sealed: false,
+        generic_parameters: vec![],
+        base_type: None,
+        interfaces: vec![],
+        members: vec![],
+        skipped_members: vec![],
+        method_def_tokens: vec![],
+        nested_types: vec![],
+        is_readonly: false,
+        is_byref_like: false,
+        is_struct: false,
+        is_auto_open: false,
+        is_require_qualified_access: false,
+        is_no_equality: false,
+        is_no_comparison: false,
+        is_structural_equality: false,
+        is_structural_comparison: false,
+        is_allow_null_literal: false,
+        obsolete: None,
+        experimental: None,
+        default_member: None,
+        compiler_feature_required: vec![],
+        source_name: None,
+        extension_member_names: vec![],
+        union_case_names: None,
+        static_extension_member_names: Vec::new(),
+        is_extension_container: false,
+        custom_attrs: vec![],
+        abbreviation_target: None,
+    }
+}
+
+fn synth_marker(
+    assembly: &str,
+    ns: &[&str],
+    name: &str,
+    target_path: &[&str],
+) -> borzoi_assembly::Entity {
+    use borzoi_assembly::{AbbreviationTarget, EntityKind};
+    let mut e = synth_entity(assembly, ns, name, EntityKind::Abbreviation);
+    e.abbreviation_target = Some(AbbreviationTarget::Named {
+        ccu: None,
+        path: target_path.iter().map(|s| (*s).to_string()).collect(),
+        args: Vec::new(),
+    });
+    e
+}
+
+fn two_dll_env(a: Vec<borzoi_assembly::Entity>, b: Vec<borzoi_assembly::Entity>) -> AssemblyEnv {
+    use borzoi_sema::AbbreviationVisibility;
+    AssemblyEnv::from_assemblies_with_abbreviation_visibility(vec![
+        (
+            PathBuf::from("A.dll"),
+            a,
+            AbbreviationVisibility::Modelled,
+            Vec::new(),
+        ),
+        (
+            PathBuf::from("B.dll"),
+            b,
+            AbbreviationVisibility::Modelled,
+            Vec::new(),
+        ),
+    ])
+}
+
+#[test]
+fn nested_alias_below_a_cross_dll_colliding_root_defers_in_type_position() {
+    // Both DLLs export a public top-level `N.Container`; the first nests
+    // `type Alias = Widget` (a marker with a Local target). FCS merges the
+    // containers by reference order, so `children` of the first-indexed root
+    // may miss the other DLL's contribution — the type-position walk must
+    // defer the nested-alias chase (recording nothing at a multi-segment
+    // tail), exactly as the value-path walk already does.
+    use borzoi_assembly::EntityKind;
+    let widget = synth_entity("A", &["N"], "Widget", EntityKind::Class);
+    let mut container_a = synth_entity("A", &["N"], "Container", EntityKind::Module);
+    container_a.nested_types = vec![{
+        let mut m = synth_marker("A", &[], "Alias", &["N", "Widget"]);
+        m.namespace = Vec::new();
+        m
+    }];
+    let container_b = synth_entity("B", &["N"], "Container", EntityKind::Module);
+    let env = two_dll_env(vec![widget, container_a], vec![container_b]);
+    let src = "module M\nlet f (x : N.Container.Alias) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Alias")),
+        None,
+        "a nested alias below a cross-DLL-colliding root must defer, not chase \
+         out of the first-indexed subtree"
+    );
+}
+
+#[test]
+fn open_type_of_a_cross_dll_colliding_alias_goes_opaque() {
+    // Both DLLs export a public top-level `Lib.S` — a chase-able alias in
+    // one, a real class in the other. FCS binds by reference order, so
+    // `open type Lib.S` must go opaque (suppressing earlier opens' values)
+    // rather than open the first-indexed DLL's pick.
+    use borzoi_assembly::EntityKind;
+    let widget = synth_entity("A", &["Lib"], "Widget", EntityKind::Class);
+    let alias = synth_marker("A", &["Lib"], "S", &["Lib", "Widget"]);
+    let s_class = synth_entity("B", &["Lib"], "S", EntityKind::Class);
+    let env = two_dll_env(vec![widget, alias], vec![s_class]);
+    let src = "module M\nmodule Opened =\n    let openedValue = 1\nopen Opened\nopen type Lib.S\nlet y = openedValue\n";
+    let rf = resolve(src, &env);
+    let use_start = src.rfind("openedValue").expect("use site");
+    let range = TextRange::new(
+        u32::try_from(use_start).unwrap().into(),
+        u32::try_from(use_start + "openedValue".len())
+            .unwrap()
+            .into(),
+    );
+    assert_eq!(
+        rf.resolution_at(range),
+        Some(Resolution::Deferred(DeferredReason::UnboundName)),
+        "an `open type` of a cross-DLL-colliding alias must go opaque, not \
+         open the first-indexed target's statics"
+    );
+}
+
+#[test]
+fn absent_child_past_a_chased_alias_defers_instead_of_ceding() {
+    // codex round 5: once a type path roots through a *resolved* alias, FCS
+    // owns the reading — `AliasNs.Alias.Inner` where the alias's target has
+    // no `Inner` (genuinely, or because the projection dropped it) must NOT
+    // cede ownership and let a lower-priority open's same-named
+    // `Alias.Inner` bind. Mirrors the value-path `via_alias` rule main's
+    // Stage 4a established.
+    use borzoi_assembly::EntityKind;
+    let widget = synth_entity("A", &["AliasNs"], "Widget", EntityKind::Class);
+    let alias = synth_marker("A", &["AliasNs"], "Alias", &["AliasNs", "Widget"]);
+    let inner = {
+        let mut e = synth_entity("B", &[], "Inner", EntityKind::Class);
+        e.namespace = Vec::new();
+        e
+    };
+    let mut other_alias = synth_entity("B", &["OtherNs"], "Alias", EntityKind::Class);
+    other_alias.nested_types = vec![inner];
+    let env = two_dll_env(vec![widget, alias], vec![other_alias]);
+    // `open AliasNs` is the LATER (higher-priority) open: its alias reading
+    // owns the path even though its target lacks `Inner`.
+    let src = "module M\nopen OtherNs\nopen AliasNs\nlet f (x : Alias.Inner) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Inner")),
+        None,
+        "an absent child past a chased alias must defer the path, not fall \
+         through to the lower open's same-named type"
     );
 }

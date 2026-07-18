@@ -365,11 +365,18 @@ with args, `Fun`, `Tuple`, `UCase` — returns `Ok(None)`. Populate the field in
    *every* decode path two-sided: `IntId`/`ObjId` (referenced NonLocal), `S`
    (BCL), `PointAlias` (same-assembly → `MiniLibFs.Point`), `SelfVar<'T>` (typar
    → `!T0`), and `MyList<'T> = 'T list` (declined). The **FSharp.Core sweep is
-   deferred**: `fcs-dump entities` still aborts on FSharp.Core's first
-   indexer-property type (only *abbreviation* entities got the minimal-projection
-   branch), so a whole-assembly dump is unavailable. Reaching that coverage needs
-   a narrower `fcs-dump abbrev-targets` mode that skips non-abbreviation
+   deferred**: `fcs-dump entities` still aborts on FSharp.Core — empirically at
+   the non-IL *generic-entity* guard (`MeasureProduct`2`, the second top-level
+   entity in pickle order; the indexer-property guard sits later and never
+   fires first), since only *abbreviation* entities got the minimal-projection
+   branch — so a whole-assembly dump is unavailable. Reaching that coverage
+   needs a narrower `fcs-dump abbrev-targets` mode that skips non-abbreviation
    projection — a follow-up, noted here so the coverage gap is explicit.
+   (Diagnosed separately: on a *NuGet-layout* DLL, `entities` fails earlier
+   still — the synthetic script `#r`s only the target and its sibling DLLs, so
+   package dependencies are unresolved, `walkFcsType` falls through, and the
+   fall-through diagnostic's own protect-wrapped `t.Format` throws; some
+   entities even throw from `MembersFunctionsAndValues` enumeration itself.)
 3. **The extraction keys by `(fqn, arity)` with the container path threaded in**
    (Stage-1 codex review): a nested alias keys by its full path and an
    arity-overloaded pair (`type A = int` / `type A<'T> = …`) does not collide.
@@ -429,48 +436,39 @@ Parallel with Stage 5.
 
 **Implements**: §2 rows 1–2.
 
-`AssemblyEnv` gains a resolver: given `AbbreviationTarget::Named { ccu, path,
-args }`, find the target `EntityHandle` — `ccu: None` ⇒ the same assembly,
-`Some(name)` ⇒ the loaded assembly with that logical name — trying the
-namespace/nested splits of `path` against the loaded tree (this is where the
-split deferred in §3.1 finally happens, with the referenced assembly present).
-At the `is_abbreviation ⇒ ProjectShadowed` sites in `resolve/assembly.rs` (both
-the value/member and type-position fns) and the `open type` opaque branch in
-`resolve/decls.rs:786`, follow a resolvable target through; fall back to the
-current defer when the target is `None` or does not resolve.
+**Status (done — 4a on `main`, 4b/4c + the FSharp.Core/forwarder widening in
+this branch).** The primitive is `AssemblyEnv::resolve_abbreviation_target`
+(4a): nullary `Named` targets, exact-identity pinning (`Local` ⇒ the marker's
+own per-DLL provenance; a `CcuRef` name ⇒ the *sole* loaded DLL of that simple
+name, declining on ambiguity or an incomplete identity registry), every
+namespace/nested split with all-candidate unique-or-decline, public-only
+chains, terminal-never-a-module, and a fuel-bounded alias chase — wired into
+the value/member `is_abbreviation` sites of `assembly_path_records` behind two
+further guards (a cross-DLL rooting-FQN collision and a ModuleSuffix companion
+module, both fcs-verified) with alias path-ownership on an `Absent` tail.
 
-**Correctness oracle**:
-- Extend `crates/sema/tests/all/resolve_fsharp_abbrev.rs`: `S.Format` where
-  `type S = System.String` resolves the member tail; `open type` of a marker
-  opens the target's statics; an unresolvable/`None` target still defers
-  (no regression — every existing assertion in that file must stay green).
-- The whole-project name-resolution differential
-  (`resolve_real_project_diff`, `resolve-real-project-diff` skill): abbreviation
-  uses that FCS resolves and we used to defer now agree, with no new
-  divergences.
+On top of that this branch adds:
 
-**Status — Stage 4a (value/member dotted-member path) done; 4b/4c to follow.**
-Landed the `AssemblyEnv::resolve_abbreviation_target` primitive (reusing the
-existing `assembly_entity_at_path` namespace/nested-split search; nullary `Named`
-only — chasing a chained alias with a fuel bound; declines `Var`/structural/
-generic/unloaded targets) and wired it into the **value/member** `is_abbreviation`
-defer sites in `assembly_path_records` (`resolve/assembly.rs`): a resolvable
-target now has the member tail walk on it (`WidgetAlias.Make` binds the `Make`
-static through the alias), while the alias segment binds to the marker and an
-unresolvable target still shadow-defers. Proven by unit tests over the primitive
-and an end-to-end fixture test; every existing `resolve_fsharp_abbrev` assertion
-stays green (their `string`/`int` targets are not loaded in the single-DLL env,
-so they keep deferring).
+- **type forwarders** — the `CcuRef` branch follows forwarder-flagged
+  `ExportedType` rows out of a facade (`netstandard`, which FSharp.Core's
+  pickle names for its BCL targets), re-applying the same uniqueness
+  discipline per hop (the reader gained the rows; the env a per-DLL map);
+- **`resolve_abbreviation_tycon`** — the type-position sibling that also
+  follows a target carrying type arguments (`option`'s `Option`1<'T>`; a
+  backtick-mangled segment carries its own arity), while the value-path fn
+  keeps its nullary contract;
+- **4b** — `assembly_type_path_core` chases at the rooting and nested marker
+  sites (behind the same cross-DLL collision guard): the marker stays the
+  *recorded* entity and the leaf (FCS names the abbreviation), the terminal
+  carries the walk past it; attribute candidates still defer on a marker leaf
+  (the `…Attribute`-suffix interaction is unprobed);
+- **4c** — `open type Alias` opens the chased terminal's statics, and
+  `opened_assembly_type` descends through an abbreviation at a non-final
+  segment (`open type Lib.Env.SpecialFolder` where `type Env =
+  System.Environment`); the plain-`open` companion-module semantics are
+  untouched.
 
-Deferred to a stacked follow-up, because both carry subtler interactions best
-validated against the whole-project differential:
-- **4b — type-position path** (`assembly_type_path_core`): the rooting-type
-  resolve-through interacts with the *annotation-shadowable* deferral (a
-  value-typed target's nullability), so it needs the corpus differential to
-  confirm it does not diverge.
-- **4c — `open type Alias`** (`resolve/decls.rs`): opening the *target's* statics
-  instead of going opaque; the plain-`open` companion-module semantics must stay
-  intact.
+An unchaseable target keeps every pre-chase defer.
 
 ---
 
@@ -487,6 +485,16 @@ bridge to `Ty` — `Named` targets to `Ty::Named` under the existing
 (sema's `Gen::annotation_ty` already recurses those shapes,
 `r2-annotation-typing-plan.md:27`). Hover (`hover.rs:627`) renders `IntId =
 int` from the target.
+
+**Status (annotation bridge done; hover rendering open).**
+`entity_annotation_ty` chases an `Abbreviation`-kind handle through
+`resolve_abbreviation_target` and bridges the terminal under the unchanged R2-d
+defers, plus one new one: a terminal of `Microsoft.FSharp.Core.Unit` (`Ty`
+has no unit story; 3.3d's void rule assumes its absence). The binder-types
+differential runs over the real FSharp.Core + `System.Runtime` +
+`netstandard` closure, so the primitive sweep exercises the chase
+end-to-end. Structural (`Fun`/`Tuple`) target bridging and the hover
+rendering remain follow-ups.
 
 **Correctness oracle**:
 - `infer`/hover unit tests: `let x : IntId = e` grounds `x : int` and flows to
@@ -510,10 +518,18 @@ item is ticked for the abbreviation slice.
   (`UnsupportedPickleTag`), so it is already bounded by
   `fsharp_abbreviations_unknowable` and never reaches this decoder; SRTP arms
   4/5; the extension-member projection holes; the arity-collision under-set.
-- **FSharp.Core marker emission** stays excluded — its primitive aliases are the
-  semantics sema hard-codes (`fsharp_primitive_alias`), not a shadow risk
-  (`fsharp_pickle_merge.rs:1463`). Its pickle is used only as differential
-  fodder (§3.3), never to emit markers.
+- ~~**FSharp.Core marker emission** stays excluded~~ — **reversed** with
+  Stage 4: FSharp.Core now emits markers like any other assembly, and the
+  hard-coded `fsharp_primitive_alias` table is **deleted**. The primitive
+  aliases' semantics come from FSharp.Core's own pickle — `int` records its
+  marker and chases `int → int32 → (netstandard forwarder) → System.Int32` —
+  exactly as FCS resolves them (they are ordinary abbreviations in
+  `prim-types-prelude.fs`, not compiler magic). The real-FSharp.Core sweep
+  `primitive_alias_chases_reproduce_the_old_table`
+  (`crates/sema/tests/all/resolve_fsharp_core.rs`) pins that the chase
+  reproduces the deleted table name-for-name, and the FSharp.Core exemption
+  on `fsharp_abbreviations_unknowable` is gone with it (a broken FSharp.Core
+  pickle is coarse-unknowable like anyone else's).
 - **Generic *instantiation* through an abbreviation** in sema (substituting
   `MyList<int>`'s `'T`) — the R2 plan already defers "generic instantiations
   (pending `Ty` args)" (`r2-annotation-typing-plan.md:57`); this plan decodes
