@@ -471,6 +471,16 @@ fn presence(kind: ExtensionKind, channel: Channel) -> Presence {
     }
 }
 
+/// The top-level entities declared directly in one exact namespace, indexed by
+/// the name F# source writes. Both vectors keep interning order and every
+/// cross-assembly/arity collision; the first-wins type-position index is
+/// [`AssemblyEnv::by_type`].
+#[derive(Debug, Default, Clone)]
+struct NamespaceTypes {
+    all: Vec<EntityHandle>,
+    by_source_name: HashMap<String, Vec<EntityHandle>>,
+}
+
 /// A flattened, name-indexed view over referenced assemblies' entities. See the
 /// module docs.
 #[derive(Debug, Default, Clone)]
@@ -551,21 +561,22 @@ pub struct AssemblyEnv {
     /// #150 / codex P2). The runtime env supplies every identity and skips no
     /// loadable DLL, so this stays `false` there.
     assembly_identities_incomplete: bool,
-    /// Every **top-level** type's handle, in interning order — unlike
-    /// [`Self::by_type`] this keeps *all* handles at a colliding
-    /// `(namespace, name, arity)` (two referenced assemblies can expose the
-    /// same FQN; `by_type` is first-wins). [`Self::public_types_named`] scans
-    /// it so the head-slot eviction check sees a constructible class even when
-    /// a non-constructible collision was indexed first.
+    /// Every **top-level** type's handle, in interning order. Whole-environment
+    /// operations use this; exact namespace/name queries use
+    /// [`Self::types_by_namespace`]. Unlike [`Self::by_type`], both collections
+    /// keep *all* handles at a colliding `(namespace, name, arity)`.
     top_level_types: Vec<EntityHandle>,
-    /// [`Self::top_level_types`] grouped by their **exact** namespace — the
-    /// per-namespace index the extension gate's hot per-call queries
-    /// ([`Self::namespace_has_extension_named`] and its `_in_assembly` sibling) scan
-    /// instead of the whole `top_level_types` list. Without it those queries were
-    /// O(all referenced types) *per namespace per call*, which on a full SDK
-    /// reference closure dominated `infer_file` (review, GPT-5.6). Same handles as
-    /// `top_level_types`, so it keeps all collisions at a shared FQN too.
-    types_by_namespace: HashMap<Vec<String>, Vec<EntityHandle>>,
+    /// [`Self::top_level_types`] grouped first by exact namespace and then by F#
+    /// source name. The namespace-wide vector feeds extension-surface queries;
+    /// the name buckets feed the hot head-slot and collision queries. Every
+    /// bucket keeps all handles in interning order.
+    types_by_namespace: HashMap<Vec<String>, NamespaceTypes>,
+    /// Every prefix of a namespace containing a public top-level type. Prefixes
+    /// are segment-structured, so a quoted identifier containing `.` cannot
+    /// collide with a multi-segment namespace. Includes the empty prefix exactly
+    /// when at least one public top-level type exists, matching
+    /// [`Self::has_namespace`]'s historical empty-path behaviour.
+    public_namespace_paths: HashSet<Vec<String>>,
     /// **Namespace** paths the referenced assemblies' assembly-level
     /// `[<assembly: AutoOpen("…")>]` attributes implicitly open — what drives
     /// the resolver's implicit opens (plan
@@ -943,6 +954,7 @@ impl AssemblyEnv {
             let is_auto_open_module = root.is_auto_open
                 && root.kind == EntityKind::Module
                 && root.access == Access::Public;
+            let is_public = root.access == Access::Public;
             // Source-named entities defer to the later passes so a same-named
             // plainly-named type wins the slot; within them, source-named
             // TYPES (a `[<CompiledName>]`-renamed type, an abbreviation
@@ -971,10 +983,22 @@ impl AssemblyEnv {
                 signature_non_authoritative,
             );
             self.top_level_types.push(handle);
-            self.types_by_namespace
+            let namespace_types = self
+                .types_by_namespace
                 .entry(namespace.clone())
+                .or_default();
+            namespace_types.all.push(handle);
+            namespace_types
+                .by_source_name
+                .entry(key.1.clone())
                 .or_default()
                 .push(handle);
+            if is_public {
+                for length in 0..=namespace.len() {
+                    self.public_namespace_paths
+                        .insert(namespace[..length].to_vec());
+                }
+            }
             if !deferred {
                 self.by_type.entry(key).or_insert(handle);
             } else if is_module {
@@ -1575,21 +1599,15 @@ impl AssemblyEnv {
     /// `Demo.Sub` that holds nothing accessible, shadowing a public root `Sub`.
     /// Used to canonicalise a possibly-relative `open` against the enclosing
     /// namespaces: a relative `open Sub` in `namespace Demo` names `Demo.Sub`
-    /// exactly when this returns `true` for it. O(types); opens are rare, so no
-    /// dedicated namespace index yet.
+    /// exactly when this returns `true` for it.
     ///
-    /// Scans the **full top-level set**, not the first-wins `by_type` index — the same
-    /// reason [`Self::public_types_named`] does (review round 15). `by_type`
-    /// keeps one handle per `(namespace, name, arity)`, so an *inaccessible* type that
-    /// happened to be enumerated first hides a **public** same-keyed type from another
-    /// assembly. Asking `by_type` would then answer "no public namespace here" for a
-    /// namespace F# can plainly open — and the module-open cut reads this to decide
-    /// whether a path is a cross-kind merge, so a false `false` there commits a
-    /// *definite target* for a name the namespace half may contest.
+    /// `public_namespace_paths` is built from the **full top-level set**,
+    /// not the first-wins `by_type` index. `by_type` keeps one handle per
+    /// `(namespace, name, arity)`, so an inaccessible type enumerated first must
+    /// not hide a public same-keyed type from another assembly and make its
+    /// namespace disappear.
     pub fn has_namespace(&self, namespace: &[String]) -> bool {
-        self.top_level_types.iter().any(|&handle| {
-            self.is_public(handle) && self.entity(handle).namespace.starts_with(namespace)
-        })
+        self.public_namespace_paths.contains(namespace)
     }
 
     /// The `(kind, is_struct)` of every **public** top-level type named `name`
@@ -1600,24 +1618,20 @@ impl AssemblyEnv {
     /// Arity-agnostic because a bare head with no type args matches any arity
     /// in FCS (`LookupTypeNameInEnvNoArity`) — a generic-only `Color<'T>`
     /// evicts a bare `Color` too (probe Ageneric). Only *public* types are
-    /// cross-assembly reachable and so can occupy the slot. O(types); opens
-    /// are rare, mirroring [`Self::has_namespace`].
+    /// cross-assembly reachable and so can occupy the slot.
     pub fn public_types_named(&self, namespace: &[String], name: &str) -> Vec<(EntityKind, bool)> {
-        let mut out = Vec::new();
-        // Scan the full top-level set, not `by_type` — a colliding
-        // `(namespace, name, arity)` keeps only its first handle there, so a
-        // constructible class indexed *after* a non-constructible collision
-        // would be invisible (codex round 3). Match the **source** name F#
-        // writes (a suffixed module is keyed as `List`, not `ListModule`),
-        // consistent with `by_type`.
-        for &handle in &self.top_level_types {
-            let e = self.entity(handle);
-            let src = e.source_name.as_deref().unwrap_or(e.name.as_str());
-            if e.namespace.as_slice() == namespace && src == name && self.is_public(handle) {
-                out.push((e.kind, e.is_struct));
-            }
-        }
-        out
+        // Keep every collision rather than consulting first-wins `by_type`: a
+        // constructible class indexed after a non-constructible collision still
+        // occupies FCS's head slot.
+        self.types_named(namespace, name)
+            .iter()
+            .copied()
+            .filter(|&handle| self.is_public(handle))
+            .map(|handle| {
+                let entity = self.entity(handle);
+                (entity.kind, entity.is_struct)
+            })
+            .collect()
     }
 
     /// The number of **distinct loaded DLLs** that export a public top-level type
@@ -1636,14 +1650,9 @@ impl AssemblyEnv {
         arity: usize,
     ) -> usize {
         let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
-        for &handle in &self.top_level_types {
+        for &handle in self.types_named(namespace, name) {
             let e = self.entity(handle);
-            let src = e.source_name.as_deref().unwrap_or(e.name.as_str());
-            if e.namespace.as_slice() == namespace
-                && src == name
-                && e.generic_parameters.len() == arity
-                && self.is_public(handle)
-            {
+            if e.generic_parameters.len() == arity && self.is_public(handle) {
                 let key = self.assembly_key(handle);
                 if !keys.contains(&key) {
                     keys.push(key);
@@ -1678,17 +1687,13 @@ impl AssemblyEnv {
     /// *later-referenced* one (fsi-verified with two probe libraries). A consumer that
     /// took only the first handle would silently lose the other's values and could bind
     /// a collision to the wrong assembly — a wrong target (review, Slice A round 5).
-    /// Scans the full top-level set, exactly as [`Self::public_types_named`] does and
-    /// for the same reason.
+    /// Reads the same complete exact-name bucket as
+    /// [`Self::public_types_named`].
     pub fn public_entities_named(&self, namespace: &[String], name: &str) -> Vec<EntityHandle> {
-        // The exact-namespace bucket is the same population as a
-        // `top_level_types` scan filtered to `namespace` — indexed, because
-        // callers run this per path split (the attribute uncertainty scan per
-        // attribute × prefix × split; `opened_assembly_modules` per split).
-        self.types_in_namespace(namespace)
+        self.types_named(namespace, name)
             .iter()
             .copied()
-            .filter(|&handle| self.entity_source_name(handle) == name && self.is_public(handle))
+            .filter(|&handle| self.is_public(handle))
             .collect()
     }
 
@@ -1699,11 +1704,7 @@ impl AssemblyEnv {
     /// through to the written one, so an internal occupant must defer the
     /// candidate, not read as a clean miss (codex round 4 on EX-3 §2(d)).
     pub(crate) fn entities_named(&self, namespace: &[String], name: &str) -> Vec<EntityHandle> {
-        self.types_in_namespace(namespace)
-            .iter()
-            .copied()
-            .filter(|&handle| self.entity_source_name(handle) == name)
-            .collect()
+        self.types_named(namespace, name).to_vec()
     }
 
     /// Whether a **retained manifest auto-open surface** could supply an entity
@@ -2670,6 +2671,15 @@ impl AssemblyEnv {
     fn types_in_namespace(&self, namespace: &[String]) -> &[EntityHandle] {
         self.types_by_namespace
             .get(namespace)
+            .map_or(&[], |types| types.all.as_slice())
+    }
+
+    /// The top-level type handles at exactly `(namespace, source name)`, across
+    /// all arities and assemblies, in interning order.
+    fn types_named(&self, namespace: &[String], name: &str) -> &[EntityHandle] {
+        self.types_by_namespace
+            .get(namespace)
+            .and_then(|types| types.by_source_name.get(name))
             .map_or(&[], Vec::as_slice)
     }
 
@@ -4595,6 +4605,7 @@ mod from_views_tests {
         EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
         SkippedProjectionItem, TypeRef, Version,
     };
+    use proptest::prelude::*;
 
     fn ident(name: &str) -> AssemblyIdentity {
         AssemblyIdentity {
@@ -4761,6 +4772,185 @@ mod from_views_tests {
             is_extension_container: false,
             custom_attrs: vec![],
             abbreviation_target: None,
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct NameIndexSpec {
+        namespace: u8,
+        name: u8,
+        source_named: bool,
+        public: bool,
+        module: bool,
+        is_struct: bool,
+    }
+
+    fn name_index_specs() -> impl Strategy<Value = Vec<NameIndexSpec>> {
+        prop::collection::vec(
+            (
+                0_u8..5,
+                0_u8..5,
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+                any::<bool>(),
+            )
+                .prop_map(
+                    |(namespace, name, source_named, public, module, is_struct)| NameIndexSpec {
+                        namespace,
+                        name,
+                        source_named,
+                        public,
+                        module,
+                        is_struct,
+                    },
+                ),
+            0..40,
+        )
+    }
+
+    fn spec_namespace(index: u8) -> Vec<String> {
+        match index {
+            0 => vec![],
+            1 => vec!["A".to_string()],
+            2 => vec!["A".to_string(), "B".to_string()],
+            3 => vec!["C".to_string()],
+            _ => vec!["C".to_string(), "D".to_string()],
+        }
+    }
+
+    fn entity_from_name_spec(index: usize, spec: &NameIndexSpec) -> Entity {
+        let source_name = format!("Name{}", spec.name);
+        let mut entity = module_entity(&format!("Assembly{index}"), &[], &source_name);
+        entity.namespace = spec_namespace(spec.namespace);
+        entity.kind = if spec.module {
+            EntityKind::Module
+        } else {
+            EntityKind::Class
+        };
+        entity.access = if spec.public {
+            Access::Public
+        } else {
+            Access::Internal
+        };
+        entity.is_struct = spec.is_struct;
+        if spec.source_named {
+            entity.name = format!("IlName{index}");
+            entity.source_name = Some(source_name);
+        }
+        entity
+    }
+
+    fn source_name(entity: &Entity) -> &str {
+        entity.source_name.as_deref().unwrap_or(&entity.name)
+    }
+
+    proptest! {
+        /// The construction-time name index is merely an acceleration of the
+        /// authoritative entity list: every indexed query must equal the naive
+        /// scan, including inaccessible/public collisions, source-name aliases,
+        /// and interning order. The two mandatory roots guarantee those cases;
+        /// the generated roots fuzz their surrounding key distribution.
+        #[test]
+        fn name_indexes_match_naive_scans(noise in name_index_specs()) {
+            let mandatory = [
+                NameIndexSpec {
+                    namespace: 2,
+                    name: 0,
+                    source_named: false,
+                    public: false,
+                    module: true,
+                    is_struct: false,
+                },
+                NameIndexSpec {
+                    namespace: 2,
+                    name: 0,
+                    source_named: true,
+                    public: true,
+                    module: false,
+                    is_struct: true,
+                },
+            ];
+            let roots: Vec<Entity> = mandatory
+                .iter()
+                .chain(&noise)
+                .enumerate()
+                .map(|(index, spec)| entity_from_name_spec(index, spec))
+                .collect();
+            let env = AssemblyEnv::from_entities(roots.clone());
+
+            let mut name_queries: Vec<(Vec<String>, String)> = roots
+                .iter()
+                .map(|entity| (entity.namespace.clone(), source_name(entity).to_string()))
+                .collect();
+            name_queries.push((vec!["Missing".to_string()], "Absent".to_string()));
+            name_queries.sort();
+            name_queries.dedup();
+
+            for (namespace, name) in name_queries {
+                let matching: Vec<&Entity> = roots
+                    .iter()
+                    .filter(|entity| {
+                        entity.namespace == namespace && source_name(entity) == name
+                    })
+                    .collect();
+                let expected_all: Vec<String> = matching
+                    .iter()
+                    .map(|entity| entity.assembly.name.clone())
+                    .collect();
+                let expected_public: Vec<String> = matching
+                    .iter()
+                    .filter(|entity| entity.access == Access::Public)
+                    .map(|entity| entity.assembly.name.clone())
+                    .collect();
+                let expected_shapes: Vec<(EntityKind, bool)> = matching
+                    .iter()
+                    .filter(|entity| entity.access == Access::Public)
+                    .map(|entity| (entity.kind, entity.is_struct))
+                    .collect();
+
+                let indexed: Vec<String> = env
+                    .types_named(&namespace, &name)
+                    .iter()
+                    .map(|&handle| env.entity(handle).assembly.name.clone())
+                    .collect();
+                prop_assert_eq!(&indexed, &expected_all);
+
+                let all: Vec<String> = env
+                    .entities_named(&namespace, &name)
+                    .iter()
+                    .map(|&handle| env.entity(handle).assembly.name.clone())
+                    .collect();
+                prop_assert_eq!(&all, &expected_all);
+
+                let public: Vec<String> = env
+                    .public_entities_named(&namespace, &name)
+                    .iter()
+                    .map(|&handle| env.entity(handle).assembly.name.clone())
+                    .collect();
+                prop_assert_eq!(&public, &expected_public);
+                prop_assert_eq!(env.public_types_named(&namespace, &name), expected_shapes);
+                prop_assert_eq!(
+                    env.distinct_dlls_with_public_type(&namespace, &name, 0),
+                    expected_public.len(),
+                );
+            }
+
+            let mut namespace_queries = vec![vec!["Missing".to_string()]];
+            for entity in &roots {
+                for length in 0..=entity.namespace.len() {
+                    namespace_queries.push(entity.namespace[..length].to_vec());
+                }
+            }
+            namespace_queries.sort();
+            namespace_queries.dedup();
+            for namespace in namespace_queries {
+                let expected = roots.iter().any(|entity| {
+                    entity.access == Access::Public
+                        && entity.namespace.starts_with(&namespace)
+                });
+                prop_assert_eq!(env.has_namespace(&namespace), expected);
+            }
         }
     }
 
