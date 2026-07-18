@@ -2,6 +2,55 @@ namespace Lib
 
 type Marker = { Value: int }
 
+// A same-assembly type with a static member, and an abbreviation aliasing it.
+// Unlike the `string`/`int` aliases below (whose BCL/FSharp.Core targets are not
+// loaded in the single-DLL fixture env), `Widget` lives in THIS assembly, so it
+// is loaded — which lets the resolver chase `WidgetAlias` to it and resolve the
+// `Make` static tail THROUGH the alias (Stage 4 resolve-through).
+type Widget() =
+    static member Make () = 1
+
+type WidgetAlias = Widget
+
+// Stage 4 resolve-through ownership (codex round 4): `UAlias = U` aliases a union.
+// A qualified `UAlias.UCase` must bind THROUGH the alias to the union *case* —
+// which lives in `union_case_names`, not the `members` surface the tail walk
+// searches — and must OWN the path, so an earlier `open` of a same-named,
+// top-level `UAlias` (namespace `Lib.Lower`, below, with a real static `UCase`)
+// cannot win. Absence of `UCase` from the target's member surface must not cede.
+type U =
+    | UCase
+
+type UAlias = U
+
+// A nested alias of a loaded same-assembly type (codex round 5): the nested
+// descent branch must treat a *terminal* nested alias (`Lib.Nested.NestedAlias`,
+// no member tail) as a bare use and DEFER it, exactly like the top-level rooting
+// branch, while a *qualifier* through it (`Lib.Nested.NestedAlias.Make`) still
+// resolves the `Make` static on the chased `Widget` target.
+module Nested =
+    type NestedAlias = Widget
+
+// An abbreviation with BOTH a loaded target AND a ModuleSuffix companion module
+// (codex round 6): FCS routes `WidgetC.Make` to the companion module's `Make`,
+// NOT the target `Widget`'s static `Make` — a module-over-target member
+// precedence we do not model, so a member access through such an alias must
+// DEFER rather than commit the target's member.
+type WidgetC = Widget
+
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module WidgetC =
+    let Make () = 2
+
+// A nullary abbreviation ALONGSIDE a generic type of the same source name
+// (codex round 9): `lookup_type(.., 0)` selects the nullary alias, and FCS
+// resolves `AliasO.Make` through `Widget`. The cross-DLL-collision guard must
+// count distinct DLLs at arity 0, not all same-named entities, or it would
+// wrongly defer this legal same-DLL overload.
+type AliasO = Widget
+
+type AliasO<'T> = { OValue: 'T }
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct
@@ -53,6 +102,15 @@ module Holder =
     [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
     module NestedRenamed =
         let fromNested = 1
+
+// The competing lower-priority reading for the resolve-through ownership test: a
+// *top-level* `UAlias` (so `lookup_type` finds it) with a real static `UCase`. An
+// earlier `open Lib.Lower` puts it in scope below the later `open Lib`'s union
+// alias; resolving `UAlias.UCase` must NOT cede to this one.
+namespace Lib.Lower
+
+type UAlias() =
+    static member UCase = 0
 
 namespace Other.Deep
 

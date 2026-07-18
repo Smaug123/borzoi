@@ -62,14 +62,60 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
-        // A type-abbreviation marker: the name binds (FCS chases the
-        // abbreviation to its target, e.g. `S.Format` where `type S =
-        // System.String`), but the target is unmodelled — we can neither
-        // resolve the member tail nor safely let a lower-priority reading
-        // take the path. Shadow-defer (D5: defer, never a wrong target).
-        if self.assemblies.is_abbreviation(type_handle) {
-            return AssemblyPath::ProjectShadowed;
-        }
+        // Whether the rooting's top-level FQN is exported by more than one loaded
+        // DLL, at the **arity `lookup_type` selected** (0). `lookup_type` returns
+        // the first-enumerated entity at a colliding key, so when two referenced
+        // assemblies export the same top-level FQN — an abbreviation in one, a real
+        // type or module in another — FCS applies reference-order/merge precedence
+        // sema does not model, and resolving *through* the first-picked alias would
+        // commit a member from the wrong DLL. Only a **top-level** FQN merges across
+        // DLLs (nested entities are interned within one parent's subtree), so this
+        // rooting count also guards a nested alias reached below a merged parent
+        // module. When it collides an alias chase must defer, as the
+        // pre-resolve-through marker did. Counting *distinct DLLs at arity 0* (not
+        // all same-named entities) avoids over-deferring a legal `type Alias =
+        // Widget` beside a generic `type Alias<'T>` in one DLL — a plain non-alias
+        // reading is unchanged either way (first-wins, out of scope). Codex review.
+        let rooting_fqn_collides =
+            self.assemblies
+                .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
+                > 1;
+
+        // A type-abbreviation marker: the name binds, and FCS chases the
+        // abbreviation to its target (`S.Format` where `type S = System.String`
+        // resolves `Format` on `System.String`). Resolve *through* a resolvable
+        // target — the tail then walks on the target below — but keep the marker
+        // itself as the binding for the alias segment. An unresolvable target
+        // (structural, generic, or not loaded) shadow-defers as before (D5: defer,
+        // never a wrong target).
+        let walk_root = if self.assemblies.is_abbreviation(type_handle) {
+            // Two guards make resolve-through unsafe here — defer, as the marker
+            // did before Stage 4: (1) the alias's own FQN collides across DLLs
+            // (`rooting_fqn_collides` above), so a later-referenced DLL may own the
+            // name; (2) the alias has a ModuleSuffix companion module, whose member
+            // FCS routes `Alias.Member` to, not the target's (fcs-verified) — a
+            // module-over-target precedence we do not model (codex review).
+            if rooting_fqn_collides
+                || self
+                    .assemblies
+                    .alias_has_companion_module(type_handle, None)
+            {
+                return AssemblyPath::ProjectShadowed;
+            }
+            match self.assemblies.resolve_abbreviation_target(type_handle) {
+                Some(target) => target,
+                None => return AssemblyPath::ProjectShadowed,
+            }
+        } else {
+            type_handle
+        };
+        // True once the path roots (or descends) through a *resolved* abbreviation
+        // alias. FCS then owns the alias reading, so an `Absent` member tail must
+        // NOT cede the path to a lower reading: the tail may live on a non-member
+        // target surface — a union case (`union_case_names`) or a type
+        // augmentation — that we do not walk, so absence from `members` does not
+        // prove absence (codex review 4 on Stage 4).
+        let mut via_alias = walk_root != type_handle;
 
         let mut recs: Vec<(TextRange, Resolution)> = Vec::new();
         let deferred = Resolution::Deferred(DeferredReason::QualifiedAccess);
@@ -80,7 +126,22 @@ impl<'a> Resolver<'a> {
         }
         recs.push((
             segments[k - base].text_range(),
-            Resolution::Entity(type_handle),
+            // Resolve-through chases the target to walk a member *tail*. When the
+            // alias is a *qualifier* (a tail follows: `WidgetAlias.Make`), FCS points
+            // the alias segment at the marker and the tail below walks on `walk_root`
+            // (its target) — bind the marker. But a *bare* alias use with no tail
+            // (`Lib.WidgetAlias`) FCS resolves by the target's value/constructor
+            // surface, which we do not model: a constructible class points at the
+            // terminal type, a `type UAlias = U` union without a constructor errors
+            // FS1133 with no symbol at all (codex review). We cannot tell those apart
+            // here, so *defer* the bare alias — own the path (it is the alias's own
+            // reading) but name no target, never a wrong one. (A *type*-position bare
+            // use is a separate resolver, [`Self::assembly_type_path_core`].)
+            if via_alias && k + 1 == n {
+                deferred
+            } else {
+                Resolution::Entity(type_handle)
+            },
         ));
 
         // Walk the segments past the rooting type: nested types extend the
@@ -89,7 +150,7 @@ impl<'a> Resolver<'a> {
         // whole path). `owns_path` records whether the reading captures the whole
         // path — see [`AssemblyPath::Resolved`]; it stays `true` unless a segment
         // names nothing on its parent (a genuinely-absent tail).
-        let mut parent = type_handle;
+        let mut parent = walk_root;
         let mut i = k + 1;
         let mut owns_path = true;
         while i < n {
@@ -99,13 +160,43 @@ impl<'a> Resolver<'a> {
                 .nested(parent, &names[i], 0)
                 .filter(|&h| self.assemblies.is_public(h))
             {
-                // A nested abbreviation marker: same defer as the rooting
-                // case above.
-                if self.assemblies.is_abbreviation(child) {
-                    return AssemblyPath::ProjectShadowed;
-                }
+                // A nested abbreviation marker: resolve through its target (or
+                // shadow-defer if unresolvable), same as the rooting case above.
+                let child_walk = if self.assemblies.is_abbreviation(child) {
+                    // Defer for the same two reasons as the rooting branch: a merged
+                    // parent module (the rooting FQN collides across DLLs, so
+                    // `children(parent)` sees only one contributor and may miss the
+                    // other's `Alias`/companion), or a companion module beside this
+                    // nested alias (codex review).
+                    if rooting_fqn_collides
+                        || self
+                            .assemblies
+                            .alias_has_companion_module(child, Some(parent))
+                    {
+                        return AssemblyPath::ProjectShadowed;
+                    }
+                    match self.assemblies.resolve_abbreviation_target(child) {
+                        Some(target) => {
+                            // A *terminal* nested alias (no tail follows) is a bare
+                            // use — defer it exactly as the rooting branch does, for
+                            // the same reason (we do not model the target's
+                            // value/constructor surface; codex review). Only a
+                            // *qualifier* nested alias resolves through to a tail.
+                            if i + 1 == n {
+                                recs.push((src.text_range(), deferred));
+                                i += 1;
+                                break;
+                            }
+                            via_alias = true;
+                            target
+                        }
+                        None => return AssemblyPath::ProjectShadowed,
+                    }
+                } else {
+                    child
+                };
                 recs.push((src.text_range(), Resolution::Entity(child)));
-                parent = child;
+                parent = child_walk;
                 i += 1;
             } else {
                 match self.assemblies.static_lookup(parent, &names[i]) {
@@ -162,6 +253,14 @@ impl<'a> Resolver<'a> {
                     // re-deriving it from a second ownership predicate that could
                     // disagree (review rounds 3 and 4 were that disagreement, twice).
                     StaticLookup::Absent => {
+                        // Through a resolved alias FCS owns this reading, and the
+                        // tail may live on a non-member target surface we do not
+                        // walk (see `via_alias`). Own-and-defer as the
+                        // pre-resolve-through marker did, rather than cede the path
+                        // to a lower reading and diverge from FCS.
+                        if via_alias {
+                            return AssemblyPath::ProjectShadowed;
+                        }
                         owns_path = false;
                         break;
                     }
