@@ -595,6 +595,7 @@ mod tests {
         return_type: TypeRef,
     ) -> Member {
         Member::Method(MethodLike {
+            definition_range: None,
             name: name.into(),
             access: Access::Public,
             signature: MethodSignature {

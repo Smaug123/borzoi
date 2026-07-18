@@ -12,11 +12,12 @@
 //! the `FSharp.Core.dll` this reads); the Nix devShell provides it.
 
 use borzoi::goto_source::{
-    DefinitionSource, definition_document_in_pdb, definition_source, definition_source_in_pdb,
-    entity_definition_document_in_pdb, entity_definition_source,
+    DefinitionSource, definition_document_for_range, definition_document_in_pdb, definition_source,
+    definition_source_in_pdb, definition_source_with_range_fallback,
+    entity_definition_document_in_pdb, entity_definition_source, range_definition_source_in_pdb,
 };
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
-use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, Member};
+use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, FsharpSourceRange, Member, MethodLike};
 
 use crate::common::ensure_fsharp_core_dll;
 
@@ -307,6 +308,208 @@ fn entity_definition_document_reports_the_module_origin() {
         doc.document
     );
     assert!(doc.line >= 1);
+}
+
+// --- module values: the pickled-range fallback -------------------------------
+//
+// An F# module *value* (`let nan = …`) compiles to a static property whose
+// getter merely reads the backing field: the getter MethodDef carries **no**
+// sequence point (empirically: all 747 of FSharp.Core's module values), so the
+// token path finds nothing. The signature pickle's `DefinitionRange` is the
+// authoritative source position — the same one FCS/VS navigates to — and the
+// PDB still says how to obtain the file (embedded source or SourceLink).
+
+/// The `Microsoft.FSharp.Core.<entity>` method whose F# `source_name` is
+/// `source` — the whole [`MethodLike`], where [`method_token`] returns just
+/// the token.
+fn fsharp_core_method(bytes: &[u8], entity: &str, source: &str) -> MethodLike {
+    let view = Ecma335Assembly::parse(bytes).expect("parse FSharp.Core");
+    let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
+    let e = entities
+        .iter()
+        .find(|e| {
+            e.name == entity
+                && e.namespace
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["Microsoft", "FSharp", "Core"])
+        })
+        .unwrap_or_else(|| panic!("entity Microsoft.FSharp.Core.{entity} not found"));
+    e.members
+        .iter()
+        .find_map(|m| match m {
+            Member::Method(m) if m.source_name.as_deref() == Some(source) => Some(m.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no method with source_name {source:?} on {entity}"))
+}
+
+#[test]
+fn a_module_value_resolves_via_its_pickled_definition_range() {
+    // `nan` (IL `Operators.NaN`) is a plain module value.
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let m = fsharp_core_method(&bytes, "Operators", "nan");
+    assert!(m.module_value.is_some(), "nan is a value binding");
+
+    // Precondition — the bug this fallback exists for: the value's getter
+    // carries no sequence point, so the token path yields nothing.
+    assert_eq!(
+        definition_source_in_pdb(&image, m.metadata_token).unwrap(),
+        None,
+        "a module value's getter has no sequence point"
+    );
+
+    // The pickled DefinitionRange points at the *implementation* file (the
+    // `.fs`, not the `.fsi` the primary val_range names for an
+    // `.fsi`-constrained assembly like FSharp.Core).
+    let range = m
+        .definition_range
+        .expect("a pickled module value carries its definition range");
+    assert!(
+        range.file.ends_with("prim-types.fs"),
+        "nan is implemented in prim-types.fs; got {}",
+        range.file
+    );
+
+    // The range resolves through SourceLink to the file at the pickled
+    // position (converted to the 1-based DefinitionSource convention).
+    match range_definition_source_in_pdb(&image, &range)
+        .expect("range resolution succeeds")
+        .expect("prim-types.fs is SourceLink-mapped")
+    {
+        DefinitionSource::Remote {
+            document,
+            url,
+            line,
+            column,
+        } => {
+            assert_eq!(document, range.file);
+            assert!(
+                url.starts_with("https://raw.githubusercontent.com/")
+                    && url.ends_with("prim-types.fs")
+                    && !url.contains('\\'),
+                "SourceLink URL for prim-types.fs; got {url}"
+            );
+            assert_eq!(line, range.start_line, "1-based line passes through");
+            assert_eq!(
+                column,
+                range.start_column + 1,
+                "0-based pickled column becomes 1-based"
+            );
+        }
+        other => panic!("expected Remote source for prim-types.fs, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_range_fallback_composes_with_the_token_path() {
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+
+    // A method *with* sequence points (printfn): the token wins; a decoy range
+    // must not perturb the result.
+    let printfn_token = method_token(&bytes, "ExtraTopLevelOperators", "printfn");
+    let decoy = FsharpSourceRange {
+        file: "Z:\\nowhere\\decoy.fs".into(),
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 5,
+    };
+    assert_eq!(
+        definition_source_with_range_fallback(&image, printfn_token, Some(&decoy)).unwrap(),
+        definition_source_in_pdb(&image, printfn_token).unwrap(),
+        "a sequence-pointed method ignores the fallback range"
+    );
+
+    // A module value (no sequence point): the fallback range resolves it.
+    let nan = fsharp_core_method(&bytes, "Operators", "nan");
+    let range = nan.definition_range.expect("nan carries a range");
+    assert_eq!(
+        definition_source_with_range_fallback(&image, nan.metadata_token, Some(&range)).unwrap(),
+        range_definition_source_in_pdb(&image, &range).unwrap(),
+        "a sequence-point-less method resolves via the range"
+    );
+    // …and with no range to fall back on, it stays `None` (D5).
+    assert_eq!(
+        definition_source_with_range_fallback(&image, nan.metadata_token, None).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn a_range_in_an_embedded_document_resolves_to_embedded_source() {
+    // A range whose file *is* one of the PDB's embedded-source documents
+    // resolves offline, exactly like the token path would.
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let pdb = PortablePdb::read(&image).expect("parse the PDB image");
+    let embedded_doc = (1..=pdb.document_count())
+        .find(|&rid| matches!(pdb.document_embedded_source(rid), Ok(Some(_))))
+        .expect("FSharp.Core embeds at least one document's source");
+    let range = FsharpSourceRange {
+        file: pdb.document_name(embedded_doc).unwrap(),
+        start_line: 3,
+        start_column: 4,
+        end_line: 3,
+        end_column: 9,
+    };
+    match range_definition_source_in_pdb(&image, &range)
+        .unwrap()
+        .unwrap()
+    {
+        DefinitionSource::Embedded {
+            document,
+            text,
+            line,
+            column,
+        } => {
+            assert_eq!(document, range.file);
+            assert!(!text.is_empty());
+            assert_eq!((line, column), (3, 5), "1-based position from the range");
+        }
+        other => panic!("expected Embedded source, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_range_in_an_unknown_document_is_none() {
+    // Neither a PDB document nor SourceLink-mapped → say nothing (D5).
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let range = FsharpSourceRange {
+        file: "Q:\\not\\a\\real\\path.fs".into(),
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 1,
+    };
+    assert_eq!(
+        range_definition_source_in_pdb(&image, &range).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn definition_document_for_range_reports_the_pickled_position() {
+    // The hover-side "say where it is" view built straight from the range —
+    // no PDB needed: the range already names the document and position.
+    let range = FsharpSourceRange {
+        file: r"D:\build\prim-types.fs".into(),
+        start_line: 4989,
+        start_column: 12,
+        end_line: 4989,
+        end_column: 15,
+    };
+    let doc = definition_document_for_range(&range);
+    assert_eq!(doc.document, range.file);
+    assert_eq!(doc.line, 4989, "1-based line passes through");
+    assert_eq!(doc.column, 13, "0-based pickled column becomes 1-based");
 }
 
 #[test]

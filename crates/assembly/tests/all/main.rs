@@ -25,6 +25,7 @@ mod generative_source_diff;
 mod methodimpl_classification;
 mod modifier_metamorphic;
 mod pdb_fsharp_core;
+mod pickled_ranges;
 mod projector_custom_modifiers;
 mod projector_default_member;
 mod projector_events;

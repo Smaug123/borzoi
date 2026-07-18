@@ -59,8 +59,8 @@ use crate::fsharp_pickle::model::{
     PickledTyconRepr, PickledType, PickledVal, TupleKind, TyparKind,
 };
 use crate::model::{
-    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind, Member,
-    SkippedMember, TypeParameter,
+    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind,
+    FsharpSourceRange, Member, SkippedMember, TypeParameter,
 };
 use std::collections::HashMap;
 
@@ -813,6 +813,13 @@ pub struct ModuleMemberVal {
     /// so the cross-reference prefers a member of the matching IL
     /// accessibility class before falling back on name/shape/arity alone.
     pub is_public: bool,
+    /// Where the val is defined in source — FCS's `Val.DefinitionRange`,
+    /// resolved from the pickled `(val_range, DefinitionRange)` pair
+    /// (`p_ValData` / `p_ranges`): the *second* component when present (the
+    /// implementation range, which for an `.fsi`-constrained assembly names
+    /// the `.fs` file), else the first. `None` when the val pickles no range
+    /// (no `ValReprInfo`).
+    pub definition_range: Option<FsharpSourceRange>,
 }
 
 impl ModuleMemberVal {
@@ -924,9 +931,27 @@ fn module_member_vals(
                 .is_some_and(|r| r.typar_repr.iter().any(|t| t.kind == TyparKind::Type)),
             is_literal: v.literal_value.is_some(),
             is_public: v.access.is_empty(),
+            definition_range: resolve_definition_range(pickled, v),
         });
     }
     Ok(out)
+}
+
+/// The val's [`FsharpSourceRange`] from its pickled range pair — the
+/// `DefinitionRange` component (`other_range`) when present, else the primary
+/// `val_range`. The file string-index was bounds-checked at decode time
+/// (`read_string_index`), so the lookup cannot dangle; `.get` keeps a
+/// malformed index a silent decline rather than a panic all the same.
+fn resolve_definition_range(pickled: &PickledCcu, v: &PickledVal) -> Option<FsharpSourceRange> {
+    let r = v.other_range.as_ref().or(v.range.as_ref())?;
+    let file = pickled.header.strings.get(r.file as usize)?.clone();
+    Some(FsharpSourceRange {
+        file,
+        start_line: r.start.line,
+        start_column: r.start.column,
+        end_line: r.end.line,
+        end_column: r.end.column,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1005,7 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         source_name: source,
         instance_extension: v.is_extension && v.is_instance,
         fsharp_extension: v.is_extension && v.is_member,
+        definition_range: v.definition_range.clone(),
     }
 }
 
@@ -988,6 +1014,7 @@ struct ValFacts {
     source_name: Option<String>,
     instance_extension: bool,
     fsharp_extension: bool,
+    definition_range: Option<FsharpSourceRange>,
 }
 
 /// Per-claim-group facts, `None` when the group's vals disagree. A group is
@@ -1003,6 +1030,7 @@ struct GroupFacts {
     source_name: Option<Option<String>>,
     extension: Option<bool>,
     fsharp_extension: Option<bool>,
+    definition_range: Option<Option<FsharpSourceRange>>,
 }
 
 /// Rebuild `ecma`'s member list from the module's pickled vals — the Slice C
@@ -1044,11 +1072,15 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 if g.fsharp_extension != Some(facts.fsharp_extension) {
                     g.fsharp_extension = None;
                 }
+                if g.definition_range.as_ref() != Some(&facts.definition_range) {
+                    g.definition_range = None;
+                }
             })
             .or_insert(GroupFacts {
                 source_name: Some(facts.source_name),
                 extension: Some(facts.instance_extension),
                 fsharp_extension: Some(facts.fsharp_extension),
+                definition_range: Some(facts.definition_range),
             });
     }
 
@@ -1160,6 +1192,15 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // `project_method` read is never *cleared* — the pickle bit
                 // covers F#-native augmentations only.
                 m.source_name = facts.source_name.clone().flatten();
+                // The binding's pickled `DefinitionRange` — under-set (like the
+                // other facts) when a same-`(name, shape)` overload group's vals
+                // disagree, since which val claimed which MethodDef is then
+                // unprovable and a wrong range would navigate to a sibling
+                // overload. A value binding is always a singleton group (module
+                // property names are unique), so values — the members whose
+                // getter has no sequence point and for whom this range is the
+                // only source location — always keep theirs.
+                m.definition_range = facts.definition_range.clone().flatten().map(Box::new);
                 if facts.extension == Some(true) {
                     m.is_extension_method = true;
                 }
@@ -3384,6 +3425,7 @@ mod tests {
     /// extension.
     fn make_ecma_method(name: &str) -> Member {
         Member::Method(MethodLike {
+            definition_range: None,
             name: name.to_string(),
             access: Access::Public,
             signature: MethodSignature {
@@ -3588,6 +3630,7 @@ mod tests {
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
+                    definition_range: None,
                 },
                 ModuleMemberVal {
                     val_index: 1,
@@ -3602,6 +3645,7 @@ mod tests {
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
+                    definition_range: None,
                 },
                 ModuleMemberVal {
                     val_index: 2,
@@ -3615,6 +3659,7 @@ mod tests {
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
+                    definition_range: None,
                 },
                 ModuleMemberVal {
                     val_index: 3,
@@ -3628,6 +3673,7 @@ mod tests {
                     is_generic: true,
                     is_literal: false,
                     is_public: true,
+                    definition_range: None,
                 },
                 ModuleMemberVal {
                     val_index: 4,
@@ -3641,6 +3687,7 @@ mod tests {
                     is_generic: false,
                     is_literal: false,
                     is_public: true,
+                    definition_range: None,
                 },
             ]
         );
