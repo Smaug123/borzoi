@@ -761,3 +761,64 @@ fn goto_def_on_method_call_receiver_still_navigates() {
         }
     );
 }
+
+/// Stage 2 of `docs/fsi-signature-restriction-plan.md`: go-to-definition on a
+/// cross-file use of a **signature-exposed** value lands on the ident in the
+/// `.fsi` (World A — the signature is the declaration), while a sig-hidden
+/// sibling yields no location (its export is dropped; D5 silence).
+#[test]
+fn goto_def_on_sig_exposed_value_lands_in_the_fsi() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fsi" />
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    write(&tmp.path().join("A.fsi"), "module A\nval publicFoo : int\n");
+    write(
+        &tmp.path().join("A.fs"),
+        "module A\nlet publicFoo = 1\nlet hiddenFoo = 2\n",
+    );
+    let b_src = "module B\nlet u1 = A.publicFoo\nlet u2 = A.hiddenFoo\n";
+    let b = tmp.path().join("B.fs");
+    write(&b, b_src);
+
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    let (l, c) = cursor_inside(b_src, "publicFoo");
+    let loc = run(&mut state, &b_uri, l, c).expect("definition for the sig-exposed value");
+    assert_eq!(
+        loc.uri,
+        Url::from_file_path(tmp.path().join("A.fsi")).unwrap(),
+        "the declaration is the signature (World A)"
+    );
+    // `val publicFoo : int` — the ident on line 1, columns 4..13.
+    assert_eq!(
+        loc.range,
+        Range {
+            start: Position {
+                line: 1,
+                character: 4
+            },
+            end: Position {
+                line: 1,
+                character: 13
+            },
+        }
+    );
+
+    let (l, c) = cursor_inside(b_src, "hiddenFoo");
+    assert_eq!(
+        run(&mut state, &b_uri, l, c),
+        None,
+        "a sig-hidden value has no definition target (dropped export)"
+    );
+}

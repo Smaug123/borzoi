@@ -1,8 +1,9 @@
 # `.fsi` signature files restrict the paired `.fs`'s cross-file exports
 
-> **Status:** Stage 1 implemented (with the §screen correction below —
-> a 2026-07-18 probe refuted one cell of the original Stage-1 matrix);
-> Stages 2/3+ not started.
+> **Status:** Stages 1 and 2 implemented (Stage 1 with the §screen
+> correction below — a 2026-07-18 probe refuted one cell of the original
+> Stage-1 matrix; Stage 2 with the implementation notes in its section);
+> Stage 3+ not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -388,6 +389,47 @@ val/case → `.fsi`; hidden/opaque → assembly or `Deferred`/unrecorded). Inclu
 **multi-fragment** fixture (earlier unsigned public `x` wins over a later
 signatured hidden `x`). Every fixture `uses-project`-diagnostics-clean. Corpus
 gates green.
+
+**Stage-2 implementation notes (2026-07-18, landed).** The design above,
+with these mechanics settled in review/probing:
+
+- **The screen gains an exemption set** (`SigScreen::exported_paths` — the
+  exactly-modelled surviving surface, value-namespace and type-qualified
+  paths alike). A reading landing *exactly* on an exported path is exempt
+  from every screen veto: after the impl's slot the materialised export
+  commits the signature identity (what FCS binds); **before** it, the
+  reading falls through — to the merged assembly under a collision, which
+  is FCS's probed intervening verdict (row 5), or to whatever
+  lower-priority project candidate exists (probe-analogous: the
+  `sig2_intervening_relative` differential pins FCS binding the *root*
+  `module M` from a file between `AM.fsi` and `AM.fs`). This *removed* the
+  Stage-1 known over-deferral for intervening files and for the exposed
+  half of codex round 5's finding (1); the hidden-name halves of both
+  remain deferral-only.
+- **Materialisation** (`ResolvedFile::append_signature_exports`): the sig
+  slot stashes `SigExport`s (its own `Def` arena holds the `.fsi` idents);
+  on reaching the paired impl, they are appended after the impl's own
+  items — `ItemId` range/`item_base`/`item_file_bases` all impl-attributed
+  — with `ExportedItem::def` an explicit [`ExportDef::Sig { file, def }`]
+  redirect that `ResolvedProject::item_def` follows. The same-file readers
+  (`resolved_def`, `resolved_def_id`, `active_pattern_shape`,
+  `ExportedItem::def()`) treat a redirected def as cross-file and decline.
+  The screened boundary derivation drops only `ExportDef::Own` identities,
+  so the sig-derived ones are exactly what replaces the dropped surface.
+- **Modelled surface:** plain public `val`s (arrow type ⇒ function def
+  kind) and visible union/enum cases (RQA honoured: type-qualified only)
+  directly under a module root — top-level `module`, namespace-direct
+  `module … =`, or the **implicit filename module** of a headerless pair,
+  whose header decl the materialisation also publishes (nothing on the
+  impl side does — its fragments are anonymous — yet FCS treats the
+  implicit module as real and openable). Accessibility-annotated decls
+  (`val private/internal`, `module internal`, `type private`, repr-level
+  accessibility), active-pattern/operator `val`s, operator-named cases,
+  exceptions, abbreviations, records, and nested-module recursion all
+  stay screen-deferred (Stage 3).
+- **Incremental fold:** the stash joins `same_export_contribution`, so a
+  `.fsi` surface edit invalidates the suffix; the impl-slot append runs in
+  both folds before the in-sync comparison.
 
 ### Stage 3+: enrich the modelled signature surface
 

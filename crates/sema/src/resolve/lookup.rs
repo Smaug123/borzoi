@@ -1776,7 +1776,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => match id.index().checked_sub(self.item_base as usize) {
                 // Same-file: classify via this file's def arena.
-                Some(local) => self.items.get(local)?.def,
+                Some(local) => self.items.get(local)?.def()?,
                 // Cross-file: its def lives in an earlier file's arena, so consult
                 // the exported case-id set instead.
                 None => return Some(self.preceding.is_case_item(id)),
@@ -3297,7 +3297,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => Some(self.defs[id.index()].range),
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                Some(self.defs[self.items.get(local)?.def.index()].range)
+                Some(self.defs[self.items.get(local)?.def()?.index()].range)
             }
             // `lookup` only ever yields in-file `Local` / `Item` value-frame
             // entries; other kinds have no in-file value range to compare.
@@ -3316,7 +3316,7 @@ impl<'a> Resolver<'a> {
             Resolution::Local(id) => id,
             Resolution::Item(id) => {
                 let local = id.index().checked_sub(self.item_base as usize)?;
-                self.items.get(local)?.def
+                self.items.get(local)?.def()?
             }
             _ => return None,
         };
