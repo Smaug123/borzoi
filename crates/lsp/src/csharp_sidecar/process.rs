@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -19,8 +22,12 @@ use super::protocol::{
 /// sidecar are not supported.
 pub struct SidecarHandle {
     child: Child,
-    stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    /// `None` only while a bounded writer thread owns the pipe. A write that
+    /// times out poisons the handle, which the manager immediately drops.
+    stdin: Option<ChildStdin>,
+    /// Complete framed responses from the one stdout reader thread.
+    responses: Receiver<Result<Vec<u8>, SidecarError>>,
+    request_timeout: Duration,
     next_id: u64,
     init: InitializeResult,
 }
@@ -85,12 +92,20 @@ impl SidecarHandle {
     /// `result` field. `null` results deserialise to `()`.
     ///
     /// Synchronous — the sidecar processes requests serially, so we never
-    /// have more than one in flight.
+    /// have more than one in flight. One deadline covers both delivering the
+    /// request and receiving its complete response.
     fn request<P: Serialize, R: DeserializeOwned>(
         &mut self,
         method: &str,
         params: P,
     ) -> Result<R, SidecarError> {
+        // One budget covers the whole round trip. A child that stops reading can
+        // block a large write before a response-only timeout is ever reached.
+        let deadline = Instant::now() + self.request_timeout;
+        let timed_out = || SidecarError::RequestTimedOut {
+            method: method.to_string(),
+            after: self.request_timeout,
+        };
         let id = self.next_id;
         self.next_id += 1;
         let bytes = serde_json::to_vec(&JsonRpcRequest {
@@ -99,9 +114,43 @@ impl SidecarHandle {
             method,
             params,
         })?;
-        write_message(&mut self.stdin, &bytes)?;
+        let mut stdin = self.stdin.take().ok_or_else(|| {
+            SidecarError::Framing("sidecar request attempted after a timed-out write".into())
+        })?;
+        let written = crate::spawn::in_thread(move || {
+            let result = write_message(&mut stdin, &bytes);
+            (stdin, result)
+        });
+        match written.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok((stdin, result)) => {
+                self.stdin = Some(stdin);
+                result?;
+            }
+            Err(RecvTimeoutError::Timeout) => return Err(timed_out()),
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(SidecarError::Framing(
+                    "sidecar request writer stopped without reporting a result".into(),
+                ));
+            }
+        }
 
-        let response_bytes = read_message(&mut self.stdout)?;
+        let response_bytes = match self
+            .responses
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            Ok(result) => result?,
+            Err(RecvTimeoutError::Timeout) => {
+                // Close stdin as well as reporting the timeout: a late response
+                // must never make this handle look reusable to a direct caller.
+                self.stdin = None;
+                return Err(timed_out());
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(SidecarError::Framing(
+                    "sidecar stdout reader stopped without reporting a result".into(),
+                ));
+            }
+        };
         let response: JsonRpcResponse = serde_json::from_slice(&response_bytes)?;
         if response.id != Some(id) {
             return Err(SidecarError::UnexpectedResponseId {
@@ -133,7 +182,8 @@ impl SidecarHandle {
 /// Spawn the sidecar by invoking `dotnet <sidecar_dll>` and complete the
 /// `initialize` handshake. The caller supplies a workspace root and a
 /// `dotnet` runtime root — both are validated for non-emptiness by the sidecar
-/// during the handshake.
+/// during the handshake. Every request uses [`crate::spawn::default_timeout`]
+/// as a whole-round-trip deadline.
 ///
 /// Phase 2 reports them back through `initialize` but does not yet consume
 /// `dotnet_root` directly: the sidecar finds MSBuild via
@@ -144,6 +194,22 @@ pub fn start_sidecar(
     sidecar_dll: &Path,
     workspace_root: &Path,
     dotnet_root: &Path,
+) -> Result<SidecarHandle, SidecarError> {
+    start_sidecar_with_timeout(
+        dotnet_exe,
+        sidecar_dll,
+        workspace_root,
+        dotnet_root,
+        crate::spawn::default_timeout(),
+    )
+}
+
+pub(crate) fn start_sidecar_with_timeout(
+    dotnet_exe: &Path,
+    sidecar_dll: &Path,
+    workspace_root: &Path,
+    dotnet_root: &Path,
+    request_timeout: Duration,
 ) -> Result<SidecarHandle, SidecarError> {
     // Validate the DLL up-front. If we skipped this, `dotnet` would still
     // spawn successfully, then print its own banner to stdout and exit —
@@ -169,12 +235,13 @@ pub fn start_sidecar(
             source: e,
         })?;
     let stdin = child.stdin.take().expect("stdin was piped");
-    let stdout = BufReader::new(child.stdout.take().expect("stdout was piped"));
+    let responses = read_responses(child.stdout.take().expect("stdout was piped"));
 
     let mut handle = SidecarHandle {
         child,
-        stdin,
-        stdout,
+        stdin: Some(stdin),
+        responses,
+        request_timeout,
         next_id: 1,
         // Filled by the handshake below.
         init: InitializeResult {
@@ -379,9 +446,113 @@ fn read_message<R: BufRead>(stream: &mut R) -> Result<Vec<u8>, SidecarError> {
     Ok(body)
 }
 
+/// Drain the resident sidecar's stdout on one thread, delivering exactly one
+/// complete framed message per channel item. A request can therefore wait on
+/// the channel with a deadline instead of blocking inside `read_message`.
+fn read_responses(stdout: ChildStdout) -> Receiver<Result<Vec<u8>, SidecarError>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        loop {
+            let response = read_message(&mut stdout);
+            let stop = response.is_err();
+            if tx.send(response).is_err() || stop {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn start_fake_sidecar(
+        tmp: &tempfile::TempDir,
+        after_initialize: &str,
+        timeout: Duration,
+    ) -> SidecarHandle {
+        const INITIALIZE: &str = r#"
+read_request() {
+    IFS= read -r header || exit 1
+    length=${header#Content-Length: }
+    length=${length%?}
+    IFS= read -r blank || exit 1
+    dd bs=1 count="$length" of=/dev/null 2>/dev/null
+}
+
+read_request
+body='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"0.4.0","runtimeVersion":"fake","roslynVersion":null}}'
+printf 'Content-Length: %s\r\n\r\n%s' "${#body}" "$body"
+"#;
+        let script = tmp.path().join("fake-sidecar.sh");
+        std::fs::write(&script, format!("{INITIALIZE}\n{after_initialize}\n")).unwrap();
+        start_sidecar_with_timeout(Path::new("sh"), &script, tmp.path(), tmp.path(), timeout)
+            .expect("fake sidecar should complete initialize")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_metadata_is_bounded_when_the_sidecar_stops_answering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let timeout = Duration::from_millis(100);
+        let mut handle = start_fake_sidecar(&tmp, "read_request\nsleep 1", timeout);
+
+        let result = handle.build_metadata(
+            &tmp.path().join("Slow.csproj"),
+            "Debug",
+            "net10.0",
+            &BTreeMap::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(SidecarError::RequestTimedOut { method, after })
+                if method == "buildMetadata" && after == timeout
+        ));
+    }
+
+    /// A response-only timeout is not enough: a large request blocks in the
+    /// pipe write when the child has stopped reading stdin.
+    #[cfg(unix)]
+    #[test]
+    fn build_metadata_is_bounded_when_the_sidecar_stops_reading() {
+        let tmp = tempfile::tempdir().unwrap();
+        let timeout = Duration::from_millis(100);
+        let mut handle = start_fake_sidecar(&tmp, "sleep 1", timeout);
+        let huge_path = PathBuf::from("x".repeat(1 << 20));
+        let project_tfms = BTreeMap::from([(huge_path, "net10.0".to_string())]);
+
+        let result = handle.build_metadata(
+            &tmp.path().join("Slow.csproj"),
+            "Debug",
+            "net10.0",
+            &project_tfms,
+        );
+        assert!(matches!(
+            result,
+            Err(SidecarError::RequestTimedOut { method, after })
+                if method == "buildMetadata" && after == timeout
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialize_is_bounded_when_the_sidecar_never_answers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("silent-sidecar.sh");
+        std::fs::write(&script, "sleep 1\n").unwrap();
+        let timeout = Duration::from_millis(100);
+
+        let result =
+            start_sidecar_with_timeout(Path::new("sh"), &script, tmp.path(), tmp.path(), timeout);
+        assert!(matches!(
+            result,
+            Err(SidecarError::RequestTimedOut { method, after })
+                if method == "initialize" && after == timeout
+        ));
+    }
 
     /// Verifies `build.rs` actually published the sidecar (discovery tier 3).
     /// Checks the baked `CSHARP_SIDECAR_DLL` directly rather than going through
