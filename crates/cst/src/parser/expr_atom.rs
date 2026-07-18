@@ -3703,23 +3703,68 @@ impl<'src> Parser<'src> {
     /// dot-qualification and pattern position, false at a bare expression atom
     /// where `( * )` is the whole-dimension wildcard).
     fn paren_op_value_at(&self, lparen_pos: usize, allow_star: bool) -> bool {
+        self.paren_op_name_end(lparen_pos, allow_star).is_some()
+    }
+
+    /// If the `(` at `lparen_pos` opens a parenthesised operator-value `( op )`,
+    /// return the *last* operator-name token's filtered index and the byte offset
+    /// at which it ends (before the LexFilter-swallowed `)`); otherwise `None`.
+    /// `allow_star` matches [`Self::paren_op_value_at`].
+    ///
+    /// Every operator name is a single filtered token — the last index is
+    /// `lparen_pos + 1` — *except* the range-step operator `.. ..` (FCS's
+    /// `operatorName: DOT_DOT DOT_DOT`, `op_RangeStep`), whose name spans *two*
+    /// `..` tokens (`lparen_pos + 2`). The `)` is consulted on the raw stream
+    /// (LexFilter swallows it from the filtered stream) — and so is the second
+    /// `..`: a plain `(..)` followed by an unrelated outer `..` (`(..) .. x`) has
+    /// its swallowed `)` sitting between the two dots on the raw stream, so a
+    /// filtered-adjacency test alone would misread it as `.. ..`. Callers that
+    /// need only the yes/no answer use [`Self::paren_op_value_at`]; the
+    /// binding-head args lookahead ([`Self::operator_head_after`]) and the
+    /// consumption ([`Self::consume_paren_op_value`]) need the span.
+    pub(super) fn paren_op_name_end(
+        &self,
+        lparen_pos: usize,
+        allow_star: bool,
+    ) -> Option<(usize, usize)> {
         if !matches!(
             self.filtered_tokens.get(lparen_pos),
             Some((Ok(FilteredToken::Raw(Token::LParen)), _))
         ) {
-            return false;
+            return None;
         }
         let Some((Ok(FilteredToken::Raw(op)), op_span)) = self.filtered_tokens.get(lparen_pos + 1)
         else {
-            return false;
+            return None;
         };
         if !(is_paren_operator_name(op) || (allow_star && matches!(op, Token::Op("*")))) {
-            return false;
+            return None;
+        }
+        // The two-token range-step operator `.. ..`: a second `..` follows the
+        // first on the raw stream, then the `)`. The raw check (not a filtered
+        // one) is what excludes `(..) .. x`, whose swallowed `)` separates the
+        // dots on the raw stream. The second `..` is the next *filtered* token
+        // (nothing but the first dot lies between it and the `(`), at
+        // `lparen_pos + 2`.
+        if matches!(op, Token::DotDot)
+            && matches!(
+                self.next_non_trivia_raw_after(op_span.end),
+                Some(Token::DotDot)
+            )
+            && let Some((Ok(FilteredToken::Raw(Token::DotDot)), second_span)) =
+                self.filtered_tokens.get(lparen_pos + 2)
+            && matches!(
+                self.next_non_trivia_raw_after(second_span.end),
+                Some(Token::RParen)
+            )
+        {
+            return Some((lparen_pos + 2, second_span.end));
         }
         matches!(
             self.next_non_trivia_raw_after(op_span.end),
             Some(Token::RParen)
         )
+        .then_some((lparen_pos + 1, op_span.end))
     }
 
     /// Parse a bare parenthesised operator-value as an atomic expression →
@@ -3796,9 +3841,40 @@ impl<'src> Parser<'src> {
     /// an `IDENT_TOK`, the same encoding the infix/prefix paths use
     /// ([`Parser::emit_infix_op_as_long_ident`]).
     pub(super) fn consume_paren_op_value(&mut self) {
+        // Resolve, *before* consuming the `(`, whether this is the two-token
+        // range-step operator `.. ..` (its name ends at a `)` past the *second*
+        // `..`; [`Self::paren_op_name_end`] reads the raw stream so a plain `(..)`
+        // before an unrelated outer `..` is not misread).
+        let range_step = self
+            .paren_op_name_end(self.pos, true)
+            .is_some_and(|(last, _)| last == self.pos + 2);
         self.bump_into(SyntaxKind::LPAREN_TOK);
-        self.bump_into(SyntaxKind::IDENT_TOK);
+        if range_step {
+            self.consume_range_step_op_ident();
+        } else {
+            self.bump_into(SyntaxKind::IDENT_TOK);
+        }
         self.bump_swallowed_rparen(SyntaxKind::RPAREN_TOK);
+    }
+
+    /// Emit the two-token range-step operator name `.. ..` as a
+    /// [`SyntaxKind::RANGE_STEP_OP`] *node* wrapping the two `..`
+    /// ([`SyntaxKind::DOT_DOT_TOK`]) leaves — the one-segment `op_RangeStep` FCS
+    /// produces, not two `..` segments. The cursor is at the first `..` (the `(`
+    /// having just been bumped by [`Self::consume_paren_op_value`]); the second
+    /// `..` is the next filtered token. Any inter-dot trivia (whitespace, a
+    /// comment) drains — as ordinary trivia tokens — *between* the two dots when
+    /// the second is bumped, so it stays trivia inside the node (full-fidelity);
+    /// the operator's identity is carried by the node's structure, never by
+    /// layout-dependent text, so a comment (`(.. (*c*) ..)`) or a glued `(....)`
+    /// project identically. The differential normaliser and name resolution both
+    /// canonicalise the node's mere presence to FCS's fixed `.. ..` notation.
+    fn consume_range_step_op_ident(&mut self) {
+        self.builder
+            .start_node(FSharpLang::kind_to_raw(SyntaxKind::RANGE_STEP_OP));
+        self.bump_into(SyntaxKind::DOT_DOT_TOK);
+        self.bump_into(SyntaxKind::DOT_DOT_TOK);
+        self.builder.finish_node(); // RANGE_STEP_OP
     }
 
     /// Emit a glued `(*)` operator-value (the single [`Token::LParenStarRParen`]

@@ -1,7 +1,7 @@
 //! Pure extraction of the binders a pattern introduces.
 
-use crate::def::{Def, DefKind};
-use borzoi_cst::syntax::{LongIdentPat, Pat, SyntaxToken};
+use crate::def::{Def, DefKind, RANGE_STEP_OP_NAME};
+use borzoi_cst::syntax::{AstNode, LongIdentPat, Pat, SyntaxToken};
 
 /// The role a pattern plays where it appears, which fixes the [`DefKind`] of
 /// the names it introduces.
@@ -117,6 +117,15 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
         Pat::Named(p) => {
             if let Some(tok) = p.ident() {
                 out.push(Def::from_token(&tok, ctx.leaf_kind()));
+            } else if let Some(rs) = p.range_step_op() {
+                // Nullary range-step operator binding (`let (.. ..) = …`): its name
+                // is a `RANGE_STEP_OP` node, keyed on the canonical `.. ..` so a
+                // reference of any layout resolves to it.
+                out.push(Def::from_op_name(
+                    RANGE_STEP_OP_NAME,
+                    rs.syntax().text_range(),
+                    ctx.leaf_kind(),
+                ));
             }
         }
         Pat::OptionalVal(p) => {
@@ -247,17 +256,23 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
                     // `LONG_IDENT` segments are all *qualifiers*: its last one
                     // (`A`) names a module, not the value being defined (that is
                     // the `ACTIVE_PAT_NAME`, which no head arm binds today).
-                    if let Some(head) = p
-                        .head()
-                        .filter(|_| !names_active_pat(p))
-                        .and_then(|li| li.idents().last())
-                    {
-                        out.push(Def::from_token(
-                            &head,
-                            DefKind::Value {
-                                is_function: has_args,
-                            },
-                        ));
+                    let kind = DefKind::Value {
+                        is_function: has_args,
+                    };
+                    if let Some(head) = p.head().filter(|_| !names_active_pat(p)) {
+                        if let Some(rs) = head.range_step_op() {
+                            // Applied range-step operator head (`let (.. ..) a b =
+                            // …`): the operator name is a `RANGE_STEP_OP` node, not
+                            // an `idents()` segment — bind it under the canonical
+                            // `.. ..`.
+                            out.push(Def::from_op_name(
+                                RANGE_STEP_OP_NAME,
+                                rs.syntax().text_range(),
+                                kind,
+                            ));
+                        } else if let Some(name) = head.idents().last() {
+                            out.push(Def::from_token(&name, kind));
+                        }
                     }
                     for arg in &args {
                         collect(arg, Ctx::Param, out);

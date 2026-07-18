@@ -1689,10 +1689,15 @@ impl<'src> Parser<'src> {
                 star_end.and_then(|end| self.next_non_trivia_raw_after(end)),
             )
         } else {
-            let op_end = self.filtered_tokens.get(self.pos + 1).map(|(_, s)| s.end);
+            // The operator name may span two filtered tokens (the range-step
+            // `.. ..`), so take its *last* index and end byte from the shared
+            // recogniser rather than assuming the op is at `self.pos + 1`.
+            let (last_index, op_end) = self
+                .paren_op_name_end(self.pos, true)
+                .expect("operator_head_after: caller verified a paren operator value");
             (
-                self.next_non_trivia_filtered_after_index(self.pos + 1),
-                op_end.and_then(|end| self.raw_after_paren_op_close(end)),
+                self.next_non_trivia_filtered_after_index(last_index),
+                self.raw_after_paren_op_close(op_end),
             )
         }
     }

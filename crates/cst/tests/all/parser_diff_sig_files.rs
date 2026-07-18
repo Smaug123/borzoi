@@ -708,6 +708,14 @@ fn diff_sig_val_operator_glued_star() {
     assert_sig_asts_match("module M\nval (*) : int -> int -> int\n");
 }
 
+/// The two-token range-step operator name — `val (.. ..) : …` (`op_RangeStep`).
+/// The `val`-sig name shares the binding-head operator machinery
+/// (`consume_paren_op_value`), so the `RANGE_STEP_OP` node reduces here like `(*)`.
+#[test]
+fn diff_sig_val_operator_range_step() {
+    assert_sig_asts_match("module M\nval (.. ..) : int -> int -> int\n");
+}
+
 /// An operator name carrying labelled parameters, as in the corpus
 /// (`IntrinsicOperators`'s `val (&)`): the `topType` labelled-arg layer applies
 /// to an operator-named `val` exactly as to an identifier-named one.

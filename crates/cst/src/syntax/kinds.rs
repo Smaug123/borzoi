@@ -193,6 +193,26 @@ pub enum SyntaxKind {
     /// normaliser strips them at projection time.
     IDENT_TOK,
 
+    /// The two-token range-step operator *name* `.. ..` (FCS's `operatorName:
+    /// DOT_DOT DOT_DOT`, compiled `op_RangeStep`) — the *only* parenthesised
+    /// operator name that spans two lexer tokens. A wrapper node holding the two
+    /// [`Self::DOT_DOT_TOK`] leaves with any inter-dot trivia (whitespace, a
+    /// comment) preserved *between* them, taking the structural slot a single-token
+    /// operator's [`Self::IDENT_TOK`] occupies inside a `( op )` name — i.e.
+    /// `[LPAREN_TOK, RANGE_STEP_OP, RPAREN_TOK]`. It is a node, not a token,
+    /// precisely so the trivia stays trivia (full-fidelity) *and* so consumers read
+    /// the operator's identity from its structure, never from layout-dependent
+    /// source text: FCS fixes the notation to the literal `.. ..` for every
+    /// inter-dot layout (`.. ..`, `..  ..`, glued `....`, a comment
+    /// `(.. (*c*) ..)`), and keying on text would also wrongly rewrite a legal
+    /// backtick-quoted identifier spelled `` ``....`` ``. Surfaced by
+    /// [`crate::syntax::LongIdent::range_step_op`] /
+    /// [`crate::syntax::NamedPat::range_step_op`] /
+    /// [`crate::syntax::ValSig::range_step_op`] (parallel to the active-pattern-name
+    /// node), which name-resolution and the differential normaliser canonicalise to
+    /// `.. ..` by its mere presence.
+    RANGE_STEP_OP,
+
     /// `.` punctuator between segments of a dotted path (`Foo.Bar.Baz`).
     DOT_TOK,
 

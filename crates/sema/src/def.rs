@@ -222,6 +222,14 @@ impl DefId {
     }
 }
 
+/// The canonical name of the range-step operator (`op_RangeStep`) — FCS's fixed
+/// `.. ..` `OriginalNotation`, which name resolution uses for both a `(.. ..)`
+/// definition and any reference regardless of its inter-dot layout, so a
+/// cross-layout def/use (`let (....)` … `(.. ..)`) still resolves. Value-binding
+/// operators are keyed on their source spelling (`(+)` binds `+`, not
+/// `op_Addition`), and this is the range-step operator's *canonical* spelling.
+pub(crate) const RANGE_STEP_OP_NAME: &str = ".. ..";
+
 impl Def {
     /// Build a definite (non-provisional) `Def` from an identifier token and
     /// its kind.

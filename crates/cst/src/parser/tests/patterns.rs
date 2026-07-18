@@ -1113,6 +1113,46 @@ fn paren_or_operator_binding_head() {
     }
 }
 
+/// Full-fidelity guard for the two-token range-step operator name
+/// (`op_RangeStep`): a comment *between* the two `..` of `let (.. (*c*) ..) a b =
+/// a` stays an ordinary [`SyntaxKind::BLOCK_COMMENT`] trivia token *inside* the
+/// [`SyntaxKind::RANGE_STEP_OP`] node — not absorbed into a merged operator leaf.
+/// So `is_trivia()`/token-at-offset inside the comment behave correctly, and the
+/// node wraps exactly two `DOT_DOT_TOK` leaves around the preserved trivia.
+#[test]
+fn range_step_operator_preserves_inter_dot_comment_as_trivia() {
+    let source = "let (.. (*c*) ..) a b = a\n";
+    let parse = parse(source);
+    assert_lossless(source, &parse);
+    assert!(parse.errors.is_empty(), "errors: {:?}", parse.errors);
+
+    let node = parse
+        .root
+        .descendants()
+        .find(|n| n.kind() == crate::syntax::SyntaxKind::RANGE_STEP_OP)
+        .expect("tree should contain a RANGE_STEP_OP node");
+    let kinds: Vec<_> = node
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+        .map(|t| t.kind())
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            crate::syntax::SyntaxKind::DOT_DOT_TOK,
+            crate::syntax::SyntaxKind::WHITESPACE,
+            crate::syntax::SyntaxKind::BLOCK_COMMENT,
+            crate::syntax::SyntaxKind::WHITESPACE,
+            crate::syntax::SyntaxKind::DOT_DOT_TOK,
+        ],
+        "the comment must survive as trivia between the two `..` leaves",
+    );
+    assert!(
+        crate::syntax::SyntaxKind::BLOCK_COMMENT.is_trivia(),
+        "BLOCK_COMMENT is trivia, so token-at-offset in the comment is not the operator",
+    );
+}
+
 /// A nullary `let (or) = z` binds the bare `or` operator value — the singleton
 /// `NAMED_PAT` form (FCS's `atomicPattern: atomicPatternLongIdent` →
 /// `SynPat.Named`), identical to `let (&) = z` modulo the operator spelling.

@@ -45,6 +45,7 @@ mod resolve_project_diff;
 mod resolve_qualified_path_access_gen_diff;
 mod resolve_qualified_values;
 mod resolve_qualifier_precedence_diff;
+mod resolve_range_step_operator;
 mod resolve_scoping;
 mod resolve_straddle_gen_diff;
 mod resolve_string_qualifier_repro;

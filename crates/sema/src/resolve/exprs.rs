@@ -1,9 +1,11 @@
 //! Expression and pattern name resolution.
 
-use borzoi_cst::syntax::{Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
+use borzoi_cst::syntax::{
+    AstNode, Expr, InterpStringPart, MatchClause, Pat, RangeStepOp, SyntaxToken,
+};
 
 use crate::binders::{BinderRole, binders};
-use crate::def::{Def, DefKind};
+use crate::def::{Def, DefKind, RANGE_STEP_OP_NAME};
 
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
@@ -46,8 +48,22 @@ impl<'a> Resolver<'a> {
                 if let Some(li) = e.long_ident()
                     && li.active_pat_names().next().is_none()
                 {
-                    let segments: Vec<SyntaxToken> = li.idents().collect();
-                    self.resolve_long_ident(&segments);
+                    // An unqualified range-step operator reference (`(.. ..)`) is a
+                    // `RANGE_STEP_OP` node — invisible to `idents()`, like an
+                    // active-pattern name — so resolve it by its canonical `.. ..`
+                    // (layout-independent, so a reference of any spelling resolves to
+                    // a `let (....)` / `let (.. ..)` def alike). The qualified form
+                    // `Foo.(.. ..)` is deferred (feeding the bare `Foo` qualifier to
+                    // `resolve_long_ident` would mis-read it as the whole path) — a
+                    // coverage gap, never wrong, as for a qualified active pattern.
+                    if let Some(rs) = li.range_step_op() {
+                        if li.idents().next().is_none() {
+                            self.resolve_range_step_use(&rs);
+                        }
+                    } else {
+                        let segments: Vec<SyntaxToken> = li.idents().collect();
+                        self.resolve_long_ident(&segments);
+                    }
                 }
             }
             Expr::Paren(e) => {
@@ -785,5 +801,18 @@ impl<'a> Resolver<'a> {
             .lookup(id_text(tok.text()))
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
         self.record(tok.text_range(), res);
+    }
+
+    /// Resolve an unqualified range-step operator reference (`(.. ..)`), whose name
+    /// is a [`RangeStepOp`] node rather than a token. Look it up under the canonical
+    /// [`RANGE_STEP_OP_NAME`] (`.. ..`) — the same name a `let (.. ..)` / `let
+    /// (....)` head binds — so resolution is layout-independent, and record the
+    /// result at the node's range. Mirrors [`Self::resolve_name_use`] for the
+    /// two-token operator name.
+    pub(super) fn resolve_range_step_use(&mut self, rs: &RangeStepOp) {
+        let res = self
+            .lookup(RANGE_STEP_OP_NAME)
+            .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
+        self.record(rs.syntax().text_range(), res);
     }
 }

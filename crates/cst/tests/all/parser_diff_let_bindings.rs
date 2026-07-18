@@ -1811,6 +1811,56 @@ fn diff_ast_let_operator_head_pipe() {
     assert_asts_match("let (|>) x f = f x\n");
 }
 
+/// The range-*step* operator head with curried args — `let (.. ..) v1 v2 = v1`
+/// (the `productioncoverage01.fs` shape). `(.. ..)` is FCS's two-token
+/// `operatorName: DOT_DOT DOT_DOT` (`op_RangeStep`), the one paren operator name
+/// spanning two filtered tokens; the recognition, the operator-value consumption
+/// (a `RANGE_STEP_OP` node wrapping the two `..`), and the curried-args lookahead
+/// past the `)` all step over both `..`. Reduces to the applied
+/// `SynPat.LongIdent([op_RangeStep], …, Pats[Named v1; Named v2])`.
+#[test]
+fn diff_ast_let_range_step_operator_head_applied() {
+    assert_asts_match("let (.. ..) v1 v2 = v1\n");
+}
+
+/// The range-step operator head, nullary — `let (.. ..) = id`. With no args it
+/// stays the value-form `SynPat.Named(op_RangeStep, ".. ..")`, exercising the
+/// two-token name on the nullary (`NAMED_PAT`) path (`NamedPat::range_step_op`
+/// surfaces the node).
+#[test]
+fn diff_ast_let_range_step_operator_head_nullary() {
+    assert_asts_match("let (.. ..) = id\n");
+}
+
+/// The range-step operator head with the dots *glued* and curried args —
+/// `let (....) v1 v2 = v1`. Guards that the applied (`LONG_IDENT_PAT`) path's
+/// `RANGE_STEP_OP` node canonicalises to `.. ..` regardless of the inter-dot
+/// layout, exactly as the spaced form does.
+#[test]
+fn diff_ast_let_range_step_operator_head_glued() {
+    assert_asts_match("let (....) v1 v2 = v1\n");
+}
+
+/// The range-step operator head with a comment between the dots —
+/// `let (.. (*c*) ..) a b = a`. The comment stays a trivia token inside the
+/// `RANGE_STEP_OP` node; FCS still reduces the head to `op_RangeStep`. Regression
+/// guard that the node-keyed canonicalisation is layout- and comment-independent.
+#[test]
+fn diff_ast_let_range_step_operator_head_inner_comment() {
+    assert_asts_match("let (.. (*c*) ..) a b = a\n");
+}
+
+/// A backtick-quoted identifier spelled `` ``....`` `` — `let ``....`` = 1`. Its
+/// name strips to `....`, which FCS keeps verbatim (`idText = "...."`). This is an
+/// ordinary `IDENT_TOK`, *not* a range-step `RANGE_STEP_OP` node, so the
+/// normaliser must leave it `....` and never rewrite it to `.. ..` — the
+/// regression guard that operator canonicalisation keys on the node, not the
+/// dequoted spelling.
+#[test]
+fn diff_ast_let_quoted_four_dots_ident_not_range_step() {
+    assert_asts_match("let ``....`` = 1\n");
+}
+
 /// Nullary operator-named binding head — `let (+) = id`. With no curried
 /// args FCS reduces through `atomicPattern: atomicPatternLongIdent` to
 /// `SynPat.Named(SynIdent("op_Addition", OriginalNotationWithParen "+"), …)`

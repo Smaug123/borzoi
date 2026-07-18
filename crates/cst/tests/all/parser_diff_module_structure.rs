@@ -5097,6 +5097,15 @@ fn diff_ast_member_operator_access_modifier() {
     assert_asts_match("type T() =\n  member private (+) (a, b) = a\n");
 }
 
+/// The two-token range-step operator name as a static member
+/// (`static member (.. ..) (a, b) = a` → `op_RangeStep`). The member head shares
+/// the binding-head operator machinery, so the `RANGE_STEP_OP` node that
+/// `let (.. ..)` exercises reduces to the same `SynPat.LongIdent` here.
+#[test]
+fn diff_ast_member_operator_range_step() {
+    assert_asts_match("type T() =\n  static member (.. ..) (a, b) = a\n");
+}
+
 /// The index-get funky operator name as a static member
 /// (`static member (.()) (v, i) = v`). FCS's `operatorName: FUNKY_OPERATOR_NAME`
 /// admits `.()` cleanly (`op_ArrayLookup`); the member head shares the binding-head

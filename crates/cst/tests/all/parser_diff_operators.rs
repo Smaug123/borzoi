@@ -865,6 +865,42 @@ fn diff_ast_paren_op_value_range() {
     assert_asts_match("(..)\n");
 }
 
+/// `(.. ..)` — the range-*step* operator as a value (`op_RangeStep`, FCS's
+/// `operatorName: DOT_DOT DOT_DOT`, two `..` tokens). FCS fixes the notation to
+/// the literal `.. ..`; we emit a `RANGE_STEP_OP` node wrapping the two `..` and
+/// the normaliser canonicalises by the node's presence.
+#[test]
+fn diff_ast_paren_op_value_range_step() {
+    assert_asts_match("(.. ..)\n");
+}
+
+/// `(..  ..)` — the range-step operator with *two* spaces between the dots. FCS's
+/// notation is still the fixed `.. ..`; the layout-independent kind-keyed
+/// canonicalisation must agree.
+#[test]
+fn diff_ast_paren_op_value_range_step_double_space() {
+    assert_asts_match("(..  ..)\n");
+}
+
+/// `(....)` — the range-step operator with the two `..` *glued* (no space). Lexed
+/// as two adjacent `DotDot` tokens; still `op_RangeStep` with notation `.. ..`.
+#[test]
+fn diff_ast_paren_op_value_range_step_glued() {
+    assert_asts_match("(....)\n");
+}
+
+/// `(.. (*c*) ..)` — a block comment *between* the two range-step dots. The comment
+/// is trivia, so FCS still parses `op_RangeStep` with notation `.. ..`. Our
+/// recogniser skips the comment (raw lookahead); the comment stays a trivia token
+/// *inside* the `RANGE_STEP_OP` node (full-fidelity preserved), and the normaliser
+/// reads the operator's identity from the node's presence, not any text — the
+/// regression guard against canonicalising by the (comment-bearing) source
+/// spelling.
+#[test]
+fn diff_ast_paren_op_value_range_step_inner_comment() {
+    assert_asts_match("(.. (*c*) ..)\n");
+}
+
 /// `(*)` — glued multiply operator-value (the lexer's dedicated
 /// `LParenStarRParen` token). Contrast with the spaced `( * )`, which FCS
 /// parses as the whole-dimension wildcard `Paren(IndexRange(None, None))`.

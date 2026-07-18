@@ -17,7 +17,7 @@ use borzoi_cst::syntax::{
     RecordFieldDecl, SigDecl, SigFile, StaticOptCondition, StaticOptimizationExpr, SyntaxKind,
     SyntaxToken, TraitCallExpr, TupleExpr, TuplePat, TupleSegment, TupleType, TyparConstraint,
     TyparConstraintKind, TyparDecl, Type, TypeAppExpr, TypeDefn, TypeDefnRepr, TypeTestExpr,
-    TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, VarType,
+    TypedExpr, TypedPat, UnionCase, UnionCaseField, UpcastExpr, ValField, ValSig, VarType,
 };
 
 use super::decode::*;
@@ -195,20 +195,12 @@ fn normalise_sig_decl(d: &SigDecl) -> NormalisedSigDecl {
             let vs = v.val_sig().expect("VAL_DECL must contain a VAL_SIG child");
             // An active-pattern-named value (`val (|Foo|_|) : …`) carries an
             // `ACTIVE_PAT_NAME` child, not a bare `IDENT_TOK`; FCS folds it to a
-            // single `idText` (`"|Foo|_|"`). An operator-named value
-            // (`val (+) : …`) keeps the bare operator under `IDENT_TOK`, which
-            // `vs.ident()` returns directly (matching FCS's unwrapped
-            // `OriginalNotationWithParen`).
-            let name = if let Some(active) = vs.active_pat_name() {
-                active_pat_id_text(&active)
-            } else {
-                strip_backticks(
-                    vs.ident()
-                        .expect("a `val` signature must have a name")
-                        .text(),
-                )
-                .to_string()
-            };
+            // single `idText` (`"|Foo|_|"`). The range-step operator (`val (.. ..)
+            // : …`) carries a `RANGE_STEP_OP` node, canonicalised to `.. ..`. An
+            // operator-named value (`val (+) : …`) keeps the bare operator under
+            // `IDENT_TOK`, which `vs.ident()` returns directly (matching FCS's
+            // unwrapped `OriginalNotationWithParen`).
+            let name = val_sig_name(&vs, "a `val` signature must have a name");
             // Explicit value typars (`val f<'T> : …`, phase 10.12) + their
             // inside-`<>` `when` constraints — the same `TYPAR_DECLS` projection a
             // type-definition header uses.
@@ -716,9 +708,11 @@ fn normalise_extern(e: &ExternDecl) -> NormalisedDecl {
 /// The `LongIdent` path segments of `li` (backticks stripped) — the shared
 /// projection used across the decl normalisers.
 fn long_ident_segments(li: LongIdent) -> Vec<String> {
-    li.idents()
-        .map(|tok| strip_backticks(tok.text()).to_string())
-        .collect()
+    // Walk the children so a folded `.. ..` range-step operator segment
+    // ([`RANGE_STEP_OP`](SyntaxKind::RANGE_STEP_OP)) — a node, absent from
+    // `idents()` — and an active-pattern `opName` segment are picked up in source
+    // order alongside the plain `IDENT_TOK` segments.
+    long_ident_segment_texts(&li)
 }
 
 /// An extern C type (`cType`) → FCS's `SynType.App` representation. Even a plain
@@ -1343,16 +1337,7 @@ fn normalise_member(m: &MemberDefn) -> NormalisedMember {
             // (`"|Foo|_|"`); every other name (ident or operator, the latter kept
             // as the bare operator under `IDENT_TOK`) reads from the `VAL_SIG`'s
             // ident — same rule as the member-sig name above.
-            let name = if let Some(active) = vs.active_pat_name() {
-                active_pat_id_text(&active)
-            } else {
-                strip_backticks(
-                    vs.ident()
-                        .expect("an abstract slot must have a name")
-                        .text(),
-                )
-                .to_string()
-            };
+            let name = val_sig_name(&vs, "an abstract slot must have a name");
             let ty = normalise_type(
                 &vs.ty()
                     .expect("an abstract slot must have a `: <type>` signature"),
@@ -1420,15 +1405,8 @@ fn normalise_member_sig(ms: &MemberSig) -> NormalisedMember {
     // operator name keeps the bare operator under `IDENT_TOK`, like a `val` sig).
     let name = if leading == MemberSigLeading::New {
         "new".to_string()
-    } else if let Some(active) = vs.active_pat_name() {
-        active_pat_id_text(&active)
     } else {
-        strip_backticks(
-            vs.ident()
-                .expect("a member signature must have a name")
-                .text(),
-        )
-        .to_string()
+        val_sig_name(&vs, "a member signature must have a name")
     };
     let ty = normalise_type(
         &vs.ty()
@@ -1882,6 +1860,11 @@ fn normalise_named_pat(p: &NamedPat) -> String {
     if let Some(active) = p.active_pat_name() {
         return active_pat_id_text(&active);
     }
+    // The nullary range-step operator binding (`let (.. ..) = …`) — its name is a
+    // `RANGE_STEP_OP` node, canonicalised to FCS's fixed `.. ..` by its presence.
+    if p.range_step_op().is_some() {
+        return RANGE_STEP_OP_NAME.to_string();
+    }
     let tok = p.ident().expect("NAMED_PAT must contain an IDENT_TOK");
     strip_backticks(tok.text()).to_string()
 }
@@ -1895,6 +1878,26 @@ fn active_pat_id_text(active: &borzoi_cst::syntax::ActivePatName) -> String {
         .map(|tok| strip_backticks(tok.text()).to_string())
         .collect();
     format!("|{}|", cases.join("|"))
+}
+
+/// FCS's fixed source spelling for the range-step operator (`operatorName:
+/// DOT_DOT DOT_DOT`) — the `OriginalNotation` it stamps regardless of the
+/// inter-dot layout, which the FCS-side normaliser also unwraps to. The single
+/// source of this string across the projector.
+const RANGE_STEP_OP_NAME: &str = ".. ..";
+
+/// The name of a `val`-signature carrier ([`SyntaxKind::VAL_SIG`], shared by the
+/// `val` sig, the abstract slot and the member sig): the folded active-pattern
+/// `idText` (`(|Foo|_|)`), the fixed range-step notation (`(.. ..)`), or the bare
+/// ident/operator token. `expect_msg` names the caller for the missing-name panic.
+fn val_sig_name(vs: &ValSig, expect_msg: &str) -> String {
+    if let Some(active) = vs.active_pat_name() {
+        active_pat_id_text(&active)
+    } else if vs.range_step_op().is_some() {
+        RANGE_STEP_OP_NAME.to_string()
+    } else {
+        strip_backticks(vs.ident().expect(expect_msg).text()).to_string()
+    }
 }
 
 /// Project our `LONG_IDENT_PAT > [LONG_IDENT, <args…>]` back into FCS's
@@ -1918,18 +1921,12 @@ fn long_ident_pat_head_segments(p: &LongIdentPat) -> Vec<String> {
         (head_node, Some(active)) => {
             let mut segs: Vec<String> = Vec::new();
             if let Some(li) = head_node {
-                segs.extend(
-                    li.idents()
-                        .map(|tok| strip_backticks(tok.text()).to_string()),
-                );
+                segs.extend(long_ident_segment_texts(&li));
             }
             segs.push(active_pat_id_text(&active));
             segs
         }
-        (Some(head_node), None) => head_node
-            .idents()
-            .map(|tok| strip_backticks(tok.text()).to_string())
-            .collect(),
+        (Some(head_node), None) => long_ident_segment_texts(&head_node),
         (None, None) => {
             panic!("LONG_IDENT_PAT must contain a LONG_IDENT or ACTIVE_PAT_NAME head child")
         }
@@ -3671,8 +3668,18 @@ fn long_ident_segment_texts(inner: &LongIdent) -> Vec<String> {
                 matches!(tok.kind(), SyntaxKind::IDENT_TOK | SyntaxKind::NEW_TOK)
                     .then(|| strip_backticks(tok.text()).to_string())
             } else if let Some(node) = el.as_node() {
-                (node.kind() == SyntaxKind::ACTIVE_PAT_NAME)
-                    .then(|| active_pat_id_text(&ActivePatName::cast(node.clone()).unwrap()))
+                match node.kind() {
+                    // Active-pattern `opName` segment (`(|Foo|_|)`), folded to FCS's
+                    // single `idText`.
+                    SyntaxKind::ACTIVE_PAT_NAME => Some(active_pat_id_text(
+                        &ActivePatName::cast(node.clone()).unwrap(),
+                    )),
+                    // The range-step operator name `.. ..` — FCS's fixed notation
+                    // for `op_RangeStep`, from the node's presence (never its
+                    // layout-dependent text; see [`SyntaxKind::RANGE_STEP_OP`]).
+                    SyntaxKind::RANGE_STEP_OP => Some(RANGE_STEP_OP_NAME.to_string()),
+                    _ => None,
+                }
             } else {
                 None
             }

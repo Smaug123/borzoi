@@ -157,6 +157,7 @@ ast_node!(BindingReturnInfo, BINDING_RETURN_INFO);
 // `NamePatPair` / `RecordPatField` are not `Pat` variants, so they stay
 // hand-written here.
 ast_node!(ActivePatName, ACTIVE_PAT_NAME);
+ast_node!(RangeStepOp, RANGE_STEP_OP);
 ast_node!(NamePatPairs, NAME_PAT_PAIRS);
 ast_node!(NamePatPair, NAME_PAT_PAIR);
 ast_node!(RecordPatField, RECORD_PAT_FIELD);
@@ -1103,14 +1104,23 @@ impl ValSig {
     /// idents nest inside the type node). For an operator-named value
     /// (`val (+) : …`) this is the bare operator token between the parens (the
     /// `IDENT_TOK` of the `[LPAREN_TOK, IDENT_TOK, RPAREN_TOK]` run), matching
-    /// FCS's `OriginalNotationWithParen` spelling. `None` on a malformed slot
-    /// **or** an active-pattern name (`val (|Foo|_|) : …`), whose idents live
-    /// inside the [`ActivePatName`] node — read those via [`Self::active_pat_name`].
+    /// FCS's `OriginalNotationWithParen` spelling. `None` on a malformed slot, an
+    /// active-pattern name (`val (|Foo|_|) : …`, read via [`Self::active_pat_name`]),
+    /// **or** the two-token range-step name (`val (.. ..) : …`, read via
+    /// [`Self::range_step_op`]) — both fold into one `SynValSig.ident` FCS keeps as
+    /// a single `idText`, so neither is a bare `IDENT_TOK`.
     pub fn ident(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
             .find(|t| t.kind() == SyntaxKind::IDENT_TOK)
+    }
+
+    /// The range-step operator name (`.. ..`, `op_RangeStep`) when this value is
+    /// named by it (`val (.. ..) : …`) — the two-token-operator analogue of
+    /// [`Self::active_pat_name`]. Mutually exclusive with [`Self::ident`].
+    pub fn range_step_op(&self) -> Option<RangeStepOp> {
+        child(&self.0)
     }
 
     /// The active-pattern name — `(|Foo|_|)`, `(|Foo|Bar|)` — when this value is
@@ -1959,14 +1969,23 @@ impl BindingReturnInfo {
 
 impl NamedPat {
     /// The single [`SyntaxKind::IDENT_TOK`] child carrying the LHS identifier.
-    /// `None` for the active-pattern form (`let (|Foo|Bar|) = …`), whose name
-    /// is an [`ActivePatName`] child instead — read it via
-    /// [`Self::active_pat_name`].
+    /// `None` for the active-pattern form (`let (|Foo|Bar|) = …`), whose name is an
+    /// [`ActivePatName`] child (read via [`Self::active_pat_name`]), **and** for the
+    /// nullary range-step operator binding (`let (.. ..) = …`), whose name is a
+    /// [`RangeStepOp`] node (read via [`Self::range_step_op`]).
     pub fn ident(&self) -> Option<SyntaxToken> {
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
             .find(|t| t.kind() == SyntaxKind::IDENT_TOK)
+    }
+
+    /// The range-step operator name (`.. ..`, `op_RangeStep`) when this nullary
+    /// binding is named by it (`let (.. ..) = …`) — the two-token-operator analogue
+    /// of [`Self::active_pat_name`]. Mutually exclusive with [`Self::ident`] and
+    /// [`Self::active_pat_name`].
+    pub fn range_step_op(&self) -> Option<RangeStepOp> {
+        child(&self.0)
     }
 
     /// The active-pattern name when this is a *nullary* active-pattern binding
@@ -2883,12 +2902,26 @@ impl LongIdent {
     /// (the `Ident list`). Backticks are preserved in the token text. A `new`
     /// constructor head (phase 9.10b) carries the `new` keyword as its sole
     /// segment (a [`SyntaxKind::NEW_TOK`], text `"new"`), mirroring FCS's
-    /// `SynLongIdent(["new"])`, so it is yielded here too.
+    /// `SynLongIdent(["new"])`, so it is yielded here too. The two-token range-step
+    /// operator name is a [`RangeStepOp`] *node*, not a token, so it is **not**
+    /// yielded here — a `.. ..` path segment is surfaced by [`Self::range_step_op`],
+    /// which a consumer of [`Self::idents`] must also consult (as it does
+    /// [`Self::active_pat_names`]).
     pub fn idents(&self) -> impl Iterator<Item = SyntaxToken> + '_ {
         self.0
             .children_with_tokens()
             .filter_map(|el| el.into_token())
             .filter(|t| matches!(t.kind(), SyntaxKind::IDENT_TOK | SyntaxKind::NEW_TOK))
+    }
+
+    /// The range-step operator-name node (`op_RangeStep`, `.. ..`) embedded in this
+    /// path, if any — the two-token-operator analogue of [`Self::active_pat_names`]
+    /// (both are `opName` names FCS folds into one `SynLongIdent` segment that
+    /// cannot be projected as a bare token). A path holds at most one; a qualified
+    /// `Foo.(.. ..)` folds it after the `Foo` segment. Consumers that read a path by
+    /// [`Self::idents`] must consult this too, lest they drop the operator segment.
+    pub fn range_step_op(&self) -> Option<RangeStepOp> {
+        child(&self.0)
     }
 
     /// The active-pattern-name segments embedded in this path — `(|Foo|_|)` used
