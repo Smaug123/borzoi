@@ -806,6 +806,60 @@ let private renderType (t: FSharpType) : string =
     let empty : System.Collections.Generic.IList<FSharpGenericParameter> = upcast ResizeArray<_>()
     renderTypeInScope empty empty t
 
+/// The *immediate, unchased, logical* target of a type abbreviation, as a
+/// canonical string the Rust-side `AbbreviationTarget` decoder mirrors — or
+/// `None` when the target is a shape the first decoder slice does not model.
+///
+/// Deliberately NOT `renderTypeInScope` (which strips every abbreviation layer
+/// and compiles F# tuples/functions to their `System.Tuple`/`FSharpFunc` IL
+/// shape) and NOT `chaseAbbreviation` (which walks to the terminal): it renders
+/// exactly what the F# signature pickle's `type_abbrev` stores — ONE level, by
+/// the target tycon's *logical* FQN (`Microsoft.FSharp.Core.int`, never chased
+/// to `System.Int32`), because the single-assembly Rust reader cannot chase a
+/// cross-assembly abbreviation. See `docs/abbreviation-target-projection-plan.md`
+/// §3.3. Used only for `IsFSharpAbbreviation` entities; `typeTypars` is the
+/// abbreviation entity's own `GenericParameters`, so a `'T` on the RHS renders
+/// by its positional index (`!T0`).
+///
+/// **Scope: nullary Named + in-scope typar only.** This is the exact currency
+/// for the first decoder slice, which decodes those two shapes. Everything else
+/// — a generic *instantiation* (`int list`, `int[]`), a function, a tuple, a
+/// measure — is **declined** (`None`), not rendered. Declining is what keeps the
+/// oracle unambiguous: a precedence-free string for `int -> int -> int` cannot
+/// distinguish `(int -> int) -> int` from `int -> (int -> int)`, so a decoder
+/// with wrong associativity could pass. The structural shapes get a
+/// precedence-correct rendering — on this side *and* the Rust side together —
+/// in the structural-shape slice (plan Stage 3); until then the differential
+/// asserts nothing about them.
+let private renderAbbreviationTargetLogical
+    (typeTypars: System.Collections.Generic.IList<FSharpGenericParameter>)
+    (t: FSharpType) : string option =
+    if t.IsGenericParameter then
+        let tp = t.GenericParameter
+        let mutable found = -1
+        let mutable i = 0
+        while found < 0 && i < typeTypars.Count do
+            if typeTypars.[i].Equals(tp) then found <- i
+            i <- i + 1
+        // An out-of-scope typar (should not happen for a well-formed alias) is
+        // declined rather than rendered as a bare `'name` that could collide
+        // with a real type.
+        if found >= 0 then Some(sprintf "!T%d" found) else None
+    elif t.HasTypeDefinition && t.GenericArguments.Count = 0 then
+        // A NULLARY named tycon — the only Named shape this slice handles. Do
+        // NOT branch on `t.IsAbbreviation` (that is the chase `renderTypeInScope`
+        // does). `TryFullName` is `None` for abbreviation entities, so build the
+        // logical FQN from `AccessPath` + `LogicalName`, which is the form the
+        // pickle's nleref path carries.
+        let td = t.TypeDefinition
+        match td.AccessPath with
+        | "" -> Some td.LogicalName
+        | ap -> Some(sprintf "%s.%s" ap td.LogicalName)
+    else
+        // Generic instantiation / function / tuple / measure — deferred to the
+        // structural-shape slice (see the doc comment above).
+        None
+
 /// Whether an [`FSharpType`] position can meaningfully carry a nullable
 /// annotation — used both by [`fcsTypeNullnessSuffix`] here and by the
 /// position-level [`resolveFcsPositionNullability`] further down. Treat
@@ -4084,6 +4138,47 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
         e.GenericParameters
     let emptyMethodTypars : System.Collections.Generic.IList<FSharpGenericParameter> =
         upcast ResizeArray<_>()
+    // A type ABBREVIATION is name-only on the Rust side (a marker entity: no
+    // members, no base, no interfaces). FCS instead surfaces the *target's*
+    // members and (for a generic abbreviation) its typars through the
+    // transparent entity — which the full projection below cannot render (it
+    // fails loud on `list`/`string` indexed properties and on F#-defined
+    // generic typars). Emit a minimal record carrying only the immediate-logical
+    // target, so the differential compares exactly what the marker models. See
+    // `docs/abbreviation-target-projection-plan.md` §3.3.
+    if e.IsFSharpAbbreviation then
+        let target : objnull =
+            try
+                match renderAbbreviationTargetLogical typeTypars e.AbbreviatedType with
+                | Some s -> box s
+                | None -> null
+            with _ ->
+                null
+        // Name-only typars — invariant, unconstrained. The full generic-param
+        // projection fails loud on an F#-defined entity (variance/constraints are
+        // not on the FCS public surface), but the marker the Rust side
+        // synthesises carries exactly these names, and the arity is load-bearing:
+        // `type Foo = …` and `type Foo<'T> = …` are distinct aliases the target
+        // (`!T0`) and any arity-keyed lookup must tell apart. Emit them.
+        let genericParameters =
+            typeTypars
+            |> Seq.map (fun tp ->
+                box {| Declaration = tp.Name; Constraints = ([||]: string array) |})
+            |> Seq.toArray
+        box {| Fqn = entityFqn e
+               Kind = entityKindString e
+               Access = accessString e.Accessibility
+               GenericParameters = genericParameters
+               BaseType = (null: objnull)
+               Interfaces = ([||]: string array)
+               Members = ([||]: obj array)
+               NestedTypes = ([||]: obj array)
+               Obsolete = (null: objnull)
+               Experimental = (null: objnull)
+               DefaultMember = (null: objnull)
+               AbbreviatedTarget = target
+               CompilerFeatureRequired = ([||]: obj array) |}
+    else
     // System.Text.Json's null encoding of `objnull` matches the
     // `"BaseType": null` shape the harness's `Option<String>` deserialiser
     // expects, so we can keep the field a single nullable cell rather than
@@ -4335,6 +4430,20 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
         match tryFormatDefaultMember e.Attributes with
         | Some s -> box s
         | None -> null
+    // The immediate, unchased, logical abbreviation target (see
+    // `renderAbbreviationTargetLogical`); `null` for non-abbreviations. The
+    // Rust `parse_fcs_dump` ignores this field until the decoder half lands
+    // (Stage 2), so emitting it now is safe.
+    let abbreviatedTarget : objnull =
+        let isAbbrev =
+            try e.IsFSharpAbbreviation with _ -> false
+        if isAbbrev then
+            try
+                box (renderAbbreviationTargetLogical e.GenericParameters e.AbbreviatedType)
+            with _ ->
+                null
+        else
+            null
     box {| Fqn = entityFqn e
            Kind = entityKindString e
            Access = accessString e.Accessibility
@@ -4346,6 +4455,7 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
            Obsolete = obsolete
            Experimental = experimental
            DefaultMember = defaultMember
+           AbbreviatedTarget = abbreviatedTarget
            CompilerFeatureRequired = formatCompilerFeatureRequiredList e.Attributes |> List.toArray |}
 
 /// Walk the FSharpAssemblySignature tree, flattening namespace nodes and
