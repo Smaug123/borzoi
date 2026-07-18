@@ -56,6 +56,7 @@ use borzoi_cst::syntax::{
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
+use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
 
@@ -185,6 +186,20 @@ pub fn resolve_file(
                 }
                 _ => {}
             }
+        }
+    }
+    // Every value-binder simple name in the file — the constructor fallback's
+    // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
+    // pattern through the resolution-independent [`binders`] walk, which yields a
+    // binder *before* the resolution stage's provisional/interning drops, so a
+    // would-be-shadowed local and a provisional uppercase parameter are both
+    // captured. Called on every pattern node (not just outermost) so no construct
+    // `binders` might not recurse can hide a name — over-collection only defers.
+    // File-global and order-independent, like the type-name pre-scans above.
+    for pat in file.syntax().descendants().filter_map(Pat::cast) {
+        for def in binders(&pat, BinderRole::Let) {
+            r.own_binder_simple_names
+                .insert(id_text(&def.name).to_string());
         }
     }
     // The top-level value scope is *per container*, not one shared base frame: F#
@@ -1618,6 +1633,7 @@ impl<'a> Resolver<'a> {
             open_extension_unknowable: false,
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            own_binder_simple_names: HashSet::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),

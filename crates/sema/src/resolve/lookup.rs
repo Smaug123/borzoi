@@ -2312,7 +2312,11 @@ impl<'a> Resolver<'a> {
                 Resolution::Deferred(DeferredReason::QualifiedAccess),
             );
         } else {
-            self.resolve_name_use(first);
+            // The head is member access on a *value*; a type-as-qualifier was
+            // already handled by the assembly-path resolution above. Forbid the
+            // opened-type constructor fallback so a declined type-qualifier does
+            // not re-resolve the head to a colliding opened assembly type.
+            self.resolve_name_use(first, false);
         }
         for seg in rest {
             self.record(

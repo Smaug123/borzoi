@@ -584,6 +584,65 @@ fn open_namespace_resolves_unqualified_type_and_member() {
 }
 
 #[test]
+fn open_namespace_resolves_bare_constructor_use() {
+    // A bare *constructor* call `Thing ()` uses the type name as an expression
+    // head. `open Demo` brings the type `Demo.Thing` into scope, so the bare
+    // `Thing` must resolve to the `Demo.Thing` entity — FCS reports the type
+    // symbol at this occurrence (verified: `StringBuilder ()` under
+    // `open System.Text` → `System.Text.StringBuilder`), so expression-position
+    // resolution must consult opened assembly *types*, not just the value frame.
+    let env = fixture_env();
+    let src = "open Demo\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "a bare constructor use resolves to the opened type entity"
+    );
+}
+
+#[test]
+fn bare_constructor_defers_when_shadowed_or_not_constructible() {
+    // The constructor fallback must never wrong-target. Three arms, each FCS-sound
+    // (verified in `resolve_assembly_diff`), that must NOT record the assembly
+    // entity:
+    //   - a same-file `type Thing` shadows the opened `Demo.Thing` (FCS binds the
+    //     project type — which this resolution-only pass does not model, so defer);
+    //   - `Demo.Calc` is a *static* class (no accessible instance constructor);
+    //   - `Demo.GenericBase` is generic — the arity-0 fallback would misname it.
+    // Plus value-frame misses that are only *conservative*, not genuinely unbound
+    // — the binder-name oracle (`own_binder_simple_names`) and the staled-head
+    // guard must keep the fallback from naming the opened type where FCS binds a
+    // value:
+    //   - a local `let Thing` staled by a later project-module open's generation
+    //     barrier (the module contributes an active pattern, which raises the
+    //     barrier) is one FCS still binds;
+    //   - a *provisional* uppercase parameter `(Thing: int)` binds the RHS `Thing`
+    //     in FCS, though the resolution pass drops the would-be binder so `lookup`
+    //     misses — the binder-name pre-scan still sees it.
+    let env = fixture_env();
+    for src in [
+        "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
+        "open Demo\nlet x = Calc ()\n",
+        "open Demo\nlet x = GenericBase ()\n",
+        "module M\nopen Demo\nlet Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P\nlet y = Thing ()\n",
+        "module M\nopen Demo\nlet f (Thing: int) = Thing\n",
+    ] {
+        let rf = resolve(src, &env);
+        assert!(
+            !rf.resolutions()
+                .values()
+                .any(|r| matches!(r, Resolution::Entity(_) | Resolution::Member { .. })),
+            "constructor fallback must defer, not wrong-target, for {src:?}"
+        );
+    }
+}
+
+#[test]
 fn open_type_resolves_unqualified_static_members() {
     // `open type Demo.Calc` brings the type's static members into unqualified
     // scope, so bare `Zero` (a static method) and `Answer` (a static property)
