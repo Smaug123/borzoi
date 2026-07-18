@@ -393,6 +393,24 @@ pub fn ensure_minilib_fs_built() -> &'static Path {
 /// `CurriedParameterGroups`. Both projectors must agree on the
 /// IL-shaped signature including the re-prepended receiver, and on the
 /// `extension` flag (set only for the instance shape).
+/// Build the EntityRanges F# fixture once and return the path to the produced
+/// `.dll`. Same build-once pattern as [`ensure_minilib_built`].
+///
+/// EntityRanges exercises the entity `definition_range` overlay: a value-only
+/// module, a plain type, a method-less measure, a module-suffix source name, an
+/// exception-abbreviation alias, and arity twins whose IL names collapse onto
+/// one arity-stripped name. It is deliberately *not* diffed against fcs-dump
+/// (it defines F#-generic entities and arity twins, which
+/// `fcs-dump entities` cannot project) — the tests assert the projected ranges
+/// directly.
+pub fn ensure_entity_ranges_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("EntityRanges", "EntityRanges.dll"))
+        .1
+        .as_path()
+}
+
 pub fn ensure_minilib_fs_ext_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
     BUILT

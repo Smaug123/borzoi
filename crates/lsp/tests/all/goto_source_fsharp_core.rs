@@ -14,7 +14,8 @@
 use borzoi::goto_source::{
     DefinitionSource, definition_document_for_range, definition_document_in_pdb, definition_source,
     definition_source_in_pdb, definition_source_with_range_fallback,
-    entity_definition_document_in_pdb, entity_definition_source, range_definition_source_in_pdb,
+    entity_definition_document_in_pdb, entity_definition_source, entity_definition_source_in_pdb,
+    entity_definition_source_with_range_fallback, range_definition_source_in_pdb,
 };
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, FsharpSourceRange, Member, MethodLike};
@@ -538,4 +539,214 @@ fn definition_document_for_a_non_method_token_is_none() {
         definition_document_in_pdb(&image, typedef_token).unwrap(),
         None
     );
+}
+
+// --- entities: the pickled-range fallback ------------------------------------
+//
+// The entity counterpart of the module-value range fallback above. A method-
+// less entity (a measure) or a value-only module carries no navigable sequence
+// point, so its pickled `entity_range` is go-to-definition's only source — and
+// for an `.fsi`-constrained assembly like FSharp.Core that range names the
+// `.fsi`, which the PDB Document table never lists yet SourceLink still maps.
+
+/// The `Microsoft.FSharp.…` entity at `namespace` with IL `name`.
+fn fsharp_core_entity(bytes: &[u8], namespace: &[&str], name: &str) -> Entity {
+    let view = Ecma335Assembly::parse(bytes).expect("parse FSharp.Core");
+    let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
+    flatten(&entities)
+        .into_iter()
+        .find(|e| {
+            e.name == name
+                && e.namespace
+                    .iter()
+                    .map(String::as_str)
+                    .eq(namespace.iter().copied())
+        })
+        .unwrap_or_else(|| panic!("entity {}.{name} not found", namespace.join(".")))
+        .clone()
+}
+
+#[test]
+fn a_sequence_pointed_entity_ignores_the_fallback_range() {
+    // `ListModule` has source-mapped methods, so the token sweep wins; a decoy
+    // range must not preempt it (the entity analogue of the member-side check).
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let module = fsharp_core_entity(
+        &bytes,
+        &["Microsoft", "FSharp", "Collections"],
+        "ListModule",
+    );
+
+    let decoy = FsharpSourceRange {
+        file: "Z:\\nowhere\\decoy.fsi".into(),
+        start_line: 1,
+        start_column: 0,
+        end_line: 1,
+        end_column: 5,
+    };
+    let via_token = entity_definition_source_in_pdb(&image, &module.method_def_tokens).unwrap();
+    assert!(via_token.is_some(), "ListModule has a source-mapped method");
+    assert_eq!(
+        entity_definition_source_with_range_fallback(
+            &image,
+            &module.method_def_tokens,
+            Some(&decoy),
+        )
+        .unwrap(),
+        via_token,
+        "a sequence-pointed entity ignores the fallback range"
+    );
+}
+
+#[test]
+fn a_measure_entity_resolves_via_its_pickled_range() {
+    // `Microsoft.FSharp.Data.UnitSystems.SI.UnitNames.metre` is a standalone
+    // measure: an ECMA TypeDef row with zero methods, so the token sweep finds
+    // nothing and only the pickled `entity_range` can navigate it.
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let metre = fsharp_core_entity(
+        &bytes,
+        &[
+            "Microsoft",
+            "FSharp",
+            "Data",
+            "UnitSystems",
+            "SI",
+            "UnitNames",
+        ],
+        "metre",
+    );
+    assert!(
+        metre.method_def_tokens.is_empty(),
+        "a measure has no methods; got {:?}",
+        metre.method_def_tokens
+    );
+    // Precondition: no token, so the token sweep yields nothing.
+    assert_eq!(
+        entity_definition_source_in_pdb(&image, &metre.method_def_tokens).unwrap(),
+        None
+    );
+
+    let range = metre
+        .definition_range
+        .as_ref()
+        .expect("a measure carries its entity range");
+    assert!(
+        range.file.ends_with("SI.fs"),
+        "metre is defined in SI.fs; got {}",
+        range.file
+    );
+
+    // The fallback resolves it, agreeing with resolving the range directly.
+    let resolved =
+        entity_definition_source_with_range_fallback(&image, &metre.method_def_tokens, Some(range))
+            .expect("range resolution succeeds");
+    assert_eq!(
+        resolved,
+        range_definition_source_in_pdb(&image, range).unwrap()
+    );
+    match resolved.expect("SI.fs is SourceLink-mapped") {
+        DefinitionSource::Remote {
+            document,
+            url,
+            line,
+            column,
+        } => {
+            assert_eq!(document, range.file);
+            assert!(
+                url.starts_with("https://raw.githubusercontent.com/")
+                    && url.ends_with("SI.fs")
+                    && !url.contains('\\'),
+                "SourceLink URL for SI.fs; got {url}"
+            );
+            assert_eq!(line, range.start_line, "1-based line passes through");
+            assert_eq!(
+                column,
+                range.start_column + 1,
+                "0-based column becomes 1-based"
+            );
+        }
+        other => panic!("expected Remote source for SI.fs, got {other:?}"),
+    }
+}
+
+#[test]
+fn an_entity_range_naming_an_fsi_still_sourcelink_maps() {
+    // `ListModule`'s pickled range names `list.fsi` — a signature file that
+    // never appears in the PDB Document table (no sequence points), yet the
+    // SourceLink prefix map still covers it. Probe finding 2, end-to-end.
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let module = fsharp_core_entity(
+        &bytes,
+        &["Microsoft", "FSharp", "Collections"],
+        "ListModule",
+    );
+    let range = module
+        .definition_range
+        .as_ref()
+        .expect("ListModule carries an entity range");
+    assert!(
+        range.file.ends_with("list.fsi"),
+        "ListModule's range names list.fsi; got {}",
+        range.file
+    );
+
+    match range_definition_source_in_pdb(&image, range)
+        .expect("range resolution succeeds")
+        .expect("list.fsi is SourceLink-mapped despite no Document row")
+    {
+        DefinitionSource::Remote { document, url, .. } => {
+            assert_eq!(document, range.file);
+            assert!(
+                url.starts_with("https://raw.githubusercontent.com/")
+                    && url.ends_with("list.fsi")
+                    && !url.contains('\\'),
+                "SourceLink URL for list.fsi; got {url}"
+            );
+        }
+        other => panic!("expected Remote source for list.fsi, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_method_less_entity_reports_its_document_without_a_pdb() {
+    // The hover "defined in" path: a measure has no method (nothing for
+    // `entity_definition_document_in_pdb` to find) but its pickled range names
+    // the document and position directly — no PDB needed. This is the
+    // composition `entity_definition_document` performs.
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).unwrap_or_else(|e| panic!("read {dll:?}: {e}"));
+    let image = embedded_portable_pdb(&bytes).unwrap().unwrap();
+    let metre = fsharp_core_entity(
+        &bytes,
+        &[
+            "Microsoft",
+            "FSharp",
+            "Data",
+            "UnitSystems",
+            "SI",
+            "UnitNames",
+        ],
+        "metre",
+    );
+    // No token → the PDB half says nothing.
+    assert_eq!(
+        entity_definition_document_in_pdb(&image, &metre.method_def_tokens).unwrap(),
+        None
+    );
+    // The range half needs no PDB at all.
+    let range = metre
+        .definition_range
+        .as_ref()
+        .expect("metre carries a range");
+    let doc = definition_document_for_range(range);
+    assert!(doc.document.ends_with("SI.fs"), "got {}", doc.document);
+    assert_eq!(doc.line, range.start_line);
+    assert_eq!(doc.column, range.start_column + 1);
 }

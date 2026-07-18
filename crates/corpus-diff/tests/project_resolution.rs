@@ -181,6 +181,7 @@ fn synthetic_assembly_env() -> AssemblyEnv {
         source_name: None,
         custom_attrs: Vec::new(),
         abbreviation_target: None,
+        definition_range: None,
     }])
 }
 
