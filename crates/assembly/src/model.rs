@@ -1038,6 +1038,33 @@ pub struct ModuleValue {
     pub is_mutable: bool,
 }
 
+/// The source location of an F# binding, as recorded by the host CCU's
+/// signature pickle: FCS's `Val.DefinitionRange` — the *implementation*
+/// range ("used by Visual Studio" for navigation), which for an
+/// `.fsi`-constrained assembly names the `.fs` file rather than the
+/// signature (`p_ValData` pickles the `(val_range, DefinitionRange)` pair;
+/// this is the second component, falling back to the first when the pair is
+/// collapsed).
+///
+/// Conventions are FCS's `pos`/`range`: **1-based lines, 0-based columns**,
+/// spanning exactly the binder identifier. `file` is the compile-time path —
+/// for a deterministic (SourceLink) build it matches the portable PDB's
+/// document names byte-for-byte, which is what lets a consumer resolve it to
+/// embedded source or a SourceLink URL.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FsharpSourceRange {
+    pub file: String,
+    /// 1-based.
+    pub start_line: u32,
+    /// 0-based.
+    pub start_column: u32,
+    /// 1-based.
+    pub end_line: u32,
+    /// 0-based (exclusive).
+    pub end_column: u32,
+}
+
 /// A method, constructor, or operator. The `is_constructor` flag
 /// distinguishes the `.ctor` / `.cctor` cases from regular methods so
 /// callers don't have to string-compare names.
@@ -1127,6 +1154,22 @@ pub struct MethodLike {
     /// unlike [`Self::module_value`], it does not imply the property emission shape, so
     /// it is safe to set on a method without disturbing the doc-ID / `val` render.
     pub is_module_value_binding: bool,
+    /// Where the F# binding this member came from is declared, from the host
+    /// CCU's signature pickle ([`FsharpSourceRange`]). `Some` only on the
+    /// authoritative-pickle path for module members whose claim group agreed
+    /// on one range (the same unanimity posture as `source_name`); `None`
+    /// everywhere else — non-F# assemblies, the IL-heuristic path, and
+    /// members the pickle did not claim.
+    ///
+    /// Go-to-definition reads it when the PDB has no sequence point for the
+    /// member's own MethodDef: an F# module *value* compiles to a static
+    /// property whose getter merely reads the backing field (the initialiser
+    /// lives in the module's `.cctor`), so the getter carries no sequence
+    /// point and this pickled range is the only — and FCS's own — source
+    /// location for the binding.
+    /// Boxed: the range is consulted only at navigation time, and inline it
+    /// would tip [`Member`] over clippy's large-variant threshold.
+    pub definition_range: Option<Box<FsharpSourceRange>>,
     /// Formal method type parameters (the `M0`/`M1`/... typars referenced
     /// from the signature via `TypeRef::Var { is_method: true, .. }`).
     /// Empty for non-generic methods. The ECMA-335 generic-arity number

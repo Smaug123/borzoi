@@ -777,6 +777,7 @@ mod tests {
 
     fn method(name: &str, params: Vec<Parameter>, ret: TypeRef) -> MethodLike {
         MethodLike {
+            definition_range: None,
             name: name.to_owned(),
             access: Access::Public,
             signature: MethodSignature {

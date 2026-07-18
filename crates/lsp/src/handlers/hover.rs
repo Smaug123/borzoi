@@ -745,6 +745,7 @@ mod tests {
 
     fn method(is_extension_method: bool) -> Member {
         Member::Method(MethodLike {
+            definition_range: None,
             name: "M".to_string(),
             access: Access::Public,
             signature: MethodSignature {

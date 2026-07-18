@@ -11,8 +11,10 @@
 //!   `assembly_member_location`: the method's source via its DLL's portable
 //!   PDB — *embedded* in the DLL, or a *sidecar* `.pdb` beside it (`pdb_image_for`)
 //!   — yielding a `file://` for embedded (or, behind `sourcelink-fetch`, fetched)
-//!   source, or the SourceLink URL when fetching is off. A non-method member
-//!   still → `Ok(None)` (no source mapping yet).
+//!   source, or the SourceLink URL when fetching is off. A method with no
+//!   sequence point (an F# module *value*'s property getter) falls back to
+//!   the binding's pickled `definition_range` through the same machinery.
+//!   A non-method member still → `Ok(None)` (no source mapping yet).
 //! - [`Resolution::Entity`] (a referenced-assembly *type* or *module*) →
 //!   `assembly_entity_location`: navigates to the entity's first source-mapped
 //!   method through the same PDB machinery, so go-to-definition on `Gen` or
@@ -40,7 +42,8 @@ use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position
 use crate::cst_panic_safe::parse_with_symbols;
 use crate::goto_source::{
     DefinitionDocument, DefinitionSource, SourceFetcher, SourcePlan, SourceTarget,
-    definition_document_in_pdb, definition_source_in_pdb, entity_definition_document_in_pdb,
+    definition_document_for_range, definition_document_in_pdb,
+    definition_source_with_range_fallback, entity_definition_document_in_pdb,
     entity_definition_source_in_pdb, plan_source, sidecar_pdb_matches, sidecar_pdb_name,
 };
 use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_at};
@@ -292,9 +295,11 @@ fn assembly_member_location(
         workspace,
     );
 
-    // Only methods carry a `MethodDef` token + PDB sequence point to navigate to.
-    let token = match env.member_at(parent, idx) {
-        Member::Method(m) => m.metadata_token,
+    // Only methods carry a `MethodDef` token + PDB sequence point to navigate
+    // to. An F# module *value*'s getter has no sequence point, so its pickled
+    // `definition_range` rides along as the fallback source position.
+    let (token, range) = match env.member_at(parent, idx) {
+        Member::Method(m) => (m.metadata_token, m.definition_range.clone()),
         _ => return None,
     };
     let dll = env.assembly_path(parent)?;
@@ -302,7 +307,8 @@ fn assembly_member_location(
         let bytes = std::fs::read(dll).ok()?;
         Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
     })?;
-    let source = definition_source_in_pdb(&pdb_image, token).ok()??;
+    let source =
+        definition_source_with_range_fallback(&pdb_image, token, range.as_deref()).ok()??;
     locate_source(source)
 }
 
@@ -347,16 +353,23 @@ pub fn member_definition_document(
     parent: EntityHandle,
     idx: MemberIndex,
 ) -> Option<DefinitionDocument> {
-    let token = match env.member_at(parent, idx) {
-        Member::Method(m) => m.metadata_token,
+    let (token, range) = match env.member_at(parent, idx) {
+        Member::Method(m) => (m.metadata_token, m.definition_range.clone()),
         _ => return None,
     };
-    let dll = env.assembly_path(parent)?;
-    let pdb_image = semantic.pdb_image(dll, || {
-        let bytes = std::fs::read(dll).ok()?;
-        Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
-    })?;
-    definition_document_in_pdb(&pdb_image, token).ok()?
+    let mut from_pdb = || {
+        let dll = env.assembly_path(parent)?;
+        let pdb_image = semantic.pdb_image(dll, || {
+            let bytes = std::fs::read(dll).ok()?;
+            Some(Arc::<[u8]>::from(pdb_image_for(dll, &bytes)?))
+        })?;
+        definition_document_in_pdb(&pdb_image, token).ok()?
+    };
+    // The sequence point first; a member without one (an F# module value's
+    // getter) — or a DLL with no PDB at all — still reports where it is from
+    // its pickled range, which needs no PDB: the range itself names the
+    // document and position.
+    from_pdb().or_else(|| range.as_deref().map(definition_document_for_range))
 }
 
 /// *Where* a referenced-assembly **entity** (type/module) is defined — the

@@ -162,6 +162,7 @@ fn sig(params: Vec<Parameter>, ret: TypeRef) -> MethodSignature {
 
 fn method(name: &str, signature: MethodSignature) -> MethodLike {
     MethodLike {
+        definition_range: None,
         name: name.to_string(),
         access: Access::Public,
         signature,

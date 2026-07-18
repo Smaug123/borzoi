@@ -2319,6 +2319,9 @@ impl Ecma335Assembly {
             // The raw IL projection cannot see F# argument groups; the pickle
             // merge sets this from the host signature (`rebuild_module_member_list`).
             is_module_value_binding: false,
+            // The pickled binding location is likewise merge-driven
+            // (`rebuild_module_member_list`); IL metadata has no source ranges.
+            definition_range: None,
             // The CLR `[Extension]` marker; `project_fsharp_members` additionally
             // sets this for F#-native name-mangled module extensions (7.5b).
             is_extension_method: self.has_attribute(
