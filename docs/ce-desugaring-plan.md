@@ -231,9 +231,14 @@ entry may appear at any synthesized-call span.
 ### CE-D2. `BuilderMethods`: probe the builder like FCS does, or defer
 
 FCS's existence probes see **extension members in scope** (§2.1) — the same
-landmine as overload resolution's P15. `BuilderMethods` is built from the
-builder's resolved **assembly** entity (project-defined builders are out of v1
-scope entirely — see CE-D4), and two gates protect it:
+landmine as overload resolution's P15 — and they walk the **whole intrinsic
+hierarchy** (`AllMethInfosOfTypeInScope`): an inherited method changes the
+translation exactly like a declared one (`DerivedBuilder : BaseBuilder`
+inherits `Run` ⇒ FCS wraps the CE and the result type changes).
+`BuilderMethods` is therefore built over the builder's **full base chain** of
+assembly entities — the OV §4.1 chain-completeness gate transplanted: chain
+`Complete`/`ObjectCapped` or defer (project-defined builders are out of v1
+scope entirely — see CE-D4). Two further gates protect it:
 
 - **The extension gate is *stricter* than OV-6's name-keyed refinement.** For
   overloads, an extension only matters if it shares the called name, so EX-1's
@@ -248,9 +253,9 @@ scope entirely — see CE-D4), and two gates protect it:
   lives in `TaskBuilderExtensions` priority extensions —
   [`resolve_fsharp_core.rs`](../crates/sema/tests/all/resolve_fsharp_core.rs)
   already pins them unmodelled) while `async`/`option`-style builders pass.
-- Skipped members on the entity (`Entity::skipped_members`) ⇒ defer likewise;
-  so does any member whose attributes are unreadable, since the
-  `[<CustomOperation>]`/`[<DefaultValue>]` rules below key on them
+- Skipped members on **any level of the chain** (`Entity::skipped_members`) ⇒
+  defer likewise; so does any member whose attributes are unreadable, since
+  the `[<CustomOperation>]`/`[<DefaultValue>]` rules below key on them
   (`MethodLike::custom_attrs` is empty today — the CE-P0 attribute-projection
   prerequisite).
 
@@ -306,9 +311,15 @@ treacherous, so commits are staged:
    resumable-code lowering is not modelled, and the head/binder commits don't
    need it.
 
-Everything else about soundness is inherited machinery: undischarged CE
-constraints poison via the existing `mark_incomplete`/deferred-poison backstop,
-and read-off stays ground-only.
+One backstop the inherited machinery does **not** provide (review finding,
+round 2): deferred-poison only blocks generalisation of *open* variables, and
+`finish` emits every ground one — so if one synthesized call defers (an
+ambiguous `Bind`) while another discharges (`Return`), partially-grounded
+head/binder spans would still publish. CE emissions therefore sit behind a
+**CE-wide completion gate**: the generation records every constraint the
+`CeCore` interpretation produced, and the CE's spans (head, binders,
+interiors) publish only if *all* of them discharged — one deferral makes the
+whole CE invisible. Read-off stays ground-only on top of that, as everywhere.
 
 ### CE-D4. When is the builder's type known?
 
@@ -377,7 +388,7 @@ Oracle first, then infrastructure, then engine — the OV discipline.
 
 **Dependencies:** none. **Blocks:** CE-4 onward.
 
-The substrate the header names, three legs, each currently absent:
+The substrate the header names, four legs, each currently absent:
 
 - **`Ty` generic args + generic-method wakes.** `Ty::Named` grows an argument
   list; unification, rendering, the assembly-signature bridge, and the member
@@ -393,11 +404,18 @@ The substrate the header names, three legs, each currently absent:
   the CE-D2 `[<CustomOperation>]`/`[<DefaultValue>]` gates need real attribute
   reads on assembly members **including the extension-member index** (the
   CE-D2 extension gate keys on them).
+- **`FSharpFunc` canonicalisation in the signature bridge.** F# function
+  parameters project from metadata as
+  `TypeRef::Named(FSharpFunc<dom, ran>)`, while our lambdas produce
+  `Ty::Fun` — without an explicit bridge (including the `unit` domain,
+  `FSharpFunc<Unit, _>` ↔ `Fun(unit, _)`) the two constructors never unify,
+  so `AsyncBuilder.Bind`'s continuation parameter can never accept a typed
+  lambda and every advertised `let!` path still defers.
 
 Needs its own design doc in the overload-plan mould. **Oracle:** the existing
 member/overload differentials extended with generic-instantiation,
-F#-argument-group, and attribute-read cases; `AsyncBuilder.Bind`-shaped
-probes.
+F#-argument-group, attribute-read, and function-parameter cases;
+`AsyncBuilder.Bind`-shaped probes.
 
 ### CE-0 — probe pinning + the CE differential harness
 
@@ -428,27 +446,37 @@ machinery's monomorphic path, no generalisation for locals) — and
 check-mode. Today both catch-all-defer, which means *any* function body with a
 local `let` loses its binder and body types (and its enclosing binding cannot
 generalise); CE bodies are just the loudest victim.
-**Oracle:** non-CE snippets through the existing types differential
-(`let f x = let y = x + 1 in y * 2` ⇒ `y : Int32` at its span, body typed);
-all existing suites green.
+**Oracle:** non-CE snippets through the existing types differential, over
+*already-modelled* RHS shapes — infix operators are deliberately unmodelled in
+`infer_expr_inner` (they are an SRTP-adjacent pile of their own), so the
+fixtures use literals, idents, `if`/`then`/`else`, and single-candidate method
+calls (`let f (s: string) = let y = s.Length in y` ⇒ `y : Int32` at its
+span); all existing suites green.
 
 ### CE-1b — contextual lambdas and pattern typing
 
-**Dependencies:** CE-1. **Implements:** the continuation shapes §2.2 emits,
-which the current machinery cannot type (review finding, 2026-07-18).
+**Dependencies:** CE-1, CE-P0 (the `FSharpFunc` bridge leg — the standalone
+oracle needs it). **Implements:** the continuation shapes §2.2 emits, which
+the current machinery cannot type (review findings, rounds 1–2).
 
-Two gaps: the `Gen` lambda arm only walks its body and returns `None` — it
-never produces a `Ty::Fun` an enclosing call could unify against — and
-parameter typing handles only top-level simple parameters, so a
-deconstruction pattern (`let! (a, b) = …`, `for Ctor x in …`) can never
-receive `def_type`s. Add *checked-mode* lambda/match-lambda typing (an
-expected domain type pushed into the pattern, binders typed from it) — the
-mechanism CE-4 uses to flow `Bind`'s continuation-parameter type into the
-`let!` binders, and independently useful for ordinary
-lambda-as-known-signature-argument positions. **Oracle:** non-CE snippets
-through the types differential (a lambda argument to a known
-single-candidate method types its parameter; tuple-pattern `let` binders get
-types); existing suites green.
+Three gaps, and this stage owns all of them: the `Gen` lambda arm only walks
+its body and returns `None` — it never produces a `Ty::Fun` an enclosing call
+could unify against; parameter typing handles only top-level simple
+parameters, so a deconstruction pattern (`let! (a, b) = …`, `for Ctor x in …`)
+can never receive `def_type`s; and **no parameter→argument type push exists**
+— `walk_arg_element` mints a fresh variable and `wake_member` uses argument
+types for selection only, unifying just the return — so an expected domain
+never reaches a lambda argument at all. Add checked-mode lambda/match-lambda
+typing (an expected domain type pushed into the pattern, binders typed from
+it) *plus* the scoped parameter→argument constraint that supplies the
+expectation: when a woken call is group-complete with a single candidate and
+a bridgeable function-typed parameter, push that parameter type into the
+argument. This is exactly the mechanism CE-4 uses to flow `Bind`'s
+continuation-parameter type into the `let!` binders. **Oracle:** non-CE
+snippets through the types differential against a monomorphic F#-authored
+fixture assembly (a method taking `int -> int` — an `FSharpFunc` in metadata,
+hence the CE-P0 bridge dependency): the lambda argument's parameter and
+tuple-pattern binders get types; existing suites green.
 
 ### CE-2 — builder-head callee typing (assembly value refs)
 
@@ -501,14 +529,18 @@ The `App(head, Computation)` route in generation: head's type ground and
 `desugar` ⇒ interpret `CeCore` into constraints (each `Call` a **no-record**
 `HasMember` method wake on the builder type, per CE-D1; continuation lambdas
 typed with CE-1b's checked-mode machinery; binder `def_type`s from the
-continuation parameter). Commits: head span + binder spans only. Target:
+continuation parameter), all behind CE-D3's **completion gate** — the CE's
+spans publish only when every synthesized call discharged. Commits: head span
++ binder spans only. Target:
 `async` with `let!`/`do!`(non-final)/`return`/`return!` bodies. **Oracle:**
 CE-0's differential goes non-vacuous — P1-shaped snippets assert head +
 binder agreement against `types` (and the resolve-side DEF picture for
 binders); P2/P6-shaped project-builder snippets pin FCS's side and assert we
 defer; defer-shape tests pin every CE-D2 gate firing silently (task, query,
-BindReturn-present, `Source`/`Run`-present, extension-surface builders); the
-CE-0 synthetic-span `member_resolutions` assertion goes non-vacuous.
+BindReturn-present, `Source`/`Run`-present, extension-surface, and
+inherited-`Run` builders); a partial-discharge test pins the completion gate
+(a builder whose `Bind` defers while `Return` resolves publishes *nothing*);
+the CE-0 synthetic-span `member_resolutions` assertion goes non-vacuous.
 
 ### CE-5 — statement forms: `Zero`/`Combine`/`Delay`, loops, `try`, `use`
 
@@ -539,10 +571,14 @@ translation — observable through the range/type picture — or defer.
 **Dependencies:** CE-4 (worth doing after CE-5). **Implements:** CE-D3
 commit 3.
 
-Emit user-expression types at unshadowed interior spans. **Oracle:** the CE-0
+Emit user-expression types at unshadowed interior spans. Infix operators stay
+unmodelled (their own pile), so interior coverage is bounded to the modelled
+shapes — the assertion set must respect that. **Oracle:** the CE-0
 differential tightened to assert agreement at every emitted interior span on
 the curated corpus, including the P2 shadow case (we must *not* emit at
-`a + 1`'s span) and the P1 pass-through case (we *must* still emit `x + 1`).
+`a + 1`'s span — a synthesized `Return` sits there) and a pass-through case
+over a modelled shape (an unshadowed plain-`let` RHS that is a literal,
+ident, or single-candidate call *must* emit).
 
 ### CE-8 — solve-time builders + the generative differential
 
