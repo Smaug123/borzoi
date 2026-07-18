@@ -305,6 +305,27 @@ pub fn definition_source_with_range_fallback(
     }
 }
 
+/// The entity counterpart of [`definition_source_with_range_fallback`]: the
+/// entity's `method_def_tokens` are swept for the lowest-rid source-mapped
+/// method first ([`entity_definition_source_in_pdb`]); when none carries a
+/// sequence point — or the entity has no methods at all (a value-only module, a
+/// measure, an enum, an interface, an exception-abbreviation marker) — the
+/// entity's pickled `definition_range` resolves it ([`range_definition_source_in_pdb`]).
+/// `Ok(None)` when neither says anything (D5).
+pub fn entity_definition_source_with_range_fallback(
+    pdb_image: &[u8],
+    method_tokens: &[u32],
+    range: Option<&borzoi_assembly::FsharpSourceRange>,
+) -> Result<Option<DefinitionSource>, PdbError> {
+    if let Some(source) = entity_definition_source_in_pdb(pdb_image, method_tokens)? {
+        return Ok(Some(source));
+    }
+    match range {
+        Some(range) => range_definition_source_in_pdb(pdb_image, range),
+        None => Ok(None),
+    }
+}
+
 /// The [`DefinitionDocument`] view of a pickled range — the hover-side "say
 /// where it is" counterpart of [`range_definition_source_in_pdb`]. No PDB is
 /// needed: the range itself names the document and position; only the

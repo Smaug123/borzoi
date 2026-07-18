@@ -22,7 +22,7 @@
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, Member, MethodLike};
 
-use crate::common::{ensure_minilib_built, ensure_minilib_fs_built};
+use crate::common::{ensure_entity_ranges_built, ensure_minilib_built, ensure_minilib_fs_built};
 
 fn load_fs() -> Vec<Entity> {
     let dll = ensure_minilib_fs_built();
@@ -162,6 +162,178 @@ fn csharp_assembly_methods_have_no_definition_range() {
                     );
                 }
             }
+            sweep(&e.nested_types);
+        }
+    }
+    sweep(&entities);
+}
+
+// ---------------------------------------------------------------------------
+// Entity `definition_range` — the entity counterpart of the member ranges
+// above, from the EntityRanges fixture (non-differential).
+// ---------------------------------------------------------------------------
+
+/// The repo copy of the EntityRanges fixture source, the oracle for the pickled
+/// entity ranges (same role as [`fixture_source`] for MiniLibFs).
+fn entity_ranges_source() -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/assembly/EntityRanges/Library.fs");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"))
+}
+
+fn load_entity_ranges() -> Vec<Entity> {
+    let dll = ensure_entity_ranges_built();
+    let bytes = std::fs::read(dll).expect("read EntityRanges.dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("Ecma335Assembly::parse EntityRanges");
+    view.enumerate_type_defs()
+        .expect("enumerate EntityRanges types")
+}
+
+/// The single top-level entity in `EntityRangesNs` whose IL `name` is `name`;
+/// panics if there is not exactly one (the arity-twin case has two and must be
+/// queried differently).
+fn er_entity(entities: &[Entity], name: &str) -> Entity {
+    let mut matches = entities.iter().filter(|e| {
+        e.name == name
+            && e.namespace
+                .iter()
+                .map(String::as_str)
+                .eq(["EntityRangesNs"])
+    });
+    let found = matches
+        .next()
+        .unwrap_or_else(|| panic!("no entity {name:?} in EntityRangesNs"));
+    assert!(
+        matches.next().is_none(),
+        "expected exactly one entity {name:?}"
+    );
+    found.clone()
+}
+
+/// Assert `entity`'s range spans exactly `ident`, whose binder is introduced by
+/// `prefix` in the fixture source (1-based line, 0-based columns).
+fn assert_entity_range_spans(entity: &Entity, prefix: &str, ident: &str) {
+    let range = entity
+        .definition_range
+        .as_ref()
+        .unwrap_or_else(|| panic!("{:?} carries a definition range", entity.name));
+    assert!(
+        range.file.ends_with("Library.fs"),
+        "range names the fixture source; got {}",
+        range.file
+    );
+    let (line, col) = binder_position(&entity_ranges_source(), prefix, ident);
+    assert_eq!(
+        (range.start_line, range.start_column),
+        (line, col),
+        "1-based line, 0-based column of the {ident:?} binder"
+    );
+    assert_eq!(
+        (range.end_line, range.end_column),
+        (line, col + ident.len() as u32),
+        "the range spans exactly {ident:?}"
+    );
+}
+
+#[test]
+fn module_entity_carries_the_pickled_range() {
+    // A value-only module: its getter has no sequence point, so this range is
+    // go-to-definition's only source for the module.
+    let entities = load_entity_ranges();
+    let m = er_entity(&entities, "ValueOnly");
+    assert_eq!(m.kind, borzoi_assembly::EntityKind::Module);
+    assert_entity_range_spans(&m, "module ", "ValueOnly");
+}
+
+#[test]
+fn type_entity_carries_the_pickled_range() {
+    let entities = load_entity_ranges();
+    let t = er_entity(&entities, "ChoiceR");
+    assert_entity_range_spans(&t, "type ", "ChoiceR");
+}
+
+#[test]
+fn measure_entity_carries_the_pickled_range() {
+    // `[<Measure>] type mr` — a method-less entity: only the range can navigate
+    // it (the token sweep has nothing to sweep).
+    let entities = load_entity_ranges();
+    let m = er_entity(&entities, "mr");
+    assert_eq!(m.kind, borzoi_assembly::EntityKind::Measure);
+    assert!(
+        m.method_def_tokens.is_empty(),
+        "a measure has no methods; got {:?}",
+        m.method_def_tokens
+    );
+    assert_entity_range_spans(&m, "type ", "mr");
+}
+
+#[test]
+fn module_suffix_range_covers_the_source_binder() {
+    // The IL name is `SuffixedRModule`, but the range spans the *source* binder
+    // `SuffixedR` — renamed/suffixed modules navigate to the right identifier.
+    let entities = load_entity_ranges();
+    let m = er_entity(&entities, "SuffixedRModule");
+    assert_eq!(m.source_name.as_deref(), Some("SuffixedR"));
+    assert_entity_range_spans(&m, "module ", "SuffixedR");
+}
+
+#[test]
+fn exception_abbreviation_marker_carries_the_pickled_range() {
+    // `exception MyErrorAliasR = MyErrorR`: the synthesised Exception-kinded
+    // marker has no ECMA row and no method tokens, so this range is its only
+    // navigable source location.
+    let entities = load_entity_ranges();
+    let m = er_entity(&entities, "MyErrorAliasR");
+    assert_eq!(m.kind, borzoi_assembly::EntityKind::Exception);
+    assert!(
+        m.method_def_tokens.is_empty(),
+        "an abbreviation marker has no methods; got {:?}",
+        m.method_def_tokens
+    );
+    assert_entity_range_spans(&m, "exception ", "MyErrorAliasR");
+}
+
+#[test]
+fn arity_twins_decline_the_range() {
+    // Two source types (`ArityTwin` and `[<CompiledName("ArityTwin`1")>]
+    // ArityTwinG<'T>`) whose IL names both strip to `ArityTwin`: the collected
+    // pickle targets and the ECMA rows both collapse onto one name, so the
+    // overlay declines both rather than navigate to the wrong twin (D5).
+    let entities = load_entity_ranges();
+    let twins: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| {
+            e.name == "ArityTwin"
+                && e.namespace
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["EntityRangesNs"])
+        })
+        .collect();
+    assert_eq!(twins.len(), 2, "the fixture defines two arity twins");
+    for t in twins {
+        assert_eq!(
+            t.definition_range, None,
+            "arity-ambiguous entity {:?} (src={:?}) must decline the range",
+            t.name, t.source_name
+        );
+    }
+}
+
+#[test]
+fn csharp_assembly_entities_have_no_definition_range() {
+    // A C# assembly has no signature pickle: no entity may invent a range.
+    let dll = ensure_minilib_built();
+    let bytes = std::fs::read(dll).expect("read MiniLib.dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse MiniLib");
+    let entities = view.enumerate_type_defs().expect("enumerate MiniLib");
+    fn sweep(entities: &[Entity]) {
+        for e in entities {
+            assert_eq!(
+                e.definition_range, None,
+                "C# entity {} must have no pickled range",
+                e.name
+            );
             sweep(&e.nested_types);
         }
     }
