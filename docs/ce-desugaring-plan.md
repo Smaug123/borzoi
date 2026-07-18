@@ -304,12 +304,11 @@ and typed (`let! x : T = …`) and wildcard (`use! _ = …`) binders are
 feature-gated too, so "assume latest" can commit types for code the project's
 own compiler rejects. `infer_file` currently receives no language version.
 Rule: **every version-gated shape defers at every stage until the LangVersion
-plumbing exists** — typed bang binders (which CE-4 already meets), wildcard
-`use!` and `while!` (CE-5), `and!` (CE-6). The plumbing itself — threading the
-evaluated `LangVersion` property from the `.fsproj` table into `infer_file`'s
-inputs (unpinned means latest) — is a small standalone slice, landable any
-time from CE-4 on and required by CE-6; once present, a shape publishes only
-when the effective version supports it **and the value is trustworthy**: the
+plumbing (stage CE-LV) exists** — typed bang binders (which CE-4 already
+meets), wildcard `use!`, `while!`, and empty `builder { }` bodies
+(`EmptyBodiedComputationExpressions` is F# 9+ even when `Zero` exists) in
+CE-5, `and!` in CE-6. Once CE-LV is present, a shape publishes only when the
+effective version supports it **and the value is trustworthy**: the
 evaluation marks a property untrusted when e.g. an unresolved condition
 controls it (`property_provenance_untrusted`), and an untrusted `LangVersion`
 means the version is not proven — defer the version-gated shapes exactly as
@@ -494,7 +493,12 @@ generalise); CE bodies are just the loudest victim.
 `infer_expr_inner` (they are an SRTP-adjacent pile of their own), so the
 fixtures use literals, idents, `if`/`then`/`else`, and single-candidate method
 calls (`let f (s: string) = let y = s.Length in y` ⇒ `y : Int32` at its
-span); all existing suites green.
+span) — **plus** the open-local soundness case the rule above exists for: a
+`let local = id` fixture used at two different types must defer the binder
+*and* every dependent emission, asserted against FCS's generalised picture
+(without this case a monomorphic implementation passes the ground-RHS
+fixtures while publishing wrong downstream types); all existing suites
+green.
 
 ### CE-1b — contextual lambdas and pattern typing
 
@@ -549,7 +553,10 @@ version-gated) — a tuple `use! (a, b) = …` is FS1228, and desugaring it
 against a permissive builder would publish types for rejected code
 (CCE.fs:1945–1968). Plain `use` is **not** so restricted (FCS accepts general
 patterns when the builder's `Using` signature does) — its general-pattern
-forms translate per the §2.2 table. No inference wiring. **Oracle:** property tests —
+forms translate per the §2.2 table. A parenthesised control construct in
+statement position (`async { (return 1) }`) is FS0792 *before* translation —
+an explicit `CeDefer` case with its own regression, never an ordinary splice.
+No inference wiring. **Oracle:** property tests —
 (1) *splice provenance*: every user sub-expression of the body appears in the
 output with exactly the multiplicity its construct's §2.2 rewrite specifies,
 range untouched — 1 for most, but `while!` splices its guard into both the
@@ -583,8 +590,8 @@ continuation parameter), all behind CE-D3's **completion gate** — the CE's
 spans publish only when every synthesized call discharged. Commits: head span
 + binder spans only. Target:
 `async` with `let!`/`do!`(non-final)/`return`/`return!` bodies; typed bang
-binders (`let! x : T = …`) defer per CE-D2's version-gate rule until the
-LangVersion plumbing lands. **Oracle:**
+binders (`let! x : T = …`) defer per CE-D2's version-gate rule until CE-LV
+lands. **Oracle:**
 CE-0's differential goes non-vacuous — P1-shaped snippets assert head +
 binder agreement against `types` (and the resolve-side DEF picture for
 binders); P2/P6-shaped project-builder snippets pin FCS's side and assert we
@@ -601,23 +608,36 @@ the CE-0 synthetic-span `member_resolutions` assertion goes non-vacuous.
 Sequential CE statements (`Combine`+`Delay`), `if`-no-else (`Zero`), `while`,
 `for`, `try/with`, `try/finally`, `use`, `use!`, `match!`, final-`do!` (the
 non-`Final`, non-`[<DefaultValue>]` branch). The version-gated shapes —
-wildcard `use!` and the `while!` pre-rewrite — follow CE-D2's rule (defer
-until the LangVersion plumbing lands); `use`/`use!` additionally ride on
-CE-P0's constraint-affirmation leg (`Using`'s `'T :> IDisposable`).
+wildcard `use!`, the `while!` pre-rewrite, and empty `builder { }` bodies —
+follow CE-D2's rule (defer until CE-LV lands); `use`/`use!` additionally ride
+on CE-P0's constraint-affirmation leg (`Using`'s `'T :> IDisposable`).
 **Oracle:** P5-shaped differential snippets per construct; each construct's
 required-method absence defers silently (behaviour tests); a
 non-disposable-`use` snippet pins the constraint defer.
 
+### CE-LV — LangVersion plumbing (standalone slice)
+
+**Dependencies:** none (landable any time; CE-6 requires it).
+**Implements:** CE-D2's version-gate rule.
+
+Thread the evaluated `LangVersion` property (value **and** its
+`property_provenance_untrusted` trust signal) from the `.fsproj` evaluation
+into `infer_file`'s inputs; expose an effective-version query the CE engine's
+version gates consult. **Oracle:** a four-way matrix — trusted-pinned-below
+(shape defers), trusted-pinned-at-or-above (shape publishes), untrusted
+(defers regardless of value), unpinned/default (latest, publishes) — asserted
+through a version-gated CE shape's differential once CE-4+ exists, and
+through unit tests on the query before that.
+
 ### CE-6 — the applicative ladder: `and!`, `BindReturn`, `MergeSources`
 
-**Dependencies:** CE-4. **Implements:** §2.2 rows 1–2's member-directed
-choices; lifts the CE-D2 `BindReturn` defer.
+**Dependencies:** CE-4, CE-LV. **Implements:** §2.2 rows 1–2's
+member-directed choices; lifts the CE-D2 `BindReturn` defer.
 
 Model `convertSimpleReturnToExpr` (CCE.fs:2704–2792) and the
-`BindNReturn`/`BindN`/`MergeSourcesK` selection. `and!` is feature-gated, so
-this stage **requires** the CE-D2 LangVersion plumbing (landable any time
-from CE-4 on): `and!` and the other version-sensitive binder shapes publish
-only when the effective version supports them. **Oracle:**
+`BindNReturn`/`BindN`/`MergeSourcesK` selection. `and!` is feature-gated,
+hence the CE-LV dependency: `and!` and the other version-sensitive binder
+shapes publish only when the effective version supports them. **Oracle:**
 P6-shaped differentials; a builder-method-subset matrix (with/without
 `BindReturn`, varying `MergeSourcesK` depth) asserting we pick FCS's
 translation — observable through the range/type picture — or defer.
