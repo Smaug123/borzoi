@@ -75,6 +75,7 @@ fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
         compiler_feature_required: vec![],
         source_name: None,
         custom_attrs: vec![],
+        abbreviation_target: None,
     }
 }
 

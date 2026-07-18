@@ -4162,6 +4162,7 @@ mod tests {
             compiler_feature_required: vec![],
             source_name: None,
             custom_attrs: vec![],
+            abbreviation_target: None,
         }
     }
 

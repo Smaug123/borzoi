@@ -168,6 +168,49 @@ impl NullableType {
     }
 }
 
+/// A referenced/same-assembly F# type-abbreviation target, decoded from the
+/// host signature pickle's `type_abbrev` into a *logical* reference the sema
+/// layer resolves. Deliberately **not** a [`TypeRef`]: the ECMA namespace/nested
+/// split and the assembly identity a `TypeRef::Named` needs are absent from the
+/// pickle and cannot be reconstructed by the single-assembly reader (it does not
+/// have the referenced assembly loaded). We store what the pickle knows — a CCU
+/// *logical name* and an unsplit dotted path — and defer the split + identity to
+/// the sema layer, which has every referenced assembly in scope. This mirrors
+/// FCS's own lazy-nleref architecture; see
+/// `docs/abbreviation-target-projection-plan.md` §3.1.
+///
+/// Hangs off the abbreviation marker as [`Entity::abbreviation_target`]; `None`
+/// there on any marker whose target the decoder cannot yet faithfully model (a
+/// structural/generic shape), which keeps the consumer deferring exactly as
+/// before — an absent target can never turn a defer into a *wrong* resolution.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AbbreviationTarget {
+    /// A tycon application. `ccu = None` **iff** the target is same-assembly —
+    /// whether the pickle encoded it as a `Local` stamp or (as fsc does for a
+    /// public signature) a non-local ref back into the current CCU, both of which
+    /// the decoder normalises to `None`. `Some(name)` is a genuinely referenced
+    /// assembly — the CCU **logical name** only (`"FSharp.Core"`), the loader
+    /// resolving the full identity. `path` is the
+    /// unsplit dotted *logical* path the pickle carries
+    /// (`["System", "String"]`, `["Microsoft", "FSharp", "Core", "int"]`), and
+    /// canonical-renders as `path.join(".")` — the ccu is stored for sema but is
+    /// **not** part of the rendered string (a same-assembly target renders
+    /// path-only, exactly as FCS does).
+    Named {
+        ccu: Option<String>,
+        path: Vec<String>,
+        /// Type arguments of the application. Always empty in the nullary decoder
+        /// slice; the structural-shape slice (plan Stage 3) populates it and adds
+        /// the `Array`/`Fun`/`Tuple` variants beside this one.
+        args: Vec<AbbreviationTarget>,
+    },
+    /// The abbreviation's own generic parameter, by position into the marker's
+    /// [`Entity::generic_parameters`] (`type MyList<'T> = 'T list` ⇒ the `'T`
+    /// target is `Var(0)`). Canonical-renders as `!T<pos>`.
+    Var(u16),
+}
+
 /// One of the ECMA-335 `ELEMENT_TYPE_*` primitive codes. Phase 1 carries
 /// only the variants reachable from the hand-built fixture; new variants
 /// land alongside the test that motivates them.
@@ -795,6 +838,14 @@ pub struct Entity {
     /// (see D6). Each one keeps its raw blob for hover; consumers should
     /// not try to interpret the bytes without going through the importer.
     pub custom_attrs: Vec<CustomAttr>,
+    /// The decoded *target* of an [`EntityKind::Abbreviation`] marker
+    /// (`type IntId = int` ⇒ `Named { path: ["Microsoft","FSharp","Core","int"],
+    /// … }`), or `None` on every non-marker entity **and** on any marker whose
+    /// target the decoder cannot yet faithfully model (a structural/generic
+    /// shape). A resolvable target lets a consumer resolve *through* the alias
+    /// instead of deferring; `None` keeps it deferring, so the field is strictly
+    /// additive. See [`AbbreviationTarget`].
+    pub abbreviation_target: Option<AbbreviationTarget>,
 }
 
 /// How confidently a projected module member is known to be an **F#-native

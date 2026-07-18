@@ -347,6 +347,32 @@ with args, `Fun`, `Tuple`, `UCase` — returns `Ok(None)`. Populate the field in
   (`property-based-testing` skill.)
 - Existing marker/resolve tests stay green — the field is additive.
 
+**Status (done).** Landed with three refinements the implementation forced:
+
+1. **Same-assembly targets pickle as *non-local-to-self*, not `Local`.** A public
+   signature is written to be read from other assemblies, so fsc pickles a
+   reference to the current CCU's own type as a non-local ref whose ccu is the
+   assembly *itself* (`FsExtIndex`'s `TalliedAlias`, `MiniLibFs`'s `PointAlias`
+   both do this). The decoder **normalises** a self-ccu to `ccu = None`, so the
+   model's invariant is *`None` iff same-assembly* regardless of the pickle's
+   `Local`/non-local-to-self encoding — one same-assembly path for sema, not two.
+   `decode_abbreviation_target` therefore takes the current assembly's name. (The
+   `Local` decode path stays — exercised by the synthetic unit test — but real
+   fixtures reach the non-local-to-self path.)
+2. **The two-sided differential rides entirely on `MiniLibFs`.** `MiniLibFs`
+   dumps cleanly through `entities`, so its fixtures were widened to exercise
+   *every* decode path two-sided: `IntId`/`ObjId` (referenced NonLocal), `S`
+   (BCL), `PointAlias` (same-assembly → `MiniLibFs.Point`), `SelfVar<'T>` (typar
+   → `!T0`), and `MyList<'T> = 'T list` (declined). The **FSharp.Core sweep is
+   deferred**: `fcs-dump entities` still aborts on FSharp.Core's first
+   indexer-property type (only *abbreviation* entities got the minimal-projection
+   branch), so a whole-assembly dump is unavailable. Reaching that coverage needs
+   a narrower `fcs-dump abbrev-targets` mode that skips non-abbreviation
+   projection — a follow-up, noted here so the coverage gap is explicit.
+3. **The extraction keys by `(fqn, arity)` with the container path threaded in**
+   (Stage-1 codex review): a nested alias keys by its full path and an
+   arity-overloaded pair (`type A = int` / `type A<'T> = …`) does not collide.
+
 ---
 
 ### Stage 3 — generic args + structural shapes (`Array`, `Fun`, `Tuple`)

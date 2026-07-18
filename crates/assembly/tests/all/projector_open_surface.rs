@@ -16,7 +16,7 @@
 
 use std::path::Path;
 
-use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
+use borzoi_assembly::{AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
 
 use crate::common::{ensure_fs_ext_index_built, ensure_minilib_fs_built};
 
@@ -174,6 +174,32 @@ fn an_auto_open_abbreviation_marker_carries_the_attribute() {
         .find(|e| e.name == "TalliedAlias")
         .expect("abbreviation marker synthesized");
     assert!(alias.is_auto_open, "the pickled [<AutoOpen>] must survive");
+}
+
+#[test]
+fn a_same_assembly_abbreviation_target_normalises_to_a_ccu_less_nested_path() {
+    // `[<AutoOpen>] type TalliedAlias = Tallied` (module `PatternSurface`): the
+    // target is a *same-assembly* type. fsc pickles even that as a non-local ref
+    // whose ccu is `FsExtIndex` itself (a public signature is written to be read
+    // from elsewhere), and the decoder normalises the self-ccu to `None`. The
+    // result is the target's full *nested* logical path (it lives in a module)
+    // with `ccu = None` — the uniform same-assembly shape a consumer resolves in
+    // the current assembly.
+    let entities = load(ensure_fs_ext_index_built());
+    let alias = entity_named(&entities, "TalliedAlias");
+    assert_eq!(
+        alias.abbreviation_target,
+        Some(AbbreviationTarget::Named {
+            ccu: None,
+            path: vec![
+                "FsExtIndex".to_string(),
+                "PatternSurface".to_string(),
+                "Tallied".to_string(),
+            ],
+            args: Vec::new(),
+        }),
+        "TalliedAlias must normalise its same-assembly nested target to a ccu-less path",
+    );
 }
 
 #[test]

@@ -347,9 +347,28 @@ module Suffixed =
 //     immediate, unchased logical target is `Microsoft.FSharp.Core.int`.
 //   - `S` targets a BCL type directly, so FCS renders the target `System.String`
 //     (already an `AccessPath`+`LogicalName` FQN, not chased through an alias).
+//   - `ObjId` is a second referenced-assembly alias (`Microsoft.FSharp.Core.obj`).
+//   - `PointAlias` targets a *same-assembly* type (`Point`, above). fsc pickles
+//     even that as a non-local ref back into `MiniLibFs` itself, which the decoder
+//     normalises to `MiniLibFs.Point` with `ccu = None` (rendered path-only —
+//     exactly as FCS does).
+//   - `SelfVar<'T> = 'T` targets the abbreviation's own type parameter, decoded
+//     to `Var(0)` and rendered `!T0`.
+//   - `MyList<'T> = 'T list` is a *generic instantiation* — a structural shape the
+//     nullary decoder slice declines (`None`), so the two-sided differential
+//     asserts nothing about it (while FCS still renders it). Its marker's arity is
+//     load-bearing: it must not collide with the nullary aliases above.
 type IntId = int
 
 type S = System.String
+
+type ObjId = obj
+
+type PointAlias = Point
+
+type SelfVar<'T> = 'T
+
+type MyList<'T> = 'T list
 
 module Witness =
     let inline addThem (x: ^a) (y: ^a) : ^a = x + y

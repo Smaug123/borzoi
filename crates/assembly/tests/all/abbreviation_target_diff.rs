@@ -18,7 +18,8 @@
 //! entity), which the `IntId`/`S` fixtures now exercise; the target is elided
 //! there and read through [`fcs_abbreviation_targets`] instead.
 
-use borzoi_assembly::test_support::fcs_abbreviation_targets;
+use borzoi_assembly::test_support::{fcs_abbreviation_targets, our_abbreviation_targets};
+use borzoi_assembly::{Ecma335Assembly, EcmaView};
 
 use crate::common::{ensure_minilib_fs_built, invoke_fcs_dump};
 
@@ -56,5 +57,55 @@ fn fcs_dump_renders_immediate_logical_targets_for_minilib_fs() {
         Some(&Some("System.String".to_string())),
         "`type S = System.String` targets a BCL type directly, rendered by its \
          AccessPath+LogicalName FQN. All abbreviation targets: {targets:#?}",
+    );
+}
+
+/// The two-sided differential: certain-implies-exact. For every abbreviation
+/// target the **Rust decoder** commits (`Some`), `fcs-dump`'s rendering must
+/// match it exactly; where the decoder declines (`None`), we assert nothing (a
+/// declined target keeps every consumer deferring, so it can never be wrong).
+/// This is the load-bearing oracle for the decoder — it is run over the same
+/// `MiniLibFs` dump the whole-tree diff proves loads cleanly.
+///
+/// Requires the .NET 10 SDK on PATH — the Nix devShell provides it.
+#[test]
+fn rust_decoded_targets_agree_with_fcs_over_minilib_fs() {
+    let dll_path = ensure_minilib_fs_built();
+    let dll_bytes = std::fs::read(dll_path).expect("read MiniLibFs.dll");
+    let view = Ecma335Assembly::parse(&dll_bytes).expect("Ecma335Assembly::parse MiniLibFs");
+    let entities = view
+        .enumerate_type_defs()
+        .expect("enumerate MiniLibFs types");
+    let ours = our_abbreviation_targets(&entities);
+
+    let fcs_json = invoke_fcs_dump("entities", dll_path);
+    let fcs = fcs_abbreviation_targets(&fcs_json);
+
+    let mut checked = 0usize;
+    for (key, decoded) in &ours {
+        let Some(rendered) = decoded else {
+            continue; // we declined — assert nothing
+        };
+        let fcs_target = fcs.get(key).unwrap_or_else(|| {
+            panic!(
+                "the decoder committed a target for {key:?} that fcs-dump has no \
+                 abbreviation entry for.\nours: {ours:#?}\nfcs: {fcs:#?}"
+            )
+        });
+        assert_eq!(
+            fcs_target.as_ref(),
+            Some(rendered),
+            "abbreviation-target divergence at {key:?}: ours={rendered:?}, fcs={fcs_target:?}",
+        );
+        checked += 1;
+    }
+
+    // Guard against a vacuous pass: MiniLibFs decodes the five non-declined
+    // aliases — `IntId`, `S`, `ObjId` (referenced), `PointAlias` (same-assembly
+    // Local), and `SelfVar` (typar `!T0`); `MyList<'T> = 'T list` declines.
+    assert!(
+        checked >= 5,
+        "expected to decode at least the five non-declined aliases; only checked \
+         {checked}. ours: {ours:#?}",
     );
 }

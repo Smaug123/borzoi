@@ -723,6 +723,10 @@ impl Ecma335Assembly {
             // The catch-all bag for unclassified attributes; every attribute the
             // model surfaces has a typed field, so it is left empty.
             custom_attrs: Vec::new(),
+            // Only synthesised abbreviation markers carry a target (fsc emits no
+            // ECMA TypeDef for a plain abbreviation, so this projector never sees
+            // one); `apply_abbreviation_markers` sets it there.
+            abbreviation_target: None,
         })
     }
 
