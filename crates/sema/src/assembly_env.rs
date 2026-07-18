@@ -643,6 +643,15 @@ type AssemblyProjectionInput = (
     Option<AssemblyIdentity>,
 );
 
+/// Whether the nullary entity `e`'s **logical name** — its IL `name` or its
+/// `source_name` — is `seg`. The domain an abbreviation-target path is matched in
+/// (a `[<CompilationRepresentation(ModuleSuffix)>]` module contributes its
+/// suffixed IL name *or* its source name; a `[<CompiledName>]` type its source
+/// name). Arity 0: a target-path segment is always non-generic here.
+fn seg_name_matches(e: &Entity, seg: &str) -> bool {
+    e.generic_parameters.is_empty() && (e.name == seg || e.source_name.as_deref() == Some(seg))
+}
+
 /// Whether one referenced assembly's F# type abbreviations are fully
 /// represented in its projected entity tree.
 ///
@@ -1264,85 +1273,68 @@ impl AssemblyEnv {
         assembly_matches: impl Fn(EntityHandle) -> bool,
     ) -> Option<EntityHandle> {
         let last = path.len().checked_sub(1)?; // an empty path names nothing
-        // A nullary entity whose logical name — its IL `name` or its source name —
-        // is `seg`. Every entity on the target path must also be cross-assembly
-        // **public**: F# permits a public abbreviation of an internal/private type
-        // in the declaring library (FS0044), but a *consumer* accessing a member
-        // through the alias is rejected (FS0491), so an inaccessible entity on the
-        // path declines the target (codex review 5). Used for the *container*
-        // segments a multi-segment path descends through.
-        let seg_matches = |e: &Entity, seg: &str| {
-            e.generic_parameters.is_empty()
-                && (e.name == seg || e.source_name.as_deref() == Some(seg))
-        };
-        // The **terminal** segment names the target *type*, so it must not bind a
-        // `[<CompilationRepresentation(ModuleSuffix)>]` companion module that
-        // shares the type's source name: `type Outer = Mid` names the type `Mid`,
-        // and FCS gives type-over-module precedence, so the chase reaches `Mid`'s
-        // abbreviation marker (→ its own target), never the companion module's
-        // members (which FCS rejects on the expansion, FS0039). Intermediate
-        // container segments may legitimately be modules, so only the terminal is
-        // constrained (codex review).
-        let terminal_matches =
-            |e: &Entity, seg: &str| seg_matches(e, seg) && e.kind != EntityKind::Module;
-        // Resolve to a target only when it is **uniquely** determined. Two
-        // distinct entities matching the same (assembly-scope, path) — a
-        // namespace/type split that is ambiguous, or two indistinguishable
-        // same-path candidates in an env whose `assembly_matches` cannot tell
-        // them apart (`from_entities`, keyed by manifest identity, is the only
-        // path where that is possible) — cannot be disambiguated, so decline
-        // rather than return the first (correctness over availability, codex P2).
-        let mut found: Option<EntityHandle> = None;
+        // Collect every terminal the path can reach, then commit only a *uniquely*
+        // determined one. More than one arises from: an ambiguous top-level
+        // namespace/type split; an `assembly_matches` that cannot tell two
+        // same-path candidates apart (`from_entities`, keyed by manifest identity);
+        // OR — at any descent step — a parent with two children matching the
+        // segment by IL-or-source name that lead to distinct entities. In every
+        // case decline rather than pick the metadata-first (correctness over
+        // availability, codex P2). The **terminal** segment names the target
+        // *type*, never a `[<CompilationRepresentation(ModuleSuffix)>]` companion
+        // module sharing its source name (FCS gives type-over-module precedence);
+        // an intermediate container segment may be a module. Every entity on the
+        // path must be cross-assembly **public**: F# permits a public abbreviation
+        // of an internal type (FS0044) but rejects a consumer reaching a member
+        // through it (FS0491), so an inaccessible entity declines the target.
+        let mut terminals: Vec<EntityHandle> = Vec::new();
         for split in 0..path.len() {
-            let candidates = self.top_level_types.iter().copied().filter(|&h| {
+            for top in self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
                 self.is_public(h)
                     && assembly_matches(h)
                     && e.namespace.as_slice() == &path[..split]
-                    && if split == last {
-                        terminal_matches(e, &path[split])
-                    } else {
-                        seg_matches(e, &path[split])
-                    }
-            });
-            for top in candidates {
-                let mut handle = top;
-                let mut ok = true;
-                for (offset, segment) in path[split + 1..].iter().enumerate() {
-                    // Descend by the logical name too (children were interned from
-                    // `top`'s subtree, so this stays within its assembly). The last
-                    // descended segment is the terminal (type-only, no companion
-                    // module); the rest are containers. A non-public entity anywhere
-                    // on the path declines.
-                    let is_terminal = split + 1 + offset == last;
-                    match self.children(handle).iter().copied().find(|&c| {
-                        self.is_public(c) && {
-                            let e = self.entity(c);
-                            if is_terminal {
-                                terminal_matches(e, segment)
-                            } else {
-                                seg_matches(e, segment)
-                            }
-                        }
-                    }) {
-                        Some(child) => handle = child,
-                        None => {
-                            ok = false;
-                            break;
-                        }
-                    }
-                }
-                if ok {
-                    match found {
-                        None => found = Some(handle),
-                        // A second, distinct match: ambiguous — decline.
-                        Some(prev) if prev != handle => return None,
-                        Some(_) => {}
-                    }
-                }
+                    && seg_name_matches(e, &path[split])
+                    && (split != last || e.kind != EntityKind::Module)
+            }) {
+                self.collect_abbreviation_descent(top, &path[split + 1..], &mut terminals);
             }
         }
-        found
+        let mut terminals = terminals.into_iter();
+        let first = terminals.next()?;
+        // Exactly one *distinct* terminal, else decline.
+        terminals.all(|h| h == first).then_some(first)
+    }
+
+    /// Push every entity reachable from `parent` by descending `remaining` (a
+    /// suffix of an abbreviation-target path, in the logical-name domain) into
+    /// `out`. Explores **all** matching children at each step — a parent may hold
+    /// two public children matching a segment by IL-or-source name — so
+    /// [`Self::abbreviation_target_at_path`]'s unique-or-decline check sees every
+    /// candidate terminal, not just the metadata-first (codex review). The
+    /// **last** remaining segment is the terminal (a type, never a module); the
+    /// rest are containers. Children were interned from `parent`'s subtree, so the
+    /// descent stays within its assembly. Recursion is bounded by `remaining`.
+    fn collect_abbreviation_descent(
+        &self,
+        parent: EntityHandle,
+        remaining: &[String],
+        out: &mut Vec<EntityHandle>,
+    ) {
+        let Some((segment, rest)) = remaining.split_first() else {
+            out.push(parent);
+            return;
+        };
+        let is_terminal = rest.is_empty();
+        for &child in self.children(parent) {
+            if !self.is_public(child) {
+                continue;
+            }
+            let e = self.entity(child);
+            if seg_name_matches(e, segment) && (!is_terminal || e.kind != EntityKind::Module) {
+                self.collect_abbreviation_descent(child, rest, out);
+            }
+        }
     }
 
     /// Whether the assembly with provenance `contributor` declares a
@@ -5329,6 +5321,54 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
             None,
             "a skipped DLL makes the CCU name undecidable — decline",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_ambiguous_nested_children() {
+        // A target path `Lib.P.Foo.X` where the container `P` holds TWO public
+        // children matching `Foo` by logical name — a `[<ModuleSuffix>]` module
+        // (source name `Foo`) and a class `Foo` — each with a *distinct* nested
+        // `X`. The descent must explore BOTH paths and, seeing two distinct
+        // terminals, decline rather than commit whichever metadata interned first
+        // (codex P2: the unique-or-decline rule holds at every descent step, not
+        // just the top-level split).
+        let x_in_module = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &[], "X")
+        };
+        let foo_module = Entity {
+            kind: EntityKind::Module,
+            source_name: Some("Foo".to_string()),
+            nested_types: vec![x_in_module],
+            ..module_entity("Lib", &[], "FooModule")
+        };
+        let x_in_class = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &[], "X")
+        };
+        let foo_class = Entity {
+            kind: EntityKind::Class,
+            nested_types: vec![x_in_class],
+            ..module_entity("Lib", &[], "Foo")
+        };
+        let p = Entity {
+            kind: EntityKind::Module,
+            nested_types: vec![foo_module, foo_class],
+            ..module_entity("Lib", &["Lib"], "P")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "Alias",
+            Some(named_target(None, &["Lib", "P", "Foo", "X"])),
+        );
+        let env = AssemblyEnv::from_entities(vec![p, marker]);
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "Alias")),
+            None,
+            "two distinct nested `X` terminals via same-named `Foo` children must decline",
         );
     }
 
