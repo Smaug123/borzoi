@@ -421,7 +421,14 @@ with these mechanics settled in review/probing:
     overridden by a later-or-same fragment's exact export (probe: a later
     `val x` beats an earlier sig's unmodelled mention of `x`), but a
     later-materialising screen's veto stands — its fragment could expose
-    an unmodelled shadowing member, so a commit would be a guess.
+    an unmodelled shadowing member, so a commit would be a guess. And the
+    override requires the exporting fragment to have **materialised**
+    (its impl slot already folded — codex round 3, probed: with
+    `[First.fs, A.fsi, A.fs, B.fsi, Between.fs, B.fs]`, FCS binds
+    Between's `N.M.x` to A.fsi, so B's pending export must not cancel A's
+    screen); a screen's *own* exact export cancels its own veto
+    unconditionally — pre-materialisation the fall-through to lower
+    candidates is the probed intervening verdict.
 - **Materialisation** (`ResolvedFile::append_signature_exports`): the sig
   slot stashes `SigExport`s (its own `Def` arena holds the `.fsi` idents);
   on reaching the paired impl, they are appended after the impl's own

@@ -797,14 +797,28 @@ impl ProjectItems {
             s.exported_value_paths.contains(names)
                 || (case_exempt && s.exported_case_paths.contains(names))
         };
-        let latest_exempt = self
+        // Only a **materialised** export (its implementation slot already
+        // folded — `item_file_bases.len()` is the number of folded files,
+        // i.e. the reading file's Compile index) may override ANOTHER
+        // screen's veto: an unmaterialised signature's surface does not
+        // exist yet for this reader, and FCS still binds the latest
+        // materialised fragment (probe: `[First.fs, A.fsi, A.fs, B.fsi,
+        // Between.fs, B.fs]` — Between's `N.M.x` binds A.fsi, so B's
+        // pending export must not cancel A's screen). A screen's OWN exact
+        // export cancels its own veto unconditionally — pre-materialisation
+        // the fall-through to lower candidates is the probed verdict.
+        let now = self.item_file_bases.len();
+        let latest_published_exempt = self
             .sig_screens
             .iter()
-            .filter(|(s, _)| exempt(s))
+            .filter(|(s, rank)| *rank < now && exempt(s))
             .map(|(_, rank)| *rank)
             .max();
         self.sig_screens.iter().any(|(screen, rank)| {
-            if latest_exempt.is_some_and(|j| j >= *rank) {
+            if exempt(screen) {
+                return false;
+            }
+            if latest_published_exempt.is_some_and(|j| j >= *rank) {
                 return false;
             }
             screen.roots.iter().any(|root| {
@@ -844,14 +858,21 @@ impl ProjectItems {
         // assembly entry is FCS's verdict).
         let mut full = opened.to_vec();
         full.push(name.to_string());
-        let latest_exempt = self
+        // Same materialisation gate as [`Self::screened_path`]: only a
+        // published export overrides another screen's veto; a screen's own
+        // export always answers its own concern.
+        let now = self.item_file_bases.len();
+        let latest_published_exempt = self
             .sig_screens
             .iter()
-            .filter(|(s, _)| s.exported_value_paths.contains(&full))
+            .filter(|(s, rank)| *rank < now && s.exported_value_paths.contains(&full))
             .map(|(_, rank)| *rank)
             .max();
         self.sig_screens.iter().any(|(screen, rank)| {
-            if latest_exempt.is_some_and(|j| j >= *rank) {
+            if screen.exported_value_paths.contains(&full) {
+                return false;
+            }
+            if latest_published_exempt.is_some_and(|j| j >= *rank) {
                 return false;
             }
             screen.roots.iter().any(|root| {

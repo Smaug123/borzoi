@@ -1163,3 +1163,195 @@ fn codex_round2_shapes_agree_with_fcs() {
         assert_sig_matches_fcs(fixture);
     }
 }
+
+/// The **fragment-interleaving matrix**: the codex rounds 1–2 findings were
+/// all interactions between the screen exemption and multi-fragment merges,
+/// so this sweeps that class mechanically instead of fixture-by-fixture.
+/// Two namespace-headed fragment pairs (`A.fsi`/`A.fs`, `B.fsi`/`B.fs`)
+/// both contribute `module N.M`; axes = every valid sig-before-impl
+/// interleaving × each fragment's exposure of the probe val `x`
+/// (exactly-modelled `val x` / unmodelled `val internal x` / hidden). The
+/// site-keyed oracle is the same as
+/// `signature_matrix_agrees_with_fcs_per_reference`: FCS in-project → we
+/// match the decl exactly or defer; FCS unbound → we defer. Floors keep all
+/// verdict families non-vacuous.
+#[test]
+fn fragment_interleaving_matrix_agrees_with_fcs() {
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Exposure {
+        Modelled,
+        Unmodelled,
+        Hidden,
+    }
+    // Compile orders as (label, row order); rows are S1/I1/S2/I2.
+    let interleavings: &[(&str, [usize; 4])] = &[
+        ("adjacent", [0, 1, 2, 3]), // S1 I1 S2 I2
+        ("grouped", [0, 2, 1, 3]),  // S1 S2 I1 I2
+        ("reversed", [0, 2, 3, 1]), // S1 S2 I2 I1 — impl order flips
+    ];
+    let sig_src = |e: Exposure, k: usize| match e {
+        Exposure::Modelled => {
+            format!("namespace N\n\nmodule M =\n    val x: int\n    val other{k}: int\n")
+        }
+        Exposure::Unmodelled => {
+            format!("namespace N\n\nmodule M =\n    val internal x: int\n    val other{k}: int\n")
+        }
+        Exposure::Hidden => format!("namespace N\n\nmodule M =\n    val other{k}: int\n"),
+    };
+    let impl_src =
+        |k: usize| format!("namespace N\n\nmodule M =\n    let x = {k}\n    let other{k} = {k}\n");
+
+    let mut item_agreements = 0usize;
+    let mut deferrals = 0usize;
+
+    for (ilabel, order) in interleavings {
+        for e1 in [Exposure::Modelled, Exposure::Unmodelled, Exposure::Hidden] {
+            for e2 in [Exposure::Modelled, Exposure::Unmodelled, Exposure::Hidden] {
+                let rows_base: [(String, String); 4] = [
+                    ("A.fsi".to_string(), sig_src(e1, 1)),
+                    ("A.fs".to_string(), impl_src(1)),
+                    ("B.fsi".to_string(), sig_src(e2, 2)),
+                    ("B.fs".to_string(), impl_src(2)),
+                ];
+                let mut rows: Vec<(String, String)> =
+                    order.iter().map(|&i| rows_base[i].clone()).collect();
+                rows.push((
+                    "Use.fs".to_string(),
+                    "module Use\n\nlet u = N.M.x\n".to_string(),
+                ));
+                let row_refs: Vec<(&str, &str)> = rows
+                    .iter()
+                    .map(|(rel, src)| (rel.as_str(), src.as_str()))
+                    .collect();
+                let label = format!("sig2frag_{ilabel}_{e1:?}_{e2:?}").to_lowercase();
+
+                let (root, written) = temp_fs_tree(&label, &row_refs);
+                let paths: Vec<&Path> = written.iter().map(|(path, _)| path.as_path()).collect();
+                let json = invoke_fcs_dump_project_with_refs(&paths, &[]);
+                let fcs_files = parse_fcs_uses_project(&json, &written);
+
+                let srcs: Vec<SourceFile> = row_refs
+                    .iter()
+                    .zip(&written)
+                    .map(|((rel, src), _)| source_file(rel, src))
+                    .collect();
+                let full_paths: Vec<PathBuf> =
+                    written.iter().map(|(path, _)| path.clone()).collect();
+                let qnofs = qualified_names(&srcs, &full_paths);
+                let input: Vec<ProjectFile> = srcs
+                    .into_iter()
+                    .zip(qnofs)
+                    .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                    .collect();
+                let proj = resolve_project_files(&input, &AssemblyEnv::default());
+                let _ = std::fs::remove_dir_all(&root);
+
+                let use_idx = written.len() - 1;
+                let (use_path, use_source) = &written[use_idx];
+                let needle = "N.M.x";
+                let start = use_source.find(needle).expect("probe site present");
+                let site = span(start, start + needle.len());
+                let fcs_at_site = fcs_files
+                    .iter()
+                    .find(|f| f.path.file_name() == use_path.file_name())
+                    .and_then(|f| {
+                        f.uses.iter().find(|u| {
+                            u.start == usize::from(site.start()) && u.end == usize::from(site.end())
+                        })
+                    });
+                let ours = proj.file(use_idx).resolution_at(site);
+                let what = format!("{label}: {needle}");
+                match fcs_at_site {
+                    Some(u) if u.decl.is_some() => {
+                        let decl = u.decl.as_ref().expect("checked");
+                        match ours {
+                            None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                            Some(res @ Resolution::Item(_)) => {
+                                let (idx, def) = proj.item_def(res).expect("item def");
+                                assert_eq!(
+                                    written[idx].0.file_name(),
+                                    decl.file.file_name(),
+                                    "{what}: wrong declaring file"
+                                );
+                                assert_eq!(
+                                    def.range,
+                                    span(decl.start, decl.end),
+                                    "{what}: wrong def range"
+                                );
+                                item_agreements += 1;
+                            }
+                            other => panic!(
+                                "{what}: FCS declares in-project at {:?}, we committed {other:?}",
+                                decl.file
+                            ),
+                        }
+                    }
+                    // FCS unbound or unreported: we must say nothing.
+                    _ => match ours {
+                        None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                        other => panic!("{what}: FCS is unbound here, we committed {other:?}"),
+                    },
+                }
+            }
+        }
+    }
+    // Non-vacuity floors: the modelled-last-materialising cells commit
+    // (observed 12); the unmodelled-last and hidden-behind-unmodelled cells
+    // defer (observed 15). Zero wrong commits is the assertion above.
+    assert!(item_agreements >= 8, "item agreements: {item_agreements}");
+    assert!(deferrals >= 8, "deferrals: {deferrals}");
+}
+
+/// Codex round 3 (FCS-probed): an **unmaterialised** signature's export —
+/// its implementation still past the reader — must not cancel an
+/// already-materialised earlier screen. In `[First.fs, A.fsi, A.fs, B.fsi,
+/// Between.fs, B.fs]` (A's sig exposes an unmodelled `val internal x`, B's
+/// an exactly-modelled `val x`), FCS binds Between's `N.M.x` to **A.fsi**
+/// (A's fragment is the latest materialised); committing First.fs's stale
+/// public `x` — what cancelling A's screen would do — is a wrong target,
+/// so the reading defers.
+#[test]
+fn unmaterialised_export_does_not_cancel_active_screen() {
+    let files = [
+        ("/p/First.fs", "namespace N\n\nmodule M =\n    let x = 0\n"),
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule M =\n    val internal x: int\n",
+        ),
+        ("/p/A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+        ("/p/B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+        ("/p/Between.fs", "module Between\n\nlet u = N.M.x\n"),
+        ("/p/B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_uncommitted(
+        res_at(&proj, &files, 4, "N.M.x"),
+        "a reader between B.fsi and B.fs, under A's still-active screen",
+    );
+    // After B.fs materialises, B's export is the latest fragment and wins.
+    // (FCS binds B.fsi for a use after B.fs — the in-order rule.)
+}
+
+/// …as a live FCS differential: FCS declares Between's use in A.fsi, so a
+/// First.fs commit fails the exactness check (expected agreements: 0 —
+/// we defer, honestly).
+#[test]
+fn codex_round3_shape_agrees_with_fcs() {
+    assert_sig_matches_fcs(&SigProject {
+        label: "sig2_unmaterialised_exemption",
+        files: vec![
+            ("First.fs", "namespace N\n\nmodule M =\n    let x = 0\n"),
+            (
+                "A.fsi",
+                "namespace N\n\nmodule M =\n    val internal x: int\n",
+            ),
+            ("A.fs", "namespace N\n\nmodule M =\n    let x = 1\n"),
+            ("B.fsi", "namespace N\n\nmodule M =\n    val x: int\n"),
+            ("Between.fs", "module Between\n\nlet u = N.M.x\n"),
+            ("B.fs", "namespace N\n\nmodule M =\n    let x = 2\n"),
+        ],
+        refs: vec![],
+        expected_cross_file: 0,
+        fcs_must_not_declare: vec![],
+    });
+}
