@@ -347,6 +347,33 @@ with args, `Fun`, `Tuple`, `UCase` — returns `Ok(None)`. Populate the field in
   (`property-based-testing` skill.)
 - Existing marker/resolve tests stay green — the field is additive.
 
+**Status (done).** Landed with three refinements the implementation forced:
+
+1. **Same-assembly targets pickle as *non-local-to-self*, not `Local`.** A public
+   signature is written to be read from other assemblies, so fsc pickles a
+   reference to the current CCU's own type as a non-local ref whose ccu is the
+   assembly *itself* (`FsExtIndex`'s `TalliedAlias`, `MiniLibFs`'s `PointAlias`
+   both do this). The decoder stores that ccu **verbatim** (`Some(host-name)`),
+   *not* folded to `None`: a `CcuRef` carries only a name — no version/PKT — so a
+   name equal to the host cannot be proven to mean the host rather than a
+   same-named referenced assembly (an extern alias), and only sema (with the
+   loaded identities) can tell them apart. `ccu = None` is reserved for the `Local`
+   tcref, the one encoding that proves same-CCU membership. (Codex flagged an
+   earlier by-name normalisation as unsound; this is the fix.)
+2. **The two-sided differential rides entirely on `MiniLibFs`.** `MiniLibFs`
+   dumps cleanly through `entities`, so its fixtures were widened to exercise
+   *every* decode path two-sided: `IntId`/`ObjId` (referenced NonLocal), `S`
+   (BCL), `PointAlias` (same-assembly → `MiniLibFs.Point`), `SelfVar<'T>` (typar
+   → `!T0`), and `MyList<'T> = 'T list` (declined). The **FSharp.Core sweep is
+   deferred**: `fcs-dump entities` still aborts on FSharp.Core's first
+   indexer-property type (only *abbreviation* entities got the minimal-projection
+   branch), so a whole-assembly dump is unavailable. Reaching that coverage needs
+   a narrower `fcs-dump abbrev-targets` mode that skips non-abbreviation
+   projection — a follow-up, noted here so the coverage gap is explicit.
+3. **The extraction keys by `(fqn, arity)` with the container path threaded in**
+   (Stage-1 codex review): a nested alias keys by its full path and an
+   arity-overloaded pair (`type A = int` / `type A<'T> = …`) does not collide.
+
 ---
 
 ### Stage 3 — generic args + structural shapes (`Array`, `Fun`, `Tuple`)
@@ -370,6 +397,28 @@ oracle makes cheapest, but keep each behind its own test.
 - The Stage-2 differential extends over these and over FSharp.Core /the corpus
   (rich in `'T list`, `'T[]`, function-typed aliases): certain-implies-exact.
 - The fail-closed property still holds for the residue (`Measure`/`UCase`).
+
+**Status (done, minus arrays).** Landed as `Fun` and `Tuple` model variants plus
+`Named.args` — there is **no separate `Array` variant**: `int list` and (in the
+pickle) `int[]` are both generic *apps*, so they flow through `Named { path, args }`
+with the tycon path carrying the arity. The canonical rendering is
+precedence-explicit and byte-identical on both sides (`render_abbreviation_target`
+⇄ `renderAbbreviationTargetLogical`): a generic app is `path``N<args>`, a function
+`a -> b` with the *domain* parenthesised only when itself a function, a tuple
+`(a * b)` / `struct (a * b)`. MiniLibFs gained `MyIntList`/`IntFn`/`NestedFn`/`Pair`
+(and `MyList<'T>` now decodes instead of declining) — all two-sided green;
+struct-tuple rendering is pinned by a synthetic unit test because
+`type X = struct (…)` misparses as a struct-type definition.
+
+Two deliberate deferrals:
+- **Arrays.** The pickle encodes `int[]` as an `App` of the array tycon (so the
+  Rust side *would* decode it as a `Named`), but FCS surfaces it as `IsArrayType`,
+  a different shape than the `[]`-tycon App — so the two renderings do not yet
+  align. `renderAbbreviationTargetLogical` declines `IsArrayType` (`None`), and no
+  array fixture is added, so no array reaches the differential. Aligning the two
+  representations is a follow-up.
+- **Byref/pointer intrinsics** are not expressible as abbreviation targets in
+  surface F#, so they never arise here.
 
 ---
 
