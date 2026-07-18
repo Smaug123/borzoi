@@ -10,16 +10,40 @@
 //! guard: fcs-dump must reject a relative ref path loudly rather than
 //! silently no-op.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use borzoi_oracle_harness::panic_silence::silence_panics_here;
+
 use crate::common::{invoke_fcs_dump_with_refs, temp_fs_file};
 
 #[test]
-#[should_panic(expected = "absolute")]
 fn a_relative_ref_path_is_rejected_loudly() {
     let path = temp_fs_file("fcs_dump_refs_absolute", "let x = 1\n");
-    let _ = invoke_fcs_dump_with_refs(
-        "uses",
-        &path,
-        &[std::path::Path::new("relative/does_not_exist.dll")],
+
+    let result = {
+        // The panic is the expected outcome, not a test-harness failure — don't
+        // let it print to stderr.
+        let _silence = silence_panics_here();
+        catch_unwind(AssertUnwindSafe(|| {
+            invoke_fcs_dump_with_refs(
+                "uses",
+                &path,
+                &[std::path::Path::new("relative/does_not_exist.dll")],
+            )
+        }))
+    };
+    // Clean up regardless of outcome: the expected (panicking) path must not
+    // leak the temp source file on every green run.
+    std::fs::remove_file(&path).expect("remove temp .fs");
+
+    let payload = result.expect_err("a relative ref path must be rejected loudly");
+    let message = payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_owned()))
+        .unwrap_or_default();
+    assert!(
+        message.contains("absolute"),
+        "panic message should name the absolute-path requirement, got {message:?}"
     );
-    let _ = std::fs::remove_file(&path);
 }

@@ -4642,7 +4642,13 @@ let private dumpEntities (dllAbsolute: string) =
 /// regression into a loud failure instead of a silently wrong differential.
 let private refArg (source: string) (p: string) : string =
     let trimmed = p.Trim()
-    if not (Path.IsPathRooted trimmed) then
+    // `Path.IsPathRooted` is not the right check here: on Windows it also
+    // accepts drive-relative (`C:foo.dll`) and current-drive-rooted
+    // (`\foo.dll`) forms, both still resolved against a base directory FCS
+    // does not share with the caller — exactly the silent-no-op failure mode
+    // this guard exists to catch. `IsPathFullyQualified` requires a path that
+    // means the same thing regardless of the current directory or drive.
+    if not (Path.IsPathFullyQualified trimmed) then
         failwithf "%s: expected an absolute .dll path, got relative path %s" source trimmed
     "-r:" + trimmed
 
