@@ -519,6 +519,18 @@ pub struct AssemblyEnv {
     /// distinguishes same-named views. An entity's [`EntityNode::assembly`]
     /// indexes this.
     assemblies: Vec<Option<PathBuf>>,
+    /// Manifest identity per [`AssemblyId`], parallel to [`Self::assemblies`] —
+    /// one entry per *loaded* DLL, **including one whose types were all dropped**
+    /// (a rootless assembly contributes no [`Self::top_level_types`], so counting
+    /// DLL names off the interned entities would miss it — issue #150 / codex P2).
+    /// `Some` when the build path knows the identity: [`AssemblyEnv::from_views`]
+    /// reads `EcmaView::identity` for every view; [`AssemblyEnv::from_assemblies`]
+    /// takes it from the first surviving root, so a *rootless* assembly there is
+    /// `None` (its identity is genuinely unavailable — a documented residual on
+    /// that constructor's input shape). Empty for the synthetic single-group
+    /// [`AssemblyEnv::from_entities`], which registers no per-DLL identities;
+    /// [`Self::unique_assembly_key_for_name`] falls back to the entities there.
+    assembly_identities: Vec<Option<AssemblyIdentity>>,
     /// Every **top-level** type's handle, in interning order — unlike
     /// [`Self::by_type`] this keeps *all* handles at a colliding
     /// `(namespace, name, arity)` (two referenced assemblies can expose the
@@ -798,6 +810,11 @@ impl AssemblyEnv {
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(Some(path));
+            // Register the DLL's identity (from the first surviving root) so a
+            // referenced-CCU name is counted per loaded DLL. A rootless assembly
+            // here has no identity to register (see [`Self::assembly_identities`]).
+            env.assembly_identities
+                .push(roots.first().map(|r| r.assembly.clone()));
             // The assembly's manifest identity name, for the FSharp.Core special
             // case — every root carries it. The deref itself keys on `id`.
             if let Some(first) = roots.first() {
@@ -993,6 +1010,9 @@ impl AssemblyEnv {
                 u32::try_from(env.assemblies.len()).expect("more than u32::MAX assemblies"),
             );
             env.assemblies.push(None);
+            // Every view is a distinct loaded DLL with a known identity — register
+            // it (even a rootless one) so a referenced-CCU name is counted per DLL.
+            env.assembly_identities.push(Some(view.identity().clone()));
             tagged.extend(roots.into_iter().map(move |r| {
                 (
                     Some(id),
@@ -1210,6 +1230,8 @@ impl AssemblyEnv {
     /// - **Type-over-module at the terminal.** The final segment names the target
     ///   *type*, so it must not bind a ModuleSuffix companion module that shares
     ///   the type's source name (see `terminal_matches` below).
+    /// - **Unique-or-decline.** Returns a target only when exactly one entity
+    ///   matches; two distinct matches decline (see `found` below).
     fn abbreviation_target_at_path(
         &self,
         path: &[String],
@@ -1237,6 +1259,14 @@ impl AssemblyEnv {
         // constrained (codex review).
         let terminal_matches =
             |e: &Entity, seg: &str| seg_matches(e, seg) && e.kind != EntityKind::Module;
+        // Resolve to a target only when it is **uniquely** determined. Two
+        // distinct entities matching the same (assembly-scope, path) — a
+        // namespace/type split that is ambiguous, or two indistinguishable
+        // same-path candidates in an env whose `assembly_matches` cannot tell
+        // them apart (`from_entities`, keyed by manifest identity, is the only
+        // path where that is possible) — cannot be disambiguated, so decline
+        // rather than return the first (correctness over availability, codex P2).
+        let mut found: Option<EntityHandle> = None;
         for split in 0..path.len() {
             let candidates = self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
@@ -1277,11 +1307,16 @@ impl AssemblyEnv {
                     }
                 }
                 if ok {
-                    return Some(handle);
+                    match found {
+                        None => found = Some(handle),
+                        // A second, distinct match: ambiguous — decline.
+                        Some(prev) if prev != handle => return None,
+                        Some(_) => {}
+                    }
                 }
             }
         }
-        None
+        found
     }
 
     /// Whether the assembly with provenance `contributor` declares a
@@ -2833,11 +2868,31 @@ impl AssemblyEnv {
     /// `name`, or `None` if **no** loaded DLL has that name or **two or more
     /// distinct** DLLs do. A referenced CCU is pickled only by its simple name;
     /// an absent or ambiguous name cannot be pinned to one DLL, so the target
-    /// declines (see [`Self::resolve_abbreviation_target`]). Distinctness is by
-    /// [`AssemblyKey`], so two byte-identical duplicate-reference DLLs count as
-    /// two (issue #150) — a bare manifest-identity comparison would collapse
-    /// them and let a target guess into the wrong tree.
+    /// declines (see [`Self::resolve_abbreviation_target`]). Two byte-identical
+    /// duplicate-reference DLLs count as two (issue #150) — a bare
+    /// manifest-identity comparison would collapse them and let a target guess
+    /// into the wrong tree.
+    ///
+    /// Counts off the per-DLL [`Self::assembly_identities`] registry so a
+    /// same-named DLL whose types were **all dropped** (no
+    /// [`Self::top_level_types`]) still makes the name ambiguous (codex P2). For
+    /// the synthetic single-group [`Self::from_entities`] (no registry) it falls
+    /// back to the interned entities, keyed by manifest identity.
     fn unique_assembly_key_for_name(&self, name: &str) -> Option<AssemblyKey<'_>> {
+        if !self.assembly_identities.is_empty() {
+            let mut found: Option<AssemblyId> = None;
+            for (idx, ident) in self.assembly_identities.iter().enumerate() {
+                if ident.as_ref().is_some_and(|a| a.name == name) {
+                    let id = AssemblyId(u32::try_from(idx).expect("more than u32::MAX assemblies"));
+                    match found {
+                        None => found = Some(id),
+                        Some(prev) if prev != id => return None,
+                        Some(_) => {}
+                    }
+                }
+            }
+            return found.map(AssemblyKey::Provenance);
+        }
         let mut found: Option<AssemblyKey<'_>> = None;
         for &h in &self.top_level_types {
             if self.entity(h).assembly.name == name {
@@ -5003,6 +5058,70 @@ mod from_views_tests {
             env.resolve_abbreviation_target(handle_of(&env, &["N"], "Outer")),
             Some(target_h),
             "the chase must prefer the type `Mid` over its module-suffix companion",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_a_name_shared_with_a_rootless_sibling() {
+        // Two loaded DLLs are named `Lib`: the contributor declares `N.Widget`
+        // and a marker whose target CCU is `Lib`; the sibling declares NO
+        // surviving types (all dropped) yet still loads. Counting only *rooted*
+        // DLLs would see `Lib` as unique and resolve into the contributor — but
+        // the pickle's `Some("Lib")` cannot choose between two loaded DLLs of
+        // that name, so it must decline (issue #150 / codex P2). The per-DLL
+        // identity registry counts the rootless sibling.
+        let contributor = ConfigView::new(
+            "Lib",
+            vec![
+                Entity {
+                    kind: EntityKind::Class,
+                    ..module_entity("Lib", &["N"], "Widget")
+                },
+                abbrev_marker(
+                    "Lib",
+                    &["Lib"],
+                    "RefAlias",
+                    Some(named_target(Some("Lib"), &["N", "Widget"])),
+                ),
+            ],
+            &[],
+        );
+        let rootless = ConfigView::new("Lib", vec![], &[]);
+        let env = AssemblyEnv::from_views(&[contributor, rootless]).expect("build env");
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
+            None,
+            "a CCU name shared with a rootless sibling DLL is still ambiguous — decline",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_a_duplicate_local_without_provenance() {
+        // `from_entities` carries no per-DLL provenance, so two byte-identical
+        // DLLs' roots merge to the same `AssemblyKey::Identity`. A `Local`
+        // (`None`-ccu) marker then matches BOTH same-path `Widget`s; unable to
+        // tell which DLL the pickle meant, the resolver must decline rather than
+        // return the first (codex P2). `top_level_types` keeps both colliding
+        // handles, so the ambiguity is visible.
+        fn widget() -> Entity {
+            Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["N"], "Widget")
+            }
+        }
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "LocalAlias",
+            Some(named_target(None, &["N", "Widget"])),
+        );
+        let env = AssemblyEnv::from_entities(vec![widget(), widget(), marker]);
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "LocalAlias")),
+            None,
+            "two indistinguishable same-path candidates must decline, not pick the first",
         );
     }
 
