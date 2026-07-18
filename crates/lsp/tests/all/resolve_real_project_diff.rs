@@ -82,13 +82,13 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::common::{invoke_fcs_dump_project_with_refs, parse_fcs_uses_project};
+use borzoi::assembly_cache::AssemblyCache;
 use borzoi::project_assets::resolve_assemblies_root_only;
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi::semantic::SemanticState;
+use borzoi::semantic::{SemanticState, build_env_from_dll_paths};
 use borzoi::workspace::Workspace;
-use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::language_version::LanguageVersion;
-use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, Resolution, resolve_project_files};
+use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
 use rowan::TextRange;
 
 /// How many sites of each kind to print for triage.
@@ -294,39 +294,16 @@ fn project_resolution_matches_fcs() {
         .map(PathBuf::as_path)
         .collect();
 
-    // Our AssemblyEnv over that closure, built per-DLL so one bad assembly can't
-    // sink the whole env (D5 "under-resolve, never wrong"). The reader is wrapped
-    // panic-safely, mirroring the LSP's own `build_env_from_dll_paths`: a
-    // reference that makes `Ecma335Assembly::parse` / `enumerate_type_defs` panic
-    // (an unsupported/corrupt DLL) is skipped, not propagated. The per-panic
+    // Our AssemblyEnv over that closure, built through the LSP's own
+    // `build_env_from_dll_paths` — the *exact* runtime env-build (per-DLL
+    // panic-safety, AbbreviationVisibility, manifest identities, type
+    // forwarders, and the same-name version-unification drop), so the oracle
+    // validates the env the shipped server builds rather than a hand-rolled copy
+    // that drifts. A disabled cache keeps the read deterministic. The per-panic
     // backtrace is silenced so a skipped DLL doesn't spam the report.
     let _silence = silence_panics_here();
-    let assemblies: Vec<_> = dll_paths
-        .iter()
-        .filter_map(|p| {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let bytes = std::fs::read(p).ok()?;
-                let view = Ecma335Assembly::parse(&bytes).ok()?;
-                let (entities, skips) = view.enumerate_type_defs_with_skips().ok()?;
-                // Mirror the runtime's per-DLL AbbreviationVisibility
-                // derivation exactly — the oracle must validate the same env
-                // the shipped server builds.
-                let visibility = if skips.fsharp_abbreviations_unknowable {
-                    AbbreviationVisibility::Unknowable
-                } else {
-                    AbbreviationVisibility::Modelled
-                };
-                // Same degradation as the runtime's `enumerate_view_catching`:
-                // an unreadable AutoOpen list costs only the implicit opens.
-                let auto_opens = view.assembly_auto_opens().unwrap_or_default();
-                Some((p.to_path_buf(), entities, visibility, auto_opens))
-            }))
-            .ok()
-            .flatten()
-        })
-        .collect();
+    let env = build_env_from_dll_paths(dll_paths.iter().copied(), &AssemblyCache::disabled());
     drop(_silence);
-    let env = AssemblyEnv::from_assemblies_with_abbreviation_visibility(assemblies);
 
     // 3. Our whole-project resolution — the signature-aware fold, exactly as
     //    the LSP runs it (a `.fsi`-bearing project folds since Stage 1 of

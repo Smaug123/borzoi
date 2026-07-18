@@ -16,7 +16,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity};
+use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
@@ -1893,6 +1893,72 @@ fn is_fsharp_project(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("fsproj"))
 }
 
+/// The compiler's *unified* reference set among same-named candidate assemblies.
+///
+/// The CLR binder and `fsc`'s metadata importer unify assemblies that share an
+/// identity's `(name, public-key token)` to the **highest version**. A
+/// lower-versioned duplicate still lands on the compiler's reference path (RAR
+/// leaves both there, emitting only the MSB3243 "choosing … arbitrarily"
+/// warning), but the importer resolves every type through the highest version,
+/// so a type unique to the lower one is *unresolvable* (`fsc` reports FS0039) —
+/// verified with a same-name/different-version probe. Dropping the lower
+/// duplicate here models exactly that: it can only make unreachable what `fsc`
+/// already treats as unreachable, never hide a type `fsc` would resolve.
+///
+/// The motivating case: a project that transitively references the legacy
+/// `System.Runtime` 4.x package restores its `ref/…/System.Runtime.dll` contract
+/// assembly into the compile closure *beside* the framework pack's
+/// `System.Runtime` 6.0.0.0 — same name, same PKT, lower version. Both *define*
+/// `System.String` (the 4.x one is a reference/contract assembly, not a pure
+/// forwarder), so the abbreviation-target chase for a bare `string` cannot pin a
+/// unique `System.Runtime` and declines; unifying to the framework's 6.0.0.0
+/// removes the ambiguity, matching what `fsc` imports.
+///
+/// borzoi assembles its closure straight from restore output (`package_dlls`) ∪
+/// the framework pack ∪ project-reference outputs, without MSBuild's conflict
+/// pass, so it must apply the unification here. Otherwise it hands
+/// [`AssemblyEnv`] two DLLs of one simple name, which the referenced-CCU
+/// uniqueness rule ([`AssemblyEnv::resolve_abbreviation_target`]) can only
+/// *decline*: every abbreviation-target chase that hops through the shared name
+/// dies — a bare `string` never reaches `System.String`, so it surfaces as "No
+/// definition available".
+///
+/// Returns a keep-mask aligned to `identities`. An entry is dropped only when a
+/// **strictly higher** version shares its `(name, PKT)` key. Deliberately
+/// conservative at the edges:
+///
+/// - **equal versions are all kept** — a byte-identical duplicate-reference pair
+///   stays two distinct DLLs, so the provenance handling of issue #150 (which
+///   tells such siblings apart by load position, not identity) is untouched;
+/// - **an unreadable identity (`None`) is always kept** — with no key it cannot
+///   be unified against anything, and dropping it would be guessing;
+/// - **public-key token is part of the key** — two assemblies sharing a simple
+///   name but signed differently are genuinely distinct (a third-party assembly
+///   coincidentally named like a framework one), so neither supersedes the
+///   other.
+fn unified_reference_keep_mask(identities: &[Option<AssemblyIdentity>]) -> Vec<bool> {
+    let mut max_version: HashMap<(&str, Option<[u8; 8]>), Version> = HashMap::new();
+    for id in identities.iter().flatten() {
+        let key = (id.name.as_str(), id.public_key_token);
+        max_version
+            .entry(key)
+            .and_modify(|v| *v = (*v).max(id.version))
+            .or_insert(id.version);
+    }
+    identities
+        .iter()
+        .map(|id| match id {
+            None => true,
+            Some(id) => {
+                let key = (id.name.as_str(), id.public_key_token);
+                // The key was just inserted from this very entry, so the lookup
+                // always hits; `>=` keeps every entry tied at the group max.
+                id.version >= max_version[&key]
+            }
+        })
+        .collect()
+}
+
 /// Fold the resolved reference DLLs into an [`AssemblyEnv`] **per DLL**: each
 /// is read, parsed, and enumerated independently, and a DLL that fails (or
 /// panics the reader) is skipped while the rest are retained. This is the D5
@@ -1913,7 +1979,13 @@ fn is_fsharp_project(path: &Path) -> bool {
 /// Builds via [`AssemblyEnv::from_assemblies`] so each entity keeps the path of
 /// the DLL it came from: go-to-definition into a referenced member reads that
 /// DLL's portable PDB for the source location (see `handlers::definition`).
-fn build_env_from_dll_paths<'a>(
+///
+/// Public so the `resolve_real_project_diff` integration test builds its
+/// `AssemblyEnv` through the *exact* runtime path — forwarders, manifest
+/// identities and the version-unification drop included — rather than a
+/// hand-rolled copy that silently drifts (the drift that hid every BCL
+/// abbreviation-target chase from that gate until this was shared).
+pub fn build_env_from_dll_paths<'a>(
     dlls: impl Iterator<Item = &'a Path>,
     cache: &AssemblyCache,
 ) -> AssemblyEnv {
@@ -1992,7 +2064,36 @@ fn build_env_from_dll_paths<'a>(
     // must then decline wholesale, as a same-named sibling could be the intended
     // CCU (issue #150 / codex P2). Distinct from the extension-surface gate below,
     // which a bad AutoOpen list also trips.
+    //
+    // Computed *before* the version-unification drop below: that drop is a
+    // deliberate exclusion of a DLL whose identity we *do* know, not a projection
+    // failure, so it must not read as an incomplete registry (which would make
+    // referenced-CCU uniqueness decline wholesale and defeat the very chase the
+    // drop enables).
     let some_dll_skipped = indexed.len() < paths.len();
+    // MSBuild's conflict resolution / the CLR binder unify same-named assemblies
+    // to the highest version before the compiler sees them; borzoi builds its
+    // closure without that pass, so apply it now (see
+    // [`unified_reference_keep_mask`]).
+    {
+        let identities: Vec<Option<AssemblyIdentity>> = indexed
+            .iter()
+            .map(|(_, _, p)| p.manifest_identity.clone())
+            .collect();
+        let keep = unified_reference_keep_mask(&identities);
+        let mut kept = keep.iter();
+        indexed.retain(|(_, path, projection)| {
+            let keep = *kept.next().expect("mask aligned to indexed");
+            if !keep {
+                tracing::info!(
+                    dll = %path.display(),
+                    superseded = ?projection.manifest_identity,
+                    "dropping a lower-version duplicate assembly (unified to the highest version)"
+                );
+            }
+            keep
+        });
+    }
     let extension_surface_unknowable =
         some_dll_skipped || indexed.iter().any(|(_, _, p)| p.auto_opens_unreadable);
     // Collect the namespaces of every dropped type across all DLLs.
@@ -2237,6 +2338,142 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         fs::write(path, content).unwrap();
+    }
+
+    fn ident_vp(name: &str, major: u16, pkt: Option<[u8; 8]>) -> AssemblyIdentity {
+        AssemblyIdentity {
+            name: name.to_string(),
+            version: Version {
+                major,
+                minor: 0,
+                build: 0,
+                revision: 0,
+            },
+            public_key_token: pkt,
+        }
+    }
+
+    const PKT_A: Option<[u8; 8]> = Some([176, 63, 95, 127, 17, 213, 10, 58]);
+    const PKT_B: Option<[u8; 8]> = Some([204, 123, 19, 255, 205, 45, 221, 81]);
+
+    #[test]
+    fn unified_reference_mask_drops_lower_version_of_same_name_and_pkt() {
+        // The motivating case: `System.Runtime` 4.1.0.0 (a package facade) beside
+        // `System.Runtime` 6.0.0.0 (the framework pack), same PKT. The lower one
+        // is superseded — without this drop the referenced-CCU chase declines.
+        let ids = [
+            Some(ident_vp("System.Runtime", 4, PKT_A)),
+            Some(ident_vp("FSharp.Core", 6, PKT_A)),
+            Some(ident_vp("System.Runtime", 6, PKT_A)),
+        ];
+        assert_eq!(
+            unified_reference_keep_mask(&ids),
+            vec![false, true, true],
+            "the lower-version System.Runtime is dropped; the winner and unrelated DLLs stay",
+        );
+    }
+
+    #[test]
+    fn unified_reference_mask_keeps_equal_version_duplicates() {
+        // Byte-identical duplicate references (issue #150) share name, PKT AND
+        // version — no strictly-higher sibling, so both survive and sema's
+        // provenance handling tells them apart as before.
+        let ids = [
+            Some(ident_vp("Dup", 1, PKT_A)),
+            Some(ident_vp("Dup", 1, PKT_A)),
+        ];
+        assert_eq!(unified_reference_keep_mask(&ids), vec![true, true]);
+    }
+
+    #[test]
+    fn unified_reference_mask_keeps_distinct_public_key_tokens() {
+        // Same simple name, different signing key: genuinely distinct assemblies
+        // (e.g. a third-party DLL coincidentally named like a framework one), so
+        // neither supersedes the other regardless of version.
+        let ids = [
+            Some(ident_vp("Shared", 1, PKT_A)),
+            Some(ident_vp("Shared", 9, PKT_B)),
+        ];
+        assert_eq!(unified_reference_keep_mask(&ids), vec![true, true]);
+    }
+
+    #[test]
+    fn unified_reference_mask_keeps_unreadable_identities() {
+        // A DLL whose identity could not be read has no key to unify on; keep it
+        // (dropping would be guessing) — and it never supersedes a real one.
+        let ids = [None, Some(ident_vp("Lib", 1, PKT_A)), None];
+        assert_eq!(unified_reference_keep_mask(&ids), vec![true, true, true]);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn unified_reference_mask_is_sound(
+            // Small alphabets so collisions are frequent.
+            entries in proptest::collection::vec(
+                (
+                    proptest::option::of(proptest::sample::select(vec!["A", "B", "C"])),
+                    0u16..4,
+                    proptest::sample::select(vec![PKT_A, PKT_B, None]),
+                ),
+                0..12,
+            ),
+        ) {
+            let ids: Vec<Option<AssemblyIdentity>> = entries
+                .iter()
+                .map(|(name, major, pkt)| {
+                    name.map(|n| ident_vp(n, *major, *pkt))
+                })
+                .collect();
+            let mask = unified_reference_keep_mask(&ids);
+            proptest::prop_assert_eq!(mask.len(), ids.len());
+
+            // The per-key max version, computed independently of the function.
+            use std::collections::HashMap;
+            let mut group_max: HashMap<(&str, Option<[u8; 8]>), Version> = HashMap::new();
+            for id in ids.iter().flatten() {
+                let key = (id.name.as_str(), id.public_key_token);
+                let e = group_max.entry(key).or_insert(id.version);
+                if id.version > *e { *e = id.version; }
+            }
+
+            for (id, &kept) in ids.iter().zip(&mask) {
+                match id {
+                    // Property 1: an unreadable identity is always kept.
+                    None => proptest::prop_assert!(kept, "None identity must be kept"),
+                    Some(id) => {
+                        let key = (id.name.as_str(), id.public_key_token);
+                        let is_group_max = id.version == group_max[&key];
+                        // Property 2: kept iff at the group max — nothing below the
+                        // max survives, everything at it does.
+                        proptest::prop_assert_eq!(
+                            kept, is_group_max,
+                            "entry kept iff its version is the group max"
+                        );
+                    }
+                }
+            }
+
+            // Property 3: every group keeps at least one entry (never erase a name).
+            for key in group_max.keys() {
+                let kept_in_group = ids.iter().zip(&mask).any(|(id, &kept)| {
+                    kept && id.as_ref().is_some_and(|id|
+                        (id.name.as_str(), id.public_key_token) == *key)
+                });
+                proptest::prop_assert!(kept_in_group, "each (name, PKT) group keeps its max");
+            }
+
+            // Property 4: idempotent — re-running on the survivors keeps them all.
+            let survivors: Vec<Option<AssemblyIdentity>> = ids
+                .iter()
+                .zip(&mask)
+                .filter(|&(_, &k)| k)
+                .map(|(id, _)| id.clone())
+                .collect();
+            proptest::prop_assert!(
+                unified_reference_keep_mask(&survivors).iter().all(|&k| k),
+                "the survivor set is a fixed point"
+            );
+        }
     }
 
     /// A minimal SDK-less fsproj that compiles the given files in source
