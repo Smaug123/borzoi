@@ -22,7 +22,8 @@ use lsp_types::notification::{
 use lsp_types::request::{
     Completion, DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest,
     References, RegisterCapability, Request as RequestTrait, SemanticTokensFullRequest,
-    SemanticTokensRefresh, Shutdown, WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
+    SemanticTokensRefresh, Shutdown, WorkspaceDiagnosticRefresh, WorkspaceDiagnosticRequest,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     ClientCapabilities, FileChangeType, FileEvent, MessageType, ShowMessageParams, Url,
@@ -140,27 +141,25 @@ pub struct State {
     /// server session, so opening file after file in the same project doesn't
     /// re-toast. See [`warn_compile_uncertainty`].
     warned_uncertain_projects: HashSet<PathBuf>,
-    /// Monotonic counter for the ids of *repeated* server→client requests (the
-    /// `semanticTokens/refresh`es). JSON-RPC ids must distinguish concurrently
-    /// outstanding requests — a client keys pending requests by id — so a fixed
-    /// string would collide if two refreshes were in flight before the first
-    /// reply. (`registerCapability` is one-shot, so it keeps a fixed id.)
+    /// Monotonic counter for the ids of repeated server→client refresh requests.
+    /// A fresh id makes a late reply unable to acknowledge a newer refresh
+    /// accidentally.
     server_request_seq: u64,
-    /// The id of the `semanticTokens/refresh` currently awaiting the client's
-    /// reply, if any. Bounds server→client refreshes to **at most one
-    /// outstanding at a time**: while this is `Some`, an invalidation keeps
-    /// `SemanticState::wants_refresh` set but sends nothing, and the next refresh
-    /// goes out only once the client's reply clears the slot (`Message::Response`).
+    /// A structural watched-file batch owes a global pull-diagnostic refresh.
+    /// Independent of the open-document republish list: project context can
+    /// change while no buffer is open, and workspace diagnostics can still be
+    /// stale.
+    wants_diagnostic_refresh: bool,
+    /// The id of the diagnostic or semantic-token refresh currently awaiting
+    /// the client's reply, if any. Bounds all server→client refreshes to **at
+    /// most one outstanding at a time**: owed work remains set until the reply
+    /// clears this slot and the shared scheduler runs again.
     ///
-    /// This is a concurrency bound, **not** a typing-burst debounce. The reply is
-    /// a bare acknowledgement the client sends promptly (within ~one round trip),
-    /// decoupled from its later, asynchronous token re-requests — so the gate only
-    /// coalesces edits that pile up *before* that reply. Edits spread across normal
-    /// typing (keystrokes slower than the round trip) each still send a refresh.
-    /// That is deliberate: LSP delegates the debounce to the client, which is free
-    /// to delay and coalesce its token re-requests; a refresh request is tiny, and
-    /// correctness never depends on the rate. The `an_edit_after_a_refresh_reply_sends_another`
-    /// test pins this: two edits separated by a reply send two refreshes.
+    /// This is a concurrency bound, **not** a debounce. The reply is a bare
+    /// acknowledgement the client sends promptly, decoupled from its later
+    /// diagnostic/token pulls. Invalidations before that acknowledgement
+    /// coalesce; invalidations after it produce another refresh. Clients remain
+    /// free to delay and coalesce the pulls themselves.
     pending_refresh_id: Option<RequestId>,
 }
 
@@ -175,6 +174,7 @@ impl State {
             workspace_roots: Vec::new(),
             warned_uncertain_projects: HashSet::new(),
             server_request_seq: 0,
+            wants_diagnostic_refresh: false,
             pending_refresh_id: None,
         }
     }
@@ -208,6 +208,21 @@ impl State {
             .and_then(|c| c.text_document.as_ref())
             .and_then(|td| td.diagnostic.as_ref())
             .is_some()
+    }
+
+    /// Whether this pull-diagnostic client accepts the global
+    /// `workspace/diagnostic/refresh` request. Both capabilities are required:
+    /// refresh support alone does not select pull delivery, and an absent or
+    /// false `workspace.diagnostic.refreshSupport` forbids the request.
+    pub fn supports_diagnostic_refresh(&self) -> bool {
+        self.supports_pull_diagnostics()
+            && self
+                .client_capabilities
+                .as_ref()
+                .and_then(|c| c.workspace.as_ref())
+                .and_then(|w| w.diagnostic.as_ref())
+                .and_then(|d| d.refresh_support)
+                .unwrap_or(false)
     }
 
     /// Whether the client advertised support for the hierarchical
@@ -293,7 +308,9 @@ impl State {
 
     /// Apply a batch of `workspace/didChangeWatchedFiles` changes to the caches
     /// and return the open-document URIs whose diagnostics the shell must
-    /// republish — empty unless a **structural** file changed.
+    /// republish — empty unless a **structural** file changed. A structural
+    /// batch also records a global pull-diagnostic refresh independently of
+    /// this list, because workspace diagnostics can stale with no open buffers.
     ///
     /// - A `Structural` change (a `.fsproj` / `Directory.Build.*` /
     ///   `global.json` / `project.assets.json`) invalidates the *whole*
@@ -332,6 +349,7 @@ impl State {
             // clears the assembly state too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
+            self.wants_diagnostic_refresh = true;
             self.docs.keys().cloned().collect()
         } else {
             if assembly_input {
@@ -562,7 +580,7 @@ pub fn run_with_fetcher(
                             dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
                         }
                     }
-                    maybe_send_semantic_tokens_refresh(&mut state, &connection);
+                    maybe_send_refresh(&mut state, &connection);
                 }
             }
             Message::Notification(not) => {
@@ -573,11 +591,10 @@ pub fn run_with_fetcher(
                 // mutation or diagnostic publishing after `shutdown`.
                 if !shutting_down {
                     handle_notification(&mut state, &connection, not);
-                    // A `didChange`/`didClose`/`didChangeWatchedFiles` invalidates
-                    // caches and may have staled an open buffer's tokens without
-                    // any fold — so drain the refresh here too, not only after
-                    // requests.
-                    maybe_send_semantic_tokens_refresh(&mut state, &connection);
+                    // A notification can invalidate pull diagnostics or stale
+                    // an open buffer's semantic tokens without any fold, so
+                    // drain refresh work here too, not only after requests.
+                    maybe_send_refresh(&mut state, &connection);
                 }
             }
             Message::Response(resp) => {
@@ -1258,24 +1275,31 @@ where
     let _ = conn.sender.send(Message::Notification(notif));
 }
 
-/// If an invalidation owes a `workspace/semanticTokens/refresh`, ask the client
-/// to re-request tokens for its open buffers (an already-open *later* buffer now
-/// resolves differently, but the client only re-requests the buffer it edited).
+/// Send the next client-supported refresh owed by cache invalidation.
 ///
 /// Sends **at most one refresh at a time** ([`State::pending_refresh_id`]): while
-/// one is outstanding this leaves the owed flag set and sends nothing; the next
-/// refresh goes out when the client replies ([`handle_refresh_reply`]). That
-/// bounds concurrent server→client requests to one and de-duplicates edits queued
-/// before the reply — but it does *not* debounce a typing burst spread over time,
-/// since the client acknowledges the refresh promptly and independently of its
-/// later token re-requests (those re-requests are the client's to debounce; see
-/// [`State::pending_refresh_id`]). When not in flight, the flag is drained whether
-/// or not we send (a client without `refreshSupport` must never accrete a stale
-/// owed-refresh), so `take_wants_refresh()` runs first.
-fn maybe_send_semantic_tokens_refresh(state: &mut State, conn: &Connection) {
+/// one is outstanding, owed work stays set until [`handle_refresh_reply`] clears
+/// the slot and calls this again. Diagnostic refresh has priority: a structural
+/// change makes the diagnostics the server directly provides stale, while the
+/// semantic-token debt can remain in [`SemanticState`] until the diagnostic
+/// acknowledgement. Unsupported work is drained because capabilities are fixed
+/// for the session and must not accumulate for a request the client forbids.
+fn maybe_send_refresh(state: &mut State, conn: &Connection) {
     if state.pending_refresh_id.is_some() {
         return;
     }
+
+    if std::mem::take(&mut state.wants_diagnostic_refresh) && state.supports_diagnostic_refresh() {
+        let id = RequestId::from(format!(
+            "borzoi/diagnostic-refresh/{}",
+            state.server_request_seq
+        ));
+        state.server_request_seq += 1;
+        state.pending_refresh_id = Some(id.clone());
+        send_request::<WorkspaceDiagnosticRefresh>(conn, id, ());
+        return;
+    }
+
     if !state.semantic.take_wants_refresh() || !state.supports_semantic_tokens_refresh() {
         return;
     }
@@ -1289,11 +1313,10 @@ fn maybe_send_semantic_tokens_refresh(state: &mut State, conn: &Connection) {
     send_request::<SemanticTokensRefresh>(conn, id, ());
 }
 
-/// Handle a client response. If `resp_id` is the in-flight
-/// `semanticTokens/refresh` ([`State::pending_refresh_id`]), clear the slot and —
-/// unless we're shutting down — let the next owed refresh go out. Any other id
-/// (the one-shot `registerCapability`, or a late/stray reply) is ignored: it
-/// carries nothing we act on, and must not abort an in-progress shutdown.
+/// Handle a client response. If `resp_id` is the in-flight refresh, clear the
+/// shared slot and — unless we're shutting down — send the next owed refresh.
+/// Any other id (the one-shot `registerCapability`, or a late/stray reply) is
+/// ignored: it carries nothing we act on, and must not abort shutdown.
 fn handle_refresh_reply(
     state: &mut State,
     conn: &Connection,
@@ -1303,7 +1326,7 @@ fn handle_refresh_reply(
     if state.pending_refresh_id.as_ref() == Some(resp_id) {
         state.pending_refresh_id = None;
         if !shutting_down {
-            maybe_send_semantic_tokens_refresh(state, conn);
+            maybe_send_refresh(state, conn);
         }
     }
 }
@@ -1363,7 +1386,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::{DiagnosticClientCapabilities, FileChangeType, TextDocumentClientCapabilities};
+    use lsp_types::{
+        DiagnosticClientCapabilities, DiagnosticWorkspaceClientCapabilities, FileChangeType,
+        TextDocumentClientCapabilities, WorkspaceClientCapabilities,
+    };
     use std::fs;
     use tempfile::TempDir;
 
@@ -1403,6 +1429,48 @@ mod tests {
             state.supports_pull_diagnostics(),
             "the diagnostic object selects pull even when dynamic registration is false"
         );
+    }
+
+    fn caps_with_diagnostic_refresh(
+        pull_diagnostics: bool,
+        refresh_support: Option<bool>,
+    ) -> ClientCapabilities {
+        ClientCapabilities {
+            workspace: Some(WorkspaceClientCapabilities {
+                diagnostic: Some(DiagnosticWorkspaceClientCapabilities { refresh_support }),
+                ..Default::default()
+            }),
+            text_document: pull_diagnostics.then(|| TextDocumentClientCapabilities {
+                diagnostic: Some(DiagnosticClientCapabilities::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn diagnostic_refresh_requires_pull_and_explicit_refresh_support() {
+        assert!(!State::default().supports_diagnostic_refresh());
+
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_diagnostic_refresh(false, Some(true)));
+        assert!(
+            !state.supports_diagnostic_refresh(),
+            "refresh support without pull diagnostics is not enough"
+        );
+
+        for support in [None, Some(false)] {
+            let mut state = State::default();
+            state.set_client_capabilities(caps_with_diagnostic_refresh(true, support));
+            assert!(
+                !state.supports_diagnostic_refresh(),
+                "absent or false refreshSupport must disable the request"
+            );
+        }
+
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_diagnostic_refresh(true, Some(true)));
+        assert!(state.supports_diagnostic_refresh());
     }
 
     #[test]
@@ -2049,6 +2117,27 @@ mod tests {
     }
 
     #[test]
+    fn only_structural_watched_changes_owe_diagnostic_refresh() {
+        let cases = [
+            ("file:///p/App.fsproj", FileChangeType::CHANGED, true),
+            ("file:///p/New.fs", FileChangeType::CREATED, true),
+            ("file:///p/Other.fs", FileChangeType::CHANGED, false),
+            ("file:///p/Lib.dll", FileChangeType::CHANGED, false),
+            ("file:///p/README.md", FileChangeType::CHANGED, false),
+        ];
+
+        for (uri, typ, expected) in cases {
+            let mut state = State::default();
+            let republish = state.apply_watched_changes(&[event(url(uri), typ)]);
+            assert!(republish.is_empty(), "the test keeps every state unopened");
+            assert_eq!(
+                state.wants_diagnostic_refresh, expected,
+                "refresh debt for {uri} ({typ:?})"
+            );
+        }
+    }
+
+    #[test]
     fn source_only_change_requests_no_republish() {
         let mut state = State::default();
         state
@@ -2291,6 +2380,15 @@ mod tests {
         }
     }
 
+    fn caps_with_both_refreshes() -> ClientCapabilities {
+        let mut caps = caps_with_diagnostic_refresh(true, Some(true));
+        caps.workspace.as_mut().unwrap().semantic_tokens =
+            Some(lsp_types::SemanticTokensWorkspaceClientCapabilities {
+                refresh_support: Some(true),
+            });
+        caps
+    }
+
     #[test]
     fn semantic_tokens_refresh_capability_gates_on_client_support() {
         // Absent capability, or explicitly `false`, both read as unsupported.
@@ -2301,6 +2399,119 @@ mod tests {
         let mut s = State::default();
         s.set_client_capabilities(caps_with_semantic_tokens_refresh(true));
         assert!(s.supports_semantic_tokens_refresh());
+    }
+
+    #[test]
+    fn diagnostic_refresh_precedes_semantic_tokens_refresh() {
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_both_refreshes());
+
+        state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        maybe_send_refresh(&mut state, &server);
+        let diagnostic_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(request) => {
+                assert_eq!(request.method, WorkspaceDiagnosticRefresh::METHOD);
+                request.id
+            }
+            other => panic!("expected a diagnostic refresh request, got {other:?}"),
+        };
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "semantic refresh waits behind the diagnostic refresh"
+        );
+
+        handle_refresh_reply(&mut state, &server, &diagnostic_id, false);
+        let semantic_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(request) => {
+                assert_eq!(request.method, SemanticTokensRefresh::METHOD);
+                request.id
+            }
+            other => panic!("expected a semantic-tokens refresh request, got {other:?}"),
+        };
+        assert_ne!(diagnostic_id, semantic_id, "each refresh has a fresh id");
+        assert_eq!(state.pending_refresh_id.as_ref(), Some(&semantic_id));
+    }
+
+    #[test]
+    fn diagnostic_refreshes_coalesce_while_one_is_in_flight() {
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_diagnostic_refresh(true, Some(true)));
+
+        state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        maybe_send_refresh(&mut state, &server);
+        let first_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(request) => request.id,
+            other => panic!("expected a diagnostic refresh request, got {other:?}"),
+        };
+
+        state.apply_watched_changes(&[changed(url("file:///p/Directory.Build.props"))]);
+        maybe_send_refresh(&mut state, &server);
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "no second refresh while the first is in flight"
+        );
+
+        handle_refresh_reply(&mut state, &server, &first_id, false);
+        match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(request) => {
+                assert_eq!(request.method, WorkspaceDiagnosticRefresh::METHOD);
+                assert_ne!(request.id, first_id);
+            }
+            other => panic!("expected one coalesced diagnostic refresh, got {other:?}"),
+        }
+        assert!(client.receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn unmatched_or_shutdown_refresh_replies_do_not_advance_the_queue() {
+        let (server, client) = Connection::memory();
+        let mut state = State::default();
+        state.set_client_capabilities(caps_with_both_refreshes());
+
+        state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        maybe_send_refresh(&mut state, &server);
+        let first_id = match client
+            .receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+        {
+            Message::Request(request) => request.id,
+            other => panic!("expected a diagnostic refresh request, got {other:?}"),
+        };
+
+        handle_refresh_reply(
+            &mut state,
+            &server,
+            &RequestId::from("unrelated".to_string()),
+            false,
+        );
+        assert_eq!(state.pending_refresh_id.as_ref(), Some(&first_id));
+        assert!(client.receiver.try_recv().is_err());
+
+        handle_refresh_reply(&mut state, &server, &first_id, true);
+        assert!(state.pending_refresh_id.is_none());
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "shutdown suppresses the owed semantic refresh"
+        );
     }
 
     /// End to end: an edit makes the server send a `workspace/semanticTokens/refresh`
@@ -2337,7 +2548,7 @@ mod tests {
                 .resolved_project_and_env_for(&proj, workspace, docs)
                 .expect("warm");
         }
-        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server);
 
         // Export-changing edit to A, then a token request for A itself.
         state
@@ -2355,7 +2566,7 @@ mod tests {
                 .resolved_prefix_and_env_for(&proj, 0, workspace, docs)
                 .expect("fold after edit");
         }
-        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server);
 
         // Exactly one message reached the client: the refresh request.
         let msg = client
@@ -2388,7 +2599,7 @@ mod tests {
 
         // First edit, nothing in flight: one refresh goes out and is outstanding.
         state.semantic.invalidate_project(proj);
-        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2410,7 +2621,7 @@ mod tests {
         // in-flight gate sends nothing — the burst coalesces.
         for _ in 0..2 {
             state.semantic.invalidate_project(proj);
-            maybe_send_semantic_tokens_refresh(&mut state, &server);
+            maybe_send_refresh(&mut state, &server);
         }
         assert!(
             client.receiver.try_recv().is_err(),
@@ -2452,7 +2663,7 @@ mod tests {
 
         // Edit 1, nothing in flight: one refresh goes out and is outstanding.
         state.semantic.invalidate_project(proj);
-        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server);
         let first_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))
@@ -2481,7 +2692,7 @@ mod tests {
         // Edit 2, now that the slot is clear: a *second*, distinct refresh. The gate
         // did not coalesce across the reply boundary — one refresh per edit.
         state.semantic.invalidate_project(proj);
-        maybe_send_semantic_tokens_refresh(&mut state, &server);
+        maybe_send_refresh(&mut state, &server);
         let second_id = match client
             .receiver
             .recv_timeout(Duration::from_secs(5))

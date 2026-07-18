@@ -23,19 +23,19 @@ use lsp_types::notification::{
 };
 use lsp_types::request::{
     DocumentDiagnosticRequest, DocumentSymbolRequest, GotoDefinition, HoverRequest, References,
-    Request as RequestTrait, SemanticTokensFullRequest, Shutdown, WorkspaceDiagnosticRequest,
-    WorkspaceSymbolRequest,
+    Request as RequestTrait, SemanticTokensFullRequest, Shutdown, WorkspaceDiagnosticRefresh,
+    WorkspaceDiagnosticRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     ClientCapabilities, DiagnosticClientCapabilities, DiagnosticServerCapabilities,
-    DidChangeTextDocumentParams, DidChangeWatchedFilesClientCapabilities,
-    DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentDiagnosticParams, DocumentDiagnosticReport, DocumentDiagnosticReportResult,
-    DocumentSymbolClientCapabilities, DocumentSymbolParams, DocumentSymbolResponse, FileChangeType,
-    FileEvent, GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams,
-    Location, MarkupKind, OneOf, PartialResultParams, Position,
-    PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams, ReferenceContext,
-    ReferenceParams, RegistrationParams, SemanticTokenType, SemanticTokensParams,
+    DiagnosticWorkspaceClientCapabilities, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesClientCapabilities, DidChangeWatchedFilesParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentDiagnosticParams,
+    DocumentDiagnosticReport, DocumentDiagnosticReportResult, DocumentSymbolClientCapabilities,
+    DocumentSymbolParams, DocumentSymbolResponse, FileChangeType, FileEvent, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location, MarkupKind, OneOf,
+    PartialResultParams, Position, PublishDiagnosticsClientCapabilities, PublishDiagnosticsParams,
+    ReferenceContext, ReferenceParams, RegistrationParams, SemanticTokenType, SemanticTokensParams,
     SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, SymbolKind,
     TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
     TextDocumentItem, TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
@@ -72,6 +72,19 @@ fn pull_diagnostic_caps() -> ClientCapabilities {
         }),
         ..Default::default()
     }
+}
+
+/// A pull-diagnostic client that accepts the global refresh request used after
+/// project-wide changes.
+fn pull_diagnostic_refresh_caps() -> ClientCapabilities {
+    let mut caps = pull_diagnostic_caps();
+    caps.workspace = Some(WorkspaceClientCapabilities {
+        diagnostic: Some(DiagnosticWorkspaceClientCapabilities {
+            refresh_support: Some(true),
+        }),
+        ..Default::default()
+    });
+    caps
 }
 
 /// A live in-memory server: spawns the dispatch loop on a background
@@ -244,6 +257,15 @@ fn diagnostic_params(uri: &Url) -> DocumentDiagnosticParams {
         text_document: TextDocumentIdentifier { uri: uri.clone() },
         identifier: None,
         previous_result_id: None,
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    }
+}
+
+fn workspace_diagnostic_params() -> WorkspaceDiagnosticParams {
+    WorkspaceDiagnosticParams {
+        identifier: None,
+        previous_result_ids: Vec::new(),
         work_done_progress_params: WorkDoneProgressParams::default(),
         partial_result_params: PartialResultParams::default(),
     }
@@ -773,6 +795,66 @@ fn pull_client_never_receives_publish_diagnostics() {
     assert!(closed.full_document_diagnostic_report.items.is_empty());
 }
 
+/// A structural watched-file change can stale diagnostics across the whole
+/// workspace. Pull clients that advertise refresh support are asked to
+/// re-request them, even when the server has no open buffers to republish.
+#[test]
+fn structural_watched_change_requests_diagnostic_refresh() {
+    let server = Server::start_with_caps(vec![], pull_diagnostic_refresh_caps());
+
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: Url::parse("file:///workspace/App.fsproj").unwrap(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+
+    let request = match server
+        .client
+        .receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("diagnostic refresh request within 5s")
+    {
+        Message::Request(request) => request,
+        other => panic!("expected workspace/diagnostic/refresh, got {other:?}"),
+    };
+    assert_eq!(request.method, WorkspaceDiagnosticRefresh::METHOD);
+    assert_eq!(request.params, serde_json::Value::Null);
+    server
+        .client
+        .sender
+        .send(Message::Response(Response {
+            id: request.id,
+            result: Some(serde_json::Value::Null),
+            error: None,
+        }))
+        .unwrap();
+}
+
+/// Both gates are necessary: structural changes do not send the request to a
+/// client without refresh support, and source-content changes do not send a
+/// global request even when the client supports one. The workspace pull is an
+/// ordering barrier that would encounter any stray reverse request first.
+#[test]
+fn diagnostic_refresh_is_capability_and_change_gated() {
+    let cases = [
+        (pull_diagnostic_caps(), "file:///workspace/App.fsproj"),
+        (pull_diagnostic_refresh_caps(), "file:///workspace/Other.fs"),
+    ];
+
+    for (caps, changed_uri) in cases {
+        let mut server = Server::start_with_caps(vec![], caps);
+        server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: Url::parse(changed_uri).unwrap(),
+                typ: FileChangeType::CHANGED,
+            }],
+        });
+        let report = server.request::<WorkspaceDiagnosticRequest>(workspace_diagnostic_params());
+        assert!(matches!(report, WorkspaceDiagnosticReportResult::Report(_)));
+    }
+}
+
 /// Clients without `textDocument.diagnostic` retain the complete stateful push
 /// lifecycle: publish on open/change/watched structural changes, and clear on
 /// close. This is the compatibility half of the one-delivery-mode invariant.
@@ -817,12 +899,7 @@ fn workspace_diagnostic_round_trip() {
     let mut server = Server::start(vec![]);
 
     let resp: WorkspaceDiagnosticReportResult =
-        server.request::<WorkspaceDiagnosticRequest>(WorkspaceDiagnosticParams {
-            identifier: None,
-            previous_result_ids: Vec::new(),
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-        });
+        server.request::<WorkspaceDiagnosticRequest>(workspace_diagnostic_params());
     match resp {
         WorkspaceDiagnosticReportResult::Report(report) => assert!(report.items.is_empty()),
         other => panic!("expected an (empty) Report, got {other:?}"),
