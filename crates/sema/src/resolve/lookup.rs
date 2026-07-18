@@ -3295,8 +3295,197 @@ impl<'a> Resolver<'a> {
                         Resolution::Deferred(DeferredReason::QualifiedAccess),
                     );
                 }
+                return;
             }
         }
+        // Lowest priority: a referenced-assembly union (a project type would have
+        // been committed above, so the assembly reading is tried only once every
+        // project tier declines — mirroring the tiered walk the value/type paths
+        // use). Only the bare `Type.Case` form; a fully-qualified assembly case
+        // path is a later slice.
+        if let [type_seg, case_seg] = segs {
+            self.record_assembly_case_pattern(type_seg, case_seg);
+        }
+    }
+
+    /// Resolve a bare `Type.Case` PATTERN against the referenced assemblies — the
+    /// pattern-position sibling of how the value path resolves an assembly union
+    /// case (`SynAccess.Internal` as an expression). A pattern head is a
+    /// type/constructor lookup, not a value one, so it walks the assembly
+    /// precedence tiers ([`Self::assembly_prefixes_by_priority`]) for a public
+    /// **union** named `type_seg` whose accessible cases
+    /// ([`borzoi_assembly::Entity::union_case_names`]) include `case_seg`,
+    /// **skipping** a same-named module / non-union / caseless type at a higher
+    /// tier — as F# does resolving the constructor namespace: the `SynType` union
+    /// found past a later-`open`ed `SynType` *module* that shadows it only in the
+    /// value/module namespace.
+    ///
+    /// Records the head → the union's `Entity`, and the whole `Type.Case` span →
+    /// the case's nested IL type when the case carries fields (it then compiles
+    /// to a nested type, as `record_type_qualifier` records a project case), else
+    /// [`Resolution::Deferred`] — a *nullary* case is a singleton with no nested
+    /// type, a known case reference with an opaque target, exactly as an opened
+    /// assembly case folds ([`OpenFoldTarget::Opaque`]). Records nothing (a sound
+    /// decline) when no such union is in scope.
+    fn record_assembly_case_pattern(&mut self, type_seg: &SyntaxToken, case_seg: &SyntaxToken) {
+        let Some((union, nested_case)) =
+            self.assembly_union_case(id_text(type_seg.text()), id_text(case_seg.text()))
+        else {
+            return;
+        };
+        self.record(type_seg.text_range(), Resolution::Entity(union));
+        let whole = TextRange::new(type_seg.text_range().start(), case_seg.text_range().end());
+        let case_res = match nested_case {
+            Some(case) => Resolution::Entity(case),
+            None => Resolution::Deferred(DeferredReason::QualifiedAccess),
+        };
+        self.record(whole, case_res);
+    }
+
+    /// The highest-priority in-scope referenced-assembly **union** named
+    /// `type_name` whose accessible cases include `case_name`, paired with that
+    /// case's nested IL type when it compiles to one (a field-carrying case; a
+    /// nullary case has none). Both names are already [`id_text`]-normalised.
+    ///
+    /// Walks [`Self::assembly_prefixes_by_priority`] — opens latest-first, then
+    /// the enclosing namespace, then the root. A **plain module** named
+    /// `type_name` is transparent to a pattern-type lookup (FCS resolves the
+    /// constructor namespace, where a module is not a type), so a tier holding
+    /// only modules is skipped and the walk continues — this is what roots a
+    /// union past a later-`open`ed same-named module. Any **type** named
+    /// `type_name`, in contrast, *binds* the head at its tier: the walk decides
+    /// there and never falls through to a lower tier (falling through would be a
+    /// wrong target when FCS bound the higher type). The tier resolves iff it
+    /// holds exactly one public union owning the case and nothing else that could
+    /// bind or shadow the head; otherwise it declines. Sources of decline
+    /// (never a wrong target, only a missed one):
+    ///
+    /// - a **project** type / abbreviation of the same simple name — FCS binds it
+    ///   (chasing an abbreviation to its target's cases), which sema does not
+    ///   model in this branch;
+    /// - a per-tier **shadow veto** the type resolver also applies
+    ///   ([`Self::resolve_assembly_path_tiered`]'s `shadow_at`): an
+    ///   [auto-open module in the namespace with a type of this
+    ///   name](AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named)
+    ///   whose nested content the direct bucket cannot see, or — at a tier with
+    ///   nothing directly — an [unknowable
+    ///   abbreviation](AssemblyEnv::unknowable_abbreviations_in_namespace) that
+    ///   could be a same-named union;
+    /// - a **cross-DLL** name collision at the tier — FCS merges same-FQN roots
+    ///   by reference order, which sema does not model (a same-DLL companion, a
+    ///   `type Shape` beside its `module Shape`, is *not* a collision);
+    /// - a same-named **abbreviation** (its target's cases are not walked here),
+    ///   a union with an **unknowable** case list ([`union_case_names`](borzoi_assembly::Entity::union_case_names)
+    ///   `None`), a same-named **non-union type** or a union **lacking** the case
+    ///   (each binds the head to something that is not this case), or **more than
+    ///   one** union owning the case.
+    ///
+    /// Not modelled (each a completeness gap, never a wrong target):
+    /// - a union imported through an `open` of an assembly **module** rather than
+    ///   a namespace — [`assembly_prefixes_by_priority`](Self::assembly_prefixes_by_priority)
+    ///   carries only namespace readings, and the module open sets
+    ///   [`opaque_value_open`](Self::opaque_value_open) so
+    ///   [`record_qualified_case_pattern`](Self::record_qualified_case_pattern)
+    ///   returns before this branch runs;
+    /// - when both a project case and an assembly union own the path, the earlier
+    ///   [`cross_file_type_case`](Self::cross_file_type_case) commits the project
+    ///   case before this branch runs, so a later `open` of the assembly union
+    ///   does not win — the per-prefix interleaving of project and assembly
+    ///   readings is a follow-up.
+    fn assembly_union_case(
+        &self,
+        type_name: &str,
+        case_name: &str,
+    ) -> Option<(EntityHandle, Option<EntityHandle>)> {
+        // A project type / abbreviation of this name shadows any assembly union in
+        // the constructor namespace (FCS chases a project abbreviation to its
+        // target's cases) — decline rather than root the assembly union.
+        if self.own_type_simple_names.contains(type_name)
+            || self.preceding.project_type_simple_names.contains(type_name)
+        {
+            return None;
+        }
+        for prefix in self.assembly_prefixes_by_priority() {
+            // Per-tier shadow vetoes, the same the type resolver applies
+            // ([`Self::resolve_assembly_path_tiered`]'s `shadow_at`): an
+            // auto-open module in this namespace with a type of this name
+            // outranks the direct bucket (and its nested content is unseen here),
+            // and — when the tier holds nothing directly — an unknowable
+            // abbreviation could be a union of this name we cannot enumerate.
+            // Either way FCS may bind above where we can see, so decline.
+            if self
+                .assemblies
+                .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
+            {
+                return None;
+            }
+            let here = self.assemblies.public_entities_named(prefix, type_name);
+            if here.is_empty() {
+                if self
+                    .assemblies
+                    .unknowable_abbreviations_in_namespace(prefix)
+                {
+                    return None;
+                }
+                continue;
+            }
+            // A cross-DLL name collision at this tier: FCS's reference-order merge
+            // is unmodelled, so binding one DLL's entity risks the wrong target.
+            // Distinct DLL *provenance* — a same-DLL companion (`type Shape` + its
+            // `module Shape`) is not a collision.
+            let dlls: HashSet<_> = here
+                .iter()
+                .map(|&h| &self.assemblies.entity(h).assembly)
+                .collect();
+            if dlls.len() > 1 {
+                return None;
+            }
+            // Classify the (single-DLL) entities at this tier. A module is
+            // transparent; anything else binds the head, so `binds` forces a
+            // decision here — the walk must not continue to a lower tier past a
+            // bound head.
+            let mut owning: Option<EntityHandle> = None;
+            let mut binds = false;
+            for &h in &here {
+                let entity = self.assemblies.entity(h);
+                match entity.kind {
+                    EntityKind::Module => {}
+                    EntityKind::Union
+                        if entity
+                            .union_case_names
+                            .as_ref()
+                            .is_some_and(|cases| cases.iter().any(|c| c == case_name)) =>
+                    {
+                        // A second union owning the case (distinct arities of the
+                        // same name) is ambiguous — the pattern writes no arity.
+                        binds |= owning.replace(h).is_some();
+                    }
+                    // A non-union type, an abbreviation, a union with unknowable
+                    // cases, or a union lacking this case: the head binds to
+                    // something that is not this case.
+                    _ => binds = true,
+                }
+            }
+            if binds {
+                return None;
+            }
+            if let Some(union) = owning {
+                // A field-carrying case compiles to a nested type; a generic
+                // union's carrier carries the union's own generic parameters, so
+                // key the nested lookup on the union's arity (falling back to
+                // arity 0 for a non-generic union).
+                let arity = self.assemblies.entity(union).generic_parameters.len();
+                let nested_case = self
+                    .assemblies
+                    .nested(union, case_name, arity)
+                    .or_else(|| self.assemblies.nested(union, case_name, 0))
+                    .filter(|&h| self.assemblies.is_public(h));
+                return Some((union, nested_case));
+            }
+            // Only plain modules here (none owning the case): transparent tier —
+            // continue outward, as FCS does past a same-named module.
+        }
+        None
     }
 
     /// Record a `Type.Case` qualifier hit: the head segment → the *type* def and
