@@ -89,7 +89,9 @@ A **`Source`** change keeps today's targeted `semantic.invalidate_file(path)`.
 An open `.fs` buffer's diagnostics depend on its owning project's
 `DefineConstants` (via `symbols_for`), so after a `Structural` change re-run
 `publish_diagnostics` for **every open document** (the changed `.fsproj`
-included, if open). A `Source`-only change cannot alter an open buffer's
+included, if open). `publish_diagnostics` sends only for push-mode clients;
+pull-mode clients rely on their next document/workspace pull over the freshly
+invalidated caches. A `Source`-only change cannot alter an open buffer's
 lexer/parser diagnostics (cross-file sema isn't in the diagnostic path yet) →
 invalidate semantic, **no** republish.
 
@@ -129,7 +131,7 @@ handle_notification(DidChangeWatchedFiles):    (shell)
   if structural:
     workspace.invalidate_projects()             (NEW: projects.clear())
     semantic.invalidate_all()                   (NEW: clears all three maps)
-    for uri in open docs: publish_diagnostics(uri)
+    for uri in open docs: publish_diagnostics(uri) # sends only in push mode
 
 main/run (Stage 2): if client supports dynamic registration
                     → send client/registerCapability with the watcher globs
@@ -150,7 +152,8 @@ main/run (Stage 2): if client supports dynamic registration
 - A pure `classify_change(uri) -> ChangeClass` (in `server.rs` or a small
   module).
 - `DidChangeWatchedFiles::METHOD` arm in `handle_notification`: classify all
-  changes, invalidate, republish open buffers on a structural change.
+  changes, invalidate, and republish open buffers for push-mode clients on a
+  structural change.
 
 **Correctness oracle:**
 - *Classify properties:* each extension / special filename maps to the right
@@ -161,8 +164,9 @@ main/run (Stage 2): if client supports dynamic registration
   `symbols_for` now sees `B`. The inverse of the existing
   `invalidate_owning_project_skips_fsproj_uris` cache-proof test.
 - *Republish:* after a structural change, every open buffer gets a fresh
-  `publish_diagnostics`; a source-only change invalidates semantic without
-  republishing (assert via a spy / by observing a changed result).
+  `publish_diagnostics` in push mode and no publish in pull mode; a source-only
+  change invalidates semantic without republishing (assert via a spy / by
+  observing a changed result).
 
 ### Stage 2 — Dynamic watcher registration ✅ DONE
 

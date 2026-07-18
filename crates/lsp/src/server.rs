@@ -117,6 +117,7 @@ pub struct State {
     /// Cross-file `#line` publish bookkeeping: which diagnostics each document
     /// currently contributes to each target URI, so targets that drop out are
     /// cleared and shared targets publish the union (see [`PublishState`]).
+    /// Unused for clients that advertise the pull-diagnostic model.
     pub publish: PublishState,
     /// Per-project parses and (later) name resolution, layered on top of the
     /// workspace's `.fsproj` cache so editor buffers can overlay disk text.
@@ -124,7 +125,8 @@ pub struct State {
     pub semantic: SemanticState,
     /// Capabilities the client advertised at `initialize`. `None` means we
     /// have not yet received an `initialize` (tests, or pre-handshake).
-    /// Handlers read this to negotiate response shapes — most notably
+    /// Handlers read this to negotiate response shapes and delivery modes —
+    /// notably [`Self::supports_pull_diagnostics`] and
     /// [`Self::supports_hierarchical_document_symbols`].
     client_capabilities: Option<ClientCapabilities>,
     /// Filesystem roots the client opened at `initialize` (from
@@ -193,6 +195,19 @@ impl State {
     /// The workspace roots `workspace/diagnostic` enumerates under.
     pub fn workspace_roots(&self) -> &[PathBuf] {
         &self.workspace_roots
+    }
+
+    /// Whether the client advertised the pull-diagnostic model through
+    /// `textDocument.diagnostic`. Presence selects pull delivery for the whole
+    /// session; fields inside [`lsp_types::DiagnosticClientCapabilities`] only
+    /// describe optional parts of that model. A missing capability (including
+    /// before `initialize`) keeps the push path active for older clients.
+    pub fn supports_pull_diagnostics(&self) -> bool {
+        self.client_capabilities
+            .as_ref()
+            .and_then(|c| c.text_document.as_ref())
+            .and_then(|td| td.diagnostic.as_ref())
+            .is_some()
     }
 
     /// Whether the client advertised support for the hierarchical
@@ -902,18 +917,21 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 let uri = params.text_document.uri;
                 state.docs.remove(&uri);
                 state.invalidate_owning_project(&uri);
-                // Clear this document's own diagnostics and any it had
-                // relocated onto other files via `#line` directives.
-                for params in state.publish.plan_close(&uri) {
-                    send_notification::<PublishDiagnostics>(conn, params);
+                if !state.supports_pull_diagnostics() {
+                    // Clear this document's own diagnostics and any it had
+                    // relocated onto other files via `#line` directives.
+                    for params in state.publish.plan_close(&uri) {
+                        send_notification::<PublishDiagnostics>(conn, params);
+                    }
                 }
             }
         }
         DidChangeWatchedFiles::METHOD => {
             if let Ok(params) = extract_notification::<DidChangeWatchedFiles>(not) {
-                // Invalidate the affected caches, then republish every open
-                // buffer the structural change may have moved (their
-                // `DefineConstants` are recomputed from the now-fresh project).
+                // Invalidate the affected caches, then refresh every open
+                // buffer through the negotiated delivery path. Push clients
+                // receive new notifications; pull clients read the fresh
+                // project context on their next request.
                 for uri in state.apply_watched_changes(&params.changes) {
                     publish_diagnostics(conn, state, &uri);
                 }
@@ -925,6 +943,9 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
 
 fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
     let _span = tracing::info_span!("publish_diagnostics", uri = %uri).entered();
+    if state.supports_pull_diagnostics() {
+        return;
+    }
     let Some(text) = state.docs.get(uri).cloned() else {
         return;
     };
@@ -1342,7 +1363,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lsp_types::FileChangeType;
+    use lsp_types::{DiagnosticClientCapabilities, FileChangeType, TextDocumentClientCapabilities};
     use std::fs;
     use tempfile::TempDir;
 
@@ -1352,6 +1373,36 @@ mod tests {
 
     fn event(uri: Url, typ: FileChangeType) -> FileEvent {
         FileEvent { uri, typ }
+    }
+
+    #[test]
+    fn pull_diagnostic_support_is_selected_by_capability_presence() {
+        let mut state = State::new();
+        assert!(
+            !state.supports_pull_diagnostics(),
+            "pre-initialize state uses push"
+        );
+
+        state.set_client_capabilities(ClientCapabilities::default());
+        assert!(
+            !state.supports_pull_diagnostics(),
+            "an absent textDocument.diagnostic capability uses push"
+        );
+
+        state.set_client_capabilities(ClientCapabilities {
+            text_document: Some(TextDocumentClientCapabilities {
+                diagnostic: Some(DiagnosticClientCapabilities {
+                    dynamic_registration: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            state.supports_pull_diagnostics(),
+            "the diagnostic object selects pull even when dynamic registration is false"
+        );
     }
 
     #[test]
