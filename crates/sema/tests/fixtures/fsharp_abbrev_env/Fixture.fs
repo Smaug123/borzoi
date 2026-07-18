@@ -2,6 +2,27 @@ namespace Lib
 
 type Marker = { Value: int }
 
+// A same-assembly type with a static member, and an abbreviation aliasing it.
+// Unlike the `string`/`int` aliases below (whose BCL/FSharp.Core targets are not
+// loaded in the single-DLL fixture env), `Widget` lives in THIS assembly, so it
+// is loaded — which lets the resolver chase `WidgetAlias` to it and resolve the
+// `Make` static tail THROUGH the alias (Stage 4 resolve-through).
+type Widget() =
+    static member Make () = 1
+
+type WidgetAlias = Widget
+
+// Stage 4 resolve-through ownership (codex round 4): `UAlias = U` aliases a union.
+// A qualified `UAlias.UCase` must bind THROUGH the alias to the union *case* —
+// which lives in `union_case_names`, not the `members` surface the tail walk
+// searches — and must OWN the path, so an earlier `open` of a same-named,
+// top-level `UAlias` (namespace `Lib.Lower`, below, with a real static `UCase`)
+// cannot win. Absence of `UCase` from the target's member surface must not cede.
+type U =
+    | UCase
+
+type UAlias = U
+
 type int64 = string
 
 // The review-confirmed same-tier collision: `Collide` exists BOTH as a direct
@@ -53,6 +74,15 @@ module Holder =
     [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
     module NestedRenamed =
         let fromNested = 1
+
+// The competing lower-priority reading for the resolve-through ownership test: a
+// *top-level* `UAlias` (so `lookup_type` finds it) with a real static `UCase`. An
+// earlier `open Lib.Lower` puts it in scope below the later `open Lib`'s union
+// alias; resolving `UAlias.UCase` must NOT cede to this one.
+namespace Lib.Lower
+
+type UAlias() =
+    static member UCase = 0
 
 namespace Other.Deep
 

@@ -62,14 +62,28 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
-        // A type-abbreviation marker: the name binds (FCS chases the
-        // abbreviation to its target, e.g. `S.Format` where `type S =
-        // System.String`), but the target is unmodelled — we can neither
-        // resolve the member tail nor safely let a lower-priority reading
-        // take the path. Shadow-defer (D5: defer, never a wrong target).
-        if self.assemblies.is_abbreviation(type_handle) {
-            return AssemblyPath::ProjectShadowed;
-        }
+        // A type-abbreviation marker: the name binds, and FCS chases the
+        // abbreviation to its target (`S.Format` where `type S = System.String`
+        // resolves `Format` on `System.String`). Resolve *through* a resolvable
+        // target — the tail then walks on the target below — but keep the marker
+        // itself as the binding for the alias segment. An unresolvable target
+        // (structural, generic, or not loaded) shadow-defers as before (D5: defer,
+        // never a wrong target).
+        let walk_root = if self.assemblies.is_abbreviation(type_handle) {
+            match self.assemblies.resolve_abbreviation_target(type_handle) {
+                Some(target) => target,
+                None => return AssemblyPath::ProjectShadowed,
+            }
+        } else {
+            type_handle
+        };
+        // True once the path roots (or descends) through a *resolved* abbreviation
+        // alias. FCS then owns the alias reading, so an `Absent` member tail must
+        // NOT cede the path to a lower reading: the tail may live on a non-member
+        // target surface — a union case (`union_case_names`) or a type
+        // augmentation — that we do not walk, so absence from `members` does not
+        // prove absence (codex review 4 on Stage 4).
+        let mut via_alias = walk_root != type_handle;
 
         let mut recs: Vec<(TextRange, Resolution)> = Vec::new();
         let deferred = Resolution::Deferred(DeferredReason::QualifiedAccess);
@@ -80,6 +94,8 @@ impl<'a> Resolver<'a> {
         }
         recs.push((
             segments[k - base].text_range(),
+            // The alias segment binds to the marker itself (FCS points `S` at the
+            // abbreviation); the tail below walks on `walk_root` (its target).
             Resolution::Entity(type_handle),
         ));
 
@@ -89,7 +105,7 @@ impl<'a> Resolver<'a> {
         // whole path). `owns_path` records whether the reading captures the whole
         // path — see [`AssemblyPath::Resolved`]; it stays `true` unless a segment
         // names nothing on its parent (a genuinely-absent tail).
-        let mut parent = type_handle;
+        let mut parent = walk_root;
         let mut i = k + 1;
         let mut owns_path = true;
         while i < n {
@@ -99,13 +115,21 @@ impl<'a> Resolver<'a> {
                 .nested(parent, &names[i], 0)
                 .filter(|&h| self.assemblies.is_public(h))
             {
-                // A nested abbreviation marker: same defer as the rooting
-                // case above.
-                if self.assemblies.is_abbreviation(child) {
-                    return AssemblyPath::ProjectShadowed;
-                }
+                // A nested abbreviation marker: resolve through its target (or
+                // shadow-defer if unresolvable), same as the rooting case above.
+                let child_walk = if self.assemblies.is_abbreviation(child) {
+                    match self.assemblies.resolve_abbreviation_target(child) {
+                        Some(target) => {
+                            via_alias = true;
+                            target
+                        }
+                        None => return AssemblyPath::ProjectShadowed,
+                    }
+                } else {
+                    child
+                };
                 recs.push((src.text_range(), Resolution::Entity(child)));
-                parent = child;
+                parent = child_walk;
                 i += 1;
             } else {
                 match self.assemblies.static_lookup(parent, &names[i]) {
@@ -162,6 +186,14 @@ impl<'a> Resolver<'a> {
                     // re-deriving it from a second ownership predicate that could
                     // disagree (review rounds 3 and 4 were that disagreement, twice).
                     StaticLookup::Absent => {
+                        // Through a resolved alias FCS owns this reading, and the
+                        // tail may live on a non-member target surface we do not
+                        // walk (see `via_alias`). Own-and-defer as the
+                        // pre-resolve-through marker did, rather than cede the path
+                        // to a lower reading and diverge from FCS.
+                        if via_alias {
+                            return AssemblyPath::ProjectShadowed;
+                        }
                         owns_path = false;
                         break;
                     }

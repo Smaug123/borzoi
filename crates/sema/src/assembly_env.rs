@@ -20,12 +20,19 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{
-    Access, AssemblyIdentity, Augmentation, EcmaView, Entity, EntityKind, ImportError, Member,
-    MethodLike, TypeRef,
+    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, EcmaView, Entity, EntityKind,
+    ImportError, Member, MethodLike, TypeRef,
 };
 
 use crate::def::SemanticClass;
 use crate::resolve::ActivePatternShape;
+
+/// Fuel bound for chasing a chain of type-abbreviation markers
+/// (`type A = B; type B = C; …`) in [`AssemblyEnv::resolve_abbreviation_target`].
+/// Real alias chains are short; the bound only stops a pathological or crafted
+/// cycle from looping (each hop is a distinct marker, so a legitimate chain
+/// terminates well within it).
+const ABBREV_CHASE_FUEL: u32 = 32;
 
 /// Index of a source assembly in [`AssemblyEnv::assemblies`]. Identifies which
 /// referenced DLL an interned entity came from, so a resolved member can name
@@ -1152,6 +1159,74 @@ impl AssemblyEnv {
                     // Nested descent stays within `top`'s assembly by
                     // construction (children were interned from its subtree).
                     match self.nested(handle, segment, 0) {
+                        Some(child) => handle = child,
+                        None => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    return Some(handle);
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolve an abbreviation target's dotted path to a top-level-then-nested
+    /// entity, selecting the owning assembly by `assembly_matches`. Two things set
+    /// it apart from the source-domain [`Self::assembly_entity_at_path`] (which the
+    /// AutoOpen deref uses), and both are why abbreviation targets need their own
+    /// resolver:
+    ///
+    /// - **Assembly by predicate, not simple name.** A proven same-CCU target is
+    ///   pinned to the marker's *exact* [`AssemblyIdentity`]; a simple name could
+    ///   match a same-named extern-alias sibling of a different version/PKT.
+    /// - **Logical-name matching at every segment.** The pickle path is in the
+    ///   *logical* name domain, so each segment is matched against the IL `name`
+    ///   (a `[<CompilationRepresentation(ModuleSuffix)>]` module contributes its
+    ///   suffixed `FooModule`) **or** the source name (a `[<CompiledName>]` type
+    ///   contributes its source name) — top-level split *and* nested descent alike.
+    ///   [`Self::nested`] is deliberately source-domain (it never matches a
+    ///   suffixed module's compiled name, which F# source never writes), so it
+    ///   cannot serve this path.
+    fn abbreviation_target_at_path(
+        &self,
+        path: &[String],
+        assembly_matches: impl Fn(&AssemblyIdentity) -> bool,
+    ) -> Option<EntityHandle> {
+        // A nullary entity whose logical name — its IL `name` or its source name —
+        // is `seg`. Every entity on the target path must also be cross-assembly
+        // **public**: F# permits a public abbreviation of an internal/private type
+        // in the declaring library (FS0044), but a *consumer* accessing a member
+        // through the alias is rejected (FS0491), so an inaccessible entity on the
+        // path declines the target (codex review 5).
+        let seg_matches = |e: &Entity, seg: &str| {
+            e.generic_parameters.is_empty()
+                && (e.name == seg || e.source_name.as_deref() == Some(seg))
+        };
+        for split in 0..path.len() {
+            let candidates = self.top_level_types.iter().copied().filter(|&h| {
+                let e = self.entity(h);
+                self.is_public(h)
+                    && assembly_matches(&e.assembly)
+                    && e.namespace.as_slice() == &path[..split]
+                    && seg_matches(e, &path[split])
+            });
+            for top in candidates {
+                let mut handle = top;
+                let mut ok = true;
+                for segment in &path[split + 1..] {
+                    // Descend by the logical name too (children were interned from
+                    // `top`'s subtree, so this stays within its assembly). A
+                    // non-public entity anywhere on the path declines.
+                    match self
+                        .children(handle)
+                        .iter()
+                        .copied()
+                        .find(|&c| self.is_public(c) && seg_matches(self.entity(c), segment))
+                    {
                         Some(child) => handle = child,
                         None => {
                             ok = false;
@@ -2634,11 +2709,87 @@ impl AssemblyEnv {
     }
 
     /// Whether `handle` is a metadata-invisible type-abbreviation **marker**
-    /// (see `apply_abbreviation_markers` in `borzoi-assembly`): the name
-    /// is real, but its target type is not modelled, so a lookup that lands
-    /// on it must defer rather than resolve.
+    /// (see `apply_abbreviation_markers` in `borzoi-assembly`): the name is real.
+    /// A lookup landing on one resolves *through* its target when
+    /// [`Self::resolve_abbreviation_target`] yields one, and otherwise defers.
     pub fn is_abbreviation(&self, handle: EntityHandle) -> bool {
         self.entity(handle).kind == EntityKind::Abbreviation
+    }
+
+    /// Resolve an abbreviation marker to the entity its target *names*, so a
+    /// consumer can resolve *through* the alias (`type S = System.String` lets
+    /// `S.Format` bind the member on `System.String`) instead of deferring.
+    ///
+    /// Returns `Some(handle)` only for a **nullary `Named`** target that resolves
+    /// to a loaded entity — chasing a chained alias (`type A = B` where `B` is
+    /// itself a marker) with a fuel bound against a pathological cycle. `None` for
+    /// every shape that does not name a single entity whose members a path can
+    /// walk (a type parameter, a function, a tuple, a *generic instantiation*), a
+    /// target whose CCU is not loaded, or one that does not resolve — the consumer
+    /// then keeps deferring, so this can only turn a defer into a *correct*
+    /// resolution, never a wrong one.
+    pub fn resolve_abbreviation_target(&self, marker: EntityHandle) -> Option<EntityHandle> {
+        self.resolve_abbreviation_target_fueled(marker, ABBREV_CHASE_FUEL)
+    }
+
+    fn resolve_abbreviation_target_fueled(
+        &self,
+        marker: EntityHandle,
+        fuel: u32,
+    ) -> Option<EntityHandle> {
+        let fuel = fuel.checked_sub(1)?;
+        match self.entity(marker).abbreviation_target.as_ref()? {
+            AbbreviationTarget::Named { ccu, path, args } if args.is_empty() => {
+                let target = match ccu {
+                    // Proven same-CCU (the pickle used a `Local` tcref): resolve
+                    // within the marker's OWN assembly, matched by *full* identity —
+                    // a simple name could match a same-named extern-alias sibling of
+                    // a different version/public-key-token and resolve a wrong tree.
+                    None => {
+                        let identity = self.entity(marker).assembly.clone();
+                        self.abbreviation_target_at_path(path, |a| *a == identity)?
+                    }
+                    // A referenced CCU, known only by simple name. If two loaded
+                    // assemblies share that name we cannot tell which the pickle
+                    // meant, so decline rather than guess (correctness over
+                    // availability); the consumer keeps deferring.
+                    Some(name) => {
+                        if self.assembly_name_is_ambiguous(name) {
+                            return None;
+                        }
+                        self.abbreviation_target_at_path(path, |a| a.name == *name)?
+                    }
+                };
+                // Chase a chained alias; a non-marker target is the terminus.
+                if self.is_abbreviation(target) {
+                    self.resolve_abbreviation_target_fueled(target, fuel)
+                } else {
+                    Some(target)
+                }
+            }
+            // `Var` / function / tuple / generic-instantiation targets do not name
+            // a single member-bearing entity — keep deferring.
+            _ => None,
+        }
+    }
+
+    /// Whether two or more *distinct* loaded assemblies share the simple `name`.
+    /// A referenced CCU is known to the pickle only by its simple name, so a
+    /// target into an ambiguous name cannot be pinned to one assembly and must
+    /// decline (see [`Self::resolve_abbreviation_target`]).
+    fn assembly_name_is_ambiguous(&self, name: &str) -> bool {
+        let mut seen: Option<&AssemblyIdentity> = None;
+        for &h in &self.top_level_types {
+            let a = &self.entity(h).assembly;
+            if a.name == name {
+                match seen {
+                    None => seen = Some(a),
+                    Some(prev) if prev != a => return true,
+                    Some(_) => {}
+                }
+            }
+        }
+        false
     }
 
     /// Whether `handle` has a **public type-abbreviation child** named `name`, at
@@ -4206,8 +4357,8 @@ mod active_pattern_banana_tests {
 mod from_views_tests {
     use super::{AssemblyEnv, InterfaceChain};
     use borzoi_assembly::{
-        Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity, EntityKind,
-        FSharpResource, ImportError, Member, Nullability, Primitive, Property,
+        AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
+        EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
         SkippedProjectionItem, TypeRef, Version,
     };
 
@@ -4447,6 +4598,247 @@ mod from_views_tests {
         let ns: Vec<String> = namespace.iter().map(|s| (*s).to_string()).collect();
         env.lookup_type(&ns, name, 0)
             .unwrap_or_else(|| panic!("no type {namespace:?}.{name}"))
+    }
+
+    /// A public *static* readable property `name : System.Int32`.
+    fn static_int_prop(name: &str) -> Member {
+        match int_prop(name) {
+            Member::Property(p) => Member::Property(Property {
+                is_static: true,
+                ..p
+            }),
+            other => other,
+        }
+    }
+
+    /// An abbreviation marker `namespace.name` whose decoded target is `target`.
+    fn abbrev_marker(
+        assembly: &str,
+        namespace: &[&str],
+        name: &str,
+        target: Option<AbbreviationTarget>,
+    ) -> Entity {
+        Entity {
+            kind: EntityKind::Abbreviation,
+            abbreviation_target: target,
+            ..module_entity(assembly, namespace, name)
+        }
+    }
+
+    fn named_target(ccu: Option<&str>, path: &[&str]) -> AbbreviationTarget {
+        AbbreviationTarget::Named {
+            ccu: ccu.map(str::to_string),
+            path: path.iter().map(|s| (*s).to_string()).collect(),
+            args: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_follows_a_nullary_named_target() {
+        // `type S = System.String` (marker in `Lib`, target in `mscorlib`) resolves
+        // through to the `String` entity, on which the member tail then walks.
+        let string = Entity {
+            kind: EntityKind::Class,
+            members: vec![static_int_prop("Format")],
+            ..module_entity("mscorlib", &["System"], "String")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "S",
+            Some(named_target(Some("mscorlib"), &["System", "String"])),
+        );
+        let env = AssemblyEnv::from_entities(vec![string, marker]);
+
+        let marker_h = handle_of(&env, &["Lib"], "S");
+        let string_h = handle_of(&env, &["System"], "String");
+        assert_eq!(env.resolve_abbreviation_target(marker_h), Some(string_h));
+        // The static member is reachable on the resolved target.
+        assert!(matches!(
+            env.static_lookup(string_h, "Format"),
+            super::StaticLookup::Resolved(_)
+        ));
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_chases_a_chained_alias() {
+        // `type A = B` and `type B = C` (a concrete class) — resolving `A` chases
+        // through `B` to `C`.
+        let c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["Lib"], "C")
+        };
+        let b = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "B",
+            Some(named_target(None, &["Lib", "C"])),
+        );
+        let a = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "A",
+            Some(named_target(None, &["Lib", "B"])),
+        );
+        let env = AssemblyEnv::from_entities(vec![c, b, a]);
+
+        let a_h = handle_of(&env, &["Lib"], "A");
+        let c_h = handle_of(&env, &["Lib"], "C");
+        assert_eq!(env.resolve_abbreviation_target(a_h), Some(c_h));
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_unresolvable_targets() {
+        // A typar target, a target whose CCU is not loaded, and a marker with no
+        // decoded target all decline — the consumer keeps deferring.
+        let typar_marker =
+            abbrev_marker("Lib", &["Lib"], "SelfVar", Some(AbbreviationTarget::Var(0)));
+        let unloaded_marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "Missing",
+            Some(named_target(Some("NotLoaded"), &["Some", "Type"])),
+        );
+        let no_target_marker = abbrev_marker("Lib", &["Lib"], "Bare", None);
+        let env = AssemblyEnv::from_entities(vec![typar_marker, unloaded_marker, no_target_marker]);
+
+        for name in ["SelfVar", "Missing", "Bare"] {
+            let h = handle_of(&env, &["Lib"], name);
+            assert_eq!(
+                env.resolve_abbreviation_target(h),
+                None,
+                "{name} must decline (defer)",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_respects_exact_identity_across_same_named_assemblies() {
+        // Two loaded assemblies share the simple name `Same` (an extern-alias
+        // shape) but differ in version, each declaring `N.Widget`.
+        fn ident_v(name: &str, major: u16) -> AssemblyIdentity {
+            AssemblyIdentity {
+                name: name.to_string(),
+                version: Version {
+                    major,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                },
+                public_key_token: None,
+            }
+        }
+        fn widget(assembly: AssemblyIdentity) -> Entity {
+            Entity {
+                kind: EntityKind::Class,
+                assembly,
+                ..module_entity("_", &["N"], "Widget")
+            }
+        }
+        let same_v1 = ident_v("Same", 1);
+        let same_v2 = ident_v("Same", 2);
+
+        // A `None`-ccu (proven same-CCU) marker in `Same` v1 → must pin v1's
+        // `Widget`, never v2's same-named sibling.
+        let local_marker = Entity {
+            kind: EntityKind::Abbreviation,
+            assembly: same_v1.clone(),
+            abbreviation_target: Some(named_target(None, &["N", "Widget"])),
+            ..module_entity("_", &["Lib"], "LocalAlias")
+        };
+        // A `Some("Same")`-ccu marker → the name is ambiguous, so decline.
+        let ref_marker = Entity {
+            kind: EntityKind::Abbreviation,
+            assembly: ident("Lib"),
+            abbreviation_target: Some(named_target(Some("Same"), &["N", "Widget"])),
+            ..module_entity("_", &["Lib"], "RefAlias")
+        };
+        let env = AssemblyEnv::from_entities(vec![
+            widget(same_v1.clone()),
+            widget(same_v2),
+            local_marker,
+            ref_marker,
+        ]);
+
+        let local = env
+            .resolve_abbreviation_target(handle_of(&env, &["Lib"], "LocalAlias"))
+            .expect("same-CCU target resolves");
+        assert_eq!(
+            env.entity(local).assembly,
+            same_v1,
+            "a same-CCU target must pin the marker's exact assembly, not a same-named sibling",
+        );
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "RefAlias")),
+            None,
+            "an ambiguous referenced CCU name must decline",
+        );
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_matches_module_suffix_segments_by_logical_name() {
+        // The pickle path is in the logical-name domain, so a
+        // `[<CompilationRepresentation(ModuleSuffix)>]` module contributes its
+        // suffixed IL name (`InnerModule`), while its projected source name is
+        // `Inner`. This must match at BOTH the top-level split and — the case
+        // `nested` deliberately does not serve — a *nested* descent, or a target
+        // beneath such a module is never found and the alias wrongly keeps
+        // deferring. Here `InnerModule` is nested under a plain `Outer`.
+        let widget = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Probe", &[], "Widget")
+        };
+        let inner = Entity {
+            kind: EntityKind::Module,
+            source_name: Some("Inner".to_string()),
+            nested_types: vec![widget],
+            ..module_entity("Probe", &[], "InnerModule")
+        };
+        let outer = Entity {
+            kind: EntityKind::Module,
+            nested_types: vec![inner],
+            ..module_entity("Probe", &["Probe"], "Outer")
+        };
+        let marker = abbrev_marker(
+            "Probe",
+            &["Lib"],
+            "WAlias",
+            Some(named_target(
+                None,
+                &["Probe", "Outer", "InnerModule", "Widget"],
+            )),
+        );
+        let env = AssemblyEnv::from_entities(vec![outer, marker]);
+
+        let resolved = env
+            .resolve_abbreviation_target(handle_of(&env, &["Lib"], "WAlias"))
+            .expect("a target nested under a module-suffix module must resolve by logical name");
+        assert_eq!(env.entity(resolved).name, "Widget");
+    }
+
+    #[test]
+    fn resolve_abbreviation_target_declines_an_inaccessible_target() {
+        // A public abbreviation of an *internal* type: F# permits the library but
+        // rejects member access through the alias in a consumer, so resolve-through
+        // must decline rather than commit one of the internal type's members.
+        let secret = Entity {
+            kind: EntityKind::Class,
+            access: Access::Internal,
+            ..module_entity("Lib", &["N"], "Secret")
+        };
+        let marker = abbrev_marker(
+            "Lib",
+            &["Lib"],
+            "Alias",
+            Some(named_target(None, &["N", "Secret"])),
+        );
+        let env = AssemblyEnv::from_entities(vec![secret, marker]);
+
+        assert_eq!(
+            env.resolve_abbreviation_target(handle_of(&env, &["Lib"], "Alias")),
+            None,
+            "a target that is not cross-assembly public must decline",
+        );
     }
 
     /// A diamond `IDerived : IA, IB` with `IA, IB : IBase`, plus `System.Object`:

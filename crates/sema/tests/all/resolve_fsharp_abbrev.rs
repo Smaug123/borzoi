@@ -150,6 +150,58 @@ fn real_type_in_signature_data_namespace_still_resolves() {
 }
 
 #[test]
+fn resolve_through_a_same_assembly_abbreviation_binds_the_member_tail() {
+    // `type WidgetAlias = Widget` aliases a same-assembly type (so `Widget` is
+    // loaded in the env, unlike the `string`/`int` aliases). The `Make` static
+    // must resolve THROUGH the alias to a member on `Widget` — where the plain
+    // marker defer would have left the whole path unresolved. `WidgetAlias` itself
+    // binds to the marker (FCS points the alias name at the abbreviation).
+    let env = fixture_env();
+    let src = "module M\nopen Lib\nlet _ = WidgetAlias.Make()\n";
+    let rf = resolve(src, &env);
+
+    let marker = env
+        .lookup_type(&["Lib".into()], "WidgetAlias", 0)
+        .expect("fixture must declare Lib.WidgetAlias");
+    assert_eq!(
+        rf.resolution_at(at(src, "WidgetAlias")),
+        Some(Resolution::Entity(marker)),
+        "the alias segment binds to the abbreviation marker",
+    );
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "WidgetAlias.Make")),
+            Some(Resolution::Member { .. })
+        ),
+        "`Make` must resolve through the alias to a member on `Widget`; got {:?}",
+        rf.resolution_at(at(src, "WidgetAlias.Make")),
+    );
+}
+
+#[test]
+fn resolve_through_an_alias_owns_the_path_over_a_lower_reading() {
+    // `open Lib.Lower` brings a `UAlias` class with a real static `UCase`; `open
+    // Lib` (later, so it wins the `UAlias` binding) brings `UAlias = U`, a union
+    // alias. `UAlias.UCase` must resolve THROUGH the later alias — the union case
+    // lives in `union_case_names`, not the `members` surface the tail walk
+    // searches — and OWN the path, never ceding to `Lower.UAlias.UCase`. Absence
+    // from the target's member surface is not proof of absence (codex round 4:
+    // resolve-through must not let a lower reading win on a non-member surface).
+    let env = fixture_env();
+    let src = "module M\nopen Lib.Lower\nopen Lib\nlet _ = UAlias.UCase\n";
+    let rf = resolve(src, &env);
+    assert!(
+        !matches!(
+            rf.resolution_at(at(src, "UAlias.UCase")),
+            Some(Resolution::Member { .. })
+        ),
+        "the aliased tail must own/defer, not cede to the lower reading's static \
+         member; got {:?}",
+        rf.resolution_at(at(src, "UAlias.UCase")),
+    );
+}
+
+#[test]
 fn root_namespace_with_signature_data_marks_annotation_shadowable_with_no_open() {
     // Regression pin (codex review P2, round 4, on
     // `docs/completed/r2-annotation-typing-plan.md`): the fixture declares `namespace
