@@ -449,6 +449,29 @@ current defer when the target is `None` or does not resolve.
   uses that FCS resolves and we used to defer now agree, with no new
   divergences.
 
+**Status — Stage 4a (value/member dotted-member path) done; 4b/4c to follow.**
+Landed the `AssemblyEnv::resolve_abbreviation_target` primitive (reusing the
+existing `assembly_entity_at_path` namespace/nested-split search; nullary `Named`
+only — chasing a chained alias with a fuel bound; declines `Var`/structural/
+generic/unloaded targets) and wired it into the **value/member** `is_abbreviation`
+defer sites in `assembly_path_records` (`resolve/assembly.rs`): a resolvable
+target now has the member tail walk on it (`WidgetAlias.Make` binds the `Make`
+static through the alias), while the alias segment binds to the marker and an
+unresolvable target still shadow-defers. Proven by unit tests over the primitive
+and an end-to-end fixture test; every existing `resolve_fsharp_abbrev` assertion
+stays green (their `string`/`int` targets are not loaded in the single-DLL env,
+so they keep deferring).
+
+Deferred to a stacked follow-up, because both carry subtler interactions best
+validated against the whole-project differential:
+- **4b — type-position path** (`assembly_type_path_core`): the rooting-type
+  resolve-through interacts with the *annotation-shadowable* deferral (a
+  value-typed target's nullability), so it needs the corpus differential to
+  confirm it does not diverge.
+- **4c — `open type Alias`** (`resolve/decls.rs`): opening the *target's* statics
+  instead of going opaque; the plain-`open` companion-module semantics must stay
+  intact.
+
 ---
 
 ### Stage 5 — annotation bridge + hover rendering
