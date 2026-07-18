@@ -250,7 +250,11 @@ inherits `Run` ⇒ FCS wraps the CE and the result type changes).
 `BuilderMethods` is therefore built over the builder's **full base chain** of
 assembly entities — the OV §4.1 chain-completeness gate transplanted: chain
 `Complete`/`ObjectCapped` or defer (project-defined builders are out of v1
-scope entirely — see CE-D4). Two further gates protect it:
+scope entirely — see CE-D4). An **interface-typed** builder (legal, if
+exotic) must not use `base_chain` at all — FCS's lookup sees transitively
+inherited interfaces, which `base_chain` omits: probe via the interface
+walk's `interface_member_chain`, or defer interface-typed builders wholesale.
+Two further gates protect it:
 
 - **The extension gate is *stricter* than OV-6's name-keyed refinement.** For
   overloads, an extension only matters if it shares the called name, so EX-1's
@@ -305,7 +309,11 @@ plumbing exists** — typed bang binders (which CE-4 already meets), wildcard
 evaluated `LangVersion` property from the `.fsproj` table into `infer_file`'s
 inputs (unpinned means latest) — is a small standalone slice, landable any
 time from CE-4 on and required by CE-6; once present, a shape publishes only
-when the effective version supports it.
+when the effective version supports it **and the value is trustworthy**: the
+evaluation marks a property untrusted when e.g. an unresolved condition
+controls it (`property_provenance_untrusted`), and an untrusted `LangVersion`
+means the version is not proven — defer the version-gated shapes exactly as
+if pinned below them.
 
 ### CE-D3. The commit discipline: head + binders first, shadow-masked interiors later
 
@@ -467,14 +475,18 @@ CE continuations expose; independently valuable outside CEs.
 component walked in check-mode). Local `let` binders are **not** blanket
 monomorphic — F# generalises eligible local bindings, so grounding
 `let local = id` to `int -> int` from a later use publishes a wrong hover at
-the binder (review finding, round 3; the completion gate cannot catch it
-because everything discharges). Rule: a local binder's type publishes only
-when its RHS grounds it *by itself* — before the continuation is walked
-(literals, annotated shapes, calls with ground returns); a binder whose type
-is still open at the binding point stays un-emitted (FCS may have generalised
-it), while the continuation still types through the variable as usual. Full
-nested Algorithm-W generalisation is the data-gated upgrade if corpus hovers
-demand it. Today both catch-all-defer, which means *any* function body with a
+the binder (review findings, rounds 3–4; the completion gate cannot catch it
+because everything discharges). Suppressing just the binder's emission is
+not enough — the shared monomorphic variable also poisons *uses*: in
+`let local = id in … local 1 … local "s"` the first use grounds the variable,
+and the second use's already-ground result could emit `Int32` where FCS says
+`String`. Rule: a local binder whose RHS type is **ground by itself** —
+before the continuation is walked (literals, annotated shapes, calls with
+ground returns) — types and emits normally; an **open-at-binding** local
+marks the walk incomplete, and *every* emission depending on it is
+suppressed, not merely the binder's (FCS may have generalised). Full nested
+Algorithm-W generalisation is the data-gated upgrade if corpus hovers demand
+it. Today both catch-all-defer, which means *any* function body with a
 local `let` loses its binder and body types (and its enclosing binding cannot
 generalise); CE bodies are just the loudest victim.
 **Oracle:** non-CE snippets through the existing types differential, over
@@ -531,11 +543,13 @@ non-query subset of §2.2 (everything except the CE-D2 defer list).
 `desugar`, with the §2.2 table transcribed — including the range each
 synthesized node carries and its synthetic bit (§2.5), because CE-7's shadow
 mask reads them. The desugarer also enforces the pattern-shape rules FCS
-checks *before* translating, deferring what FCS rejects: `use`/`use!` accept
+checks *before* translating, deferring what FCS rejects: **`use!`** accepts
 only a single identifier (optionally parenthesised/typed; wildcard is
 version-gated) — a tuple `use! (a, b) = …` is FS1228, and desugaring it
 against a permissive builder would publish types for rejected code
-(CCE.fs:1945–1968). No inference wiring. **Oracle:** property tests —
+(CCE.fs:1945–1968). Plain `use` is **not** so restricted (FCS accepts general
+patterns when the builder's `Using` signature does) — its general-pattern
+forms translate per the §2.2 table. No inference wiring. **Oracle:** property tests —
 (1) *splice provenance*: every user sub-expression of the body appears in the
 output with exactly the multiplicity its construct's §2.2 rewrite specifies,
 range untouched — 1 for most, but `while!` splices its guard into both the
