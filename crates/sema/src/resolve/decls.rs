@@ -7,7 +7,9 @@ use borzoi_cst::syntax::{
 use crate::assembly_env::OpenFoldSurface;
 use crate::def::DefId;
 
-use super::model::{CaseKind, ExportDeclKind, ExportedItem, ItemId, SlotClass};
+use super::model::{
+    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
+};
 use super::state::{AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver};
 use super::{
     attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
@@ -750,6 +752,63 @@ impl<'a> Resolver<'a> {
                 );
             }
             ModuleDecl::Open(open) => {
+                // Resolution-explain trace (see `ResolutionTrace`): snapshot the
+                // three opaque-open flags *before* this open, and capture its
+                // range / path / kind, so the record pushed at the end of this
+                // arm names which flags this open flipped false→true. The flags
+                // are write-only within this arm and monotone within a block, so
+                // a `now && !before` diff is exactly this open's contribution.
+                let trace_range = open.syntax().text_range();
+                let trace_is_type = open.is_type();
+                let trace_path: Vec<String> = if trace_is_type {
+                    open.ty()
+                        .and_then(|t| type_long_ident_path(&t))
+                        .unwrap_or_default()
+                } else if let Some(li) = open.long_ident() {
+                    // Drop a leading `global` root qualifier (matching the raw
+                    // keyword, not an escaped ``global`` ident) so the traced
+                    // path is the namespace/module actually opened — the same
+                    // normalisation the plain-open branch below applies.
+                    let idents: Vec<SyntaxToken> = li.idents().collect();
+                    let rooted = idents.first().is_some_and(|t| t.text() == "global");
+                    idents
+                        .iter()
+                        .skip(usize::from(rooted))
+                        .map(|t| id_text(t.text()).to_string())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let trace_before = (
+                    self.opaque_value_open,
+                    self.opaque_dotted_open,
+                    self.unmodelled_open_active,
+                );
+                // The generation is a fourth deferral mechanism: an open that
+                // raises the barrier stales earlier entries, deferring a later
+                // head through one even when the three flags stay false. Snapshot
+                // it too. Monotone within the arm (only ever bumped), so a strict
+                // increase is this open's own barrier.
+                let trace_before_gen = self.open_generation;
+                // A fifth: a fully-enumerated open can import a name that is
+                // ITSELF `Deferred` (a cross-assembly duplicate, say), setting no
+                // flag and bumping no generation — yet it is the source of that
+                // deferred name. Opened entries all land in `module_frame()`
+                // (`scopes.last()`), and this arm pushes only its own (it never
+                // enters a nested module), so a new `Deferred` entry after it is
+                // this open's import.
+                let trace_before_entries = self.scopes.last().map_or(0, |f| f.entries.len());
+                // A sixth: a namespace open contributes a **reading** / shortening
+                // prefix — a qualified-path precedence entry — while setting no flag
+                // and raising no barrier. It usually *resolves* names, but it can
+                // re-own a later dotted head against a lower open's reading (`open
+                // Low; open High; M.Mangled`), deferring when the higher reading owns
+                // the path with an uncertain member. Both `imports` (the `OpenGroup`)
+                // and `open_shortening_prefixes` grow only within this arm (it never
+                // enters a nested module), so a strict length increase in either is
+                // this open's own reading contribution.
+                let trace_before_imports = self.imports.len();
+                let trace_before_shortening = self.open_shortening_prefixes.len();
                 // Classify the open. `open <namespace>` brings the namespace's
                 // *types* into scope — record the prefix so later qualified
                 // references retry under it (modelled), no unqualified values.
@@ -1505,6 +1564,29 @@ impl<'a> Resolver<'a> {
                         }
                     }
                 }
+                // Resolution-explain trace: record which opaque-open flags THIS
+                // open flipped false→true (snapshot at the arm's start). Both the
+                // `open type` and plain-`open` branches fall through to here.
+                self.trace_opens.push(OpenTrace {
+                    range: trace_range,
+                    path: trace_path,
+                    is_type: trace_is_type,
+                    opacity: OpenOpacity {
+                        opaque_value: self.opaque_value_open && !trace_before.0,
+                        opaque_dotted: self.opaque_dotted_open && !trace_before.1,
+                        unmodelled: self.unmodelled_open_active && !trace_before.2,
+                        staled_earlier: self.open_generation > trace_before_gen,
+                        imported_deferred: self.scopes.last().is_some_and(|f| {
+                            f.entries
+                                .get(trace_before_entries..)
+                                .unwrap_or(&[])
+                                .iter()
+                                .any(|e| matches!(e.resolution, Resolution::Deferred(_)))
+                        }),
+                        added_reading: self.imports.len() > trace_before_imports
+                            || self.open_shortening_prefixes.len() > trace_before_shortening,
+                    },
+                });
             }
             ModuleDecl::Attributes(_) => {
                 // A standalone `[<assembly: …>]` (parser phase 10.7) introduces no
