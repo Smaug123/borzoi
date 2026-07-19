@@ -12,7 +12,12 @@
 //! [`Entity`]; once you have one, every field is materialised.
 
 /// `Major.Minor.Build.Revision` — the .NET assembly version quadruple.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Ord` is the derived lexicographic order over the fields in declaration
+/// order (major, then minor, then build, then revision) — exactly .NET's own
+/// version ordering, so it can decide which of two same-named assemblies wins a
+/// binding-unification tie.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Version {
     pub major: u16,
