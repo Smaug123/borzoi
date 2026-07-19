@@ -55,6 +55,27 @@ fn orphan_state(text: &str) -> (State, Url) {
     (state, uri)
 }
 
+fn assert_argument_label_is_deferred(src: &str, binder: Position, label: Position, rhs: Position) {
+    let (mut state, uri) = orphan_state(src);
+
+    let locs = run(&mut state, &uri, binder.line, binder.character, true);
+    assert_eq!(locs.len(), 2, "binder plus the argument's RHS: {locs:#?}");
+    assert!(
+        locs.iter().any(|location| location.range.start == rhs),
+        "the RHS value reference is retained: {locs:#?}"
+    );
+    assert!(
+        locs.iter().all(|location| location.range.start != label),
+        "the named-argument label is not a lexical value reference: {locs:#?}"
+    );
+
+    let from_label = run(&mut state, &uri, label.line, label.character, true);
+    assert!(
+        from_label.is_empty(),
+        "a cursor whose meaning depends on the callee's type is deferred: {from_label:#?}"
+    );
+}
+
 #[test]
 fn local_let_collects_self_and_uses_with_declaration() {
     // `let x = 1 in x + x` — `x` resolves three times: the binder's self-
@@ -150,6 +171,82 @@ fn ambiguous_argument_label_is_deferred_from_same_named_value_references() {
     assert!(
         from_ambiguous_label.is_empty(),
         "a cursor whose meaning depends on the callee's type is deferred: {from_ambiguous_label:#?}"
+    );
+}
+
+#[test]
+fn explicit_constructor_argument_label_is_deferred() {
+    assert_argument_label_is_deferred(
+        "let value = 1\nlet result = new C(value = value)\n",
+        Position {
+            line: 0,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 19,
+        },
+        Position {
+            line: 1,
+            character: 27,
+        },
+    );
+}
+
+#[test]
+fn object_expression_constructor_argument_label_is_deferred() {
+    assert_argument_label_is_deferred(
+        "let value = 1\nlet result = { new C(value = value) with member _.M () = () }\n",
+        Position {
+            line: 0,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 21,
+        },
+        Position {
+            line: 1,
+            character: 29,
+        },
+    );
+}
+
+#[test]
+fn optional_argument_label_is_deferred() {
+    assert_argument_label_is_deferred(
+        "let opt = 1\nC.M(?opt = opt)\n",
+        Position {
+            line: 0,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 5,
+        },
+        Position {
+            line: 1,
+            character: 11,
+        },
+    );
+}
+
+#[test]
+fn argument_label_with_intervening_comment_is_deferred() {
+    assert_argument_label_is_deferred(
+        "let x = 1\nC.M(x (* comment *) = x)\n",
+        Position {
+            line: 0,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 22,
+        },
     );
 }
 

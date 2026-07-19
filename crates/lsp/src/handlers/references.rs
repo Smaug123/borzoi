@@ -4,10 +4,10 @@
 //! prefer-non-`Deferred` rules as goto-definition), then iterates every file
 //! in the [`ResolvedProject`] and collects ranges whose recorded resolution
 //! is exactly that one ([`Resolution`] is `Copy + PartialEq`). A range in the
-//! label position of an application argument shaped `name = value` is omitted
-//! when `name` is a bare identifier: without the callee's type, that syntax
-//! could be either a named-argument label or the left operand of an ordinary
-//! Boolean equality. For
+//! label position of a call argument shaped `name = value` or `?name = value`
+//! is omitted when `name` is a bare identifier. The former could also be an
+//! ordinary Boolean equality; the latter is unambiguously a label, but its
+//! parameter cannot be identified without the callee's type. For
 //! [`Resolution::Local`] only the cursor's file can contain references —
 //! locals are file-scoped by definition — so the iteration short-circuits.
 //!
@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxNode};
+use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, resolve_file,
 };
@@ -309,30 +309,37 @@ fn single_file_references(
     out
 }
 
-/// Ranges which might be named-argument labels in an application.
+/// Ranges which might be named-argument labels in a call.
 ///
-/// `f(name = value)` and `f (name = value)` have the same expression shape
-/// whether `f` is a method accepting a named argument or an ordinary function
-/// accepting a Boolean equality. Find-references cannot prove which reading is
-/// correct without resolving the callee's type, so it makes no claim for the
-/// possible label range. The ordinary resolver remains untouched: definition,
+/// `f(name = value)` and `f (name = value)` have the same argument expression
+/// shape whether `f` is a method accepting a named argument or an ordinary
+/// function accepting a Boolean equality. An optional `?name` is certainly a
+/// label, but the callee's type is still needed to identify its parameter.
+/// Explicit construction and object expressions carry the same argument shape
+/// directly on their `New` / `ObjExpr` nodes. Find-references makes no claim for
+/// these label ranges. The ordinary resolver remains untouched: definition,
 /// hover, and non-reference consumers retain both equality operands.
 fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
     let mut ranges = HashSet::new();
     for expression in root.descendants().filter_map(Expr::cast) {
-        let Expr::App(application) = expression else {
-            continue;
+        let argument = match expression {
+            Expr::App(application) => {
+                if application.is_infix() {
+                    continue;
+                }
+                // FCS lowers every completed infix expression to a non-infix outer
+                // `App` whose function is the inner infix `App`. Its argument is the
+                // operator's RHS, not a call argument list.
+                if matches!(application.func(), Some(Expr::App(inner)) if inner.is_infix()) {
+                    continue;
+                }
+                application.arg()
+            }
+            Expr::New(construction) => construction.arg(),
+            Expr::ObjExpr(object_expression) => object_expression.arg(),
+            _ => continue,
         };
-        if application.is_infix() {
-            continue;
-        }
-        // FCS lowers every completed infix expression to a non-infix outer
-        // `App` whose function is the inner infix `App`. Its argument is the
-        // operator's RHS, not a call argument list.
-        if matches!(application.func(), Some(Expr::App(inner)) if inner.is_infix()) {
-            continue;
-        }
-        if let Some(argument) = application.arg() {
+        if let Some(argument) = argument {
             collect_ambiguous_argument_labels(&argument, &mut ranges);
         }
     }
@@ -376,12 +383,35 @@ fn ambiguous_argument_label(element: &Expr) -> Option<TextRange> {
         return None;
     };
     if !equals.is_infix()
-        || !equals
-            .func()
-            .is_some_and(|operator| operator.syntax().text().to_string().trim() == "=")
+        || !equals.func().is_some_and(|operator| {
+            let mut tokens = operator
+                .syntax()
+                .descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+                .filter(|token| !token.kind().is_trivia());
+            matches!(
+                tokens.next(),
+                Some(token) if token.kind() == SyntaxKind::IDENT_TOK && token.text() == "="
+            ) && tokens.next().is_none()
+        })
     {
         return None;
     }
     let label = equals.arg()?;
-    matches!(label, Expr::Ident(_)).then(|| label.syntax().text_range())
+    match label {
+        Expr::Ident(_) => Some(label.syntax().text_range()),
+        Expr::LongIdent(optional)
+            if optional
+                .syntax()
+                .children_with_tokens()
+                .filter_map(|element| element.into_token())
+                .any(|token| token.kind() == SyntaxKind::QMARK_TOK) =>
+        {
+            let path = optional.long_ident()?;
+            let mut idents = path.idents();
+            let ident = idents.next()?;
+            idents.next().is_none().then(|| ident.text_range())
+        }
+        _ => None,
+    }
 }
