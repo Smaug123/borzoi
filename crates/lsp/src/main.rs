@@ -1,7 +1,9 @@
 use std::error::Error;
 
 use borzoi::log_info;
-use borzoi::server::{State, server_capabilities, workspace_roots_from_init};
+use borzoi::server::{
+    State, client_capabilities_from_initialize, server_capabilities, workspace_roots_from_init,
+};
 use lsp_server::Connection;
 use lsp_types::InitializeParams;
 
@@ -23,6 +25,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             return Err(err.into());
         }
     };
+    let client_capabilities = client_capabilities_from_initialize(&init_params)?;
     let init_params: InitializeParams = serde_json::from_value(init_params)?;
 
     let mut state = State::new();
@@ -33,9 +36,9 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     state
         .semantic
         .set_assembly_cache(borzoi::assembly_cache::AssemblyCache::from_env());
-    // Roots for `workspace/diagnostic`, extracted before `capabilities` is
-    // moved. `rootUri` is deprecated in the protocol but still the only signal
-    // some clients send, so we honour it as a fallback.
+    // Roots for `workspace/diagnostic`. `rootUri` is deprecated in the protocol
+    // but still the only signal some clients send, so we honour it as a
+    // fallback.
     let roots = {
         #[allow(deprecated)]
         let root_uri = init_params.root_uri.as_ref();
@@ -55,7 +58,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     state
         .semantic
         .set_on_demand_restore_enabled(enable_on_demand_restore);
-    state.set_client_capabilities(init_params.capabilities);
+    state.set_client_capabilities(client_capabilities);
 
     borzoi::server::run(connection, state)?;
     io_threads.join()?;

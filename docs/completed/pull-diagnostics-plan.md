@@ -20,8 +20,10 @@
 > from `server.rs` with `diagnostic_provider` advertised
 > (`workspace_diagnostics: true`). **Stage 4** (cross-file `#line`
 > `related_documents`) remains **deferred** — `related_documents` is still always
-> `None` — as does work-done / partial-result streaming. The sections below are
-> the original design record, preserved.
+> `None` — as does work-done / partial-result streaming. Diagnostic delivery is
+> negotiated per session: clients advertising `textDocument.diagnostic` use
+> pull exclusively; clients without it retain `publishDiagnostics`. The
+> sections below record the resulting design.
 
 ## Why pull, and why it's parser-independent
 
@@ -96,17 +98,18 @@ generating document only knows *its own* contribution to `B`, not the union
 across every generator (which is exactly what the push planner accumulates).
 Emitting one document's slice as a `Full` report for `B` would let two files
 that both relocate onto `B` clobber each other, and would never clear `B` when
-a generator goes clean. So this cut omits cross-file related documents (the
-push path, retained per D4, still delivers them with correct union/clear
-semantics); the honest union-based version is the deferred cross-file stage
-below. Correctness over availability: omit rather than over-claim.
+a generator goes clean. Pull therefore omits cross-file related documents; the
+honest union-based version is the deferred cross-file stage below. Push-only
+clients still receive the union through `PublishState`, while pull clients omit
+it rather than over-claim a partial set. Correctness over availability.
 
-### D4 — Keep push intact; add pull alongside
-A pull-capable client ignores `publishDiagnostics`; there is no conflict and no
-regression for existing push clients. Suppressing push when the client
-advertises `textDocument.diagnostic` is a **separate, optional follow-up**
-(flagged, not built) — it is a behaviour change to the notification path, not
-required to ship pull.
+### D4 — Negotiate exactly one delivery mechanism
+The presence of `ClientCapabilities.textDocument.diagnostic` selects pull for
+the whole session. Its inner fields refine optional pull features; they do not
+decide whether pull is supported. Every `publishDiagnostics` route is suppressed
+in that mode, including the close-time empty publish. When the capability is
+absent, the existing stateful push lifecycle remains active. The server still
+advertises and serves document and workspace pull requests in either mode.
 
 ### D5 — Overlay-then-disk text
 Read a file's text from the `state.docs` open-buffer overlay if present, else
@@ -258,13 +261,12 @@ D3 defers.
 publishes. The hard part is enumerating those generators in a stateless pull
 (including unopened on-disk generated files such as `obj/Lexer.fs`), and
 deciding how `workspace/diagnostic` attributes a generated file's relocated
-diagnostics. Until then the push path (D4) remains the correct channel for
-`#line` relocation. Build only when a real client needs cross-file diagnostics
-over pull rather than push.
+diagnostics. Until then push-only clients receive `#line` relocation and pull
+clients omit it. Build only when a real client needs cross-file diagnostics over
+pull.
 
 ## Out of scope
 
-- **Suppressing push for pull-capable clients** (D4) — optional follow-up.
 - **`result_id` caching** (Stage 3) — done (#358, #360); work-done /
   partial-result **streaming** remains deferred.
 - **`.fsproj` cache file-watch invalidation** — `Workspace.projects` is still
@@ -284,5 +286,5 @@ over pull rather than push.
   partial-result streaming are the mitigations. Measure before optimising.
 - **Stale `.fsproj` cache** (Out of scope) — `define_constants`/`items` stay as
   first seen within a session.
-- **Push/pull duplication** for a client using both — harmless (pull-only
-  clients ignore pushes); push-suppression deferred (D4).
+- **Cross-file `#line` diagnostics in pull mode.** These remain unavailable
+  until Stage 4 can produce the complete union without over-claiming.

@@ -551,16 +551,62 @@ struct SignatureSurface {
 }
 
 /// Whether the node carries any accessibility token (`private` / `internal` /
-/// `public`) anywhere. Stage 2 models only the unannotated (public) surface:
-/// `val private` is dropped by design (FS1094 cross-file — hide = drop), and
-/// `internal` / repr-level accessibility are Stage-3 refinements — a skipped
-/// decl's names stay in the screen's token set, so readings of them defer.
-/// (An explicit `public` is also skipped — over-conservative but sound.)
+/// `public`) anywhere. Gates the *type* surface: `type private T` and
+/// repr-level accessibility (`type T = private | …`) are a later Stage-3
+/// slice — a skipped decl's names stay in the screen's token set, so
+/// readings of them defer.
 fn has_access_token(node: &SyntaxNode) -> bool {
     use borzoi_cst::syntax::SyntaxKind;
     node.descendants_with_tokens()
         .filter_map(|el| el.into_token())
         .any(|t| t.kind() == SyntaxKind::ACCESS_TOK)
+}
+
+/// The accessibility classification of one signature `val` (FCS-probed
+/// 2026-07-18; `docs/fsi-signature-restriction-plan.md` Stage 3).
+enum SigValAccess {
+    /// No modifier, `public`, or `internal`: all project-visible — one
+    /// project is one assembly, so `internal` restricts nothing sema can
+    /// see — and a cross-file use binds the `.fsi` ident, clean. The val
+    /// exports exactly like a plain public one.
+    Exported,
+    /// `private`: the val exports with a **restricted access root** (its
+    /// declaring container — [`ExportedItem::access_root_len`](model::ExportedItem)
+    /// semantics, exactly as an impl-side `let private`). FCS-probed both
+    /// ways: a later fragment of the *same module* reads it
+    /// diagnostics-clean (the `.fsi` ident is the decl — codex Stage-3
+    /// round 1), while everywhere else it behaves as dropped — an earlier
+    /// public fragment's same-path value or a colliding assembly member
+    /// binds *cleanly*, and a direct outside reading is FS1094 (never
+    /// clean). The shared accessibility machinery
+    /// ([`accessible_from`](model::accessible_from) through
+    /// `latest_accessible_value`) delivers all three verdicts per site.
+    Private,
+    /// An access-token shape we cannot place (more than one token, or one
+    /// that does not precede the ident). Skip the decl; its names stay
+    /// screened.
+    Unknown,
+}
+
+/// Classify a signature `val`'s accessibility from its head — the one
+/// `ACCESS_TOK` slot before the ident (`val mutable inline private x : T`).
+fn sig_val_access(vd_node: &SyntaxNode, ident: &SyntaxToken) -> SigValAccess {
+    use borzoi_cst::syntax::SyntaxKind;
+    let mut toks = vd_node
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::ACCESS_TOK);
+    let Some(tok) = toks.next() else {
+        return SigValAccess::Exported;
+    };
+    if toks.next().is_some() || tok.text_range().start() >= ident.text_range().start() {
+        return SigValAccess::Unknown;
+    }
+    match tok.text() {
+        "private" => SigValAccess::Private,
+        "internal" | "public" => SigValAccess::Exported,
+        _ => SigValAccess::Unknown,
+    }
 }
 
 /// Whether a `val`'s declared type makes it a **function** (`int -> int`):
@@ -578,21 +624,36 @@ fn sig_val_type_is_function(ty: Option<Type>) -> bool {
     }
 }
 
-/// Collect the exactly-modelled Stage-2 exports of one signature container
-/// (a module root's direct `sig_decls`): plain public `val`s (active-pattern
+/// Collect the exactly-modelled exports of one signature container (a module
+/// root's direct `sig_decls`): `val`s of every accessibility (active-pattern
 /// and operator-named `val`s are Stage 3 — a `val` with no plain ident is
-/// skipped) and the cases of visible union/enum representations. Everything
-/// skipped stays covered by the screen's over-approximated name set, so it
-/// defers rather than falling through.
+/// skipped; a `val private` exports with its container as access root, see
+/// [`SigValAccess::Private`]) and the cases of visible union/enum
+/// representations. Everything skipped stays covered by the screen's
+/// over-approximated name set, so it defers rather than falling through.
+///
+/// `access_floor` is the container's own accessibility: `Some(k)` for a
+/// `module private` header (its **parent** prefix length — the impl-side
+/// floor rule, see `decls::export_access_root_len`; FCS-probed: a private
+/// module's surface is visible to the whole enclosing container, e.g. any
+/// same-namespace sibling in any file, clean), `None` for a public /
+/// `internal` header. Every export inherits the floor; a `val private`
+/// deepens it to its own container.
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
+    access_floor: Option<usize>,
     defs: &mut Vec<Def>,
     exports: &mut Vec<model::SigExport>,
 ) {
+    debug_assert!(
+        access_floor.is_none_or(|f| f < container.len()),
+        "access_floor must be a proper prefix length of the container"
+    );
     let mut push = |defs: &mut Vec<Def>,
                     def: Def,
                     qualified: bool,
+                    access_root_len: Option<usize>,
                     case: Option<CaseKind>,
                     type_qualified: Option<Vec<String>>,
                     attributed: bool| {
@@ -607,6 +668,7 @@ fn collect_sig_container_exports(
             qualified: qualified.then(|| path.clone()),
             path,
             def: def_id,
+            access_root_len,
             case,
             type_qualified,
             attributed,
@@ -616,21 +678,28 @@ fn collect_sig_container_exports(
     for decl in decls {
         match decl {
             SigDecl::Val(vd) => {
-                if has_access_token(vd.syntax()) {
-                    continue;
-                }
                 let Some(vs) = vd.val_sig() else { continue };
+                // Active-pattern / operator-named `val`s are Stage 3,
+                // whatever their accessibility: their case names stay
+                // screened.
                 if vs.active_pat_name().is_some() {
                     continue;
                 }
                 let Some(ident) = vs.ident() else { continue };
+                let access_root_len = match sig_val_access(vd.syntax(), &ident) {
+                    SigValAccess::Exported => access_floor,
+                    // Own-container `private` is always the deeper boundary
+                    // (the floor is a proper prefix of the container).
+                    SigValAccess::Private => Some(container.len()),
+                    SigValAccess::Unknown => continue,
+                };
                 // Any attribute list is a maybe-`[<Literal>]`
                 // (`ExportedItem::attributed` — presence is the sound
                 // over-approximation).
                 let attributed = vd.attributes().next().is_some();
                 let is_function = sig_val_type_is_function(vs.ty());
                 let def = Def::from_token(&ident, DefKind::Value { is_function });
-                push(defs, def, true, None, None, attributed);
+                push(defs, def, true, access_root_len, None, None, attributed);
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
@@ -665,6 +734,7 @@ fn collect_sig_container_exports(
                                     // An RQA union case is not in the value
                                     // namespace — type-qualified only.
                                     !rqa,
+                                    access_floor,
                                     Some(CaseKind::Union {
                                         require_qualified: rqa,
                                     }),
@@ -678,7 +748,15 @@ fn collect_sig_container_exports(
                                 let Some(ident) = case.ident() else { continue };
                                 let def = Def::from_token(&ident, DefKind::EnumCase);
                                 let tq = tq_path(id_text(&def.name));
-                                push(defs, def, false, Some(CaseKind::Enum), Some(tq), false);
+                                push(
+                                    defs,
+                                    def,
+                                    false,
+                                    access_floor,
+                                    Some(CaseKind::Enum),
+                                    Some(tq),
+                                    false,
+                                );
                             }
                         }
                         // Opaque (no repr), abbreviation, record, object
@@ -714,16 +792,22 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         match fragment.kind() {
             ModuleOrNamespaceKind::NamedModule => {
                 if let Some(path) = header_long_id_path(&fragment) {
-                    // `module internal M` / `module private M` headers are
-                    // Stage 3 — skip the surface, keep the screen.
-                    if !header_has_access_token(fragment.syntax()) {
-                        collect_sig_container_exports(
-                            &path,
-                            fragment.sig_decls(),
-                            &mut defs,
-                            &mut exports,
-                        );
-                    }
+                    // A `module internal M` header restricts nothing sema
+                    // can see (one project = one assembly; FCS-probed).
+                    // `module private M` exports with its **parent** as the
+                    // access floor (FCS-probed: a same-namespace sibling in
+                    // any file reads the surface clean, decl = the `.fsi`;
+                    // outside it only FS1092/FS1094 — the site-aware lookup
+                    // delivers both verdicts).
+                    let access_floor =
+                        decls::header_is_private(fragment.syntax()).then(|| path.len() - 1);
+                    collect_sig_container_exports(
+                        &path,
+                        fragment.sig_decls(),
+                        access_floor,
+                        &mut defs,
+                        &mut exports,
+                    );
                     roots.push(model::SigRoot {
                         path,
                         auto_open: attrs_auto_open(fragment.attributes()),
@@ -744,17 +828,19 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             path.extend(li.idents().map(|t| id_text(t.text()).to_string()));
                             // A namespace-direct module is the module *root*
                             // (nesting deeper is Stage 3): collect its direct
-                            // Stage-2 surface — unless its header carries an
-                            // accessibility modifier (`module internal M`,
-                            // Stage 3), where the screen keeps it deferred.
-                            if !header_has_access_token(nm.syntax()) {
-                                collect_sig_container_exports(
-                                    &path,
-                                    nm.sig_decls(),
-                                    &mut defs,
-                                    &mut exports,
-                                );
-                            }
+                            // surface — `module internal` included (project-
+                            // visible, FCS-probed), `module private` with the
+                            // enclosing namespace as its access floor
+                            // (FCS-probed: sibling-visible, outside-erroring).
+                            let access_floor =
+                                decls::header_is_private(nm.syntax()).then(|| path.len() - 1);
+                            collect_sig_container_exports(
+                                &path,
+                                nm.sig_decls(),
+                                access_floor,
+                                &mut defs,
+                                &mut exports,
+                            );
                             let auto_open = attrs_auto_open(nm.attributes());
                             if auto_open {
                                 auto_open_nested.push(path.clone());
@@ -838,6 +924,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     collect_sig_container_exports(
                         &path,
                         fragment.sig_decls(),
+                        None,
                         &mut defs,
                         &mut exports,
                     );
@@ -873,23 +960,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         defs,
         exports,
     }
-}
-
-/// Whether a module **header** (tokens up to the module name) carries an
-/// accessibility token — `module internal M` / `module private M`. Scans
-/// only up to the `LONG_IDENT`, so accessibility inside the module's *body*
-/// decls (each judged separately) does not spill over. Works for both a
-/// top-level fragment header and a signature nested-module decl.
-fn header_has_access_token(node: &SyntaxNode) -> bool {
-    use borzoi_cst::syntax::SyntaxKind;
-    for el in node.children_with_tokens() {
-        match el {
-            rowan::NodeOrToken::Node(n) if n.kind() == SyntaxKind::LONG_IDENT => return false,
-            rowan::NodeOrToken::Token(t) if t.kind() == SyntaxKind::ACCESS_TOK => return true,
-            _ => {}
-        }
-    }
-    false
 }
 
 /// The signature's over-approximated exposable-name set: any name a `.fsi`

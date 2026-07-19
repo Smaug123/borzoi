@@ -13,6 +13,6 @@
 //! `Command::{spawn,status,output}`) keep working unchanged.
 
 pub use borzoi_spawn::{
-    BoundedCommand, ChildFailure, output_bounded, output_serialised, spawn_serialised,
-    status_serialised,
+    BoundedCommand, ChildFailure, default_timeout, in_thread, output_bounded, output_serialised,
+    spawn_serialised, status_serialised,
 };
