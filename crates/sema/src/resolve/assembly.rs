@@ -62,30 +62,27 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
-        // Whether the rooting's top-level FQN is exported by more than one loaded
-        // DLL, at the **arity `lookup_type` selected** (0). `lookup_type` returns
-        // the first-enumerated entity at a colliding key, so when two referenced
-        // assemblies export the same top-level FQN — an abbreviation in one, a real
-        // type or module in another — FCS applies reference-order/merge precedence
-        // sema does not model, and resolving *through* the first-picked alias would
-        // commit a member from the wrong DLL. Only a **top-level** FQN merges across
-        // DLLs (nested entities are interned within one parent's subtree), so this
-        // rooting count also guards a nested alias reached below a merged parent
-        // module. When it collides an alias chase must defer, as the
-        // pre-resolve-through marker did. Counting *distinct DLLs at arity 0* (not
-        // all same-named entities) avoids over-deferring a legal `type Alias =
-        // Widget` beside a generic `type Alias<'T>` in one DLL — a plain non-alias
-        // reading is unchanged either way (first-wins, out of scope). Codex review.
-        // Computed lazily: consulted only when an alias is actually met, and
-        // the check scans every loaded top-level type (codex round 6).
-        let rooting_collision = std::cell::OnceCell::new();
-        let rooting_fqn_collides = || {
-            *rooting_collision.get_or_init(|| {
-                self.assemblies
-                    .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
-                    > 1
-            })
-        };
+        // The rooting's top-level FQN exported by more than one loaded DLL, at
+        // the **arity `lookup_type` selected** (0): FCS merges same-FQN roots
+        // across references and binds the latest *accessible* one (fsi-verified
+        // with two probe libraries, both reference orders; an internal
+        // contestant is skipped regardless of order), which sema does not model
+        // — `lookup_type` is first-wins. Any commit at a merged rooting could
+        // therefore name the wrong DLL's type, and any descent below it walks
+        // the first-indexed subtree, which may miss the other DLL's
+        // contribution (only a **top-level** FQN merges across DLLs; nested
+        // entities are interned within one parent's subtree). So the whole path
+        // defers (D5: defer, never a wrong target). Counting *distinct DLLs at
+        // arity 0* (not all same-named entities) keeps a same-DLL companion
+        // module — and a `type Alias = Widget` beside a generic `type
+        // Alias<'T>` in one DLL — resolving (codex review).
+        if self
+            .assemblies
+            .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
+            > 1
+        {
+            return AssemblyPath::ProjectShadowed;
+        }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
@@ -95,16 +92,14 @@ impl<'a> Resolver<'a> {
         // (structural, generic, or not loaded) shadow-defers as before (D5: defer,
         // never a wrong target).
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
-            // Two guards make resolve-through unsafe here — defer, as the marker
-            // did before Stage 4: (1) the alias's own FQN collides across DLLs
-            // (`rooting_fqn_collides` above), so a later-referenced DLL may own the
-            // name; (2) the alias has a ModuleSuffix companion module, whose member
-            // FCS routes `Alias.Member` to, not the target's (fcs-verified) — a
-            // module-over-target precedence we do not model (codex review).
-            if rooting_fqn_collides()
-                || self
-                    .assemblies
-                    .alias_has_companion_module(type_handle, None)
+            // Resolve-through is unsafe when the alias has a ModuleSuffix
+            // companion module, whose member FCS routes `Alias.Member` to, not
+            // the target's (fcs-verified) — a module-over-target precedence we
+            // do not model (codex review). Defer, as the marker did before
+            // Stage 4.
+            if self
+                .assemblies
+                .alias_has_companion_module(type_handle, None)
             {
                 return AssemblyPath::ProjectShadowed;
             }
@@ -169,15 +164,13 @@ impl<'a> Resolver<'a> {
                 // A nested abbreviation marker: resolve through its target (or
                 // shadow-defer if unresolvable), same as the rooting case above.
                 let child_walk = if self.assemblies.is_abbreviation(child) {
-                    // Defer for the same two reasons as the rooting branch: a merged
-                    // parent module (the rooting FQN collides across DLLs, so
-                    // `children(parent)` sees only one contributor and may miss the
-                    // other's `Alias`/companion), or a companion module beside this
-                    // nested alias (codex review).
-                    if rooting_fqn_collides()
-                        || self
-                            .assemblies
-                            .alias_has_companion_module(child, Some(parent))
+                    // Defer for the same reason as the rooting branch: a
+                    // companion module beside this nested alias (codex review).
+                    // (A merged parent — the rooting FQN colliding across DLLs
+                    // — already deferred the whole path at the rooting above.)
+                    if self
+                        .assemblies
+                        .alias_has_companion_module(child, Some(parent))
                     {
                         return AssemblyPath::ProjectShadowed;
                     }
@@ -515,25 +508,27 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
-        // Whether the rooting's top-level FQN is exported by more than one
-        // loaded DLL, at the arity `lookup_type` selected. FCS merges same-FQN
-        // roots by reference order, which sema does not model — so any chase
-        // decision at or below a merged rooting could name the wrong DLL's
-        // tree (the first-indexed subtree's `children` may miss the other
-        // DLL's contribution) and must defer instead. It guards both an alias
-        // *at* the root and one nested below a merged non-alias container
-        // (codex round 3; mirrors the value-path walk) — but is consulted
-        // ONLY when an alias is actually met, and the check scans every
-        // loaded top-level type, so it is computed lazily rather than taxing
-        // every ordinary `System.String` path (codex round 6).
-        let rooting_collision = std::cell::OnceCell::new();
-        let rooting_fqn_collides = || {
-            *rooting_collision.get_or_init(|| {
-                self.assemblies
-                    .distinct_dlls_with_public_type(&names[..k], &names[k], arity_at(k))
-                    > 1
-            })
-        };
+        // The rooting's top-level FQN exported by more than one loaded DLL, at
+        // the arity `lookup_type` selected: FCS merges same-FQN roots across
+        // references and binds the latest *accessible* one (fsi-verified with
+        // two probe libraries, both reference orders; an internal contestant
+        // is skipped regardless of order), which sema does not model —
+        // `lookup_type` is first-wins. Any commit at a merged rooting could
+        // therefore name the wrong DLL's type, and any descent below it walks
+        // the first-indexed subtree, which may miss the other DLL's
+        // contribution (only a **top-level** FQN merges across DLLs; nested
+        // entities are interned within one parent's subtree). So the whole
+        // path defers (D5; mirrors the value-path walk). Counting *distinct
+        // DLLs at the selected arity* (not all same-named entities) keeps a
+        // same-DLL companion module — and a `type Alias = Widget` beside a
+        // generic `type Alias<'T>` in one DLL — resolving (codex review).
+        if self
+            .assemblies
+            .distinct_dlls_with_public_type(&names[..k], &names[k], arity_at(k))
+            > 1
+        {
+            return AssemblyPath::ProjectShadowed;
+        }
 
         // A type-abbreviation *marker* (a metadata-invisible F# abbreviation
         // surfaced name-only from the signature pickle): the name is really
@@ -541,14 +536,11 @@ impl<'a> Resolver<'a> {
         // target lets the path resolve exactly as FCS does. The marker is the
         // recorded entity for its own segment (and the leaf, when the path
         // ends on it — FCS names the abbreviation, not its target); the
-        // chased terminal only carries the walk PAST it. Two things keep the
-        // pre-chase shadow-defer instead: an unchaseable target
+        // chased terminal only carries the walk PAST it. An unchaseable target
         // ([`AssemblyEnv::resolve_abbreviation_tycon`] declines structural /
-        // unloaded / ambiguous shapes), and the rooting collision above.
+        // unloaded / ambiguous shapes) keeps the pre-chase shadow-defer
+        // instead.
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
-            if rooting_fqn_collides() {
-                return AssemblyPath::ProjectShadowed;
-            }
             match self.assemblies.resolve_abbreviation_tycon(type_handle) {
                 Some(terminal) => terminal,
                 None => return AssemblyPath::ProjectShadowed,
@@ -593,14 +585,10 @@ impl<'a> Resolver<'a> {
             {
                 // A nested abbreviation marker (`Lib.Auto.Foo` where `Foo` is
                 // a module-scoped abbreviation): same chase-or-defer as the
-                // rooting case above, including the rooting collision guard —
-                // a nested alias below a merged non-alias container is
-                // reached through the first-indexed subtree, which may miss
-                // the other DLL's contribution (codex round 3).
+                // rooting case above. (A nested alias below a *merged*
+                // non-alias container cannot be reached here — a rooting two
+                // DLLs export already deferred the whole path above.)
                 let next = if self.assemblies.is_abbreviation(child) {
-                    if rooting_fqn_collides() {
-                        return AssemblyPath::ProjectShadowed;
-                    }
                     match self.assemblies.resolve_abbreviation_tycon(child) {
                         Some(terminal) => {
                             via_alias = true;

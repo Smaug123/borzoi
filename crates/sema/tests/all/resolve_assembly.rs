@@ -2314,6 +2314,146 @@ fn colliding_assembly_types_all_count_for_eviction() {
     assert_head_evicted(&env);
 }
 
+// ===== Contested same-FQN rooting across differently-named DLLs =====
+//
+// fsc/FCS merges same-FQN top-level types across references and binds the
+// latest *accessible* reference (fsi-verified with two probe libraries, both
+// reference orders, in type position and through a static-member path; an
+// internal contestant is skipped regardless of order). Sema's `lookup_type`
+// slot is first-wins and does not model that merge, so a commit at a rooting
+// two distinct DLLs export could name the wrong DLL's type — it must defer
+// instead, in both the type-position and the value/member walk.
+
+/// Two *differently-named* referenced assemblies each declaring a real public
+/// class at the same FQN `Ns.Color` (cloned from the fixture's `Demo.Widget`,
+/// so member metadata stays valid — including the `StaticCount` static the
+/// member-path test walks to).
+fn contested_color_env() -> AssemblyEnv {
+    let ents = fixture_entities();
+    let mut first = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    first.namespace = vec!["Ns".to_string()];
+    first.name = "Color".to_string();
+    first.nested_types = vec![];
+    let mut second = first.clone();
+    second.assembly.name = "OtherLib".to_string();
+    AssemblyEnv::from_entities(vec![first, second])
+}
+
+fn assert_defers(rf: &ResolvedFile, src: &str, needle: &str) {
+    match rf.resolution_at(at(src, needle)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        other => panic!("expected {needle:?} to defer at a contested rooting, got {other:?}"),
+    }
+}
+
+#[test]
+fn contested_same_fqn_type_defers_in_type_position() {
+    let env = contested_color_env();
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
+fn contested_same_fqn_type_defers_when_shortened_by_an_open() {
+    let env = contested_color_env();
+    let src = "module M\nopen Ns\nlet x : Color = Unchecked.defaultof<_>\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
+fn contested_same_fqn_type_defers_a_static_member_path() {
+    let env = contested_color_env();
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    assert_defers(&rf, src, "Color");
+    // A resolved static member records over the whole path span — that span
+    // must not commit either.
+    assert_defers(&rf, src, "Ns.Color.StaticCount");
+}
+
+#[test]
+fn same_fqn_across_dlls_at_different_arities_still_resolves() {
+    // DLL A declares `Ns.Color` (arity 0); a differently-named DLL B declares
+    // `Ns.Color<'T>` (arity 1). The contested-rooting guard counts distinct
+    // DLLs at the arity the lookup selected, so the arity-0 use is uncontested
+    // and must keep resolving — a bare `type Alias = Widget` beside a generic
+    // `type Alias<'T>` is a legal shape, not a merge.
+    let ents = fixture_entities();
+    let mut zero = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.is_empty()
+        })
+        .expect("an arity-0 Demo class")
+        .clone();
+    zero.namespace = vec!["Ns".to_string()];
+    zero.name = "Color".to_string();
+    zero.nested_types = vec![];
+    let mut one = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.len() == 1
+        })
+        .expect("an arity-1 Demo class")
+        .clone();
+    one.namespace = vec!["Ns".to_string()];
+    one.name = "Color".to_string();
+    one.nested_types = vec![];
+    one.assembly.name = "OtherLib".to_string();
+    let env = AssemblyEnv::from_entities(vec![zero, one]);
+    let handle = env
+        .lookup_type(&["Ns".to_string()], "Color", 0)
+        .expect("arity-0 Ns.Color");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Color")),
+        Some(Resolution::Entity(handle)),
+        "an arity-scoped non-collision must keep resolving"
+    );
+}
+
+#[test]
+fn same_dll_type_and_companion_module_still_resolve() {
+    // One DLL's `type Color` beside its companion `module Color` (compiled
+    // `ColorModule`, source name `Color`) shares the `(namespace, name)` bucket
+    // without any cross-DLL contest — the FSharp.Core-critical shape (`type
+    // Result` + `module Result`). The guard counts DLLs, not bucket entries,
+    // so this must keep resolving to the type.
+    let ents = fixture_entities();
+    let mut ty = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    ty.namespace = vec!["Ns".to_string()];
+    ty.name = "Color".to_string();
+    ty.nested_types = vec![];
+    let mut module = ty.clone();
+    module.kind = EntityKind::Module;
+    module.name = "ColorModule".to_string();
+    module.source_name = Some("Color".to_string());
+    let env = AssemblyEnv::from_entities(vec![ty, module]);
+    let handle = env
+        .lookup_type(&["Ns".to_string()], "Color", 0)
+        .expect("Ns.Color");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Color")),
+        Some(Resolution::Entity(handle)),
+        "a same-DLL type/companion-module bucket is not a cross-DLL contest"
+    );
+}
+
 // ===== Extension members never enter unqualified scope (autoopen plan ⚠) =====
 
 #[test]
