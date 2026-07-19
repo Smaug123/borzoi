@@ -263,10 +263,26 @@ module DirectOps =
 
     // A nested MODULE: opening `DirectOps` also makes `DirectSub` a
     // bare-visible dotted HEAD (`DirectSub.DirectSubT`), outranking the
-    // same-named global-namespace module below.
+    // same-named global-namespace module below. Its CONTENTS are not
+    // bare-visible, though — `DirectSub` is not `[<AutoOpen>]`, so a bare
+    // `DirectSubT` is FS0039 (fsi-verified): the shadow surface is the
+    // imported one, not the whole tree.
     module DirectSub =
         type DirectSubT() =
             member _.Marker = 3
+
+    // An `[<AutoOpen>]` nested module: FCS opens it transitively with its
+    // parent, so ITS nested type is bare-visible too (fsi-verified).
+    [<AutoOpen>]
+    module DirectAuto =
+        type DirectAutoT() =
+            member _.Marker = 4
+
+    // A PRIVATE nested type: never importable cross-assembly, so the
+    // same-named global-namespace type below stays FCS's binding for a bare
+    // `DirectPrivate` (fsi-verified) — the shadow surface must not count it.
+    type private DirectPrivate() =
+        member _.Marker = 5
 
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
@@ -666,3 +682,9 @@ module DirectSub =
 
 type GlobalPlain() =
     member _.Decoy = 3
+
+// The decoy for `DirectOps`'s PRIVATE nested type of the same name: the
+// private one is not importable, so FCS binds THIS one bare (fsi-verified) —
+// the manifest-module shadow surface must let it commit.
+type DirectPrivate() =
+    member _.Decoy = 4

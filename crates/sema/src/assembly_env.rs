@@ -1822,8 +1822,9 @@ impl AssemblyEnv {
     ///   types, and its auto-open modules' trees (a dropped type in the
     ///   namespace answers `true` for every name: we cannot see what it was);
     /// - a **module/type-shaped** target ([`Self::auto_open_module_handles`]):
-    ///   its tree's entities are bare-visible, and a dropped type in its owning
-    ///   namespace could be a hidden one.
+    ///   its imported surface ([`Self::module_open_surface_has_entity_named`])
+    ///   is bare-visible, and a dropped type in its owning namespace could be
+    ///   a hidden part of it.
     ///
     /// Deferral-only for the attribute resolution (EX-3 §2(d)): a `true` here
     /// never resolves anything, it only withholds a commitment that a modeled
@@ -1884,7 +1885,33 @@ impl AssemblyEnv {
             let owning = &self.nodes[h.index()].owning_namespace;
             self.namespace_has_dropped_type(owning)
                 || self.unknowable_abbreviations_in_namespace(owning)
-                || self.entity_tree_has_entity_named(h, name)
+                || self.module_open_surface_has_entity_named(h, name)
+        })
+    }
+
+    /// Whether opening the module `handle` imports an entity named `name`
+    /// into bare scope: its **public direct children** (a nested type is
+    /// bare-visible; a nested module is a bare-visible dotted head), matched
+    /// by source (else IL) name, plus — FCS opens `[<AutoOpen>]` submodules
+    /// recursively — the surface of each public auto-open child module.
+    /// Deliberately the *imported surface*, not the whole tree: a private
+    /// child can never be named cross-assembly (FSharp.Core's auto-open
+    /// modules carry many private compiler-generated closure classes; see
+    /// [`Self::auto_open_module_shadows_type_named`], which is public-only
+    /// for the same reason), and a non-auto-open submodule's contents stay
+    /// qualified-only (fsi-verified: with `DirectOps` manifest-opened, bare
+    /// `DirectSubT` is FS0039 while `DirectSub.DirectSubT` resolves) —
+    /// counting either would defer bare names FCS resolves elsewhere (codex
+    /// review of this change).
+    fn module_open_surface_has_entity_named(&self, handle: EntityHandle, name: &str) -> bool {
+        self.children(handle).iter().any(|&child| {
+            self.is_public(child)
+                && (self.entity_source_name(child) == name || {
+                    let e = self.entity(child);
+                    e.kind == EntityKind::Module
+                        && e.is_auto_open
+                        && self.module_open_surface_has_entity_named(child, name)
+                })
         })
     }
 
@@ -6433,6 +6460,57 @@ mod from_views_tests {
         assert!(
             !cenv.manifest_auto_open_module_could_supply_entity_named("X"),
             "the module-only query must not fold contested namespace opens"
+        );
+    }
+
+    /// The query walks the module's **imported surface**, not its whole tree
+    /// (codex review): a private child is never importable cross-assembly, a
+    /// plain submodule's contents stay qualified-only, and only an
+    /// `[<AutoOpen>]` submodule is opened recursively — each fsi-verified
+    /// against the `autoopen_env` fixture's `DirectOps`.
+    #[test]
+    fn manifest_module_shadow_query_walks_the_imported_surface_only() {
+        let private_child = Entity {
+            kind: EntityKind::Class,
+            access: Access::Private,
+            ..module_entity("Lib", &["A"], "Hidden")
+        };
+        let plain_sub = Entity {
+            nested_types: vec![Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["A"], "Qualified")
+            }],
+            ..module_entity("Lib", &["A"], "PlainSub")
+        };
+        let auto_sub = Entity {
+            is_auto_open: true,
+            nested_types: vec![Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["A"], "Transitive")
+            }],
+            ..module_entity("Lib", &["A"], "AutoSub")
+        };
+        let target = Entity {
+            nested_types: vec![private_child, plain_sub, auto_sub],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named("Hidden"),
+            "a private child is not imported"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("PlainSub"),
+            "a public submodule is a bare-visible dotted head"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named("Qualified"),
+            "a plain submodule's contents are not bare-visible"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("Transitive"),
+            "an [<AutoOpen>] submodule is opened recursively with its parent"
         );
     }
 

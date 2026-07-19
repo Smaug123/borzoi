@@ -741,6 +741,60 @@ fn manifest_auto_open_module_nested_module_defers_a_dotted_head() {
 }
 
 #[test]
+fn manifest_auto_open_module_transitive_auto_open_nested_type_defers() {
+    // FCS opens `[<AutoOpen>]` submodules recursively with their parent, so
+    // `DirectOps.DirectAuto`'s nested `DirectAutoT` is bare-visible too
+    // (fsi-verified) — the imported-surface walk must descend through the
+    // auto-open child and defer the name.
+    let env = fixture_env();
+    let src = "let f (x: DirectAutoT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectAutoT")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "a transitively auto-opened nested type must mark the bare annotation shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_private_nested_type_does_not_veto() {
+    // `DirectOps` also nests a PRIVATE `DirectPrivate`, never importable
+    // cross-assembly: FCS binds the same-named global-namespace decoy
+    // (fsi-verified), so the shadow surface must not count the private child
+    // — the root commitment stands. This is the shape that matters at scale:
+    // FSharp.Core's auto-open modules are full of private compiler-generated
+    // closure classes (codex review of this change).
+    let env = fixture_env();
+    let src = "let f (x: DirectPrivate) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectPrivate", 0)
+        .expect("fixture must declare a global-namespace DirectPrivate");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectPrivate")),
+        Some(Resolution::Entity(root)),
+        "a private nested type is not imported — the global-namespace type must commit"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_plain_submodule_contents_do_not_veto_bare_use() {
+    // `DirectSub` is NOT `[<AutoOpen>]`, so opening `DirectOps` makes it a
+    // dotted head but does not import its contents: bare `DirectSubT` is
+    // FS0039 in FCS (fsi-verified). Nothing else declares the name, so the
+    // sound verdict is a clean no-match (nothing recorded) — a whole-tree
+    // scan would have deferred it.
+    let env = fixture_env();
+    let src = "let f (x: DirectSubT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSubT")),
+        None,
+        "a plain submodule's nested type is not bare-visible — no shadow, no record"
+    );
+}
+
+#[test]
 fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
     // Over-defer control: `GlobalPlain` appears in no auto-open module's
     // tree, so the manifest-module shadow check must not touch it — it keeps
