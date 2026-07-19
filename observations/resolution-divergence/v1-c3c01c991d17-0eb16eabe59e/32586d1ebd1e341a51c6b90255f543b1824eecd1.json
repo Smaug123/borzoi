@@ -1,0 +1,77 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-c3c01c991d17-0eb16eabe59e",
+  "repository": "Smaug123/borzoi",
+  "commit": "32586d1ebd1e341a51c6b90255f543b1824eecd1",
+  "measured_at": "2026-07-19T13:00:29Z",
+  "workflow": {
+    "run_id": 29687730794,
+    "run_number": 2,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/29687730794"
+  },
+  "corpus": {
+    "source": "dotnet/fsharp",
+    "revision": "c3c01c991d17643700d343cee5c5a1e20c06ce03"
+  },
+  "flake_lock_hash": "f27a8220b9ba57001e2e9025876c45078da8fe6f5d81d34471f569582813a136",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "resolution-divergence",
+    "configuration": {
+      "corpus": "fsharp-src",
+      "file_extensions": [
+        "fs"
+      ],
+      "limit": null,
+      "scope": "in-file",
+      "stride": 13
+    },
+    "statistics": {
+      "alt_binders": 230,
+      "b1_coverage": {
+        "basis_points": 8828,
+        "matched": 22058,
+        "seen": 24984
+      },
+      "divergences": 0,
+      "files_compared": 355,
+      "gap_b1_by_tag": {
+        "active-pattern-case": 34,
+        "constructor": 221,
+        "entity:module": 94,
+        "entity:namespace": 24,
+        "entity:type": 425,
+        "parameter": 24,
+        "static-member": 47,
+        "static-member:overloaded(group)": 15,
+        "type-parameter": 396,
+        "union-case": 206,
+        "value:local-or-param": 1001,
+        "value:module-or-import": 439
+      },
+      "gaps": {
+        "b1": 2926,
+        "b2": 1174,
+        "b3": 144,
+        "other": 0,
+        "total": 4244
+      },
+      "infrastructure": {
+        "fcs_not_ok": 1,
+        "our_panics": 0,
+        "our_parser_errors": 44,
+        "unreadable": 1
+      },
+      "matches": {
+        "by_bucket": {
+          "B1": 22058,
+          "B2": 1
+        },
+        "total": 22059
+      },
+      "out_of_file": 20754,
+      "uses_adjudicated": 26533
+    }
+  }
+}
