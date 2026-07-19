@@ -772,6 +772,20 @@ impl SemanticState {
         docs: &HashMap<Url, String>,
     ) -> Option<(Arc<ResolvedProject>, Arc<AssemblyEnv>)> {
         let key = canonicalise(project);
+        let lookup_span = tracing::info_span!(
+            "semantic.project_lookup",
+            project = %project.display(),
+            scope = if up_to_index == usize::MAX { "full" } else { "prefix" },
+            cache_hit = tracing::field::Empty,
+            requested_files = tracing::field::Empty,
+            cached_files = tracing::field::Empty,
+        );
+        let _lookup_guard = lookup_span.enter();
+        let cached_files = self
+            .resolved_projects
+            .get(&key)
+            .map_or(0, |(resolved, _env)| resolved.len());
+        lookup_span.record("cached_files", cached_files);
 
         // Fast path — **before any `Workspace`/SDK probing**. `dotnet_root_for_project`
         // can spawn `dotnet --info` under a long deadline (asdf/mise/Nix-style
@@ -784,12 +798,15 @@ impl SemanticState {
         // built and dropped together), so this correctly falls through.
         if let Some(cached_parses) = self.project_parses.get(&key) {
             let want_len = up_to_index.saturating_add(1).min(cached_parses.files.len());
+            lookup_span.record("requested_files", want_len);
             if let Some((resolved, env)) = self.resolved_projects.get(&key)
                 && resolved.len() >= want_len
             {
+                lookup_span.record("cache_hit", true);
                 return Some((Arc::clone(resolved), Arc::clone(env)));
             }
         }
+        lookup_span.record("cache_hit", false);
 
         // Slow path: (re-)evaluate parses + env and fold the prefix.
         //
@@ -816,6 +833,7 @@ impl SemanticState {
         // Resolve `0..want_len`; `up_to_index` is a valid Compile index (or
         // `usize::MAX` for "the whole project"), so `+1` (saturating) then clamp.
         let want_len = up_to_index.saturating_add(1).min(parses.files.len());
+        lookup_span.record("requested_files", want_len);
         // Assembly env — always returns *some* env (empty if anything is
         // missing). Caches a separate slot. `retryable` is set when a
         // transient C# sidecar failure left the env incomplete and un-cached.
@@ -858,13 +876,14 @@ impl SemanticState {
                 .get(&key)
                 .filter(|prev| Arc::ptr_eq(&prev.env, &env));
             took_incremental = reusable_prev.is_some();
-            let _span = tracing::info_span!(
+            let resolve_span = tracing::info_span!(
                 "resolve_project",
                 files = want_len,
                 incremental = took_incremental,
-            )
-            .entered();
-            match reusable_prev {
+                reused_files = tracing::field::Empty,
+            );
+            let _resolve_guard = resolve_span.enter();
+            let answer = match reusable_prev {
                 // Incremental: reuse per-file results the edit can't have changed,
                 // re-resolving only what it touched. Returns exactly what a cold
                 // fold would (asserted by sema's `incremental ≡ batch` differential).
@@ -917,7 +936,9 @@ impl SemanticState {
                     let resolved = borzoi_sema::resolve_project_files_prefix(files, want_len, &env);
                     (Arc::new(resolved), 0)
                 }
-            }
+            };
+            resolve_span.record("reused_files", answer.1);
+            answer
         };
         if took_incremental {
             self.incremental_folds += 1;
@@ -5124,9 +5145,10 @@ mod tests {
         // Body-only edit to C, then request C's prefix again.
         docs.insert(c_uri, "module C\nlet z = (B.y)\n".to_string());
         sema.invalidate_project(&proj);
-        let (p2, _) = sema
-            .resolved_prefix_and_env_for(&proj, 2, &mut ws, &docs)
-            .expect("prefix up to 2 after edit");
+        let ((p2, _), trace) = crate::test_trace::capture(|| {
+            sema.resolved_prefix_and_env_for(&proj, 2, &mut ws, &docs)
+                .expect("prefix up to 2 after edit")
+        });
         assert_eq!(
             p2.len(),
             3,
@@ -5142,6 +5164,12 @@ mod tests {
             2,
             "A and B reused; only the edited C recomputed (D was never in scope)"
         );
+        let lookup = trace.only_span("semantic.project_lookup");
+        assert_eq!(lookup.field("cache_hit"), Some("false"));
+        assert_eq!(lookup.field("requested_files"), Some("3"));
+        let fold = trace.only_span("resolve_project");
+        assert_eq!(fold.field("incremental"), Some("true"));
+        assert_eq!(fold.field("reused_files"), Some("2"));
     }
 
     /// A shallow prefix request must not discard a deeper incremental base: after

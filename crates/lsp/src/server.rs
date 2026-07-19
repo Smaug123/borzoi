@@ -608,16 +608,21 @@ pub fn run_with_fetcher(
                         "received a request after shutdown".to_string(),
                     )))?;
                 } else {
-                    match handle_request(&mut state, req) {
-                        // Synchronous request: reply immediately, as before.
-                        Dispatch::Reply(response) => {
-                            connection.sender.send(Message::Response(response))?;
-                        }
-                        // Cold SourceLink fetch: hand to the pool, which replies
-                        // out-of-band when it completes. The loop never blocks on
-                        // the network.
-                        Dispatch::Defer { id, pending } => {
-                            dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
+                    let method = req.method.clone();
+                    {
+                        let _request_span =
+                            tracing::info_span!("lsp.request", method = %method).entered();
+                        match handle_request(&mut state, req) {
+                            // Synchronous request: reply immediately, as before.
+                            Dispatch::Reply(response) => {
+                                enqueue_response(&connection, &method, response)?;
+                            }
+                            // Cold SourceLink fetch: hand to the pool, which replies
+                            // out-of-band when it completes. The loop never blocks on
+                            // the network.
+                            Dispatch::Defer { id, pending } => {
+                                dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
+                            }
                         }
                     }
                     maybe_send_refresh(&mut state, &connection);
@@ -647,6 +652,19 @@ pub fn run_with_fetcher(
         }
     }
 
+    Ok(())
+}
+
+/// Enqueue one synchronous response onto `lsp_server`'s writer channel. This
+/// span measures channel enqueue latency; the writer thread owns stdout, and
+/// client delivery is outside the server process.
+fn enqueue_response(
+    connection: &Connection,
+    method: &str,
+    response: Response,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let _span = tracing::info_span!("lsp.response_enqueue", method).entered();
+    connection.sender.send(Message::Response(response))?;
     Ok(())
 }
 
@@ -826,7 +844,6 @@ pub enum Dispatch {
 /// network the dispatch loop must not block on); every other request replies
 /// synchronously.
 pub fn handle_request(state: &mut State, req: Request) -> Dispatch {
-    let _span = tracing::info_span!("lsp.request", method = %req.method).entered();
     if req.method == GotoDefinition::METHOD {
         let id = req.id.clone();
         return match extract::<GotoDefinition>(req) {
@@ -886,7 +903,7 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
         References::METHOD => match extract::<References>(req) {
             Ok((id, params)) => {
                 let resp = crate::handlers::references::handle(state, params);
-                ok_response(id, &resp)
+                references_response(id, &resp)
             }
             Err(err) => err_response(
                 id,
@@ -1396,6 +1413,16 @@ fn ok_response<T: serde::Serialize>(id: RequestId, value: &T) -> Response {
     }
 }
 
+fn references_response(id: RequestId, value: &Option<Vec<lsp_types::Location>>) -> Response {
+    let _span = tracing::info_span!(
+        "lsp.response_serialize",
+        method = References::METHOD,
+        result_count = value.as_ref().map_or(0, Vec::len),
+    )
+    .entered();
+    ok_response(id, value)
+}
+
 fn err_response(id: RequestId, code: lsp_server::ErrorCode, message: String) -> Response {
     Response {
         id,
@@ -1440,6 +1467,35 @@ mod tests {
 
     fn event(uri: Url, typ: FileChangeType) -> FileEvent {
         FileEvent { uri, typ }
+    }
+
+    #[test]
+    fn response_enqueue_span_identifies_the_request_method() {
+        let (server, client) = Connection::memory();
+        let response = ok_response(RequestId::from(1), &Vec::<lsp_types::Location>::new());
+
+        let (result, trace) =
+            crate::test_trace::capture(|| enqueue_response(&server, References::METHOD, response));
+        result.unwrap();
+        assert!(matches!(
+            client.receiver.recv().unwrap(),
+            Message::Response(_)
+        ));
+
+        let span = trace.only_span("lsp.response_enqueue");
+        assert_eq!(span.field("method"), Some(References::METHOD));
+    }
+
+    #[test]
+    fn references_serialization_span_records_the_result_count() {
+        let locations = Some(Vec::<lsp_types::Location>::new());
+
+        let (_response, trace) =
+            crate::test_trace::capture(|| references_response(RequestId::from(1), &locations));
+
+        let span = trace.only_span("lsp.response_serialize");
+        assert_eq!(span.field("method"), Some(References::METHOD));
+        assert_eq!(span.field("result_count"), Some("0"));
     }
 
     #[test]
