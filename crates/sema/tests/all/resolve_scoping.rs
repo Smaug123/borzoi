@@ -156,6 +156,36 @@ fn optional_value_parameter_is_visible_in_the_body() {
 }
 
 #[test]
+fn named_argument_label_is_not_a_value_reference_but_its_rhs_is() {
+    let src = "let x = 42\nlet same = x = x\nf(x = x)\n";
+    let rf = resolve(src);
+    let label = nth(src, "x", 3);
+    let rhs = nth(src, "x", 4);
+
+    assert!(
+        rf.resolution_at(label).is_none(),
+        "a named-argument label is selected against the callee's parameters, not lexical value scope"
+    );
+    assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));
+    assert_resolves_to(&rf, nth(src, "x", 2), nth(src, "x", 0));
+    assert_resolves_to(&rf, rhs, nth(src, "x", 0));
+}
+
+#[test]
+fn constructor_named_argument_label_is_not_a_value_reference_but_its_rhs_is() {
+    let src = "let x = 42\nlet value = new C(x = x)\n";
+    let rf = resolve(src);
+    let label = nth(src, "x", 1);
+    let rhs = nth(src, "x", 2);
+
+    assert!(
+        rf.resolution_at(label).is_none(),
+        "a constructor named-argument label is selected against the constructor's parameters"
+    );
+    assert_resolves_to(&rf, rhs, nth(src, "x", 0));
+}
+
+#[test]
 fn inline_il_argument_resolves_to_binder() {
     // The value argument inside an inline-IL expression `(# "neg" x : int #)`
     // resolves to the enclosing parameter — the resolver descends into

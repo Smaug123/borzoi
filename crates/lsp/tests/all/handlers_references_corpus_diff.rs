@@ -68,19 +68,19 @@ const MIN_SOURCE_TARGETS: usize = 17_000;
 const MIN_SELECTED_TARGETS: usize = 1_200;
 const MIN_ANSWERED_PERMILLE: usize = 650;
 
-/// Returned-location and oracle-quality ratchets from the same run: 1,540
-/// locations corroborated by FCS (826 definitions and 714 ordinary uses), with
-/// 136 ranges unobserved in FCS-erroring files. The corroboration denominator
+/// Returned-location and oracle-quality ratchets from the same run: 1,515
+/// locations corroborated by FCS (826 definitions and 689 ordinary uses), with
+/// 135 ranges unobserved in FCS-erroring files. The corroboration denominator
 /// includes alternate binders and divergences as well as omissions.
 const MIN_EXACT_LOCATIONS: usize = 1_500;
 const MIN_DEFINITION_LOCATIONS: usize = 800;
 const MIN_USE_LOCATIONS: usize = 680;
 const MIN_CORROBORATED_PERMILLE: usize = 900;
 
-/// FCS must never contradict us with a differently named symbol or omit a
-/// returned range from a clean check. The one measured same-name alternate
-/// binder is FCS isolation recovery around an optional argument, the same
-/// benign class documented by sema's resolution corpus differential.
+/// FCS must never contradict us with a different symbol or omit a returned
+/// range from a clean check. Same-name alternate binders are admitted only in
+/// FCS-erroring files, where isolation recovery can bind to an enclosing
+/// same-named declaration; none were measured in the pinned run.
 const MAX_DIVERGENCES: usize = 0;
 const MAX_ALT_BINDERS: usize = 5;
 const MAX_HANDLER_PANICS: usize = 0;
@@ -112,6 +112,30 @@ struct Site {
     target: SymbolKey,
     result: (usize, usize),
     occupants: Vec<(String, Option<(usize, usize)>)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MismatchKind {
+    Divergence,
+    AlternateBinder,
+    OracleOmission,
+}
+
+/// Classify a returned range that did not exactly match the target symbol.
+/// Same-name/different-declaration occupants are only ambiguous while FCS is
+/// recovering from check errors; in a clean check they prove a wrong symbol.
+fn classify_mismatch(
+    has_check_errors: bool,
+    target_name: &str,
+    occupants: &[(String, Option<(usize, usize)>)],
+) -> MismatchKind {
+    if has_check_errors && occupants.is_empty() {
+        MismatchKind::OracleOmission
+    } else if has_check_errors && occupants.iter().any(|(name, _)| name == target_name) {
+        MismatchKind::AlternateBinder
+    } else {
+        MismatchKind::Divergence
+    }
 }
 
 #[derive(Default)]
@@ -322,16 +346,10 @@ fn compare_file(file: &FileCensus, ordinal: usize, tally: &mut Tally) {
                 result: (start, end),
                 occupants,
             };
-            if site.occupants.is_empty() && file.has_check_errors {
-                tally.oracle_omissions.push(site);
-            } else if site
-                .occupants
-                .iter()
-                .any(|(name, _)| name == &target.key.name)
-            {
-                tally.alt_binders.push(site);
-            } else {
-                tally.divergences.push(site);
+            match classify_mismatch(file.has_check_errors, &target.key.name, &site.occupants) {
+                MismatchKind::Divergence => tally.divergences.push(site),
+                MismatchKind::AlternateBinder => tally.alt_binders.push(site),
+                MismatchKind::OracleOmission => tally.oracle_omissions.push(site),
             }
         }
     }
@@ -505,6 +523,58 @@ fn every_reported_corpus_reference_is_the_cursor_symbol_according_to_fcs() {
         "the handler panicked on {} selected declaration queries",
         tally.handler_panics,
     );
+}
+
+#[test]
+fn alternate_binders_are_only_tolerated_during_fcs_error_recovery() {
+    let same_name = vec![("x".to_owned(), Some((10, 11)))];
+    let other_name = vec![("y".to_owned(), Some((20, 21)))];
+    let cases = [
+        (
+            "clean, unobserved",
+            false,
+            &[][..],
+            MismatchKind::Divergence,
+        ),
+        (
+            "clean, same name",
+            false,
+            same_name.as_slice(),
+            MismatchKind::Divergence,
+        ),
+        (
+            "clean, other name",
+            false,
+            other_name.as_slice(),
+            MismatchKind::Divergence,
+        ),
+        (
+            "erroring, unobserved",
+            true,
+            &[][..],
+            MismatchKind::OracleOmission,
+        ),
+        (
+            "erroring, same name",
+            true,
+            same_name.as_slice(),
+            MismatchKind::AlternateBinder,
+        ),
+        (
+            "erroring, other name",
+            true,
+            other_name.as_slice(),
+            MismatchKind::Divergence,
+        ),
+    ];
+
+    for (case, has_check_errors, occupants, expected) in cases {
+        assert_eq!(
+            classify_mismatch(has_check_errors, "x", occupants),
+            expected,
+            "mismatch classification for {case}",
+        );
+    }
 }
 
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {

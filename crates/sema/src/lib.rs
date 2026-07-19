@@ -37,6 +37,7 @@ mod assembly_env;
 mod binders;
 mod def;
 mod diagnostics;
+mod expr_shape;
 mod infer;
 mod member_ty;
 mod overload;

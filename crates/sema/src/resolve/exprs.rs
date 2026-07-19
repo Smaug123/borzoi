@@ -4,6 +4,7 @@ use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, Synt
 
 use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefKind};
+use crate::expr_shape::is_named_arg;
 
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
@@ -72,7 +73,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&f);
                 }
                 if let Some(a) = e.arg() {
-                    self.resolve_expr(&a);
+                    self.resolve_argument_list(&a);
                 }
             }
             Expr::DotGet(e) => {
@@ -154,7 +155,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_expr(&arg);
+                    self.resolve_argument_list(&arg);
                 }
             }
             Expr::ObjExpr(e) => {
@@ -173,7 +174,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_type(&ty);
                 }
                 if let Some(arg) = e.arg() {
-                    self.resolve_expr(&arg);
+                    self.resolve_argument_list(&arg);
                 }
             }
             Expr::InferredUpcast(e) => {
@@ -614,6 +615,48 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&finally);
                 }
             }
+        }
+    }
+
+    /// Resolve a call or constructor argument list while keeping named-argument
+    /// labels out of lexical value scope. The parser represents parentheses as
+    /// one transparent [`Expr::Paren`] layer and comma-separated arguments as a
+    /// tuple, so inspect exactly those positions; an equality expression
+    /// elsewhere remains an ordinary expression whose two operands resolve.
+    fn resolve_argument_list(&mut self, argument: &Expr) {
+        let inner = match argument {
+            Expr::Paren(paren) => match paren.inner() {
+                Some(inner) => inner,
+                None => return,
+            },
+            other => other.clone(),
+        };
+
+        if let Expr::Tuple(tuple) = &inner
+            && !tuple.is_struct()
+        {
+            for element in tuple.elements() {
+                self.resolve_argument_element(&element);
+            }
+        } else {
+            self.resolve_argument_element(&inner);
+        }
+    }
+
+    /// A named argument's label is selected against the callee's parameter
+    /// list, not lexical value scope. Resolving it like an identifier can
+    /// capture a same-named local and make find-references return the wrong
+    /// symbol. Its RHS remains an ordinary value expression and is safe to
+    /// resolve.
+    fn resolve_argument_element(&mut self, element: &Expr) {
+        if is_named_arg(element) {
+            if let Expr::App(named) = element
+                && let Some(value) = named.arg()
+            {
+                self.resolve_expr(&value);
+            }
+        } else {
+            self.resolve_expr(element);
         }
     }
 

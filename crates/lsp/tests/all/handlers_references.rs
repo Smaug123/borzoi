@@ -115,6 +115,39 @@ fn shadowing_param_does_not_pollute_outer_let() {
 }
 
 #[test]
+fn named_argument_label_does_not_pollute_same_named_value_references() {
+    let src = "let x = 42\nf(x = x)\n";
+    let (mut state, uri) = orphan_state(src);
+
+    let locs = run(&mut state, &uri, 0, 4, true);
+    assert_eq!(
+        locs.len(),
+        2,
+        "binder plus the named argument's RHS: {locs:#?}"
+    );
+    assert!(
+        locs.iter().any(|location| {
+            location.range.start
+                == Position {
+                    line: 1,
+                    character: 6,
+                }
+        }),
+        "the RHS value reference is retained: {locs:#?}"
+    );
+    assert!(
+        locs.iter().all(|location| {
+            location.range.start
+                != Position {
+                    line: 1,
+                    character: 2,
+                }
+        }),
+        "the named-argument label is not a lexical value reference: {locs:#?}"
+    );
+}
+
+#[test]
 fn unresolved_cursor_returns_empty_list_not_none() {
     // `Deferred(UnboundName)` cursor → empty list (the spec answer that
     // clears a stale reference panel cleanly). Critically not `None`.

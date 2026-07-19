@@ -394,6 +394,7 @@ use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
 use crate::def::DefId;
+use crate::expr_shape::is_named_arg;
 use crate::member_ty::type_ref_to_ty;
 use crate::overload::arity_window;
 use crate::resolve::{Resolution, ResolvedFile};
@@ -3403,32 +3404,6 @@ fn is_member_access_callee(e: &Expr) -> bool {
 /// walk-incomplete from `literal_ty`'s `None` on `()`).
 fn is_unit_arg(e: &Expr) -> bool {
     matches!(e, Expr::Const(c) if c.literal().map(|t| t.kind()) == Some(SyntaxKind::LPAREN_TOK))
-}
-
-/// Whether an argument element is a **named argument** `name = value` (Stage 3.3d).
-/// F# parses it as `App[ InfixApp[name, "="], value ]` — an outer (non-infix)
-/// application whose function is the infix `=` operator applied to the name. A
-/// *positional* infix argument (`a + b`, itself an infix `App`) is **not** a named
-/// argument (the outer `is_infix()` guard), and neither is a nested `=` inside a
-/// record / lambda (which is not the element's own top-level operator). The wake
-/// cannot validate the name against the method's parameters, so any named argument
-/// defers the whole call (conservative — even correct names defer, but never wrong).
-fn is_named_arg(el: &Expr) -> bool {
-    let Expr::App(outer) = el else {
-        return false;
-    };
-    // A positional infix element (`a + b`) is the infix `App` itself, not an outer
-    // application *of* an infix — so exclude it here.
-    if outer.is_infix() {
-        return false;
-    }
-    let Some(Expr::App(op_app)) = outer.func() else {
-        return false;
-    };
-    op_app.is_infix()
-        && op_app
-            .func()
-            .is_some_and(|op| op.syntax().text().to_string().trim() == "=")
 }
 
 /// Peel transparent parentheses, returning the innermost non-[`Expr::Paren`]
