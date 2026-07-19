@@ -482,7 +482,10 @@ struct NamespaceTypes {
 
 /// Every top-level entity at one exact `(namespace, source name)`. `all` is the
 /// collision-preserving query population; `first_by_arity` is the deterministic
-/// type-position slot used by [`AssemblyEnv::lookup_type`].
+/// broad entity slot used by [`AssemblyEnv::lookup_type`] (including an F# module,
+/// whose CLR representation is a TypeDef). A type-syntactic terminal instead uses
+/// [`AssemblyEnv::lookup_terminal_type`] over `all`, because an authoritative F#
+/// module may contain a type but is not itself one an annotation can denote.
 #[derive(Debug, Default, Clone)]
 struct NamedTypes {
     all: Vec<EntityHandle>,
@@ -1662,11 +1665,13 @@ impl AssemblyEnv {
         self.nodes.is_empty()
     }
 
-    /// Resolve a top-level type by its namespace, simple name, and generic
-    /// arity (the number of type arguments; `0` for a non-generic type). `None`
-    /// if no referenced assembly declares that type at that arity — never a
-    /// guess (D5). Arity is required because `` List`1 `` and a hypothetical
-    /// non-generic `List` are distinct types under one `(namespace, name)`.
+    /// Resolve a top-level CLR type-shaped entity by its namespace, simple name,
+    /// and generic arity (the number of type arguments; `0` for non-generic).
+    /// This broad lookup deliberately includes an F# **module**, whose compiled
+    /// representation is a TypeDef: value/member paths and `open` need modules as
+    /// containers. A type-syntactic terminal must use `lookup_terminal_type`.
+    /// Arity is required because ``List`1`` and a hypothetical non-generic `List`
+    /// are distinct entities under one `(namespace, name)`.
     pub fn lookup_type(
         &self,
         namespace: &[String],
@@ -1674,6 +1679,71 @@ impl AssemblyEnv {
         arity: usize,
     ) -> Option<EntityHandle> {
         self.indexed_type(namespace, name, arity)
+    }
+
+    /// Resolve a top-level entity that FCS permits at the **terminal** of a type
+    /// path (`value: Name`). Unlike [`Self::lookup_type`], this does not let an
+    /// authoritative F# module occupy the terminal slot: a module is a valid
+    /// container in `Module.NestedType`, but `(value: Module)` does not denote its
+    /// generated CLR class.
+    ///
+    /// The complete exact-namespace population is searched rather than filtering
+    /// [`Self::lookup_type`]'s first entry. Two DLLs may contribute a module and a
+    /// real type at the same `(namespace, name, arity)`; FCS selects the type in
+    /// either reference order, so rejecting the first module must still discover
+    /// the type behind it. Within the eligible population the broad index's name
+    /// priority remains: an ordinary name before a source-renamed one, then
+    /// interning/reference order.
+    ///
+    /// A non-authoritative F# image is the exception to the module exclusion. FCS
+    /// imports it through IL, where the module marker is not trusted and the CLR
+    /// TypeDef *is* an annotatable type. Its IL name is therefore matched rather
+    /// than a heuristic F# `source_name`.
+    pub(crate) fn lookup_terminal_type(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        self.types_by_namespace
+            .get(namespace)?
+            .all
+            .iter()
+            .copied()
+            .filter_map(|handle| {
+                self.terminal_type_name_priority(handle, name, arity)
+                    .map(|priority| (priority, handle))
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, handle)| handle)
+    }
+
+    /// The source-name priority of `handle` as a type-path terminal. `None` means
+    /// the entity is inaccessible, the name/arity does not match, or FCS sees an
+    /// authoritative module, which occupies no terminal type slot. Accessibility
+    /// is part of candidate selection so an internal priority-0 IL module cannot
+    /// hide a public same-FQN type considered later.
+    fn terminal_type_name_priority(
+        &self,
+        handle: EntityHandle,
+        name: &str,
+        arity: usize,
+    ) -> Option<u8> {
+        if !self.is_public(handle) {
+            return None;
+        }
+        let entity = self.entity(handle);
+        if entity.generic_parameters.len() != arity {
+            return None;
+        }
+        if entity.kind == EntityKind::Module {
+            return (self.fsharp_signature_unreliable(handle) && entity.name == name).then_some(0);
+        }
+        match entity.source_name.as_deref() {
+            None if entity.name == name => Some(0),
+            Some(source_name) if source_name == name => Some(1),
+            _ => None,
+        }
     }
 
     /// The first-wins top-level type-position slot at
@@ -2917,6 +2987,27 @@ impl AssemblyEnv {
                         && e.source_name.as_deref().is_some_and(|src| matches(e, src))
                 })
             })
+    }
+
+    /// [`Self::nested`] for the terminal segment of a type-syntactic path. The
+    /// parent may itself be a module or type; only the selected child must be a
+    /// type FCS lets an annotation denote. Searching every child preserves a
+    /// real type hidden behind an earlier module-shaped metadata entry.
+    pub(crate) fn nested_terminal_type(
+        &self,
+        handle: EntityHandle,
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        self.children(handle)
+            .iter()
+            .copied()
+            .filter_map(|child| {
+                self.terminal_type_name_priority(child, name, arity)
+                    .map(|priority| (priority, child))
+            })
+            .min_by_key(|(priority, _)| *priority)
+            .map(|(_, child)| child)
     }
 
     /// The handles of the top-level `[<AutoOpen>]` modules declared directly in
@@ -6387,6 +6478,97 @@ mod from_views_tests {
             None,
             "a non-authoritative assembly's module kind is declined on the from_views path"
         );
+    }
+
+    #[test]
+    fn terminal_type_lookup_respects_fsharp_signature_authority() {
+        let terminal = |view: ConfigView| {
+            let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+            env.lookup_terminal_type(&["A".to_string()], "M", 0)
+                .map(|handle| env.entity(handle).kind)
+        };
+
+        assert_eq!(
+            terminal(ConfigView::new(
+                "Lib",
+                vec![module_entity("Lib", &["A"], "M")],
+                &[]
+            )),
+            None,
+            "an authoritative F# module occupies no terminal type slot"
+        );
+
+        let mut il_import = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &[]);
+        il_import.signature_non_authoritative = true;
+        assert_eq!(
+            terminal(il_import),
+            Some(EntityKind::Module),
+            "without authoritative F# metadata, FCS imports the CLR TypeDef as a type"
+        );
+    }
+
+    #[test]
+    fn terminal_type_lookup_skips_an_inaccessible_il_module_before_ranking() {
+        let module_view = || {
+            let mut il_module = module_entity("ModuleLib", &["A"], "FooModule");
+            il_module.source_name = Some("Foo".to_string());
+            il_module.access = Access::Internal;
+            let mut view = ConfigView::new("ModuleLib", vec![il_module], &[]);
+            view.signature_non_authoritative = true;
+            view
+        };
+        let type_view = || {
+            let mut public_type = module_entity("TypeLib", &["A"], "FooModule");
+            public_type.kind = EntityKind::Class;
+            ConfigView::new("TypeLib", vec![public_type], &[])
+        };
+
+        for module_first in [false, true] {
+            let views = if module_first {
+                vec![module_view(), type_view()]
+            } else {
+                vec![type_view(), module_view()]
+            };
+            let env = AssemblyEnv::from_views(&views).expect("build env");
+            let handle = env
+                .lookup_terminal_type(&["A".to_string()], "FooModule", 0)
+                .expect("the accessible same-FQN type remains discoverable");
+            assert_eq!(env.entity(handle).assembly.name, "TypeLib");
+            assert_eq!(env.entity(handle).kind, EntityKind::Class);
+            assert_eq!(env.entity(handle).access, Access::Public);
+        }
+    }
+
+    #[test]
+    fn nested_terminal_type_lookup_skips_an_inaccessible_il_module_before_ranking() {
+        for module_first in [false, true] {
+            let mut il_module = module_entity("Lib", &[], "FooModule");
+            il_module.source_name = Some("Foo".to_string());
+            il_module.access = Access::Internal;
+
+            let mut public_type = module_entity("Lib", &[], "FooModule");
+            public_type.kind = EntityKind::Class;
+
+            let children = if module_first {
+                vec![il_module, public_type]
+            } else {
+                vec![public_type, il_module]
+            };
+            let mut container = module_entity("Lib", &["A"], "Container");
+            container.nested_types = children;
+            let mut view = ConfigView::new("Lib", vec![container], &[]);
+            view.signature_non_authoritative = true;
+
+            let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+            let parent = env
+                .lookup_type(&["A".to_string()], "Container", 0)
+                .expect("A.Container");
+            let handle = env
+                .nested_terminal_type(parent, "FooModule", 0)
+                .expect("the accessible nested type remains discoverable");
+            assert_eq!(env.entity(handle).kind, EntityKind::Class);
+            assert_eq!(env.entity(handle).access, Access::Public);
+        }
     }
 
     /// **Review (P2), round: sibling-only contested targets.** `[<assembly:

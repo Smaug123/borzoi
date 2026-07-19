@@ -687,12 +687,11 @@ fn auto_open_supplied_head_of_a_qualified_candidate_defers() {
     );
 }
 
-/// A module-shaped leaf is not an attribute type — FCS does not bind a module
-/// in attribute position, falling through to the written candidate instead —
-/// and we do not model that fallthrough's precedence, so a module leaf must
-/// decline rather than commit (codex round 4).
+/// A module-shaped leaf is not an attribute type. It is a clean miss for the
+/// suffixed candidate, so attribute lookup falls through to the written
+/// candidate; when that is absent too, neither FCS nor sema records a target.
 #[test]
-fn module_shaped_leaf_defers() {
+fn module_shaped_leaf_is_not_an_attribute_candidate() {
     use std::path::PathBuf;
     let module_foo = synthetic_type(
         &["Lib"],
@@ -708,8 +707,8 @@ fn module_shaped_leaf_defers() {
     )]);
     let verdict = verdict_at(&env, "namespace Lib\n\n[<Foo>]\ntype X = A | B\n", "Foo");
     assert!(
-        matches!(verdict, Some(Resolution::Deferred(_))),
-        "a module-shaped suffixed candidate must defer, got {verdict:?}"
+        verdict.is_none(),
+        "a module-shaped suffixed candidate must be a clean miss, got {verdict:?}"
     );
 }
 
