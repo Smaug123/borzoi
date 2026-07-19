@@ -42,8 +42,9 @@ A measurement generator writes this shape:
 ```
 
 `measurement` is a lowercase kebab-case path segment. `configuration` and
-`statistics` are JSON objects, and `statistics` must contain at least one
-number. The series identity is a deterministic digest of the generator schema,
+`statistics` are JSON objects. `statistics` must contain at least one number
+and cannot contain arrays; use nested objects for structured metric families.
+The series identity is a deterministic digest of the generator schema,
 measurement name, pinned corpus revision, `flake.lock` hash, and complete
 configuration. Changing the corpus, toolchain inputs, stride, scope, defines,
 or another configuration field therefore starts a new comparable series rather
@@ -65,4 +66,6 @@ The recorder is deliberately strict: malformed SHAs and timestamps, unknown
 schema versions, unsafe measurement names, symlinks, and observation files whose
 paths disagree with their contents all fail the publication. Concurrent main
 runs write disjoint commit paths; the workflow bounds fetch/rebase/push retries
-when `stats-data` advances during publication.
+when `stats-data` advances during publication. Dashboard jobs hold a shared
+Pages lock while fetching the current branch tip, rendering, and deploying, so
+a late-arriving run cannot overwrite the dashboard with its older snapshot.

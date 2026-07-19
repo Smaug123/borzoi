@@ -72,7 +72,8 @@ function filtered() {
   return state.observations.filter(item => item.generator.measurement === byId('measurement').value && item.series === byId('series').value);
 }
 function refreshSeries() {
-  const values = unique(state.observations.filter(item => item.generator.measurement === byId('measurement').value).map(item => item.series));
+  const items = state.observations.filter(item => item.generator.measurement === byId('measurement').value);
+  const values = unique([...items].reverse().map(item => item.series));
   selectValues(byId('series'), values);
   refreshMetrics();
 }

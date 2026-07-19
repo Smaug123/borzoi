@@ -74,6 +74,44 @@ fn record_rejects_unsafe_identity_and_unknown_generator_schema() {
     malformed_time.measured_at = "2026-07-19Té:00-".into();
     let err = record_observation(&malformed_time).unwrap_err().to_string();
     assert!(err.contains("ISO-8601"), "{err}");
+
+    for measured_at in [
+        "0000-01-01T00:00:00Z",
+        "2026-00-01T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "2026-04-31T00:00:00Z",
+        "2025-02-29T00:00:00Z",
+        "2026-01-01T24:00:00Z",
+        "2026-01-01T00:60:00Z",
+        "2026-01-01T00:00:60Z",
+    ] {
+        let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+        let mut invalid_time = input(temp.path(), summary);
+        invalid_time.measured_at = measured_at.into();
+        let err = record_observation(&invalid_time).unwrap_err().to_string();
+        assert!(err.contains("ISO-8601"), "{measured_at}: {err}");
+    }
+    for measured_at in [
+        "2000-02-29T00:00:00Z",
+        "2024-02-29T23:59:59Z",
+        "9999-12-31T23:59:59Z",
+    ] {
+        let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+        let mut valid_time = input(temp.path(), summary);
+        valid_time.measured_at = measured_at.into();
+        record_observation(&valid_time).expect("valid Gregorian UTC timestamp");
+    }
+
+    let array_summary = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "bins": [1, 2], "matches": 7 }),
+    );
+    let err = record_observation(&input(temp.path(), array_summary))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("arrays"), "{err}");
 }
 
 #[test]
@@ -105,6 +143,10 @@ fn site_contains_every_valid_observation_and_rejects_misfiled_data() {
     let html = fs::read_to_string(output.join("index.html")).unwrap();
     assert!(html.contains("Borzoi measurements"));
     assert!(html.contains("data.json"));
+    assert!(
+        html.contains("unique([...items].reverse().map(item => item.series))"),
+        "the first series option must be the most recently observed"
+    );
     assert!(output.join(".nojekyll").is_file());
 
     let actual = record_observation(&input(
@@ -138,6 +180,20 @@ fn input(root: &Path, summary: PathBuf) -> RecordInput {
 }
 
 fn write_summary(root: &Path, measurement: &str, configuration: Value) -> PathBuf {
+    write_summary_with_statistics(
+        root,
+        measurement,
+        configuration,
+        json!({ "matches": 7, "divergences": 1 }),
+    )
+}
+
+fn write_summary_with_statistics(
+    root: &Path,
+    measurement: &str,
+    configuration: Value,
+    statistics: Value,
+) -> PathBuf {
     let path = root.join(format!("{measurement}-summary.json"));
     fs::write(
         &path,
@@ -145,7 +201,7 @@ fn write_summary(root: &Path, measurement: &str, configuration: Value) -> PathBu
             "schema_version": 1,
             "measurement": measurement,
             "configuration": configuration,
-            "statistics": { "matches": 7, "divergences": 1 }
+            "statistics": statistics
         }))
         .unwrap(),
     )

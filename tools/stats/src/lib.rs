@@ -218,6 +218,9 @@ fn validate_generator(generator: &GeneratorSummary) -> Result<(), StatsError> {
     if !generator.statistics.is_object() {
         return invalid("generator statistics must be a JSON object");
     }
+    if contains_array(&generator.statistics) {
+        return invalid("generator statistics must not contain arrays");
+    }
     if !contains_number(&generator.statistics) {
         return invalid("generator statistics must contain at least one number");
     }
@@ -371,15 +374,48 @@ fn valid_timestamp(value: &str) -> bool {
             return false;
         }
     }
-    true
+
+    let year = decimal(&bytes[0..4]);
+    let month = decimal(&bytes[5..7]);
+    let day = decimal(&bytes[8..10]);
+    let hour = decimal(&bytes[11..13]);
+    let minute = decimal(&bytes[14..16]);
+    let second = decimal(&bytes[17..19]);
+    if year == 0 || !(1..=12).contains(&month) || hour > 23 || minute > 59 || second > 59 {
+        return false;
+    }
+    let days_in_month = match month {
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    (1..=days_in_month).contains(&day)
+}
+
+fn decimal(digits: &[u8]) -> u32 {
+    digits
+        .iter()
+        .fold(0, |value, digit| value * 10 + u32::from(digit - b'0'))
+}
+
+fn is_leap_year(year: u32) -> bool {
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+}
+
+fn contains_array(value: &Value) -> bool {
+    match value {
+        Value::Array(_) => true,
+        Value::Object(values) => values.values().any(contains_array),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => false,
+    }
 }
 
 fn contains_number(value: &Value) -> bool {
     match value {
         Value::Number(_) => true,
-        Value::Array(values) => values.iter().any(contains_number),
         Value::Object(values) => values.values().any(contains_number),
-        Value::Null | Value::Bool(_) | Value::String(_) => false,
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::String(_) => false,
     }
 }
 
