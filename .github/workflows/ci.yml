@@ -826,6 +826,7 @@ jobs:
       - test-msbuild
       - test-nuget
       - test-astgen
+      - test-stats
       - test-assembly
       - test-sema
       - test-lsp

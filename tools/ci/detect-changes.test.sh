@@ -165,6 +165,29 @@ for cdir in "$repo_root"/crates/*/; do
   fi
 done
 
+# --- required-check aggregate coverage --------------------------------------
+# Branch protection keys off `all-required-checks-complete`, so every test job
+# must feed that aggregate. Derive both sets from the workflow instead of
+# maintaining another hand-written list in this test.
+workflow="$repo_root/.github/workflows/ci.yml"
+declared_test_jobs="$(sed -n 's/^  \(test-[a-z0-9-]*\):$/\1/p' "$workflow" | sort | tr '\n' ' ')"
+aggregated_test_jobs="$(awk '
+  /^  all-required-checks-complete:$/ { aggregate = 1; next }
+  aggregate && /^      - test-[a-z0-9-]*$/ {
+    sub(/^      - /, "")
+    print
+  }
+' "$workflow" | sort | tr '\n' ' ')"
+assert_eq "required aggregate includes every test job" \
+  "$declared_test_jobs" "$aggregated_test_jobs"
+
+stats_workflow="$repo_root/.github/workflows/stats.yml"
+deploy_main_ref="$(awk '
+  /^  deploy:$/ { deploy = 1; next }
+  deploy && /^          ref: main$/ { print "current-main" }
+' "$stats_workflow")"
+assert_eq "dashboard deploy checks out current main" "current-main" "$deploy_main_ref"
+
 echo
 if [[ $fails -eq 0 ]]; then
   echo "all detect-changes tests passed"

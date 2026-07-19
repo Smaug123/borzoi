@@ -238,6 +238,11 @@ jobs:
       # history snapshot over a newer one.
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # This job can belong to an older measurement run. Resolve the branch
+          # after acquiring the Pages lock so the validator and dashboard code
+          # come from the current main tip, not that run's event SHA.
+          ref: main
 
       - name: Move /nix and cargo's target/ to the large /mnt disk
         run: |
