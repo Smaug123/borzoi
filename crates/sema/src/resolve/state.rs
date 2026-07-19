@@ -241,6 +241,21 @@ pub(super) enum AssemblyPath<R> {
     /// `open` that resolves the whole path must still win over it (codex review
     /// 4). Reached in priority order, it defers like `ProjectShadowed`.
     AbbreviationOpaque,
+    /// The reading's rooting top-level FQN is exported by **more than one
+    /// loaded DLL**: FCS merges same-FQN roots across references and binds the
+    /// latest *accessible* one (fsi-verified, both reference orders), which
+    /// sema does not model — `lookup_type` is first-wins — so this reading can
+    /// neither commit a target nor confidently disown the path: it **defers**.
+    ///
+    /// Tier-local like [`Self::AbbreviationOpaque`], and for the same reason:
+    /// it is an *assembly* reading, not a lexical project-bound head, so it
+    /// must not trip the preemptive as-written-root veto in
+    /// [`Resolver::resolve_assembly_path_tiered`] — a higher-priority `open`
+    /// whose rooting is uncontested still wins over a contested root-tier
+    /// reading (codex review on the contested-FQN guard). Reached in priority
+    /// order, it defers like [`Self::ProjectShadowed`]: FCS binds one of the
+    /// contestants at that tier, so no lower tier may re-root the path.
+    ContestedRooting,
     /// Not an assembly path at all.
     NoMatch,
 }

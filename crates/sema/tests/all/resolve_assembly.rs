@@ -2376,6 +2376,45 @@ fn contested_same_fqn_type_defers_a_static_member_path() {
 }
 
 #[test]
+fn contested_global_root_does_not_preempt_an_open_reading() {
+    // Codex review of the contested-rooting guard: the value/member walk
+    // pre-probes the as-written ROOT reading before walking opens, and a
+    // `ProjectShadowed` there vetoes the whole walk. A contested rooting is an
+    // *assembly* reading, not a lexical project-bound head — it must be
+    // tier-local (like an opaque abbreviation reading), so a higher-priority
+    // `open` whose rooting is uncontested still wins: with a *global* `Color`
+    // in two DLLs and a unique `Demo.Color`, `open Demo; Color.StaticCount`
+    // binds `Demo.Color.StaticCount` (opens outrank the root tier — the same
+    // latest-wins layering the tiered walk models).
+    let ents = fixture_entities();
+    let mut global = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    global.namespace = vec![];
+    global.name = "Color".to_string();
+    global.nested_types = vec![];
+    let mut global_rival = global.clone();
+    global_rival.assembly.name = "OtherLib".to_string();
+    let mut demo = global.clone();
+    demo.namespace = vec!["Demo".to_string()];
+    let env = AssemblyEnv::from_entities(vec![global, global_rival, demo]);
+    let demo_color = env
+        .lookup_type(&["Demo".to_string()], "Color", 0)
+        .expect("Demo.Color");
+    let src = "module M\nopen Demo\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == demo_color => {}
+        other => panic!(
+            "expected the open's uncontested `Demo.Color.StaticCount` to win over the \
+             contested global root, got {other:?}"
+        ),
+    }
+}
+
+#[test]
 fn same_fqn_across_dlls_at_different_arities_still_resolves() {
     // DLL A declares `Ns.Color` (arity 0); a differently-named DLL B declares
     // `Ns.Color<'T>` (arity 1). The contested-rooting guard counts distinct

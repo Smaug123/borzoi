@@ -71,17 +71,20 @@ impl<'a> Resolver<'a> {
         // therefore name the wrong DLL's type, and any descent below it walks
         // the first-indexed subtree, which may miss the other DLL's
         // contribution (only a **top-level** FQN merges across DLLs; nested
-        // entities are interned within one parent's subtree). So the whole path
-        // defers (D5: defer, never a wrong target). Counting *distinct DLLs at
-        // arity 0* (not all same-named entities) keeps a same-DLL companion
-        // module — and a `type Alias = Widget` beside a generic `type
-        // Alias<'T>` in one DLL — resolving (codex review).
+        // entities are interned within one parent's subtree). So this reading
+        // defers (D5: defer, never a wrong target) — *tier-locally*
+        // ([`AssemblyPath::ContestedRooting`]), so a higher-priority open with
+        // an uncontested rooting still wins over a contested root-tier reading
+        // (codex review). Counting *distinct DLLs at arity 0* (not all
+        // same-named entities) keeps a same-DLL companion module — and a
+        // `type Alias = Widget` beside a generic `type Alias<'T>` in one DLL —
+        // resolving (codex review).
         if self
             .assemblies
             .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
             > 1
         {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::ContestedRooting;
         }
 
         // A type-abbreviation marker: the name binds, and FCS chases the
@@ -440,7 +443,8 @@ impl<'a> Resolver<'a> {
                 // same-named *root* namespace's assembly reading.
                 AssemblyPath::ProjectShadowed
                 | AssemblyPath::SelfModuleShadowed
-                | AssemblyPath::AbbreviationOpaque => {
+                | AssemblyPath::AbbreviationOpaque
+                | AssemblyPath::ContestedRooting => {
                     return TieredResolution::ShadowDeferred;
                 }
                 AssemblyPath::NoMatch => {
@@ -517,17 +521,19 @@ impl<'a> Resolver<'a> {
         // therefore name the wrong DLL's type, and any descent below it walks
         // the first-indexed subtree, which may miss the other DLL's
         // contribution (only a **top-level** FQN merges across DLLs; nested
-        // entities are interned within one parent's subtree). So the whole
-        // path defers (D5; mirrors the value-path walk). Counting *distinct
-        // DLLs at the selected arity* (not all same-named entities) keeps a
-        // same-DLL companion module — and a `type Alias = Widget` beside a
-        // generic `type Alias<'T>` in one DLL — resolving (codex review).
+        // entities are interned within one parent's subtree). So this reading
+        // defers (D5; mirrors the value-path walk), *tier-locally*
+        // ([`AssemblyPath::ContestedRooting`]) so a higher-priority open with
+        // an uncontested rooting still wins. Counting *distinct DLLs at the
+        // selected arity* (not all same-named entities) keeps a same-DLL
+        // companion module — and a `type Alias = Widget` beside a generic
+        // `type Alias<'T>` in one DLL — resolving (codex review).
         if self
             .assemblies
             .distinct_dlls_with_public_type(&names[..k], &names[k], arity_at(k))
             > 1
         {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::ContestedRooting;
         }
 
         // A type-abbreviation *marker* (a metadata-invisible F# abbreviation
