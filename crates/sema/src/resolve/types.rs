@@ -1597,18 +1597,17 @@ impl<'a> Resolver<'a> {
                 AttrCandidate::Deferred
             }
             _ if self.attribute_candidate_unrulable(names) => AttrCandidate::Deferred,
-            // A module-shaped leaf is not an attribute type: FCS does not bind
-            // a module in attribute position (probed — `[<M>]` with a module
-            // `MAttribute` falls through to a written type `M`). We do not
-            // model that fallthrough's interaction with the walk's precedence,
-            // so a module leaf declines rather than committing a wrong entity
-            // (codex round 4). An abbreviation-marker leaf (a chase-able
-            // marker now resolves as a type path) defers too: FCS chases the
-            // abbreviation before the `…Attribute`-suffix candidates apply,
-            // and that interaction is unprobed — committing either the marker
-            // or its terminal here would be a guess.
+            // An authoritative module is excluded by the terminal type lookup;
+            // a module marker can reach this point only when its F# signature is
+            // non-authoritative, in which case FCS imports the CLR TypeDef as a
+            // type and the ordinary entity arm below is correct. An
+            // abbreviation-marker leaf (a chase-able marker now resolves as a
+            // type path) still defers: FCS chases the abbreviation before the
+            // `…Attribute`-suffix candidates apply, and that interaction is
+            // unprobed — committing either the marker or its terminal here would
+            // be a guess.
             TypePathResolution::Assembly { leaf: Some(h), .. }
-                if self.assemblies.is_module(h) || self.assemblies.is_abbreviation(h) =>
+                if self.assemblies.is_abbreviation(h) =>
             {
                 AttrCandidate::Deferred
             }
