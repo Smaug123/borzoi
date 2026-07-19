@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   measure:
-    name: Measure parser and resolution
+    name: Measure parser, resolution, and references
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 360
@@ -64,6 +64,17 @@ jobs:
             resolve_divergence::regenerate_resolution_divergence_report \
             -- --ignored --nocapture
 
+      - name: Generate find-references differential report
+        # Keep the sampling configuration explicit so a change starts a new
+        # comparable series rather than joining unlike observations.
+        run: |
+          nix develop --command env \
+            BORZOI_REFERENCES_DIFF_OUT="$RUNNER_TEMP/reports/find-references-differential" \
+            BORZOI_REFERENCES_DIFF_STRIDE=13 \
+            cargo test -p borzoi --test all \
+            handlers_references_corpus_diff::every_reported_corpus_reference_is_the_cursor_symbol_according_to_fcs \
+            -- --ignored --nocapture
+
       - name: Add the current summaries to the workflow page
         run: |
           {
@@ -73,6 +84,10 @@ jobs:
             echo '```'
             echo '## Resolution divergence'
             cat "$RUNNER_TEMP/reports/resolution-divergence/summary.txt"
+            echo '## Find references differential'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/find-references-differential/summary.json"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload full measurement reports
@@ -152,7 +167,7 @@ jobs:
               ;;
           esac
 
-      - name: Record both observations
+      - name: Record all observations
         env:
           HISTORY_DIR: ${{ runner.temp }}/stats-history
           REPOSITORY: ${{ github.repository }}
@@ -180,6 +195,9 @@ jobs:
             "${common[@]}"
           "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
             --summary "$RUNNER_TEMP/reports/resolution-divergence/summary.json" \
+            "${common[@]}"
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/find-references-differential/summary.json" \
             "${common[@]}"
 
       - name: Commit and push the durable observations

@@ -327,6 +327,15 @@ fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
                 if application.is_infix() {
                     continue;
                 }
+                // The right operand of a query `JoinIn` is represented as the
+                // application `xs on (a = b)`. Its final argument is the join
+                // equality, never a named-argument list.
+                if matches!(
+                    application.syntax().parent().and_then(Expr::cast),
+                    Some(Expr::JoinIn(_))
+                ) {
+                    continue;
+                }
                 // FCS lowers every completed infix expression to a non-infix outer
                 // `App` whose function is the inner infix `App`. Its argument is the
                 // operator's RHS, not a call argument list.

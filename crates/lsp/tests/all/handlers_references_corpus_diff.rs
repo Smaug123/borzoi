@@ -36,7 +36,9 @@
 //!
 //! `BORZOI_REFERENCES_DIFF_STRIDE` (default 13) and
 //! `BORZOI_REFERENCES_DIFF_LIMIT` tune the sample. The ratchets below are tied
-//! to the default stride and the pinned corpus.
+//! to the default stride and the pinned corpus. The full mismatch worklists and
+//! a versioned `summary.json` are written under `references-diff/` at the
+//! workspace root; override that with `BORZOI_REFERENCES_DIFF_OUT`.
 
 use std::collections::HashSet;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -50,6 +52,7 @@ use lsp_types::{
     PartialResultParams, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
     TextDocumentPositionParams, Url, WorkDoneProgressParams,
 };
+use serde::Serialize;
 
 use crate::common::{FileCensus, LineIndex, invoke_fcs_dump_census, parse_fcs_census_jsonl};
 
@@ -114,6 +117,18 @@ struct Site {
     occupants: Vec<(String, Option<(usize, usize)>)>,
 }
 
+impl Site {
+    fn line(&self) -> String {
+        format!(
+            "{}\ttarget {:?}\tresult {:?}\tFCS occupants {:?}",
+            self.path.display(),
+            self.target,
+            self.result,
+            self.occupants,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MismatchKind {
     Divergence,
@@ -160,11 +175,108 @@ struct Tally {
     oracle_omissions: Vec<Site>,
 }
 
+#[derive(Serialize)]
+struct Summary {
+    schema_version: u32,
+    measurement: &'static str,
+    configuration: ConfigurationSummary,
+    statistics: StatisticsSummary,
+}
+
+#[derive(Serialize)]
+struct ConfigurationSummary {
+    corpus: &'static str,
+    file_extensions: [&'static str; 1],
+    scope: &'static str,
+    stride: usize,
+    limit: Option<usize>,
+    targets_per_file: usize,
+    include_declaration: bool,
+}
+
+#[derive(Serialize)]
+struct StatisticsSummary {
+    files: FileStatistics,
+    targets: TargetStatistics,
+    locations: LocationStatistics,
+    mismatches: MismatchStatistics,
+    infrastructure: InfrastructureStatistics,
+}
+
+#[derive(Serialize)]
+struct FileStatistics {
+    discovered: usize,
+    sampled: usize,
+    seen: usize,
+    with_targets: usize,
+    answered: usize,
+    without_targets: usize,
+}
+
+#[derive(Serialize)]
+struct TargetStatistics {
+    source: usize,
+    selected: usize,
+    answered: usize,
+    declined: usize,
+    answer_rate: RateSummary,
+}
+
+#[derive(Serialize)]
+struct LocationStatistics {
+    returned: usize,
+    exact: usize,
+    definitions: usize,
+    uses: usize,
+    corroboration_rate: RateSummary,
+}
+
+#[derive(Serialize)]
+struct MismatchStatistics {
+    divergences: usize,
+    alternate_binders: usize,
+    oracle_omissions: usize,
+}
+
+#[derive(Serialize)]
+struct InfrastructureStatistics {
+    handler_panics: usize,
+    fcs_not_ok: usize,
+    fcs_with_check_errors: usize,
+    unreadable: usize,
+}
+
+#[derive(Serialize)]
+struct RateSummary {
+    numerator: usize,
+    denominator: usize,
+    basis_points: u32,
+}
+
 fn env_usize_or(key: &str, default: usize) -> usize {
     std::env::var(key)
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
+}
+
+fn output_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BORZOI_REFERENCES_DIFF_OUT") {
+        return PathBuf::from(dir);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .expect("workspace root")
+        .join("references-diff")
+}
+
+fn basis_points(numerator: usize, denominator: usize) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    u32::try_from((numerator as u128 * 10_000) / denominator as u128)
+        .expect("a ratio in basis points fits u32")
 }
 
 fn params(uri: &Url, source: &str, byte: usize) -> ReferenceParams {
@@ -378,6 +490,112 @@ fn print_sites(label: &str, sites: &[Site]) {
     }
 }
 
+fn summary_json(
+    tally: &Tally,
+    discovered_files: usize,
+    sampled_files: usize,
+    stride: usize,
+    limit: Option<usize>,
+) -> String {
+    let returned_locations = tally.exact_locations
+        + tally.divergences.len()
+        + tally.alt_binders.len()
+        + tally.oracle_omissions.len();
+    let summary = Summary {
+        schema_version: 1,
+        measurement: "find-references-differential",
+        configuration: ConfigurationSummary {
+            corpus: "fsharp-src",
+            file_extensions: ["fs"],
+            scope: "in-file-isolation",
+            stride,
+            limit,
+            targets_per_file: TARGETS_PER_FILE,
+            include_declaration: true,
+        },
+        statistics: StatisticsSummary {
+            files: FileStatistics {
+                discovered: discovered_files,
+                sampled: sampled_files,
+                seen: tally.files_seen,
+                with_targets: tally.files_with_targets,
+                answered: tally.files_answered,
+                without_targets: tally.files_without_targets,
+            },
+            targets: TargetStatistics {
+                source: tally.source_targets,
+                selected: tally.selected_targets,
+                answered: tally.answered_targets,
+                declined: tally.declined_targets,
+                answer_rate: RateSummary {
+                    numerator: tally.answered_targets,
+                    denominator: tally.selected_targets,
+                    basis_points: basis_points(tally.answered_targets, tally.selected_targets),
+                },
+            },
+            locations: LocationStatistics {
+                returned: returned_locations,
+                exact: tally.exact_locations,
+                definitions: tally.definition_locations,
+                uses: tally.use_locations,
+                corroboration_rate: RateSummary {
+                    numerator: tally.exact_locations,
+                    denominator: returned_locations,
+                    basis_points: basis_points(tally.exact_locations, returned_locations),
+                },
+            },
+            mismatches: MismatchStatistics {
+                divergences: tally.divergences.len(),
+                alternate_binders: tally.alt_binders.len(),
+                oracle_omissions: tally.oracle_omissions.len(),
+            },
+            infrastructure: InfrastructureStatistics {
+                handler_panics: tally.handler_panics,
+                fcs_not_ok: tally.fcs_not_ok,
+                fcs_with_check_errors: tally.fcs_with_check_errors,
+                unreadable: tally.unreadable,
+            },
+        },
+    };
+    let mut json =
+        serde_json::to_string_pretty(&summary).expect("serialise find-references summary");
+    json.push('\n');
+    json
+}
+
+fn write_report(
+    out: &Path,
+    tally: &Tally,
+    discovered_files: usize,
+    sampled_files: usize,
+    stride: usize,
+    limit: Option<usize>,
+) {
+    std::fs::create_dir_all(out).expect("create references report dir");
+    write_sites(out, "divergences.txt", &tally.divergences);
+    write_sites(out, "alternate_binders.txt", &tally.alt_binders);
+    write_sites(out, "oracle_omissions.txt", &tally.oracle_omissions);
+    std::fs::write(
+        out.join("summary.json"),
+        summary_json(tally, discovered_files, sampled_files, stride, limit),
+    )
+    .expect("write find-references summary.json");
+}
+
+fn write_sites(out: &Path, name: &str, sites: &[Site]) {
+    let mut sorted: Vec<&Site> = sites.iter().collect();
+    sorted.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then(left.result.cmp(&right.result))
+    });
+    let body: String = sorted
+        .iter()
+        .map(|site| format!("{}\n", site.line()))
+        .collect();
+    std::fs::write(out.join(name), body).unwrap_or_else(|error| panic!("write {name}: {error}"));
+}
+
 #[test]
 #[ignore = "full-corpus find-references differential (FCS type-check); run with --ignored under nix develop"]
 fn every_reported_corpus_reference_is_the_cursor_symbol_according_to_fcs() {
@@ -456,6 +674,16 @@ fn every_reported_corpus_reference_is_the_cursor_symbol_according_to_fcs() {
         "unobserved ranges in FCS-erroring files",
         &tally.oracle_omissions,
     );
+    let out = output_dir();
+    write_report(
+        &out,
+        &tally,
+        all_files.len(),
+        sample.len(),
+        stride,
+        (limit != usize::MAX).then_some(limit),
+    );
+    eprintln!("references-diff: wrote report to {}", out.display());
 
     assert!(
         tally.files_with_targets >= MIN_FILES_WITH_TARGETS,
@@ -575,6 +803,93 @@ fn alternate_binders_are_only_tolerated_during_fcs_error_recovery() {
             "mismatch classification for {case}",
         );
     }
+}
+
+#[test]
+fn summary_json_contract_is_versioned_and_preserves_denominators() {
+    let site = || Site {
+        path: "sample.fs".into(),
+        target: SymbolKey {
+            name: "x".into(),
+            decl: (1, 2),
+        },
+        result: (3, 4),
+        occupants: Vec::new(),
+    };
+    let tally = Tally {
+        files_seen: 5,
+        fcs_not_ok: 1,
+        fcs_with_check_errors: 2,
+        unreadable: 1,
+        files_without_targets: 1,
+        files_with_targets: 4,
+        files_answered: 3,
+        source_targets: 8,
+        selected_targets: 4,
+        answered_targets: 3,
+        declined_targets: 1,
+        handler_panics: 1,
+        exact_locations: 7,
+        definition_locations: 3,
+        use_locations: 4,
+        divergences: vec![site()],
+        alt_binders: vec![site()],
+        oracle_omissions: vec![site()],
+    };
+
+    let value: serde_json::Value =
+        serde_json::from_str(&summary_json(&tally, 10, 5, 13, None)).expect("summary is JSON");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "schema_version": 1,
+            "measurement": "find-references-differential",
+            "configuration": {
+                "corpus": "fsharp-src",
+                "file_extensions": ["fs"],
+                "scope": "in-file-isolation",
+                "stride": 13,
+                "limit": null,
+                "targets_per_file": 4,
+                "include_declaration": true
+            },
+            "statistics": {
+                "files": {
+                    "discovered": 10,
+                    "sampled": 5,
+                    "seen": 5,
+                    "with_targets": 4,
+                    "answered": 3,
+                    "without_targets": 1
+                },
+                "targets": {
+                    "source": 8,
+                    "selected": 4,
+                    "answered": 3,
+                    "declined": 1,
+                    "answer_rate": { "numerator": 3, "denominator": 4, "basis_points": 7500 }
+                },
+                "locations": {
+                    "returned": 10,
+                    "exact": 7,
+                    "definitions": 3,
+                    "uses": 4,
+                    "corroboration_rate": { "numerator": 7, "denominator": 10, "basis_points": 7000 }
+                },
+                "mismatches": {
+                    "divergences": 1,
+                    "alternate_binders": 1,
+                    "oracle_omissions": 1
+                },
+                "infrastructure": {
+                    "handler_panics": 1,
+                    "fcs_not_ok": 1,
+                    "fcs_with_check_errors": 2,
+                    "unreadable": 1
+                }
+            }
+        })
+    );
 }
 
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {

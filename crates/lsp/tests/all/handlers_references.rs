@@ -270,6 +270,29 @@ fn equality_inside_an_infix_rhs_is_not_an_argument_label() {
 }
 
 #[test]
+fn query_join_equality_is_not_an_argument_label() {
+    let src = "let xs = [1]\nlet a = 1\nlet b = 1\nlet result = query { for x in xs do join y in xs on (a = b); select x }\n";
+    let (mut state, uri) = orphan_state(src);
+
+    let locs = run(&mut state, &uri, 1, 4, true);
+    assert_eq!(
+        locs.len(),
+        2,
+        "binder plus the join equality use: {locs:#?}"
+    );
+    assert!(
+        locs.iter().any(|location| {
+            location.range.start
+                == Position {
+                    line: 3,
+                    character: 53,
+                }
+        }),
+        "the query join's equality operand remains a reference: {locs:#?}"
+    );
+}
+
+#[test]
 fn qualified_equality_operand_is_not_an_argument_label() {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("P.fsproj");
