@@ -115,7 +115,7 @@ fn shadowing_param_does_not_pollute_outer_let() {
 }
 
 #[test]
-fn named_argument_label_does_not_pollute_same_named_value_references() {
+fn ambiguous_argument_label_is_deferred_from_same_named_value_references() {
     let src = "let x = 42\nf(x = x)\n";
     let (mut state, uri) = orphan_state(src);
 
@@ -144,6 +144,12 @@ fn named_argument_label_does_not_pollute_same_named_value_references() {
                 }
         }),
         "the named-argument label is not a lexical value reference: {locs:#?}"
+    );
+
+    let from_ambiguous_label = run(&mut state, &uri, 1, 2, true);
+    assert!(
+        from_ambiguous_label.is_empty(),
+        "a cursor whose meaning depends on the callee's type is deferred: {from_ambiguous_label:#?}"
     );
 }
 

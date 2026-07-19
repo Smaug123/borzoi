@@ -68,9 +68,9 @@ const MIN_SOURCE_TARGETS: usize = 17_000;
 const MIN_SELECTED_TARGETS: usize = 1_200;
 const MIN_ANSWERED_PERMILLE: usize = 650;
 
-/// Returned-location and oracle-quality ratchets from the same run: 1,515
-/// locations corroborated by FCS (826 definitions and 689 ordinary uses), with
-/// 135 ranges unobserved in FCS-erroring files. The corroboration denominator
+/// Returned-location and oracle-quality ratchets from the same run: 1,539
+/// locations corroborated by FCS (826 definitions and 713 ordinary uses), with
+/// 136 ranges unobserved in FCS-erroring files. The corroboration denominator
 /// includes alternate binders and divergences as well as omissions.
 const MIN_EXACT_LOCATIONS: usize = 1_500;
 const MIN_DEFINITION_LOCATIONS: usize = 800;

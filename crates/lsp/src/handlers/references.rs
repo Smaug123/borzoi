@@ -3,7 +3,10 @@
 //! Resolves the cursor to a [`Resolution`] (using the same containment +
 //! prefer-non-`Deferred` rules as goto-definition), then iterates every file
 //! in the [`ResolvedProject`] and collects ranges whose recorded resolution
-//! is exactly that one ([`Resolution`] is `Copy + PartialEq`). For
+//! is exactly that one ([`Resolution`] is `Copy + PartialEq`). A range in the
+//! label position of an application argument shaped `name = value` is omitted:
+//! without the callee's type, that syntax could be either a named-argument
+//! label or the left operand of an ordinary Boolean equality. For
 //! [`Resolution::Local`] only the cursor's file can contain references —
 //! locals are file-scoped by definition — so the iteration short-circuits.
 //!
@@ -18,9 +21,9 @@
 //! an error), so a stale "Find Usages" panel clears cleanly rather than
 //! sticking with the previous answer.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, resolve_file,
 };
@@ -28,7 +31,7 @@ use lsp_types::{Location, ReferenceParams, Url};
 use rowan::TextRange;
 
 use crate::cst_panic_safe::parse_with_symbols;
-use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_at};
+use crate::handlers::{preferred_uri, range_to_lsp, smallest_resolution_with_range};
 use crate::paths::{lexically_normalize, paths_equal};
 use crate::position::position_to_offset;
 use crate::semantic::ProjectParses;
@@ -87,8 +90,14 @@ fn project_references(
         .paths
         .iter()
         .position(|p| paths_equal(&lexically_normalize(p), &lexically_normalize(&path)))?;
-    let target_res = smallest_resolution_at(resolved.file(target_file_idx), byte)?;
+    let (target_range, target_res) =
+        smallest_resolution_with_range(resolved.file(target_file_idx), byte)?;
     if matches!(target_res, Resolution::Deferred(_) | Resolution::Unresolved) {
+        return Some(Vec::new());
+    }
+    if ambiguous_argument_label_ranges(parses.files[target_file_idx].file.syntax())
+        .contains(&target_range)
+    {
         return Some(Vec::new());
     }
     let decl_anchor = declaration_anchor(&resolved, target_res, target_file_idx);
@@ -177,7 +186,12 @@ fn collect_locations(
     let mut decl_emitted = false;
     for file_idx in file_range {
         let file = resolved.file(file_idx);
+        let ambiguous_labels =
+            ambiguous_argument_label_ranges(parses.files[file_idx].file.syntax());
         for (range, _res) in matching_in_file(file, target_res) {
+            if ambiguous_labels.contains(&range) {
+                continue;
+            }
             if matches!(decl_anchor, Some((f, r)) if f == file_idx && r == range) {
                 decl_emitted = true;
                 if !include_declaration {
@@ -251,10 +265,14 @@ fn single_file_references(
         return Vec::new();
     };
     let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
-    let Some(target_res) = smallest_resolution_at(&resolved, byte) else {
+    let Some((target_range, target_res)) = smallest_resolution_with_range(&resolved, byte) else {
         return Vec::new();
     };
     if matches!(target_res, Resolution::Deferred(_) | Resolution::Unresolved) {
+        return Vec::new();
+    }
+    let ambiguous_labels = ambiguous_argument_label_ranges(file.syntax());
+    if ambiguous_labels.contains(&target_range) {
         return Vec::new();
     }
     // The declaration anchor in the single-file case: a `Local` has its
@@ -276,6 +294,9 @@ fn single_file_references(
         if *res != target_res {
             continue;
         }
+        if ambiguous_labels.contains(range) {
+            continue;
+        }
         if !include_declaration && decl_range == Some(*range) {
             continue;
         }
@@ -285,4 +306,74 @@ fn single_file_references(
         });
     }
     out
+}
+
+/// Ranges which might be named-argument labels in an application.
+///
+/// `f(name = value)` and `f (name = value)` have the same expression shape
+/// whether `f` is a method accepting a named argument or an ordinary function
+/// accepting a Boolean equality. Find-references cannot prove which reading is
+/// correct without resolving the callee's type, so it makes no claim for the
+/// possible label range. The ordinary resolver remains untouched: definition,
+/// hover, and non-reference consumers retain both equality operands.
+fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
+    let mut ranges = HashSet::new();
+    for expression in root.descendants().filter_map(Expr::cast) {
+        let Expr::App(application) = expression else {
+            continue;
+        };
+        if application.is_infix() {
+            continue;
+        }
+        if let Some(argument) = application.arg() {
+            collect_ambiguous_argument_labels(&argument, &mut ranges);
+        }
+    }
+    ranges
+}
+
+/// Inspect only the direct elements of one application argument list. An
+/// equality nested inside a record, lambda, or other expression is an ordinary
+/// sub-expression rather than a possible label.
+fn collect_ambiguous_argument_labels(argument: &Expr, ranges: &mut HashSet<TextRange>) {
+    let Some(inner) = (match argument {
+        Expr::Paren(paren) => paren.inner(),
+        other => Some(other.clone()),
+    }) else {
+        return;
+    };
+
+    if let Expr::Tuple(tuple) = &inner
+        && !tuple.is_struct()
+    {
+        for element in tuple.elements() {
+            if let Some(range) = ambiguous_argument_label(&element) {
+                ranges.insert(range);
+            }
+        }
+    } else if let Some(range) = ambiguous_argument_label(&inner) {
+        ranges.insert(range);
+    }
+}
+
+/// The possible label range of a direct argument element shaped
+/// `App[InfixApp[label, "="], value]`.
+fn ambiguous_argument_label(element: &Expr) -> Option<TextRange> {
+    let Expr::App(outer) = element else {
+        return None;
+    };
+    if outer.is_infix() {
+        return None;
+    }
+    let Expr::App(equals) = outer.func()? else {
+        return None;
+    };
+    if !equals.is_infix()
+        || !equals
+            .func()
+            .is_some_and(|operator| operator.syntax().text().to_string().trim() == "=")
+    {
+        return None;
+    }
+    equals.arg().map(|label| label.syntax().text_range())
 }
