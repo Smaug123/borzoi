@@ -25,6 +25,7 @@ jobs:
       sema: ${{ steps.filter.outputs.sema }}
       nuget: ${{ steps.filter.outputs.nuget }}
       astgen: ${{ steps.filter.outputs.astgen }}
+      stats: ${{ steps.filter.outputs.stats }}
       fcs: ${{ steps.filter.outputs.fcs }}
       sidecar: ${{ steps.filter.outputs.sidecar }}
       workspace: ${{ steps.filter.outputs.workspace }}
@@ -415,6 +416,54 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-astgen --verbose
 
+  test-stats:
+    name: Test stats
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      # The recorder and dashboard have no oracle dependency. Their own filter
+      # handles implementation changes; workspace changes cover shared Cargo or
+      # toolchain inputs that can affect every package.
+      - name: Check gate
+        id: gate
+        run: |
+          if [[ "${{ needs.changes.outputs.stats }}" == "true" || \
+                "${{ needs.changes.outputs.workspace }}" == "true" ]]; then
+            echo "Gate passed — running stats tests."
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No relevant changes — skipping stats tests."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout code
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+      - name: Install Nix
+        if: steps.gate.outputs.run == 'true'
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Cache cargo target/
+        if: steps.gate.outputs.run == 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Test stats crate
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          nix develop --command cargo test --locked -p borzoi-stats --verbose
+
   test-assembly:
     name: Test assembly
     needs: [changes, fcs-dump]
@@ -777,6 +826,7 @@ jobs:
       - test-msbuild
       - test-nuget
       - test-astgen
+      - test-stats
       - test-assembly
       - test-sema
       - test-lsp

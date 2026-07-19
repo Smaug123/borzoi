@@ -11,6 +11,7 @@ members = [
     "crates/sema",
     "crates/spawn",
     "tools/astgen",
+    "tools/stats",
 ]
 
 [workspace.package]
