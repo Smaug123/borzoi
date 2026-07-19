@@ -3,8 +3,9 @@
 > **Status:** Stages 1 and 2 implemented (Stage 1 with the §screen
 > correction below — a 2026-07-18 probe refuted one cell of the original
 > Stage-1 matrix; Stage 2 with the implementation notes in its section).
-> Of Stage 3+, the **accessibility slice** is implemented (see its notes);
-> the rest not started.
+> Of Stage 3+, the **accessibility slice** is implemented — val/module
+> `internal`/`public`, `val private`, and `module private` (see its
+> notes); the rest not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -146,6 +147,7 @@ Six conclusions, each probe-disambiguated:
 | `val internal x` | `A.x` | resolves → `.fsi` (project-visible) |
 | `val private x` | `A.x` | resolves → `.fsi` **+ FS1094 inaccessible** (never in a clean fixture) |
 | `module internal M` | `A.M.y` | resolves → `.fsi` |
+| `module private M` (under `namespace N`) | `M.y` from a same-`N` sibling file | resolves → `.fsi`, **clean**; from outside `N`: `.fsi` + FS1092/FS1094 |
 | `val (\|Even\|Odd\|)` / `val (\|DivBy\|_\|)` | `Even` / `DivBy 3` | recognizer span in `.fsi` |
 | `exception E` / `type Alias = int` | `A.E`, `A.Alias` | resolves → `.fsi` |
 | `type R = { X }` (visible) | `r.X` | field ident in `.fsi` |
@@ -503,6 +505,43 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   matrix's exposure axis extended to {modelled, internal, private,
   unmodelled-mention (an `exception X` — still-unmodelled value surface,
   replacing `val internal` which this slice models), hidden}.
+
+  **`module private` (implemented 2026-07-18).** A `module private`
+  header's surface exports with the **enclosing container as its access
+  floor** (`collect_sig_container_exports`'s `access_floor` parameter,
+  the impl-side `decls::export_access_root_len` floor rule: parent
+  prefix length for the header, deepened to the val's own container by a
+  `val private` inside it). FCS-probed semantics — the impl-side D2 pin
+  (`a_module_private_value_resolves_from_a_sibling_in_the_namespace`),
+  one level wider than `val private`'s own-container root: a
+  same-namespace **sibling in any file** reads the surface
+  diagnostics-clean (decl = the `.fsi` ident, bare- or fully-qualified;
+  identical with the impl header annotated `private` or not, and for the
+  dotted top-level `module private N.A` form; a single-segment
+  `module private M` floors at the empty prefix, i.e. project-visible —
+  probed clean). Outside the namespace it behaves as dropped: an earlier
+  public fragment's same-path value binds *cleanly*, a colliding
+  assembly member binds *cleanly* (`shown` in both the private sig and
+  RefLib → RefLib, clean), and a direct outside reading is FS1092 +
+  FS1094 with the decl error-recovered to the `.fsi` — never clean, so
+  the `expected_cross_file: 0` fixture catches a wrong sig-identity
+  commit. No new lookup machinery: the screen exemption plus the
+  site-aware accessibility walk (`accessible_from` /
+  `latest_accessible_value` / `is_project_value_prefixed`) delivers
+  every verdict. Known over-deferrals, pinned not fixed: (a) a value
+  path rooted at a **namespace-direct** signatured module never falls
+  through to a colliding assembly member (`nested_module_paths`'s
+  proper-prefix defer-shadow, pre-existing and independent of
+  accessibility — FCS binds RefLib cleanly there; pinned by
+  `namespace_direct_module_private_collision_defers_but_never_commits`);
+  (b) the module *entity* itself carries no accessibility (an `open` of
+  the private module from outside binds the assembly module in FCS;
+  ours stays a defer-shadow — the P2 open-fold class above). Oracles:
+  the matrix gained a **module-header axis** (`{"", internal, private}`
+  × val access × collision × site — 72 site-keyed cells, observed
+  36 sig commits / 18 assembly commits / 18 deferrals), plus the
+  `sig3_module_private_*` differentials (sibling, earlier-fragment,
+  dotted, inner-`val private`, assembly-collision).
 - **Active-pattern `val`s** — `val (|Even|Odd|)` / `val (|DivBy|_|)`, wired to the
   Stage-3a active-pattern-case export path (`docs/export-decl-model-plan.md`),
   recognizer span in the `.fsi` as identity.

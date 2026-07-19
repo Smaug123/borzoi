@@ -153,7 +153,10 @@ pub(super) struct SigExport {
     /// within the declaring module's subtree (FCS-probed: a later fragment
     /// of the same module reads it diagnostics-clean; everywhere else it
     /// behaves as dropped, falling through to an earlier public fragment or
-    /// the merged assembly). `None` for the public/`internal` surface.
+    /// the merged assembly). `Some(parent prefix len)` for any export under
+    /// a `module private` header — the whole enclosing container sees it
+    /// (FCS-probed: a same-namespace sibling in any file reads it clean).
+    /// `None` for the public/`internal` surface.
     pub(super) access_root_len: Option<usize>,
     /// The constructor-case kind, `None` for a plain `val`.
     pub(super) case: Option<CaseKind>,

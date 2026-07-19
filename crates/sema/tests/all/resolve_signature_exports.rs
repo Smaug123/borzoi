@@ -1801,8 +1801,9 @@ fn open_bare_private_collision_defers_but_never_commits_a_project_item() {
     );
 }
 
-/// `module private` stays screen-deferred: FCS resolves through it only
-/// with FS1092/FS1094 errors, so there is no clean commit to make.
+/// `module private` from **outside** the enclosing namespace stays
+/// uncommitted: FCS resolves through it only with FS1092/FS1094 errors, so
+/// there is no clean commit to make.
 #[test]
 fn module_private_stays_deferred() {
     let files = [
@@ -1815,6 +1816,281 @@ fn module_private_stays_deferred() {
     ];
     let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
     assert_uncommitted(res_at(&proj, &files, 2, "N.A.y"), "module private member");
+}
+
+/// A sig `module private`'s access root is the **enclosing container** (the
+/// impl-side D2 semantics), wider than `val private`'s own-container root: a
+/// sibling module in the same namespace, in another file, reads the val
+/// diagnostics-clean with decl = the `.fsi` ident (probe mp1, 2026-07-18).
+#[test]
+fn module_private_is_accessible_to_a_same_namespace_sibling() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule private A =\n    val y: int\n",
+        ),
+        ("/p/A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n",
+        ),
+        (
+            "/p/Sib2.fs",
+            "namespace N\n\nmodule Other2 =\n    let v = N.A.y\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "A.y"),
+        0,
+        "y",
+        "same-namespace sibling reading through the private module",
+    );
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 3, "N.A.y"),
+        0,
+        "y",
+        "fully-qualified sibling reading through the private module",
+    );
+}
+
+/// The impl header's own `private` changes nothing: FCS's verdicts are
+/// identical whether the paired `.fs` header is annotated or not (probe mp2).
+#[test]
+fn module_private_with_a_private_impl_header_matches() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule private A =\n    val y: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "namespace N\n\nmodule private A =\n    let y = 1\n",
+        ),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n",
+        ),
+        ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "A.y"),
+        0,
+        "y",
+        "sibling reading with a private impl header",
+    );
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "N.A.y"),
+        "outside reading with a private impl header",
+    );
+}
+
+/// A `val private` **inside** a private module keeps its deeper
+/// own-container root: the same-namespace sibling reads the plain val clean
+/// but the private one only with FS1094 (probe mp3) — so the plain val
+/// commits and the private one stays uncommitted.
+#[test]
+fn val_private_inside_a_private_module_restricts_to_the_module_subtree() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule private A =\n    val private p: int\n    val y: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "namespace N\n\nmodule A =\n    let p = 1\n    let y = 2\n",
+        ),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n    let w = A.p\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "A.y"),
+        0,
+        "y",
+        "plain val of a private module from a sibling",
+    );
+    assert_uncommitted(
+        res_at(&proj, &files, 2, "A.p"),
+        "val private inside a private module from a sibling",
+    );
+}
+
+/// The fragment half (probe mp4, **diagnostics-clean both ways**): with an
+/// earlier unsigned public fragment of the module, the outside reader binds
+/// the earlier fragment's `y` (the inaccessible restricted export never
+/// blocks it — a deferral here is the blanket-gate over-deferral this slice
+/// removes), while the same-namespace sibling binds the later `.fsi` export
+/// (latest accessible wins).
+#[test]
+fn module_private_drops_to_the_earlier_public_fragment() {
+    let files = [
+        ("/p/First.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+        (
+            "/p/P.fsi",
+            "namespace N\n\nmodule private A =\n    val y: int\n",
+        ),
+        ("/p/P.fs", "namespace N\n\nmodule A =\n    let y = 2\n"),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let s = N.A.y\n",
+        ),
+        ("/p/Use.fs", "module Use\n\nlet d = N.A.y\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 4, "N.A.y"),
+        0,
+        "y",
+        "outside reading past a private module with an earlier public fragment",
+    );
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 3, "N.A.y"),
+        1,
+        "y",
+        "sibling reading of the latest (private-module) export",
+    );
+}
+
+/// A dotted top-level header `module private N.A` restricts to its parent
+/// namespace exactly like the namespace-direct form (probe mp5): the
+/// same-namespace sibling binds the `.fsi`, the outside reader stays
+/// uncommitted (FS1092/FS1094).
+#[test]
+fn dotted_module_private_header_exports_to_its_namespace() {
+    let files = [
+        ("/p/A.fsi", "module private N.A\n\nval y: int\n"),
+        ("/p/A.fs", "module N.A\n\nlet y = 1\n"),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n",
+        ),
+        ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
+    ];
+    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "A.y"),
+        0,
+        "y",
+        "sibling reading through a dotted private header",
+    );
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "N.A.y"),
+        "outside reading through a dotted private header",
+    );
+}
+
+/// The assembly half (probes mp8/mp9/mp11, all diagnostics-clean): from
+/// outside the namespace the inaccessible private module never shadows the
+/// merged assembly — a name it exports (`shown`) and one it doesn't (`bar`)
+/// both bind the RefLib member cleanly. From inside, the accessible project
+/// export wins over the assembly. Top-level dotted header — the shape whose
+/// assembly fall-through sema models (see the sibling namespace-direct pin
+/// below).
+#[test]
+fn module_private_drops_to_the_colliding_assembly_member() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "module private ProbeNs.Shared\n\nval shown: int\n",
+        ),
+        ("/p/A.fs", "module ProbeNs.Shared\n\nlet shown = 1\n"),
+        (
+            "/p/Sib.fs",
+            "namespace ProbeNs\n\nmodule Other =\n    let a = Shared.shown\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nlet b = ProbeNs.Shared.shown\nlet c = ProbeNs.Shared.bar\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "Shared.shown"),
+        0,
+        "shown",
+        "inside reading of the private module past the assembly collision",
+    );
+    let shown = res_at(&proj, &files, 3, "ProbeNs.Shared.shown");
+    assert!(
+        matches!(shown, Some(Resolution::Member { .. })),
+        "outside `shown` must fall through to the assembly member, got {shown:?}"
+    );
+    let bar = res_at(&proj, &files, 3, "ProbeNs.Shared.bar");
+    assert!(
+        matches!(bar, Some(Resolution::Member { .. })),
+        "outside `bar` must fall through to the assembly member, got {bar:?}"
+    );
+}
+
+/// The namespace-direct twin, pinned as a known over-deferral: FCS's
+/// verdicts are identical to the dotted-header shape (probes mp8/mp9 —
+/// outside readings bind the assembly cleanly), but a value path rooted at
+/// a *nested* project module never falls through
+/// ([`nested_module_paths`]'s proper-prefix defer-shadow — sema does not
+/// model nested-module members, a pre-existing class independent of this
+/// slice). Deferral is sound; a *project* commit would be wrong, which is
+/// what this pins. The accessible inside reading commits either way.
+#[test]
+fn namespace_direct_module_private_collision_defers_but_never_commits() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "namespace ProbeNs\n\nmodule private Shared =\n    val shown: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "namespace ProbeNs\n\nmodule Shared =\n    let shown = 1\n",
+        ),
+        (
+            "/p/Sib.fs",
+            "namespace ProbeNs\n\nmodule Other =\n    let a = Shared.shown\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nlet b = ProbeNs.Shared.shown\nlet c = ProbeNs.Shared.bar\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "Shared.shown"),
+        0,
+        "shown",
+        "inside reading of the namespace-direct private module",
+    );
+    for needle in ["ProbeNs.Shared.shown", "ProbeNs.Shared.bar"] {
+        let res = res_at(&proj, &files, 3, needle);
+        assert!(
+            matches!(
+                res,
+                None | Some(
+                    Resolution::Deferred(_) | Resolution::Member { .. } | Resolution::Entity(_)
+                )
+            ),
+            "FCS binds the assembly member for {needle}; a project commit is wrong, got {res:?}"
+        );
+    }
 }
 
 /// Incremental ≡ batch when a `.fsi` edit flips a val's accessibility: the
@@ -1842,6 +2118,55 @@ fn incremental_matches_cold_when_val_access_flips_to_private() {
     assert_uncommitted(
         res_at(&cold, &after, 2, "M.shown"),
         "M.shown once the signature makes it private",
+    );
+}
+
+/// Incremental ≡ batch when a `.fsi` edit flips a **module header's**
+/// accessibility: the export surface's access roots change, so the suffix
+/// must re-fold — the outside reader flips to uncommitted while the
+/// same-namespace sibling keeps the `.fsi` commit.
+#[test]
+fn incremental_matches_cold_when_module_access_flips_to_private() {
+    let env = AssemblyEnv::default();
+    let before = [
+        ("/p/A.fsi", "namespace N\n\nmodule A =\n    val y: int\n"),
+        ("/p/A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n",
+        ),
+        ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
+    ];
+    let prev_files = project(&before);
+    let prev = resolve_project_files(&prev_files, &env);
+
+    let after = [
+        (
+            "/p/A.fsi",
+            "namespace N\n\nmodule private A =\n    val y: int\n",
+        ),
+        ("/p/A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+        (
+            "/p/Sib.fs",
+            "namespace N\n\nmodule Other =\n    let u = A.y\n",
+        ),
+        ("/p/Use.fs", "module Use\n\nlet b = N.A.y\n"),
+    ];
+    let new_files = project(&after);
+    let (incr, _) = resolve_project_files_incremental(&prev_files, &prev, &new_files, &env);
+    let cold = resolve_project_files(&new_files, &env);
+    assert_eq!(incr, cold, "incremental ≡ batch after a module-access edit");
+    assert_uncommitted(
+        res_at(&cold, &after, 3, "N.A.y"),
+        "outside reading once the signature makes the module private",
+    );
+    assert_def_ident(
+        &cold,
+        &after,
+        res_at(&cold, &after, 2, "A.y"),
+        0,
+        "y",
+        "sibling reading once the signature makes the module private",
     );
 }
 
@@ -1982,162 +2307,300 @@ fn sig_accessibility_agrees_with_fcs() {
             expected_cross_file: 0,
             fcs_must_not_declare: vec![],
         },
+        // Diagnostics-clean (probed): a `module private`'s access root is
+        // the enclosing namespace, so same-namespace siblings in other
+        // files bind the `.fsi` — bare-qualified and fully-qualified alike.
+        SigProject {
+            label: "sig3_module_private_sibling",
+            files: vec![
+                (
+                    "A.fsi",
+                    "namespace N\n\nmodule private A =\n    val y: int\n",
+                ),
+                ("A.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+                ("Sib.fs", "namespace N\n\nmodule Other =\n    let u = A.y\n"),
+                (
+                    "Sib2.fs",
+                    "namespace N\n\nmodule Other2 =\n    let v = N.A.y\n",
+                ),
+            ],
+            refs: vec![],
+            expected_cross_file: 2,
+            fcs_must_not_declare: vec![],
+        },
+        // Diagnostics-clean both ways (probed): the outside reader binds the
+        // earlier public fragment (the inaccessible export never blocks it),
+        // the sibling binds the later `.fsi` export.
+        SigProject {
+            label: "sig3_module_private_earlier_fragment",
+            files: vec![
+                ("First.fs", "namespace N\n\nmodule A =\n    let y = 1\n"),
+                (
+                    "P.fsi",
+                    "namespace N\n\nmodule private A =\n    val y: int\n",
+                ),
+                ("P.fs", "namespace N\n\nmodule A =\n    let y = 2\n"),
+                (
+                    "Sib.fs",
+                    "namespace N\n\nmodule Other =\n    let s = N.A.y\n",
+                ),
+                ("Use.fs", "module Use\n\nlet d = N.A.y\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 2,
+            fcs_must_not_declare: vec![],
+        },
+        // The dotted top-level header form: same semantics (probed) — the
+        // sibling binds the `.fsi`, the outside reader is FS1092/FS1094.
+        SigProject {
+            label: "sig3_module_private_dotted",
+            files: vec![
+                ("A.fsi", "module private N.A\n\nval y: int\n"),
+                ("A.fs", "module N.A\n\nlet y = 1\n"),
+                ("Sib.fs", "namespace N\n\nmodule Other =\n    let u = A.y\n"),
+                ("Use.fs", "module Use\n\nlet b = N.A.y\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // A `val private` inside a private module keeps its deeper root
+        // (probed): the sibling reads the plain val clean, the private one
+        // only with FS1094 — one agreement, and a commit on `p` would be a
+        // wrong sig-identity commit caught by the exactness loop.
+        SigProject {
+            label: "sig3_module_private_inner_private",
+            files: vec![
+                (
+                    "A.fsi",
+                    "namespace N\n\nmodule private A =\n    val private p: int\n    val y: int\n",
+                ),
+                (
+                    "A.fs",
+                    "namespace N\n\nmodule A =\n    let p = 1\n    let y = 2\n",
+                ),
+                (
+                    "Sib.fs",
+                    "namespace N\n\nmodule Other =\n    let u = A.y\n    let w = A.p\n",
+                ),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // A visible union's case inside a private module inherits the
+        // header's floor (probed): the sibling binds the `.fsi` case clean
+        // (its own binding kept private — a public one would be FS410,
+        // "less accessible", with the same decl), the outside reading is
+        // FS1092 with the decl recovered to the `.fsi` — a wrong commit
+        // there would bump the count.
+        SigProject {
+            label: "sig3_module_private_union_case",
+            files: vec![
+                (
+                    "A.fsi",
+                    "namespace N\n\nmodule private A =\n    type T =\n        | C of int\n",
+                ),
+                (
+                    "A.fs",
+                    "namespace N\n\nmodule A =\n    type T =\n        | C of int\n",
+                ),
+                (
+                    "Sib.fs",
+                    "namespace N\n\nmodule Other =\n    let private u = A.C 3\n",
+                ),
+                ("Use.fs", "module Use\n\nlet b = N.A.C 4\n"),
+            ],
+            refs: vec![],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // The assembly collision (probed, diagnostics-clean): the sibling
+        // binds the `.fsi` past the collision; the outside readings bind
+        // RefLib (`shown` and the never-mentioned `bar` alike) — assembly
+        // commits, which the count ignores and the wrong-commit checks
+        // guard.
+        SigProject {
+            label: "sig3_module_private_asm_collision",
+            files: vec![
+                ("A.fsi", "module private ProbeNs.Shared\n\nval shown: int\n"),
+                ("A.fs", "module ProbeNs.Shared\n\nlet shown = 1\n"),
+                (
+                    "Sib.fs",
+                    "namespace ProbeNs\n\nmodule Other =\n    let a = Shared.shown\n",
+                ),
+                (
+                    "Use.fs",
+                    "module Use\n\nlet b = ProbeNs.Shared.shown\nlet c = ProbeNs.Shared.bar\n",
+                ),
+            ],
+            refs: vec![ensure_reflib_built()],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
     ];
     for fixture in &fixtures {
         assert_sig_matches_fcs(fixture);
     }
 }
 
-/// The systematic sweep for this slice: accessibility × assembly collision ×
-/// reading site (intervening / outside-after / **inside the module's own
-/// subtree** — the site codex round 1 P1 showed the point fixtures had
-/// missed), site-keyed against FCS. For every access flavour the
-/// intervening reading falls through (assembly under a collision, unbound
-/// otherwise); after the impl's slot the exposed flavours bind the `.fsi`
-/// everywhere, and `private` splits by site — the inside reader binds the
-/// `.fsi` (accessible), the outside one falls through — including the
-/// **clean** private+collision assembly binding this slice exists to
-/// commit.
+/// The systematic sweep for this slice: **module-header accessibility** ×
+/// val accessibility × assembly collision × reading site (intervening /
+/// outside-after / **inside the module's own subtree** — the site codex
+/// round 1 P1 showed the point fixtures had missed), site-keyed against
+/// FCS. For every flavour the intervening reading falls through (assembly
+/// under a collision, unbound otherwise); after the impl's slot the exposed
+/// flavours bind the `.fsi` everywhere, and `private` — on the val or on
+/// the header — splits by site: the inside reader binds the `.fsi`
+/// (accessible: the header's floor is the enclosing namespace, the val's
+/// root its module), the outside one falls through — including the
+/// **clean** private+collision assembly bindings this slice and the val
+/// slice exist to commit.
 #[test]
 fn accessibility_matrix_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
     let mut sig_commits = 0usize;
     let mut assembly_commits = 0usize;
     let mut deferrals = 0usize;
-    for access in ["", "public ", "internal ", "private "] {
-        for collision in [false, true] {
-            let sig_src = format!("module ProbeNs.Shared\n\nval {access}bar: int\n");
-            let files: Vec<(&str, &str)> = vec![
-                ("A.fsi", sig_src.as_str()),
-                (
-                    "Between.fs",
-                    "module Between\n\nlet g = ProbeNs.Shared.bar\n",
-                ),
-                ("A.fs", "module ProbeNs.Shared\n\nlet bar = 2\n"),
-                ("After.fs", "module After\n\nlet h = ProbeNs.Shared.bar\n"),
-                // A later unsigned fragment of the same module: its reading
-                // site lies inside the module's subtree, where a private
-                // val is accessible.
-                (
-                    "Inside.fs",
-                    "namespace ProbeNs\n\nmodule Shared =\n    let g2 = ProbeNs.Shared.bar\n",
-                ),
-            ];
-            let label = format!(
-                "sig3acc_{}_{}",
-                access.trim().replace(' ', "_"),
-                if collision { "coll" } else { "nocoll" }
-            );
-            let (root, written) = temp_fs_tree(&label, &files);
-            let paths: Vec<&Path> = written.iter().map(|(path, _)| path.as_path()).collect();
-            let refs: Vec<&Path> = if collision { vec![reflib] } else { vec![] };
-            let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
-            let fcs_files = parse_fcs_uses_project(&json, &written);
-
-            let srcs: Vec<SourceFile> = files
-                .iter()
-                .map(|(rel, src)| source_file(rel, src))
-                .collect();
-            let full_paths: Vec<PathBuf> = written.iter().map(|(path, _)| path.clone()).collect();
-            let qnofs = qualified_names(&srcs, &full_paths);
-            let input: Vec<ProjectFile> = srcs
-                .into_iter()
-                .zip(qnofs)
-                .map(|(file, qnof)| ProjectFile::new(file, qnof))
-                .collect();
-            let env = if collision {
-                reflib_env()
-            } else {
-                AssemblyEnv::default()
-            };
-            let proj = resolve_project_files(&input, &env);
-            let _ = std::fs::remove_dir_all(&root);
-
-            // Site-keyed: for each reading site, our verdict must match
-            // FCS's — in-project decl ⇒ exact Item or deferral; assembly ⇒
-            // assembly member or deferral; unbound ⇒ nothing.
-            for (site_idx, needle_owner) in [
-                (1usize, "Between.fs"),
-                (3usize, "After.fs"),
-                (4usize, "Inside.fs"),
-            ] {
-                let (site_path, site_src) = &written[site_idx];
-                assert_eq!(
-                    site_path.file_name().and_then(|n| n.to_str()),
-                    Some(needle_owner),
-                    "fixture rows moved"
+    for header in ["", "internal ", "private "] {
+        for access in ["", "public ", "internal ", "private "] {
+            for collision in [false, true] {
+                let sig_src = format!("module {header}ProbeNs.Shared\n\nval {access}bar: int\n");
+                let files: Vec<(&str, &str)> = vec![
+                    ("A.fsi", sig_src.as_str()),
+                    (
+                        "Between.fs",
+                        "module Between\n\nlet g = ProbeNs.Shared.bar\n",
+                    ),
+                    ("A.fs", "module ProbeNs.Shared\n\nlet bar = 2\n"),
+                    ("After.fs", "module After\n\nlet h = ProbeNs.Shared.bar\n"),
+                    // A later unsigned fragment of the same module: its reading
+                    // site lies inside the module's subtree, where a private
+                    // val is accessible.
+                    (
+                        "Inside.fs",
+                        "namespace ProbeNs\n\nmodule Shared =\n    let g2 = ProbeNs.Shared.bar\n",
+                    ),
+                ];
+                let label = format!(
+                    "sig3acc_{}_{}_{}",
+                    header.trim().replace(' ', "_"),
+                    access.trim().replace(' ', "_"),
+                    if collision { "coll" } else { "nocoll" }
                 );
-                let needle = "ProbeNs.Shared.bar";
-                let start = site_src.find(needle).expect("probe site present");
-                let site = span(start, start + needle.len());
-                let fcs_at_site = fcs_files
+                let (root, written) = temp_fs_tree(&label, &files);
+                let paths: Vec<&Path> = written.iter().map(|(path, _)| path.as_path()).collect();
+                let refs: Vec<&Path> = if collision { vec![reflib] } else { vec![] };
+                let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
+                let fcs_files = parse_fcs_uses_project(&json, &written);
+
+                let srcs: Vec<SourceFile> = files
                     .iter()
-                    .find(|f| f.path.file_name() == site_path.file_name())
-                    .and_then(|f| {
-                        f.uses.iter().find(|u| {
-                            u.start == usize::from(site.start()) && u.end == usize::from(site.end())
-                        })
-                    });
-                let ours = proj.file(site_idx).resolution_at(site);
-                let what = format!("{label}: {needle_owner}");
-                match fcs_at_site {
-                    Some(u) if u.decl.is_some() => {
-                        let decl = u.decl.as_ref().expect("checked");
-                        match ours {
-                            None | Some(Resolution::Deferred(_)) => deferrals += 1,
-                            Some(res @ Resolution::Item(_)) => {
-                                let (idx, def) = proj.item_def(res).expect("item def");
-                                assert_eq!(
-                                    written[idx].0.file_name(),
-                                    decl.file.file_name(),
-                                    "{what}: wrong declaring file"
-                                );
-                                assert_eq!(
-                                    def.range,
-                                    span(decl.start, decl.end),
-                                    "{what}: wrong def range"
-                                );
-                                sig_commits += 1;
+                    .map(|(rel, src)| source_file(rel, src))
+                    .collect();
+                let full_paths: Vec<PathBuf> =
+                    written.iter().map(|(path, _)| path.clone()).collect();
+                let qnofs = qualified_names(&srcs, &full_paths);
+                let input: Vec<ProjectFile> = srcs
+                    .into_iter()
+                    .zip(qnofs)
+                    .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                    .collect();
+                let env = if collision {
+                    reflib_env()
+                } else {
+                    AssemblyEnv::default()
+                };
+                let proj = resolve_project_files(&input, &env);
+                let _ = std::fs::remove_dir_all(&root);
+
+                // Site-keyed: for each reading site, our verdict must match
+                // FCS's — in-project decl ⇒ exact Item or deferral; assembly ⇒
+                // assembly member or deferral; unbound ⇒ nothing.
+                for (site_idx, needle_owner) in [
+                    (1usize, "Between.fs"),
+                    (3usize, "After.fs"),
+                    (4usize, "Inside.fs"),
+                ] {
+                    let (site_path, site_src) = &written[site_idx];
+                    assert_eq!(
+                        site_path.file_name().and_then(|n| n.to_str()),
+                        Some(needle_owner),
+                        "fixture rows moved"
+                    );
+                    let needle = "ProbeNs.Shared.bar";
+                    let start = site_src.find(needle).expect("probe site present");
+                    let site = span(start, start + needle.len());
+                    let fcs_at_site = fcs_files
+                        .iter()
+                        .find(|f| f.path.file_name() == site_path.file_name())
+                        .and_then(|f| {
+                            f.uses.iter().find(|u| {
+                                u.start == usize::from(site.start())
+                                    && u.end == usize::from(site.end())
+                            })
+                        });
+                    let ours = proj.file(site_idx).resolution_at(site);
+                    let what = format!("{label}: {needle_owner}");
+                    match fcs_at_site {
+                        Some(u) if u.decl.is_some() => {
+                            let decl = u.decl.as_ref().expect("checked");
+                            match ours {
+                                None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                                Some(res @ Resolution::Item(_)) => {
+                                    let (idx, def) = proj.item_def(res).expect("item def");
+                                    assert_eq!(
+                                        written[idx].0.file_name(),
+                                        decl.file.file_name(),
+                                        "{what}: wrong declaring file"
+                                    );
+                                    assert_eq!(
+                                        def.range,
+                                        span(decl.start, decl.end),
+                                        "{what}: wrong def range"
+                                    );
+                                    sig_commits += 1;
+                                }
+                                other => panic!(
+                                    "{what}: FCS declares in-project at {:?}, we committed {other:?}",
+                                    decl.file
+                                ),
                             }
-                            other => panic!(
-                                "{what}: FCS declares in-project at {:?}, we committed {other:?}",
-                                decl.file
-                            ),
                         }
+                        Some(u) if u.assembly.as_deref() == Some("SemaSignatureRefLib") => {
+                            match ours {
+                                None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                                Some(Resolution::Member { .. } | Resolution::Entity(_)) => {
+                                    assembly_commits += 1;
+                                }
+                                other => panic!(
+                                    "{what}: FCS binds the assembly, we committed {other:?} in-project"
+                                ),
+                            }
+                        }
+                        _ => match ours {
+                            None | Some(Resolution::Deferred(_)) => deferrals += 1,
+                            other => panic!("{what}: FCS is unbound here, we committed {other:?}"),
+                        },
                     }
-                    Some(u) if u.assembly.as_deref() == Some("SemaSignatureRefLib") => match ours {
-                        None | Some(Resolution::Deferred(_)) => deferrals += 1,
-                        Some(Resolution::Member { .. } | Resolution::Entity(_)) => {
-                            assembly_commits += 1;
-                        }
-                        other => panic!(
-                            "{what}: FCS binds the assembly, we committed {other:?} in-project"
-                        ),
-                    },
-                    _ => match ours {
-                        None | Some(Resolution::Deferred(_)) => deferrals += 1,
-                        other => panic!("{what}: FCS is unbound here, we committed {other:?}"),
-                    },
                 }
             }
         }
     }
-    // Non-vacuity floors: the exposed after/inside cells commit the sig
-    // identity, and the private inside cells do too — the site where the
-    // restricted export is accessible, even under a collision (observed
-    // 14 = 3 exposed flavours × {after, inside} × 2 collision states + the
-    // 2 private inside cells); the collision fall-throughs commit the
-    // assembly (observed 5: the exposed intervening cells + the private
-    // after cell + the private intervening cell); the unbound cells defer
-    // (observed 5).
+    // Non-vacuity floors, just under the observed counts (printed;
+    // observed 36 / 18 / 18 over the 72 cells): every verdict family must
+    // stay populated — the exposed after/inside cells commit the sig
+    // identity (for a private header the inside cell is the accessible
+    // site), the collision fall-throughs commit the assembly (including
+    // the private-header after cells), and the unbound cells defer.
     println!(
         "accessibility matrix: {sig_commits} sig commits, {assembly_commits} assembly commits, \
          {deferrals} deferrals"
     );
-    assert!(sig_commits >= 12, "sig-identity commits: {sig_commits}");
+    assert!(sig_commits >= 32, "sig-identity commits: {sig_commits}");
     assert!(
-        assembly_commits >= 4,
+        assembly_commits >= 15,
         "assembly commits: {assembly_commits}"
     );
-    assert!(deferrals >= 4, "deferrals: {deferrals}");
+    assert!(deferrals >= 15, "deferrals: {deferrals}");
 }
