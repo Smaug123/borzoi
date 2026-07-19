@@ -22,7 +22,7 @@ assert_eq() { # name expected actual
 # sorted/space-joined shape the runners below produce.
 expect() { # true-filters...
   local f out=""
-  for f in assembly astgen cst fcs lsp msbuild nuget sema sidecar workspace; do
+  for f in assembly astgen cst fcs lsp msbuild nuget sema sidecar stats workspace; do
     if [[ " $* " == *" $f "* ]]; then out+="$f=true "; else out+="$f=false "; fi
   done
   printf '%s' "$out"
@@ -40,7 +40,7 @@ assert_eq "nix dir"                  "$(expect workspace)"     "$(classify 'nix/
 assert_eq "ci workflow file"         "$(expect workspace)"     "$(classify '.github/workflows/ci.yml')"
 assert_eq "stats workflow file"      "$(expect workspace)"     "$(classify '.github/workflows/stats.yml')"
 assert_eq "this script (tools/ci)"   "$(expect workspace)"     "$(classify 'tools/ci/detect-changes.sh')"
-assert_eq "stats tool"               "$(expect workspace)"     "$(classify 'tools/stats/src/lib.rs')"
+assert_eq "stats tool"               "$(expect stats)"         "$(classify 'tools/stats/src/lib.rs')"
 assert_eq "astgen tool"              "$(expect astgen)"        "$(classify 'tools/astgen/src/lib.rs')"
 assert_eq "fcs-dump tool"            "$(expect fcs)"           "$(classify 'tools/fcs-dump/Program.fs')"
 assert_eq "sidecar prod"             "$(expect sidecar)"       "$(classify 'tools/csharp-sidecar/Foo.cs')"
@@ -54,6 +54,7 @@ assert_eq "nothing changed"          "$(expect)"               "$(classify '')"
 # Prefix-boundary guards: a sibling dir that shares a name prefix must NOT match.
 assert_eq "crates/cstfoo is not cst" "$(expect)"               "$(classify 'crates/cstfoo/x.rs')"
 assert_eq "tools/astgenfoo not astgen" "$(expect)"             "$(classify 'tools/astgenfoo/x.rs')"
+assert_eq "tools/statsfoo not stats" "$(expect)"              "$(classify 'tools/statsfoo/x.rs')"
 assert_eq "csharp-sidecar-extra"     "$(expect)"               "$(classify 'tools/csharp-sidecar-extra/x.cs')"
 assert_eq "nuget-oracle-extra"       "$(expect)"               "$(classify 'tools/nuget-oracle-extra/x.fs')"
 # Crates/tools routed after the initial gate set.
@@ -95,11 +96,11 @@ assert_eq "push diff (before=c1)" "$(expect lsp)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE="$base")"
 assert_eq "pull_request diff (base=c1)" "$(expect lsp)" \
   "$(run GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base")"
-assert_eq "fail-open: empty before" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: empty before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=)"
-assert_eq "fail-open: all-zeros before" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: all-zeros before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=0000000000000000000000000000000000000000)"
-assert_eq "fail-open: unknown base sha" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: unknown base sha" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
 
 # --- non-ancestor base (force-push) ------------------------------------------

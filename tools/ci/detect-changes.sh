@@ -41,18 +41,19 @@ filter_prefixes() {
     # so both live under one filter.
     nuget)     echo "crates/nuget tools/nuget-oracle" ;;
     astgen)    echo "tools/astgen" ;;
+    stats)     echo "tools/stats" ;;
     fcs)       echo "tools/fcs-dump" ;;
     sidecar)   echo "tools/csharp-sidecar tools/csharp-sidecar.tests" ;;
     # crates/spawn (every test harness shells out through it) and
     # crates/oracle-harness (drives every resident oracle) underpin the whole
     # suite, so — like the build-config entries — a change to either runs
     # everything. Each still has its own test job, gated on `workspace`.
-    workspace) echo "Cargo.toml Cargo.lock flake.nix flake.lock nix rust-toolchain.toml .github/workflows tools/ci tools/stats crates/spawn crates/oracle-harness" ;;
+    workspace) echo "Cargo.toml Cargo.lock flake.nix flake.lock nix rust-toolchain.toml .github/workflows tools/ci crates/spawn crates/oracle-harness" ;;
     *)         echo "filter_prefixes: unknown filter '$1'" >&2; exit 2 ;;
   esac
 }
 
-FILTERS="cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace"
+FILTERS="cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace"
 
 # Read a changed-file list on stdin; print "name=true|false" per filter.
 classify() {

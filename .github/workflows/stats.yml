@@ -75,11 +75,6 @@ jobs:
             cat "$RUNNER_TEMP/reports/resolution-divergence/summary.txt"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build the history validator and dashboard generator
-        run: |
-          nix develop --command cargo build -p borzoi-stats
-          tar -C target/debug -czf "$RUNNER_TEMP/borzoi-stats.tgz" borzoi-stats
-
       - name: Upload full measurement reports
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -87,15 +82,6 @@ jobs:
           path: ${{ runner.temp }}/reports
           if-no-files-found: error
           retention-days: 90
-          overwrite: true
-
-      - name: Upload the stats tool for the persistence job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: stats-tool-${{ github.sha }}
-          path: ${{ runner.temp }}/borzoi-stats.tgz
-          if-no-files-found: error
-          retention-days: 1
           overwrite: true
 
   persist:
@@ -110,22 +96,39 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Build the publisher on this VM under the same pinned Nix environment
+      # that will remain present while it runs. A binary built in another job
+      # refers to that job's /nix/store ELF interpreter and cannot be copied to
+      # a fresh runner by itself.
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache cargo target/
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: true
+
+      - name: Build the history validator and dashboard generator
+        run: |
+          nix develop --command cargo build --locked -p borzoi-stats
+          test -x "$GITHUB_WORKSPACE/target/debug/borzoi-stats"
+
       - name: Download full measurement reports
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: measurement-reports-${{ github.sha }}
           path: ${{ runner.temp }}/reports
-
-      - name: Download the stats tool
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: stats-tool-${{ github.sha }}
-          path: ${{ runner.temp }}
-
-      - name: Unpack the stats tool
-        run: |
-          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/borzoi-stats.tgz"
-          test -x "$RUNNER_TEMP/borzoi-stats"
 
       - name: Check out or initialise the stats-data branch
         env:
@@ -170,10 +173,10 @@ jobs:
             --corpus-revision "$corpus_revision"
             --flake-lock-hash "$flake_lock_hash"
           )
-          "$RUNNER_TEMP/borzoi-stats" record \
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
             --summary "$RUNNER_TEMP/reports/parser-divergence/summary.json" \
             "${common[@]}"
-          "$RUNNER_TEMP/borzoi-stats" record \
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
             --summary "$RUNNER_TEMP/reports/resolution-divergence/summary.json" \
             "${common[@]}"
 
@@ -219,7 +222,7 @@ jobs:
           HISTORY_DIR: ${{ runner.temp }}/stats-history
           SITE_DIR: ${{ runner.temp }}/stats-site
         run: |
-          "$RUNNER_TEMP/borzoi-stats" site \
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" site \
             --history "$HISTORY_DIR" \
             --output "$SITE_DIR"
 
@@ -232,6 +235,9 @@ jobs:
     name: Deploy measurement dashboard
     needs: persist
     runs-on: ubuntu-latest
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       contents: read
       pages: write
