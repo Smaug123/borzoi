@@ -5501,7 +5501,7 @@ let private usesProjectBatch () =
 /// line, and for each type-checks it *in isolation* as a single-file project —
 /// reusing the SDK reference set harvested once (by script resolution on the
 /// first usable path) — then emits one compact JSON line
-/// `{ Path, Ok, Error, Uses: [classified-use] }`.
+/// `{ Path, Ok, Error, HasCheckErrors, Uses: [classified-use] }`.
 ///
 /// Unlike `uses` / `uses-project`, this NEVER aborts on a type error. A corpus
 /// file checked without its siblings cannot resolve cross-file names, but
@@ -5550,6 +5550,7 @@ let private dumpUsesCensusBatchCore () =
                             {| Path = path
                                Ok = false
                                Error = "reference resolution failed"
+                               HasCheckErrors = false
                                Uses = ([||]: obj[]) |}, options)
                     | Some opts0 ->
                         let sourceText = SourceText.ofString (File.ReadAllText absolute)
@@ -5568,21 +5569,34 @@ let private dumpUsesCensusBatchCore () =
                             |> Async.RunSynchronously
                         match checkAnswer with
                         | FSharpCheckFileAnswer.Succeeded r ->
+                            let hasCheckErrors =
+                                r.Diagnostics
+                                |> Array.exists (fun d ->
+                                    d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                             let uses =
                                 r.GetAllUsesOfAllSymbolsInFile()
                                 |> Seq.map projectSymbolUseCensus
                                 |> Seq.toArray
                             JsonSerializer.Serialize(
-                                {| Path = path; Ok = true; Error = ""; Uses = uses |}, options)
+                                {| Path = path
+                                   Ok = true
+                                   Error = ""
+                                   HasCheckErrors = hasCheckErrors
+                                   Uses = uses |}, options)
                         | FSharpCheckFileAnswer.Aborted ->
                             JsonSerializer.Serialize(
                                 {| Path = path
                                    Ok = false
                                    Error = "type-check aborted"
+                                   HasCheckErrors = false
                                    Uses = ([||]: obj[]) |}, options)
                 with ex ->
                     JsonSerializer.Serialize(
-                        {| Path = path; Ok = false; Error = ex.Message; Uses = ([||]: obj[]) |}, options)
+                        {| Path = path
+                           Ok = false
+                           Error = ex.Message
+                           HasCheckErrors = false
+                           Uses = ([||]: obj[]) |}, options)
             Console.Out.WriteLine(json)
             Console.Out.Flush()
         line <- Console.In.ReadLine()
@@ -5608,8 +5622,9 @@ let private dumpUsesCensusBatch () =
 
 /// Project-mode sibling of [`dumpUsesCensusBatchCore`]: type-check the
 /// Compile-ordered paths from stdin as a *single project* (cross-file names
-/// resolve), then emit one `{ Path, Ok, Uses }` JSON line per file with the same
-/// classified-use shape. The unbiased counterpart for the Phase-3 census's
+/// resolve), then emit one `{ Path, Ok, HasCheckErrors, Uses }` JSON line per
+/// file with the same classified-use shape. The unbiased counterpart for the
+/// Phase-3 census's
 /// isolation-bias probe (`crates/sema/tests/uses_census_project.rs`): running a
 /// real project's files this way *and* standalone, on the same set, exposes how
 /// many member accesses the standalone batch loses to unresolved siblings.
@@ -5665,21 +5680,34 @@ let private dumpUsesCensusProjectCore () =
                     |> Async.RunSynchronously
                 match checkAnswer with
                 | FSharpCheckFileAnswer.Succeeded r ->
+                    let hasCheckErrors =
+                        r.Diagnostics
+                        |> Array.exists (fun d ->
+                            d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
                     let uses =
                         r.GetAllUsesOfAllSymbolsInFile()
                         |> Seq.map projectSymbolUseCensus
                         |> Seq.toArray
                     JsonSerializer.Serialize(
-                        {| Path = absolute; Ok = true; Error = ""; Uses = uses |}, options)
+                        {| Path = absolute
+                           Ok = true
+                           Error = ""
+                           HasCheckErrors = hasCheckErrors
+                           Uses = uses |}, options)
                 | FSharpCheckFileAnswer.Aborted ->
                     JsonSerializer.Serialize(
                         {| Path = absolute
                            Ok = false
                            Error = "type-check aborted"
+                           HasCheckErrors = false
                            Uses = ([||]: obj[]) |}, options)
             with ex ->
                 JsonSerializer.Serialize(
-                    {| Path = absolute; Ok = false; Error = ex.Message; Uses = ([||]: obj[]) |}, options)
+                    {| Path = absolute
+                       Ok = false
+                       Error = ex.Message
+                       HasCheckErrors = false
+                       Uses = ([||]: obj[]) |}, options)
         Console.Out.WriteLine(json)
         Console.Out.Flush()
 

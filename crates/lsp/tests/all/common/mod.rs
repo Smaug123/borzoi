@@ -329,6 +329,20 @@ pub fn invoke_fcs_dump_project_with_refs(
     String::from_utf8(out.stdout).expect("fcs-dump stdout is UTF-8")
 }
 
+/// Run `fcs-dump uses-census-batch` over `paths`, type-checking every file in
+/// isolation, and return one `{ Path, Ok, HasCheckErrors, Uses }` JSON object per
+/// input line.
+/// The long-lived child amortises FCS startup and reference discovery over the
+/// corpus while keeping each file's symbol table independent.
+pub fn invoke_fcs_dump_census(paths: &[PathBuf]) -> String {
+    let cmd = fcs_dump_command("uses-census-batch");
+    let out = BoundedCommand::new(cmd)
+        .stdin_lines(paths.iter().map(|p| p.display().to_string()))
+        .timeout(PROJECT_TIMEOUT)
+        .run_ok("fcs-dump uses-census-batch");
+    String::from_utf8(out.stdout).expect("fcs-dump stdout is UTF-8")
+}
+
 /// Lookup byte offset for an FCS `(line, col)` position. FCS uses 1-based lines
 /// and 0-based columns counting **UTF-16 code units**, so `col` is walked a char
 /// at a time accumulating UTF-16 units. (Ported verbatim from the sema harness.)
@@ -409,6 +423,66 @@ struct FcsPos {
     line: u32,
     #[serde(rename = "Col")]
     col: u32,
+}
+
+/// One file returned by `uses-census-batch`.
+#[derive(Deserialize)]
+pub struct FileCensus {
+    #[serde(rename = "Path")]
+    pub path: String,
+    #[serde(rename = "Ok")]
+    pub ok: bool,
+    #[serde(rename = "Error", default)]
+    pub error: Option<String>,
+    #[serde(rename = "HasCheckErrors")]
+    pub has_check_errors: bool,
+    #[serde(rename = "Uses", default)]
+    pub uses: Vec<CensusUse>,
+}
+
+/// One FCS symbol occurrence from the isolation census. Location fields stay
+/// in FCS line/UTF-16-column form until the caller supplies the exact source.
+#[derive(Deserialize)]
+pub struct CensusUse {
+    #[serde(rename = "SymbolName")]
+    pub name: String,
+    #[serde(rename = "Range")]
+    range: FcsRange,
+    #[serde(rename = "DeclRange")]
+    decl_range: Option<FcsRange>,
+    #[serde(rename = "IsFromDefinition")]
+    pub is_from_definition: bool,
+}
+
+impl CensusUse {
+    pub fn use_range_bytes(&self, idx: &LineIndex<'_>) -> (usize, usize) {
+        (
+            idx.offset(self.range.start.line, self.range.start.col),
+            idx.offset(self.range.end.line, self.range.end.col),
+        )
+    }
+
+    /// The declaration range when it lies in the checked file. A declaration
+    /// in FSharp.Core or another assembly cannot be converted against this
+    /// source and is therefore absent.
+    pub fn decl_range_bytes(&self, idx: &LineIndex<'_>) -> Option<(usize, usize)> {
+        self.decl_range.as_ref().and_then(|decl| {
+            (decl.file == self.range.file).then(|| {
+                (
+                    idx.offset(decl.start.line, decl.start.col),
+                    idx.offset(decl.end.line, decl.end.col),
+                )
+            })
+        })
+    }
+}
+
+/// Parse the census JSONL (one [`FileCensus`] per non-blank line).
+pub fn parse_fcs_census_jsonl(json: &str) -> Vec<FileCensus> {
+    json.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("FCS census line is valid JSON"))
+        .collect()
 }
 
 /// Where a use's symbol is declared, normalised to a project file and a byte

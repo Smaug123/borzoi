@@ -312,8 +312,10 @@ fn fcs_project_batch_pool() -> &'static BatchPool {
 
 /// Run `fcs-dump uses-census-batch` over `paths` (any order; **each file is
 /// type-checked in isolation**) and return its JSONL stdout — one
-/// `{ Path, Ok, Error, Uses }` object per line. The tolerant census oracle for
-/// the Phase-3 scoping measurement (`tests/all/uses_census.rs`).
+/// `{ Path, Ok, Error, HasCheckErrors, Uses }` object per line. The tolerant
+/// census oracle for the Phase-3 scoping measurement
+/// (`tests/all/uses_census.rs`); this harness ignores `HasCheckErrors` because
+/// partial results are the population that measurement intentionally counts.
 pub fn invoke_fcs_dump_census(paths: &[PathBuf]) -> String {
     census_driver("uses-census-batch", paths, &[])
 }
@@ -380,7 +382,8 @@ const PROJECT_TIMEOUT: Duration = Duration::from_secs(3600);
 // Census classification — the Phase-3 scoping taxonomy (single source of truth)
 // ============================================================================
 
-/// One file's census result (`{ Path, Ok, Uses }` JSON line). Shared by
+/// One file's census result (`{ Path, Ok, HasCheckErrors, Uses }` JSON line).
+/// `HasCheckErrors` is intentionally ignored here; this view is shared by
 /// `tests/all/uses_census.rs` (corpus sweep) and `tests/all/uses_census_project.rs`
 /// (isolation-bias probe).
 #[derive(Deserialize)]
