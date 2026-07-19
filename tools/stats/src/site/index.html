@@ -96,16 +96,14 @@ function render() {
   const values = points.map(point => point.value), low = Math.min(...values), high = Math.max(...values);
   const pad = high === low ? Math.max(1, Math.abs(high) * .1) : (high - low) * .12;
   const ymin = low - pad, ymax = high + pad, left = 78, right = 970, top = 24, bottom = 310;
-  const times = points.map(point => Date.parse(point.item.measured_at));
-  const tmin = Math.min(...times), tmax = Math.max(...times);
-  const x = (time, index) => tmax === tmin ? left + (right - left) * (points.length === 1 ? .5 : index / (points.length - 1)) : left + (right - left) * (time - tmin) / (tmax - tmin);
+  const x = index => left + (right - left) * (points.length === 1 ? .5 : index / (points.length - 1));
   const y = value => bottom - (bottom - top) * (value - ymin) / (ymax - ymin);
   for (let i = 0; i <= 4; i++) {
     const yy = top + (bottom - top) * i / 4, value = ymax - (ymax - ymin) * i / 4;
     chart.append(svg('line', { x1: left, x2: right, y1: yy, y2: yy, class: 'grid' }));
     const label = svg('text', { x: left - 10, y: yy + 4, 'text-anchor': 'end', class: 'axis-label' }); label.textContent = metric.endsWith('basis_points') ? `${(value / 100).toFixed(1)}%` : (Number.isInteger(value) ? value : value.toFixed(2)); chart.append(label);
   }
-  const coordinates = points.map((point, index) => [x(times[index], index), y(point.value)]);
+  const coordinates = points.map((point, index) => [x(index), y(point.value)]);
   chart.append(svg('polyline', { points: coordinates.map(pair => pair.join(',')).join(' '), class: 'line' }));
   coordinates.forEach(([cx, cy], index) => {
     const link = svg('a', { href: `https://github.com/${points[index].item.repository}/commit/${points[index].item.commit}` });

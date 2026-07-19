@@ -24,6 +24,7 @@ fn run() -> Result<(), String> {
                 commit: required(&options, "commit")?,
                 measured_at: required(&options, "measured-at")?,
                 run_id: number(&options, "run-id")?,
+                run_number: number(&options, "run-number")?,
                 run_attempt: number(&options, "run-attempt")?,
                 corpus_revision: required(&options, "corpus-revision")?,
                 flake_lock_hash: required(&options, "flake-lock-hash")?,
@@ -37,6 +38,7 @@ fn run() -> Result<(), String> {
                     "commit",
                     "measured-at",
                     "run-id",
+                    "run-number",
                     "run-attempt",
                     "corpus-revision",
                     "flake-lock-hash",
@@ -113,7 +115,7 @@ fn reject_unknown(options: &BTreeMap<String, String>, allowed: &[&str]) -> Resul
 
 fn usage() -> String {
     "usage: borzoi-stats record --summary PATH --history PATH --repository OWNER/REPO \
-     --commit SHA --measured-at TIMESTAMP --run-id ID --run-attempt N \
+     --commit SHA --measured-at TIMESTAMP --run-id ID --run-number N --run-attempt N \
      --corpus-revision SHA --flake-lock-hash SHA256\n       \
      borzoi-stats site --history PATH --output PATH"
         .into()

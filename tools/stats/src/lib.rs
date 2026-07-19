@@ -21,6 +21,7 @@ pub struct RecordInput {
     pub commit: String,
     pub measured_at: String,
     pub run_id: u64,
+    pub run_number: u64,
     pub run_attempt: u32,
     pub corpus_revision: String,
     pub flake_lock_hash: String,
@@ -91,6 +92,8 @@ struct Observation {
 #[serde(deny_unknown_fields)]
 struct Workflow {
     run_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_number: Option<u64>,
     run_attempt: u32,
     url: String,
 }
@@ -118,6 +121,7 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
         measured_at: input.measured_at.clone(),
         workflow: Workflow {
             run_id: input.run_id,
+            run_number: Some(input.run_number),
             run_attempt: input.run_attempt,
             url: format!(
                 "https://github.com/{}/actions/runs/{}",
@@ -162,12 +166,7 @@ pub fn build_site(history: &Path, output: &Path) -> Result<usize, StatsError> {
         }
         observations.push(observation);
     }
-    observations.sort_by(|a, b| {
-        a.measured_at
-            .cmp(&b.measured_at)
-            .then(a.generator.measurement.cmp(&b.generator.measurement))
-            .then(a.commit.cmp(&b.commit))
-    });
+    observations.sort_by(observation_order);
 
     create_dir_all(output)?;
     write_json(&output.join("data.json"), &observations)?;
@@ -177,25 +176,51 @@ pub fn build_site(history: &Path, output: &Path) -> Result<usize, StatsError> {
 }
 
 fn validate_record_input(input: &RecordInput) -> Result<(), StatsError> {
-    if !valid_repository(&input.repository) {
+    validate_provenance(Provenance {
+        repository: &input.repository,
+        commit: &input.commit,
+        measured_at: &input.measured_at,
+        run_id: input.run_id,
+        run_attempt: input.run_attempt,
+        corpus_revision: &input.corpus_revision,
+        flake_lock_hash: &input.flake_lock_hash,
+    })?;
+    if input.run_number == 0 {
+        return invalid("workflow run number must be non-zero");
+    }
+    Ok(())
+}
+
+struct Provenance<'a> {
+    repository: &'a str,
+    commit: &'a str,
+    measured_at: &'a str,
+    run_id: u64,
+    run_attempt: u32,
+    corpus_revision: &'a str,
+    flake_lock_hash: &'a str,
+}
+
+fn validate_provenance(provenance: Provenance<'_>) -> Result<(), StatsError> {
+    if !valid_repository(provenance.repository) {
         return invalid(format!(
             "repository must be OWNER/REPO with path-safe components, got {:?}",
-            input.repository
+            provenance.repository
         ));
     }
-    validate_hex("commit", &input.commit, 40)?;
-    validate_hex("corpus revision", &input.corpus_revision, 40)?;
-    validate_hex("flake.lock hash", &input.flake_lock_hash, 64)?;
-    if input.run_id == 0 {
+    validate_hex("commit", provenance.commit, 40)?;
+    validate_hex("corpus revision", provenance.corpus_revision, 40)?;
+    validate_hex("flake.lock hash", provenance.flake_lock_hash, 64)?;
+    if provenance.run_id == 0 {
         return invalid("workflow run id must be non-zero");
     }
-    if input.run_attempt == 0 {
+    if provenance.run_attempt == 0 {
         return invalid("workflow run attempt must be non-zero");
     }
-    if !valid_timestamp(&input.measured_at) {
+    if !valid_timestamp(provenance.measured_at) {
         return invalid(format!(
             "measured-at must be an ISO-8601 UTC timestamp (YYYY-MM-DDTHH:MM:SSZ), got {:?}",
-            input.measured_at
+            provenance.measured_at
         ));
     }
     Ok(())
@@ -236,18 +261,18 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
             observation.observation_schema_version
         ));
     }
-    let input = RecordInput {
-        summary: PathBuf::new(),
-        history: PathBuf::new(),
-        repository: observation.repository.clone(),
-        commit: observation.commit.clone(),
-        measured_at: observation.measured_at.clone(),
+    validate_provenance(Provenance {
+        repository: &observation.repository,
+        commit: &observation.commit,
+        measured_at: &observation.measured_at,
         run_id: observation.workflow.run_id,
         run_attempt: observation.workflow.run_attempt,
-        corpus_revision: observation.corpus.revision.clone(),
-        flake_lock_hash: observation.flake_lock_hash.clone(),
-    };
-    validate_record_input(&input)?;
+        corpus_revision: &observation.corpus.revision,
+        flake_lock_hash: &observation.flake_lock_hash,
+    })?;
+    if observation.workflow.run_number == Some(0) {
+        return invalid("workflow run number must be non-zero");
+    }
     validate_generator(&observation.generator)?;
     if observation.corpus.source != FSHARP_CORPUS_SOURCE {
         return invalid(format!(
@@ -277,6 +302,17 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
         ));
     }
     Ok(())
+}
+
+fn observation_order(a: &Observation, b: &Observation) -> std::cmp::Ordering {
+    match (a.workflow.run_number, b.workflow.run_number) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (None, Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), None) => std::cmp::Ordering::Greater,
+        (None, None) => a.measured_at.cmp(&b.measured_at),
+    }
+    .then(a.generator.measurement.cmp(&b.generator.measurement))
+    .then(a.commit.cmp(&b.commit))
 }
 
 fn series_key(

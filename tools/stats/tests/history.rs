@@ -28,6 +28,7 @@ fn record_is_path_stable_and_a_rerun_replaces_the_observation() {
     assert_eq!(first_json["observation_schema_version"], 1);
     assert_eq!(first_json["series"], "v1-c3c01c991d17-32becba0320d");
     assert_eq!(first_json["generator"]["statistics"]["matches"], 7);
+    assert_eq!(first_json["workflow"]["run_number"], 42);
     assert_eq!(
         first_json["workflow"]["url"],
         "https://github.com/Smaug123/borzoi/actions/runs/42"
@@ -114,6 +115,14 @@ fn record_rejects_unsafe_identity_and_unknown_generator_schema() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("arrays"), "{err}");
+
+    let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    let mut invalid_run_number = input(temp.path(), summary);
+    invalid_run_number.run_number = 0;
+    let err = record_observation(&invalid_run_number)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("run number"), "{err}");
 }
 
 #[test]
@@ -165,6 +174,59 @@ fn site_contains_every_valid_observation_and_rejects_misfiled_data() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("does not match its contents"), "{err}");
+}
+
+#[test]
+fn site_orders_observations_by_workflow_creation_not_completion_time() {
+    let temp = tempfile::tempdir().unwrap();
+
+    let legacy_summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    let mut legacy = input(temp.path(), legacy_summary);
+    legacy.measured_at = "2026-07-22T10:00:00Z".into();
+    let legacy_path = record_observation(&legacy).unwrap();
+    let mut legacy_json: Value =
+        serde_json::from_str(&fs::read_to_string(&legacy_path).unwrap()).unwrap();
+    legacy_json["workflow"]
+        .as_object_mut()
+        .unwrap()
+        .remove("run_number");
+    fs::write(
+        &legacy_path,
+        serde_json::to_vec_pretty(&legacy_json).unwrap(),
+    )
+    .unwrap();
+
+    let older_summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    let mut older = input(temp.path(), older_summary);
+    older.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    older.measured_at = "2026-07-21T10:00:00Z".into();
+    older.run_number = 43;
+    record_observation(&older).unwrap();
+
+    let newer_summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    let mut newer = input(temp.path(), newer_summary);
+    newer.commit = "2123456789abcdef0123456789abcdef01234567".into();
+    newer.measured_at = "2026-07-20T10:00:00Z".into();
+    newer.run_number = 44;
+    record_observation(&newer).unwrap();
+
+    let output = temp.path().join("site");
+    assert_eq!(
+        build_site(&temp.path().join("history"), &output).unwrap(),
+        3
+    );
+    let data: Value =
+        serde_json::from_str(&fs::read_to_string(output.join("data.json")).unwrap()).unwrap();
+    assert_eq!(data[0]["commit"], COMMIT);
+    assert_eq!(data[1]["commit"], older.commit);
+    assert_eq!(data[2]["commit"], newer.commit);
+
+    let html = fs::read_to_string(output.join("index.html")).unwrap();
+    assert!(
+        !html.contains("Date.parse(point.item.measured_at)"),
+        "chart coordinates must follow observation order"
+    );
+    assert!(html.contains("const x = index =>"));
 }
 
 #[cfg(unix)]
@@ -250,6 +312,7 @@ fn input(root: &Path, summary: PathBuf) -> RecordInput {
         commit: COMMIT.into(),
         measured_at: "2026-07-19T10:00:00Z".into(),
         run_id: 42,
+        run_number: 42,
         run_attempt: 1,
         corpus_revision: CORPUS.into(),
         flake_lock_hash: LOCK_HASH.into(),
