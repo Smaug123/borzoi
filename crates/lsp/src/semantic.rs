@@ -785,7 +785,7 @@ impl SemanticState {
             .resolved_projects
             .get(&key)
             .map_or(0, |(resolved, _env)| resolved.len());
-        lookup_span.record("cached_files", cached_files);
+        lookup_span.record("cached_files", cached_files as i64);
 
         // Fast path — **before any `Workspace`/SDK probing**. `dotnet_root_for_project`
         // can spawn `dotnet --info` under a long deadline (asdf/mise/Nix-style
@@ -798,7 +798,7 @@ impl SemanticState {
         // built and dropped together), so this correctly falls through.
         if let Some(cached_parses) = self.project_parses.get(&key) {
             let want_len = up_to_index.saturating_add(1).min(cached_parses.files.len());
-            lookup_span.record("requested_files", want_len);
+            lookup_span.record("requested_files", want_len as i64);
             if let Some((resolved, env)) = self.resolved_projects.get(&key)
                 && resolved.len() >= want_len
             {
@@ -833,7 +833,7 @@ impl SemanticState {
         // Resolve `0..want_len`; `up_to_index` is a valid Compile index (or
         // `usize::MAX` for "the whole project"), so `+1` (saturating) then clamp.
         let want_len = up_to_index.saturating_add(1).min(parses.files.len());
-        lookup_span.record("requested_files", want_len);
+        lookup_span.record("requested_files", want_len as i64);
         // Assembly env — always returns *some* env (empty if anything is
         // missing). Caches a separate slot. `retryable` is set when a
         // transient C# sidecar failure left the env incomplete and un-cached.
@@ -878,7 +878,7 @@ impl SemanticState {
             took_incremental = reusable_prev.is_some();
             let resolve_span = tracing::info_span!(
                 "resolve_project",
-                files = want_len,
+                files = want_len as i64,
                 incremental = took_incremental,
                 reused_files = tracing::field::Empty,
             );
@@ -937,7 +937,7 @@ impl SemanticState {
                     (Arc::new(resolved), 0)
                 }
             };
-            resolve_span.record("reused_files", answer.1);
+            resolve_span.record("reused_files", answer.1 as i64);
             answer
         };
         if took_incremental {
@@ -5167,9 +5167,13 @@ mod tests {
         let lookup = trace.only_span("semantic.project_lookup");
         assert_eq!(lookup.field("cache_hit"), Some("false"));
         assert_eq!(lookup.field("requested_files"), Some("3"));
+        assert_eq!(lookup.i64_field("requested_files"), Some(3));
+        assert_eq!(lookup.i64_field("cached_files"), Some(0));
         let fold = trace.only_span("resolve_project");
         assert_eq!(fold.field("incremental"), Some("true"));
         assert_eq!(fold.field("reused_files"), Some("2"));
+        assert_eq!(fold.i64_field("files"), Some(3));
+        assert_eq!(fold.i64_field("reused_files"), Some(2));
     }
 
     /// A shallow prefix request must not discard a deeper incremental base: after

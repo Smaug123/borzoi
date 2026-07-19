@@ -13,11 +13,16 @@ use tracing::{Event, Metadata, Subscriber};
 pub(crate) struct CapturedSpan {
     pub(crate) name: &'static str,
     fields: HashMap<&'static str, String>,
+    signed_fields: HashMap<&'static str, i64>,
 }
 
 impl CapturedSpan {
     pub(crate) fn field(&self, name: &str) -> Option<&str> {
         self.fields.get(name).map(String::as_str)
+    }
+
+    pub(crate) fn i64_field(&self, name: &str) -> Option<i64> {
+        self.signed_fields.get(name).copied()
     }
 }
 
@@ -80,8 +85,12 @@ impl Subscriber for CaptureSubscriber {
         let mut span = CapturedSpan {
             name: attrs.metadata().name(),
             fields: HashMap::new(),
+            signed_fields: HashMap::new(),
         };
-        attrs.record(&mut FieldVisitor(&mut span.fields));
+        attrs.record(&mut FieldVisitor {
+            fields: &mut span.fields,
+            signed_fields: &mut span.signed_fields,
+        });
         self.shared.spans.lock().unwrap().push(span);
         Id::from_u64(id)
     }
@@ -89,7 +98,11 @@ impl Subscriber for CaptureSubscriber {
     fn record(&self, span: &Id, values: &Record<'_>) {
         let index = span.into_u64() as usize - 1;
         let mut spans = self.shared.spans.lock().unwrap();
-        values.record(&mut FieldVisitor(&mut spans[index].fields));
+        let span = &mut spans[index];
+        values.record(&mut FieldVisitor {
+            fields: &mut span.fields,
+            signed_fields: &mut span.signed_fields,
+        });
     }
 
     fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
@@ -101,27 +114,35 @@ impl Subscriber for CaptureSubscriber {
     fn exit(&self, _span: &Id) {}
 }
 
-struct FieldVisitor<'a>(&'a mut HashMap<&'static str, String>);
+struct FieldVisitor<'a> {
+    fields: &'a mut HashMap<&'static str, String>,
+    signed_fields: &'a mut HashMap<&'static str, i64>,
+}
 
 impl Visit for FieldVisitor<'_> {
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.0.insert(field.name(), value.to_string());
+        self.fields.insert(field.name(), value.to_string());
+        self.signed_fields.remove(field.name());
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.0.insert(field.name(), value.to_string());
+        self.fields.insert(field.name(), value.to_string());
+        self.signed_fields.insert(field.name(), value);
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.0.insert(field.name(), value.to_string());
+        self.fields.insert(field.name(), value.to_string());
+        self.signed_fields.remove(field.name());
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.0.insert(field.name(), value.to_string());
+        self.fields.insert(field.name(), value.to_string());
+        self.signed_fields.remove(field.name());
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.0.insert(field.name(), format!("{value:?}"));
+        self.fields.insert(field.name(), format!("{value:?}"));
+        self.signed_fields.remove(field.name());
     }
 }
 

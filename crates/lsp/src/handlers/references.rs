@@ -59,10 +59,10 @@ pub fn handle(state: &mut State, params: ReferenceParams) -> Option<Vec<Location
     let Some(text) = state.docs.get(&uri).cloned() else {
         span.record("mode", "missing_buffer");
         span.record("target_kind", "none");
-        span.record("project_files", 0);
-        span.record("files_scanned", 0);
-        span.record("resolutions_scanned", 0);
-        span.record("result_count", 0);
+        span.record("project_files", 0_i64);
+        span.record("files_scanned", 0_i64);
+        span.record("resolutions_scanned", 0_i64);
+        span.record("result_count", 0_i64);
         return None;
     };
     let byte = position_to_offset(&text, pos);
@@ -76,10 +76,13 @@ pub fn handle(state: &mut State, params: ReferenceParams) -> Option<Vec<Location
     };
     span.record("mode", answer.mode);
     span.record("target_kind", answer.target_kind);
-    span.record("project_files", answer.project_files);
-    span.record("files_scanned", answer.scan.files_scanned);
-    span.record("resolutions_scanned", answer.scan.resolutions_scanned);
-    span.record("result_count", answer.scan.locations.len());
+    span.record("project_files", answer.project_files as i64);
+    span.record("files_scanned", answer.scan.files_scanned as i64);
+    span.record(
+        "resolutions_scanned",
+        answer.scan.resolutions_scanned as i64,
+    );
+    span.record("result_count", answer.scan.locations.len() as i64);
     Some(answer.scan.locations)
 }
 
@@ -256,7 +259,7 @@ fn collect_locations(
     let files_scanned = file_range.len();
     let span = tracing::info_span!(
         "find_references.scan",
-        files_scanned,
+        files_scanned = files_scanned as i64,
         resolutions_scanned = tracing::field::Empty,
         result_count = tracing::field::Empty,
     );
@@ -297,8 +300,8 @@ fn collect_locations(
     {
         out.push(loc);
     }
-    span.record("resolutions_scanned", resolutions_scanned);
-    span.record("result_count", out.len());
+    span.record("resolutions_scanned", resolutions_scanned as i64);
+    span.record("result_count", out.len() as i64);
     ReferenceScan {
         locations: out,
         files_scanned,
@@ -381,8 +384,8 @@ fn single_file_references(
     let resolutions_scanned = resolved.resolutions().len() + resolved.attribute_resolutions().len();
     let scan_span = tracing::info_span!(
         "find_references.scan",
-        files_scanned,
-        resolutions_scanned,
+        files_scanned = files_scanned as i64,
+        resolutions_scanned = resolutions_scanned as i64,
         result_count = tracing::field::Empty,
     );
     let _scan_guard = scan_span.enter();
@@ -409,7 +412,7 @@ fn single_file_references(
             range: range_to_lsp(text, *range),
         });
     }
-    scan_span.record("result_count", out.len());
+    scan_span.record("result_count", out.len() as i64);
     ReferencesAnswer {
         mode: "single_file",
         target_kind: resolution_kind(target_res),
@@ -419,117 +422,6 @@ fn single_file_references(
             files_scanned,
             resolutions_scanned,
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_trace::capture;
-    use lsp_types::{
-        PartialResultParams, Position, ReferenceContext, TextDocumentIdentifier,
-        TextDocumentPositionParams, WorkDoneProgressParams,
-    };
-    use std::fs;
-    use tempfile::TempDir;
-
-    fn params(uri: Url, include_declaration: bool) -> ReferenceParams {
-        ReferenceParams {
-            text_document_position: TextDocumentPositionParams {
-                text_document: TextDocumentIdentifier { uri },
-                position: Position {
-                    line: 0,
-                    character: 4,
-                },
-            },
-            work_done_progress_params: WorkDoneProgressParams::default(),
-            partial_result_params: PartialResultParams::default(),
-            context: ReferenceContext {
-                include_declaration,
-            },
-        }
-    }
-
-    #[test]
-    fn telemetry_describes_the_single_file_scan_and_answer() {
-        let uri = Url::parse("inmemory:///Sample.fs").unwrap();
-        let mut state = State::default();
-        state
-            .docs
-            .insert(uri.clone(), "let x = 1\nlet y = x + x\n".to_string());
-
-        let (locations, trace) = capture(|| handle(&mut state, params(uri, true)));
-        assert_eq!(locations.unwrap().len(), 3);
-
-        let request = trace.only_span("find_references");
-        assert_eq!(request.field("mode"), Some("single_file"));
-        assert_eq!(request.field("target_kind"), Some("item"));
-        assert_eq!(request.field("project_files"), Some("1"));
-        assert_eq!(request.field("files_scanned"), Some("1"));
-        assert_eq!(request.field("result_count"), Some("3"));
-
-        let scan = trace.only_span("find_references.scan");
-        assert_eq!(scan.field("files_scanned"), Some("1"));
-        assert_eq!(scan.field("result_count"), Some("3"));
-        assert!(
-            scan.field("resolutions_scanned")
-                .unwrap()
-                .parse::<usize>()
-                .unwrap()
-                >= 3
-        );
-    }
-
-    #[test]
-    fn telemetry_identifies_a_fully_cached_project_lookup() {
-        let tmp = TempDir::new().unwrap();
-        let project = tmp.path().join("P.fsproj");
-        let a = tmp.path().join("A.fs");
-        let b = tmp.path().join("B.fs");
-        fs::write(
-            &project,
-            r#"<Project>
-              <ItemGroup>
-                <Compile Include="A.fs" />
-                <Compile Include="B.fs" />
-              </ItemGroup>
-            </Project>"#,
-        )
-        .unwrap();
-        let a_text = "module Shared\nlet foo = 1\n";
-        let b_text = "module Other\nlet x = Shared.foo\nlet y = Shared.foo\n";
-        fs::write(&a, a_text).unwrap();
-        fs::write(&b, b_text).unwrap();
-        let a_uri = Url::from_file_path(a).unwrap();
-        let b_uri = Url::from_file_path(b).unwrap();
-        let mut state = State::default();
-        state.docs.insert(a_uri.clone(), a_text.to_string());
-        state.docs.insert(b_uri, b_text.to_string());
-        let reference_params = || {
-            let mut params = params(a_uri.clone(), true);
-            params.text_document_position.position = Position {
-                line: 1,
-                character: 4,
-            };
-            params
-        };
-
-        assert_eq!(handle(&mut state, reference_params()).unwrap().len(), 3);
-        let (locations, trace) = capture(|| handle(&mut state, reference_params()));
-        assert_eq!(locations.unwrap().len(), 3);
-
-        let request = trace.only_span("find_references");
-        assert_eq!(request.field("mode"), Some("project"));
-        assert_eq!(request.field("target_kind"), Some("item"));
-        assert_eq!(request.field("project_files"), Some("2"));
-        assert_eq!(request.field("files_scanned"), Some("2"));
-        assert_eq!(request.field("result_count"), Some("3"));
-        let lookup = trace.only_span("semantic.project_lookup");
-        assert_eq!(lookup.field("scope"), Some("full"));
-        assert_eq!(lookup.field("cache_hit"), Some("true"));
-        assert_eq!(lookup.field("requested_files"), Some("2"));
-        assert_eq!(lookup.field("cached_files"), Some("2"));
-        assert!(trace.spans_named("resolve_project").is_empty());
     }
 }
 
@@ -663,5 +555,146 @@ fn ambiguous_argument_label(element: &Expr) -> Option<TextRange> {
             idents.next().is_none().then(|| ident.text_range())
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_trace::capture;
+    use lsp_types::{
+        PartialResultParams, Position, ReferenceContext, TextDocumentIdentifier,
+        TextDocumentPositionParams, WorkDoneProgressParams,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn params(uri: Url, include_declaration: bool) -> ReferenceParams {
+        ReferenceParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 0,
+                    character: 4,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: ReferenceContext {
+                include_declaration,
+            },
+        }
+    }
+
+    #[test]
+    fn telemetry_describes_the_single_file_scan_and_answer() {
+        let uri = Url::parse("inmemory:///Sample.fs").unwrap();
+        let mut state = State::default();
+        state
+            .docs
+            .insert(uri.clone(), "let x = 1\nlet y = x + x\n".to_string());
+
+        let (locations, trace) = capture(|| handle(&mut state, params(uri, true)));
+        assert_eq!(locations.unwrap().len(), 3);
+
+        let request = trace.only_span("find_references");
+        assert_eq!(request.field("mode"), Some("single_file"));
+        assert_eq!(request.field("target_kind"), Some("item"));
+        assert_eq!(request.field("project_files"), Some("1"));
+        assert_eq!(request.field("files_scanned"), Some("1"));
+        assert_eq!(request.field("result_count"), Some("3"));
+        assert_eq!(request.i64_field("project_files"), Some(1));
+        assert_eq!(request.i64_field("files_scanned"), Some(1));
+        let resolutions_scanned = request
+            .i64_field("resolutions_scanned")
+            .expect("resolution count is a signed integer");
+        assert!(resolutions_scanned >= 3);
+        assert_eq!(request.i64_field("result_count"), Some(3));
+
+        let scan = trace.only_span("find_references.scan");
+        assert_eq!(scan.field("files_scanned"), Some("1"));
+        assert_eq!(scan.field("result_count"), Some("3"));
+        assert_eq!(scan.i64_field("files_scanned"), Some(1));
+        assert_eq!(
+            scan.i64_field("resolutions_scanned"),
+            Some(resolutions_scanned)
+        );
+        assert_eq!(scan.i64_field("result_count"), Some(3));
+    }
+
+    #[test]
+    fn telemetry_uses_signed_zero_counts_for_a_missing_buffer() {
+        let uri = Url::parse("inmemory:///Missing.fs").unwrap();
+        let mut state = State::default();
+
+        let (locations, trace) = capture(|| handle(&mut state, params(uri, true)));
+        assert!(locations.is_none());
+
+        let request = trace.only_span("find_references");
+        for field in [
+            "project_files",
+            "files_scanned",
+            "resolutions_scanned",
+            "result_count",
+        ] {
+            assert_eq!(request.i64_field(field), Some(0), "field {field}");
+        }
+    }
+
+    #[test]
+    fn telemetry_identifies_a_fully_cached_project_lookup() {
+        let tmp = TempDir::new().unwrap();
+        let project = tmp.path().join("P.fsproj");
+        let a = tmp.path().join("A.fs");
+        let b = tmp.path().join("B.fs");
+        fs::write(
+            &project,
+            r#"<Project>
+              <ItemGroup>
+                <Compile Include="A.fs" />
+                <Compile Include="B.fs" />
+              </ItemGroup>
+            </Project>"#,
+        )
+        .unwrap();
+        let a_text = "module Shared\nlet foo = 1\n";
+        let b_text = "module Other\nlet x = Shared.foo\nlet y = Shared.foo\n";
+        fs::write(&a, a_text).unwrap();
+        fs::write(&b, b_text).unwrap();
+        let a_uri = Url::from_file_path(a).unwrap();
+        let b_uri = Url::from_file_path(b).unwrap();
+        let mut state = State::default();
+        state.docs.insert(a_uri.clone(), a_text.to_string());
+        state.docs.insert(b_uri, b_text.to_string());
+        let reference_params = || {
+            let mut params = params(a_uri.clone(), true);
+            params.text_document_position.position = Position {
+                line: 1,
+                character: 4,
+            };
+            params
+        };
+
+        assert_eq!(handle(&mut state, reference_params()).unwrap().len(), 3);
+        let (locations, trace) = capture(|| handle(&mut state, reference_params()));
+        assert_eq!(locations.unwrap().len(), 3);
+
+        let request = trace.only_span("find_references");
+        assert_eq!(request.field("mode"), Some("project"));
+        assert_eq!(request.field("target_kind"), Some("item"));
+        assert_eq!(request.field("project_files"), Some("2"));
+        assert_eq!(request.field("files_scanned"), Some("2"));
+        assert_eq!(request.field("result_count"), Some("3"));
+        assert_eq!(request.i64_field("project_files"), Some(2));
+        assert_eq!(request.i64_field("files_scanned"), Some(2));
+        assert_eq!(request.i64_field("result_count"), Some(3));
+        let lookup = trace.only_span("semantic.project_lookup");
+        assert_eq!(lookup.field("scope"), Some("full"));
+        assert_eq!(lookup.field("cache_hit"), Some("true"));
+        assert_eq!(lookup.field("requested_files"), Some("2"));
+        assert_eq!(lookup.field("cached_files"), Some("2"));
+        assert_eq!(lookup.i64_field("requested_files"), Some(2));
+        assert_eq!(lookup.i64_field("cached_files"), Some(2));
+        assert!(trace.spans_named("resolve_project").is_empty());
     }
 }

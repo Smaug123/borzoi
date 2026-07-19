@@ -1417,7 +1417,7 @@ fn references_response(id: RequestId, value: &Option<Vec<lsp_types::Location>>) 
     let _span = tracing::info_span!(
         "lsp.response_serialize",
         method = References::METHOD,
-        result_count = value.as_ref().map_or(0, Vec::len),
+        result_count = value.as_ref().map_or(0, Vec::len) as i64,
     )
     .entered();
     ok_response(id, value)
@@ -1496,6 +1496,7 @@ mod tests {
         let span = trace.only_span("lsp.response_serialize");
         assert_eq!(span.field("method"), Some(References::METHOD));
         assert_eq!(span.field("result_count"), Some("0"));
+        assert_eq!(span.i64_field("result_count"), Some(0));
     }
 
     #[test]
