@@ -293,6 +293,25 @@ fn query_join_equality_is_not_an_argument_label() {
 }
 
 #[test]
+fn query_join_direct_rhs_call_still_defers_argument_labels() {
+    assert_argument_label_is_deferred(
+        "let x = 1\nlet result = query { join y in C.M(?x = x) }\n",
+        Position {
+            line: 0,
+            character: 4,
+        },
+        Position {
+            line: 1,
+            character: 36,
+        },
+        Position {
+            line: 1,
+            character: 40,
+        },
+    );
+}
+
+#[test]
 fn qualified_equality_operand_is_not_an_argument_label() {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("P.fsproj");

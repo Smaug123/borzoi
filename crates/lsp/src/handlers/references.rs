@@ -24,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_cst::syntax::{AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
+use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, resolve_file,
 };
@@ -327,13 +327,7 @@ fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
                 if application.is_infix() {
                     continue;
                 }
-                // The right operand of a query `JoinIn` is represented as the
-                // application `xs on (a = b)`. Its final argument is the join
-                // equality, never a named-argument list.
-                if matches!(
-                    application.syntax().parent().and_then(Expr::cast),
-                    Some(Expr::JoinIn(_))
-                ) {
+                if is_query_join_on_wrapper(&application) {
                     continue;
                 }
                 // FCS lowers every completed infix expression to a non-infix outer
@@ -353,6 +347,29 @@ fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
         }
     }
     ranges
+}
+
+/// Whether this is the synthetic `xs on (a = b)` application on a query
+/// `JoinIn` RHS. Its left-nested shape is `App(App(xs, on), Paren(equality))`;
+/// an ordinary call used directly as either operand does not carry the bare
+/// `on` argument and remains eligible for label filtering.
+fn is_query_join_on_wrapper(application: &AppExpr) -> bool {
+    let Some(Expr::JoinIn(join)) = application.syntax().parent().and_then(Expr::cast) else {
+        return false;
+    };
+    if !join
+        .rhs()
+        .is_some_and(|rhs| rhs.syntax() == application.syntax())
+    {
+        return false;
+    }
+    let Some(Expr::App(prefix)) = application.func() else {
+        return false;
+    };
+    let Some(Expr::Ident(on)) = prefix.arg() else {
+        return false;
+    };
+    on.ident().is_some_and(|token| token.text() == "on")
 }
 
 /// Inspect only the direct elements of one application argument list. An
