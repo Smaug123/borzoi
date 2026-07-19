@@ -16,7 +16,7 @@
 use crate::common::{
     ensure_assembly_fixture_built, invoke_fcs_dump_with_refs, parse_fcs_uses, temp_fs_file,
 };
-use borzoi_assembly::{Ecma335Assembly, Member};
+use borzoi_assembly::{Ecma335Assembly, EcmaView, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
@@ -280,11 +280,64 @@ fn assembly_resolution_is_sound_across_the_tier_surface() {
         // it must defer, never wrong-target `Demo.Sub.Calc` (the ours→FCS guard).
         "module M\nopen Demo\nmodule Sub =\n    type Calc = int\nlet f (x : Sub.Calc) = x\n",
         "module M\nopen Demo\nmodule Sub =\n    let placeholder = 1\nlet f (x : Sub.Calc) = x\n",
+        // Expression-position constructor fallback edge cases (the ours→FCS guard
+        // catches a wrong-target): a same-file `type Thing` shadows the opened
+        // `Demo.Thing` (FCS binds the project type), and an explicit type
+        // application must not name the arity-0 sibling.
+        "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
+        "open Demo\nlet x = Pair<int> ()\n",
+        "open Demo\nlet x = Calc ()\n", // static class → no bare constructor
     ];
     for src in cases {
         let (agreed, total) = sweep_sound(src);
         eprintln!("[sweep] {agreed}/{total} {src:?}");
     }
+}
+
+/// The expression-position **constructor** fallback, swept generatively over
+/// *every* public type the fixture declares in `Demo`. For each, `open Demo; let
+/// x = <Name> ()` is checked certain-implies-exact against FCS ([`sweep_sound`]):
+/// where we commit an `Entity`, FCS must name the same one; otherwise we must
+/// honestly defer. Enumerating from the assembly (not a hand-list) means a new
+/// fixture type is probed automatically — the guard against the
+/// [`AssemblyEnv::bare_expr_constructible`] predicate silently drifting from
+/// FCS's actual constructor surface (a static class, union, record, generic, or
+/// abbreviation that must defer, vs a plain class that must resolve).
+///
+/// This is the systematic backstop for the constructor fallback: the type-kind
+/// edge cases (static `Calc`/`Exts` → nothing, generic `Pair<'T>` → the arity
+/// sibling, struct unions → nothing) are checked by the machine rather than
+/// reasoned about one at a time.
+#[test]
+fn bare_constructor_fallback_is_sound_over_every_demo_type() {
+    let fixture = ensure_assembly_fixture_built();
+    let bytes = std::fs::read(fixture).expect("read fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse fixture dll");
+    let entities = view.enumerate_type_defs().expect("enumerate type defs");
+
+    // Distinct public simple names declared directly in `Demo` (dedup the
+    // generic-arity siblings `Pair` / `Pair`1` / `Pair`2`, which share a name).
+    let mut names: Vec<String> = Vec::new();
+    for e in &entities {
+        if e.namespace == ["Demo"] && !names.contains(&e.name) {
+            names.push(e.name.clone());
+        }
+    }
+    assert!(names.len() > 5, "fixture should declare many Demo types");
+
+    let mut total_agreed = 0usize;
+    for name in &names {
+        let src = format!("open Demo\nlet x = {name} ()\n");
+        let (agreed, _total) = sweep_sound(&src);
+        eprintln!("[ctor-sweep] agreed={agreed} {src:?}");
+        total_agreed += agreed;
+    }
+    // Non-vacuity: the fallback must actually resolve at least the plain classes
+    // (`Thing`, `Other`, `Widget`, `Gizmo`, `Pair`), or the sweep proves nothing.
+    assert!(
+        total_agreed >= 4,
+        "the constructor fallback resolved nothing — the sweep is vacuous"
+    );
 }
 
 #[test]
@@ -305,6 +358,13 @@ fn assembly_resolution_agrees_with_fcs() {
     // namespace prefix coming from the open, not the source.
     assert_matches_fcs("open Demo\nlet x = Calc.Zero()\n", 2);
     assert_matches_fcs("open Demo\nlet y = Calc.Answer\n", 2);
+
+    // A bare *constructor* call uses the type name as an expression head: `open
+    // Demo` then `Thing ()` resolves the bare `Thing` to the `Demo.Thing` type
+    // (Entity). FCS reports the type symbol at the occurrence, so this is the
+    // expression-position twin of the type-position `(x : Thing)` below — only
+    // the type use counts (the `Demo` open-clause qualifier we leave unresolved).
+    assert_matches_fcs("open Demo\nlet x = Thing ()\n", 1);
 
     // An inaccessible `open Demo.Hidden` (internal type) must not suppress the
     // valid `open Demo`: `Calc.Zero` still resolves to `Demo.Calc.Zero`.

@@ -2255,7 +2255,7 @@ impl<'a> Resolver<'a> {
         match arg {
             Pat::Named(p) => {
                 if resolve_values && let Some(tok) = p.ident() {
-                    self.resolve_name_use(&tok);
+                    self.resolve_name_use(&tok, false);
                 }
             }
             Pat::LongIdent(p) => {
@@ -2273,7 +2273,7 @@ impl<'a> Resolver<'a> {
                     if let Some(only) = idents.next()
                         && idents.next().is_none()
                     {
-                        self.resolve_name_use(&only);
+                        self.resolve_name_use(&only, false);
                     }
                 }
                 for arg in p.args() {

@@ -959,6 +959,19 @@ pub(super) struct Resolver<'a> {
     /// Over-approximate (an augmentation target counts too) — sound, since a
     /// spurious match only defers.
     pub(super) own_type_simple_names: HashSet<String>,
+    /// Every **value binder** simple name introduced by a pattern anywhere in the
+    /// file — pre-scanned file-globally (like [`Self::own_type_simple_names`]) from
+    /// the resolution-independent [`binders`](crate::binders) walk, *before* its
+    /// provisional/interning drops. The expression-constructor fallback
+    /// ([`Resolver::opened_constructor_target`]) consults it: the value-frame
+    /// [`lookup`](Self::lookup) is deliberately conservative and returns `None` for
+    /// names a binder still owns — a provisional uppercase parameter (`let f
+    /// (Thing: int) = Thing`), a would-be-shadowed local — so committing an opened
+    /// assembly type for such a bare name would be a wrong go-to-definition. Any
+    /// name a binder could own defers instead. File-global and order-independent:
+    /// over-approximate (a binder in a sibling scope the use cannot see counts
+    /// too), which is sound — a spurious match only defers.
+    pub(super) own_binder_simple_names: HashSet<String>,
     /// The subset of [`Self::own_type_simple_names`] with a **generic**
     /// declaration anywhere in the file. FCS's attribute lookup is arity-0
     /// (`DefiniteEmpty`), so it skips a generic local type where the

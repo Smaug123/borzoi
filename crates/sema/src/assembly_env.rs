@@ -1900,6 +1900,41 @@ impl AssemblyEnv {
         &self.nodes[handle.index()].entity
     }
 
+    /// Whether `handle` is a type FCS resolves to *itself* when its bare name is
+    /// used as an **expression-position constructor** (`StringBuilder ()`, `Thing
+    /// ()`) — the predicate the expression resolver's opened-type constructor
+    /// fallback gates on (`crates/sema/src/resolve/exprs.rs`). Deliberately
+    /// narrow: a wrong go-to-definition is worse than "no definition", so this
+    /// commits only where FCS certainly names the type entity.
+    ///
+    /// The conditions (verified against FCS over the `assembly_env` fixture's
+    /// type zoo by the constructor-fallback differential):
+    ///
+    /// - **[`EntityKind::Class`] only.** A struct union / record / enum /
+    ///   interface / delegate / module / measure / abbreviation is not exposed as
+    ///   a bare constructor (a struct union yields *no* symbol at the occurrence;
+    ///   an abbreviation would need chasing to its target). Plain **structs** are
+    ///   constructible but excluded until the fixture exercises one — sound
+    ///   under-resolution, not a wrong target.
+    /// - **non-generic.** The fallback does an arity-0 lookup, so a generic type
+    ///   (`Pair<'T>`) would be mis-identified as its non-generic sibling; the
+    ///   caller also suppresses the fallback under an explicit type application.
+    /// - **an accessible public instance constructor.** This is what separates a
+    ///   constructible class (`Thing`) from a C# *static* class (`Calc`, projected
+    ///   as a `Class` with only a `.cctor`), which FCS resolves to nothing.
+    pub fn bare_expr_constructible(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.kind == EntityKind::Class
+            && e.generic_parameters.is_empty()
+            && e.members.iter().any(|m| {
+                matches!(
+                    m,
+                    Member::Method(mm)
+                        if mm.is_constructor && !mm.is_static && mm.access == Access::Public
+                )
+            })
+    }
+
     /// The [`SemanticClass`] of a referenced-assembly entity, or `None` where we
     /// decline: an F# `module` reads as [`SemanticClass::Module`] and every plain
     /// type kind (class, struct, interface, enum, union, record, delegate,
