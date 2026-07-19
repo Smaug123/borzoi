@@ -23,6 +23,9 @@ pub mod spawn;
 pub mod telemetry;
 pub mod workspace;
 
+#[cfg(test)]
+mod test_trace;
+
 /// The `$(Configuration)` the LSP serves everything under
 /// (`docs/fsproj-tfm-selection-plan.md` E4). One policy value, four
 /// consumers that must agree — the evaluator's global seed
