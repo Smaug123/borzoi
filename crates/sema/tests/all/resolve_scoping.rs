@@ -156,6 +156,15 @@ fn optional_value_parameter_is_visible_in_the_body() {
 }
 
 #[test]
+fn equality_operands_in_an_ordinary_application_both_resolve() {
+    let src = "let x = 1\nlet y = 2\nlet result = not (x = y)\n";
+    let rf = resolve(src);
+
+    assert_resolves_to(&rf, nth(src, "x", 1), nth(src, "x", 0));
+    assert_resolves_to(&rf, nth(src, "y", 1), nth(src, "y", 0));
+}
+
+#[test]
 fn inline_il_argument_resolves_to_binder() {
     // The value argument inside an inline-IL expression `(# "neg" x : int #)`
     // resolves to the enclosing parameter — the resolver descends into

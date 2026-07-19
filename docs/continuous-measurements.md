@@ -1,8 +1,8 @@
 # Continuous measurements
 
-`.github/workflows/stats.yml` runs the expensive parser and name-resolution
-corpus reports after every push to `main` (and on manual dispatch from `main`).
-It is an observational workflow, not a merge gate.
+`.github/workflows/stats.yml` runs the expensive parser, name-resolution, and
+find-references corpus reports after every push to `main` (and on manual
+dispatch from `main`). It is an observational workflow, not a merge gate.
 
 The workflow has four distinct products:
 
