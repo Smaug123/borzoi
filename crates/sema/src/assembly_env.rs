@@ -1855,6 +1855,31 @@ impl AssemblyEnv {
         }) {
             return true;
         }
+        self.manifest_auto_open_module_could_supply_entity_named(name)
+    }
+
+    /// Whether a **module/type-shaped manifest auto-open surface**
+    /// ([`Self::auto_open_module_handles`]) could supply an entity named
+    /// `name` into bare scope. FCS opens such a target like a module, so its
+    /// nested types and modules *are* bare-visible — at open priority, above
+    /// the enclosing-namespace and root tiers (fsi-verified: with a
+    /// same-named `namespace global` decoy, a bare type annotation binds the
+    /// auto-opened module's nested type) — while the resolver's prefix walk
+    /// never searches the surface. Name-keyed to exactly these surfaces so
+    /// the general type walk can defer the names they could shadow
+    /// (`decide_type_path`'s pre-tier veto) without the contested-namespace
+    /// arm of [`Self::retained_auto_open_could_supply_entity_named`], which
+    /// every real project trips (FSharp.Core auto-opens `Microsoft`, which
+    /// the BCL also declares) and which would defer legitimate commitments
+    /// wholesale.
+    ///
+    /// Per-surface uncertainty is folded in, name-blind: a dropped type in
+    /// the target's owning namespace could be a descendant of the target of
+    /// any name (the drop marker records only the enclosing top-level
+    /// namespace), and an undecodable signature pickle hides the module's
+    /// nested abbreviations. Deferral-only, like the coarse veto: a `true`
+    /// never resolves anything, it only withholds a commitment.
+    pub(crate) fn manifest_auto_open_module_could_supply_entity_named(&self, name: &str) -> bool {
         self.auto_open_module_handles.iter().any(|&h| {
             let owning = &self.nodes[h.index()].owning_namespace;
             self.namespace_has_dropped_type(owning)
@@ -6353,6 +6378,83 @@ mod from_views_tests {
         assert!(
             !clean_env.extension_named_in_scope(&[], "Foo", false),
             "with no drop, the auto-opened module declares no extension named Foo, so commit"
+        );
+    }
+
+    /// The manifest-module-only shadow query behind `decide_type_path`'s
+    /// pre-tier veto: name-keyed over exactly the module-shaped auto-open
+    /// surfaces. A contested NAMESPACE auto-open — which the coarse
+    /// `retained_auto_open_could_supply_entity_named` folds in, and which
+    /// every real project has (`Microsoft`) — must not fire it, or the
+    /// general type walk would defer every name a contested namespace
+    /// declares.
+    #[test]
+    fn manifest_module_shadow_query_is_name_keyed_and_module_shaped_only() {
+        let nested = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let target = Entity {
+            nested_types: vec![nested],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("C"),
+            "the auto-opened module's nested type name could be supplied bare"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named("D"),
+            "a name the module's tree does not declare cannot be supplied"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named("M"),
+            "opening a module introduces its contents, not its own name"
+        );
+
+        // The contested-namespace contrast: two assemblies declare `N`, the
+        // contributor auto-opens it, and its type `X` lives there.
+        let x = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("P", &["N"], "X")
+        };
+        let y = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Q", &["N"], "Y")
+        };
+        let contributor = ConfigView::new("P", vec![x], &["N"]);
+        let sibling = ConfigView::new("Q", vec![y], &[]);
+        let cenv = AssemblyEnv::from_views(&[contributor, sibling]).expect("build env");
+        assert!(
+            cenv.retained_auto_open_could_supply_entity_named("X"),
+            "control: the coarse veto does fold the contested namespace's own type"
+        );
+        assert!(
+            !cenv.manifest_auto_open_module_could_supply_entity_named("X"),
+            "the module-only query must not fold contested namespace opens"
+        );
+    }
+
+    /// A dropped descendant of the module-shaped target could be a nested
+    /// type of ANY name (the drop marker records only the enclosing
+    /// top-level namespace), so the query answers true for every name.
+    #[test]
+    fn manifest_module_shadow_query_defers_on_a_dropped_descendant() {
+        let mut view = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &["A.M"]);
+        view.dropped_fqns = vec!["A.M/Inner".to_string()];
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("Anything"),
+            "a dropped descendant hides a possible nested type of any name"
+        );
+
+        // Control: the identical env without the drop is name-keyed again.
+        let clean = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &["A.M"]);
+        let clean_env = AssemblyEnv::from_views(std::slice::from_ref(&clean)).expect("build env");
+        assert!(
+            !clean_env.manifest_auto_open_module_could_supply_entity_named("Anything"),
+            "with no drop, the empty module tree supplies nothing"
         );
     }
 

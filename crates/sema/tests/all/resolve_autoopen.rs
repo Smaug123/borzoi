@@ -673,6 +673,92 @@ fn manifest_auto_open_module_path_is_skipped_conservatively() {
 }
 
 #[test]
+fn manifest_auto_open_module_nested_type_defers_a_bare_type_annotation() {
+    // `SemaAutoOpen.DirectOps` — a MODULE named by an assembly-level
+    // AutoOpen — declares a nested `type DirectShadow`, and the fixture's
+    // GLOBAL namespace declares a decoy of the same name. FCS opens the
+    // module, and that open outranks the root tier: bare `DirectShadow`
+    // binds `SemaAutoOpen.DirectOps.DirectShadow`, not the root decoy
+    // (fsi-verified in both type and expression position). Sema keeps the
+    // module surface out of its prefix walk, so committing the root decoy
+    // — what the walk finds — would be a wrong go-to-definition. The sound
+    // verdict is a shadowable deferral.
+    let env = fixture_env();
+    let src = "let f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root_decoy = env
+        .lookup_type(&[], "DirectShadow", 0)
+        .expect("fixture must declare a global-namespace DirectShadow decoy");
+    let got = rf.resolution_at(at(src, "DirectShadow"));
+    assert_ne!(
+        got,
+        Some(Resolution::Entity(root_decoy)),
+        "FCS binds the auto-opened module's DirectShadow — the root decoy is a wrong target"
+    );
+    assert_eq!(
+        got,
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "a name the manifest module-shaped AutoOpen could supply must defer shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_nested_type_defers_without_a_decoy() {
+    // The decoy-free twin: `DirectOnly` exists ONLY as a nested type of the
+    // auto-opened module. FCS resolves it there (fsi-verified), so the
+    // verdict must be a shadowable deferral — a clean no-match would tell
+    // consumers "no shadow possible", which is false.
+    let env = fixture_env();
+    let src = "let f (x: DirectOnly) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectOnly")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an auto-opened module's nested type must mark the bare annotation shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_nested_module_defers_a_dotted_head() {
+    // The dotted-head shape: `DirectOps` also nests a `module DirectSub`,
+    // bare-visible through the manifest open, so `DirectSub.DirectSubT`
+    // roots there in FCS (fsi-verified) — not at the fixture's same-named
+    // global-namespace module. Neither segment may commit the decoy path;
+    // a multi-segment deferral records nothing.
+    let env = fixture_env();
+    let src = "let f (x: DirectSub.DirectSubT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSub")),
+        None,
+        "the head must not commit the global-namespace DirectSub"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSubT")),
+        None,
+        "the leaf must not commit the global-namespace DirectSub.DirectSubT"
+    );
+}
+
+#[test]
+fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
+    // Over-defer control: `GlobalPlain` appears in no auto-open module's
+    // tree, so the manifest-module shadow check must not touch it — it keeps
+    // resolving through the root tier as any `namespace global` type does.
+    let env = fixture_env();
+    let src = "let f (x: GlobalPlain) = x\n";
+    let rf = resolve(src, &env);
+    let expected = env
+        .lookup_type(&[], "GlobalPlain", 0)
+        .expect("fixture must declare a global-namespace GlobalPlain");
+    assert_eq!(
+        rf.resolution_at(at(src, "GlobalPlain")),
+        Some(Resolution::Entity(expected)),
+        "a root type no auto-open module names must keep resolving"
+    );
+}
+
+#[test]
 fn contested_manifest_namespace_defers_instead_of_wrongly_resolving() {
     // The fsi-verified shape behind the contested-namespace drop (codex P2,
     // round 3): FCS opens the CONTRIBUTING assembly's namespace entity only,

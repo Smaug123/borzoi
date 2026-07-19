@@ -1298,11 +1298,33 @@ impl<'a> Resolver<'a> {
         }
 
         // A single-segment in-file `type` shadows any assembly type of that name
-        // (arity-agnostic, as F# in-file type lookup is).
+        // (arity-agnostic, as F# in-file type lookup is). This outranks the
+        // manifest module-shaped auto-open veto below: file content shadows
+        // every implicit open (fsi-verified — a local `type DirectShadow`
+        // wins against the fixture's auto-opened one).
         if let [only] = names
             && let Some(id) = self.lookup_type_def(only)
         {
             return TypePathResolution::InFileType(id);
+        }
+
+        // A module/type-shaped manifest auto-open (`[<assembly:
+        // AutoOpen("N.Ops")>]` naming a module) is kept out of the tiered
+        // walk below entirely (`record_assembly_auto_opens` narrowing 2),
+        // yet FCS opens the target like a module: its nested types and
+        // modules are bare-visible at open priority, above the
+        // enclosing-namespace and root tiers (fsi-verified against a
+        // `namespace global` decoy). So any tier match for a HEAD the
+        // surface could supply may be a wrong target — the head is the only
+        // segment an open can contest, since it is where a bare or dotted
+        // path roots. Name-keyed to the retained surfaces' trees, so only
+        // paths such a module could actually shadow pay the deferral; the
+        // arity-blind over-approximation only defers, never resolves.
+        if names.first().is_some_and(|head| {
+            self.assemblies
+                .manifest_auto_open_module_could_supply_entity_named(head)
+        }) {
+            return TypePathResolution::Deferred;
         }
 
         // Inside a `rec` block a forward-declared project type may not be in

@@ -247,6 +247,27 @@ namespace SemaAutoOpen
 module DirectOps =
     let directValue () = 11
 
+    // A nested TYPE in the module-shaped target. FCS's open makes it
+    // bare-visible at opens-tier priority — fsi-verified: with a same-named
+    // type in the GLOBAL namespace (below), bare `DirectShadow` in both type
+    // and expression position binds THIS one, not the root one. Sema does not
+    // model the module-shaped open, so type-position resolution must defer
+    // the name rather than commit the root decoy (a wrong target).
+    type DirectShadow() =
+        member _.Marker = 1
+
+    // The decoy-free twin: `DirectOnly` names nothing anywhere else, so the
+    // sound verdict is a shadowable deferral, never a clean no-match.
+    type DirectOnly() =
+        member _.Marker = 2
+
+    // A nested MODULE: opening `DirectOps` also makes `DirectSub` a
+    // bare-visible dotted HEAD (`DirectSub.DirectSubT`), outranking the
+    // same-named global-namespace module below.
+    module DirectSub =
+        type DirectSubT() =
+            member _.Marker = 3
+
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
 // A path that exists nowhere — FCS warns and skips it; it must not sink or
@@ -625,3 +646,23 @@ module AutoMod =
 
 module ClassShape =
     let mhPjClass () = 403
+
+// ===== Global-namespace decoys for the manifest module-shaped AutoOpen =====
+//
+// Same simple names as `SemaAutoOpen.DirectOps`'s nested type/module. FCS
+// binds the auto-opened module's ones (an open — even the manifest-applied
+// kind — outranks the root tier; fsi-verified in both type and expression
+// position), so a resolver that never searches the module surface would
+// wrongly commit these. `GlobalPlain` is the negative control: no auto-open
+// module tree names it, so it must keep resolving via the root tier.
+namespace global
+
+type DirectShadow() =
+    member _.Decoy = 1
+
+module DirectSub =
+    type DirectSubT() =
+        member _.Decoy = 2
+
+type GlobalPlain() =
+    member _.Decoy = 3
