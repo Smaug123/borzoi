@@ -22,7 +22,7 @@ assert_eq() { # name expected actual
 # sorted/space-joined shape the runners below produce.
 expect() { # true-filters...
   local f out=""
-  for f in assembly astgen cst fcs lsp msbuild nuget sema sidecar workspace; do
+  for f in assembly astgen cst fcs lsp msbuild nuget sema sidecar stats workspace; do
     if [[ " $* " == *" $f "* ]]; then out+="$f=true "; else out+="$f=false "; fi
   done
   printf '%s' "$out"
@@ -38,7 +38,9 @@ assert_eq "multiple crates + ignored" "$(expect cst lsp)"      "$(classify $'cra
 assert_eq "exact workspace file"     "$(expect workspace)"     "$(classify 'Cargo.toml')"
 assert_eq "nix dir"                  "$(expect workspace)"     "$(classify 'nix/deps.json')"
 assert_eq "ci workflow file"         "$(expect workspace)"     "$(classify '.github/workflows/ci.yml')"
+assert_eq "stats workflow file"      "$(expect workspace)"     "$(classify '.github/workflows/stats.yml')"
 assert_eq "this script (tools/ci)"   "$(expect workspace)"     "$(classify 'tools/ci/detect-changes.sh')"
+assert_eq "stats tool"               "$(expect stats)"         "$(classify 'tools/stats/src/lib.rs')"
 assert_eq "astgen tool"              "$(expect astgen)"        "$(classify 'tools/astgen/src/lib.rs')"
 assert_eq "fcs-dump tool"            "$(expect fcs)"           "$(classify 'tools/fcs-dump/Program.fs')"
 assert_eq "sidecar prod"             "$(expect sidecar)"       "$(classify 'tools/csharp-sidecar/Foo.cs')"
@@ -52,6 +54,7 @@ assert_eq "nothing changed"          "$(expect)"               "$(classify '')"
 # Prefix-boundary guards: a sibling dir that shares a name prefix must NOT match.
 assert_eq "crates/cstfoo is not cst" "$(expect)"               "$(classify 'crates/cstfoo/x.rs')"
 assert_eq "tools/astgenfoo not astgen" "$(expect)"             "$(classify 'tools/astgenfoo/x.rs')"
+assert_eq "tools/statsfoo not stats" "$(expect)"              "$(classify 'tools/statsfoo/x.rs')"
 assert_eq "csharp-sidecar-extra"     "$(expect)"               "$(classify 'tools/csharp-sidecar-extra/x.cs')"
 assert_eq "nuget-oracle-extra"       "$(expect)"               "$(classify 'tools/nuget-oracle-extra/x.fs')"
 # Crates/tools routed after the initial gate set.
@@ -93,11 +96,11 @@ assert_eq "push diff (before=c1)" "$(expect lsp)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE="$base")"
 assert_eq "pull_request diff (base=c1)" "$(expect lsp)" \
   "$(run GITHUB_EVENT_NAME=pull_request GITHUB_PR_BASE_SHA="$base")"
-assert_eq "fail-open: empty before" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: empty before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=)"
-assert_eq "fail-open: all-zeros before" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: all-zeros before" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=0000000000000000000000000000000000000000)"
-assert_eq "fail-open: unknown base sha" "$(expect cst msbuild assembly lsp sema nuget astgen fcs sidecar workspace)" \
+assert_eq "fail-open: unknown base sha" "$(expect cst msbuild assembly lsp sema nuget astgen stats fcs sidecar workspace)" \
   "$(run GITHUB_EVENT_NAME=push GITHUB_EVENT_BEFORE=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef)"
 
 # --- non-ancestor base (force-push) ------------------------------------------
@@ -161,6 +164,29 @@ for cdir in "$repo_root"/crates/*/; do
       "UNROUTED — add a filter prefix in detect-changes.sh (or exempt it here)"
   fi
 done
+
+# --- required-check aggregate coverage --------------------------------------
+# Branch protection keys off `all-required-checks-complete`, so every test job
+# must feed that aggregate. Derive both sets from the workflow instead of
+# maintaining another hand-written list in this test.
+workflow="$repo_root/.github/workflows/ci.yml"
+declared_test_jobs="$(sed -n 's/^  \(test-[a-z0-9-]*\):$/\1/p' "$workflow" | sort | tr '\n' ' ')"
+aggregated_test_jobs="$(awk '
+  /^  all-required-checks-complete:$/ { aggregate = 1; next }
+  aggregate && /^      - test-[a-z0-9-]*$/ {
+    sub(/^      - /, "")
+    print
+  }
+' "$workflow" | sort | tr '\n' ' ')"
+assert_eq "required aggregate includes every test job" \
+  "$declared_test_jobs" "$aggregated_test_jobs"
+
+stats_workflow="$repo_root/.github/workflows/stats.yml"
+deploy_main_ref="$(awk '
+  /^  deploy:$/ { deploy = 1; next }
+  deploy && /^          ref: main$/ { print "current-main" }
+' "$stats_workflow")"
+assert_eq "dashboard deploy checks out current main" "current-main" "$deploy_main_ref"
 
 echo
 if [[ $fails -eq 0 ]]; then
