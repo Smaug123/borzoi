@@ -268,6 +268,17 @@ pub struct ProjectItems {
     /// [`Resolver::modules_with_hidden_values`](super::state::Resolver::modules_with_hidden_values)). A later file's `open M` of one
     /// must bump the open generation so it shadows earlier opens.
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// The subset of [`Self::modules_with_hidden_values`] whose markers came
+    /// from a file **without** a paired signature. A sig-paired file's whole
+    /// cross-file surface is bounded by its `.fsi` text (the screen's
+    /// foundational invariant — a name absent from the signature provably
+    /// cannot be exposed), so the per-name screen demotion at the open fold
+    /// ([`ProjectItems::sig_screened_open_name`]) covers everything such a
+    /// file's markers fear. An **unscreened** file's unenumerable
+    /// value-space names (an active pattern, an alias target, …) have no
+    /// such bound: an `open` of a path marked here must still stale its own
+    /// assembly entries via the generation bump, not just earlier opens'.
+    pub(super) opaque_hidden_value_modules: HashSet<Vec<String>>,
     /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
     /// paired with the Compile-order file that declared it, in Compile order —
     /// `private` ones are excluded, since F# does not bring a `private` module
@@ -788,6 +799,13 @@ impl ProjectItems {
             .any(|p| opened.starts_with(p.as_slice()))
     }
 
+    /// Whether `mp` carries a hidden-value marker from an **unscreened**
+    /// file (see [`Self::opaque_hidden_value_modules`]): an `open` of it may
+    /// bring value-space names no signature soup demotes per-name.
+    pub(super) fn opaque_hidden_value_module(&self, mp: &[String]) -> bool {
+        self.opaque_hidden_value_modules.contains(mp)
+    }
+
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
         self.screened_path(names, false)
     }
@@ -1012,6 +1030,9 @@ impl ProjectItems {
         for hidden in idx.modules_with_hidden_values {
             self.modules_with_hidden_values.insert(hidden);
         }
+        for hidden in idx.opaque_hidden_value_modules {
+            self.opaque_hidden_value_modules.insert(hidden);
+        }
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
@@ -1182,6 +1203,7 @@ struct FileExportIndices {
     real_nested_modules: Vec<Vec<String>>,
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
+    opaque_hidden_value_modules: Vec<Vec<String>>,
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
@@ -1435,6 +1457,11 @@ impl FileExportIndices {
                 fi.auto_open_module_paths.push(path.clone());
                 fi.modules_with_hidden_values.push(path.clone());
             }
+        } else {
+            // No signature bounds this file's surface, so nothing name-screens
+            // what its markers fear: they are opaque
+            // ([`ProjectItems::opaque_hidden_value_modules`]).
+            fi.opaque_hidden_value_modules = fi.modules_with_hidden_values.clone();
         }
         fi
     }
