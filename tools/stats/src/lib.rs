@@ -132,6 +132,7 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
         generator,
     };
     let path = observation_path(&input.history, &observation);
+    reject_symlinked_components(&input.history, &path)?;
     let parent = path.parent().expect("observation path has a parent");
     create_dir_all(parent)?;
     write_json(&path, &observation)?;
@@ -142,6 +143,7 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
 /// directory. The deployed site is disposable; `history` remains authoritative.
 pub fn build_site(history: &Path, output: &Path) -> Result<usize, StatsError> {
     let root = history.join("observations");
+    reject_symlinked_components(history, &root)?;
     let mut paths = Vec::new();
     collect_json_files(&root, &mut paths)?;
     paths.sort();
@@ -419,7 +421,41 @@ fn contains_number(value: &Value) -> bool {
     }
 }
 
+fn reject_symlinked_components(root: &Path, target: &Path) -> Result<(), StatsError> {
+    let relative = target
+        .strip_prefix(root)
+        .expect("observation target is rooted under its history directory");
+    let mut current = if root.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        root.to_path_buf()
+    };
+    reject_symlink(&current)?;
+    for component in relative.components() {
+        current.push(component);
+        reject_symlink(&current)?;
+    }
+    Ok(())
+}
+
+fn reject_symlink(path: &Path) -> Result<(), StatsError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => invalid(format!(
+            "observation history contains symlink {}",
+            path.display()
+        )),
+        Ok(_) => Ok(()),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(StatsError::Io {
+            operation: "inspect",
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 fn collect_json_files(dir: &Path, output: &mut Vec<PathBuf>) -> Result<(), StatsError> {
+    reject_symlink(dir)?;
     let entries = fs::read_dir(dir).map_err(|source| StatsError::Io {
         operation: "read directory",
         path: dir.to_path_buf(),

@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
 use borzoi_stats::{RecordInput, build_site, record_observation};
@@ -163,6 +165,81 @@ fn site_contains_every_valid_observation_and_rejects_misfiled_data() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("does not match its contents"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn record_rejects_symlinks_in_every_existing_output_component() {
+    let series = "v1-c3c01c991d17-ee961db1637c";
+    for component in [
+        String::new(),
+        "observations".into(),
+        "observations/parser-divergence".into(),
+        format!("observations/parser-divergence/{series}"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let history = temp.path().join("history");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let link = if component.is_empty() {
+            history.clone()
+        } else {
+            history.join(&component)
+        };
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&outside, &link).unwrap();
+
+        let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+        let err = record_observation(&input(temp.path(), summary))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("symlink"), "{component:?}: {err}");
+        assert!(fs::read_dir(&outside).unwrap().next().is_none());
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let history = temp.path().join("history");
+    let observation = history
+        .join("observations/parser-divergence")
+        .join(series)
+        .join(format!("{COMMIT}.json"));
+    fs::create_dir_all(observation.parent().unwrap()).unwrap();
+    let outside = temp.path().join("outside.json");
+    fs::write(&outside, b"do not overwrite").unwrap();
+    symlink(&outside, &observation).unwrap();
+
+    let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    let err = record_observation(&input(temp.path(), summary))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("symlink"), "{err}");
+    assert_eq!(fs::read(&outside).unwrap(), b"do not overwrite");
+}
+
+#[cfg(unix)]
+#[test]
+fn site_rejects_a_symlinked_history_or_observations_root() {
+    for link_history in [true, false] {
+        let temp = tempfile::tempdir().unwrap();
+        let history = temp.path().join("history");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        if link_history {
+            fs::create_dir(outside.join("observations")).unwrap();
+            symlink(&outside, &history).unwrap();
+        } else {
+            fs::create_dir(&history).unwrap();
+            symlink(&outside, history.join("observations")).unwrap();
+        }
+
+        let err = build_site(&history, &temp.path().join("site"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("symlink"),
+            "link_history={link_history}: {err}"
+        );
+    }
 }
 
 fn input(root: &Path, summary: PathBuf) -> RecordInput {
