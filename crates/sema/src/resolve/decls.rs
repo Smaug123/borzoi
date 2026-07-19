@@ -1386,6 +1386,46 @@ impl<'a> Resolver<'a> {
                         {
                             self.open_generation += 1;
                         }
+                        // The project-module half's OWN hidden-values barrier
+                        // (Q14's "may bring names we cannot enumerate" bump).
+                        // A same-file RESOLVABLE alias is canonicalised to its
+                        // target at tier 0, and THAT group carries the open's
+                        // real semantics — values and hidden-value conservatism
+                        // alike. The alias's own path exports no values and its
+                        // blanket hidden marker exists for *later files* (which
+                        // cannot follow the alias), so consulting it here would
+                        // double-bump and stale names FCS resolves (the marker's
+                        // declaration site documents exactly this split).
+                        //
+                        // The bump's position splits on marker provenance
+                        // (`docs/fsi-signature-restriction-plan.md`, the
+                        // open-fold slice). When every hidden marker for `gp`
+                        // is **sig-screened** — no marker from this file's own
+                        // decls, none from an unscreened earlier file — the
+                        // names the barrier fears are bounded by the signature
+                        // text, and THE FOLD's per-name screen demotion below
+                        // (`sig_screened_open_name`) already defers exactly
+                        // those among this open's own assembly entries. Bump
+                        // BEFORE the fold, so those entries carry the fresh
+                        // generation and the ones the signature provably cannot
+                        // expose fall through to the assembly as FCS does
+                        // (probed: a sig-`private` or sig-hidden name after
+                        // `open` of the signatured module binds the colliding
+                        // assembly member, diagnostics-clean). An opaque marker
+                        // (an active pattern, an alias, … in an unscreened
+                        // fragment) keeps the bump after the fold: the hidden
+                        // name could shadow this open's own assembly entries
+                        // and no screen demotes it per-name.
+                        let resolved_alias = self.module_aliases.contains_key(gp.as_slice());
+                        let project_module_bump = has_project_module
+                            && !resolved_alias
+                            && self.module_has_hidden_values(gp);
+                        let bump_covered_by_screen = project_module_bump
+                            && !self.modules_with_hidden_values.contains(gp.as_slice())
+                            && !self.preceding.opaque_hidden_value_module(gp);
+                        if bump_covered_by_screen {
+                            self.open_generation += 1;
+                        }
                         // A group that hides names we cannot LIST needs more than the
                         // per-head staleness veto: the hidden name could itself be a
                         // dotted HEAD with no earlier entry to go stale (`X.Red` where
@@ -1583,16 +1623,10 @@ impl<'a> Resolver<'a> {
                         // model, so dotted heads through it stay conservative
                         // (`opaque_dotted_open`).
                         if has_project_module {
-                            // A same-file RESOLVABLE alias is canonicalised to its
-                            // target at tier 0, and THAT group carries the open's
-                            // real semantics — values and hidden-value conservatism
-                            // alike. The alias's own path exports no values and its
-                            // blanket hidden marker exists for *later files* (which
-                            // cannot follow the alias), so consulting it here would
-                            // double-bump and stale names FCS resolves (the marker's
-                            // declaration site documents exactly this split).
-                            let resolved_alias = self.module_aliases.contains_key(gp.as_slice());
-                            if !resolved_alias && self.module_has_hidden_values(gp) {
+                            // The opaque-marker arm of the provenance split
+                            // above: hidden names no screen bounds must stale
+                            // this open's own assembly entries too.
+                            if project_module_bump && !bump_covered_by_screen {
                                 self.open_generation += 1;
                             }
                             // An explicit `open M` brings *every* direct member of

@@ -1764,17 +1764,180 @@ fn private_val_is_accessible_to_a_later_same_module_fragment() {
     );
 }
 
-/// Codex Stage-3 round 1, P2, pinned as a known over-deferral: after `open`
-/// of the signatured module, a bare reading of the sig-private name that
-/// collides with an assembly member binds the **assembly** in FCS
-/// (diagnostics-clean, probed), but the open fold still defers every
-/// assembly entry of a signatured root (the Stage-1 blanket
-/// hidden-valued marking — same class as the documented hidden-name open
-/// over-deferral). Deferral is sound; a *project* commit here would be
-/// wrong, which is what this pins.
+/// Assert the use committed to a referenced-assembly member.
+fn assert_member(res: Option<Resolution>, what: &str) {
+    assert!(
+        matches!(res, Some(Resolution::Member { .. })),
+        "{what}: expected an assembly Member, got {res:?}"
+    );
+}
+
+/// After `open` of a signatured module, a bare reading of a name the sig
+/// does not expose at this site falls through to the colliding assembly
+/// member (FCS-probed op1, diagnostics-clean): the sig-`private` val and
+/// the impl-only (sig-hidden) val both bind the assembly, while the
+/// exposed val binds the `.fsi`. The open's own assembly entries survive
+/// the hidden-values generation barrier because every hidden marker for
+/// the opened path is sig-screened — the per-name screen demotion is the
+/// precise form of that barrier for this open's own fold.
 #[test]
-fn open_bare_private_collision_defers_but_never_commits_a_project_item() {
+fn open_bare_private_collision_drops_to_the_colliding_assembly_member() {
     let files = [
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\nval shown: int\nval private bar: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet bar = 2\nlet asmOnly = 3\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\nlet c = asmOnly\nlet d = shown\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_member(
+        res_at(&proj, &files, 2, "bar"),
+        "sig-private name after the open",
+    );
+    assert_member(
+        res_at(&proj, &files, 2, "asmOnly"),
+        "impl-only (sig-hidden) name after the open",
+    );
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "shown"),
+        0,
+        "shown",
+        "sig-exposed name after the open",
+    );
+}
+
+/// `open` of a `module private` signatured module from **outside** the
+/// enclosing namespace: FCS binds the assembly module, so every colliding
+/// bare name binds the assembly member cleanly and a sig-only name is
+/// FS39 (probed op2).
+#[test]
+fn open_of_a_private_sig_module_from_outside_drops_to_the_assembly() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "module private ProbeNs.Shared\n\nval shown: int\nval x: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet x = 2\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet d = shown\nlet c = asmOnly\nlet e = x\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_member(
+        res_at(&proj, &files, 2, "shown"),
+        "colliding name, private module opened from outside",
+    );
+    assert_member(
+        res_at(&proj, &files, 2, "asmOnly"),
+        "assembly-only name, private module opened from outside",
+    );
+    assert_uncommitted(
+        res_at(&proj, &files, 2, "x"),
+        "sig-only name, private module opened from outside (FCS: FS39)",
+    );
+}
+
+/// `open` of a `module private` signatured module from a same-namespace
+/// **sibling** (the accessible site): the sig surface binds — the project
+/// fragment folds last, so an exposed name beats the colliding assembly
+/// member — while an assembly-only name still falls through (probed op3).
+#[test]
+fn open_of_a_private_sig_module_from_a_sibling_binds_the_sig_surface() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "module private ProbeNs.Shared\n\nval shown: int\nval x: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet x = 2\n",
+        ),
+        (
+            "/p/Sib.fs",
+            "namespace ProbeNs\n\nmodule SibOpen =\n    open ProbeNs.Shared\n    let d = shown\n    let c = asmOnly\n    let e = x\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "shown"),
+        0,
+        "shown",
+        "colliding sig-exposed name, sibling open",
+    );
+    assert_def_ident(
+        &proj,
+        &files,
+        res_at(&proj, &files, 2, "x"),
+        0,
+        "x",
+        "sig-only name, sibling open",
+    );
+    assert_member(
+        res_at(&proj, &files, 2, "asmOnly"),
+        "assembly-only name, sibling open",
+    );
+}
+
+/// The fall-through does not require a fully-modelled signature: a sig
+/// carrying an unmodelled decl kind (a record type) still screens by
+/// name, so its `val private` and the assembly-only name both drop to the
+/// assembly (probed op4).
+#[test]
+fn open_collision_with_a_partially_modelled_sig_still_drops() {
+    let files = [
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\ntype Widget = { size: int }\nval private bar: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\ntype Widget = { size: int }\nlet bar = 2\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\nlet c = asmOnly\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_member(
+        res_at(&proj, &files, 2, "bar"),
+        "sig-private name, partially modelled sig",
+    );
+    assert_member(
+        res_at(&proj, &files, 2, "asmOnly"),
+        "assembly-only name, partially modelled sig",
+    );
+}
+
+/// An **unscreened** same-path fragment with an opaque hidden-value
+/// marker blocks the fall-through: an `[<AutoOpen>]` type's statics are
+/// value-space names sema cannot enumerate, and no signature soup covers
+/// them, so the open's assembly entries must stay behind the generation
+/// barrier — deferral, never a commit in either direction. (An active
+/// pattern would not do here: its case is an enumerable export now, so
+/// it marks nothing hidden.)
+#[test]
+fn an_unscreened_fragment_blocks_the_open_fold_fall_through() {
+    let files = [
+        (
+            "/p/Frag.fs",
+            "namespace ProbeNs\n\nmodule Shared =\n    [<AutoOpen>]\n    type Helper =\n        static member Act = 1\n",
+        ),
         (
             "/p/A.fsi",
             "module ProbeNs.Shared\n\nval shown: int\nval private bar: int\n",
@@ -1789,15 +1952,56 @@ fn open_bare_private_collision_defers_but_never_commits_a_project_item() {
         ),
     ];
     let proj = resolve_project_files(&project(&files), &reflib_env());
-    let bar = res_at(&proj, &files, 2, "bar");
-    assert!(
-        matches!(
-            bar,
-            None | Some(
-                Resolution::Deferred(_) | Resolution::Member { .. } | Resolution::Entity(_)
-            )
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "bar"),
+        "open of a module with an unscreened fragment",
+    );
+}
+
+/// Incremental ≡ cold when an edit turns the sig-private collision case
+/// on: the opaque-hidden-marker provenance must thread through the
+/// incremental fold too.
+#[test]
+fn incremental_matches_cold_for_an_open_collision() {
+    let env = reflib_env();
+    let before = [
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\nval shown: int\nval bar: int\n",
         ),
-        "FCS binds the assembly member; a project commit is wrong, got {bar:?}"
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet bar = 2\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\n",
+        ),
+    ];
+    let prev_files = project(&before);
+    let prev = resolve_project_files(&prev_files, &env);
+
+    let after = [
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\nval shown: int\nval private bar: int\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nlet shown = 1\nlet bar = 2\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\n",
+        ),
+    ];
+    let new_files = project(&after);
+    let (incr, _) = resolve_project_files_incremental(&prev_files, &prev, &new_files, &env);
+    let cold = resolve_project_files(&new_files, &env);
+    assert_eq!(incr, cold, "incremental ≡ batch after a val-access edit");
+    assert_member(
+        res_at(&cold, &after, 2, "bar"),
+        "sig-private collision after the incremental edit",
     );
 }
 
@@ -2438,6 +2642,55 @@ fn sig_accessibility_agrees_with_fcs() {
             expected_cross_file: 1,
             fcs_must_not_declare: vec![],
         },
+        // The open-fold half (probed op1, diagnostics-clean): after an
+        // outside `open` of the signatured module, the exposed `shown`
+        // binds the `.fsi` (the one cross-file agreement), while the
+        // sig-private `bar` and the impl-only `asmOnly` bind RefLib —
+        // assembly commits the count ignores and the wrong-commit checks
+        // guard.
+        SigProject {
+            label: "sig3_open_private_collision",
+            files: vec![
+                (
+                    "A.fsi",
+                    "module ProbeNs.Shared\n\nval shown: int\nval private bar: int\n",
+                ),
+                (
+                    "A.fs",
+                    "module ProbeNs.Shared\n\nlet shown = 1\nlet bar = 2\nlet asmOnly = 3\n",
+                ),
+                (
+                    "Use.fs",
+                    "module Use\n\nopen ProbeNs.Shared\n\nlet b = bar\nlet c = asmOnly\nlet d = shown\n",
+                ),
+            ],
+            refs: vec![ensure_reflib_built()],
+            expected_cross_file: 1,
+            fcs_must_not_declare: vec![],
+        },
+        // The sibling open of a private sig module (probed op3): both sig
+        // vals bind the `.fsi` (two agreements), the assembly-only name
+        // binds RefLib.
+        SigProject {
+            label: "sig3_open_private_module_sibling",
+            files: vec![
+                (
+                    "A.fsi",
+                    "module private ProbeNs.Shared\n\nval shown: int\nval x: int\n",
+                ),
+                (
+                    "A.fs",
+                    "module ProbeNs.Shared\n\nlet shown = 1\nlet x = 2\n",
+                ),
+                (
+                    "Sib.fs",
+                    "namespace ProbeNs\n\nmodule SibOpen =\n    open ProbeNs.Shared\n    let d = shown\n    let c = asmOnly\n    let e = x\n",
+                ),
+            ],
+            refs: vec![ensure_reflib_built()],
+            expected_cross_file: 2,
+            fcs_must_not_declare: vec![],
+        },
     ];
     for fixture in &fixtures {
         assert_sig_matches_fcs(fixture);
@@ -2447,15 +2700,16 @@ fn sig_accessibility_agrees_with_fcs() {
 /// The systematic sweep for this slice: **module-header accessibility** ×
 /// val accessibility × assembly collision × reading site (intervening /
 /// outside-after / **inside the module's own subtree** — the site codex
-/// round 1 P1 showed the point fixtures had missed), site-keyed against
+/// round 1 P1 showed the point fixtures had missed — plus the two bare
+/// **open** sites, outside and same-namespace sibling), site-keyed against
 /// FCS. For every flavour the intervening reading falls through (assembly
 /// under a collision, unbound otherwise); after the impl's slot the exposed
 /// flavours bind the `.fsi` everywhere, and `private` — on the val or on
 /// the header — splits by site: the inside reader binds the `.fsi`
 /// (accessible: the header's floor is the enclosing namespace, the val's
 /// root its module), the outside one falls through — including the
-/// **clean** private+collision assembly bindings this slice and the val
-/// slice exist to commit.
+/// **clean** private+collision assembly bindings the qualified slices and
+/// the open-fold slice exist to commit.
 #[test]
 fn accessibility_matrix_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
@@ -2480,6 +2734,20 @@ fn accessibility_matrix_agrees_with_fcs() {
                     (
                         "Inside.fs",
                         "namespace ProbeNs\n\nmodule Shared =\n    let g2 = ProbeNs.Shared.bar\n",
+                    ),
+                    // Two `open` sites — the bare-name open-fold half of the
+                    // slice: an outside open (falls through to the assembly
+                    // for every flavour the sig hides from it) and a
+                    // same-namespace sibling open (the accessible site for a
+                    // `private` header, still outside a `private` val's own
+                    // module root).
+                    (
+                        "UseOpen.fs",
+                        "module UseOpen\n\nopen ProbeNs.Shared\n\nlet k = bar\n",
+                    ),
+                    (
+                        "SibOpen.fs",
+                        "namespace ProbeNs\n\nmodule SibOpen =\n    open ProbeNs.Shared\n    let m = bar\n",
                     ),
                 ];
                 let label = format!(
@@ -2517,10 +2785,12 @@ fn accessibility_matrix_agrees_with_fcs() {
                 // Site-keyed: for each reading site, our verdict must match
                 // FCS's — in-project decl ⇒ exact Item or deferral; assembly ⇒
                 // assembly member or deferral; unbound ⇒ nothing.
-                for (site_idx, needle_owner) in [
-                    (1usize, "Between.fs"),
-                    (3usize, "After.fs"),
-                    (4usize, "Inside.fs"),
+                for (site_idx, needle_owner, needle) in [
+                    (1usize, "Between.fs", "ProbeNs.Shared.bar"),
+                    (3usize, "After.fs", "ProbeNs.Shared.bar"),
+                    (4usize, "Inside.fs", "ProbeNs.Shared.bar"),
+                    (5usize, "UseOpen.fs", "bar"),
+                    (6usize, "SibOpen.fs", "bar"),
                 ] {
                     let (site_path, site_src) = &written[site_idx];
                     assert_eq!(
@@ -2528,7 +2798,6 @@ fn accessibility_matrix_agrees_with_fcs() {
                         Some(needle_owner),
                         "fixture rows moved"
                     );
-                    let needle = "ProbeNs.Shared.bar";
                     let start = site_src.find(needle).expect("probe site present");
                     let site = span(start, start + needle.len());
                     let fcs_at_site = fcs_files
@@ -2588,19 +2857,20 @@ fn accessibility_matrix_agrees_with_fcs() {
         }
     }
     // Non-vacuity floors, just under the observed counts (printed;
-    // observed 36 / 18 / 18 over the 72 cells): every verdict family must
-    // stay populated — the exposed after/inside cells commit the sig
-    // identity (for a private header the inside cell is the accessible
-    // site), the collision fall-throughs commit the assembly (including
-    // the private-header after cells), and the unbound cells defer.
+    // observed 66 / 27 / 27 over the 120 site-cells): every verdict family
+    // must stay populated — the exposed after/inside/open cells commit the
+    // sig identity (for a private header the inside and sibling-open cells
+    // are the accessible sites), the collision fall-throughs commit the
+    // assembly (the private-header after cells and the bare open-fold
+    // cells included), and the unbound cells defer.
     println!(
         "accessibility matrix: {sig_commits} sig commits, {assembly_commits} assembly commits, \
          {deferrals} deferrals"
     );
-    assert!(sig_commits >= 32, "sig-identity commits: {sig_commits}");
+    assert!(sig_commits >= 60, "sig-identity commits: {sig_commits}");
     assert!(
-        assembly_commits >= 15,
+        assembly_commits >= 24,
         "assembly commits: {assembly_commits}"
     );
-    assert!(deferrals >= 15, "deferrals: {deferrals}");
+    assert!(deferrals >= 24, "deferrals: {deferrals}");
 }
