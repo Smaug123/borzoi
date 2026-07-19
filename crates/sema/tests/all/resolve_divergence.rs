@@ -35,8 +35,10 @@
 //! * infra worklists — `our_parser_errors.txt`, `our_panics.txt`,
 //!   `fcs_not_ok.txt`, `unreadable.txt`: one path per line, the files we could
 //!   not compare.
-//! * `summary.txt` — the per-bucket counts, the `gap_b1` sub-tag histogram
-//!   (the actionable digest), and the coverage ratios.
+//! * `summary.txt` — the human-readable per-bucket counts, the `gap_b1` sub-tag
+//!   histogram (the actionable digest), and the coverage ratios.
+//! * `summary.json` — the versioned machine-readable configuration and the same
+//!   counts, consumed by the continuous-measurements workflow.
 //!
 //! Matches are the headline success and are only counted, not listed.
 //!
@@ -67,6 +69,7 @@
 //! the denominator of its `MIN_B1_COVERAGE_PERMILLE` completeness ratchet.
 
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
+use serde::Serialize;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -148,6 +151,67 @@ struct Report {
     unreadable: Vec<PathBuf>,
 }
 
+#[derive(Serialize)]
+struct Summary<'a> {
+    schema_version: u32,
+    measurement: &'static str,
+    configuration: ConfigurationSummary,
+    statistics: StatisticsSummary<'a>,
+}
+
+#[derive(Serialize)]
+struct ConfigurationSummary {
+    corpus: &'static str,
+    file_extensions: [&'static str; 1],
+    scope: &'static str,
+    stride: usize,
+    limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+struct StatisticsSummary<'a> {
+    files_compared: usize,
+    uses_adjudicated: usize,
+    out_of_file: usize,
+    matches: MatchSummary<'a>,
+    divergences: usize,
+    alt_binders: usize,
+    gaps: GapSummary,
+    b1_coverage: CoverageSummary,
+    gap_b1_by_tag: BTreeMap<&'static str, usize>,
+    infrastructure: InfrastructureSummary,
+}
+
+#[derive(Serialize)]
+struct MatchSummary<'a> {
+    total: usize,
+    by_bucket: &'a BTreeMap<&'static str, usize>,
+}
+
+#[derive(Serialize)]
+struct GapSummary {
+    total: usize,
+    b1: usize,
+    b2: usize,
+    b3: usize,
+    other: usize,
+}
+
+#[derive(Serialize)]
+struct CoverageSummary {
+    matched: usize,
+    seen: usize,
+    basis_points: u32,
+}
+
+#[derive(Serialize)]
+struct InfrastructureSummary {
+    our_parser_errors: usize,
+    our_panics: usize,
+    fcs_not_ok: usize,
+    unreadable: usize,
+}
+
 fn bucket_name(b: Option<Bucket>) -> &'static str {
     match b {
         Some(Bucket::B1) => "B1",
@@ -201,7 +265,12 @@ fn regenerate_resolution_divergence_report() {
         }
     }
 
-    write_report(&out, &report);
+    write_report(
+        &out,
+        &report,
+        stride,
+        (limit != usize::MAX).then_some(limit),
+    );
 
     let total_gaps =
         report.gap_b1.len() + report.gap_b2.len() + report.gap_b3.len() + report.gap_other.len();
@@ -345,7 +414,7 @@ fn sweep_file(file: &FileCensus, report: &mut Report) {
 }
 
 /// Write every bucket file plus `summary.txt` under `out`.
-fn write_report(out: &Path, r: &Report) {
+fn write_report(out: &Path, r: &Report, stride: usize, limit: Option<usize>) {
     std::fs::create_dir_all(out).expect("create report dir");
 
     // Faults and gaps: `<bucket>/<tag>\t<loc>\t<text>[\t<ours>]`. Divergences and
@@ -364,6 +433,8 @@ fn write_report(out: &Path, r: &Report) {
     write_paths(out, "unreadable.txt", &r.unreadable);
 
     std::fs::write(out.join("summary.txt"), summary(r)).expect("write summary");
+    std::fs::write(out.join("summary.json"), summary_json(r, stride, limit))
+        .expect("write resolution divergence summary.json");
 }
 
 enum SortKey {
@@ -451,6 +522,68 @@ fn summary(r: &Report) -> String {
     s
 }
 
+fn summary_json(r: &Report, stride: usize, limit: Option<usize>) -> String {
+    let match_total: usize = r.matches.values().sum();
+    let gap_total = r.gap_b1.len() + r.gap_b2.len() + r.gap_b3.len() + r.gap_other.len();
+    let b1_match = r.matches.get("B1").copied().unwrap_or(0);
+    let mut gap_b1_by_tag = BTreeMap::new();
+    for site in &r.gap_b1 {
+        *gap_b1_by_tag.entry(site.tag).or_default() += 1;
+    }
+    let summary = Summary {
+        schema_version: 1,
+        measurement: "resolution-divergence",
+        configuration: ConfigurationSummary {
+            corpus: "fsharp-src",
+            file_extensions: ["fs"],
+            scope: "in-file",
+            stride,
+            limit,
+        },
+        statistics: StatisticsSummary {
+            files_compared: r.files_compared,
+            uses_adjudicated: r.adjudicated,
+            out_of_file: r.out_of_file,
+            matches: MatchSummary {
+                total: match_total,
+                by_bucket: &r.matches,
+            },
+            divergences: r.divergences.len(),
+            alt_binders: r.alt_binders.len(),
+            gaps: GapSummary {
+                total: gap_total,
+                b1: r.gap_b1.len(),
+                b2: r.gap_b2.len(),
+                b3: r.gap_b3.len(),
+                other: r.gap_other.len(),
+            },
+            b1_coverage: CoverageSummary {
+                matched: b1_match,
+                seen: b1_match + r.gap_b1.len(),
+                basis_points: basis_points(b1_match, b1_match + r.gap_b1.len()),
+            },
+            gap_b1_by_tag,
+            infrastructure: InfrastructureSummary {
+                our_parser_errors: r.our_errors.len(),
+                our_panics: r.our_panics.len(),
+                fcs_not_ok: r.fcs_not_ok.len(),
+                unreadable: r.unreadable.len(),
+            },
+        },
+    };
+    let mut json = serde_json::to_string_pretty(&summary).expect("serialise resolution summary");
+    json.push('\n');
+    json
+}
+
+fn basis_points(numerator: usize, denominator: usize) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    u32::try_from((numerator as u128 * 10_000) / denominator as u128)
+        .expect("a ratio in basis points fits u32")
+}
+
 /// Recursively collect `.fs` implementation files (not `.fsi`), skipping
 /// build/VCS output and symlinks. Mirrors `resolve_corpus_diff.rs`'s collector.
 fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -473,5 +606,73 @@ fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.extension().and_then(|s| s.to_str()) == Some("fs") {
             out.push(path);
         }
+    }
+}
+
+#[test]
+fn summary_json_contract_is_versioned_and_preserves_denominators() {
+    let mut report = Report {
+        files_compared: 5,
+        adjudicated: 18,
+        out_of_file: 7,
+        ..Report::default()
+    };
+    report.matches.insert("B1", 8);
+    report.matches.insert("B2", 2);
+    report.gap_b1 = vec![test_site("record-field"), test_site("record-field")];
+    report.gap_b2 = vec![test_site("member")];
+    report.gap_b3 = vec![test_site("overload")];
+    report.gap_other = vec![test_site("other")];
+    report.divergences = vec![test_site("fault")];
+    report.alt_binders = vec![test_site("alternate")];
+    report.our_errors = vec!["parse.fs".into()];
+    report.our_panics = vec!["panic.fs".into()];
+    report.fcs_not_ok = vec!["fcs.fs".into()];
+    report.unreadable = vec!["gone.fs".into()];
+
+    let value: serde_json::Value =
+        serde_json::from_str(&summary_json(&report, 13, None)).expect("summary is JSON");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "schema_version": 1,
+            "measurement": "resolution-divergence",
+            "configuration": {
+                "corpus": "fsharp-src",
+                "file_extensions": ["fs"],
+                "scope": "in-file",
+                "stride": 13,
+                "limit": null
+            },
+            "statistics": {
+                "files_compared": 5,
+                "uses_adjudicated": 18,
+                "out_of_file": 7,
+                "matches": { "total": 10, "by_bucket": { "B1": 8, "B2": 2 } },
+                "divergences": 1,
+                "alt_binders": 1,
+                "gaps": { "total": 5, "b1": 2, "b2": 1, "b3": 1, "other": 1 },
+                "b1_coverage": { "matched": 8, "seen": 10, "basis_points": 8000 },
+                "gap_b1_by_tag": { "record-field": 2 },
+                "infrastructure": {
+                    "our_parser_errors": 1,
+                    "our_panics": 1,
+                    "fcs_not_ok": 1,
+                    "unreadable": 1
+                }
+            }
+        })
+    );
+}
+
+fn test_site(tag: &'static str) -> Site {
+    Site {
+        bucket: "B1",
+        tag,
+        path: "test.fs".into(),
+        start: 0,
+        end: 1,
+        text: "x".into(),
+        ours: String::new(),
     }
 }

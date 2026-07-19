@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Borzoi measurements</title>
+  <style>
+    :root { color-scheme: light dark; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    body { margin: 0; background: #10141c; color: #e7edf7; }
+    main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 64px; }
+    h1 { margin: 0 0 8px; font-size: clamp(2rem, 6vw, 4.4rem); letter-spacing: -.07em; }
+    .lede, .muted { color: #9da9ba; }
+    .controls, .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); margin: 28px 0 18px; }
+    label, .card, .panel { border: 1px solid #2a3444; background: #171d28; border-radius: 10px; }
+    label { display: grid; gap: 8px; padding: 12px; color: #9da9ba; font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+    select { width: 100%; border: 0; background: transparent; color: #f3f6fb; font: inherit; font-size: .9rem; }
+    .card { padding: 16px; }
+    .card strong { display: block; margin-top: 7px; font-size: 1.55rem; color: #77e1b4; }
+    .panel { padding: 18px; margin-top: 14px; overflow: hidden; }
+    svg { display: block; width: 100%; min-height: 330px; }
+    .grid { stroke: #2a3444; stroke-width: 1; }
+    .axis-label { fill: #9da9ba; font-size: 12px; }
+    .line { fill: none; stroke: #77e1b4; stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
+    .point { fill: #10141c; stroke: #77e1b4; stroke-width: 3; }
+    table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+    th, td { padding: 9px 8px; border-bottom: 1px solid #2a3444; text-align: left; }
+    th { color: #9da9ba; font-weight: 500; }
+    a { color: #8ab4ff; }
+    pre { white-space: pre-wrap; word-break: break-word; color: #b8c4d5; font-size: .78rem; }
+    #error { color: #ff9b9b; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Borzoi measurements</h1>
+  <p class="lede">Corpus differentials measured on <code>main</code>. A new series begins whenever the corpus, toolchain inputs, or measurement configuration changes.</p>
+  <p id="error"></p>
+  <section class="controls">
+    <label>Measurement<select id="measurement"></select></label>
+    <label>Comparable series<select id="series"></select></label>
+    <label>Statistic<select id="metric"></select></label>
+  </section>
+  <section class="cards">
+    <div class="card"><span class="muted">Latest</span><strong id="latest">—</strong></div>
+    <div class="card"><span class="muted">Change from first</span><strong id="delta">—</strong></div>
+    <div class="card"><span class="muted">Observations</span><strong id="count">—</strong></div>
+  </section>
+  <section class="panel"><svg id="chart" viewBox="0 0 1000 360" role="img" aria-label="Selected statistic over time"></svg></section>
+  <section class="panel"><table><thead><tr><th>Measured</th><th>Commit</th><th>Value</th><th>Workflow</th></tr></thead><tbody id="rows"></tbody></table></section>
+  <section class="panel"><h2>Series identity</h2><pre id="identity"></pre></section>
+</main>
+<script>
+const ns = 'http://www.w3.org/2000/svg';
+const state = { observations: [] };
+const byId = id => document.getElementById(id);
+const unique = values => [...new Set(values)];
+const option = (value, label = value) => { const node = document.createElement('option'); node.value = value; node.textContent = label; return node; };
+const displayValue = (metric, value) => metric.endsWith('basis_points') ? `${(value / 100).toFixed(2)}%` : value.toLocaleString();
+
+function numbers(value, prefix = '', output = {}) {
+  if (typeof value === 'number') output[prefix] = value;
+  else if (value && typeof value === 'object' && !Array.isArray(value))
+    for (const [key, child] of Object.entries(value)) numbers(child, prefix ? `${prefix}.${key}` : key, output);
+  return output;
+}
+function selectValues(select, values) {
+  const previous = select.value;
+  select.replaceChildren(...values.map(value => option(value)));
+  if (values.includes(previous)) select.value = previous;
+}
+function filtered() {
+  return state.observations.filter(item => item.generator.measurement === byId('measurement').value && item.series === byId('series').value);
+}
+function refreshSeries() {
+  const values = unique(state.observations.filter(item => item.generator.measurement === byId('measurement').value).map(item => item.series));
+  selectValues(byId('series'), values);
+  refreshMetrics();
+}
+function refreshMetrics() {
+  const items = filtered();
+  const values = unique(items.flatMap(item => Object.keys(numbers(item.generator.statistics)))).sort();
+  selectValues(byId('metric'), values);
+  render();
+}
+function svg(name, attrs = {}) {
+  const node = document.createElementNS(ns, name);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
+}
+function render() {
+  const metric = byId('metric').value;
+  const points = filtered().map(item => ({ item, value: numbers(item.generator.statistics)[metric] })).filter(point => Number.isFinite(point.value));
+  const chart = byId('chart'); chart.replaceChildren();
+  if (!points.length) { byId('latest').textContent = byId('delta').textContent = byId('count').textContent = '—'; return; }
+  const values = points.map(point => point.value), low = Math.min(...values), high = Math.max(...values);
+  const pad = high === low ? Math.max(1, Math.abs(high) * .1) : (high - low) * .12;
+  const ymin = low - pad, ymax = high + pad, left = 78, right = 970, top = 24, bottom = 310;
+  const times = points.map(point => Date.parse(point.item.measured_at));
+  const tmin = Math.min(...times), tmax = Math.max(...times);
+  const x = (time, index) => tmax === tmin ? left + (right - left) * (points.length === 1 ? .5 : index / (points.length - 1)) : left + (right - left) * (time - tmin) / (tmax - tmin);
+  const y = value => bottom - (bottom - top) * (value - ymin) / (ymax - ymin);
+  for (let i = 0; i <= 4; i++) {
+    const yy = top + (bottom - top) * i / 4, value = ymax - (ymax - ymin) * i / 4;
+    chart.append(svg('line', { x1: left, x2: right, y1: yy, y2: yy, class: 'grid' }));
+    const label = svg('text', { x: left - 10, y: yy + 4, 'text-anchor': 'end', class: 'axis-label' }); label.textContent = metric.endsWith('basis_points') ? `${(value / 100).toFixed(1)}%` : (Number.isInteger(value) ? value : value.toFixed(2)); chart.append(label);
+  }
+  const coordinates = points.map((point, index) => [x(times[index], index), y(point.value)]);
+  chart.append(svg('polyline', { points: coordinates.map(pair => pair.join(',')).join(' '), class: 'line' }));
+  coordinates.forEach(([cx, cy], index) => {
+    const link = svg('a', { href: `https://github.com/${points[index].item.repository}/commit/${points[index].item.commit}` });
+    const circle = svg('circle', { cx, cy, r: 5, class: 'point' });
+    const title = svg('title'); title.textContent = `${points[index].item.measured_at}: ${displayValue(metric, points[index].value)}`; circle.append(title); link.append(circle); chart.append(link);
+  });
+  const first = points[0].value, latest = points.at(-1).value, delta = latest - first;
+  byId('latest').textContent = displayValue(metric, latest); byId('delta').textContent = metric.endsWith('basis_points') ? `${delta > 0 ? '+' : ''}${(delta / 100).toFixed(2)} pp` : `${delta > 0 ? '+' : ''}${delta.toLocaleString()}`; byId('count').textContent = points.length.toLocaleString();
+  byId('rows').replaceChildren(...points.slice(-12).reverse().map(({ item, value }) => {
+    const row = document.createElement('tr');
+    const date = document.createElement('td'); date.textContent = new Date(item.measured_at).toLocaleString();
+    const commit = document.createElement('td'), commitLink = document.createElement('a'); commitLink.href = `https://github.com/${item.repository}/commit/${item.commit}`; commitLink.textContent = item.commit.slice(0, 12); commit.append(commitLink);
+    const metricValue = document.createElement('td'); metricValue.textContent = displayValue(metric, value);
+    const run = document.createElement('td'), runLink = document.createElement('a'); runLink.href = item.workflow.url; runLink.textContent = `run ${item.workflow.run_id}.${item.workflow.run_attempt}`; run.append(runLink);
+    row.append(date, commit, metricValue, run); return row;
+  }));
+  const identity = points.at(-1).item;
+  byId('identity').textContent = JSON.stringify({ series: identity.series, corpus: identity.corpus, generator_schema_version: identity.generator.schema_version, configuration: identity.generator.configuration, flake_lock_hash: identity.flake_lock_hash }, null, 2);
+}
+
+byId('measurement').addEventListener('change', refreshSeries);
+byId('series').addEventListener('change', refreshMetrics);
+byId('metric').addEventListener('change', render);
+fetch('data.json').then(response => { if (!response.ok) throw new Error(`${response.status} ${response.statusText}`); return response.json(); }).then(data => {
+  if (!Array.isArray(data)) throw new Error('data.json is not an array'); state.observations = data;
+  selectValues(byId('measurement'), unique(data.map(item => item.generator.measurement)).sort()); refreshSeries();
+}).catch(error => { byId('error').textContent = `Could not load observations: ${error.message}`; });
+</script>
+</body>
+</html>

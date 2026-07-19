@@ -1,0 +1,245 @@
+name: Continuous measurements
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+# Reruns of one commit replace the same observation paths, so serialise those.
+# Different commits write disjoint paths and reconcile stats-data push races in
+# the persistence job below.
+concurrency:
+  group: continuous-measurements-${{ github.sha }}
+  cancel-in-progress: false
+
+# Measurement is read-only. The two jobs that mutate GitHub state override this
+# with only the permissions their respective boundaries require.
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: Measure parser and resolution
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache cargo target/
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: true
+
+      - name: Generate parser divergence report
+        run: |
+          nix develop --command env \
+            BORZOI_DIVERGENCE_OUT="$RUNNER_TEMP/reports/parser-divergence" \
+            cargo test -p borzoi-cst --test all \
+            fcs_divergence::regenerate_fcs_divergence -- --ignored --nocapture
+
+      - name: Generate resolution divergence report
+        # Pin the sampling knobs explicitly. A change starts a new series because
+        # the configuration is part of the series identity.
+        run: |
+          nix develop --command env \
+            BORZOI_RESOLVE_DIVERGENCE_OUT="$RUNNER_TEMP/reports/resolution-divergence" \
+            BORZOI_RESOLVE_DIFF_STRIDE=13 \
+            cargo test -p borzoi-sema --test all \
+            resolve_divergence::regenerate_resolution_divergence_report \
+            -- --ignored --nocapture
+
+      - name: Add the current summaries to the workflow page
+        run: |
+          {
+            echo '## Parser divergence'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/parser-divergence/summary.json"
+            echo '```'
+            echo '## Resolution divergence'
+            cat "$RUNNER_TEMP/reports/resolution-divergence/summary.txt"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build the history validator and dashboard generator
+        run: |
+          nix develop --command cargo build -p borzoi-stats
+          tar -C target/debug -czf "$RUNNER_TEMP/borzoi-stats.tgz" borzoi-stats
+
+      - name: Upload full measurement reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: measurement-reports-${{ github.sha }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
+      - name: Upload the stats tool for the persistence job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: stats-tool-${{ github.sha }}
+          path: ${{ runner.temp }}/borzoi-stats.tgz
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  persist:
+    name: Persist observations and build Pages
+    needs: measure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Download full measurement reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: measurement-reports-${{ github.sha }}
+          path: ${{ runner.temp }}/reports
+
+      - name: Download the stats tool
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: stats-tool-${{ github.sha }}
+          path: ${{ runner.temp }}
+
+      - name: Unpack the stats tool
+        run: |
+          tar -C "$RUNNER_TEMP" -xpzf "$RUNNER_TEMP/borzoi-stats.tgz"
+          test -x "$RUNNER_TEMP/borzoi-stats"
+
+      - name: Check out or initialise the stats-data branch
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin refs/heads/stats-data >/dev/null
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              git fetch origin refs/heads/stats-data:refs/remotes/origin/stats-data
+              git worktree add -B stats-data "$HISTORY_DIR" refs/remotes/origin/stats-data
+              ;;
+            2)
+              git worktree add --orphan -b stats-data "$HISTORY_DIR"
+              ;;
+            *)
+              echo "Could not determine whether origin/stats-data exists." >&2
+              exit "$status"
+              ;;
+          esac
+
+      - name: Record both observations
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          corpus_revision="$(jq -er '.nodes["fsharp-src"].locked.rev' flake.lock)"
+          flake_lock_hash="$(sha256sum flake.lock | cut -d ' ' -f 1)"
+          measured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          common=(
+            --history "$HISTORY_DIR"
+            --repository "$REPOSITORY"
+            --commit "$COMMIT"
+            --measured-at "$measured_at"
+            --run-id "$RUN_ID"
+            --run-attempt "$RUN_ATTEMPT"
+            --corpus-revision "$corpus_revision"
+            --flake-lock-hash "$flake_lock_hash"
+          )
+          "$RUNNER_TEMP/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/parser-divergence/summary.json" \
+            "${common[@]}"
+          "$RUNNER_TEMP/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/resolution-divergence/summary.json" \
+            "${common[@]}"
+
+      - name: Commit and push the durable observations
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+        run: |
+          git -C "$HISTORY_DIR" config user.name github-actions[bot]
+          git -C "$HISTORY_DIR" config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C "$HISTORY_DIR" add observations
+          if git -C "$HISTORY_DIR" diff --cached --quiet; then
+            echo "The observation already has identical contents."
+            git -C "$HISTORY_DIR" fetch origin refs/heads/stats-data:refs/remotes/origin/stats-data
+            git -C "$HISTORY_DIR" merge --ff-only refs/remotes/origin/stats-data
+          else
+            git -C "$HISTORY_DIR" commit -m "stats: record ${GITHUB_SHA:0:12}"
+            pushed=false
+            for attempt in 1 2 3 4 5; do
+              if git -C "$HISTORY_DIR" push origin HEAD:stats-data; then
+                pushed=true
+                break
+              fi
+              echo "stats-data advanced while publishing; rebasing (attempt $attempt/5)." >&2
+              git -C "$HISTORY_DIR" fetch origin \
+                refs/heads/stats-data:refs/remotes/origin/stats-data
+              if git -C "$HISTORY_DIR" merge-base HEAD refs/remotes/origin/stats-data >/dev/null; then
+                git -C "$HISTORY_DIR" rebase refs/remotes/origin/stats-data
+              else
+                # Two jobs can both observe an absent branch during the first
+                # publication. Replay this root commit over the winner's root.
+                git -C "$HISTORY_DIR" rebase \
+                  --onto refs/remotes/origin/stats-data --root
+              fi
+            done
+            if [[ "$pushed" != true ]]; then
+              echo "Could not publish stats-data after 5 attempts." >&2
+              exit 1
+            fi
+          fi
+
+      - name: Build the dashboard from the published history
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+          SITE_DIR: ${{ runner.temp }}/stats-site
+        run: |
+          "$RUNNER_TEMP/borzoi-stats" site \
+            --history "$HISTORY_DIR" \
+            --output "$SITE_DIR"
+
+      - name: Upload GitHub Pages artifact
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
+        with:
+          path: ${{ runner.temp }}/stats-site
+
+  deploy:
+    name: Deploy measurement dashboard
+    needs: persist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

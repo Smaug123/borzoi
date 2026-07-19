@@ -71,12 +71,21 @@
             # csharp-sidecar, …) is still pruned by falling through to `false`.
             || rel == "tools"
             || rel == "tools/astgen"
-            || lib.hasPrefix "tools/astgen/" rel;
+            || lib.hasPrefix "tools/astgen/" rel
+            # `tools/stats` validates and assembles the durable observation
+            # records published by the main-only statistics workflow.
+            || rel == "tools/stats"
+            || lib.hasPrefix "tools/stats/" rel;
         in
         pkgs.lib.cleanSourceWith {
           src = ./.;
           filter = path: type:
-            (craneLib.filterCargoSources path type) && (repoFilter path type);
+            let
+              rel = lib.removePrefix "${sourceRoot}/" (toString path);
+              cargoSource = craneLib.filterCargoSources path type;
+              statsSite = rel == "tools/stats/src/site/index.html";
+            in
+            (cargoSource || statsSite) && (repoFilter path type);
         };
 
       # `doCheck = false`: the crate build does not run `cargo test`. The
@@ -92,8 +101,8 @@
       # hermeticity over the `nix develop` path, at a large cost. The whole
       # .NET surface would have to re-enter `mkRustSource`
       # (`craneLib.filterCargoSources` keeps only `.rs`/`.toml`, stripping
-      # every `.cs`/`.fs`/`*proj`; all of `tools/` except `tools/astgen` is
-      # excluded outright) — ~30
+      # every `.cs`/`.fs`/`*proj`; only the Cargo workspace members under
+      # `tools/` are retained) — ~30
       # fixture/sidecar projects — plus a writable HOME and an in-sandbox
       # rebuild of the NUGET symlink farm, and every `nix build` would then
       # rerun the full suite. Not worth it while `nix develop` already
