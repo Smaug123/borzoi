@@ -4,9 +4,10 @@
 //! prefer-non-`Deferred` rules as goto-definition), then iterates every file
 //! in the [`ResolvedProject`] and collects ranges whose recorded resolution
 //! is exactly that one ([`Resolution`] is `Copy + PartialEq`). A range in the
-//! label position of an application argument shaped `name = value` is omitted:
-//! without the callee's type, that syntax could be either a named-argument
-//! label or the left operand of an ordinary Boolean equality. For
+//! label position of an application argument shaped `name = value` is omitted
+//! when `name` is a bare identifier: without the callee's type, that syntax
+//! could be either a named-argument label or the left operand of an ordinary
+//! Boolean equality. For
 //! [`Resolution::Local`] only the cursor's file can contain references —
 //! locals are file-scoped by definition — so the iteration short-circuits.
 //!
@@ -325,6 +326,12 @@ fn ambiguous_argument_label_ranges(root: &SyntaxNode) -> HashSet<TextRange> {
         if application.is_infix() {
             continue;
         }
+        // FCS lowers every completed infix expression to a non-infix outer
+        // `App` whose function is the inner infix `App`. Its argument is the
+        // operator's RHS, not a call argument list.
+        if matches!(application.func(), Some(Expr::App(inner)) if inner.is_infix()) {
+            continue;
+        }
         if let Some(argument) = application.arg() {
             collect_ambiguous_argument_labels(&argument, &mut ranges);
         }
@@ -375,5 +382,6 @@ fn ambiguous_argument_label(element: &Expr) -> Option<TextRange> {
     {
         return None;
     }
-    equals.arg().map(|label| label.syntax().text_range())
+    let label = equals.arg()?;
+    matches!(label, Expr::Ident(_)).then(|| label.syntax().text_range())
 }

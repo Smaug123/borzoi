@@ -154,6 +154,70 @@ fn ambiguous_argument_label_is_deferred_from_same_named_value_references() {
 }
 
 #[test]
+fn equality_inside_an_infix_rhs_is_not_an_argument_label() {
+    let src = "let x = 1\nlet y = 2\nlet result = true && (x = y)\n";
+    let (mut state, uri) = orphan_state(src);
+
+    let locs = run(&mut state, &uri, 0, 4, true);
+    assert_eq!(locs.len(), 2, "binder plus the equality use: {locs:#?}");
+    assert!(
+        locs.iter().any(|location| {
+            location.range.start
+                == Position {
+                    line: 2,
+                    character: 22,
+                }
+        }),
+        "the equality's left operand remains a reference: {locs:#?}"
+    );
+}
+
+#[test]
+fn qualified_equality_operand_is_not_an_argument_label() {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("P.fsproj");
+    let a = tmp.path().join("A.fs");
+    let b = tmp.path().join("B.fs");
+    write(
+        &proj,
+        r#"<Project>
+          <ItemGroup>
+            <Compile Include="A.fs" />
+            <Compile Include="B.fs" />
+          </ItemGroup>
+        </Project>"#,
+    );
+    let a_src = "module Lib\nlet x = 1\n";
+    let b_src = "module Use\nlet y = 2\nlet result = id (Lib.x = y)\n";
+    write(&a, a_src);
+    write(&b, b_src);
+
+    let a_uri = Url::from_file_path(&a).unwrap();
+    let b_uri = Url::from_file_path(&b).unwrap();
+    let mut state = State::default();
+    state.docs.insert(a_uri.clone(), a_src.to_string());
+    state.docs.insert(b_uri.clone(), b_src.to_string());
+
+    let locs = run(&mut state, &a_uri, 1, 4, true);
+    assert_eq!(
+        locs.len(),
+        2,
+        "definition plus the qualified equality use: {locs:#?}"
+    );
+    assert!(
+        locs.iter().any(|location| {
+            location.uri == b_uri
+                && location.range.start
+                    == Position {
+                        line: 2,
+                        character: 17,
+                    }
+        }),
+        "the qualified equality operand remains a reference: {locs:#?}"
+    );
+}
+
+#[test]
 fn unresolved_cursor_returns_empty_list_not_none() {
     // `Deferred(UnboundName)` cursor → empty list (the spec answer that
     // clears a stale reference panel cleanly). Critically not `None`.
