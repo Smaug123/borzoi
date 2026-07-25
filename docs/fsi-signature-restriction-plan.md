@@ -576,7 +576,15 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   implementation's flag, and collected inside
   `collect_sig_container_exports`, the one place every container shape
   (named header, namespace-direct module, headerless implicit filename
-  module) meets its decls, so no shape can be missed. Pinned by
+  module) meets its decls, so no shape can be missed — recursively, so a
+  type nested any depth down marks the container it actually sits in.
+  A borrowed marker blocks the rescue when it lies **anywhere at or
+  under** the opened path, since an `open` publishes the module's own
+  names *and* its `[<AutoOpen>]` descendants' (fsc-probed: an auto-open
+  nested module holding an auto-open abbreviation publishes the
+  abbreviated type's statics at the outer `open`). That subtree is
+  exactly the set of names the open can bring, which closes the
+  soundness argument instead of enumerating leak paths. Pinned by
   `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
   `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
   `a_signature_only_auto_open_type_blocks_the_fall_through`; swept

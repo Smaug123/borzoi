@@ -2001,6 +2001,37 @@ fn an_auto_open_type_in_a_signatured_file_blocks_the_fall_through() {
     );
 }
 
+/// Borrowed names reach the open site through the opened module's
+/// **auto-open descendants** too, so the marker that blocks the pre-fold
+/// bump need not sit on the opened path itself: an `[<AutoOpen>]` nested
+/// module holding an `[<AutoOpen>]` abbreviation publishes the abbreviated
+/// type's statics at `open ProbeNs.Shared` (fsc-probed 2026-07-25 — the
+/// bare `asmOnly` type-checks as `string`, i.e. `Target.T.asmOnly`, not the
+/// RefLib's `int`). Any borrowed marker **at or under** the opened path
+/// therefore blocks the rescue, which is what makes the soundness argument
+/// closed: every name an `open` publishes comes from that subtree.
+#[test]
+fn a_borrowed_marker_under_the_opened_path_blocks_the_fall_through() {
+    let sig_and_impl = "module ProbeNs.Shared\n\n[<AutoOpen>]\nmodule Inner =\n\n    [<AutoOpen>]\n    type Alias = Target.T\n";
+    let files = [
+        (
+            "/p/Target.fs",
+            "module Target\n\ntype T =\n    static member asmOnly = \"from-target\"\n",
+        ),
+        ("/p/A.fsi", sig_and_impl),
+        ("/p/A.fs", sig_and_impl),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet v = asmOnly\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "asmOnly"),
+        "a borrowed marker on an auto-open descendant of the opened path",
+    );
+}
+
 /// The signature's `[<AutoOpen>]` verdict is authoritative for **types**
 /// exactly as it is for modules, so the borrowed-name marker cannot be read
 /// off the implementation's attribute alone: fsc-probed 2026-07-25, with
@@ -2992,8 +3023,10 @@ fn accessibility_matrix_agrees_with_fcs() {
 /// abbreviated type's statics / declared members, whose names *are* in the
 /// signature text) × where the `[<AutoOpen>]` **attribute** sits (signature
 /// only — authoritative on its own — implementation only, or both) × the
-/// **container shape** (a named `module ProbeNs.Shared` header vs a
-/// namespace-direct `module Shared`, the two shapes that can collide with
+/// **container shape** (a named `module ProbeNs.Shared` header, a
+/// namespace-direct `module Shared`, or the decls one level down in an
+/// `[<AutoOpen>]` nested module so a borrowed name arrives from *under*
+/// the opened path — the shapes that can collide with
 /// the RefLib; the headerless implicit filename module has no root-level
 /// assembly module to collide with, so it is pinned on the screen itself by
 /// `signature_surface_tests::every_container_shape_reports_its_auto_open_types`)
@@ -3026,7 +3059,7 @@ fn auto_open_type_matrix_agrees_with_fcs() {
             } else {
                 ""
             };
-            for container in ["named", "nsdirect"] {
+            for container in ["named", "nsdirect", "autoopen_nested"] {
                 // The same container path, `ProbeNs.Shared`, reached two ways.
                 let body = |attr: &str, decls: &str| -> String {
                     let indented: String =
@@ -3036,10 +3069,18 @@ fn auto_open_type_matrix_agrees_with_fcs() {
                     } else {
                         "    [<AutoOpen>]\n".to_string()
                     };
-                    if container == "named" {
-                        format!("module ProbeNs.Shared\n\n{attr}{decls}")
-                    } else {
-                        format!("namespace ProbeNs\n\nmodule Shared =\n{attr_line}{indented}")
+                    match container {
+                        "named" => format!("module ProbeNs.Shared\n\n{attr}{decls}"),
+                        "nsdirect" => {
+                            format!("namespace ProbeNs\n\nmodule Shared =\n{attr_line}{indented}")
+                        }
+                        // The decls sit one level down, in an `[<AutoOpen>]`
+                        // nested module: `open ProbeNs.Shared` publishes them
+                        // through the auto-open chain, so a borrowed name
+                        // arrives from *under* the opened path.
+                        _ => format!(
+                            "module ProbeNs.Shared\n\n[<AutoOpen>]\nmodule Inner =\n\n{attr_line}{indented}"
+                        ),
                     }
                 };
                 let (sig_src, impl_src) = match shape {
@@ -3126,8 +3167,8 @@ fn auto_open_type_matrix_agrees_with_fcs() {
          {deferrals} deferrals"
     );
     assert!(
-        assembly_commits >= 2,
+        assembly_commits >= 3,
         "assembly commits: {assembly_commits}"
     );
-    assert!(deferrals >= 24, "deferrals: {deferrals}");
+    assert!(deferrals >= 36, "deferrals: {deferrals}");
 }

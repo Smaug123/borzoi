@@ -1411,17 +1411,27 @@ impl<'a> Resolver<'a> {
                         // expose fall through to the assembly as FCS does
                         // (probed: a sig-`private` or sig-hidden name after
                         // `open` of the signatured module binds the colliding
-                        // assembly member, diagnostics-clean). An opaque marker
-                        // (an active pattern, an alias, … in an unscreened
-                        // fragment) keeps the bump after the fold: the hidden
-                        // name could shadow this open's own assembly entries
-                        // and no screen demotes it per-name.
+                        // assembly member, diagnostics-clean). A borrowed-name
+                        // marker (an active pattern or alias in an unscreened
+                        // fragment, an `[<AutoOpen>]` type anywhere) keeps the
+                        // bump after the fold: the hidden name could shadow this
+                        // open's own assembly entries and no screen demotes it
+                        // per-name. Such a marker counts **anywhere at or under**
+                        // `gp`, because an `open` publishes the module's own
+                        // names *and* its `[<AutoOpen>]` descendants' — the
+                        // subtree is exactly the set of names this open can
+                        // bring, so a clean subtree is what makes the rescue's
+                        // soundness argument closed rather than a list of
+                        // leak paths.
                         let resolved_alias = self.module_aliases.contains_key(gp.as_slice());
                         let project_module_bump = has_project_module
                             && !resolved_alias
                             && self.module_has_hidden_values(gp);
                         let bump_covered_by_screen = project_module_bump
-                            && !self.modules_with_hidden_values.contains(gp.as_slice())
+                            && !self
+                                .modules_with_hidden_values
+                                .iter()
+                                .any(|path| path.starts_with(gp.as_slice()))
                             && !self.preceding.opaque_hidden_value_module(gp);
                         if bump_covered_by_screen {
                             self.open_generation += 1;

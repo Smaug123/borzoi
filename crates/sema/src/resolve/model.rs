@@ -814,11 +814,21 @@ impl ProjectItems {
             .any(|p| opened.starts_with(p.as_slice()))
     }
 
-    /// Whether `mp` carries a hidden-value marker from an **unscreened**
-    /// file (see [`Self::opaque_hidden_value_modules`]): an `open` of it may
-    /// bring value-space names no signature soup demotes per-name.
+    /// Whether `mp` **or anything under it** carries a borrowed-name hidden
+    /// marker (see [`Self::opaque_hidden_value_modules`]): an `open` of `mp`
+    /// may then bring value-space names no signature soup demotes per-name.
+    ///
+    /// The subtree, not the exact path, is the right question: an `open`
+    /// publishes the module's own names *and* those of its `[<AutoOpen>]`
+    /// descendants, so a borrowed marker anywhere below `mp` reaches the same
+    /// reading site (fsc-probed: an auto-open nested module holding an
+    /// auto-open abbreviation publishes the abbreviated type's statics at the
+    /// outer `open`). Every name an `open` can publish comes from this
+    /// subtree, which is what closes the rescue's soundness argument.
     pub(super) fn opaque_hidden_value_module(&self, mp: &[String]) -> bool {
-        self.opaque_hidden_value_modules.contains(mp)
+        self.opaque_hidden_value_modules
+            .iter()
+            .any(|path| path.starts_with(mp))
     }
 
     pub(super) fn sig_screened_path(&self, names: &[String]) -> bool {
