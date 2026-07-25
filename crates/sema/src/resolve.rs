@@ -49,9 +49,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ImplFile, LongIdent, ModuleDecl,
-    ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile, SyntaxNode,
-    SyntaxToken, Type, TypeDefn, TypeDefnRepr,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, LongIdent,
+    ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile,
+    SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr,
 };
 use rowan::TextRange;
 
@@ -200,6 +200,18 @@ pub fn resolve_file(
         for def in binders(&pat, BinderRole::Let) {
             r.own_binder_simple_names
                 .insert(id_text(&def.name).to_string());
+        }
+    }
+    // An `extern` prototype is the one value-namespace binder with no pattern for
+    // the walk above to reach: its name is a `LongIdent`, and the decl arm
+    // deliberately does not intern it as a usable value. Both halves of the
+    // fallback's "not a value" evidence therefore miss it, so it is added to the
+    // same oracle directly — otherwise `open Demo; extern int Thing(int x);
+    // Thing 1` would name the opened `Demo.Thing` where F# binds the prototype.
+    for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {
+        if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
+            r.own_binder_simple_names
+                .insert(id_text(last.text()).to_string());
         }
     }
     // The top-level value scope is *per container*, not one shared base frame: F#

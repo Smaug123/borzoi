@@ -625,7 +625,12 @@ fn bare_constructor_defers_when_shadowed_or_not_constructible() {
     //     barrier) is one FCS still binds;
     //   - a *provisional* uppercase parameter `(Thing: int)` binds the RHS `Thing`
     //     in FCS, though the resolution pass drops the would-be binder so `lookup`
-    //     misses — the binder-name pre-scan still sees it.
+    //     misses — the binder-name pre-scan still sees it;
+    //   - an `extern` prototype, which has no pattern for the binder walk and is
+    //     deliberately never interned, so the pre-scan reads its name directly.
+    // `resolve_assembly_diff`'s `bare_constructor_fallback_is_sound_under_every_
+    // shadowing_declaration` sweeps these forms against FCS systematically; these
+    // arms pin the specific channels without needing the oracle.
     let env = fixture_env();
     for src in [
         "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
@@ -633,6 +638,7 @@ fn bare_constructor_defers_when_shadowed_or_not_constructible() {
         "open Demo\nlet x = GenericBase ()\n",
         "module M\nopen Demo\nlet Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P\nlet y = Thing ()\n",
         "module M\nopen Demo\nlet f (Thing: int) = Thing\n",
+        "module M\nopen Demo\nextern int Thing(int x)\nlet y = Thing 1\n",
     ] {
         let rf = resolve(src, &env);
         assert!(

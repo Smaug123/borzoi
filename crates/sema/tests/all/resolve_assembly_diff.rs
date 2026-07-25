@@ -16,9 +16,12 @@
 use crate::common::{
     ensure_assembly_fixture_built, invoke_fcs_dump_with_refs, parse_fcs_uses, temp_fs_file,
 };
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
 use rowan::TextRange;
 
@@ -287,6 +290,11 @@ fn assembly_resolution_is_sound_across_the_tier_surface() {
         "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
         "open Demo\nlet x = Pair<int> ()\n",
         "open Demo\nlet x = Calc ()\n", // static class → no bare constructor
+        // An `extern` prototype introduces a module-level *value* `Thing` that
+        // shadows the opened `Demo.Thing`, but is deliberately not interned as a
+        // usable binder and has no pattern to reach the binder-name pre-scan —
+        // so the value-frame miss there is conservative, not a genuine unbound.
+        "module M\nopen Demo\nextern int Thing(int x)\nlet y = Thing 1\n",
     ];
     for src in cases {
         let (agreed, total) = sweep_sound(src);
@@ -337,6 +345,93 @@ fn bare_constructor_fallback_is_sound_over_every_demo_type() {
     assert!(
         total_agreed >= 4,
         "the constructor fallback resolved nothing — the sweep is vacuous"
+    );
+}
+
+/// Every in-file **declaration form** that introduces a name colliding with the
+/// opened `Demo.Thing`, crossed with every bare-`Thing` use position, checked
+/// certain-implies-exact against FCS ([`sweep_sound`]).
+///
+/// This is the sibling axis to [`bare_constructor_fallback_is_sound_over_every_demo_type`]:
+/// that one sweeps *which assembly types* are constructible, this one sweeps
+/// *which project declarations shadow them*. It exists because the fallback's
+/// precondition — "the value frame missed, so the name is unbound" — is only
+/// **conservative**: `lookup` also misses names F# genuinely binds (a `let` the
+/// generation barrier staled, a provisional uppercase parameter, an `extern`
+/// prototype that is deliberately never interned). Each such declaration form is
+/// a separate channel, and the channels are not derivable from the code the
+/// fallback can see, so enumerating the *syntax* and letting FCS adjudicate is
+/// the only way to know the veto covers them all. A newly-modelled declaration
+/// form is probed here automatically once added to `FORMS`.
+#[test]
+fn bare_constructor_fallback_is_sound_under_every_shadowing_declaration() {
+    // Each entry declares something named `Thing` in the same file as `open Demo`.
+    const FORMS: &[&str] = &[
+        "let Thing = 1",
+        "let Thing () = 1",
+        "let inline Thing x = x",
+        "let mutable Thing = 1",
+        "[<Literal>]\nlet Thing = 1",
+        "let rec Thing x = Thing x",
+        "extern int Thing(int x)",
+        "exception Thing of int",
+        "type U =\n    | Thing of int",
+        "type U =\n    | Thing",
+        "module Thing =\n    let x = 1",
+        "type Thing() = class end",
+        "type Thing = int",
+        "let (|Thing|_|) x = None",
+        // A *provisional* uppercase parameter: FCS binds the RHS `Thing`, but the
+        // resolution pass drops the would-be binder, so `lookup` misses.
+        "let f (Thing: int) = Thing",
+        // The staled-head channel: an intervening open raises the generation
+        // barrier, so the earlier `Thing` binder is staled out of the value frame.
+        "let Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P",
+    ];
+    // The bare-`Thing` use positions the fallback can reach.
+    const USES: &[&str] = &["let y = Thing 1", "let y = Thing ()", "let y = Thing"];
+
+    // Control: with no shadowing declaration the fallback *must* resolve, or every
+    // "deferred, therefore sound" verdict below would hold vacuously (a disabled
+    // fallback passes the whole sweep).
+    let (agreed, _) = sweep_sound("module M\nopen Demo\nlet y = Thing ()\n");
+    assert_eq!(
+        agreed, 1,
+        "unshadowed control must resolve — otherwise the shadow sweep is vacuous"
+    );
+
+    // Collect every violation rather than stopping at the first: the point of the
+    // sweep is the *worklist* of unguarded channels, not one example of one.
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for form in FORMS {
+        for use_site in USES {
+            let src = format!("module M\nopen Demo\n{form}\n{use_site}\n");
+            let guard = silence_panics_here();
+            let outcome = catch_unwind(AssertUnwindSafe(|| sweep_sound(&src)));
+            drop(guard);
+            match outcome {
+                Ok((agreed, total)) => eprintln!("[shadow-sweep] {agreed}/{total} {src:?}"),
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                        .unwrap_or_else(|| "<non-string panic>".to_string());
+                    eprintln!("[shadow-sweep] UNSOUND {src:?}");
+                    failures.push((src, msg));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the constructor fallback wrong-targets under {} shadowing declaration(s):\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(src, msg)| format!("  {src:?}\n    {msg}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 

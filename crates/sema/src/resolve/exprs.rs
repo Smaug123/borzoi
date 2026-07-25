@@ -836,11 +836,15 @@ impl<'a> Resolver<'a> {
     ///   crux, since `lookup` returns `None` for names FCS still binds as values.
     ///   Two channels cover that, both invisible to `decide_type_path` (type
     ///   position): [`own_binder_simple_names`](Self::own_binder_simple_names) — the
-    ///   file's whole binder-name set, so a would-be-shadowed local or a
-    ///   *provisional* uppercase parameter (`let f (Thing: int) = Thing`) FCS binds
-    ///   but `lookup` dropped defers rather than naming the opened type — and
-    ///   [`head_entry_staled`](Self::head_entry_staled), a staled *opened* value
-    ///   (which is not a file binder);
+    ///   file's whole value-binder name set, so a would-be-shadowed local, a
+    ///   *provisional* uppercase parameter (`let f (Thing: int) = Thing`), or an
+    ///   `extern` prototype (`extern int Thing(int x)`, which is never interned) —
+    ///   each of which FCS binds but `lookup` misses — defers rather than naming
+    ///   the opened type — and [`head_entry_staled`](Self::head_entry_staled), a
+    ///   staled *opened* value (which is not a file binder). The sweep
+    ///   `bare_constructor_fallback_is_sound_under_every_shadowing_declaration`
+    ///   adjudicates every declaration form against FCS, so a binder form that
+    ///   escapes both channels is caught by the machine, not by review;
     /// - the leaf must be a bare-expression-constructible class
     ///   ([`AssemblyEnv::bare_expr_constructible`]): a static class, union, record,
     ///   abbreviation, or generic type is not, so it defers.

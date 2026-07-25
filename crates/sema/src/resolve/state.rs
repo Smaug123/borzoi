@@ -1029,10 +1029,12 @@ pub(super) struct Resolver<'a> {
     /// Over-approximate (an augmentation target counts too) — sound, since a
     /// spurious match only defers.
     pub(super) own_type_simple_names: HashSet<String>,
-    /// Every **value binder** simple name introduced by a pattern anywhere in the
-    /// file — pre-scanned file-globally (like [`Self::own_type_simple_names`]) from
-    /// the resolution-independent [`binders`](crate::binders) walk, *before* its
-    /// provisional/interning drops. The expression-constructor fallback
+    /// Every **value binder** simple name introduced anywhere in the file —
+    /// pre-scanned file-globally (like [`Self::own_type_simple_names`]) from the
+    /// resolution-independent [`binders`](crate::binders) walk over every pattern,
+    /// *before* its provisional/interning drops, plus each `extern` prototype's
+    /// name (the one value binder that has no pattern to walk, and which the decl
+    /// arm deliberately never interns). The expression-constructor fallback
     /// ([`Resolver::opened_constructor_target`]) consults it: the value-frame
     /// [`lookup`](Self::lookup) is deliberately conservative and returns `None` for
     /// names a binder still owns — a provisional uppercase parameter (`let f
