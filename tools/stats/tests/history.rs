@@ -427,6 +427,23 @@ fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
             "project",
             json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "./A/A.fsproj")] }),
         ),
+        // The workflow joins these with the path-list separator and the runner
+        // splits them again, so a separator inside a pin arrives as two
+        // fragments that name nothing.
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A:B/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A;B/A.fsproj")] }),
+        ),
+        // `owner/repo` and `owner/repo.git` clone one repository under two
+        // names, so both pins survive and the project is measured twice.
+        (
+            ".git",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A.git", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
         (
             "two revisions",
             json!({ "schema_version": 1, "projects": [good.clone(), pin("Smaug123/A", &"b".repeat(40), "A/Other.fsproj")] }),

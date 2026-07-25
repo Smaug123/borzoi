@@ -1870,13 +1870,29 @@ struct CorpusProjectCounts {
     visited: usize,
     comparable: usize,
     skipped: usize,
-    skipped_basis_points: Option<u64>,
+    /// Never `Option`. See [`defined_ratio`].
+    skipped_basis_points: u64,
     discovery_errors: usize,
 }
 
 #[derive(Debug, Serialize)]
 struct CorpusCoverageBasisPoints {
-    basis_points: Option<u64>,
+    /// Never `Option`. See [`defined_ratio`].
+    basis_points: u64,
+}
+
+/// A ratio for `statistics`, where an undefined one (an empty denominator)
+/// must still be a number.
+///
+/// `null` is exactly as bad as an absent key here: the dashboard plots one
+/// metric per nested *number*, so it ignores nulls too, skips the observation,
+/// and leaves the previous point reading as "Latest" — a run that measured
+/// nothing would masquerade as the last run that measured something. `0` is
+/// not ambiguous in context because the denominator is emitted beside every
+/// ratio (`uses.total_considered`, `projects.visited`), so "0 of 0" is
+/// distinguishable from "0 of many" by anyone reading the series.
+fn defined_ratio(ratio: Option<u64>) -> u64 {
+    ratio.unwrap_or(0)
 }
 
 #[derive(Debug, Serialize)]
@@ -1923,7 +1939,7 @@ pub fn render_generator_summary(
                 visited: summary.projects_visited,
                 comparable: summary.comparable_projects,
                 skipped: summary.skipped_projects.len(),
-                skipped_basis_points: summary.skipped_projects_basis_points(),
+                skipped_basis_points: defined_ratio(summary.skipped_projects_basis_points()),
                 discovery_errors: summary.project_discovery_errors.len(),
             },
             files_compared: summary.files_compared,
@@ -1950,7 +1966,7 @@ pub fn render_generator_summary(
                 total: summary.total_divergences(),
             },
             coverage: CorpusCoverageBasisPoints {
-                basis_points: summary.coverage_basis_points(),
+                basis_points: defined_ratio(summary.coverage_basis_points()),
             },
             skipped_uses: CorpusSkippedUsesCounts {
                 definitions: summary.skipped_uses.definitions,
@@ -4401,6 +4417,59 @@ mod tests {
 
         // A list and a walk are never the same series, whatever the knobs.
         assert_ne!(render(&listed), walked);
+    }
+
+    /// Every leaf of `statistics` must be a number, on every run, whatever the
+    /// input. A `null` is exactly as invisible to the dashboard as a missing
+    /// key: it plots one metric per nested *number*, so either way the
+    /// observation is skipped and the previous point still reads as "Latest" —
+    /// a run that measured nothing masquerading as the last one that did.
+    ///
+    /// This walks the whole rendered tree rather than naming the fields it
+    /// knows about, because the failure it guards against is precisely a field
+    /// nobody thought to name: the sparse-map version of this bug was fixed
+    /// one release earlier while two `Option` ratios went on serialising as
+    /// `null`.
+    #[test]
+    fn no_statistic_is_ever_null_however_empty_the_run() {
+        fn assert_all_numbers(value: &serde_json::Value, path: &str) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    for (key, child) in fields {
+                        assert_all_numbers(child, &format!("{path}.{key}"));
+                    }
+                }
+                serde_json::Value::Number(_) => {}
+                other => panic!(
+                    "statistics{path} is {other}, not a number — the dashboard \
+                     skips the observation and the previous value reads as latest"
+                ),
+            }
+        }
+
+        // The degenerate run: comparable, but with nothing to divide by, which
+        // is what sends every ratio down its `None` branch.
+        let mut empty = CorpusSummary::new(0);
+        empty.record_comparison(&Comparison::default());
+        assert_eq!(empty.coverage_basis_points(), None);
+        assert_eq!(empty.skipped_projects_basis_points(), None);
+
+        for summary in [&empty, &{
+            let mut populated = CorpusSummary::new(1);
+            populated.record_project_visited();
+            populated.record_comparison(&Comparison {
+                uses_considered: 3,
+                matches: 1,
+                ..Comparison::default()
+            });
+            populated
+        }] {
+            let json: serde_json::Value = serde_json::from_str(
+                &render_generator_summary(summary, &generator_settings()).expect("render"),
+            )
+            .expect("valid JSON");
+            assert_all_numbers(&json["statistics"], "");
+        }
     }
 
     /// A metric that disappears when its count reaches zero reads, on the

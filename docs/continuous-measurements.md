@@ -76,17 +76,28 @@ embeds a path or an oracle error mints a fresh metric per run and none of them
 are comparable. Keep those in the report artifact and put closed enumerations
 (asset status, error kind) in `statistics`.
 
-**Emit the same keys every run.** A metric is not merely a number; it is a
-number that is *always there*. The dashboard skips observations whose value is
-absent, so a key that disappears when its count falls to zero leaves the older,
-nonzero point showing as "Latest" — a fixed problem still reading as broken,
-which is the exact failure this workflow exists to catch. A closed enumeration
-emitted sparsely is an open one: iterate the variants and emit zeros, never
-`counts.iter().map(…).collect()` over the observed ones. Nothing in the
-recorder can check this, because a summary with a missing key is
-indistinguishable from a measurement that genuinely has fewer metrics; the
-generator has to be exhaustive by construction. `borzoi-corpus-diff`'s
-`every_asset_status_is_a_metric_even_at_zero` pins that for the asset statuses.
+**Every key, every run, always a number.** A metric is not merely a number; it
+is a number that is *always there*. The dashboard plots one metric per nested
+*number*, so it ignores a `null` exactly as it ignores an absent key: either
+way the observation is skipped and the previous point still reads as "Latest",
+which means a run that measured nothing masquerades as the last run that
+measured something — the precise failure this workflow exists to catch. Two
+ways to breach it, and they are the same bug:
+
+- *A sparse map.* A closed enumeration emitted only for the variants that
+  occurred is an open one. Iterate the variants and emit zeros; never
+  `counts.iter().map(…).collect()` over the observed ones.
+- *A nullable field.* An `Option` ratio serialises as `null` the moment its
+  denominator is empty. Emit a defined value instead — `0` is unambiguous
+  because the denominator is emitted beside it, so "0 of 0" stays
+  distinguishable from "0 of many".
+
+Nothing in the recorder can enforce this: a summary with a missing key is
+indistinguishable from a measurement that genuinely has fewer metrics, so the
+generator has to be exhaustive by construction. `borzoi-corpus-diff` guards it
+with `no_statistic_is_ever_null_however_empty_the_run`, which walks the whole
+rendered tree on a deliberately degenerate run rather than naming the fields it
+knows about — the field nobody thought to name is exactly the one that breaks.
 
 ## Two corpora
 
@@ -121,6 +132,15 @@ bump deliberately rather than routinely.
 
 A candidate project must restore under the pinned SDK and be worth measuring:
 multi-file, with imported-assembly uses.
+
+A pin must have exactly **one spelling**. Duplicate detection compares pins
+literally, so any second way to write the same project survives as a separate
+pin, gets its own checkout, and is measured twice — doubling every count it
+contributes while the job's comparable-count assertion still passes.
+`borzoi-stats corpus` therefore refuses `.`/`..` components, a `.git` suffix on
+the repository (`owner/repo` and `owner/repo.git` are one repository), and the
+path-list separators `:` and `;`, which the workflow uses to hand the project
+list to the runner.
 
 **Take the repository and revision from the project's own remote**, not from a
 name that looks right. Forks abound, and a fork's default branch can sit years

@@ -254,6 +254,20 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
                 pin.repository
             ));
         }
+        // `owner/repo` and `owner/repo.git` clone the same repository, but the
+        // duplicate and revision checks below compare these strings literally,
+        // so both spellings survive as separate pins, get separate checkout
+        // directories, and measure one project twice — doubling every count it
+        // contributes while the workflow's comparable-count assertion still
+        // passes. GitHub repository names cannot end in `.git`, so refusing
+        // costs nothing.
+        if pin.repository.ends_with(".git") {
+            return invalid(format!(
+                "project corpus repository must not carry a `.git` suffix, which aliases the \
+                 same repository under a second spelling, got {:?}",
+                pin.repository
+            ));
+        }
         validate_hex("project corpus revision", &pin.revision, 40)?;
         if !valid_relative_project_path(&pin.project) {
             return invalid(format!(
@@ -299,12 +313,21 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
 /// reported as a healthy one. Traversal components are therefore rejected
 /// rather than normalised: no pin has any reason to contain one, so refusing
 /// is both simpler and louder than rewriting.
+///
+/// It must also survive the journey to the runner intact. The workflow joins
+/// these paths with the platform path-list separator and
+/// `BORZOI_PROJECT_LIST` splits them with [`std::env::split_paths`], so a path
+/// containing `:` — legal on Linux — would arrive as two nonexistent
+/// fragments. Both separators are refused, not just the host's, since the pin
+/// file is read on whichever machine runs the measurement.
 fn valid_relative_project_path(value: &str) -> bool {
     !value.is_empty()
         && value.ends_with(".fsproj")
         && !value.starts_with('/')
         && !value.contains('\\')
         && !value.contains("//")
+        && !value.contains(':')
+        && !value.contains(';')
         && !value.bytes().any(|byte| byte.is_ascii_whitespace())
         && !value.bytes().any(|byte| byte.is_ascii_control())
         && value
