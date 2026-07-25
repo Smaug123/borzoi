@@ -1858,7 +1858,7 @@ impl AssemblyEnv {
         }
         // Position-blind: an attribute-path segment can be a head a module
         // roots, so module-only matches count.
-        self.manifest_auto_open_module_could_supply_entity_named(name, false)
+        self.manifest_auto_open_module_could_supply_entity_named(name, None)
     }
 
     /// Whether a **module/type-shaped manifest auto-open surface**
@@ -1879,13 +1879,17 @@ impl AssemblyEnv {
     /// the BCL also declares) and which would defer legitimate commitments
     /// wholesale.
     ///
-    /// `usable_in_type_position` narrows the match to what could bind the
-    /// query's position: a nested *module* is a bare-visible dotted head but
-    /// can never bind TYPE position, so a single-segment type annotation
-    /// passes `true` and skips module-only matches (FCS falls through to a
-    /// lower-priority type of the name — fsi-verified against a
-    /// global-namespace decoy) while a dotted path's head — which a module
-    /// *can* root — passes `false` and counts any child.
+    /// `type_position_arity` narrows the match to what could bind the
+    /// query's position. `Some(arity)` is a single-segment TYPE-position
+    /// name with its written generic arity: a nested *module* is a
+    /// bare-visible dotted head but can never bind type position, so
+    /// module-only matches are skipped, and FCS keys the lookup on arity, so
+    /// an arity-mismatched type does not contest either (both fsi-verified —
+    /// the global-namespace decoy wins for bare `DirectHeadOnly` and bare
+    /// `DirectArity` alike; codex P2s, rounds 2 and 4). `None` is a dotted
+    /// path's head or a position-blind attribute segment — a module *can*
+    /// root those, and an enclosing type is arity-keyed at 0 regardless of
+    /// what is written, so any child counts, arity-blind.
     ///
     /// Per-surface uncertainty is folded in, name-blind: a dropped type in
     /// the target's owning namespace could be a descendant of the target of
@@ -1896,13 +1900,13 @@ impl AssemblyEnv {
     pub(crate) fn manifest_auto_open_module_could_supply_entity_named(
         &self,
         name: &str,
-        usable_in_type_position: bool,
+        type_position_arity: Option<usize>,
     ) -> bool {
         self.auto_open_module_handles.iter().any(|&h| {
             let owning = &self.nodes[h.index()].owning_namespace;
             self.namespace_has_dropped_type(owning)
                 || self.unknowable_abbreviations_in_namespace(owning)
-                || self.module_open_surface_has_entity_named(h, name, usable_in_type_position)
+                || self.module_open_surface_has_entity_named(h, name, type_position_arity)
         })
     }
 
@@ -1911,10 +1915,18 @@ impl AssemblyEnv {
     /// bare-visible; a nested module is a bare-visible dotted head), matched
     /// by source (else IL) name, plus — FCS opens `[<AutoOpen>]` submodules
     /// recursively — the surface of each public auto-open child module. With
-    /// `types_only`, a module child matches only through that recursion,
-    /// never by its own name (see
-    /// [`Self::manifest_auto_open_module_could_supply_entity_named`]'s
-    /// `usable_in_type_position`).
+    /// `type_position_arity` set, a module child matches only through that
+    /// recursion, never by its own name, and a type child must also carry
+    /// the written arity (see
+    /// [`Self::manifest_auto_open_module_could_supply_entity_named`]).
+    ///
+    /// Both narrowings trust the projection, so a child of a
+    /// **non-authoritative** F# signature
+    /// ([`Self::fsharp_signature_unreliable`]) gets neither: its `Module`
+    /// kind is an IL heuristic FCS does not share (FCS imports the entity as
+    /// a plain type, which CAN bind type position — `entity_class` declines
+    /// the same bit), so it matches by name alone, in any position, at any
+    /// arity (codex P2, round 4). Over-matching only defers.
     ///
     /// Deliberately the *imported surface*, not the whole tree: a private
     /// child can never be named cross-assembly (FSharp.Core's auto-open
@@ -1929,19 +1941,34 @@ impl AssemblyEnv {
         &self,
         handle: EntityHandle,
         name: &str,
-        types_only: bool,
+        type_position_arity: Option<usize>,
     ) -> bool {
         self.children(handle).iter().any(|&child| {
             if !self.is_public(child) {
                 return false;
             }
             let e = self.entity(child);
+            if self.fsharp_signature_unreliable(child) {
+                return self.entity_source_name(child) == name
+                    || (e.kind == EntityKind::Module
+                        && e.is_auto_open
+                        && self.module_open_surface_has_entity_named(
+                            child,
+                            name,
+                            type_position_arity,
+                        ));
+            }
             if e.kind == EntityKind::Module {
-                (!types_only && self.entity_source_name(child) == name)
+                (type_position_arity.is_none() && self.entity_source_name(child) == name)
                     || (e.is_auto_open
-                        && self.module_open_surface_has_entity_named(child, name, types_only))
+                        && self.module_open_surface_has_entity_named(
+                            child,
+                            name,
+                            type_position_arity,
+                        ))
             } else {
                 self.entity_source_name(child) == name
+                    && type_position_arity.is_none_or(|arity| e.generic_parameters.len() == arity)
             }
         })
     }
@@ -6459,15 +6486,15 @@ mod from_views_tests {
         let view = ConfigView::new("Lib", vec![target], &["A.M"]);
         let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
         assert!(
-            env.manifest_auto_open_module_could_supply_entity_named("C", true),
+            env.manifest_auto_open_module_could_supply_entity_named("C", Some(0)),
             "the auto-opened module's nested type name could be supplied bare"
         );
         assert!(
-            !env.manifest_auto_open_module_could_supply_entity_named("D", false),
+            !env.manifest_auto_open_module_could_supply_entity_named("D", None),
             "a name the module's tree does not declare cannot be supplied"
         );
         assert!(
-            !env.manifest_auto_open_module_could_supply_entity_named("M", false),
+            !env.manifest_auto_open_module_could_supply_entity_named("M", None),
             "opening a module introduces its contents, not its own name"
         );
 
@@ -6489,7 +6516,7 @@ mod from_views_tests {
             "control: the coarse veto does fold the contested namespace's own type"
         );
         assert!(
-            !cenv.manifest_auto_open_module_could_supply_entity_named("X", false),
+            !cenv.manifest_auto_open_module_could_supply_entity_named("X", None),
             "the module-only query must not fold contested namespace opens"
         );
     }
@@ -6528,25 +6555,74 @@ mod from_views_tests {
         let view = ConfigView::new("Lib", vec![target], &["A.M"]);
         let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
         assert!(
-            !env.manifest_auto_open_module_could_supply_entity_named("Hidden", false),
+            !env.manifest_auto_open_module_could_supply_entity_named("Hidden", None),
             "a private child is not imported"
         );
         assert!(
-            env.manifest_auto_open_module_could_supply_entity_named("PlainSub", false),
+            env.manifest_auto_open_module_could_supply_entity_named("PlainSub", None),
             "a public submodule is a bare-visible dotted head"
         );
         assert!(
-            !env.manifest_auto_open_module_could_supply_entity_named("PlainSub", true),
+            !env.manifest_auto_open_module_could_supply_entity_named("PlainSub", Some(0)),
             "a module cannot bind type position — a module-only match must not \
              veto a single-segment type path (codex P2, round 2)"
         );
         assert!(
-            !env.manifest_auto_open_module_could_supply_entity_named("Qualified", false),
+            !env.manifest_auto_open_module_could_supply_entity_named("Qualified", None),
             "a plain submodule's contents are not bare-visible"
         );
         assert!(
-            env.manifest_auto_open_module_could_supply_entity_named("Transitive", true),
+            env.manifest_auto_open_module_could_supply_entity_named("Transitive", Some(0)),
             "an [<AutoOpen>] submodule is opened recursively with its parent"
+        );
+    }
+
+    /// Type-position matches are arity-keyed (codex round 4, fsi-verified:
+    /// bare `DirectArity` binds the non-generic global decoy while
+    /// `DirectArity<int>` binds the surface's generic type), and a
+    /// **non-authoritative** signature's `Module` kind is an IL heuristic
+    /// FCS imports as a plain type — neither the module-only exclusion nor
+    /// the arity key may trust it.
+    #[test]
+    fn manifest_module_shadow_query_is_arity_keyed_and_authority_aware() {
+        let generic = Entity {
+            kind: EntityKind::Class,
+            generic_parameters: vec![type_parameter(0)],
+            ..module_entity("Lib", &["A"], "Gen")
+        };
+        let target = Entity {
+            nested_types: vec![generic],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named("Gen", Some(0)),
+            "an arity-1 surface type does not contest a bare (arity-0) annotation"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("Gen", Some(1)),
+            "the same type contests the written arity 1"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named("Gen", None),
+            "a dotted head / attribute segment stays arity-blind"
+        );
+
+        // Non-authoritative: the module-only exclusion must not trust the
+        // heuristic kind — FCS imports the child as a plain type, which CAN
+        // bind type position.
+        let sub = module_entity("Lib", &["A"], "Sub");
+        let na_target = Entity {
+            nested_types: vec![sub],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let mut na_view = ConfigView::new("Lib", vec![na_target], &["A.M"]);
+        na_view.signature_non_authoritative = true;
+        let na_env = AssemblyEnv::from_views(std::slice::from_ref(&na_view)).expect("build env");
+        assert!(
+            na_env.manifest_auto_open_module_could_supply_entity_named("Sub", Some(0)),
+            "a heuristic Module child may be a plain type to FCS — it must contest type position"
         );
     }
 
@@ -6559,7 +6635,7 @@ mod from_views_tests {
         view.dropped_fqns = vec!["A.M/Inner".to_string()];
         let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
         assert!(
-            env.manifest_auto_open_module_could_supply_entity_named("Anything", true),
+            env.manifest_auto_open_module_could_supply_entity_named("Anything", Some(0)),
             "a dropped descendant hides a possible nested type of any name"
         );
 
@@ -6567,7 +6643,7 @@ mod from_views_tests {
         let clean = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &["A.M"]);
         let clean_env = AssemblyEnv::from_views(std::slice::from_ref(&clean)).expect("build env");
         assert!(
-            !clean_env.manifest_auto_open_module_could_supply_entity_named("Anything", true),
+            !clean_env.manifest_auto_open_module_could_supply_entity_named("Anything", Some(0)),
             "with no drop, the empty module tree supplies nothing"
         );
     }

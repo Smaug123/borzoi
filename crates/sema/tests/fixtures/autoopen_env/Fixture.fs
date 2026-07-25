@@ -292,6 +292,13 @@ module DirectOps =
     module DirectHeadOnly =
         let headOnlyInner () = 6
 
+    // A GENERIC nested type: FCS keys bare-annotation lookup on arity, so
+    // `x: DirectArity` falls through to the non-generic global-namespace
+    // type below while `x: DirectArity<int>` binds THIS one (fsi-verified)
+    // — the shadow surface match must compare the written arity.
+    type DirectArity<'T>() =
+        member _.Marker = 8
+
 // A namespace with a type sharing the auto-opened module's nested-type name:
 // an explicit `open SemaAutoOpen.ExplicitBeats` is applied AFTER the manifest
 // open, so latest-open-wins binds bare `DirectShadow` HERE (fsi-verified) —
@@ -712,3 +719,10 @@ type DirectPrivate() =
 // type path.
 type DirectHeadOnly() =
     member _.Decoy = 5
+
+// The arity decoy: non-generic, so a bare `DirectArity` annotation binds THIS
+// one (FCS keys the lookup on arity; the surface's generic `DirectArity<'T>`
+// does not contest it — fsi-verified) while `DirectArity<int>` binds the
+// surface's.
+type DirectArity() =
+    member _.Decoy = 6

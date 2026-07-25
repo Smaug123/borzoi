@@ -1400,18 +1400,27 @@ impl<'a> Resolver<'a> {
         // (both directions fsi-verified against `namespace global` /
         // `open SemaAutoOpen.ExplicitBeats` decoys). Only the HEAD is
         // contestable — it is where a bare or dotted path roots — and a
-        // module-only surface match cannot contest a single-segment path (a
-        // module never binds type position; FCS falls through). So when the
-        // surface could supply the head, walk ONLY the explicit-open
-        // readings: a complete reading there outranks the surface and
-        // commits; anything less — a partial (FCS prefers a complete reading
-        // even at lower priority, and the surface may hold one), a shadow, a
-        // no-match — defers rather than let a lower tier commit a wrong
-        // target. Deferral-only below the explicit tier: never a new
-        // resolution.
+        // single-segment path is contested only by what could bind type
+        // position at the written arity (a module never binds it, and FCS
+        // keys the lookup on arity; both fsi-verified). So when the surface
+        // could supply the head, walk ONLY the explicit-open readings: a
+        // complete reading there outranks the surface and commits; anything
+        // less — a partial (FCS prefers a complete reading even at lower
+        // priority, and the surface may hold one), a shadow, a no-match —
+        // defers rather than let a lower tier commit a wrong target.
+        // Deferral-only below the explicit tier: never a new resolution.
+        // One modelled-away ordering within that stratum (codex round 4): a
+        // namespace-shaped AutoOpen attribute LATER in the combined manifest
+        // order than the module-shaped one outranks the surface in FCS, but
+        // `auto_open_module_handles` keeps no position, so its reading is
+        // not walked and such a name defers — sound, and reachable only when
+        // an interleaved manifest supplies one name from both shapes.
         if names.first().is_some_and(|head| {
             self.assemblies
-                .manifest_auto_open_module_could_supply_entity_named(head, names.len() == 1)
+                .manifest_auto_open_module_could_supply_entity_named(
+                    head,
+                    (names.len() == 1).then_some(arity),
+                )
         }) {
             return match self.resolve_assembly_path_over(
                 self.explicit_open_reading_prefixes(),

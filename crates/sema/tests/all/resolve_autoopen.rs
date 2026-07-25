@@ -840,6 +840,41 @@ fn a_module_only_surface_match_does_not_veto_a_single_segment_type_path() {
 }
 
 #[test]
+fn an_arity_mismatched_surface_type_does_not_veto_a_bare_annotation() {
+    // `DirectOps` nests `DirectArity<'T>`; the global namespace declares a
+    // NON-generic `DirectArity`. FCS keys the bare-annotation lookup on
+    // arity, so `x: DirectArity` falls through to the global type
+    // (fsi-verified) — the surface match must compare the written arity
+    // (codex P2, round 4).
+    let env = fixture_env();
+    let src = "let f (x: DirectArity) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectArity", 0)
+        .expect("fixture must declare a global-namespace DirectArity");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectArity")),
+        Some(Resolution::Entity(root)),
+        "an arity-mismatched surface type must not defer the bare annotation"
+    );
+}
+
+#[test]
+fn an_arity_matched_surface_type_still_defers_the_applied_annotation() {
+    // The control: `x: DirectArity<int>` matches the surface type's arity,
+    // and FCS binds the auto-opened `DirectOps.DirectArity<'T>` over any
+    // lower tier (fsi-verified) — the written arity 1 must defer.
+    let env = fixture_env();
+    let src = "let f (x: DirectArity<int>) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectArity")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an arity-matched surface type must still defer the applied annotation"
+    );
+}
+
+#[test]
 fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
     // Over-defer control: `GlobalPlain` appears in no auto-open module's
     // tree, so the manifest-module shadow check must not touch it — it keeps
