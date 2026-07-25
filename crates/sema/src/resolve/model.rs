@@ -662,6 +662,33 @@ impl ProjectItems {
     /// fragment's own member: the auto-open fold folds each `[<AutoOpen>]`
     /// fragment's members at *its* file, so it must read the export declared
     /// *there*, not the collapsed latest.
+    /// Whether **any** preceding project file exports a value named `name` in a
+    /// container that is bare-visible here: the enclosing `namespace` (whose
+    /// direct union/exception cases F# makes bare without an `open`) or the root.
+    ///
+    /// The project-side arm of the constructor fallback's "is this name a value?"
+    /// question. `lookup` does not materialise a *namespace-direct* case from an
+    /// earlier file into the value frame, and `decide_type_path` ignores values by
+    /// design, so neither sees this. Deferral-only, so matching too eagerly is
+    /// sound: the check is by simple name, ignoring accessibility and shadowing.
+    pub(super) fn namespace_exports_value_named(&self, namespace: &[String], name: &str) -> bool {
+        let mut container = namespace.to_vec();
+        loop {
+            let mut path = container.clone();
+            path.push(name.to_string());
+            if self
+                .value_exports
+                .get(&path[..])
+                .is_some_and(|history| !history.is_empty())
+            {
+                return true;
+            }
+            if container.pop().is_none() {
+                return false;
+            }
+        }
+    }
+
     fn latest_accessible_in_file(
         &self,
         path: &[String],

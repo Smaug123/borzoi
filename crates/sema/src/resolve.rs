@@ -51,7 +51,7 @@ use std::sync::Arc;
 use borzoi_cst::syntax::{
     ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, LongIdent,
     ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile,
-    SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr,
+    SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
 };
 use rowan::TextRange;
 
@@ -208,6 +208,17 @@ pub fn resolve_file(
     // fallback's "not a value" evidence therefore miss it, so it is added to the
     // same oracle directly — otherwise `open Demo; extern int Thing(int x);
     // Thing 1` would name the opened `Demo.Thing` where F# binds the prototype.
+    // Union and exception **cases** are bare-visible values with no `Pat` for the
+    // walk above to reach: `[<AutoOpen>] module A = exception Thing of int` puts
+    // `Thing` in bare expression scope, and a namespace-level union does the same.
+    // File-wide and kind-blind, like the binder scan — over-collection only
+    // defers, and a case name that never becomes bare-visible costs one deferral.
+    for case in file.syntax().descendants().filter_map(UnionCase::cast) {
+        if let Some(name) = case.ident() {
+            r.own_binder_simple_names
+                .insert(id_text(name.text()).to_string());
+        }
+    }
     for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {
         if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
             r.own_binder_simple_names

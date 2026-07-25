@@ -2208,6 +2208,26 @@ impl AssemblyEnv {
             .any(|s| Self::fold_surface_could_supply_value(s, name))
     }
 
+    /// Whether the fold surface of `namespace` could put a **value** named `name`
+    /// into bare expression scope.
+    ///
+    /// The per-file half of [`Self::assembly_bare_value_surface_could_supply`]:
+    /// the *enclosing* namespace of the source file is opened with no `open`
+    /// clause, but which namespace that is depends on the file, not the assembly
+    /// closure, so the caller supplies it. An empty path is the root namespace,
+    /// which the env-wide query already covers.
+    pub(crate) fn namespace_surface_could_supply_value(
+        &self,
+        namespace: &[String],
+        name: &str,
+    ) -> bool {
+        !namespace.is_empty()
+            && self
+                .open_namespace_fold_surfaces(namespace)
+                .iter()
+                .any(|s| Self::fold_surface_could_supply_value(s, name))
+    }
+
     /// Whether an [`OpenFoldSurface`] could put a **value** named `name` into
     /// bare expression scope.
     ///

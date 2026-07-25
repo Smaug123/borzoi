@@ -569,6 +569,34 @@ fn assert_merge_sound(label: &str, files: &[(&'static str, &'static str)]) {
 
 #[test]
 fn namespace_merge_resolution_is_sound_against_fcs() {
+    // A *preceding file*'s namespace-direct union case shadows a same-named
+    // referenced class for a later file in that namespace. FCS binds the project
+    // case; `lookup` never materialises a namespace-direct case from an earlier
+    // file, and `decide_type_path` ignores values by design, so the bare
+    // constructor fallback must consult the project's export surface or it
+    // commits `Demo.Thing` — a wrong go-to-definition (codex round 12).
+    assert_merge_sound(
+        "preceding-file-case-shadows-assembly-class",
+        &[
+            (
+                "a",
+                "namespace Demo
+
+type Host =
+    | Thing of unit
+",
+            ),
+            (
+                "b",
+                "namespace Demo
+
+module M =
+    let x = Thing ()
+",
+            ),
+        ],
+    );
+
     // Pure-assembly opens (no project shadow): the merge readings must land on the
     // right assembly namespace, latest-open-wins, relative-before-root.
     assert_merge_sound(

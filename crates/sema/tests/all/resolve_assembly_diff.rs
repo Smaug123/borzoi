@@ -391,6 +391,12 @@ fn bare_constructor_fallback_is_sound_under_every_shadowing_declaration() {
         // The staled-head channel: an intervening open raises the generation
         // barrier, so the earlier `Thing` binder is staled out of the value frame.
         "let Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P",
+        // The same declarations inside an in-file `[<AutoOpen>]` module: their
+        // names are bare-visible without an `open`, and a case has no `Pat` for
+        // the binder pre-scan to reach.
+        "[<AutoOpen>]\nmodule A =\n    exception Thing of int",
+        "[<AutoOpen>]\nmodule A =\n    type U =\n        | Thing of int",
+        "[<AutoOpen>]\nmodule A =\n    let Thing = 1",
     ];
     // The bare-`Thing` use positions the fallback can reach.
     //

@@ -901,6 +901,21 @@ impl<'a> Resolver<'a> {
             || self
                 .assemblies
                 .assembly_bare_value_surface_could_supply(name)
+            // The *enclosing* namespace is bare-visible without an `open` too, and
+            // is per-file rather than a property of the closure, so it is asked
+            // here rather than inside the env-wide query above: a referenced
+            // assembly's `N.Host` union contributes its cases bare to a file that
+            // declares `namespace N`.
+            || self
+                .assemblies
+                .namespace_surface_could_supply_value(self.enclosing_namespace(), name)
+            // The project's own preceding files: a namespace-direct union or
+            // exception case from an earlier file is bare-visible here, but
+            // `lookup` does not materialise it into the value frame and
+            // `decide_type_path` ignores values by design, so nothing else sees it.
+            || self
+                .preceding
+                .namespace_exports_value_named(self.enclosing_namespace(), name)
         {
             return None;
         }
