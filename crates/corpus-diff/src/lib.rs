@@ -1372,6 +1372,7 @@ impl CorpusSummary {
                     .collect(),
             },
             skipped_uses: &self.skipped_uses,
+            unoracled_definitions: self.unoracled_definitions,
             skipped_projects: &self.skipped_projects,
             skipped_by_reason: &self.skipped_by_reason,
             discovery_errors: &self.project_discovery_errors,
@@ -1742,6 +1743,10 @@ struct CorpusJsonReport<'a> {
     coverage: CorpusCoverageReport,
     project_assets: CorpusProjectAssetsReport<'a>,
     skipped_uses: &'a SkippedUses,
+    /// Our own defining occurrences the oracle said nothing about — reverse
+    /// checks that were skipped rather than graded, so a consumer can see how
+    /// much of that direction went unexercised.
+    unoracled_definitions: usize,
     skipped_projects: &'a [CorpusSkip],
     skipped_by_reason: &'a BTreeMap<String, usize>,
     discovery_errors: &'a [ProjectDiscoveryError],
@@ -2213,31 +2218,20 @@ fn fcs_use_confirms_resolution(
     }
 }
 
-/// Whether our rendering of an imported symbol's full name agrees with FCS's,
-/// modulo the two ways FCS names a symbol differently from us without
-/// disagreeing about *which* symbol it is:
+/// Whether our rendering of an imported symbol's full name agrees with FCS's.
 ///
-/// - **backticks.** FCS escapes identifiers that need it —
-///   ``Microsoft.FSharp.Core.Operators.``not```. A backtick never occurs inside
-///   a real identifier, so stripping them on both sides is safe.
-/// - **an unqualified FCS name.** FCS reports an imported F# module's
-///   `FullName` as the bare display name (`Seq`, `List`, `Option`), with no
-///   namespace to compare against our `Microsoft.FSharp.Collections.Seq`. When
-///   FCS's name carries no qualification *at all*, the only thing it can
-///   witness is the leaf, so that is what we compare — a dotted FCS name still
-///   has to agree in full. (The residual risk is a same-leaf symbol elsewhere
-///   in the same assembly; the assembly itself must already match.)
+/// Compared modulo **backticks** only: FCS escapes identifiers that need it —
+/// ``Microsoft.FSharp.Core.Operators.``not``` — and a backtick never occurs
+/// inside a real identifier, so stripping them on both sides is safe.
 ///
-/// The sibling harness `resolve_real_project_diff` (in the `borzoi` crate)
-/// normalises the same two, which is why it scored these as matches while this
-/// runner called them divergences.
+/// Nothing else is normalised, deliberately. FCS reports an F# *module*'s
+/// `FullName` as the bare display name (`Seq`), which cannot witness which
+/// symbol was bound; rather than accept a leaf-only match here, `fcs-dump`
+/// qualifies such a name from the entity's own `AccessPath` before it reaches
+/// us, so this comparison stays exact.
 fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     let strip = |s: &str| s.replace('`', "");
-    let (actual, expected) = (strip(actual), strip(expected));
-    if actual == expected {
-        return true;
-    }
-    !expected.contains('.') && actual.rsplit('.').next() == Some(expected.as_str())
+    strip(actual) == strip(expected)
 }
 
 fn assembly_resolution_confirms_decl(
@@ -3225,29 +3219,24 @@ mod tests {
         )
     }
 
-    /// FCS escapes identifiers that need it and names imported F# modules
-    /// unqualified; neither says the resolution went to a different symbol.
-    /// A *dotted* FCS name still has to agree in full.
+    /// FCS escapes identifiers that need it; that says nothing about which
+    /// symbol was bound. Everything else must agree exactly — including the
+    /// qualification, which `fcs-dump` supplies for the names FCS reports
+    /// bare.
     #[test]
-    fn assembly_full_names_agree_modulo_fcs_rendering() {
+    fn assembly_full_names_agree_modulo_backticks_only() {
         assert!(assembly_full_name_agrees(
             "Microsoft.FSharp.Core.Operators.not",
             "Microsoft.FSharp.Core.Operators.``not``"
         ));
-        assert!(assembly_full_name_agrees(
+        assert!(!assembly_full_name_agrees(
             "Microsoft.FSharp.Collections.Seq",
             "Seq"
         ));
         assert!(!assembly_full_name_agrees(
             "Microsoft.FSharp.Collections.Seq",
-            "List"
-        ));
-        assert!(!assembly_full_name_agrees(
-            "Microsoft.FSharp.Collections.Seq",
             "Microsoft.FSharp.Collections.List"
         ));
-        // An unqualified FCS name matches the *whole* leaf, not a suffix of it.
-        assert!(!assembly_full_name_agrees("System.Collections.Bag", "ag"));
     }
 
     /// FCS's `rangeStartup` sentinel (`range.fs`: `startupFileName = "startup"`)
@@ -4006,5 +3995,26 @@ mod tests {
         assert_eq!(report["projects"]["discovered"], 1);
         assert_eq!(report["projects"]["visited"], 1);
         assert_eq!(report["projects"]["comparable"], 1);
+    }
+
+    /// Every counter the text report shows must reach the JSONL too — machine
+    /// consumers ratchet on it, and a silently-absent field reads as "this
+    /// never happens" (codex review).
+    #[test]
+    fn the_json_report_carries_the_unoracled_definition_count() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let report_path = tmp.path().join("summary.jsonl");
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison {
+            unoracled_definitions: 7,
+            ..Comparison::default()
+        });
+
+        write_json_report_line(&report_path, &summary).expect("write report");
+
+        let text = std::fs::read_to_string(report_path).expect("read report");
+        let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(report["unoracled_definitions"], 7);
     }
 }

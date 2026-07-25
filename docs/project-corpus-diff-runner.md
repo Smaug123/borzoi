@@ -146,10 +146,12 @@ The latter two are adjudicated by assembly identity, exactly as a missing
 declaration range already was; only a use with neither an in-project
 declaration nor an assembly identity lands in a skipped bucket.
 
-Assembly full names are compared modulo the two ways FCS *names* a symbol
-differently without disagreeing about which symbol it is: backtick escaping
-(``Operators.``not```) and an unqualified module `FullName` (`Seq` rather than
-`Microsoft.FSharp.Collections.Seq`). A dotted FCS name must still agree in full.
+Assembly full names are compared modulo backticks only (FCS escapes
+identifiers that need it — ``Operators.``not```). FCS reports an F# *module*'s
+`FullName` as the bare display name (`Seq`), which cannot witness which symbol
+was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
+(`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the
+comparison here stays exact.
 
 The default soundness gate allows zero divergences.
 
