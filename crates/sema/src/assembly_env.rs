@@ -1963,6 +1963,21 @@ impl AssemblyEnv {
         self.nodes[handle.index()].signature_non_authoritative
     }
 
+    /// Whether `handle` is an F# **module** we may rely on being one.
+    ///
+    /// A module's kind is trustworthy only from an authoritative F# pickle. A
+    /// non-authoritative assembly's `Module` is an IL heuristic FCS does not
+    /// share — it imports the type through IL, where a module reads as a plain
+    /// type — so anything that *acts* on module-ness must ask this rather than
+    /// match `EntityKind::Module` directly. [`Self::entity_class`] declines
+    /// such a kind for the same reason; the resolver's type-position
+    /// eligibility filter (a module cannot be a terminal type) must decline to
+    /// *exclude* it for the same reason, or it would drop a genuine
+    /// type-position contestant from a cross-DLL contest (codex review).
+    pub fn is_authoritative_module(&self, handle: EntityHandle) -> bool {
+        self.entity(handle).kind == EntityKind::Module && !self.fsharp_signature_unreliable(handle)
+    }
+
     pub fn entity_class(&self, handle: EntityHandle) -> Option<SemanticClass> {
         match self.entity(handle).kind {
             // A module's kind is trustworthy only from an authoritative F# pickle;

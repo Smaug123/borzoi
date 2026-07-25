@@ -17,10 +17,11 @@ use borzoi_assembly::{
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AbbreviationVisibility, AssemblyEnv, EntityHandle, ProjectItems, Resolution, ResolvedFile,
-    SemanticClass, resolve_file, resolve_project,
+    AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ProjectItems,
+    Resolution, ResolvedFile, SemanticClass, resolve_file, resolve_project,
 };
 use rowan::TextRange;
+use std::path::PathBuf;
 
 fn fixture_env() -> AssemblyEnv {
     let bytes = std::fs::read(ensure_assembly_fixture_built()).expect("read fixture dll");
@@ -2715,6 +2716,116 @@ fn a_root_tier_contest_does_not_preempt_an_open() {
              ROOT-tier reading, got {other:?}"
         ),
     }
+}
+
+#[test]
+fn a_terminal_module_is_not_a_value_path_supplier() {
+    // Codex review round 6, the value-path mirror of the module-leaf rule. Only
+    // `High.Color` reaches `Inner` — and reaches it as a *submodule*, which is
+    // not a value, so FCS's expression-position lookup skips it and binds the
+    // lower `Low.Color.Inner`. Counting the module as the sole supplier would
+    // commit the module entity: a wrong target, which is the one thing the
+    // whole guard exists to prevent.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let leaf = |kind: EntityKind| {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i.kind = kind;
+        i
+    };
+    let color = |namespace: &str, assembly: &str, nested: Entity| {
+        let mut e = widget.clone();
+        e.namespace = vec![namespace.to_string()];
+        e.name = "Color".to_string();
+        e.assembly.name = assembly.to_string();
+        e.nested_types = vec![nested];
+        e
+    };
+    // Two DLLs contest `High.Color`; only the first reaches `Inner`, as a module.
+    let high_a = color("High", "LibA", leaf(EntityKind::Module));
+    let mut high_b = color("High", "LibB", leaf(EntityKind::Module));
+    high_b.nested_types = vec![];
+    let low = color("Low", "LibA", leaf(EntityKind::Class));
+
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let src = "module M\nopen Low\nopen High\nlet u = Color.Inner\n";
+    let rf = resolve(src, &env);
+    let module_leaf = env
+        .public_types_named_at_arity(&["High".to_string()], "Color", 0)
+        .into_iter()
+        .find_map(|h| env.nested(h, "Inner", 0))
+        .expect("High.Color.Inner exists as a module");
+    assert_ne!(
+        rf.resolution_at(at(src, "Inner")),
+        Some(Resolution::Entity(module_leaf)),
+        "a terminal module is not a value — committing it is a wrong target"
+    );
+}
+
+#[test]
+fn a_non_authoritative_module_still_contests_a_type_position() {
+    // Codex review round 6. A module kind is trustworthy only from an
+    // authoritative F# pickle; a non-authoritative assembly's `Module` is an IL
+    // heuristic FCS does not share — it imports the type through IL, where a
+    // module reads as a plain type (the rule `AssemblyEnv::entity_class`
+    // already follows). So the type-position eligibility filter must NOT drop
+    // it: it is a genuine contestant, and dropping it would commit the other
+    // DLL's class as if uncontested, whereas FCS's winner moves with reference
+    // order.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.nested_types = vec![];
+    let mut module_color = class_color.clone();
+    module_color.kind = EntityKind::Module;
+
+    let input = |path: &str, roots: Vec<Entity>, non_authoritative: bool| AssemblyProjectionInput {
+        path: PathBuf::from(path),
+        roots,
+        abbreviation_visibility: AbbreviationVisibility::Modelled,
+        extension_index_unknowable: false,
+        signature_non_authoritative: non_authoritative,
+        auto_opens: Vec::new(),
+        manifest_identity: None,
+        type_forwarders: Vec::new(),
+    };
+    let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+        input("class.dll", vec![class_color], false),
+        // The module kind here is an IL guess, so FCS sees a type: a contest.
+        input("module.dll", vec![module_color], true),
+    ]);
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "Color")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "a non-authoritative module is a real type-position contestant, so this \
+         collision must defer rather than commit the class, got {:?}",
+        rf.resolution_at(at(src, "Color"))
+    );
 }
 
 /// A public class and a public F# module, both `Ns.Color`, in *differently

@@ -1,6 +1,5 @@
 //! Resolution of dotted paths into referenced assemblies.
 
-use borzoi_assembly::EntityKind;
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
@@ -123,7 +122,31 @@ impl<'a> Resolver<'a> {
                 candidates,
                 Some(type_handle),
                 |handle| self.assembly_path_records_from_root(&names, segments, base, k, handle),
-                AssemblyPath::may_own_path,
+                // A reading whose **terminal segment** landed on an
+                // authoritative module supplies no *value*: FCS's
+                // expression-position lookup wants a value or member, and a
+                // module is neither, so it skips it (the value-path mirror of
+                // the type walk's module-leaf rule — codex review round 6). A
+                // resolved static member records across the whole path, not the
+                // terminal segment, so this rejects only a bare module.
+                |reading| {
+                    reading.may_own_path()
+                        && !matches!(
+                            reading,
+                            AssemblyPath::Resolved { payload, .. }
+                                if segments.last().is_some_and(|last| {
+                                    let terminal = last.text_range();
+                                    payload.iter().any(|&(range, res)| {
+                                        range == terminal
+                                            && matches!(
+                                                res,
+                                                Resolution::Entity(h)
+                                                    if self.assemblies.is_authoritative_module(h)
+                                            )
+                                    })
+                                })
+                        )
+                },
             );
             return match suppliers {
                 // No candidate supplies the tail: an ordinary **partial**
@@ -658,7 +681,7 @@ impl<'a> Resolver<'a> {
                 self.assemblies
                     .public_types_named_at_arity(&names[..k], &names[k], arity_at(k));
             if k + 1 == n {
-                candidates.retain(|&h| self.assemblies.entity(h).kind != EntityKind::Module);
+                candidates.retain(|&h| !self.assemblies.is_authoritative_module(h));
             }
             candidates
         };
@@ -723,7 +746,7 @@ impl<'a> Resolver<'a> {
                             reading,
                             AssemblyPath::Resolved { payload, .. }
                                 if payload.leaf.is_some_and(|leaf| {
-                                    self.assemblies.entity(leaf).kind == EntityKind::Module
+                                    self.assemblies.is_authoritative_module(leaf)
                                 })
                         )
                 },
