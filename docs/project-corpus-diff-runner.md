@@ -162,9 +162,9 @@ Assembly *names* are compared up to corelib facade↔implementation
 equivalence (`System.Private.CoreLib` is the same assembly as
 `System.Runtime`: which one FCS reports depends on whether the `fcs-dump`
 driving the run is framework-dependent or self-contained, while our side always
-reads the ref-pack facade). Assembly full names are compared modulo backticks
-only (FCS escapes
-identifiers that need it — ``Operators.``not```). FCS reports an F# *module*'s
+reads the ref-pack facade). Assembly full names are compared modulo FCS's
+double-backtick *quoting* (``Operators.``not``` — delimiter pairs only, since a
+quoted identifier may itself contain a lone backtick). FCS reports an F# *module*'s
 `FullName` as the bare display name (`Seq`), which cannot witness which symbol
 was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
 (`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the

@@ -179,13 +179,15 @@ fn our_assembly_full(env: &AssemblyEnv, res: Resolution) -> OurAsm {
     }
 }
 
-/// Whether one of our renderings equals FCS's full name, modulo backticks (FCS
-/// escapes some identifiers — `Operators.``not``` — and a backtick never occurs
-/// inside a real identifier, so stripping them on both sides is safe).
+/// Whether one of our renderings equals FCS's full name, modulo the
+/// double-backtick quoting FCS applies to identifiers that need it
+/// (`Operators.``not```). Only the delimiter pairs are removed, never a lone
+/// backtick: a quoted identifier may contain one (`lex.fsl` closes the quote on
+/// a *doubled* backtick only), so ``a`b`` and ``ab`` name different symbols.
 fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
-    let strip = |s: &str| s.replace('`', "");
-    let f = strip(fcs);
-    strip(&ours.qualified) == f || strip(&ours.unqualified) == f
+    let unquote = |s: &str| s.replace("``", "");
+    let f = unquote(fcs);
+    unquote(&ours.qualified) == f || unquote(&ours.unqualified) == f
 }
 
 /// Whether our name is a *nested-type rendering gap*: `AssemblyEnv` stores a
@@ -196,8 +198,8 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
 /// divergence. (A genuinely wrong resolution — a name that is *not* such a tail,
 /// or in another assembly — still diverges.)
 fn nested_rendering_gap(ours: &OurAsm, fcs: &str) -> bool {
-    let f = fcs.replace('`', "");
-    let u = ours.unqualified.replace('`', "");
+    let f = fcs.replace("``", "");
+    let u = ours.unqualified.replace("``", "");
     let fs: Vec<&str> = f.split('.').collect();
     let us: Vec<&str> = u.split('.').collect();
     !us.is_empty() && us.len() < fs.len() && fs.ends_with(us.as_slice())
