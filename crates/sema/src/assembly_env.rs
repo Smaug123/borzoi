@@ -251,6 +251,35 @@ impl OpenFoldSurface {
     }
 }
 
+/// A container's bare-visible **value** surface, paired with the uncertainty its
+/// fold surfaces cannot encode.
+///
+/// Exists so the pairing is not a convention. `open_namespace_fold_surfaces`
+/// enumerates *surviving* entities, and the markers that say "there were others"
+/// — a dropped type, an undecodable pickle — are keyed by namespace in the env,
+/// not carried on the surface. Asking the surfaces alone therefore reads a name
+/// the projection *lost* as a name the container does not have, which for a
+/// certain-implies-exact guard is a wrong answer, not a missing one.
+///
+/// Both fields are private and the only accessor consults both, so that mistake
+/// is unavailable rather than merely documented. Construct with
+/// [`AssemblyEnv::namespace_value_surface`] or
+/// [`AssemblyEnv::module_value_surface`].
+#[derive(Debug, Clone)]
+pub struct ValueSurface {
+    surfaces: Vec<OpenFoldSurface>,
+    uncertain: bool,
+}
+
+impl ValueSurface {
+    /// Whether this container could put a **value** named `name` into bare
+    /// expression scope. `true` when the container is uncertain at all — a
+    /// deferral, never a resolution, so over-approximating is sound.
+    pub fn could_supply(&self, name: &str) -> bool {
+        self.uncertain || self.surfaces.iter().any(|s| s.could_supply_value(name))
+    }
+}
+
 /// One bare name of an [`OpenFoldSurface`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFoldName {
@@ -2190,7 +2219,7 @@ impl AssemblyEnv {
         if self
             .effective_implicit_open_namespace_paths()
             .iter()
-            .any(|ns| self.namespace_surface_could_supply_value_inner(ns, name))
+            .any(|ns| self.namespace_value_surface(ns).could_supply(name))
         {
             return true;
         }
@@ -2200,7 +2229,7 @@ impl AssemblyEnv {
         if self
             .contested_auto_opens
             .iter()
-            .any(|(_, ns)| self.namespace_surface_could_supply_value_inner(ns, name))
+            .any(|(_, ns)| self.namespace_value_surface(ns).could_supply(name))
         {
             return true;
         }
@@ -2210,9 +2239,7 @@ impl AssemblyEnv {
             .auto_open_module_handles
             .iter()
             .any(|&(h, effectively_public)| {
-                effectively_public
-                    && (self.namespace_uncertain(&self.nodes[h.index()].owning_namespace)
-                        || self.open_fold_surface(h).could_supply_value(name))
+                effectively_public && self.module_value_surface(h).could_supply(name)
             })
         {
             return true;
@@ -2220,23 +2247,27 @@ impl AssemblyEnv {
         // The ROOT namespace, which needs no open at all: a global `[<AutoOpen>]`
         // module's values, and a global union's cases (bare-visible because the
         // union type itself is).
-        self.namespace_surface_could_supply_value_inner(&[], name)
+        self.namespace_value_surface(&[]).could_supply(name)
     }
 
-    /// One namespace's bare-visible **value** surface, including the per-namespace
-    /// uncertainty the fold surfaces cannot encode.
-    ///
-    /// `open_namespace_fold_surfaces` enumerates *surviving* entities, so a type
-    /// the projection dropped — which could be a union supplying a case, or an
-    /// `[<AutoOpen>]` module supplying a value — reads as a clean absence. The
-    /// dropped/unknowable markers are namespace-scoped rather than per-surface, so
-    /// they are asked here, for every namespace arm alike.
-    fn namespace_surface_could_supply_value_inner(&self, namespace: &[String], name: &str) -> bool {
-        self.namespace_uncertain(namespace)
-            || self
-                .open_namespace_fold_surfaces(namespace)
-                .iter()
-                .any(|s| s.could_supply_value(name))
+    /// The bare-visible **value** surface of `namespace`: its fold surfaces plus
+    /// the namespace-scoped uncertainty they cannot encode. The only sanctioned
+    /// way to ask whether a namespace could supply a value.
+    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface {
+        ValueSurface {
+            surfaces: self.open_namespace_fold_surfaces(namespace),
+            uncertain: self.namespace_uncertain(namespace),
+        }
+    }
+
+    /// The same, for a module opened by a module-shaped manifest `AutoOpen`. Its
+    /// uncertainty is that of the namespace that *owns* it — the marker is
+    /// namespace-keyed, and forgetting it here was the audit's finding.
+    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface {
+        ValueSurface {
+            surfaces: vec![self.open_fold_surface(handle)],
+            uncertain: self.namespace_uncertain(&self.nodes[handle.index()].owning_namespace),
+        }
     }
 
     /// The namespace-scoped incompleteness markers a fold surface cannot encode,
@@ -2264,7 +2295,7 @@ impl AssemblyEnv {
         namespace: &[String],
         name: &str,
     ) -> bool {
-        !namespace.is_empty() && self.namespace_surface_could_supply_value_inner(namespace, name)
+        !namespace.is_empty() && self.namespace_value_surface(namespace).could_supply(name)
     }
 
     /// Whether opening the module `handle` imports an entity named `name`
