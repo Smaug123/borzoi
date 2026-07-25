@@ -703,6 +703,27 @@ fn manifest_auto_open_module_nested_type_defers_a_bare_type_annotation() {
 }
 
 #[test]
+fn manifest_auto_open_module_nested_type_defers_a_bare_constructor_use() {
+    // The expression-position twin of the annotation case above — the fixture
+    // comment records that FCS binds the auto-opened `DirectShadow` in *both*
+    // positions. A bare constructor use resolves through `decide_type_path`, so
+    // the manifest-surface veto (which keys on the written arity for a
+    // single-segment path — exactly this query) must cover it too. Committing
+    // the root decoy the prefix walk finds would be a wrong go-to-definition.
+    let env = fixture_env();
+    let src = "let x = DirectShadow ()\n";
+    let rf = resolve(src, &env);
+    let root_decoy = env
+        .lookup_type(&[], "DirectShadow", 0)
+        .expect("fixture must declare a global-namespace DirectShadow decoy");
+    assert_ne!(
+        rf.resolution_at(at(src, "DirectShadow")),
+        Some(Resolution::Entity(root_decoy)),
+        "the constructor fallback must not commit the root decoy the manifest surface shadows"
+    );
+}
+
+#[test]
 fn manifest_auto_open_module_nested_type_defers_without_a_decoy() {
     // The decoy-free twin: `DirectOnly` exists ONLY as a nested type of the
     // auto-opened module. FCS resolves it there (fsi-verified), so the

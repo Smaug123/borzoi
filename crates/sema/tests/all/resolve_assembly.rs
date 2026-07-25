@@ -2462,6 +2462,21 @@ fn contested_same_fqn_type_defers_when_shortened_by_an_open() {
 }
 
 #[test]
+fn contested_same_fqn_type_defers_a_bare_constructor_use() {
+    // The expression-position twin of the annotation case above. A bare
+    // constructor use resolves through `decide_type_path`, so a contested
+    // rooting must defer here exactly as it does in type position: FCS binds
+    // the *latest* reference while `lookup_type`'s slot is first-wins, so
+    // committing the slot's entity would be a wrong go-to-definition.
+    //
+    // This pins the shared guard as load-bearing for the constructor position
+    // — without it the fallback commits the first-wins contestant.
+    let env = contested_color_env();
+    let src = "module M\nopen Ns\nlet x = Color ()\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
 fn contested_same_fqn_type_defers_a_static_member_path() {
     let env = contested_color_env();
     let src = "module M\nlet u = Ns.Color.StaticCount\n";

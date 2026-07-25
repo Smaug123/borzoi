@@ -856,30 +856,25 @@ impl<'a> Resolver<'a> {
     ///   ([`AssemblyEnv::bare_expr_constructible`]): a static class, union, record,
     ///   abbreviation, or generic type is not, so it defers.
     ///
-    /// Limitations shared, by design, with type-position resolution — they live in
-    /// `decide_type_path` (or its absence of a channel) and are not patched
-    /// asymmetrically here, because the constructor position must resolve a bare
-    /// type name identically to type position:
+    /// Delegating to `decide_type_path` rather than reimplementing a bare-name
+    /// lookup is what makes the two positions agree by construction, so its
+    /// shadow guards apply here unchanged. Two are load-bearing enough to have
+    /// expression-position regression tests of their own, since a coarser guard
+    /// in either place would silently stop covering the constructor position:
+    /// `contested_same_fqn_type_defers_a_bare_constructor_use` (a rooting FQN
+    /// contested across differently-named DLLs) and
+    /// `manifest_auto_open_module_nested_type_defers_a_bare_constructor_use` (a
+    /// module-shaped `[<assembly: AutoOpen>]` surface kept out of the prefix
+    /// walk — its veto keys on the written arity, which this queries as 0).
     ///
-    /// - a same-simple-name **type contest across referenced assemblies** —
-    ///   `lookup_type`'s first-wins slot vs FCS's latest-reference-wins. A
-    ///   `distinct_dlls == 1` guard was tried and reverted: benign duplication (a
-    ///   BCL type with real TypeDefs in *both* `netstandard` and `System.Runtime`,
-    ///   which FCS unifies and the slot resolves correctly) reads as a contest, so
-    ///   the guard deferred the common case — `StringBuilder` included. Telling a
-    ///   benign duplicate from a genuine rival needs the assembly-unification the
-    ///   shared layer owns;
-    /// - a **manifest** `[<assembly: AutoOpen("N.Ops")>]` surface omitted from the
-    ///   prefix walk can let a root type resolve where FCS binds the auto-opened
-    ///   `N.Ops.C`;
-    /// - an F# **named-argument label** (`M(arg = 1)`) reaches the bare-ident path
-    ///   at all, since named arguments are unmodelled: the walker recurses into
-    ///   application arguments blindly. [`is_named_arg_label`] keeps the *fallback*
-    ///   off it, but the label still resolves against the enclosing scope, so one
-    ///   naming a project value binds that value where F# binds the callee's
-    ///   parameter. Fixing that means modelling the argument shape at the walker.
-    ///
-    /// Each needs a pathological shape to matter and belongs at the shared layer.
+    /// One limitation remains, and it is *not* one `decide_type_path` owns: an F#
+    /// **named-argument label** (`M(arg = 1)`) reaches the bare-ident path at all,
+    /// since named arguments are unmodelled and the walker recurses into
+    /// application arguments blindly. [`is_named_arg_label`] keeps the *fallback*
+    /// off it, but the label still resolves against the enclosing scope, so one
+    /// naming a project value binds that value where F# binds the callee's
+    /// parameter — a defect that predates this fallback. Fixing it means modelling
+    /// the argument shape at the walker.
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
         if !allow_opened_type
             || self.own_binder_simple_names.contains(name)
