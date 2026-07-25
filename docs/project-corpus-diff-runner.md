@@ -146,7 +146,12 @@ The latter two are adjudicated by assembly identity, exactly as a missing
 declaration range already was; only a use with neither an in-project
 declaration nor an assembly identity lands in a skipped bucket.
 
-Assembly full names are compared modulo backticks only (FCS escapes
+Assembly *names* are compared up to corelib facade↔implementation
+equivalence (`System.Private.CoreLib` is the same assembly as
+`System.Runtime`: which one FCS reports depends on whether the `fcs-dump`
+driving the run is framework-dependent or self-contained, while our side always
+reads the ref-pack facade). Assembly full names are compared modulo backticks
+only (FCS escapes
 identifiers that need it — ``Operators.``not```). FCS reports an F# *module*'s
 `FullName` as the bare display name (`Seq`), which cannot witness which symbol
 was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`

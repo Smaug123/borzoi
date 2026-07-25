@@ -1972,7 +1972,8 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                             }
                             Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-                                if actual.assembly == expected.assembly
+                                if canonical_assembly(&actual.assembly)
+                                    == canonical_assembly(&expected.assembly)
                                     && assembly_full_name_agrees(
                                         &actual.full_name,
                                         &expected.full_name,
@@ -2218,6 +2219,26 @@ fn fcs_use_confirms_resolution(
     }
 }
 
+/// Canonicalise a core-BCL assembly name to its **ref-pack facade**, so a
+/// comparison holds regardless of how the `fcs-dump` driving it was deployed.
+///
+/// A type-forwarded corelib type (`System.String`, `System.Object`, …) is
+/// *defined* in `System.Private.CoreLib.dll` and *surfaced* through the
+/// `System.Runtime.dll` facade. A framework-dependent `fcs-dump` resolves the
+/// SDK ref pack and reports `System.Runtime`; the self-contained publish CI
+/// ships resolves the implementation framework and reports
+/// `System.Private.CoreLib`. Our side reads the ref-pack assemblies from the
+/// project's assets and so always reports the facade. Both name the same
+/// logical entity, and the full name still has to agree exactly, so a genuine
+/// divergence is still caught rather than absorbed. (The sema harness
+/// `resolve_qualifier_precedence_diff` canonicalises identically.)
+fn canonical_assembly(name: &str) -> &str {
+    match name {
+        "System.Private.CoreLib" => "System.Runtime",
+        other => other,
+    }
+}
+
 /// Whether our rendering of an imported symbol's full name agrees with FCS's.
 ///
 /// Compared modulo **backticks** only: FCS escapes identifiers that need it —
@@ -2240,7 +2261,7 @@ fn assembly_resolution_confirms_decl(
     expected: &AssemblyDecl,
 ) -> bool {
     let actual = assembly_resolution_decl(env, res);
-    if actual.assembly != expected.assembly {
+    if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
         return false;
     }
     match res {
@@ -3217,6 +3238,22 @@ mod tests {
             path.display(),
             decl_file.replace('\\', "\\\\"),
         )
+    }
+
+    /// A framework-dependent `fcs-dump` names a forwarded corelib type by its
+    /// ref-pack facade, a self-contained one by the implementation assembly;
+    /// our side always reads the facade. Same entity either way — but nothing
+    /// else is folded together.
+    #[test]
+    fn corelib_facade_and_implementation_name_the_same_assembly() {
+        assert_eq!(
+            canonical_assembly("System.Private.CoreLib"),
+            canonical_assembly("System.Runtime")
+        );
+        assert_ne!(
+            canonical_assembly("System.Runtime"),
+            canonical_assembly("System.Collections")
+        );
     }
 
     /// FCS escapes identifiers that need it; that says nothing about which
