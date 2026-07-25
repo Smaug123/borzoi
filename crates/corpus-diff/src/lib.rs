@@ -2220,9 +2220,11 @@ fn canonical_assembly(name: &str) -> &str {
 
 /// Whether our rendering of an imported symbol's full name agrees with FCS's.
 ///
-/// Compared modulo **backticks** only: FCS escapes identifiers that need it —
-/// ``Microsoft.FSharp.Core.Operators.``not``` — and a backtick never occurs
-/// inside a real identifier, so stripping them on both sides is safe.
+/// Compared modulo the **double-backtick quoting** FCS applies to identifiers
+/// that need it — ``Microsoft.FSharp.Core.Operators.``not```. Only the
+/// delimiter pairs are removed, never a lone backtick: a quoted identifier may
+/// contain one (`lex.fsl` closes the quote on a *doubled* backtick only), so
+/// ``a`b`` and ``ab`` name different members and must not collapse together.
 ///
 /// Nothing else is normalised, deliberately. FCS reports an F# *module*'s
 /// `FullName` as the bare display name (`Seq`), which cannot witness which
@@ -2230,8 +2232,8 @@ fn canonical_assembly(name: &str) -> &str {
 /// qualifies such a name from the entity's own `AccessPath` before it reaches
 /// us, so this comparison stays exact.
 fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
-    let strip = |s: &str| s.replace('`', "");
-    strip(actual) == strip(expected)
+    let unquote = |s: &str| s.replace("``", "");
+    unquote(actual) == unquote(expected)
 }
 
 fn assembly_resolution_confirms_decl(
@@ -3238,13 +3240,19 @@ mod tests {
     /// FCS escapes identifiers that need it; that says nothing about which
     /// symbol was bound. Everything else must agree exactly — including the
     /// qualification, which `fcs-dump` supplies for the names FCS reports
-    /// bare.
+    /// bare, and any *interior* backtick, which is part of the identifier.
     #[test]
-    fn assembly_full_names_agree_modulo_backticks_only() {
+    fn assembly_full_names_agree_modulo_backtick_quoting_only() {
         assert!(assembly_full_name_agrees(
             "Microsoft.FSharp.Core.Operators.not",
             "Microsoft.FSharp.Core.Operators.``not``"
         ));
+        // A double-backtick-quoted identifier may contain a single backtick
+        // (`lex.fsl`: only a doubled one closes the quote), so ``a`b`` and
+        // ``ab`` are *different* members and must not collapse together.
+        assert!(assembly_full_name_agrees("M.a`b", "M.``a`b``"));
+        assert!(!assembly_full_name_agrees("M.a`b", "M.``ab``"));
+        assert!(!assembly_full_name_agrees("M.ab", "M.``a`b``"));
         assert!(!assembly_full_name_agrees(
             "Microsoft.FSharp.Collections.Seq",
             "Seq"
