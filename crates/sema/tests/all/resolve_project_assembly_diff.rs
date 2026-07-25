@@ -575,6 +575,21 @@ fn namespace_merge_resolution_is_sound_against_fcs() {
     // file, and `decide_type_path` ignores values by design, so the bare
     // constructor fallback must consult the project's export surface or it
     // commits `Demo.Thing` — a wrong go-to-definition (codex round 12).
+    // The residue shape: an earlier file's auto-open module declares an `extern`,
+    // which is deliberately never interned, so the container is marked
+    // *hidden* rather than listed in the export index. An absent `value_exports`
+    // row there is not evidence of absence — the veto must read the marker, the
+    // project-side twin of `OpenFoldSurface::residue`.
+    assert_merge_sound(
+        "preceding-hidden-value-container-defers",
+        &[
+            (
+                "a",
+                "namespace Demo\n\n[<AutoOpen>]\nmodule A =\n    extern int Thing(int x)\n",
+            ),
+            ("b", "namespace Demo\n\nmodule M =\n    let x = Thing ()\n"),
+        ],
+    );
     // The same shape one level deeper: an earlier file's `[<AutoOpen>]` module in
     // the namespace. Its export is keyed `Demo.A.Thing`, so probing the namespace
     // and its ancestors never reaches it — the veto must walk the auto-open

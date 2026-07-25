@@ -674,7 +674,7 @@ impl ProjectItems {
     pub(super) fn namespace_exports_value_named(&self, namespace: &[String], name: &str) -> bool {
         let mut container = namespace.to_vec();
         loop {
-            if self.container_exports_value_named(&container, name) {
+            if self.container_value_surface_could_supply(&container, name) {
                 return true;
             }
             // An `[<AutoOpen>]` module *inside* this container puts its values in
@@ -683,7 +683,7 @@ impl ProjectItems {
             // Recurses, since an auto-open module may hold another.
             let mut frontier = self.auto_open_modules_directly_in(&container);
             while let Some(module) = frontier.pop() {
-                if self.container_exports_value_named(&module, name) {
+                if self.container_value_surface_could_supply(&module, name) {
                     return true;
                 }
                 frontier.extend(self.auto_open_modules_directly_in(&module));
@@ -694,9 +694,20 @@ impl ProjectItems {
         }
     }
 
-    /// Whether any preceding file exports a value named `name` *directly* in
-    /// `container`.
-    fn container_exports_value_named(&self, container: &[String], name: &str) -> bool {
+    /// Whether `container` could contribute a bare value named `name` from a
+    /// preceding file: an enumerated export of that name, **or** the container's
+    /// *residue*.
+    ///
+    /// [`Self::modules_with_hidden_values`] is the project-side twin of
+    /// [`OpenFoldSurface::residue`](crate::OpenFoldSurface::residue): a container
+    /// declaring union cases, exception constructors, active patterns or aliases
+    /// has value-space names the export index cannot enumerate, so an absent
+    /// `value_exports` row there is not evidence of absence. Consulting it is what
+    /// keeps this from being a bespoke query that re-derives the fold badly.
+    fn container_value_surface_could_supply(&self, container: &[String], name: &str) -> bool {
+        if self.modules_with_hidden_values.contains(container) {
+            return true;
+        }
         let mut path = container.to_vec();
         path.push(name.to_string());
         self.value_exports
