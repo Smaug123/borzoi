@@ -1,0 +1,82 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-346d176c0dd6-fc2529bf34cc",
+  "repository": "Smaug123/borzoi",
+  "commit": "65f3f2f69edb15df4d3a7c58cdc65e09c9ba8ede",
+  "measured_at": "2026-07-25T19:04:01Z",
+  "workflow": {
+    "run_id": 30170493812,
+    "run_number": 14,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/30170493812"
+  },
+  "corpus": {
+    "source": "Smaug123/borzoi-project-corpus",
+    "revision": "346d176c0dd66cafec34a907d1501b1154ea43a3"
+  },
+  "flake_lock_hash": "f27a8220b9ba57001e2e9025876c45078da8fe6f5d81d34471f569582813a136",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "project-corpus-diff",
+    "configuration": {
+      "build_properties": {},
+      "selection": {
+        "max_files": null,
+        "source": "list"
+      }
+    },
+    "statistics": {
+      "coverage": {
+        "basis_points": 4928
+      },
+      "deferrals": {
+        "assembly": 8584,
+        "project": 11824,
+        "total": 20408
+      },
+      "divergences": {
+        "assembly": 1,
+        "project": 1,
+        "reverse": 1,
+        "total": 3
+      },
+      "files_compared": 140,
+      "matches": {
+        "assembly": 4414,
+        "project": 15415,
+        "total": 19829
+      },
+      "project_assets_by_status": {
+        "dotnet_root_unavailable": 0,
+        "missing": 0,
+        "not_checked": 0,
+        "project_directory_unavailable": 0,
+        "resolution_failed": 0,
+        "resolved": 6
+      },
+      "projects": {
+        "comparable": 6,
+        "discovered": 6,
+        "discovery_errors": 0,
+        "skipped": 0,
+        "skipped_basis_points": 0,
+        "visited": 6
+      },
+      "skipped_uses": {
+        "definitions": 8200,
+        "no_oracle_declaration": 0,
+        "non_project_declarations": 0,
+        "out_of_project_declarations": 0,
+        "total": 8212,
+        "zero_width": 12
+      },
+      "unoracled_definitions": 5,
+      "uses": {
+        "assembly_considered": 12999,
+        "fcs_reported": 48451,
+        "project_considered": 27240,
+        "total_considered": 40239
+      }
+    }
+  }
+}
