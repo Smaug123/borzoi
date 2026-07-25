@@ -28,7 +28,14 @@ impl<'a> Resolver<'a> {
                     // `resolve_name_use` is member access on a *value* and must
                     // not fall through to an opened type — see the call in
                     // [`Self::resolve_long_ident`].
-                    self.resolve_name_use(&tok, true);
+                    //
+                    // The exception is a **named-argument label** (`M(Thing = 1)`),
+                    // which F# binds to the callee's *parameter*: it reaches here as
+                    // a bare ident, so the fallback would name an opened type of the
+                    // same name. Deferring costs nothing — a type name is never a
+                    // legal label, so nothing that would have resolved is lost.
+                    let is_label = is_named_arg_label(e);
+                    self.resolve_name_use(&tok, !is_label);
                 }
             }
             // `'T` (FCS's `SynExpr.Typar`) — a type parameter used as the head of
@@ -865,9 +872,12 @@ impl<'a> Resolver<'a> {
     /// - a **manifest** `[<assembly: AutoOpen("N.Ops")>]` surface omitted from the
     ///   prefix walk can let a root type resolve where FCS binds the auto-opened
     ///   `N.Ops.C`;
-    /// - an F# **named-argument label** (`M(arg = 1)`) reaches this as a bare ident
-    ///   just as it already reaches value-frame lookup, since named arguments are
-    ///   unmodelled.
+    /// - an F# **named-argument label** (`M(arg = 1)`) reaches the bare-ident path
+    ///   at all, since named arguments are unmodelled: the walker recurses into
+    ///   application arguments blindly. [`is_named_arg_label`] keeps the *fallback*
+    ///   off it, but the label still resolves against the enclosing scope, so one
+    ///   naming a project value binds that value where F# binds the callee's
+    ///   parameter. Fixing that means modelling the argument shape at the walker.
     ///
     /// Each needs a pathological shape to matter and belongs at the shared layer.
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
@@ -886,4 +896,60 @@ impl<'a> Resolver<'a> {
             _ => None,
         }
     }
+}
+
+/// Split an application-argument element of the **named-argument shape**
+/// `lhs = value` — F# parses it as `App[ InfixApp[lhs, "="], value ]`, an outer
+/// non-infix application whose function is the infix `=` operator applied to
+/// `lhs`. A positional infix element (`a + b`) is the infix `App` itself, not an
+/// outer application of one, so it does not match; neither does a nested `=`
+/// (not the element's own top-level operator). Either side may be `None` on a
+/// recovery tree.
+///
+/// Deliberately the same split `infer`'s `is_named_arg` performs, so the two
+/// readings of the shape cannot drift.
+pub(crate) fn named_arg_shape(el: &Expr) -> Option<(Option<Expr>, Option<Expr>)> {
+    let Expr::App(outer) = el else {
+        return None;
+    };
+    if outer.is_infix() {
+        return None;
+    }
+    let Some(Expr::App(op_app)) = outer.func() else {
+        return None;
+    };
+    if !op_app.is_infix()
+        || !op_app
+            .func()
+            .is_some_and(|op| op.syntax().text().to_string().trim() == "=")
+    {
+        return None;
+    }
+    Some((op_app.arg(), outer.arg()))
+}
+
+/// Whether this bare ident is the **label** of a named argument (`M(Thing = 1)`)
+/// rather than an ordinary use. The label sits as the `lhs` of the
+/// [`named_arg_shape`] element two levels up (`App[ InfixApp[lhs, "="], value ]`),
+/// so the element is the ident's grandparent.
+///
+/// Syntactically a label is indistinguishable from an equality operand
+/// (`f (x = y)`), and this cannot tell them apart. It is consulted **only** to
+/// suppress the opened-type constructor fallback, where the conflation is free:
+/// the fallback fires only on a value-frame miss, so a genuine equality operand
+/// that names something in scope never reaches it, and a *type* name is never a
+/// legal operand of a comparison whose result is passed as an argument.
+fn is_named_arg_label(ident: &borzoi_cst::syntax::IdentExpr) -> bool {
+    let Some(el) = ident
+        .syntax()
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(Expr::cast)
+    else {
+        return false;
+    };
+    matches!(
+        named_arg_shape(&el),
+        Some((Some(Expr::Ident(lhs)), _)) if lhs.syntax() == ident.syntax()
+    )
 }

@@ -651,6 +651,36 @@ fn bare_constructor_defers_when_shadowed_or_not_constructible() {
 }
 
 #[test]
+fn a_named_argument_label_does_not_resolve_to_an_opened_type() {
+    // `Demo.Calc.Named` takes an `int Thing`, so in `Calc.Named(Thing = 1)` F#
+    // binds `Thing` to the *parameter* — never to the opened `Demo.Thing`. The
+    // label reaches the resolver as a bare ident, so the constructor fallback
+    // must not fire there. The callee path must still resolve, or the veto has
+    // swallowed the whole application rather than just the label.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\nlet y = Calc.Named(Thing = 1)\n";
+    let rf = resolve(src, &env);
+
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "a named-argument label must not resolve to the same-named opened type"
+    );
+
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "Calc")),
+        Some(Resolution::Entity(calc)),
+        "the callee's type qualifier still resolves — only the label is skipped"
+    );
+}
+
+#[test]
 fn open_type_resolves_unqualified_static_members() {
     // `open type Demo.Calc` brings the type's static members into unqualified
     // scope, so bare `Zero` (a static method) and `Answer` (a static property)

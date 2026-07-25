@@ -295,6 +295,10 @@ fn assembly_resolution_is_sound_across_the_tier_surface() {
         // usable binder and has no pattern to reach the binder-name pre-scan —
         // so the value-frame miss there is conservative, not a genuine unbound.
         "module M\nopen Demo\nextern int Thing(int x)\nlet y = Thing 1\n",
+        // A *named-argument label* colliding with the opened type: `Calc.Named`
+        // takes an `int Thing`, so FCS binds this `Thing` to the parameter. The
+        // label is visited as a bare ident, so the fallback must not name the type.
+        "module M\nopen Demo\nlet y = Calc.Named(Thing = 1)\n",
     ];
     for src in cases {
         let (agreed, total) = sweep_sound(src);
@@ -389,6 +393,16 @@ fn bare_constructor_fallback_is_sound_under_every_shadowing_declaration() {
         "let Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P",
     ];
     // The bare-`Thing` use positions the fallback can reach.
+    //
+    // The *named-argument label* position (`Calc.Named(Thing = 1)`) is checked
+    // once, unshadowed, in `assembly_resolution_is_sound_across_the_tier_surface`
+    // rather than crossed with these forms. Crossed, it stops testing this
+    // property: a label over a shadowing declaration resolves to the *project
+    // value*, which is wrong (FCS binds the callee's parameter) but wrong on main
+    // too — the expression walker recurses into application arguments blindly, so
+    // the label reaches the bare-ident path at all. That is a named-argument
+    // modelling gap, not a constructor-fallback one, and folding it in here would
+    // make this sweep gate on a defect it does not own.
     const USES: &[&str] = &["let y = Thing 1", "let y = Thing ()", "let y = Thing"];
 
     // Control: with no shadowing declaration the fallback *must* resolve, or every
