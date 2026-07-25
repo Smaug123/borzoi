@@ -546,6 +546,85 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
     );
 }
 
+/// A *merely enclosing* oracle use is not the oracle speaking about our range.
+///
+/// For a non-simple lambda parameter FCS synthesises an `_arg1` symbol spanning
+/// the **whole** pattern, so every occurrence inside it is enclosed by an
+/// unrelated use. That must not defeat the binding-position exemption: the
+/// second alternative's `_n` is still a range FCS says nothing about, and
+/// scoring it as a contradiction would report a correct answer as a divergence.
+#[test]
+fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
+    let src =
+        "module B\n\ntype T =\n    | A of int\n    | B of int\n\nlet f = fun (A _n | B _n) -> _n\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    let pattern_start = src.find("A _n").expect("pattern start");
+    let pattern_end = src.find(") ->").expect("pattern end");
+    let first = src.find("A _n").expect("first alternative") + 2;
+    let body = src.rfind("_n").expect("body use");
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![
+                // FCS's synthetic parameter, spanning the whole pattern.
+                ProjectUse {
+                    name: "_arg1".to_string(),
+                    start: pattern_start,
+                    end: pattern_end,
+                    is_from_definition: false,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: pattern_start,
+                        end: pattern_end,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: first,
+                    end: first + 2,
+                    is_from_definition: true,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: body,
+                    end: body + 2,
+                    is_from_definition: false,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+            ],
+        }],
+    );
+
+    let second = src.find("| B _n").expect("second alternative") + 4;
+    assert!(
+        !comparison
+            .reverse_divergences
+            .iter()
+            .any(|d| d.range == (second, second + 2)),
+        "an enclosing synthetic use is not speech about this range: {:?}",
+        comparison.reverse_divergences
+    );
+    assert_eq!(comparison.unoracled_or_pattern_aliases, 1);
+}
+
 #[test]
 fn comparison_reports_skipped_oracle_categories() {
     let src = "module B\nlet _ = 1\n";

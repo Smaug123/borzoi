@@ -139,6 +139,13 @@ For each visited project, the runner:
      FCS reports that for an ordinary name but **not** for one starting with
      `_`. Silence from the oracle is not a contradiction.
 
+   "The oracle spoke here" is an **exact** span match, not enclosure: FCS
+   synthesises an `_arg1` symbol spanning the whole of a non-simple lambda
+   parameter, so in `fun (A _n | B _n) -> _n` every occurrence inside the
+   pattern is enclosed by a use of an unrelated symbol. A reported divergence
+   still lists every *overlapping* oracle use, which is what makes it
+   diagnosable.
+
 ### Signature files
 
 A `.fsi` Compile item is loaded like any other. Sema folds it into an inert

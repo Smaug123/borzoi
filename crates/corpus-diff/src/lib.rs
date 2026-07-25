@@ -2403,10 +2403,10 @@ fn add_reverse_divergences(
                 .filter(|u| fcs_use_covers_range(u, start, end))
                 .map(fcs_oracle_summary)
                 .collect();
-            // No covering use at all: the oracle did not speak here, so it
-            // cannot be contradicting us. That is routine wherever the
-            // occurrence sits in *binding* position, which is the one place FCS
-            // is free to say nothing:
+            // The oracle did not speak *about this range*, so it cannot be
+            // contradicting us. That is routine wherever the occurrence sits in
+            // *binding* position, which is the one place FCS is free to say
+            // nothing:
             //
             // - a *defining* occurrence — the forward direction does not grade
             //   FCS's definitions either;
@@ -2414,8 +2414,19 @@ fn add_reverse_divergences(
             //   `_n`, and FCS reports the later alternatives for an ordinary
             //   name but not for one starting with `_`.
             //
+            // "Spoke about this range" is an *exact* span match, not the
+            // enclosure `covering_oracles` reports: FCS synthesises an `_arg1`
+            // over the whole of a non-simple lambda parameter, so in
+            // `fun (A _n | B _n) -> _n` every occurrence inside the pattern is
+            // enclosed by a use of an unrelated symbol. Treating that as speech
+            // would report a correct answer as a divergence.
+            //
             // Count each so the silence stays visible.
-            if covering_oracles.is_empty() {
+            let spoke_here = file_uses
+                .uses
+                .iter()
+                .any(|u| u.start == start && u.end == end);
+            if !spoke_here {
                 if is_defining_occurrence(loaded, *file_idx, res, start, end) {
                     comparison.unoracled_definitions += 1;
                     continue;
