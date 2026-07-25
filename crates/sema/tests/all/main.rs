@@ -12,6 +12,7 @@ mod attr_resolution_diff;
 mod attr_resolution_sweep;
 mod classify_assembly_diff;
 mod classify_diff;
+mod companion_module_case_matrix;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
 mod infer_annotation_entity_diff;

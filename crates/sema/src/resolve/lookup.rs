@@ -1891,7 +1891,7 @@ impl<'a> Resolver<'a> {
             && !self.opaque_dotted_open
             && !self.unmodelled_open_active
             && !head_staled
-            && !self.head_contested_by_project_module(first.text())
+            && !self.head_contested_by_project_module(first.text(), case_seg.text())
             && let Some((type_id, case_res)) = self.type_case_path(first.text(), case_seg.text())
         {
             // The value-vs-type qualifier rule differs by case kind (FCS, expression
@@ -1948,7 +1948,7 @@ impl<'a> Resolver<'a> {
             && !self.opaque_dotted_open
             && !self.unmodelled_open_active
             && !head_staled
-            && !self.head_contested_by_project_module(first.text())
+            && !self.head_contested_by_project_module(first.text(), member_seg.text())
             && let Some((type_id, member_def)) =
                 self.type_member_path(first.text(), member_seg.text(), first.text_range().start())
         {
@@ -2199,6 +2199,10 @@ impl<'a> Resolver<'a> {
                 // commits the signature's own case — FCS's binding), while
                 // the value blocks above stay vetoed on it.
                 && !self.sig_screens_case_reading_of(&written_path)
+                // A same-file type owning this exact case makes the reference
+                // same-file-rooted whichever reading F# takes, so an earlier
+                // file's same-written-path case is never the target.
+                && !self.cross_file_case_shadowed_same_file(&written_path)
                 && let Some(id) = self.cross_file_type_case(&written_path, false)
             {
                 let whole = TextRange::new(
@@ -3297,6 +3301,12 @@ impl<'a> Resolver<'a> {
             if self.sig_screens_case_reading_of(&written) {
                 return;
             }
+            // A same-file type owning this exact case roots the reference in
+            // this file, so the cross-file index must not commit an earlier
+            // file's same-written-path case (the expression path's twin).
+            if self.cross_file_case_shadowed_same_file(&written) {
+                return;
+            }
             let project = self.cross_file_type_case_tiered(&written, false);
             // Order the project reading against the referenced assemblies by the
             // tier each reaches the head at. An `open` out-ranks the enclosing
@@ -3571,11 +3581,14 @@ impl<'a> Resolver<'a> {
         for k in (0..=self.container_path.len()).rev() {
             let prefix = &self.container_path[..k];
             // A module-like `Color` at this level shadows any enclosing type for
-            // member access — its members are unmodelled, so the path defers.
+            // member access, unless it provably cannot own `Red`
+            // ([`Self::module_like_transparent_for`]) — then F# backtracks past
+            // it exactly as it does past a module head whose residual misses.
             if self
                 .module_like_names
                 .get(prefix)
                 .is_some_and(|names| names.contains(tname))
+                && !self.module_like_transparent_for(prefix, tname, cname)
             {
                 return None;
             }
@@ -3593,6 +3606,140 @@ impl<'a> Resolver<'a> {
             return case_res.map(|cres| (type_id, cres));
         }
         None
+    }
+
+    /// Whether a **same-file** type reachable from the container chain owns the
+    /// case `Type.Case` — regardless of whether the same-file branch went on to
+    /// emit it.
+    ///
+    /// Such a reference is same-file-rooted whichever reading F# takes: either
+    /// the type's case, or the same-named module-like name that shadowed the
+    /// head. So the *cross-file* type-qualified-case index must not commit —
+    /// doing so navigates to an earlier file's same-written-path case, which is
+    /// a wrong go-to-definition (FCS-probed, `companion_module_case_matrix`:
+    /// `type Kind` plus a companion `module Kind` in one container, with an
+    /// earlier file declaring `Kind.ArrayFold` too).
+    ///
+    /// Deliberately *not* symmetric with [`Self::type_case_path`]'s outward
+    /// walk stopping at the innermost same-named type: when that type owns **no**
+    /// such case F# does keep searching outward and can bind a cross-file one
+    /// (FCS-probed), so only a same-file type that positively owns the case
+    /// blocks the fall-through.
+    fn same_file_type_owns_case(&self, type_name: &str, case_name: &str) -> bool {
+        let tname = id_text(type_name);
+        let cname = id_text(case_name);
+        (0..=self.container_path.len()).rev().any(|k| {
+            self.type_cases
+                .get(&self.container_path[..k])
+                .and_then(|m| m.get(tname))
+                .is_some_and(|c| c.contains_key(cname))
+        })
+    }
+
+    /// Whether the cross-file type-qualified-case index must stand down for the
+    /// written path — the bare `Type.Case` form whose head names a same-file
+    /// type that owns that case ([`Self::same_file_type_owns_case`]). Longer
+    /// paths are module-headed and already protected by
+    /// [`classify_same_file_module_qualified_case`](Self::classify_same_file_module_qualified_case)'s
+    /// same-file-rooted stop.
+    fn cross_file_case_shadowed_same_file(&self, written: &[String]) -> bool {
+        matches!(written, [ty, case] if self.same_file_type_owns_case(ty, case))
+    }
+
+    /// Whether the *module-like* `name` declared directly in `prefix`
+    /// ([`Self::module_like_names`]) provably cannot own `member` at a
+    /// 2-segment `Name.member` access, so F# backtracks past it to a same-named
+    /// **type** in an enclosing container.
+    ///
+    /// FCS-probed by the `companion_module_case_matrix` case group — the
+    /// `type Kind` + companion `module Kind` pair is the commonest shape in real
+    /// F#, and it sits precisely on this seam:
+    ///
+    /// - **FS0039**: within the module its own name is not in scope as a head at
+    ///   all, so it is transparent whatever it declares (from inside
+    ///   `module Kind`, `Kind.ArrayFold` binds the *type*'s case even when the
+    ///   module has its own `ArrayFold`).
+    /// - Otherwise only a **real same-file nested module** can be judged: sema
+    ///   holds the complete view of one, provided its path merges with nothing
+    ///   declared outside this file (an earlier file's module, a project or
+    ///   assembly namespace) and it declares no value-space names sema cannot
+    ///   enumerate. A module *abbreviation*'s target is unmodelled, so it is
+    ///   never transparent.
+    /// - A **recursive** module makes the source-ordered
+    ///   [`Self::container_decls`] view incomplete at the use, so nothing is
+    ///   provable while one is active.
+    ///
+    /// Any declaration of `member` in the module blocks transparency, in either
+    /// position. FCS does backtrack past a plain `let` value in *pattern*
+    /// position (a value is no pattern constructor), but [`DeclKinds`] does not
+    /// record `[<Literal>]`-ness and a literal **is** a constant pattern, so
+    /// that refinement is not available here; the cell stays an availability
+    /// gap in `companion_module_case_matrix`.
+    ///
+    /// Conservative in the safe direction throughout: `false` keeps the caller's
+    /// pre-existing defer.
+    fn module_like_transparent_for(&self, prefix: &[String], name: &str, member: &str) -> bool {
+        let mut mp = prefix.to_vec();
+        mp.push(name.to_string());
+        if self.container_path.starts_with(&mp) {
+            return true;
+        }
+        if self.recursive_module_active {
+            return false;
+        }
+        let Some(&kinds) = self.container_decls.get(prefix).and_then(|d| d.get(name)) else {
+            return false;
+        };
+        if !kinds.module || kinds.alias {
+            return false;
+        }
+        if self.preceding.is_exact_project_module(&mp)
+            || self.preceding.is_exact_nested_module(&mp)
+            || self.is_project_namespace_path(&mp)
+            || !self.assemblies_provably_lack_module_path(&mp)
+            || self.module_has_hidden_values(&mp)
+        {
+            return false;
+        }
+        !self
+            .container_decls
+            .get(&mp)
+            .is_some_and(|d| d.contains_key(member))
+    }
+
+    /// Whether the referenced assemblies **provably** hold nothing at `mp` that
+    /// could merge with a same-file module fragment there.
+    ///
+    /// A referenced module or static class at the same path merges with the
+    /// local fragment, and FCS's modules-first search finds the member in the
+    /// assembly half — so a local fragment's silence proves nothing unless this
+    /// says so (codex [P2], FCS-probed: a project `module Collide` beside the
+    /// qualifier fixture's `QP.ModHalf.Collide` binds the assembly's
+    /// `fromModule`, not a co-named local union case).
+    ///
+    /// This is an **absence** proof, so every clause is a negation and the
+    /// positive lookups must each be exhaustive:
+    ///
+    /// - [`opened_assembly_modules`](Self::opened_assembly_modules), not
+    ///   [`opened_assembly_type`](Self::opened_assembly_type): the latter
+    ///   commits to the *first* root a split yields, so its `None` does not mean
+    ///   "no such module". Two DLLs can encode `A.B` differently — a top-level
+    ///   `module A.B` in one, a nested `B` under root module `A` in the other —
+    ///   and FCS merges both, so every split and every root has to be searched
+    ///   (codex round 2 [P2]).
+    /// - `opened_assembly_type` still runs, for a *non-module* static class at
+    ///   `mp` that `opened_assembly_modules` filters out.
+    /// - [`any_split_of_a_module_path_has_a_dropped_type`](crate::AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type):
+    ///   a type the projector could not decode is invisible to both lookups and
+    ///   may *be* the module here, so an undecodable type anywhere along the
+    ///   path leaves absence unproven (codex round 2 [P2]).
+    fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
+        !self.assemblies.has_namespace(mp)
+            && self.opened_assembly_modules(mp).is_empty()
+            && self.opened_assembly_type(mp).is_none()
+            && !self
+                .assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(mp)
     }
 
     /// Order the definite value at `head` (already `id_text`-normalised)
@@ -3756,11 +3903,18 @@ impl<'a> Resolver<'a> {
     /// and other shapes defer through the shadow indexes exactly as before
     /// the emits existed. The conflated name-shadow set is consulted
     /// deliberately — any project-introduced name at a reachable completion
-    /// counts as contested; over-standing-down only costs availability,
-    /// never a wrong target. (Assembly modules are NOT consulted: the
+    /// counts as contested. (Assembly modules are NOT consulted: the
     /// pre-existing pin has the same-file type shadowing an assembly path.)
-    fn head_contested_by_project_module(&self, head: &str) -> bool {
+    ///
+    /// Standing down is **not** free, though: the fall-through can commit an
+    /// earlier file's same-written-path case, so a same-file module that
+    /// provably cannot own `residual` must not contest
+    /// ([`Self::module_like_transparent_for`]), and the cross-file case index
+    /// stands down in turn when a same-file type owns the case
+    /// ([`Self::cross_file_case_shadowed_same_file`]).
+    fn head_contested_by_project_module(&self, head: &str, residual: &str) -> bool {
         let head = id_text(head);
+        let residual = id_text(residual);
         let relative = (self.namespace_depth.max(1)..=self.container_path.len()).rev();
         let root_tier: &[usize] = &[0];
         let written = relative
@@ -3770,7 +3924,16 @@ impl<'a> Resolver<'a> {
             .explicit_open_prefixes
             .iter()
             .map(|(_, prefix)| prefix.clone());
-        for mut path in written.chain(opened) {
+        for prefix in written.chain(opened) {
+            // A *same-file* module that provably cannot own `residual` does not
+            // contest either: F# backtracks past it to the lexical type, so
+            // standing down would hand the residual to a cross-file case
+            // (FCS-probed, `companion_module_case_matrix` — the `type Kind` +
+            // companion `module Kind` shape).
+            if self.module_like_transparent_for(&prefix, head, residual) {
+                continue;
+            }
+            let mut path = prefix;
             path.push(head.to_string());
             // The current container (or an ancestor) does not contest: a
             // module's own name is not in scope as a head within itself — the
