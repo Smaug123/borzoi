@@ -119,7 +119,37 @@ For each visited project, the runner:
 6. Compares every comparable FCS project declaration and assembly declaration
    against sema resolution.
 7. Checks the reverse direction: every concrete sema resolution in a comparable
-   file must be covered by an FCS use.
+   file must be covered by an FCS use — except our own *defining* occurrences at
+   ranges FCS reports nothing about, which are counted rather than reported.
+   (FCS emits a binder once even where the source binds it several times: an
+   or-pattern `| Ldarg _n | Ldarga _n | …` reports `_n` at the first alternative
+   only, while sema resolves each occurrence to itself. Silence from the oracle
+   is not a contradiction.)
+
+### Where FCS says a symbol is declared
+
+A declaration outside the project's Compile set is **normal**, not a load
+failure, and `UseDecl` records which case applies:
+
+- `InProject` — a declaration in one of the project's own sources; the only
+  form the project-declaration comparison can adjudicate.
+- `Unlocated` — no declaration range, or one of FCS's pseudo-file sentinels
+  (`startup`, `unknown`, `commandLineArgs`). `rangeStartup` is the range of the
+  initial type-check environment, so *every* symbol imported from a referenced
+  assembly declares "at startup".
+- `OutsideProject` — a real file the project does not compile. An F# assembly
+  carries its original source ranges in its signature data, so FSharp.Core's
+  symbols declare at the build machine's paths
+  (`D:\a\_work\1\s\src\fsharp\src\FSharp.Core\prim-types.fsi`).
+
+The latter two are adjudicated by assembly identity, exactly as a missing
+declaration range already was; only a use with neither an in-project
+declaration nor an assembly identity lands in a skipped bucket.
+
+Assembly full names are compared modulo the two ways FCS *names* a symbol
+differently without disagreeing about which symbol it is: backtick escaping
+(``Operators.``not```) and an unqualified module `FullName` (`Seq` rather than
+`Microsoft.FSharp.Collections.Seq`). A dotted FCS name must still agree in full.
 
 The default soundness gate allows zero divergences.
 
@@ -169,8 +199,10 @@ The text report starts with project counts:
 
 The uses section distinguishes all FCS-reported uses from the subset we compare.
 Coverage is `matches / compared uses`, not `matches / all FCS uses`; definitions,
-zero-width uses, non-project declarations, and oracle uses without declarations
-are counted separately under skipped uses.
+zero-width uses, non-project declarations, out-of-project declarations, and
+oracle uses without declarations are counted separately under skipped uses,
+alongside the count of our own defining occurrences the oracle said nothing
+about.
 
 The project section also reports the skipped-project rate. The JSON report
 contains the same summary in a machine-readable form for ratchets or dashboards.
