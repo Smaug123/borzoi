@@ -785,6 +785,7 @@ fn collect_sig_container_exports(
 fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurface {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
+    let mut auto_open_type_containers = Vec::new();
     let mut value_paths = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
@@ -808,6 +809,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         &mut defs,
                         &mut exports,
                     );
+                    if sig_container_has_auto_open_type(fragment.sig_decls()) {
+                        auto_open_type_containers.push(path.clone());
+                    }
                     roots.push(model::SigRoot {
                         path,
                         auto_open: attrs_auto_open(fragment.attributes()),
@@ -820,6 +824,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     .long_id()
                     .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
                     .unwrap_or_default();
+                if sig_container_has_auto_open_type(fragment.sig_decls()) {
+                    auto_open_type_containers.push(ns.clone());
+                }
                 for decl in fragment.sig_decls() {
                     match decl {
                         SigDecl::NestedModule(nm) => {
@@ -844,6 +851,9 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                             let auto_open = attrs_auto_open(nm.attributes());
                             if auto_open {
                                 auto_open_nested.push(path.clone());
+                            }
+                            if sig_container_has_auto_open_type(nm.sig_decls()) {
+                                auto_open_type_containers.push(path.clone());
                             }
                             roots.push(model::SigRoot {
                                 path,
@@ -951,6 +961,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         roots,
         names: sig_token_names(sig),
         auto_open_nested,
+        auto_open_type_containers,
         value_paths,
         exported_value_paths,
         exported_case_paths,
@@ -1908,6 +1919,22 @@ pub(crate) fn collect_nested_module_names(
 }
 
 /// Whether the attribute lists mark a module `[<AutoOpen>]`.
+/// Whether a signature container declares an `[<AutoOpen>]` **type**.
+///
+/// Opening such a container publishes the type's static members, and an
+/// abbreviation borrows them from the abbreviated type — names the `.fsi`
+/// text never mentions, so no screen bounds them
+/// ([`model::SigScreen::auto_open_type_containers`]). The signature's
+/// attribute is authoritative on its own (fsc-probed 2026-07-25: it fires
+/// with a bare implementation `type Alias = Target.T`), so this is read off
+/// the signature rather than the implementation's flag.
+fn sig_container_has_auto_open_type(mut decls: impl Iterator<Item = SigDecl>) -> bool {
+    decls.any(|decl| match decl {
+        SigDecl::Types(types) => types.defns().any(|defn| attrs_auto_open(defn.attributes())),
+        _ => false,
+    })
+}
+
 fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
     attrs
         .flat_map(|list| list.attributes().collect::<Vec<_>>())

@@ -94,6 +94,14 @@ pub(super) struct SigScreen {
     /// the namespace sees the auto-open even when only the signature carries
     /// the attribute (conclusion 6).
     pub(super) auto_open_nested: Vec<Vec<String>>,
+    /// Paths of containers whose signature declares an `[<AutoOpen>]`
+    /// **type**. Opening one publishes that type's static members, which an
+    /// abbreviation borrows from the abbreviated type — so the `.fsi` text
+    /// does not bound them and the container's hidden-value marker is
+    /// [`HiddenNames::Borrowed`]. Collected from the signature because its
+    /// attribute is authoritative on its own (fsc-probed: it fires with a
+    /// bare implementation type, exactly as for modules — conclusion 6).
+    pub(super) auto_open_type_containers: Vec<Vec<String>>,
     /// Qualified paths of **value-namespace members the signature declares
     /// directly under a `namespace` fragment** — union/enum case names and
     /// exception constructors (a `val` cannot sit directly under a
@@ -1501,6 +1509,13 @@ impl FileExportIndices {
             for path in &screen.auto_open_nested {
                 fi.auto_open_module_paths.push(path.clone());
                 push_hidden(&mut fi, path.clone(), HiddenNames::SigDeclared);
+            }
+            // A signature-declared `[<AutoOpen>]` type publishes members the
+            // signature text need not name, and its verdict does not depend on
+            // the implementation carrying the attribute — so the marker comes
+            // from the screen rather than the implementation's own decl.
+            for path in &screen.auto_open_type_containers {
+                push_hidden(&mut fi, path.clone(), HiddenNames::Borrowed);
             }
         } else {
             // No signature bounds this file's surface, so nothing name-screens

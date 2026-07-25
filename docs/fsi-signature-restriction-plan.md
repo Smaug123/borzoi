@@ -568,9 +568,19 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   colliding RefLib member, and the `.fsi` text never mentions the
   abbreviated type's members — so the screen cannot demote them.
   (Inherited statics do not forward; the decl does not distinguish an
-  abbreviation, so every auto-open type declines.) Pinned by
-  `an_unscreened_fragment_blocks_the_open_fold_fall_through` and
-  `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through`.
+  abbreviation, so every auto-open type declines.) The signature's
+  `[<AutoOpen>]` verdict is authoritative for a *type* exactly as it is
+  for a module (probed: the sig attribute fires over a bare
+  implementation type), so the marker is contributed by the screen —
+  `SigScreen::auto_open_type_containers` — not read off the
+  implementation's flag. Pinned by
+  `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
+  `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
+  `a_signature_only_auto_open_type_blocks_the_fall_through`; swept
+  mechanically by `auto_open_type_matrix_agrees_with_fcs` (type shape ×
+  attribute placement × collision, site-keyed against FCS — the sweep
+  that turns "which construct does the `.fsi` text fail to bound?" from
+  a review question into a gate).
   FCS-probed (op1–op6, 2026-07-19): after an outside `open` of the
   signatured module, a sig-`private` val and a sig-hidden impl-only val
   colliding with RefLib both bind the **assembly** diagnostics-clean, as
