@@ -3405,9 +3405,10 @@ impl<'a> Resolver<'a> {
     ///   auto-open (pinned by the same sweep's retained arm), so it must not veto
     ///   a project reading that reached the head there.
     ///
-    /// The coarse, name-*blind* shadow sources the tiered walk carries as
-    /// [`ShadowVeto::OnNoMatch`] — an unknowable abbreviation somewhere in an
-    /// opened namespace — are excluded for the same reason, magnified: they carry
+    /// The coarse, name-*blind* shadow sources the tiered walk carries
+    /// ([`Resolver::unmodelled_type_shadow_at`]) — an unknowable abbreviation
+    /// somewhere in an opened namespace — are excluded for the same reason,
+    /// magnified: they carry
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {

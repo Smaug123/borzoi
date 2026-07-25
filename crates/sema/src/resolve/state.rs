@@ -335,16 +335,15 @@ pub(super) enum CaseTier {
 pub(super) enum ShadowVeto {
     /// Nothing at this prefix can shadow the name.
     None,
-    /// A coarse, name-blind risk (a project auto-open module whose nested
-    /// types sema does not enumerate; a namespace whose assembly's
-    /// abbreviations are unknowable): consulted only once the tier's own
-    /// lookup is a genuine no-match — pre-emptive checking would needlessly
-    /// defer every other real type under the same reading.
-    OnNoMatch,
-    /// An exact, name-keyed shadow (an in-scope assembly `[<AutoOpen>]`
-    /// module with an accessible member of exactly this name): vetoes even a
-    /// same-tier real match — FCS-probed, an auto-open module's contents
-    /// outrank the same namespace's own direct members.
+    /// Something at this prefix could shadow the name: an exact, name-keyed
+    /// match (an in-scope assembly `[<AutoOpen>]` module with an accessible
+    /// member of exactly this name) or a coarse, name-blind one (a project
+    /// `[<AutoOpen>]` module whose types sema does not enumerate; a namespace
+    /// whose assembly's abbreviations are unknowable). Either way it vetoes
+    /// the reading pre-emptively — including a same-tier real match, since
+    /// FCS-probed, an auto-open module's contents outrank the same
+    /// namespace's own direct members, and a visible entity is no evidence
+    /// that an invisible same-named one is absent.
     Preemptive,
 }
 
