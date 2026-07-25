@@ -595,7 +595,11 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   collection — and the subtree test does not check `[<AutoOpen>]`
   *reachability*, so a borrowed marker under a non-auto-open nested
   module blocks an ancestor's open. Tightening either re-opens the
-  enumerate-the-leak-paths obligation this design exists to avoid. Pinned by
+  enumerate-the-leak-paths obligation this design exists to avoid. A
+  third, pre-existing and shared with every auto-open consumer: an
+  **aliased** `AutoOpenAttribute` reads as absent (`attrs_auto_open`
+  matches the last path segment), which fsc itself warns about because
+  its own project-graph resolution misses it too (FS3561). Pinned by
   `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
   `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
   `a_signature_only_auto_open_type_blocks_the_fall_through`; swept

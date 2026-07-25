@@ -1964,7 +1964,17 @@ pub(crate) fn collect_nested_module_names(
     }
 }
 
-/// Whether the attribute lists mark a module `[<AutoOpen>]`.
+/// Whether the attribute lists mark a module or type `[<AutoOpen>]`.
+///
+/// Matched on the attribute's last path segment, so an **aliased**
+/// `AutoOpenAttribute` (`type AO = Microsoft.FSharp.Core.AutoOpenAttribute`,
+/// then `[<AO>]`) reads as absent. fsc warns on that aliasing precisely
+/// because its own project-graph dependency resolution misses it too
+/// (FS3561), and every consumer here shares the blind spot — auto-open
+/// module publication as much as the borrowed-name markers
+/// ([`model::SigScreen::auto_open_type_containers`]). Resolving attribute
+/// identity properly is the fix; treating unrecognised attributes as
+/// possibly-auto-open would defer across ordinary code instead.
 fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
     attrs
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
