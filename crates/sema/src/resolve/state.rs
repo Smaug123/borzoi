@@ -808,6 +808,13 @@ pub(super) struct Resolver<'a> {
     /// resolve directly is retried under each reading (`open System` makes
     /// `Console.WriteLine` resolve as `System.Console.WriteLine`).
     pub(super) imports: Vec<OpenGroup>,
+    /// How many *leading* [`Self::imports`] groups are the implicit
+    /// auto-opens ([`implicit_open_groups`]). Constant for the file: every
+    /// reset re-seeds `imports` with exactly that list, and explicit opens
+    /// are only ever appended after it — so `imports[..implicit_import_count]`
+    /// is always the implicit seed and the rest the explicit source opens
+    /// ([`Resolver::explicit_open_reading_prefixes`] relies on this split).
+    pub(super) implicit_import_count: usize,
     /// Every prefix that can **shorten a later module open**, in source order
     /// (latest last): the implicit auto-opens, each explicit `open <namespace>`,
     /// and each resolved `open <project module>`. The single source-ordered

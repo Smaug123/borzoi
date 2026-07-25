@@ -9,7 +9,7 @@ use super::state::Frame;
 
 use rowan::TextRange;
 
-use crate::assembly_env::EntityHandle;
+use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
 use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 
@@ -1298,7 +1298,10 @@ impl<'a> Resolver<'a> {
         }
 
         // A single-segment in-file `type` shadows any assembly type of that name
-        // (arity-agnostic, as F# in-file type lookup is).
+        // (arity-agnostic, as F# in-file type lookup is). This outranks the
+        // manifest module-shaped auto-open veto below: file content shadows
+        // every implicit open (fsi-verified — a local `type DirectShadow`
+        // wins against the fixture's auto-opened one).
         if let [only] = names
             && let Some(id) = self.lookup_type_def(only)
         {
@@ -1372,27 +1375,134 @@ impl<'a> Resolver<'a> {
             [only] => Some(only.as_str()),
             _ => None,
         };
-        match self.resolve_assembly_path_tiered(
-            |prefix| self.assembly_type_path_core(prefix, names, arity),
-            false,
-            |prefix| match only_name {
-                // The exact, name-keyed check first — it is the stronger
-                // verdict, and where it fires the coarse one is subsumed.
-                Some(name)
-                    if self
-                        .assemblies
-                        .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
-                {
-                    ShadowVeto::Preemptive
-                }
-                Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
-                _ => ShadowVeto::None,
-            },
-        ) {
-            TieredResolution::Resolved(reading) => TypePathResolution::Assembly {
+        let core = |prefix: &[String]| self.assembly_type_path_core(prefix, names, arity);
+        let shadow_at = |prefix: &[String]| match only_name {
+            // The exact, name-keyed check first — it is the stronger
+            // verdict, and where it fires the coarse one is subsumed.
+            Some(name)
+                if self
+                    .assemblies
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
+            {
+                ShadowVeto::Preemptive
+            }
+            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
+            _ => ShadowVeto::None,
+        };
+
+        // A module/type-shaped manifest auto-open (`[<assembly:
+        // AutoOpen("N.Ops")>]` naming a module) is kept out of the walk's
+        // prefixes entirely (`record_assembly_auto_opens` narrowing 2), yet
+        // FCS opens the target like a module: its imported surface is
+        // bare-visible at open priority — below every explicit source `open`
+        // (the manifest open is applied at file start, and F# is
+        // latest-open-wins) but above the enclosing-namespace and root tiers
+        // (both directions fsi-verified against `namespace global` /
+        // `open SemaAutoOpen.ExplicitBeats` decoys). Only the HEAD is
+        // contestable — it is where a bare or dotted path roots — and a
+        // single-segment path is contested only by what could bind type
+        // position at the written arity (a module never binds it, and FCS
+        // keys the lookup on arity; both fsi-verified). So when the surface
+        // could supply the head, walk ONLY the explicit-open readings: a
+        // complete reading there outranks the surface and commits; anything
+        // less — a partial (FCS prefers a complete reading even at lower
+        // priority, and the surface may hold one), a shadow, a no-match —
+        // defers rather than let a lower tier commit a wrong target.
+        // Deferral-only below the explicit tier: never a new resolution.
+        // One modelled-away ordering within that stratum (codex round 4): a
+        // namespace-shaped AutoOpen attribute LATER in the combined manifest
+        // order than the module-shaped one outranks the surface in FCS, but
+        // `auto_open_module_handles` keeps no position, so its reading is
+        // not walked and such a name defers — sound, and reachable only when
+        // an interleaved manifest supplies one name from both shapes.
+        // A committed reading whose LEAF is an **authoritative** module is
+        // not a type resolution at all: a module can never BE a type, and
+        // FCS errors on the annotation without reporting a symbol use
+        // (sweep-caught — the walk committed the global `module DirectSub`
+        // for a bare `x: DirectSub`). Every commit below flows through this
+        // filter; such a leaf defers instead. Keyed on `entity_class` (not
+        // `is_module`) because a NON-authoritative `Module` kind is an IL
+        // heuristic FCS does not share — it imports the entity as a plain
+        // type, which the annotation genuinely binds, so that leaf keeps
+        // committing (codex round 7). A module as a dotted QUALIFIER is
+        // untouched — only the whole path's leaf is checked.
+        let commit = |reading: super::state::TypePathReading| -> TypePathResolution {
+            if reading.leaf.is_some_and(|leaf| {
+                self.assemblies.entity_class(leaf) == Some(crate::SemanticClass::Module)
+            }) {
+                return TypePathResolution::Deferred;
+            }
+            TypePathResolution::Assembly {
                 idx_recs: reading.idx_recs,
                 leaf: reading.leaf,
-            },
+            }
+        };
+
+        if names.first().is_some_and(|head| {
+            let position = if names.len() == 1 {
+                ManifestSurfacePosition::TypePosition { arity }
+            } else {
+                ManifestSurfacePosition::DottedHead
+            };
+            self.assemblies
+                .manifest_auto_open_module_could_supply_entity_named(head, position)
+        }) {
+            return match self.resolve_assembly_path_over(
+                self.explicit_open_reading_prefixes(),
+                core,
+                false,
+                shadow_at,
+            ) {
+                TieredResolution::Resolved(reading) if reading.leaf.is_some() => commit(reading),
+                _ => TypePathResolution::Deferred,
+            };
+        }
+
+        // The arity FALLBACK (sweep-caught via `DirectGenHead`): the surface
+        // holds the head only at a DIFFERENT arity, so the exact-arity check
+        // above did not fire — but FCS's arity preference is a fallback, not
+        // a filter. An exact-arity type at any lower tier wins
+        // (`DirectArity`: the global arity-0 type beats the surface's
+        // generic, fsi-verified), yet with NO exact-arity type FCS binds the
+        // surface's generic with an arity error (`DirectGenHead`: the
+        // written name's only arity-0 occupant is a module, which cannot
+        // bind type position). So the full walk's verdict is trustworthy
+        // only when its leaf is itself a non-module type at the written
+        // arity; anything else — a module leaf, a partial, a no-match —
+        // defers, because the surface's generic may be FCS's binding.
+        if let [only] = names
+            && self
+                .assemblies
+                .manifest_auto_open_module_could_supply_entity_named(
+                    only,
+                    ManifestSurfacePosition::TypeAnyArity,
+                )
+        {
+            return match self.resolve_assembly_path_tiered(core, false, shadow_at) {
+                TieredResolution::Resolved(reading) => match reading.leaf {
+                    // The same authority-keyed module test as `commit` (a
+                    // non-authoritative "module" is a plain type to FCS).
+                    Some(leaf)
+                        if self.assemblies.entity_class(leaf)
+                            != Some(crate::SemanticClass::Module)
+                            && self.assemblies.entity(leaf).generic_parameters.len() == arity =>
+                    {
+                        TypePathResolution::Assembly {
+                            idx_recs: reading.idx_recs,
+                            leaf: reading.leaf,
+                        }
+                    }
+                    _ => TypePathResolution::Deferred,
+                },
+                // Even a genuine no-match defers: FCS binds the surface's
+                // generic (with an arity error), so "no shadow possible"
+                // would be the wrong signal.
+                _ => TypePathResolution::Deferred,
+            };
+        }
+
+        match self.resolve_assembly_path_tiered(core, false, shadow_at) {
+            TieredResolution::Resolved(reading) => commit(reading),
             // A project entity shadows the name at winning priority, or an
             // unmodelled type shadow won the walk at a higher-or-equal
             // priority than any real match.
