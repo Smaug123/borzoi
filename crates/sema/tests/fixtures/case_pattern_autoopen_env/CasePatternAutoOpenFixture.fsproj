@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A **retained manifest auto-open**: `[<AutoOpen>] module Cases.Retained.Auto`
+       makes fsc emit an assembly-level `AutoOpenAttribute` naming a
+       *module*-shaped target, which `AssemblyEnv::record_assembly_auto_opens`
+       keeps out of `effective_implicit_open_namespace_paths` — so no
+       namespace-prefix walk ever searches it, while FCS still imports its types
+       into bare scope ahead of the enclosing namespace and the root.
+
+       The module declares `Target`, the same head the main `fsharp_abbrev_env`
+       fixture's `Cases.Union` declares, so referencing both puts a reading the
+       precedence walk cannot see above one it can. `resolve_case_pattern_gen_diff`
+       holds the resolver to FCS's answer there (codex review). -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaCasePatternAutoOpenFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+    <Compile Include="AssemblyInfo.fs" />
+  </ItemGroup>
+
+</Project>

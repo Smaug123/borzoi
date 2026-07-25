@@ -29,8 +29,8 @@ use borzoi_sema::{AssemblyEnv, SemanticClass, resolve_project};
 use rowan::TextRange;
 
 use crate::common::{
-    CensusUse, LineIndex, ensure_assembly_fixture_built, invoke_fcs_dump_census_with_refs,
-    parse_census_jsonl,
+    CensusUse, LineIndex, ensure_abbrev_fixture_built, ensure_assembly_fixture_built,
+    invoke_fcs_dump_census_with_refs, parse_census_jsonl,
 };
 
 /// Snippets referencing statics of the sema fixture DLL — the qualified,
@@ -101,6 +101,63 @@ fn corpus_census() -> &'static std::collections::HashMap<&'static str, Vec<Censu
     })
 }
 
+/// The **F# discriminated-union** group. The C# fixture above has no unions, so
+/// nothing there exercises the one entity whose projected shape lies about its
+/// class: a *field-carrying* union case compiles to a compiler-generated nested
+/// class, and reading its kind off the projection calls it a
+/// [`SemanticClass::Type`] where FCS names a union case (codex review). Its own
+/// fixture and census, kept independent of the group above rather than adding a
+/// second `-r` to it — both fixtures declare `Demo.ModuleOpen.Merged`, and that
+/// deliberate cross-assembly collision has no business perturbing this gate.
+const UNION_CORPUS: &[&str] = &[concat!(
+    "namespace Consumer\n",
+    "open Demo.CasePat\n",
+    "module M =\n",
+    "    let f (x: Demo.CasePat.Shape) =\n",
+    "        match x with\n",
+    "        | Shape.Circle r -> r\n",
+    "        | _ -> 0\n",
+)];
+
+fn abbrev_env() -> AssemblyEnv {
+    let bytes = std::fs::read(ensure_abbrev_fixture_built()).expect("read abbrev fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse abbrev fixture dll");
+    AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
+}
+
+fn union_corpus_census() -> &'static std::collections::HashMap<&'static str, Vec<CensusUse>> {
+    static CENSUS: OnceLock<std::collections::HashMap<&'static str, Vec<CensusUse>>> =
+        OnceLock::new();
+    CENSUS.get_or_init(|| census_over(UNION_CORPUS, ensure_abbrev_fixture_built()))
+}
+
+/// One batched census over `corpus` with `dll` referenced, keyed by source.
+fn census_over(
+    corpus: &[&'static str],
+    dll: &std::path::Path,
+) -> std::collections::HashMap<&'static str, Vec<CensusUse>> {
+    let files: Vec<(PathBuf, &'static str)> =
+        corpus.iter().map(|&s| (temp_fs_file(s), s)).collect();
+    let paths: Vec<PathBuf> = files.iter().map(|(p, _)| p.clone()).collect();
+    let json = invoke_fcs_dump_census_with_refs(&paths, &[dll]);
+    let parsed = parse_census_jsonl(&json);
+    for (p, _) in &files {
+        let _ = std::fs::remove_file(p);
+    }
+    let mut by_source = std::collections::HashMap::new();
+    for fc in parsed {
+        let name = std::path::Path::new(&fc.path).file_name();
+        let &(_, source) = files
+            .iter()
+            .find(|(p, _)| p.file_name() == name)
+            .unwrap_or_else(|| panic!("census path {:?} is not a corpus snippet", fc.path));
+        assert!(fc.ok, "FCS failed to type-check {source:?}");
+        by_source.insert(source, fc.uses);
+    }
+    assert_eq!(by_source.len(), corpus.len());
+    by_source
+}
+
 /// Is FCS's kind at an occurrence compatible with the cross-assembly
 /// [`SemanticClass`] we committed? Empirically pinned by `dump_fcs_ground_truth`.
 fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
@@ -112,6 +169,8 @@ fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
         SemanticClass::Method => c == "Mfv" && u.is_member,
         // A property or a (static) field: FCS sees a property `Mfv`, or a `Field`.
         SemanticClass::Property => (c == "Mfv" && u.is_property) || c == "Field",
+        // A referenced union's case, as a pattern head or a constructor.
+        SemanticClass::UnionCase => c == "UnionCase",
         // The variants the corpus does not currently exercise (a referenced F#
         // module's function/value split, enum cases, events) are covered by the
         // per-branch `resolve_assembly` unit test; assert nothing here.
@@ -122,7 +181,6 @@ fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
         | SemanticClass::EnumCase
         | SemanticClass::Parameter
         | SemanticClass::PatternLocal
-        | SemanticClass::UnionCase
         | SemanticClass::ExceptionCase
         | SemanticClass::ActivePattern
         | SemanticClass::Member
@@ -135,7 +193,17 @@ fn fcs_compatible(class: SemanticClass, u: &CensusUse) -> bool {
 /// our token classifier commits, assert compatibility. Returns the committed
 /// `(text, class)` pairs.
 fn committed(source: &str) -> Vec<(String, SemanticClass)> {
-    let env = fixture_env();
+    committed_against(source, fixture_env(), &corpus_census()[source])
+}
+
+/// [`committed`] against a caller-chosen env and census — the two fixture groups
+/// share every assertion, so a compatibility rule cannot hold for one and not
+/// the other.
+fn committed_against(
+    source: &str,
+    env: AssemblyEnv,
+    uses: &[CensusUse],
+) -> Vec<(String, SemanticClass)> {
     let parsed = parse(source);
     assert!(parsed.errors.is_empty(), "parse errors in {source:?}");
     let file = ImplFile::cast(parsed.root).expect("impl file");
@@ -144,7 +212,7 @@ fn committed(source: &str) -> Vec<(String, SemanticClass)> {
 
     let idx = LineIndex::new(source);
     let mut out = Vec::new();
-    for u in &corpus_census()[source] {
+    for u in uses {
         let (s, e) = u.use_range_bytes(&idx);
         if s == e {
             continue;
@@ -221,6 +289,21 @@ fn commits_referenced_type_method_and_property() {
         ),
         "`Answer` is a property"
     );
+}
+
+/// A field-carrying case of a *referenced* union classifies as a union case, not
+/// as the compiler-generated carrier class it is projected from (codex review).
+#[test]
+fn referenced_union_case_pattern_classifies_as_a_union_case() {
+    for source in UNION_CORPUS {
+        let committed = committed_against(source, abbrev_env(), &union_corpus_census()[source]);
+        assert!(
+            committed
+                .iter()
+                .any(|(t, c)| t == "Shape.Circle" && *c == SemanticClass::UnionCase),
+            "no union-case classification for `Shape.Circle`; committed {committed:?}"
+        );
+    }
 }
 
 /// Ground-truth dump (ignored): print each occurrence's FCS kind alongside our

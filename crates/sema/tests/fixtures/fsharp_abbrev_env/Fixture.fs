@@ -417,3 +417,65 @@ namespace Demo.CasePat.Later
 // value/module namespace shadow the pattern resolver must see past.
 module ShadowedUnion =
     let helper () = 1
+
+// An `[<AutoOpen>]` module declaring a type that shadows its own namespace's
+// same-named union. FCS binds `Demo.CasePatAuto.Auto.Hidden`, not the direct
+// `Demo.CasePatAuto.Hidden` — the auto-open's contents out-rank the namespace's
+// own direct members — so a `Hidden.HiddenA` pattern under `open
+// Demo.CasePatAuto` must DECLINE (the tiered walk's `ShadowVeto::Preemptive`).
+namespace Demo.CasePatAuto
+
+type Hidden =
+    | HiddenA of int
+    | HiddenB
+
+[<AutoOpen>]
+module Auto =
+    type Hidden =
+        | AutoOnly of int
+
+// ==== The generative case-pattern sweep (`resolve_case_pattern_gen_diff.rs`) ====
+// One union to find, plus one namespace per *shadowing* shape that can sit at a
+// higher precedence tier than it. Every entity is called `Target`, so the sweep
+// picks a union namespace and a shadow namespace and opens them in either order.
+// Each shadow answers a different question about the head lookup: is the shape
+// transparent to the constructor namespace (a module is), does it *bind* the
+// head (a class, a caseless union), does FCS chase it (an abbreviation), or does
+// it out-rank its own namespace's direct members (an `[<AutoOpen>]` type)?
+namespace Cases.Union
+
+type Target =
+    | Carrier of int
+    | Nullary
+
+namespace Cases.GenericUnion
+
+type Target<'T> =
+    | Carrier of 'T
+    | Nullary
+
+namespace Cases.ModuleShadow
+
+module Target =
+    let helper () = 1
+
+namespace Cases.TypeShadow
+
+type Target() =
+    member _.X = 1
+
+namespace Cases.AbbrevShadow
+
+type Target = Cases.Union.Target
+
+namespace Cases.AutoOpenShadow
+
+[<AutoOpen>]
+module Auto =
+    type Target =
+        | AutoOnly of int
+
+namespace Cases.CaselessUnion
+
+type Target =
+    | Other of int

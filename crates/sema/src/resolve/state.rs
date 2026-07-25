@@ -306,6 +306,26 @@ pub(super) struct TypePathReading {
     pub(super) leaf: Option<EntityHandle>,
 }
 
+/// The precedence tier a *project* cross-file `Type.Case` reading won at
+/// (`Resolver::cross_file_type_case`) — the one distinction
+/// `Resolver::record_qualified_case_pattern` needs to order that reading
+/// against a referenced-assembly entity occupying the same head.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaseTier {
+    /// A lexically in-scope **module alias** as the head. Definitive: the alias
+    /// fixes what the head names, so it out-ranks even an `open`ed assembly
+    /// entity of the name.
+    Alias,
+    /// An `open`'s shortening prefix, the enclosing namespace/module nesting, or
+    /// the path as written. These yield to an assembly entity in scope through
+    /// an `open`: an `open` out-ranks the lower two outright, and two `open`
+    /// tiers cannot be ordered against each other here — the project
+    /// (`Resolver::open_shortening_prefixes`) and assembly
+    /// (`Resolver::open_reading_prefixes`) prefix lists are built from the same
+    /// opens but are neither shared nor index-aligned.
+    Namespace,
+}
+
 /// The per-prefix shadow verdict a caller of
 /// [`Resolver::resolve_assembly_path_tiered`](super::Resolver) supplies for
 /// each tier the walk visits — a named strength instead of two positionally

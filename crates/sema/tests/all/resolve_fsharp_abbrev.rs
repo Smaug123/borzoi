@@ -1354,6 +1354,42 @@ fn qualified_case_pattern_declines_on_cross_dll_collision() {
     );
 }
 
+/// The same collision, between two loaded DLLs that share a manifest
+/// **identity** (same name, version and public key) but export different things
+/// at the name: the main fixture's `Cases.Union.Target` union against the
+/// duplicate-identity fixture's `Cases.Union.Target` *module*. A module is
+/// transparent to a constructor-namespace head lookup, so nothing here trips the
+/// "two unions own the case" check — only per-DLL **provenance** sees the
+/// contest. Keyed on the identity instead, the pair reads as one DLL and the
+/// union is committed regardless of reference order, where FCS may bind the
+/// module (codex review).
+#[test]
+fn qualified_case_pattern_declines_on_same_identity_dll_collision() {
+    let main = std::fs::read(ensure_fixture_built()).expect("read main fixture dll");
+    let dup = std::fs::read(crate::common::ensure_case_pattern_dup_fixture_built())
+        .expect("read duplicate-identity fixture dll");
+    let main = Ecma335Assembly::parse(&main).expect("parse main fixture dll");
+    let dup = Ecma335Assembly::parse(&dup).expect("parse duplicate-identity fixture dll");
+    let env = AssemblyEnv::from_views(&[main, dup]).expect("build AssemblyEnv");
+
+    let src = "namespace Consumer\n\
+               open Cases.Union\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Target.Carrier r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "Target.Carrier");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "a union contested by a same-identity DLL's module must decline"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
 /// A union imported through an `open` of an assembly **module** (not a
 /// namespace) is a documented completeness gap: `assembly_prefixes_by_priority`
 /// carries only namespace readings, and the module open sets
@@ -1376,4 +1412,126 @@ fn module_opened_union_case_pattern_declines_soundly() {
     let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
     assert_eq!(rf.resolution_at(head), None);
     assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// The **enclosing-namespace** tier of the shared walk: no `open` at all, the
+/// file's own `namespace Demo.CasePat` supplies the prefix.
+#[test]
+fn qualified_case_pattern_resolves_at_the_enclosing_namespace() {
+    let env = fixture_env();
+    let src = "namespace Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape union in env");
+    let circle = env
+        .nested(shape, "Circle", 0)
+        .expect("Shape.Circle compiles to a nested case type");
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "the enclosing namespace is a reading tier of its own"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape.Circle")),
+        Some(Resolution::Entity(circle))
+    );
+}
+
+/// An `[<AutoOpen>]` module in the opened namespace declaring a type of the
+/// head's name out-ranks the namespace's own direct members (FCS-probed), and
+/// its nested content is not in the direct bucket — so the tier's
+/// `ShadowVeto::Preemptive` vetoes even the real same-tier union. Decline.
+#[test]
+fn qualified_case_pattern_declines_under_an_auto_open_type_shadow() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePatAuto\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Hidden.HiddenA n -> n\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "Hidden.HiddenA");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "`Demo.CasePatAuto.Auto.Hidden` out-ranks the direct `Hidden` — decline"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// The cross-tier interleave. A project union `Consumer.Shape` in an earlier
+/// file is reachable at the *enclosing-namespace* tier, and an assembly union
+/// `Demo.CasePat.Shape` owning the same case name is reachable through a later
+/// `open` — which out-ranks it, so FCS binds the assembly case. Sema cannot
+/// commit the assembly reading (a project type of the head's simple name is in
+/// scope, and FCS would chase a project abbreviation of that name to its
+/// target's cases), so the site DECLINES. Before the interleave the project
+/// reading was committed unconditionally: a wrong target, not a missed one.
+#[test]
+fn assembly_open_outranks_a_project_case_at_the_enclosing_namespace() {
+    let env = fixture_env();
+    let earlier = "namespace Consumer\n\
+                   type Shape =\n\
+                   \x20   | Circle of int\n\
+                   \x20   | Square\n";
+    let later = "namespace Consumer\n\
+                 open Demo.CasePat\n\
+                 module M =\n\
+                 \x20   let f x =\n\
+                 \x20       match x with\n\
+                 \x20       | Shape.Circle r -> r\n\
+                 \x20       | _ -> 0\n";
+    let files: Vec<_> = [earlier, later]
+        .iter()
+        .map(|src| {
+            let parsed = parse(src);
+            assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+            ImplFile::cast(parsed.root).expect("impl file")
+        })
+        .collect();
+    let contended = borzoi_sema::resolve_project(&files, &env);
+    let whole = at(later, "Shape.Circle");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(5u32));
+    assert_eq!(
+        contended.file(1).resolution_at(head),
+        None,
+        "the assembly union's `open` out-ranks the project union's namespace"
+    );
+    assert_eq!(contended.file(1).resolution_at(whole), None);
+
+    // Controls: the decline is caused by the *contending assembly union*, not by
+    // some unrelated effect of having an `open` at all. With no open, and with
+    // an open of a namespace that supplies no `Shape`, the project case binds.
+    for control in [
+        later.replace("open Demo.CasePat\n", ""),
+        later.replace("open Demo.CasePat\n", "open Demo.CasePat.Later\n"),
+    ] {
+        let files: Vec<_> = [earlier, control.as_str()]
+            .iter()
+            .map(|src| {
+                let parsed = parse(src);
+                assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+                ImplFile::cast(parsed.root).expect("impl file")
+            })
+            .collect();
+        let uncontended = borzoi_sema::resolve_project(&files, &env);
+        let whole = at(&control, "Shape.Circle");
+        assert!(
+            matches!(
+                uncontended.file(1).resolution_at(whole),
+                Some(Resolution::Item(_))
+            ),
+            "uncontended, the project case binds ({control:?}): {:?}",
+            uncontended.file(1).resolution_at(whole)
+        );
+    }
 }
