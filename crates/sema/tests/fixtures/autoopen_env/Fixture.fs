@@ -299,6 +299,14 @@ module DirectOps =
     type DirectArity<'T>() =
         member _.Marker = 8
 
+    // A generic type whose name is also a ROOT module: resolving the dotted
+    // `DirectGenHead.Nested` skips this arity-1 type (a dotted type head is
+    // keyed at arity 0) and binds the global module's nested type below
+    // (fsi-verified) — a dotted head's surface match must be arity-0-keyed
+    // for types, arityless only for modules.
+    type DirectGenHead<'T>() =
+        member _.Marker = 10
+
 // A namespace with a type sharing the auto-opened module's nested-type name:
 // an explicit `open SemaAutoOpen.ExplicitBeats` is applied AFTER the manifest
 // open, so latest-open-wins binds bare `DirectShadow` HERE (fsi-verified) —
@@ -308,8 +316,17 @@ namespace SemaAutoOpen.ExplicitBeats
 type DirectShadow() =
     member _.ExplicitMarker = 7
 
+// An INTERNAL module named by the manifest: FCS does not import its surface
+// cross-assembly (fsi-verified: with the attribute below, a bare
+// `InternalShadow` still binds the global-namespace decoy), so the shadow
+// veto must ignore the target entirely.
+module internal InternalTarget =
+    type InternalShadow() =
+        member _.Marker = 9
+
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
+[<assembly: AutoOpen("SemaAutoOpen.InternalTarget")>]
 // A path that exists nowhere — FCS warns and skips it; it must not sink or
 // skew resolution.
 [<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]
@@ -726,3 +743,16 @@ type DirectHeadOnly() =
 // surface's.
 type DirectArity() =
     member _.Decoy = 6
+
+// The dotted-head arity decoy: `DirectGenHead.Nested` binds THIS module's
+// nested type — the surface's generic `DirectGenHead<'T>` is skipped at the
+// head's arity 0 (fsi-verified).
+module DirectGenHead =
+    type Nested() =
+        member _.Decoy = 7
+
+// The decoy for the INTERNAL manifest target's nested type: the internal
+// surface is not imported cross-assembly, so FCS binds THIS one bare
+// (fsi-verified).
+type InternalShadow() =
+    member _.Decoy = 8

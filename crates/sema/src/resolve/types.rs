@@ -9,7 +9,7 @@ use super::state::Frame;
 
 use rowan::TextRange;
 
-use crate::assembly_env::EntityHandle;
+use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
 use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 
@@ -1416,11 +1416,13 @@ impl<'a> Resolver<'a> {
         // not walked and such a name defers — sound, and reachable only when
         // an interleaved manifest supplies one name from both shapes.
         if names.first().is_some_and(|head| {
+            let position = if names.len() == 1 {
+                ManifestSurfacePosition::TypePosition { arity }
+            } else {
+                ManifestSurfacePosition::DottedHead
+            };
             self.assemblies
-                .manifest_auto_open_module_could_supply_entity_named(
-                    head,
-                    (names.len() == 1).then_some(arity),
-                )
+                .manifest_auto_open_module_could_supply_entity_named(head, position)
         }) {
             return match self.resolve_assembly_path_over(
                 self.explicit_open_reading_prefixes(),
@@ -1434,6 +1436,46 @@ impl<'a> Resolver<'a> {
                         leaf: reading.leaf,
                     }
                 }
+                _ => TypePathResolution::Deferred,
+            };
+        }
+
+        // The arity FALLBACK (sweep-caught via `DirectGenHead`): the surface
+        // holds the head only at a DIFFERENT arity, so the exact-arity check
+        // above did not fire — but FCS's arity preference is a fallback, not
+        // a filter. An exact-arity type at any lower tier wins
+        // (`DirectArity`: the global arity-0 type beats the surface's
+        // generic, fsi-verified), yet with NO exact-arity type FCS binds the
+        // surface's generic with an arity error (`DirectGenHead`: the
+        // written name's only arity-0 occupant is a module, which cannot
+        // bind type position). So the full walk's verdict is trustworthy
+        // only when its leaf is itself a non-module type at the written
+        // arity; anything else — a module leaf, a partial, a no-match —
+        // defers, because the surface's generic may be FCS's binding.
+        if let [only] = names
+            && self
+                .assemblies
+                .manifest_auto_open_module_could_supply_entity_named(
+                    only,
+                    ManifestSurfacePosition::TypeAnyArity,
+                )
+        {
+            return match self.resolve_assembly_path_tiered(core, false, shadow_at) {
+                TieredResolution::Resolved(reading) => match reading.leaf {
+                    Some(leaf)
+                        if !self.assemblies.is_module(leaf)
+                            && self.assemblies.entity(leaf).generic_parameters.len() == arity =>
+                    {
+                        TypePathResolution::Assembly {
+                            idx_recs: reading.idx_recs,
+                            leaf: reading.leaf,
+                        }
+                    }
+                    _ => TypePathResolution::Deferred,
+                },
+                // Even a genuine no-match defers: FCS binds the surface's
+                // generic (with an arity error), so "no shadow possible"
+                // would be the wrong signal.
                 _ => TypePathResolution::Deferred,
             };
         }

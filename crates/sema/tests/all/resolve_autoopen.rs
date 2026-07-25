@@ -875,6 +875,66 @@ fn an_arity_matched_surface_type_still_defers_the_applied_annotation() {
 }
 
 #[test]
+fn an_internal_manifest_target_does_not_veto() {
+    // `[<assembly: AutoOpen("SemaAutoOpen.InternalTarget")>]` names an
+    // INTERNAL module: FCS does not import its surface cross-assembly, so a
+    // bare `InternalShadow` binds the global-namespace decoy (fsi-verified)
+    // — the veto must ignore the inaccessible target (codex P2, round 5).
+    let env = fixture_env();
+    let src = "let f (x: InternalShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "InternalShadow", 0)
+        .expect("fixture must declare a global-namespace InternalShadow");
+    assert_eq!(
+        rf.resolution_at(at(src, "InternalShadow")),
+        Some(Resolution::Entity(root)),
+        "an internal manifest target's surface must not defer the global decoy"
+    );
+}
+
+#[test]
+fn a_generic_surface_type_does_not_veto_a_dotted_head_at_arity_zero() {
+    // The surface's `DirectGenHead<'T>` is generic; a dotted head is keyed
+    // at arity 0, so FCS skips it and `DirectGenHead.Nested` binds the
+    // global module's nested type (fsi-verified) — a dotted head's type
+    // match must be arity-0-keyed (codex P2, round 5). Only the head is
+    // asserted committed: the nested-type tail is recorded at its own
+    // segment by the same walk.
+    let env = fixture_env();
+    let src = "let f (x: DirectGenHead.Nested) = x\n";
+    let rf = resolve(src, &env);
+    let root_module = env
+        .lookup_type(&[], "DirectGenHead", 0)
+        .expect("fixture must declare a global-namespace DirectGenHead module");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectGenHead")),
+        Some(Resolution::Entity(root_module)),
+        "an arity-1 surface type must not defer a dotted head keyed at arity 0"
+    );
+}
+
+#[test]
+fn a_wrong_arity_surface_type_defers_a_bare_annotation_with_no_exact_arity_type() {
+    // FCS's arity preference is a FALLBACK, not a filter: bare
+    // `DirectGenHead` has no arity-0 type anywhere (the global decoy of
+    // that name is a MODULE), so FCS binds the surface's generic
+    // `DirectGenHead<'T>` with an arity error — the sweep caught the
+    // arity-narrowed veto committing the global module here (a wrong
+    // target). With the surface holding the name at a different arity, a
+    // commitment is trustworthy only for an exact-arity type; anything
+    // else defers.
+    let env = fixture_env();
+    let src = "let f (x: DirectGenHead) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectGenHead")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "with no exact-arity type, FCS falls back to the surface generic — defer"
+    );
+}
+
+#[test]
 fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
     // Over-defer control: `GlobalPlain` appears in no auto-open module's
     // tree, so the manifest-module shadow check must not touch it — it keeps
