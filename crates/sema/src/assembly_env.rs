@@ -228,6 +228,29 @@ pub struct OpenFoldSurface {
     pub contestant_names: Vec<String>,
 }
 
+impl OpenFoldSurface {
+    /// Whether this surface could put a **value** named `name` into bare
+    /// expression scope.
+    ///
+    /// Lives on the type so a caller cannot consult [`Self::entries`] while
+    /// forgetting [`Self::residue`] — the mistake that makes a name the surface
+    /// merely *could not list* read as a name it does not have. Either residue
+    /// flag counts. Only value-space entries do: a pattern-only entry (an
+    /// active-pattern tag) binds no expression.
+    ///
+    /// [`Self::contestant_names`] is deliberately excluded — those are
+    /// constructible *type* names taking the constructor slot, the type-namespace
+    /// contest `decide_type_path` arbitrates.
+    pub fn could_supply_value(&self, name: &str) -> bool {
+        if self.residue || self.residue_below_vals {
+            return true;
+        }
+        self.entries.iter().any(|e| {
+            e.name == name && matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both)
+        })
+    }
+}
+
 /// One bare name of an [`OpenFoldSurface`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFoldName {
@@ -2174,11 +2197,11 @@ impl AssemblyEnv {
         // Contested auto-open namespaces: shared by two DLLs, so dropped from the
         // implicit opens above and parked here. FCS still applies each
         // contributor's open, so the same surface question applies per namespace.
-        if self.contested_auto_opens.iter().any(|(_, ns)| {
-            self.namespace_has_dropped_type(ns)
-                || self.unknowable_abbreviations_in_namespace(ns)
-                || self.namespace_surface_could_supply_value_inner(ns, name)
-        }) {
+        if self
+            .contested_auto_opens
+            .iter()
+            .any(|(_, ns)| self.namespace_surface_could_supply_value_inner(ns, name))
+        {
             return true;
         }
         // Retained module-shaped manifest auto-opens (`[<assembly:
@@ -2188,7 +2211,8 @@ impl AssemblyEnv {
             .iter()
             .any(|&(h, effectively_public)| {
                 effectively_public
-                    && Self::fold_surface_could_supply_value(&self.open_fold_surface(h), name)
+                    && (self.namespace_uncertain(&self.nodes[h.index()].owning_namespace)
+                        || self.open_fold_surface(h).could_supply_value(name))
             })
         {
             return true;
@@ -2208,12 +2232,23 @@ impl AssemblyEnv {
     /// dropped/unknowable markers are namespace-scoped rather than per-surface, so
     /// they are asked here, for every namespace arm alike.
     fn namespace_surface_could_supply_value_inner(&self, namespace: &[String], name: &str) -> bool {
-        self.namespace_has_dropped_type(namespace)
-            || self.unknowable_abbreviations_in_namespace(namespace)
+        self.namespace_uncertain(namespace)
             || self
                 .open_namespace_fold_surfaces(namespace)
                 .iter()
-                .any(|s| Self::fold_surface_could_supply_value(s, name))
+                .any(|s| s.could_supply_value(name))
+    }
+
+    /// The namespace-scoped incompleteness markers a fold surface cannot encode,
+    /// since it enumerates *surviving* entities: a dropped type could be a union
+    /// supplying a case or an `[<AutoOpen>]` module supplying a value, and an
+    /// undecodable pickle hides module-scoped aliases.
+    ///
+    /// Paired with **every** namespace read in the value queries — a name-keyed
+    /// surface answer alone is never evidence of absence.
+    fn namespace_uncertain(&self, namespace: &[String]) -> bool {
+        self.namespace_has_dropped_type(namespace)
+            || self.unknowable_abbreviations_in_namespace(namespace)
     }
 
     /// Whether the fold surface of `namespace` could put a **value** named `name`
@@ -2230,26 +2265,6 @@ impl AssemblyEnv {
         name: &str,
     ) -> bool {
         !namespace.is_empty() && self.namespace_surface_could_supply_value_inner(namespace, name)
-    }
-
-    /// Whether an [`OpenFoldSurface`] could put a **value** named `name` into
-    /// bare expression scope.
-    ///
-    /// Either residue flag counts: both mean names exist the surface cannot
-    /// list, and one of them could be this name. Only value-space entries count
-    /// — a pattern-only entry (an active-pattern tag) does not bind an
-    /// expression. [`OpenFoldSurface::contestant_names`] is deliberately **not**
-    /// consulted: those are constructible *type* names taking the constructor
-    /// slot, which is the type-namespace contest `decide_type_path` already
-    /// arbitrates, and counting them here would defer every bare constructor use
-    /// whose type lives in one of these very namespaces.
-    fn fold_surface_could_supply_value(surface: &OpenFoldSurface, name: &str) -> bool {
-        if surface.residue || surface.residue_below_vals {
-            return true;
-        }
-        surface.entries.iter().any(|e| {
-            e.name == name && matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both)
-        })
     }
 
     /// Whether opening the module `handle` imports an entity named `name`
