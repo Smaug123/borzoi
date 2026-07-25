@@ -67,6 +67,10 @@ sub-tag (`value:module-or-import`, `union-case`, …).
 - **`summary.txt`** — start here. Per-bucket counts, the **`gap_b1` sub-tag
   histogram** (the actionable digest — which constructs dominate the missing
   binds), and the coverage ratios.
+- **`summary.json`** — the versioned machine-readable counterpart, including
+  the stride/limit configuration and all denominators. The main-only continuous-
+  measurements workflow wraps it in commit/corpus provenance and records it on
+  `stats-data`; scripts should consume this rather than parsing `summary.txt`.
 - **`gap_b1.txt` — the primary worklist.** FCS resolves the use with *no
   inference* (bucket B1) and its declaration is in this file, yet we return
   `Deferred`/nothing. These are pure-lexical names we ought to bind and don't —
@@ -88,8 +92,8 @@ sub-tag (`value:module-or-import`, `union-case`, …).
   `fcs_not_ok.txt`, `unreadable.txt`: one path per line, the files we could not
   compare.
 
-Matches are the headline success and are only **counted** (in `summary.txt`),
-never listed.
+Matches are the headline success and are only **counted** (in `summary.txt` and
+`summary.json`), never listed.
 
 ### The bucket taxonomy
 

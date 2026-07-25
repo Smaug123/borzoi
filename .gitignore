@@ -15,6 +15,9 @@ fcs-divergence/
 # Generated name-resolution divergence report (resolve_divergence report generator)
 resolve-divergence/
 
+# Generated find-references differential report
+references-diff/
+
 
 # Added by cargo
 

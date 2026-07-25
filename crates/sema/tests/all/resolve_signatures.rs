@@ -474,14 +474,17 @@ fn hidden_member_falls_through_to_assembly_and_exposed_member_is_screened() {
 
 /// The `open` half of the same probe. FCS binds bare `shown` to the `.fsi`
 /// and bare `bar`/`asmOnly` to RefLib. The sig-exposed `shown` is a real
-/// export now, so the open enumerates it and the bare use commits to the
-/// `.fsi` identity. `bar`/`asmOnly` stay deferred: the signatured module is
-/// still hidden-valued (it may expose names sema cannot enumerate yet), so
-/// the open's generation barrier stales the assembly-folded entries — the
-/// honest D5 cost on this path (the *qualified* form does commit them to the
-/// assembly — the test above).
+/// export, so the open enumerates it and the bare use commits to the
+/// `.fsi` identity. `bar`/`asmOnly` commit to the assembly: every hidden
+/// marker for the opened path is sig-screened, so the generation barrier
+/// fires *before* the assembly fold and the per-name screen demotion is
+/// what stands between an assembly entry and a name the signature could
+/// expose — both names are absent from the signature text outright (`bar`
+/// exists only as the impl's hidden binder), so both entries survive and
+/// fall through as FCS does (the open-fold slice of
+/// `docs/fsi-signature-restriction-plan.md`).
 #[test]
-fn open_of_signatured_module_screens_bare_names_from_the_assembly() {
+fn open_of_signatured_module_drops_bare_hidden_names_to_the_assembly() {
     let files = [
         ("/p/A.fsi", "module ProbeNs.Shared\n\nval shown: int\n"),
         (
@@ -503,15 +506,13 @@ fn open_of_signatured_module_screens_bare_names_from_the_assembly() {
         "bare sig-exposed shown after open (FCS binds the .fsi — an assembly \
          commit would be wrong)",
     );
-    assert_uncommitted(
-        res_at(&proj, &files, 2, "bar"),
-        "bare sig-hidden bar after open (FCS binds the assembly; Stage 1 \
-         defers on the open path — never the impl binder)",
-    );
-    assert_uncommitted(
-        res_at(&proj, &files, 2, "asmOnly"),
-        "bare assembly-only asmOnly after open (deferred on the open path)",
-    );
+    for name in ["bar", "asmOnly"] {
+        let res = res_at(&proj, &files, 2, name);
+        assert!(
+            matches!(res, Some(Resolution::Member { .. })),
+            "bare sig-hidden {name} after open: FCS binds the assembly, got {res:?}"
+        );
+    }
 }
 
 /// Codex review P1 (FCS-checked in review): a **namespace-direct case** the

@@ -27,9 +27,11 @@
 //! * `uncompared_other.txt` — couldn't even get that far: `(json parse failure)`
 //!   (the JSONL line didn't parse), `<path>\t(unreadable)` (we couldn't read the
 //!   source), or `<path>\t(fcs error: …)` (a per-file FCS failure in the batch).
+//! * `summary.json` — the versioned machine-readable configuration and bucket
+//!   counts consumed by the continuous-measurements workflow.
 //!
 //! Files that match (both clean, both normalise, equal ASTs) are the headline
-//! success case and are only counted, not listed.
+//! success case and are counted in `summary.json`, not listed.
 //!
 //! Like the other corpus sweeps this is `#[ignore]`d (it parses the corpus
 //! twice and writes report files). FCS is driven through the shared
@@ -42,7 +44,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use borzoi_cst::parser::{parse_sig_with_symbols, parse_with_symbols};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::common::normalised_ast::{normalise_fcs_dump, normalise_parse};
 use crate::common::{catch_unwind_silent, corpus_root, fcs_ast_batch};
@@ -76,6 +78,42 @@ struct Buckets {
     /// Both clean, both normalise, equal — counted only.
     matches: usize,
     seen: usize,
+}
+
+#[derive(Serialize)]
+struct Summary {
+    schema_version: u32,
+    measurement: &'static str,
+    configuration: Configuration,
+    statistics: Statistics,
+}
+
+#[derive(Serialize)]
+struct Configuration {
+    corpus: &'static str,
+    file_extensions: [&'static str; 2],
+    defines: [&'static str; 2],
+}
+
+#[derive(Serialize)]
+struct Statistics {
+    records: usize,
+    matches: usize,
+    we_reject_fcs_accepts: usize,
+    we_accept_fcs_rejects: usize,
+    both_reject: usize,
+    ast_divergences: usize,
+    fcs_unmodeled: usize,
+    our_panics: usize,
+    other: usize,
+    match_rate: RateSummary,
+}
+
+#[derive(Serialize)]
+struct RateSummary {
+    matched: usize,
+    seen: usize,
+    basis_points: u32,
 }
 
 #[test]
@@ -251,6 +289,9 @@ fn write_report(out_dir: &Path, b: &Buckets) {
     other.sort();
     write_lines(out_dir, "uncompared_other.txt", &other);
 
+    std::fs::write(out_dir.join("summary.json"), summary_json(b))
+        .expect("write parser divergence summary.json");
+
     eprintln!(
         "\n{} records | {} match | {} we-reject/fcs-accept | {} we-accept/fcs-reject | \
          {} both-reject | {} ast-divergence | {} fcs-unmodeled | {} our-panics | {} other",
@@ -265,6 +306,45 @@ fn write_report(out_dir: &Path, b: &Buckets) {
         b.uncompared_other.len(),
     );
     eprintln!("wrote report to {}", out_dir.display());
+}
+
+fn summary_json(b: &Buckets) -> String {
+    let summary = Summary {
+        schema_version: 1,
+        measurement: "parser-divergence",
+        configuration: Configuration {
+            corpus: "fsharp-src",
+            file_extensions: ["fs", "fsi"],
+            defines: ["COMPILED", "EDITING"],
+        },
+        statistics: Statistics {
+            records: b.seen,
+            matches: b.matches,
+            we_reject_fcs_accepts: b.we_reject_fcs_accepts.len(),
+            we_accept_fcs_rejects: b.we_accept_fcs_rejects.len(),
+            both_reject: b.both_reject.len(),
+            ast_divergences: b.ast_divergence.len(),
+            fcs_unmodeled: b.uncompared_fcs_unmodeled.len(),
+            our_panics: b.our_parser_panics.len(),
+            other: b.uncompared_other.len(),
+            match_rate: RateSummary {
+                matched: b.matches,
+                seen: b.seen,
+                basis_points: basis_points(b.matches, b.seen),
+            },
+        },
+    };
+    let mut json = serde_json::to_string_pretty(&summary).expect("serialise parser summary");
+    json.push('\n');
+    json
+}
+
+fn basis_points(numerator: usize, denominator: usize) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    u32::try_from((numerator as u128 * 10_000) / denominator as u128)
+        .expect("a ratio in basis points fits u32")
 }
 
 fn write_paths(out_dir: &Path, name: &str, paths: &[PathBuf]) {
@@ -322,4 +402,46 @@ fn collect_diff_files(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+#[test]
+fn summary_json_contract_is_versioned_and_complete() {
+    let buckets = Buckets {
+        we_reject_fcs_accepts: vec![("expected expression".into(), "a.fs".into())],
+        we_accept_fcs_rejects: vec!["b.fs".into(), "c.fs".into()],
+        both_reject: vec!["d.fs".into()],
+        ast_divergence: vec!["e.fs".into()],
+        uncompared_fcs_unmodeled: vec!["f.fs".into()],
+        our_parser_panics: vec!["g.fs".into()],
+        uncompared_other: vec!["h.fs\t(unreadable)".into()],
+        matches: 11,
+        seen: 19,
+    };
+
+    let value: serde_json::Value =
+        serde_json::from_str(&summary_json(&buckets)).expect("summary is JSON");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "schema_version": 1,
+            "measurement": "parser-divergence",
+            "configuration": {
+                "corpus": "fsharp-src",
+                "file_extensions": ["fs", "fsi"],
+                "defines": ["COMPILED", "EDITING"]
+            },
+            "statistics": {
+                "records": 19,
+                "matches": 11,
+                "we_reject_fcs_accepts": 1,
+                "we_accept_fcs_rejects": 2,
+                "both_reject": 1,
+                "ast_divergences": 1,
+                "fcs_unmodeled": 1,
+                "our_panics": 1,
+                "other": 1,
+                "match_rate": { "matched": 11, "seen": 19, "basis_points": 5789 }
+            }
+        })
+    );
 }

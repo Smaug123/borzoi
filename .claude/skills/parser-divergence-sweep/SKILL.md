@@ -53,6 +53,10 @@ script parse would not be like-for-like).
 
 Written under the output dir.
 
+- **`summary.json`** — the versioned machine-readable measurement configuration
+  and every bucket count, including matches. The main-only continuous-
+  measurements workflow wraps this in commit/corpus provenance and records it
+  on `stats-data`; scripts should consume this file rather than parsing stderr.
 - **`we_reject_fcs_accepts.txt` — the primary worklist.** We error, FCS is
   clean. Each line is `<our first error message>\t<path>`, **sorted by message
   then path**, so the dominant gaps group together — pick the biggest cluster
@@ -70,7 +74,8 @@ Written under the output dir.
   `<path>\t(unreadable)`, or `<path>\t(fcs error: …)`.
 
 Files that match (both clean, both normalise, equal ASTs) are the headline
-success and are only **counted** (in the closing stderr summary), never listed.
+success and are only **counted** (in `summary.json` and the closing stderr
+summary), never listed.
 
 ## When to reach for this vs. the gate
 

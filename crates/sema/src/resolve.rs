@@ -639,13 +639,59 @@ fn sig_val_type_is_function(ty: Option<Type>) -> bool {
 /// same-namespace sibling in any file, clean), `None` for a public /
 /// `internal` header. Every export inherits the floor; a `val private`
 /// deepens it to its own container.
+/// Record every container **at or under** `container` whose signature
+/// declares an `[<AutoOpen>]` type.
+///
+/// Recursive because an `open` publishes the module's own names *and* those
+/// of its `[<AutoOpen>]` descendants: a borrowed name can therefore arrive
+/// from any depth, and the marker must name the container it actually sits
+/// in so that both `open` of that container and `open` of any ancestor see
+/// it (`ProjectItems::opaque_hidden_value_module` matches on the subtree).
+fn collect_auto_open_type_containers(
+    container: &[String],
+    decls: &[SigDecl],
+    out: &mut Vec<Vec<String>>,
+) {
+    for decl in decls {
+        match decl {
+            SigDecl::Types(types) => {
+                // Before any of the export walker's `continue`s: a type it
+                // skips (an accessibility modifier, a dotted name) still
+                // publishes members if it is auto-open.
+                if types.defns().any(|defn| attrs_auto_open(defn.attributes())) {
+                    out.push(container.to_vec());
+                }
+            }
+            SigDecl::NestedModule(nm) => {
+                let Some(li) = nm.long_id() else { continue };
+                let mut nested = container.to_vec();
+                nested.extend(li.idents().map(|t| id_text(t.text()).to_string()));
+                collect_auto_open_type_containers(
+                    &nested,
+                    &nm.sig_decls().collect::<Vec<_>>(),
+                    out,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_sig_container_exports(
     container: &[String],
     decls: impl Iterator<Item = SigDecl>,
     access_floor: Option<usize>,
     defs: &mut Vec<Def>,
     exports: &mut Vec<model::SigExport>,
+    auto_open_type_containers: &mut Vec<Vec<String>>,
 ) {
+    let decls: Vec<SigDecl> = decls.collect();
+    // Every container shape — a named `module M.N` header, a namespace-direct
+    // `module N`, a headerless file's implicit filename module — reaches its
+    // decls through this one function, so scanning here is what keeps a shape
+    // from being forgotten ([`model::SigScreen::auto_open_type_containers`]).
+    collect_auto_open_type_containers(container, &decls, auto_open_type_containers);
+    let decls = decls.into_iter();
     debug_assert!(
         access_floor.is_none_or(|f| f < container.len()),
         "access_floor must be a proper prefix length of the container"
@@ -785,6 +831,7 @@ fn collect_sig_container_exports(
 fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurface {
     let mut roots = Vec::new();
     let mut auto_open_nested = Vec::new();
+    let mut auto_open_type_containers = Vec::new();
     let mut value_paths = Vec::new();
     let mut defs = Vec::new();
     let mut exports = Vec::new();
@@ -807,6 +854,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         access_floor,
                         &mut defs,
                         &mut exports,
+                        &mut auto_open_type_containers,
                     );
                     roots.push(model::SigRoot {
                         path,
@@ -840,6 +888,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 access_floor,
                                 &mut defs,
                                 &mut exports,
+                                &mut auto_open_type_containers,
                             );
                             let auto_open = attrs_auto_open(nm.attributes());
                             if auto_open {
@@ -859,6 +908,12 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
                             for defn in types.defns() {
+                                // A type declared *directly* under the
+                                // namespace has no container walker to report
+                                // it: the namespace itself is the container.
+                                if attrs_auto_open(defn.attributes()) {
+                                    auto_open_type_containers.push(ns.clone());
+                                }
                                 let case_idents: Vec<SyntaxToken> = match defn.repr() {
                                     Some(TypeDefnRepr::Union(u)) => {
                                         u.cases().filter_map(|c| c.ident()).collect()
@@ -927,6 +982,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         None,
                         &mut defs,
                         &mut exports,
+                        &mut auto_open_type_containers,
                     );
                     roots.push(model::SigRoot {
                         path,
@@ -951,6 +1007,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
         roots,
         names: sig_token_names(sig),
         auto_open_nested,
+        auto_open_type_containers,
         value_paths,
         exported_value_paths,
         exported_case_paths,
@@ -1908,7 +1965,17 @@ pub(crate) fn collect_nested_module_names(
     }
 }
 
-/// Whether the attribute lists mark a module `[<AutoOpen>]`.
+/// Whether the attribute lists mark a module or type `[<AutoOpen>]`.
+///
+/// Matched on the attribute's last path segment, so an **aliased**
+/// `AutoOpenAttribute` (`type AO = Microsoft.FSharp.Core.AutoOpenAttribute`,
+/// then `[<AO>]`) reads as absent. fsc warns on that aliasing precisely
+/// because its own project-graph dependency resolution misses it too
+/// (FS3561), and every consumer here shares the blind spot — auto-open
+/// module publication as much as the borrowed-name markers
+/// ([`model::SigScreen::auto_open_type_containers`]). Resolving attribute
+/// identity properly is the fix; treating unrecognised attributes as
+/// possibly-auto-open would defer across ordinary code instead.
 fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
     attrs
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
@@ -1927,6 +1994,65 @@ pub(crate) fn id_text(raw: &str) -> &str {
     raw.strip_prefix("``")
         .and_then(|s| s.strip_suffix("``"))
         .unwrap_or(raw)
+}
+
+#[cfg(test)]
+mod signature_surface_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use borzoi_cst::parser::parse_sig;
+
+    /// Every signature *container* must declare its `[<AutoOpen>]` types to
+    /// the screen, whatever shape its header takes — a named `module M.N`, a
+    /// namespace-direct `module N`, or (here) the **implicit filename
+    /// module** of a headerless `.fsi`. Opening such a container publishes
+    /// the type's static members, which an abbreviation borrows from the
+    /// abbreviated type, so its hidden-value marker must stay
+    /// `HiddenNames::Borrowed` and the open-fold generation bump must not
+    /// move before the assembly fold (`ProjectItems::opaque_hidden_value_modules`).
+    ///
+    /// This shape is pinned on the screen directly rather than through an
+    /// FCS differential: the RefLib fixture declares no *root-level* module,
+    /// so an implicit filename module has nothing to collide with and the
+    /// behaviour has no observable use site. The collidable shapes are swept
+    /// in `auto_open_type_matrix_agrees_with_fcs`.
+    #[test]
+    fn every_container_shape_reports_its_auto_open_types() {
+        for (label, src, expected) in [
+            (
+                "headerless",
+                "[<AutoOpen>]\ntype Alias = Target.T\n",
+                vec!["Shared".to_string()],
+            ),
+            (
+                "named module",
+                "module ProbeNs.Shared\n\n[<AutoOpen>]\ntype Alias = Target.T\n",
+                vec!["ProbeNs".to_string(), "Shared".to_string()],
+            ),
+            (
+                "namespace-direct module",
+                "namespace ProbeNs\n\nmodule Shared =\n    [<AutoOpen>]\n    type Alias = Target.T\n",
+                vec!["ProbeNs".to_string(), "Shared".to_string()],
+            ),
+        ] {
+            let parsed = parse_sig(src);
+            assert!(parsed.errors.is_empty(), "{label}: {:?}", parsed.errors);
+            let sig = SigFile::cast(parsed.root).expect("signature file");
+            let qnof = crate::qualified_names(
+                &[SourceFile::Sig(sig.clone())],
+                &[PathBuf::from("/p/Shared.fsi")],
+            )
+            .pop()
+            .expect("one qnof");
+            let surface = signature_surface(&sig, &qnof);
+            assert!(
+                surface.screen.auto_open_type_containers.contains(&expected),
+                "{label}: {expected:?} missing from {:?}",
+                surface.screen.auto_open_type_containers
+            );
+        }
+    }
 }
 
 #[cfg(test)]
