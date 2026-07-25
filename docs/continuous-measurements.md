@@ -133,14 +133,31 @@ bump deliberately rather than routinely.
 A candidate project must restore under the pinned SDK and be worth measuring:
 multi-file, with imported-assembly uses.
 
-A pin must have exactly **one spelling**. Duplicate detection compares pins
-literally, so any second way to write the same project survives as a separate
-pin, gets its own checkout, and is measured twice — doubling every count it
-contributes while the job's comparable-count assertion still passes.
-`borzoi-stats corpus` therefore refuses `.`/`..` components, a `.git` suffix on
-the repository (`owner/repo` and `owner/repo.git` are one repository), and the
-path-list separators `:` and `;`, which the workflow uses to hand the project
-list to the runner.
+**Two pins that name one project must be caught.** If they are not, the second
+gets its own checkout and is measured twice, doubling every count it
+contributes — while the job's comparable-count assertion still passes, because
+both pins *did* become comparable. The corpus is therefore compared by
+**identity**, never by text, in both `validate_project_corpus` and the digest:
+
+- The repository identity is its ASCII case-folding, because GitHub resolves
+  owner and repository names case-insensitively. Folding is complete rather
+  than a guess: a repository component may only contain ASCII alphanumerics,
+  `-`, `_` and `.`, so there is no further case equivalence to discover.
+- The project path is deliberately **not** folded. It names a file on the
+  runner's case-sensitive filesystem, where `A/B.fsproj` and `A/b.fsproj`
+  really are different files.
+
+Spellings that cannot be canonicalised are refused outright, so the file and
+the digest agree by construction: `.`/`..` components, a `.git` suffix
+(`owner/repo` and `owner/repo.git` are one repository), the path-list
+separators `:` and `;` that the workflow uses to hand the list to the runner,
+and uppercase revisions (Git resolves an uppercase object ID to the same
+commit, so two casings would check out identical code under two digests and
+split one corpus across two series).
+
+The distinction matters for what happens when a pin is *re-spelled*: an
+identity-keyed digest leaves the series intact, where a text-keyed one would
+restart the trend for a change that points at exactly the same code.
 
 **Take the repository and revision from the project's own remote**, not from a
 name that looks right. Forks abound, and a fork's default branch can sit years

@@ -213,14 +213,32 @@ impl ProjectCorpus {
     ///
     /// 40 hex characters, matching the shape [`RecordInput::corpus_revision`]
     /// takes for a single-repository corpus.
+    ///
+    /// The digest is taken over each pin's *identity*, not its text, so that
+    /// re-spelling a pin without changing what it points at leaves the series
+    /// intact: re-casing a repository name checks out the same code, and a
+    /// digest that moved would restart the dashboard's trend for no reason.
+    /// Validation has already rejected the spellings that cannot be
+    /// canonicalised this way — revisions must be lowercase — so this and the
+    /// corpus validator agree on what "the same pin" means.
     pub fn revision(&self) -> String {
-        let mut pins: Vec<&PinnedProject> = self.projects.iter().collect();
+        let mut pins: Vec<(String, &str, &str)> = self
+            .projects
+            .iter()
+            .map(|pin| {
+                (
+                    repository_identity(&pin.repository),
+                    pin.revision.as_str(),
+                    pin.project.as_str(),
+                )
+            })
+            .collect();
         pins.sort();
         let mut hash = Sha1::new();
         hash.update(b"borzoi-project-corpus\0");
         hash.update(self.schema_version.to_string().as_bytes());
-        for pin in pins {
-            for field in [&pin.repository, &pin.revision, &pin.project] {
+        for (repository, revision, project) in pins {
+            for field in [repository.as_str(), revision, project] {
                 hash.update(b"\0");
                 hash.update(field.as_bytes());
             }
@@ -246,7 +264,8 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
     if corpus.projects.is_empty() {
         return invalid("project corpus must pin at least one project");
     }
-    let mut seen = std::collections::BTreeMap::new();
+    let mut seen: std::collections::BTreeMap<String, (&String, &String)> =
+        std::collections::BTreeMap::new();
     for pin in &corpus.projects {
         if !valid_repository(&pin.repository) {
             return invalid(format!(
@@ -269,27 +288,55 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
             ));
         }
         validate_hex("project corpus revision", &pin.revision, 40)?;
+        // Git resolves an uppercase object ID to the same commit, so two
+        // casings of one revision check out identical code — but
+        // `ProjectCorpus::revision` hashes the text, so they would produce
+        // different digests and split one corpus across two series. Requiring
+        // lowercase is the *only* spelling rather than folding it, so the file
+        // and the digest agree by construction.
+        if pin.revision.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return invalid(format!(
+                "project corpus revision must be lowercase hexadecimal, got {:?}",
+                pin.revision
+            ));
+        }
         if !valid_relative_project_path(&pin.project) {
             return invalid(format!(
                 "project corpus project must be a relative `.fsproj` path in its only spelling \
-                 (no `.` or `..` components, no whitespace), got {:?}",
+                 (no `.` or `..` components, no whitespace, no path-list separator), got {:?}",
                 pin.project
             ));
         }
         // One checkout per repository, so two revisions of it cannot both be
         // measured; and one measurement per project, so nothing double-counts.
-        if let Some(existing) = seen.insert(pin.repository.as_str(), pin.revision.as_str())
-            && existing != pin.revision
+        //
+        // Both comparisons are by *identity*, not by text, because the corpus
+        // is keyed on things that alias. See `repository_identity`.
+        let identity = repository_identity(&pin.repository);
+        if let Some((existing_repository, existing_revision)) =
+            seen.insert(identity.clone(), (&pin.repository, &pin.revision))
         {
-            return invalid(format!(
-                "project corpus pins {} at two revisions ({existing} and {})",
-                pin.repository, pin.revision
-            ));
+            if existing_revision != &pin.revision {
+                return invalid(format!(
+                    "project corpus pins {} at two revisions ({existing_revision} and {})",
+                    pin.repository, pin.revision
+                ));
+            }
+            if existing_repository != &pin.repository {
+                return invalid(format!(
+                    "project corpus spells one repository two ways ({existing_repository} and \
+                     {}); GitHub resolves both to the same repository, so it would be cloned \
+                     and measured twice",
+                    pin.repository
+                ));
+            }
         }
         if corpus
             .projects
             .iter()
-            .filter(|other| other.repository == pin.repository && other.project == pin.project)
+            .filter(|other| {
+                repository_identity(&other.repository) == identity && other.project == pin.project
+            })
             .count()
             > 1
         {
@@ -300,6 +347,29 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
         }
     }
     Ok(())
+}
+
+/// The identity two pins are the *same repository* under.
+///
+/// Every check in this module compares pins to catch a project being measured
+/// twice, and a comparison is only as good as the identity it uses. GitHub
+/// resolves owner and repository names case-insensitively, so
+/// `Smaug123/WoofWare.Expect` and `smaug123/woofware.expect` are one
+/// repository that a literal comparison sees as two — and the workflow would
+/// clone both, into two directories that a case-sensitive Linux filesystem
+/// keeps happily distinct, and count the project twice while the job's
+/// comparable-count assertion still passed.
+///
+/// ASCII case folding is *complete* here rather than one more entry on a list
+/// of forbidden spellings: [`valid_repo_component`] admits only ASCII
+/// alphanumerics, `-`, `_` and `.`, so ASCII lowercasing is the whole of the
+/// case equivalence and no further alias exists to discover.
+///
+/// The project path is deliberately **not** folded: it names a file on the
+/// runner's case-sensitive filesystem, where `A/B.fsproj` and `A/b.fsproj`
+/// really are different files.
+fn repository_identity(repository: &str) -> String {
+    repository.to_ascii_lowercase()
 }
 
 /// A repository-relative `.fsproj` path that cannot escape its checkout. The

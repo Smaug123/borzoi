@@ -370,6 +370,31 @@ fn the_corpus_digest_covers_every_pin_but_not_their_order() {
         assert_ne!(digest, other.revision());
     }
 
+    // Re-spelling a pin without changing what it points at must leave the
+    // series intact. A repository name re-cased checks out identical code, so
+    // a digest that moved would restart the dashboard's trend for nothing.
+    let recased = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            pin("smaug123/a", &"a".repeat(40), "A/A.fsproj"),
+            two.clone(),
+        ] }),
+    ))
+    .expect("valid corpus");
+    assert_eq!(digest, recased.revision());
+
+    // The project path is *not* case-folded: it names a file on a
+    // case-sensitive filesystem, where these really are different files.
+    let repathed = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            pin("Smaug123/A", &"a".repeat(40), "A/a.fsproj"),
+            two.clone(),
+        ] }),
+    ))
+    .expect("valid corpus");
+    assert_ne!(digest, repathed.revision());
+
     // The digest is what `record` files the observation under, so it has to be
     // accepted as a corpus revision.
     let summary = write_summary(temp.path(), "project-corpus-diff", json!({}));
@@ -443,6 +468,27 @@ fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
         (
             ".git",
             json!({ "schema_version": 1, "projects": [pin("Smaug123/A.git", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        // GitHub resolves repository names case-insensitively, so these are
+        // one repository; a case-sensitive Linux filesystem would keep two
+        // checkouts of it and each project would be counted twice. Distinct
+        // projects, so this reaches the repository-spelling check rather than
+        // the duplicate-project one below.
+        (
+            "two ways",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("smaug123/a", &"a".repeat(40), "Other/Other.fsproj")] }),
+        ),
+        // The same alias with one project reaches the duplicate check instead;
+        // either way it must not survive to be measured twice.
+        (
+            "more than once",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("smaug123/a", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        // Git resolves an uppercase object ID to the same commit, so this
+        // pins identical code under a spelling that would hash differently.
+        (
+            "lowercase",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"A".repeat(40), "A/A.fsproj")] }),
         ),
         (
             "two revisions",
