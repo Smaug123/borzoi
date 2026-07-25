@@ -600,7 +600,11 @@ pub struct AssemblyEnv {
     /// [`Self::record_assembly_auto_opens`] drops from
     /// [`Self::implicit_open_namespace_paths`] (they are opened *like a module*,
     /// not a namespace — FSharp.Core's `IntrinsicOperators` /
-    /// `TaskBuilderExtensions*`). Their **operators** are unmodelled and their
+    /// `TaskBuilderExtensions*`). An authoritative F# *type* at the path is
+    /// resolved but never recorded: FCS opens its pickled module contents,
+    /// which are empty, so the attribute imports nothing (a non-authoritative
+    /// type-shaped target IS recorded — imported through IL, its module
+    /// contents are its nested types). Their **operators** are unmodelled and their
     /// nested *values* are deliberately not made bare-resolvable, but FCS still
     /// brings their **extension members** into method-call scope — so the OV-6
     /// extension-absence gate ([`Self::extension_named_in_scope`]) treats their
@@ -1278,7 +1282,21 @@ impl AssemblyEnv {
                 if let Some((handle, effectively_public)) =
                     self.assembly_entity_at_path(contributor, &segments)
                 {
-                    // Module/type-shaped: dropped from the namespace opens (its
+                    // An authoritative F# TYPE at the path (a companion pair's
+                    // bare spelling, or a directly-named type): FCS derefs to
+                    // it and opens its *pickled* module contents — empty for a
+                    // type — so the attribute silently imports nothing
+                    // (fsi-verified). Record no surface. Non-authoritative
+                    // kinds fall through: FCS imports such an assembly through
+                    // IL, where a type's module contents are its nested types
+                    // (`ImportILTypeDef`), so the recorded surface walk is the
+                    // right (deferral-only) model there.
+                    if !self.fsharp_signature_unreliable(handle)
+                        && self.entity(handle).kind != EntityKind::Module
+                    {
+                        continue;
+                    }
+                    // Module-shaped: dropped from the namespace opens (its
                     // bare values are not made resolvable), but retained here so the
                     // OV-6 extension-absence gate can fold its extension members.
                     self.auto_open_module_handles
@@ -1342,17 +1360,30 @@ impl AssemblyEnv {
     /// versus namespace-shaped. Tries every namespace/type split because the
     /// path alone does not say where the namespace stops
     /// (`Microsoft.FSharp.Core.LanguagePrimitives.IntrinsicOperators` is
-    /// namespace × type × nested-type). Arity 0 throughout: an AutoOpen path
-    /// names a module, and modules are non-generic. Scans
+    /// namespace × type × nested-type). Scans
     /// [`Self::top_level_types`] rather than [`Self::lookup_type`] because the
     /// deref must be **per-assembly** (see
     /// [`Self::record_assembly_auto_opens`]) and the first-wins lookup slot may
     /// hold a same-FQN entity from a different assembly. Candidates
     /// are filtered by [`Self::assembly_provenance`], never by name: a sibling
     /// DLL sharing the contributor's simple name — or its whole manifest
-    /// identity — must not have *its* module folded (issue #150). Matched by
-    /// the name F# source writes (`source_name` when present — a suffixed
-    /// module's AutoOpen path says `List`, never `ListModule`).
+    /// identity — must not have *its* module folded (issue #150).
+    ///
+    /// **Name domain: compiled names, never source names.** FCS derefs the
+    /// manifest path through the CCU's entity table keyed by logical/compiled
+    /// names (`ApplyAssemblyLevelAutoOpenAttributeToTcEnv` →
+    /// `NonLocalEntityRef.TryDerefEntityPath` over
+    /// `AllEntitiesByCompiledAndLogicalMangledNames`) — the *source-level*
+    /// `open`'s demangled domain never applies. So a
+    /// `[<CompilationRepresentation(ModuleSuffix)>]` module is keyed only as
+    /// `TargetModule`; its source spelling `Target` keys the companion *type*
+    /// if one exists (the pair is collision-free — the two keys differ) and
+    /// nothing otherwise (FCS warns FS0970 and ignores the attribute). A
+    /// generic type's logical name is arity-mangled (`` X`1 ``), which the
+    /// `generic_parameters.is_empty()` filter models: a plain-spelled segment
+    /// never matches a generic entity. All four spellings fsi-verified
+    /// against a companion-pair probe assembly.
+    ///
     /// The second component is whether **every entity on the descent** — the
     /// top-level root through the target itself — is public: FCS cannot
     /// import a target whose path crosses an inaccessible entity
@@ -1360,17 +1391,6 @@ impl AssemblyEnv {
     /// C#-shaped nested-public type inside an internal class carries a
     /// `Public` flag of its own), so the shadow veto keys on this rather
     /// than the terminal's flag (codex P2s, rounds 5 and 6).
-    ///
-    /// Known concession (codex round 8): when the path names a
-    /// **companion pair** (`type Target` + `[<CompilationRepresentation
-    /// (ModuleSuffix)>] module Target`), the first interned candidate wins
-    /// here, which follows metadata order rather than FCS's type-over-module
-    /// target selection. Picking the module where FCS picks the type makes
-    /// the shadow veto walk a surface FCS never opened — an over-DEFERRAL
-    /// only (never a wrong target), in a shape no real manifest exhibits
-    /// (FSharp.Core's module-shaped targets have no companion types).
-    /// Modelling it needs the pair's FCS-side selection *and* what FCS does
-    /// with a type-shaped AutoOpen target, both unprobed.
     fn assembly_entity_at_path(
         &self,
         contributor: AssemblyId,
@@ -1381,7 +1401,7 @@ impl AssemblyEnv {
                 let e = self.entity(h);
                 self.assembly_provenance(h) == Some(contributor)
                     && e.namespace.as_slice() == &path[..split]
-                    && e.source_name.as_deref().unwrap_or(&e.name) == path[split]
+                    && e.name == path[split]
                     && e.generic_parameters.is_empty()
             });
             for top in candidates {
@@ -1391,7 +1411,7 @@ impl AssemblyEnv {
                 for segment in &path[split + 1..] {
                     // Nested descent stays within `top`'s assembly by
                     // construction (children were interned from its subtree).
-                    match self.nested(handle, segment, 0) {
+                    match self.nested_by_compiled_name(handle, segment) {
                         Some(child) => {
                             handle = child;
                             effectively_public = effectively_public && self.is_public(child);
@@ -1408,6 +1428,20 @@ impl AssemblyEnv {
             }
         }
         None
+    }
+
+    /// The nested entity a manifest-AutoOpen path segment derefs to: keyed by
+    /// **compiled** name at arity 0, the child half of
+    /// [`Self::assembly_entity_at_path`]'s name domain. Distinct from
+    /// [`Self::nested`]/[`Self::nested_module`], whose source-name tiers model
+    /// what F# *source* can write — FCS's manifest deref never demangles.
+    /// Compiled names are unique among siblings (an IL constraint), so the
+    /// first match is the only one.
+    fn nested_by_compiled_name(&self, handle: EntityHandle, name: &str) -> Option<EntityHandle> {
+        self.children(handle).iter().copied().find(|&c| {
+            let e = self.entity(c);
+            e.name == name && e.generic_parameters.is_empty()
+        })
     }
 
     /// Resolve an abbreviation target's dotted path to a top-level-then-nested
@@ -6863,6 +6897,56 @@ mod from_views_tests {
             ),
             "with no drop, the empty module tree supplies nothing"
         );
+    }
+
+    /// The manifest deref matches **compiled** names, order-independently
+    /// (FCS's `AllEntitiesByCompiledAndLogicalMangledNames` — see
+    /// [`AssemblyEnv::assembly_entity_at_path`]): a companion pair's bare
+    /// spelling keys only the TYPE half, whose authoritative open imports
+    /// nothing, so no shadow surface is recorded whichever half interns
+    /// first; the mangled spelling keys the suffixed module, which IS
+    /// recorded. Both spellings fsi-verified.
+    #[test]
+    fn manifest_deref_is_compiled_name_keyed_and_order_independent() {
+        let suffixed_module = || {
+            let child = Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["A"], "C")
+            };
+            Entity {
+                source_name: Some("Target".to_string()),
+                nested_types: vec![child],
+                ..module_entity("Lib", &["A"], "TargetModule")
+            }
+        };
+        let companion_type = || Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "Target")
+        };
+        for (label, roots) in [
+            ("type first", vec![companion_type(), suffixed_module()]),
+            ("module first", vec![suffixed_module(), companion_type()]),
+        ] {
+            let bare = ConfigView::new("Lib", roots.clone(), &["A.Target"]);
+            let bare_env = AssemblyEnv::from_views(std::slice::from_ref(&bare)).expect("build env");
+            assert!(
+                !bare_env.manifest_auto_open_module_could_supply_entity_named(
+                    "C",
+                    ManifestSurfacePosition::AnySegment
+                ),
+                "{label}: the pair's bare spelling derefs to the type and opens nothing"
+            );
+            let mangled = ConfigView::new("Lib", roots, &["A.TargetModule"]);
+            let mangled_env =
+                AssemblyEnv::from_views(std::slice::from_ref(&mangled)).expect("build env");
+            assert!(
+                mangled_env.manifest_auto_open_module_could_supply_entity_named(
+                    "C",
+                    ManifestSurfacePosition::TypePosition { arity: 0 }
+                ),
+                "{label}: the mangled spelling derefs to the suffixed module, which is opened"
+            );
+        }
     }
 
     /// The semantic-token classifier honours signature authority on the
