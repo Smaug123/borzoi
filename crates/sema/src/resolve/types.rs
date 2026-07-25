@@ -1415,18 +1415,21 @@ impl<'a> Resolver<'a> {
         // `auto_open_module_handles` keeps no position, so its reading is
         // not walked and such a name defers — sound, and reachable only when
         // an interleaved manifest supplies one name from both shapes.
-        // A committed reading whose LEAF is a module is not a type
-        // resolution at all: a module can never BE a type, and FCS errors on
-        // the annotation without reporting a symbol use (sweep-caught — the
-        // walk committed the global `module DirectSub` for a bare
-        // `x: DirectSub`). Every commit below flows through this filter; a
-        // module leaf defers instead. A module as a dotted QUALIFIER is
+        // A committed reading whose LEAF is an **authoritative** module is
+        // not a type resolution at all: a module can never BE a type, and
+        // FCS errors on the annotation without reporting a symbol use
+        // (sweep-caught — the walk committed the global `module DirectSub`
+        // for a bare `x: DirectSub`). Every commit below flows through this
+        // filter; such a leaf defers instead. Keyed on `entity_class` (not
+        // `is_module`) because a NON-authoritative `Module` kind is an IL
+        // heuristic FCS does not share — it imports the entity as a plain
+        // type, which the annotation genuinely binds, so that leaf keeps
+        // committing (codex round 7). A module as a dotted QUALIFIER is
         // untouched — only the whole path's leaf is checked.
         let commit = |reading: super::state::TypePathReading| -> TypePathResolution {
-            if reading
-                .leaf
-                .is_some_and(|leaf| self.assemblies.is_module(leaf))
-            {
+            if reading.leaf.is_some_and(|leaf| {
+                self.assemblies.entity_class(leaf) == Some(crate::SemanticClass::Module)
+            }) {
                 return TypePathResolution::Deferred;
             }
             TypePathResolution::Assembly {
@@ -1477,8 +1480,11 @@ impl<'a> Resolver<'a> {
         {
             return match self.resolve_assembly_path_tiered(core, false, shadow_at) {
                 TieredResolution::Resolved(reading) => match reading.leaf {
+                    // The same authority-keyed module test as `commit` (a
+                    // non-authoritative "module" is a plain type to FCS).
                     Some(leaf)
-                        if !self.assemblies.is_module(leaf)
+                        if self.assemblies.entity_class(leaf)
+                            != Some(crate::SemanticClass::Module)
                             && self.assemblies.entity(leaf).generic_parameters.len() == arity =>
                     {
                         TypePathResolution::Assembly {

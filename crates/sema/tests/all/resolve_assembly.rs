@@ -4782,6 +4782,70 @@ fn non_authoritative_assembly_declines_module_classification() {
     );
 }
 
+/// The same authority split governs the **module-leaf filter** on type
+/// paths: an *authoritative* module can never BE a type (FCS errors on the
+/// annotation without a symbol use — the manifest-surface sweep caught the
+/// walk committing one), but a *non-authoritative* "module" is a plain type
+/// to FCS, so the annotation genuinely binds it and must keep committing
+/// (codex round 7). Same builder as
+/// [`non_authoritative_assembly_declines_module_classification`].
+#[test]
+fn module_leaf_filter_honours_signature_authority() {
+    let calc = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc in fixture");
+    let mut module = calc;
+    module.namespace = vec!["Ns".to_string()];
+    module.name = "Mod".to_string();
+    module.kind = EntityKind::Module;
+    module.members = vec![];
+    module.nested_types = vec![];
+
+    let build = |non_authoritative: bool| {
+        AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            borzoi_sema::AssemblyProjectionInput {
+                path: std::path::PathBuf::from("Test.dll"),
+                roots: vec![module.clone()],
+                abbreviation_visibility: AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: non_authoritative,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+            },
+        ])
+    };
+    let src = "module M\nlet f (x: Ns.Mod) = x\n";
+
+    // Non-authoritative: FCS imports `Mod` as a plain type — the annotation
+    // binds it, so the resolution must commit.
+    let na_env = build(true);
+    let na_rf = resolve(src, &na_env);
+    let handle = na_env
+        .lookup_type(&["Ns".to_string()], "Mod", 0)
+        .expect("Ns.Mod");
+    assert_eq!(
+        na_rf.resolution_at(at(src, "Mod")),
+        Some(Resolution::Entity(handle)),
+        "a non-authoritative 'module' is a plain type to FCS — the annotation commits"
+    );
+
+    // Authoritative (control): a genuine module never binds type position —
+    // FCS errors with no use, so committing it would be a divergence.
+    let auth_env = build(false);
+    let auth_rf = resolve(src, &auth_env);
+    assert_ne!(
+        auth_rf.resolution_at(at(src, "Mod")),
+        Some(Resolution::Entity(
+            auth_env
+                .lookup_type(&["Ns".to_string()], "Mod", 0)
+                .expect("Ns.Mod")
+        )),
+        "an authoritative module leaf must not commit in type position"
+    );
+}
+
 /// The same authority split governs **module-qualified member ownership**
 /// (`static_lookup` → `qualified_path_occupied`): an *authoritative* module
 /// takes the in-module search domain (no base chain, so `Object`'s members do
