@@ -3696,16 +3696,7 @@ impl<'a> Resolver<'a> {
         if self.preceding.is_exact_project_module(&mp)
             || self.preceding.is_exact_nested_module(&mp)
             || self.is_project_namespace_path(&mp)
-            || self.assemblies.has_namespace(&mp)
-            // A referenced **module or static class** at the same path merges
-            // with this fragment, and FCS's modules-first search finds the
-            // member there — so absence from the local fragment proves nothing
-            // (codex [P2], FCS-probed: a project `module Collide` beside the
-            // fixture's `QP.ModHalf.Collide` binds the assembly's `fromModule`,
-            // not a co-named local union case). `opened_assembly_type` splits
-            // the path at every namespace/type boundary, so this catches a
-            // nested target too, which `has_namespace` alone cannot.
-            || self.opened_assembly_type(&mp).is_some()
+            || !self.assemblies_provably_lack_module_path(&mp)
             || self.module_has_hidden_values(&mp)
         {
             return false;
@@ -3714,6 +3705,41 @@ impl<'a> Resolver<'a> {
             .container_decls
             .get(&mp)
             .is_some_and(|d| d.contains_key(member))
+    }
+
+    /// Whether the referenced assemblies **provably** hold nothing at `mp` that
+    /// could merge with a same-file module fragment there.
+    ///
+    /// A referenced module or static class at the same path merges with the
+    /// local fragment, and FCS's modules-first search finds the member in the
+    /// assembly half — so a local fragment's silence proves nothing unless this
+    /// says so (codex [P2], FCS-probed: a project `module Collide` beside the
+    /// qualifier fixture's `QP.ModHalf.Collide` binds the assembly's
+    /// `fromModule`, not a co-named local union case).
+    ///
+    /// This is an **absence** proof, so every clause is a negation and the
+    /// positive lookups must each be exhaustive:
+    ///
+    /// - [`opened_assembly_modules`](Self::opened_assembly_modules), not
+    ///   [`opened_assembly_type`](Self::opened_assembly_type): the latter
+    ///   commits to the *first* root a split yields, so its `None` does not mean
+    ///   "no such module". Two DLLs can encode `A.B` differently — a top-level
+    ///   `module A.B` in one, a nested `B` under root module `A` in the other —
+    ///   and FCS merges both, so every split and every root has to be searched
+    ///   (codex round 2 [P2]).
+    /// - `opened_assembly_type` still runs, for a *non-module* static class at
+    ///   `mp` that `opened_assembly_modules` filters out.
+    /// - [`any_split_of_a_module_path_has_a_dropped_type`](crate::AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type):
+    ///   a type the projector could not decode is invisible to both lookups and
+    ///   may *be* the module here, so an undecodable type anywhere along the
+    ///   path leaves absence unproven (codex round 2 [P2]).
+    fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
+        !self.assemblies.has_namespace(mp)
+            && self.opened_assembly_modules(mp).is_empty()
+            && self.opened_assembly_type(mp).is_none()
+            && !self
+                .assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(mp)
     }
 
     /// Order the definite value at `head` (already `id_text`-normalised)
