@@ -857,15 +857,27 @@ impl<'a> Resolver<'a> {
     ///   abbreviation, or generic type is not, so it defers.
     ///
     /// Delegating to `decide_type_path` rather than reimplementing a bare-name
-    /// lookup is what makes the two positions agree by construction, so its
-    /// shadow guards apply here unchanged. Two are load-bearing enough to have
-    /// expression-position regression tests of their own, since a coarser guard
-    /// in either place would silently stop covering the constructor position:
-    /// `contested_same_fqn_type_defers_a_bare_constructor_use` (a rooting FQN
-    /// contested across differently-named DLLs) and
+    /// lookup is what makes the two positions agree on which *type* a bare name
+    /// denotes, so its shadow guards apply here unchanged. Two are load-bearing
+    /// enough to have expression-position regression tests of their own, since a
+    /// coarser guard in either place would silently stop covering the
+    /// constructor position: `contested_same_fqn_type_defers_a_bare_constructor_use`
+    /// (a rooting FQN contested across differently-named DLLs) and
     /// `manifest_auto_open_module_nested_type_defers_a_bare_constructor_use` (a
     /// module-shaped `[<assembly: AutoOpen>]` surface kept out of the prefix
     /// walk — its veto keys on the written arity, which this queries as 0).
+    ///
+    /// Where the delegation stops is the **value namespace**, and that asymmetry
+    /// is not a gap in `decide_type_path` but a difference between the positions:
+    /// a value never shadows a type, so type position is right to ignore values,
+    /// while expression position is precisely where a value wins. The manifest
+    /// veto above therefore has a value-keyed twin that only this caller needs
+    /// ([`AssemblyEnv::manifest_auto_open_module_could_supply_value_named`]) — a
+    /// module-shaped auto-open's `let` bindings are imported into bare expression
+    /// scope and land in no value frame, so `lookup` misses them exactly as it
+    /// misses an `extern`. Any *further* shadow channel that binds values rather
+    /// than types will need the same treatment; it will not arrive via
+    /// `decide_type_path`.
     ///
     /// One limitation remains, and it is *not* one `decide_type_path` owns: an F#
     /// **named-argument label** (`M(arg = 1)`) reaches the bare-ident path at all,
@@ -879,6 +891,15 @@ impl<'a> Resolver<'a> {
         if !allow_opened_type
             || self.own_binder_simple_names.contains(name)
             || self.head_entry_staled(name)
+            // A module-shaped manifest auto-open imports its `let` VALUES into
+            // bare expression scope, and those are not in any value frame — so
+            // the miss above is conservative here too. This is the one guard
+            // `decide_type_path` cannot supply: its manifest veto scans nested
+            // entities, which is correct for type position (a value does not
+            // shadow a type) and blind in exactly this position.
+            || self
+                .assemblies
+                .manifest_auto_open_module_could_supply_value_named(name)
         {
             return None;
         }

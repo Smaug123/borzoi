@@ -2031,3 +2031,50 @@ fn a_name_supplied_by_both_the_module_and_namespace_halves_of_a_path_defers() {
         rf.resolution_at(at(src, "onlyInNamespaceHalf"))
     );
 }
+
+#[test]
+fn manifest_auto_open_module_value_defers_a_bare_constructor_use() {
+    // `SemaAutoOpen.DirectOps` — a MODULE named by an assembly-level AutoOpen —
+    // declares a plain `let DirectValueShadow ()`, and the global namespace
+    // declares a *constructible class* of the same name. FCS imports the
+    // module's value and binds it over the lower-tier class (fsi-verified: the
+    // call returns the value's `int`, not an instance of the class), so
+    // committing the class would be a wrong go-to-definition.
+    //
+    // This is the one shadow channel `decide_type_path` cannot supply. Its
+    // manifest veto scans nested *entities*, which is right for type position
+    // — a value never shadows a type, and `x: DirectValueShadow` does bind the
+    // class — and blind in expression position, where a value is exactly what
+    // shadows. So the constructor fallback carries its own value-surface veto.
+    let env = fixture_env();
+    let src = "let x = DirectValueShadow ()\n";
+    let rf = resolve(src, &env);
+    let decoy = env
+        .lookup_type(&[], "DirectValueShadow", 0)
+        .expect("fixture must declare a global-namespace DirectValueShadow class");
+    assert_ne!(
+        rf.resolution_at(at(src, "DirectValueShadow")),
+        Some(Resolution::Entity(decoy)),
+        "an imported module value outranks the class — committing it is a wrong target"
+    );
+}
+
+#[test]
+fn a_manifest_auto_open_value_veto_does_not_defer_unrelated_constructors() {
+    // The veto is name-keyed, not "any manifest module-shaped auto-open exists".
+    // This fixture HAS such auto-opens, so a coarse veto would defer every bare
+    // constructor use in the closure. `GlobalPlain` is the fixture's negative
+    // control — no auto-open module tree names it, in either the entity or the
+    // value surface — so it must still resolve through the root tier.
+    let env = fixture_env();
+    let src = "let x = GlobalPlain ()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "GlobalPlain")),
+            Some(Resolution::Entity(_))
+        ),
+        "the value veto must not swallow constructor uses it has no value for, got {:?}",
+        rf.resolution_at(at(src, "GlobalPlain"))
+    );
+}

@@ -307,6 +307,15 @@ module DirectOps =
     type DirectGenHead<'T>() =
         member _.Marker = 10
 
+    // A plain `let` VALUE whose name matches a constructible class in the
+    // global namespace below. A module's `let` compiles to a static *member*
+    // of the module class, not to a child entity, so it is invisible to the
+    // nested-entity shadow scan — correctly so for TYPE position, where a
+    // value never shadows a type (`x: DirectValueShadow` binds the global
+    // class). EXPRESSION position is the opposite: FCS binds this value, so a
+    // bare `DirectValueShadow ()` must never commit the class.
+    let DirectValueShadow () = 12
+
 // ===== ModuleSuffix / companion-pair manifest targets =====
 //
 // FCS derefs a manifest AutoOpen path through the contributing assembly's
@@ -774,6 +783,12 @@ namespace global
 
 type DirectShadow() =
     member _.Decoy = 1
+
+// The decoy for `DirectOps`'s plain `let DirectValueShadow`: a *constructible*
+// class, so the expression-position constructor fallback finds it attractive.
+// FCS binds the module's value instead, making this a wrong target.
+type DirectValueShadow() =
+    member _.Decoy = 12
 
 module DirectSub =
     type DirectSubT() =

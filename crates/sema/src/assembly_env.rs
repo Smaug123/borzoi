@@ -2128,6 +2128,55 @@ impl AssemblyEnv {
             })
     }
 
+    /// Whether a retained module-shaped manifest auto-open could import a
+    /// **value** named `name` into bare *expression* scope.
+    ///
+    /// The entity-keyed twin above deliberately scans only nested entities,
+    /// which is right for **type** position: a module's `let` binds a value, and
+    /// a value never shadows a type there. Expression position is the mirror
+    /// image — FCS binds the imported value over a same-named class at a lower
+    /// tier (fsi-verified: `DirectValueShadow ()` returns the module value's
+    /// `int`, not the global-namespace class) — so the constructor fallback
+    /// needs this separate question. A module's `let` compiles to a public
+    /// static member of the module class, so the surface is
+    /// [`Self::open_static_entries`], plus — FCS opens `[<AutoOpen>]`
+    /// submodules recursively — each public auto-open child's.
+    ///
+    /// Name-keyed only: unlike the entity twin this does **not** fold in the
+    /// coarse `namespace_has_dropped_type` / unknowable-abbreviation arms,
+    /// which are namespace-wide and would defer every bare constructor use in a
+    /// closure holding any manifest module-shaped auto-open. The residual gap is
+    /// a value hidden behind an undecodable member signature.
+    /// Deferral-only: a `true` never resolves anything, it withholds a commit.
+    pub(crate) fn manifest_auto_open_module_could_supply_value_named(&self, name: &str) -> bool {
+        self.auto_open_module_handles
+            .iter()
+            .any(|&(h, effectively_public)| {
+                effectively_public && self.module_open_surface_has_value_named(h, name)
+            })
+    }
+
+    /// The value half of [`Self::module_open_surface_has_entity_named`]: the
+    /// module's own public statics, then each public `[<AutoOpen>]` child's.
+    fn module_open_surface_has_value_named(&self, handle: EntityHandle, name: &str) -> bool {
+        if self
+            .open_static_entries(handle)
+            .iter()
+            .any(|(entry, _)| *entry == name)
+        {
+            return true;
+        }
+        self.children(handle).iter().any(|&child| {
+            if !self.is_public(child) {
+                return false;
+            }
+            let e = self.entity(child);
+            e.kind == EntityKind::Module
+                && e.is_auto_open
+                && self.module_open_surface_has_value_named(child, name)
+        })
+    }
+
     /// Whether opening the module `handle` imports an entity named `name`
     /// into bare scope: its **public direct children** (a nested type is
     /// bare-visible; a nested module is a bare-visible dotted head), matched
