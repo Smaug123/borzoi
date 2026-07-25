@@ -121,9 +121,6 @@ pub enum LoadSkip {
     DefineConstantsUncertain {
         details: LoadUncertaintyDetails,
     },
-    SignatureFilesUnsupported {
-        path: PathBuf,
-    },
     TooManyFiles {
         files: usize,
         max_files: NonZeroUsize,
@@ -140,9 +137,6 @@ impl fmt::Display for LoadSkip {
             }
             Self::DefineConstantsUncertain { details } => {
                 write!(f, "DefineConstants are uncertain: {details}")
-            }
-            Self::SignatureFilesUnsupported { path } => {
-                write!(f, "signature files are unsupported ({})", path.display())
             }
             Self::TooManyFiles { files, max_files } => {
                 write!(f, "too many Compile items ({files} > {max_files})")
@@ -254,15 +248,6 @@ pub fn load_lsp_project_with_options(
             details: define_constants_uncertainty_details(&parsed),
         });
     }
-    if let Some(sig) = parsed
-        .items
-        .iter()
-        .find(|item| is_signature_file(&item.include))
-    {
-        return Err(LoadSkip::SignatureFilesUnsupported {
-            path: sig.include.clone(),
-        });
-    }
     if let Some(max_files) = options.limits.max_files
         && parsed.items.len() > max_files.get()
     {
@@ -301,12 +286,6 @@ pub fn load_lsp_project_with_options(
         define_constants,
         lang_version,
     })
-}
-
-fn is_signature_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("fsi"))
 }
 
 fn fcs_extra_refs(
