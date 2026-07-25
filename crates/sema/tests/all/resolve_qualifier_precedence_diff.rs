@@ -810,3 +810,73 @@ fn module_occupancy_follows_the_in_module_search_domain() {
     // lower-priority reading may own the path.
     assert_eq!(env.static_lookup(module, "TypeOnly"), StaticLookup::Absent);
 }
+
+/// A same-file `module Collide` merging with the fixture's referenced
+/// `QP.ModHalf.Collide` must stay **opaque** to the residual-aware
+/// module-like shadow (`Resolver::module_like_transparent_for`): FCS's
+/// modules-first search finds `fromModule` in the *assembly* half, so absence
+/// from the local fragment proves nothing, and a co-named local union case is
+/// never the target.
+///
+/// Three merge shapes, all certain-implies-exact — we commit only what FCS
+/// reports. The local declarations are unreachable through a `.` here, so
+/// today every cell defers; the pin is the *soundness* direction (codex [P2],
+/// which the FCS-free `companion_module_case_matrix` cannot see: it runs with
+/// an empty assembly env).
+#[test]
+fn a_module_merged_with_a_referenced_one_never_yields_a_local_case() {
+    let cells: &[(&str, &str)] = &[
+        (
+            "companion beside the type, both at the namespace",
+            "namespace QP.ModHalf\n\n[<RequireQualifiedAccess>]\ntype Collide =\n    | fromModule\n    | Other\n\nmodule Collide =\n    let describe = 1\n\nmodule Use =\n    let probe = Collide.fromModule\n",
+        ),
+        (
+            "companion at the namespace, type in a nested module",
+            "namespace QP.ModHalf\n\nmodule Collide =\n    let describe = 1\n\nmodule Use =\n    [<RequireQualifiedAccess>]\n    type Collide =\n        | fromModule\n        | Other\n\n    let probe = Collide.fromModule\n",
+        ),
+        (
+            "module header at the merged path",
+            "module QP.ModHalf\n\n[<RequireQualifiedAccess>]\ntype Collide =\n    | fromModule\n    | Other\n\nmodule Collide =\n    let describe = 1\n\nlet probe = Collide.fromModule\n",
+        ),
+    ];
+    let env = fixture_env();
+    for (label, src) in cells {
+        let rf = resolve_src(src, &env);
+        let uses = fcs_uses(src, &[ensure_qualifier_fixture_built()]);
+        let range = at(src, "Collide.fromModule");
+        let fcs = uses
+            .iter()
+            .find(|u| {
+                u32::from(range.start()) as usize == u.start
+                    && u32::from(range.end()) as usize == u.end
+            })
+            .unwrap_or_else(|| panic!("{label}: no FCS use at the probe"));
+        // The premise: FCS binds a `QP.ModHalf.Collide.fromModule` — from the
+        // referenced assembly where the namespace merges, from the snippet
+        // itself where a `module` header takes the path outright.
+        assert_eq!(
+            fcs.full_name.as_deref(),
+            Some("QP.ModHalf.Collide.fromModule"),
+            "{label}: FCS premise"
+        );
+        // Ours: never a commitment FCS contradicts. A local-case commit is the
+        // wrong target this guards; FCS declares in the assembly (no `decl`) in
+        // the merge cells, so any project `Item` there is a divergence.
+        match rf.resolution_at(range) {
+            None | Some(Resolution::Deferred(_)) => {}
+            Some(res) if fcs.decl.is_some() => {
+                let def = rf.resolved_def(res).expect("a committed def");
+                let (start, end) = fcs.decl.expect("checked");
+                assert_eq!(
+                    (
+                        u32::from(def.range.start()) as usize,
+                        u32::from(def.range.end()) as usize,
+                    ),
+                    (start, end),
+                    "{label}: committed the wrong same-file definition"
+                );
+            }
+            other => panic!("{label}: committed {other:?} where FCS declares in an assembly"),
+        }
+    }
+}

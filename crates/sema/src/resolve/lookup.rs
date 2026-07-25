@@ -3697,6 +3697,15 @@ impl<'a> Resolver<'a> {
             || self.preceding.is_exact_nested_module(&mp)
             || self.is_project_namespace_path(&mp)
             || self.assemblies.has_namespace(&mp)
+            // A referenced **module or static class** at the same path merges
+            // with this fragment, and FCS's modules-first search finds the
+            // member there — so absence from the local fragment proves nothing
+            // (codex [P2], FCS-probed: a project `module Collide` beside the
+            // fixture's `QP.ModHalf.Collide` binds the assembly's `fromModule`,
+            // not a co-named local union case). `opened_assembly_type` splits
+            // the path at every namespace/type boundary, so this catches a
+            // nested target too, which `has_namespace` alone cannot.
+            || self.opened_assembly_type(&mp).is_some()
             || self.module_has_hidden_values(&mp)
         {
             return false;
