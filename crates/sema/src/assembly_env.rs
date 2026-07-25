@@ -1282,15 +1282,19 @@ impl AssemblyEnv {
                 if let Some((handle, effectively_public)) =
                     self.assembly_entity_at_path(contributor, &segments)
                 {
-                    // An authoritative F# TYPE at the path (a companion pair's
-                    // bare spelling, or a directly-named type): FCS derefs to
-                    // it and opens its *pickled* module contents — empty for a
-                    // type — so the attribute silently imports nothing
-                    // (fsi-verified). Record no surface. Non-authoritative
-                    // kinds fall through: FCS imports such an assembly through
-                    // IL, where a type's module contents are its nested types
-                    // (`ImportILTypeDef`), so the recorded surface walk is the
-                    // right (deferral-only) model there.
+                    // An authoritative NON-MODULE at the path (a companion
+                    // pair's bare spelling, a directly-named type, an
+                    // exception definition — FCS's deref table keys those
+                    // entities too): FCS derefs to it and opens its *pickled*
+                    // module contents, which only a module has, so the
+                    // attribute silently imports nothing (fsi-verified for the
+                    // companion-pair type). Record no surface — for every
+                    // authoritative non-module kind, not just classes.
+                    // Non-authoritative kinds fall through: FCS imports such
+                    // an assembly through IL, where a type's module contents
+                    // are its nested types (`ImportILTypeDef`), so the
+                    // recorded surface walk is the right (deferral-only)
+                    // model there.
                     if !self.fsharp_signature_unreliable(handle)
                         && self.entity(handle).kind != EntityKind::Module
                     {
@@ -6947,6 +6951,55 @@ mod from_views_tests {
                 "{label}: the mangled spelling derefs to the suffixed module, which is opened"
             );
         }
+    }
+
+    /// The FS0970 warn-and-ignore spellings record no surface, pinned at the
+    /// `from_views` layer: the `autoopen_env` fixture cannot distinguish them
+    /// from its `NoSuchPath` attribute (both route the env through the
+    /// unknowable branch), so a regression there would hide behind it. A solo
+    /// suffixed module's source spelling and a generic companion's bare
+    /// spelling (generic logical names are arity-mangled) match no
+    /// compiled-name key — FCS warns and opens nothing (fsi-verified).
+    #[test]
+    fn manifest_deref_warn_and_ignore_spellings_record_no_surface() {
+        let child = || Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let solo = Entity {
+            source_name: Some("Solo".to_string()),
+            nested_types: vec![child()],
+            ..module_entity("Lib", &["A"], "SoloModule")
+        };
+        let view = ConfigView::new("Lib", vec![solo], &["A.Solo"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a solo suffixed module's source spelling keys nothing"
+        );
+
+        let generic_type = Entity {
+            kind: EntityKind::Class,
+            generic_parameters: vec![type_parameter(0)],
+            ..module_entity("Lib", &["A"], "Gen")
+        };
+        let gen_module = Entity {
+            source_name: Some("Gen".to_string()),
+            nested_types: vec![child()],
+            ..module_entity("Lib", &["A"], "GenModule")
+        };
+        let view = ConfigView::new("Lib", vec![generic_type, gen_module], &["A.Gen"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a generic companion's bare spelling keys neither half"
+        );
     }
 
     /// The semantic-token classifier honours signature authority on the
