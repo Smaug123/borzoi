@@ -9,38 +9,6 @@ use super::id_text;
 use super::model::{DeferredReason, Resolution};
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
 
-/// How many candidates at a **contested** rooting FQN can satisfy the path —
-/// the verdict [`Resolver::contested_suppliers`] returns.
-enum ContestedSuppliers<T> {
-    /// None: the tail is provably absent from every candidate, so the reading
-    /// is an ordinary *partial* one a lower priority may supersede.
-    None,
-    /// Exactly one, carrying its walk: FCS binds the sole candidate that
-    /// satisfies the path, so the collision is decidable after all.
-    One(AssemblyPath<T>),
-    /// Several: FCS binds the latest *accessible* reference among them, which
-    /// sema does not model. Defer — never a wrong target.
-    Many,
-}
-
-/// The reading a sole surviving supplier at a **contested** rooting yields.
-///
-/// A supplier that actually resolves is returned as-is. One that only *defers*
-/// names no target, and its own defer flavour may be **preemptive** —
-/// `ProjectShadowed` trips the as-written-root veto in
-/// `Resolver::resolve_assembly_path_tiered` and skips the higher-priority
-/// opens. That veto is for a lexical project-bound head; a cross-DLL contest is
-/// not one, so the defer is downgraded to the tier-local
-/// [`AssemblyPath::ContestedRooting`] and a higher-priority open still wins
-/// (codex review round 5 — the same tier-locality round 1 established for the
-/// plural case, re-entering through the sole-supplier path).
-fn tier_local_at_a_contest<T>(reading: AssemblyPath<T>) -> AssemblyPath<T> {
-    match reading {
-        resolved @ AssemblyPath::Resolved { .. } => resolved,
-        _ => AssemblyPath::ContestedRooting,
-    }
-}
-
 impl<'a> Resolver<'a> {
     /// Compute — *without recording* — how a dotted path resolves into the
     /// referenced assemblies, under an opened-namespace `prefix` (empty for a
@@ -118,42 +86,19 @@ impl<'a> Resolver<'a> {
             .assemblies
             .public_types_named_at_arity(&names[..k], &names[k], 0);
         if self.assemblies.distinct_dlls(&candidates) > 1 {
-            let suppliers = self.contested_suppliers(
+            let supplied = self.contest_has_a_supplier(
                 candidates,
-                Some(type_handle),
                 |handle| self.assembly_path_records_from_root(&names, segments, base, k, handle),
-                // A reading whose **terminal segment** landed on an
-                // authoritative module supplies no *value*: FCS's
-                // expression-position lookup wants a value or member, and a
-                // module is neither, so it skips it (the value-path mirror of
-                // the type walk's module-leaf rule — codex review round 6). A
-                // resolved static member records across the whole path, not the
-                // terminal segment, so this rejects only a bare module.
-                |reading| {
-                    reading.may_own_path()
-                        && !matches!(
-                            reading,
-                            AssemblyPath::Resolved { payload, .. }
-                                if segments.last().is_some_and(|last| {
-                                    let terminal = last.text_range();
-                                    payload.iter().any(|&(range, res)| {
-                                        range == terminal
-                                            && matches!(
-                                                res,
-                                                Resolution::Entity(h)
-                                                    if self.assemblies.is_authoritative_module(h)
-                                            )
-                                    })
-                                })
-                        )
-                },
+                AssemblyPath::may_own_path,
             );
-            return match suppliers {
+            return if supplied {
+                AssemblyPath::ContestedRooting
+            } else {
                 // No candidate supplies the tail: an ordinary **partial**
                 // reading a lower priority may supersede. Its records defer at
                 // every segment — the rooting exists, but naming *which* DLL's
                 // type it is remains the thing we cannot do.
-                ContestedSuppliers::None => AssemblyPath::Resolved {
+                AssemblyPath::Resolved {
                     payload: segments
                         .iter()
                         .map(|seg| {
@@ -164,73 +109,53 @@ impl<'a> Resolver<'a> {
                         })
                         .collect(),
                     owns_path: false,
-                },
-                ContestedSuppliers::One(reading) => tier_local_at_a_contest(reading),
-                ContestedSuppliers::Many => AssemblyPath::ContestedRooting,
+                }
             };
         }
 
         self.assembly_path_records_from_root(&names, segments, base, k, type_handle)
     }
 
-    /// Walk each candidate for a **contested** rooting FQN and classify how
-    /// many of them can actually satisfy the path — the one place both walks
-    /// decide a cross-DLL collision.
+    /// Whether **any** candidate at a contested rooting FQN could satisfy the
+    /// path — the one place both walks decide a cross-DLL collision.
     ///
-    /// FCS merges same-FQN roots across differently-named references, which
-    /// sema does not model (`lookup_type` is first-wins), so a commit chosen by
-    /// index order could name the wrong DLL's type. But the merged lookup is
-    /// *tail-sensitive*: FCS keeps the candidates that satisfy the path and
-    /// binds among those, so the collision only bites when more than one does.
-    /// fsi-verified 2026-07-25 with probe libraries — with `DupA`/`DupB` both
-    /// exporting `High.Color` and only `DupA`'s having `OnlyOnA`,
-    /// `Color.OnlyOnA` binds `DupA`'s **even though it is the earlier
-    /// reference**; when neither has the member, the rooting is skipped
-    /// entirely in favour of a lower reading.
+    /// FCS merges same-FQN roots across differently-named references and binds
+    /// the latest *accessible* one, which sema does not model (`lookup_type` is
+    /// first-wins), so at a merged rooting we can never name a target: any
+    /// supplier at all means **defer**. The merged lookup is nonetheless
+    /// *tail-sensitive* — when no candidate supplies the tail FCS skips the
+    /// rooting entirely (fsi-verified 2026-07-25 with three probe libraries) —
+    /// so "any supplier" is the question worth asking, and a `false` here lets
+    /// a lower-priority reading that completes the path win.
     ///
-    /// The caller supplies `walk`, its own post-rooting descent, and reads the
-    /// verdict off the count. `may_own_path` is the supplier test: everything
-    /// except a genuinely-absent tail, so a candidate that *defers* still
-    /// counts (it may satisfy the path on a surface we do not model).
-    /// `preferred` is the rooting the walk itself selected (the first-wins
-    /// slot): when one DLL supplies the path through *several* candidates — its
-    /// type and that type's companion module both carrying the name — that
-    /// within-DLL precedence is already decided, so the slot's pick is returned
-    /// rather than bucket order (codex review round 5).
+    /// Committing when exactly *one* candidate supplies the path would match
+    /// FCS more often (fsi: with only `DupA`'s `High.Color` carrying `OnlyOnA`,
+    /// `Color.OnlyOnA` binds it despite being the earlier reference), and an
+    /// earlier revision did. It is deliberately not done: "supplies the path"
+    /// has to agree with FCS's notion exactly for such a commit to be safe, and
+    /// review found three shapes where it did not — a terminal module, a
+    /// non-authoritative module kind, and a union-case tail (union constructors
+    /// live in `union_case_names`, not `members`, so an owning union reads as
+    /// absent). Each was a *wrong target*, the one outcome D5 forbids, whereas
+    /// deferring costs only coverage in an already-rare shape.
     ///
+    /// The caller supplies `walk`, its own post-rooting descent, and
+    /// `is_supplier`. `may_own_path` is the base test: everything except a
+    /// genuinely-absent tail, so a candidate that *defers* still counts (it may
+    /// satisfy the path on a surface we do not model).
     /// `is_supplier` is the position's own test, since "can satisfy the path"
     /// is not the same question in both walks: the type walk additionally
     /// rejects a **module leaf**, which is outside the terminal type namespace
     /// at every depth (codex review round 5).
-    fn contested_suppliers<T>(
+    fn contest_has_a_supplier<T>(
         &self,
         candidates: Vec<EntityHandle>,
-        preferred: Option<EntityHandle>,
         walk: impl Fn(EntityHandle) -> AssemblyPath<T>,
         is_supplier: impl Fn(&AssemblyPath<T>) -> bool,
-    ) -> ContestedSuppliers<T> {
-        let mut suppliers: Vec<(EntityHandle, AssemblyPath<T>)> = Vec::new();
-        for handle in candidates {
-            let reading = walk(handle);
-            if is_supplier(&reading) {
-                suppliers.push((handle, reading));
-            }
-        }
-        if suppliers.is_empty() {
-            return ContestedSuppliers::None;
-        }
-        // Count supplying *DLLs*, not supplying handles: a collision is
-        // cross-assembly by definition, and F#'s within-DLL precedence is
-        // deterministic (codex review round 5).
-        let handles: Vec<EntityHandle> = suppliers.iter().map(|(h, _)| *h).collect();
-        if self.assemblies.distinct_dlls(&handles) > 1 {
-            return ContestedSuppliers::Many;
-        }
-        let chosen = suppliers
-            .iter()
-            .position(|(h, _)| Some(*h) == preferred)
-            .unwrap_or(0);
-        ContestedSuppliers::One(suppliers.swap_remove(chosen).1)
+    ) -> bool {
+        candidates
+            .into_iter()
+            .any(|handle| is_supplier(&walk(handle)))
     }
 
     /// One reading's walk *below* an already-chosen rooting type — the body of
@@ -713,9 +638,8 @@ impl<'a> Resolver<'a> {
             return AssemblyPath::NoMatch;
         };
 
-        // The type-path mirror of the value/member walk's contested combinator,
-        // with the same three outcomes and the same reasons (see
-        // [`Self::contested_suppliers`]). It counts distinct DLLs over the
+        // The type-path mirror of the value/member walk's contest (see
+        // [`Self::contest_has_a_supplier`]). It counts distinct DLLs over the
         // **type-position candidates** — the module-filtered set the rooting
         // was selected from — so a class/module pair at one FQN across two DLLs
         // is not a contest at all (fsi-verified: the class binds in both
@@ -723,9 +647,8 @@ impl<'a> Resolver<'a> {
         // module and a `type Alias = Widget` beside a generic `type Alias<'T>`
         // keep resolving as before.
         if self.assemblies.distinct_dlls(&candidates) > 1 {
-            let suppliers = self.contested_suppliers(
+            let supplied = self.contest_has_a_supplier(
                 candidates,
-                Some(type_handle),
                 |handle| {
                     self.assembly_type_path_from_root(
                         &names,
@@ -751,8 +674,10 @@ impl<'a> Resolver<'a> {
                         )
                 },
             );
-            return match suppliers {
-                ContestedSuppliers::None => AssemblyPath::Resolved {
+            return if supplied {
+                AssemblyPath::ContestedRooting
+            } else {
+                AssemblyPath::Resolved {
                     payload: TypePathReading {
                         idx_recs: (0..segments.len())
                             .map(|idx| (idx, Resolution::Deferred(DeferredReason::QualifiedAccess)))
@@ -762,9 +687,7 @@ impl<'a> Resolver<'a> {
                         leaf: None,
                     },
                     owns_path: false,
-                },
-                ContestedSuppliers::One(reading) => tier_local_at_a_contest(reading),
-                ContestedSuppliers::Many => AssemblyPath::ContestedRooting,
+                }
             };
         }
 

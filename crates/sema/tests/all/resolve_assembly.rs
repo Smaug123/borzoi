@@ -2532,11 +2532,10 @@ fn a_contested_root_that_supplies_the_tail_still_defers_over_a_lower_open() {
     }
 }
 
-// ----- Contestants are per lookup-channel, and counted 0 / 1 / many -----
+// ----- Contestants are per lookup-channel -----
 //
 // A same-FQN collision is only a *contest* among candidates FCS's lookup would
-// actually consider together at that position, and even then only when more
-// than one of them can satisfy the path. fsi-verified 2026-07-25 with
+// actually consider together at that position. fsi-verified 2026-07-25 with
 // `ClassLib` (`namespace Ns; type Color`) and `ModuleLib`
 // (`namespace Ns; module Color` holding `greeting` and a nested `Inner`):
 //
@@ -2547,10 +2546,12 @@ fn a_contested_root_that_supplies_the_tail_still_defers_over_a_lower_open() {
 //   * `Ns.Color.greeting` and `let z : Ns.Color.Inner` both resolve regardless
 //     — a module still roots a *tail*, as a container.
 //
-// So type-position eligibility filters the candidates before they are counted,
-// and a *single* surviving supplier binds rather than defers (`OnlyOnA = 7`
-// upstream: FCS picks the one contestant that has the member, even when it is
-// not the latest reference).
+// So type-position eligibility filters the candidates *before* the collision is
+// counted: a class beside a module at one FQN is no contest, and the class
+// binds. Once a genuine contest remains, any candidate that could supply the
+// path makes it defer — see
+// `one_contestant_supplying_the_tail_defers_rather_than_binds` for why the
+// sole-supplier commit that would resolve more paths is deliberately not made.
 
 #[test]
 fn a_class_and_a_module_at_one_fqn_are_not_a_type_position_contest() {
@@ -2610,9 +2611,16 @@ fn a_lone_module_still_roots_a_terminal_type_reading() {
 }
 
 #[test]
-fn a_module_still_roots_a_nested_type_tail() {
+fn a_module_roots_a_nested_type_tail_but_a_contest_still_defers_it() {
     // The other half: type-position eligibility is about the TERMINAL segment
-    // only. A module is a perfectly good container for a nested type.
+    // only, so the module is NOT filtered out here — it is a perfectly good
+    // container, and fsi resolves `let z : Ns.Color.Inner`.
+    //
+    // It therefore stays a candidate, the collision stands, and the sole
+    // supplier defers rather than binds — the same deliberate trade as
+    // `one_contestant_supplying_the_tail_defers_rather_than_binds`. What must
+    // NOT happen is the class (which has no `Inner`) winning by elimination:
+    // that would be a wrong target.
     let (class_color, module_color) = class_and_module_color();
     let env = AssemblyEnv::from_entities(vec![class_color, module_color]);
     let module_handle = env
@@ -2620,23 +2628,35 @@ fn a_module_still_roots_a_nested_type_tail() {
         .into_iter()
         .find(|&h| env.entity(h).kind == EntityKind::Module)
         .expect("the module contestant is in the env");
-    let inner = env
-        .nested(module_handle, "Inner", 0)
-        .expect("Ns.Color.Inner under the module");
+    env.nested(module_handle, "Inner", 0)
+        .expect("Ns.Color.Inner exists under the module — the tail FCS resolves");
     let src = "module M\nlet x : Ns.Color.Inner = Unchecked.defaultof<_>\n";
     let rf = resolve(src, &env);
-    assert_eq!(
-        rf.resolution_at(at(src, "Inner")),
-        Some(Resolution::Entity(inner)),
-        "a module roots a nested-type tail even beside a same-named class"
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "Inner")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "a contested container defers its nested tail, got {:?}",
+        rf.resolution_at(at(src, "Inner"))
     );
 }
 
+/// **Known coverage gap, chosen deliberately.** fsi (`OnlyOnA = 7`): among
+/// same-FQN contestants FCS binds the one that supplies the tail, even when it
+/// is not the latest reference — so this path *could* resolve, and an earlier
+/// revision made it.
+///
+/// It defers instead. Committing on a sole supplier requires our "supplies the
+/// path" to agree with FCS's exactly, and review found three shapes where it
+/// did not — a terminal module, a non-authoritative module kind, and a
+/// union-case tail (union constructors live in `union_case_names`, not
+/// `members`, so an owning union reads as absent). Each was a **wrong target**,
+/// the one outcome D5 forbids; deferring costs only coverage, in an
+/// already-rare shape. The evidence is kept here so the trade stays visible and
+/// reversible.
 #[test]
-fn one_contestant_supplying_the_tail_binds_rather_than_defers() {
-    // fsi (`OnlyOnA = 7`): among same-FQN contestants FCS binds the one that
-    // supplies the tail, even when it is not the latest reference. Only a
-    // genuine *plurality* of suppliers is undecidable for us.
+fn one_contestant_supplying_the_tail_defers_rather_than_binds() {
     let ents = fixture_entities();
     let widget = ents
         .iter()
@@ -2659,12 +2679,12 @@ fn one_contestant_supplying_the_tail_binds_rather_than_defers() {
         .expect("the supplying contestant is in the env");
     let src = "module M\nlet u = Ns.Color.StaticCount\n";
     let rf = resolve(src, &env);
-    match rf.resolution_at(at(src, "Ns.Color.StaticCount")) {
-        Some(Resolution::Member { parent, .. }) if parent == supplier => {}
-        other => {
-            panic!("exactly one contestant has `StaticCount`, so FCS binds it — got {other:?}")
-        }
-    }
+    let resolution = rf.resolution_at(at(src, "Ns.Color.StaticCount"));
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "a genuine cross-DLL collision commits nothing, even with one supplier; \
+         FCS would bind {supplier:?} — got {resolution:?}"
+    );
 }
 
 #[test]
@@ -3131,49 +3151,42 @@ fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
                                         let before = describe_resolution(&base, before_res);
                                         let after = describe_resolution(&perturbed, after_res);
                                         checked += 1;
-                                        // A same-named MODULE is not a type-position
-                                        // candidate at all, so a *bare* type path — one
-                                        // whose rooting IS its final segment — must be
-                                        // untouched by it. (With a tail it may
-                                        // legitimately contest: a module is a fine
-                                        // container, so two containers can then supply
-                                        // the same nested type.)
-                                        let module_at_terminal = match perturbation {
-                                            // The rooting itself is the module.
-                                            Perturbation::AsModule => !path.ends_with(".Inner"),
-                                            // The *nested* segment is the module.
-                                            Perturbation::NestedInnerAsModule => {
-                                                path.ends_with(".Inner")
-                                            }
-                                            _ => false,
-                                        };
-                                        if type_position && module_at_terminal {
+                                        // A same-named MODULE is not a
+                                        // type-position candidate, so on a
+                                        // *bare* type path — one whose rooting
+                                        // IS its final segment — it is filtered
+                                        // out before the collision is even
+                                        // counted, and must leave the path
+                                        // untouched.
+                                        //
+                                        // The filter is at the ROOTING, though.
+                                        // A module *nested* under a same-FQN
+                                        // clone still contests at the rooting,
+                                        // and a genuine collision commits
+                                        // nothing — so `Color.Inner` may
+                                        // legitimately degrade to a deferral
+                                        // there, and only the no-wrong-target
+                                        // half below constrains it.
+                                        let module_at_the_rooting = perturbation
+                                            == Perturbation::AsModule
+                                            && !path.ends_with(".Inner");
+                                        if type_position && module_at_the_rooting {
                                             assert_eq!(
                                                 before, after,
-                                                "a module cannot occupy a terminal type position at ANY \
-                                         depth, so adding one must not perturb {path:?}\n\
+                                                "a module cannot occupy a terminal type position, \
+                                         so adding one must not perturb {path:?}\n\
                                          source:\n{src}"
                                             );
                                         }
-                                        // A candidate that supplies NOTHING is one
-                                        // FCS simply skips, so it must change
-                                        // nothing — however many candidates the
-                                        // *supplying* DLL contributes (a type and
-                                        // that type's companion module can both
-                                        // carry the member; that is one supplier,
-                                        // not two). This is the half the
-                                        // "may degrade at its own root" clause below
-                                        // cannot see, because such a degradation IS
-                                        // at its own root.
-                                        if perturbation == Perturbation::CloneWithoutMembers
-                                            && path.ends_with(".StaticCount")
-                                        {
-                                            assert_eq!(
-                                                before, after,
-                                                "a member-less candidate supplies no member tail, so \
-                                             adding one must not perturb {path:?}\nsource:\n{src}"
-                                            );
-                                        }
+                                        // (A member-less candidate supplies no
+                                        // member tail, but it still *contests*
+                                        // the rooting, and a genuine collision
+                                        // commits nothing — so it may
+                                        // legitimately degrade the path to a
+                                        // deferral. See
+                                        // `one_contestant_supplying_the_tail_defers_rather_than_binds`
+                                        // for the trade. Only the
+                                        // no-wrong-target half below binds it.)
                                         if before == after {
                                             continue;
                                         }
@@ -5842,5 +5855,55 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
         equals(&build(true)),
         StaticLookup::Uncertain,
         "a non-authoritative module takes the type rule, whose base chain occupies `Equals`"
+    );
+}
+
+/// Codex review round 7 (P1): the union-case shape that made the sole-supplier
+/// commit unsafe. F# union constructors are deliberately absent from
+/// `Entity::members` — their names live in `union_case_names` — so a union that
+/// genuinely owns `Color.Red` walks as a *partial* reading. With
+/// `[union Color = Red, class Color with static Red, union Color = Red]` the
+/// supplier test saw only the class and committed its member, while FCS binds
+/// the latest union case: a wrong target. Committing nothing at a contest makes
+/// the shape safe by construction, so this pins the deferral.
+#[test]
+fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let union_color = |assembly: &str| {
+        let mut e = widget.clone();
+        e.namespace = vec!["Ns".to_string()];
+        e.name = "Color".to_string();
+        e.assembly.name = assembly.to_string();
+        e.kind = EntityKind::Union;
+        e.members = vec![];
+        e.nested_types = vec![];
+        e.union_case_names = Some(vec!["Red".to_string()]);
+        e
+    };
+    // The middle candidate is a class whose STATIC is named `Red` — the member
+    // the old sole-supplier rule would have committed.
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.assembly.name = "ClassLib".to_string();
+    class_color.nested_types = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![
+        union_color("UnionA"),
+        class_color,
+        union_color("UnionB"),
+    ]);
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    let resolution = rf.resolution_at(at(src, "Ns.Color.StaticCount"));
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "three DLLs contest `Ns.Color`; committing any one DLL's member is a \
+         wrong target — got {resolution:?}"
     );
 }

@@ -1027,7 +1027,7 @@ fn two_dll_env(a: Vec<borzoi_assembly::Entity>, b: Vec<borzoi_assembly::Entity>)
 }
 
 #[test]
-fn a_nested_alias_below_a_cross_dll_colliding_root_binds_its_sole_supplier() {
+fn nested_alias_below_a_cross_dll_colliding_root_defers_in_type_position() {
     // Both DLLs export a public top-level `N.Container`; only the first nests
     // `type Alias = Widget` (a marker with a Local target).
     //
@@ -1035,10 +1035,11 @@ fn a_nested_alias_below_a_cross_dll_colliding_root_binds_its_sole_supplier() {
     // do not shadow. fsi-verified 2026-07-25 with two probe libraries each
     // exporting `namespace N; module Container`: `N.Container.onlyInA`,
     // `N.Container.onlyInB` and the *earlier* reference's nested
-    // `N.Container.AliasA` all resolve. So when exactly one merged container
-    // supplies the name, FCS binds it, and the walk — which now asks every
-    // candidate rather than only the first-indexed one — binds it too.
-    // Deferring here would under-resolve a path FCS resolves.
+    // `N.Container.AliasA` all resolve. So FCS binds `Alias` here, and this is
+    // a **known coverage gap**, not a modelling claim: a genuine cross-DLL
+    // collision commits nothing, because committing on a sole supplier needs
+    // our "supplies the path" to agree with FCS's exactly, and it does not
+    // (see `resolve_assembly::one_contestant_supplying_the_tail_defers_rather_than_binds`).
     use borzoi_assembly::EntityKind;
     let widget = synth_entity("A", &["N"], "Widget", EntityKind::Class);
     let mut container_a = synth_entity("A", &["N"], "Container", EntityKind::Module);
@@ -1051,9 +1052,11 @@ fn a_nested_alias_below_a_cross_dll_colliding_root_binds_its_sole_supplier() {
     let env = two_dll_env(vec![widget, container_a], vec![container_b]);
     let src = "module M\nlet f (x : N.Container.Alias) = x\n";
     let rf = resolve(src, &env);
-    assert!(
-        rf.resolution_at(at(src, "Alias")).is_some(),
-        "exactly one merged container supplies `Alias`, so FCS binds it"
+    assert_eq!(
+        rf.resolution_at(at(src, "Alias")),
+        None,
+        "a nested alias below a cross-DLL-colliding root must defer, not chase \
+         out of the first-indexed subtree"
     );
 }
 
