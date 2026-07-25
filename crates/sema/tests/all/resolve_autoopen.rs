@@ -2066,3 +2066,34 @@ fn manifest_auto_open_module_value_defers_a_bare_constructor_use() {
         "an imported module value outranks the class — committing it is a wrong target"
     );
 }
+
+#[test]
+fn a_compiled_name_value_does_not_let_the_fallback_commit_a_class() {
+    // `SemaAutoOpen.DirectOps` declares `[<CompiledName("CompiledOther")>] let
+    // CompiledNameShadow`, and the global namespace a constructible class of the
+    // logical name. FCS imports the value under its LOGICAL name, so the class is
+    // a wrong target.
+    //
+    // The shape exists because a guard that compares `SkippedMember::name` — the
+    // **IL** name — by equality can never match the source spelling, so an
+    // enumeration that reports "no member of that name" is wrong by construction.
+    // Answering through `open_fold_surface` makes that moot: an unlistable member
+    // is `residue`, and residue defers regardless of naming.
+    //
+    // Honest about strength: this fixture also declares an unresolvable
+    // `[<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]`, so the env-wide
+    // unknowable arm defers here too and would carry this assertion alone.
+    // Discriminating the residue path needs a fixture assembly without that
+    // negative control; what this pins is the observable contract.
+    let env = fixture_env();
+    let src = "let x = CompiledNameShadow ()\n";
+    let rf = resolve(src, &env);
+    let decoy = env
+        .lookup_type(&[], "CompiledNameShadow", 0)
+        .expect("fixture must declare a global CompiledNameShadow class");
+    assert_ne!(
+        rf.resolution_at(at(src, "CompiledNameShadow")),
+        Some(Resolution::Entity(decoy)),
+        "a CompiledName-renamed module value must not let the fallback commit the class"
+    );
+}

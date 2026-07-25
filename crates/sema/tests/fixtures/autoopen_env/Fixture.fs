@@ -316,6 +316,13 @@ module DirectOps =
     // bare `DirectValueShadow ()` must never commit the class.
     let DirectValueShadow () = 12
 
+    // codex round 11: a value whose IL name differs from its F# logical name.
+    // A guard that compares `SkippedMember::name` (the IL name) by equality can
+    // never match the source spelling FCS imports, so the surface must report it
+    // as *residue* rather than as an absent name.
+    [<CompiledName("CompiledOther")>]
+    let CompiledNameShadow () = 13
+
 // ===== ModuleSuffix / companion-pair manifest targets =====
 //
 // FCS derefs a manifest AutoOpen path through the contributing assembly's
@@ -789,6 +796,12 @@ type DirectShadow() =
 // FCS binds the module's value instead, making this a wrong target.
 type DirectValueShadow() =
     member _.Decoy = 12
+
+// The decoy for the `[<CompiledName>]` value above: FCS imports the module's
+// value under its LOGICAL name, so a bare `CompiledNameShadow ()` binds that,
+// never this class.
+type CompiledNameShadow() =
+    member _.Decoy = 13
 
 module DirectSub =
     type DirectSubT() =
