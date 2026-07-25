@@ -285,7 +285,7 @@ fn string_cells(opens: &str) {
         &uses,
         src,
         qualifier_of(src, "String.length"),
-        "String",
+        "Microsoft.FSharp.Core.String",
         "FSharp.Core",
     );
     assert_fcs_pin(
@@ -424,13 +424,15 @@ fn fixture_src(opens: &str) -> String {
     src
 }
 
-/// FCS keeps the module qualifier on `Collide.<name>` — its full name renders as
-/// the bare `"Collide"` for a module. (We do not pin FCS's *leaf*: a keeper's
+/// FCS keeps the module qualifier on `Collide.<name>`, pinned by the module's
+/// full dotted path — FCS reports an F# module's `FullName` as the bare display
+/// name, and `fcs-dump` qualifies it from the entity's `AccessPath`, so the pin
+/// names *which* `Collide` this is. (We do not pin FCS's *leaf*: a keeper's
 /// leaf varies — the type itself, an empty private-ctor result, or an
 /// abbreviation target — and our side makes no claim on it anyway.)
 fn assert_fcs_qualifier_is_module(uses: &[NormalisedUse], src: &str, name: &str) {
     let path = format!("Collide.{name}");
-    assert_fcs_pin(uses, src, qualifier_of(src, &path), "Collide", FIXTURE_ASM);
+    assert_fcs_pin(uses, src, qualifier_of(src, &path), MOD, FIXTURE_ASM);
 }
 
 /// FCS re-roots `Collide.<name>` to the **type** static (qualifier + leaf).

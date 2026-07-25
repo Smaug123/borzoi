@@ -4712,12 +4712,30 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
                 | "" | "global" -> box logical
                 | path -> box (path + "." + logical)
             | _ -> null
+    // FCS reports an F# *module*'s `FullName` as the bare display name — `Seq`,
+    // not `Microsoft.FSharp.Collections.Seq` (its `TryFullName` carries the
+    // compiled `SeqModule` name instead, which no consumer resolves to). An
+    // unqualified name cannot witness *which* symbol was bound, so qualify it
+    // from the entity's own `AccessPath` when there is one; every already-dotted
+    // name is left exactly as FCS gave it.
+    let qualifiedFullName : objnull =
+        match fullName with
+        | :? string as name when not (name.Contains ".") ->
+            match u.Symbol with
+            | :? FSharpEntity as e ->
+                (try
+                    match e.AccessPath with
+                    | "" | "global" -> fullName
+                    | path -> box (path + "." + name)
+                 with _ -> fullName)
+            | _ -> fullName
+        | _ -> fullName
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        DeclRange = declRange
        Assembly = assemblyName
-       FullName = fullName |}
+       FullName = qualifiedFullName |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

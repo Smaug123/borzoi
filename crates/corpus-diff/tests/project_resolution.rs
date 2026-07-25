@@ -12,10 +12,10 @@ use borzoi_assembly::{
 };
 use borzoi_corpus_diff::{
     CorpusSummary, DeclSite, FileUses, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
-    ProjectAssetsStatus, ProjectUse, SkippedUses, check_project_corpus_run, compare_project_uses,
-    corpus_runner_config_from_env, explain_token, invoke_fcs_uses_project, load_lsp_project,
-    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
-    project_candidates_from_env, project_corpus_run_options_from_env,
+    ProjectAssetsStatus, ProjectUse, SkippedUses, UseDecl, check_project_corpus_run,
+    compare_project_uses, corpus_runner_config_from_env, explain_token, invoke_fcs_uses_project,
+    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
+    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::parse;
@@ -353,6 +353,76 @@ fn lsp_loader_reports_causal_details_for_uncertain_compile_items() {
     }
 }
 
+/// FCS emits a pattern binder **once** even when the source binds it in
+/// several alternatives of an or-pattern (`| Ldarg _n | Ldarga _n | …`
+/// reports `_n` at the first alternative only), while our model resolves each
+/// occurrence to itself. The repeats are ranges the oracle says *nothing*
+/// about, and silence is not evidence: they must be counted, not reported as
+/// resolutions FCS contradicts.
+#[test]
+fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
+    let src = "module B\n\ntype T =\n    | A of int\n    | B of int\n\nlet f (t: T) =\n    match t with\n    | A _n\n    | B _n -> _n\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    // FCS's view: the binder is declared at the *first* alternative, and the
+    // body use points there. Nothing at all is reported for the second
+    // alternative's `_n`.
+    let first = src.find("| A _n").expect("first alternative") + 6 - 2;
+    let body = src.rfind("_n").expect("body use");
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: first,
+                    end: first + 2,
+                    is_from_definition: true,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: body,
+                    end: body + 2,
+                    is_from_definition: false,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+            ],
+        }],
+    );
+    // The fixture's oracle deliberately lists only the binder's two FCS uses,
+    // so other names in the file have no covering oracle either; this asserts
+    // about the second alternative's `_n` specifically.
+    let second = src.find("| B _n").expect("second alternative") + 4;
+    assert!(
+        !comparison
+            .reverse_divergences
+            .iter()
+            .any(|d| d.range == (second, second + 2)),
+        "the second alternative's binder has no covering oracle, so it is not a \
+         divergence: {:?}",
+        comparison.reverse_divergences
+    );
+    assert!(
+        comparison.unoracled_definitions > 0,
+        "the silently-skipped defining occurrences must still be counted"
+    );
+}
+
 #[test]
 fn comparison_reports_skipped_oracle_categories() {
     let src = "module B\nlet _ = 1\n";
@@ -369,7 +439,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 1,
                     is_from_definition: true,
-                    decl: Some(DeclSite {
+                    decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
                         end: 1,
@@ -382,7 +452,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 4,
                     end: 4,
                     is_from_definition: false,
-                    decl: Some(DeclSite {
+                    decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
                         end: 1,
@@ -395,7 +465,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 7,
                     is_from_definition: false,
-                    decl: None,
+                    decl: UseDecl::Unlocated,
                     assembly: Some("FSharp.Core".to_string()),
                     full_name: None,
                 },
@@ -404,7 +474,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 9,
                     is_from_definition: false,
-                    decl: None,
+                    decl: UseDecl::Unlocated,
                     assembly: None,
                     full_name: None,
                 },
@@ -423,6 +493,7 @@ fn comparison_reports_skipped_oracle_categories() {
             definitions: 1,
             zero_width: 1,
             non_project_declarations: 1,
+            out_of_project_declarations: 0,
             no_oracle_declaration: 1,
         }
     );
@@ -447,7 +518,7 @@ fn comparison_matches_assembly_oracle_declarations() {
                 start,
                 end,
                 is_from_definition: false,
-                decl: None,
+                decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Value".to_string()),
             }],
@@ -479,7 +550,7 @@ fn comparison_reports_wrong_assembly_resolution() {
                 start,
                 end,
                 is_from_definition: false,
-                decl: None,
+                decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Other".to_string()),
             }],
@@ -516,7 +587,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: module_start,
                     end: module_end,
                     is_from_definition: true,
-                    decl: Some(DeclSite {
+                    decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: module_start,
                         end: module_end,
@@ -529,7 +600,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: x_def_start,
                     end: x_def_end,
                     is_from_definition: true,
-                    decl: Some(DeclSite {
+                    decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: x_def_start,
                         end: x_def_end,
@@ -542,7 +613,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: y_def_start,
                     end: y_def_end,
                     is_from_definition: true,
-                    decl: Some(DeclSite {
+                    decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: y_def_start,
                         end: y_def_end,
