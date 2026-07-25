@@ -11,7 +11,8 @@
 
 use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::{
-    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, ModuleValue, SkippedMember,
+    AbbreviationTarget, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member,
+    ModuleValue, SkippedMember,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -2665,6 +2666,57 @@ fn one_contestant_supplying_the_tail_binds_rather_than_defers() {
     }
 }
 
+#[test]
+fn a_root_tier_contest_does_not_preempt_an_open() {
+    // Codex review round 5. The global `Color` is contested between a class
+    // that lacks `StaticCount` and another DLL's **unchaseable abbreviation**.
+    // Exactly one candidate survives the supplier test (the alias — we cannot
+    // prove it lacks the member), and its walk is a `ProjectShadowed` defer.
+    // Returned verbatim that trips the preemptive as-written-root veto, which
+    // skips the opens entirely — so `open Demo; Color.StaticCount` would defer
+    // even though FCS binds `Demo.Color.StaticCount`. A sole *deferring*
+    // supplier must therefore be downgraded to the tier-local contested defer,
+    // exactly as the plural case already was in round 1.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut global = widget.clone();
+    global.namespace = vec![];
+    global.name = "Color".to_string();
+    global.nested_types = vec![];
+    global.members = vec![];
+    let mut global_alias = global.clone();
+    global_alias.assembly.name = "OtherLib".to_string();
+    global_alias.kind = EntityKind::Abbreviation;
+    global_alias.abbreviation_target = Some(AbbreviationTarget::Named {
+        ccu: None,
+        path: vec!["Nowhere".to_string(), "Missing".to_string()],
+        args: Vec::new(),
+    });
+    // The uncontested, higher-priority reading that must win.
+    let mut demo = widget;
+    demo.namespace = vec!["Demo".to_string()];
+    demo.name = "Color".to_string();
+    demo.nested_types = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![global, global_alias, demo]);
+    let demo_color = env
+        .lookup_type(&["Demo".to_string()], "Color", 0)
+        .expect("Demo.Color");
+    let src = "module M\nopen Demo\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == demo_color => {}
+        other => panic!(
+            "the open's uncontested `Demo.Color.StaticCount` must outrank a contested \
+             ROOT-tier reading, got {other:?}"
+        ),
+    }
+}
+
 /// A public class and a public F# module, both `Ns.Color`, in *differently
 /// named* DLLs — the cross-lookup-channel collision that is not a contest.
 fn class_and_module_color() -> (Entity, Entity) {
@@ -2778,14 +2830,60 @@ fn sweep_color(
 }
 
 /// The perturbations the sweep applies — a same-FQN entity contributed by a
-/// differently-named DLL. A byte-identical clone is the pure collision; the
-/// **module**-kinded variant is the cross-lookup-channel one, which is not a
-/// contest at all in type position (a module cannot be a terminal type) and so
-/// must perturb even less (codex review round 4).
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// differently-named DLL.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Perturbation {
+    /// A byte-identical clone: the pure collision.
     Clone,
+    /// The cross-lookup-channel one — a module is not a terminal type
+    /// candidate, so it is no contest there at all (codex review round 4).
     AsModule,
+    /// An abbreviation marker whose target cannot be chased. Its walk is a
+    /// *defer*, not a resolution, so it exercises the path where the sole
+    /// surviving supplier names no target (codex review round 5).
+    AsOpaqueAlias,
+    /// A clone whose nested `Inner` is a **module**. A module is outside the
+    /// terminal type namespace at *every* depth, not just at the rooting, so
+    /// this must not contest another DLL's real nested type (codex review
+    /// round 5).
+    NestedInnerAsModule,
+    /// A clone stripped of its members: the *asymmetric* collision, where the
+    /// other DLL cannot supply a member tail. Paired with a same-DLL companion
+    /// module it is the shape that proves suppliers must be counted per **DLL**
+    /// — one DLL supplying through both its type and its companion is still one
+    /// supplier (codex review round 5).
+    CloneWithoutMembers,
+}
+
+impl Perturbation {
+    fn apply(self, entity: &mut Entity) {
+        match self {
+            Perturbation::Clone => {}
+            Perturbation::AsModule => entity.kind = EntityKind::Module,
+            Perturbation::AsOpaqueAlias => {
+                entity.kind = EntityKind::Abbreviation;
+                entity.abbreviation_target = Some(AbbreviationTarget::Named {
+                    ccu: None,
+                    path: vec!["Nowhere".to_string(), "Missing".to_string()],
+                    args: Vec::new(),
+                });
+            }
+            Perturbation::NestedInnerAsModule => {
+                for nested in &mut entity.nested_types {
+                    nested.kind = EntityKind::Module;
+                }
+            }
+            Perturbation::CloneWithoutMembers => entity.members = vec![],
+        }
+    }
+
+    const ALL: [Perturbation; 5] = [
+        Perturbation::Clone,
+        Perturbation::AsModule,
+        Perturbation::AsOpaqueAlias,
+        Perturbation::NestedInnerAsModule,
+        Perturbation::CloneWithoutMembers,
+    ];
 }
 
 #[test]
@@ -2828,110 +2926,180 @@ fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
     const OPEN_SEQUENCES: &[&[&str]] =
         &[&[], &["High"], &["Low"], &["High", "Low"], &["Low", "High"]];
 
+    // `High` varies over the whole flag cross-product; `Low` is the fully
+    // populated uncontested reading the fall-through cases need. Two further
+    // dimensions cover the shapes review round 5 found by hand: a *same-DLL*
+    // companion module beside each type (which must never read as a cross-DLL
+    // contest), and a nested `Inner` that is a **module** rather than a class
+    // (which is not a terminal type candidate at any depth).
     let flag_combos = [(false, false), (false, true), (true, false), (true, true)];
     let mut checked = 0usize;
     for &(high_statics, high_nested) in &flag_combos {
-        for &(low_statics, low_nested) in &flag_combos {
-            for &with_global in &[false, true] {
-                let mut catalogue = vec![
-                    sweep_color(&widget, &inner, &["High"], high_statics, high_nested),
-                    sweep_color(&widget, &inner, &["Low"], low_statics, low_nested),
-                ];
-                if with_global {
-                    catalogue.push(sweep_color(&widget, &inner, &[], true, true));
-                }
+        for &with_global in &[false, true] {
+            for &with_companion in &[false, true] {
+                {
+                    let companion = |e: &Entity| {
+                        let mut m = e.clone();
+                        m.kind = EntityKind::Module;
+                        m.name = "ColorModule".to_string();
+                        m.source_name = Some("Color".to_string());
+                        m
+                    };
+                    let mut catalogue = vec![
+                        sweep_color(&widget, &inner, &["High"], high_statics, high_nested),
+                        sweep_color(&widget, &inner, &["Low"], true, true),
+                    ];
+                    if with_global {
+                        catalogue.push(sweep_color(&widget, &inner, &[], true, true));
+                    }
+                    if with_companion {
+                        catalogue.extend(catalogue.clone().iter().map(companion));
+                    }
 
-                // Duplicate one catalogue entry at a time, into a
-                // differently-named DLL — the shape `lookup_type`'s first-wins
-                // slot cannot see and FCS merges.
-                for dup in 0..catalogue.len() {
-                    for perturbation in [Perturbation::Clone, Perturbation::AsModule] {
-                        let base = AssemblyEnv::from_entities(catalogue.clone());
-                        let mut perturbed_ents = catalogue.clone();
-                        let mut clone = catalogue[dup].clone();
-                        clone.assembly.name = "OtherLib".to_string();
-                        if perturbation == Perturbation::AsModule {
-                            clone.kind = EntityKind::Module;
-                        }
-                        perturbed_ents.push(clone);
-                        let perturbed = AssemblyEnv::from_entities(perturbed_ents);
+                    // Duplicate one catalogue entry at a time, into a
+                    // differently-named DLL — the shape `lookup_type`'s
+                    // first-wins slot cannot see and FCS merges.
+                    let originals = catalogue.len();
+                    for dup in 0..originals {
+                        for perturbation in Perturbation::ALL {
+                            let base = AssemblyEnv::from_entities(catalogue.clone());
+                            let mut perturbed_ents = catalogue.clone();
+                            let mut clone = catalogue[dup].clone();
+                            clone.assembly.name = "OtherLib".to_string();
+                            perturbation.apply(&mut clone);
+                            perturbed_ents.push(clone);
+                            let perturbed = AssemblyEnv::from_entities(perturbed_ents);
 
-                        let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
-                        let roots = base
-                            .public_types_named_at_arity(&dup_ns, "Color", 0)
-                            .into_iter()
-                            .flat_map(|h| subtree(&base, h))
-                            .collect::<Vec<_>>();
+                            let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
+                            let roots = base
+                                .public_types_named_at_arity(&dup_ns, "Color", 0)
+                                .into_iter()
+                                .flat_map(|h| subtree(&base, h))
+                                .collect::<Vec<_>>();
 
-                        for opens in OPEN_SEQUENCES {
-                            let preamble: String =
-                                opens.iter().map(|o| format!("open {o}\n")).collect();
-                            let cases = VALUE_PATHS
-                                .iter()
-                                .map(|p| (format!("module M\n{preamble}let u = {p}\n"), *p, false))
-                                .chain(TYPE_PATHS.iter().map(|p| {
-                                    (
-                                        format!(
-                                            "module M\n{preamble}let x : {p} = \
+                            for opens in OPEN_SEQUENCES {
+                                let preamble: String =
+                                    opens.iter().map(|o| format!("open {o}\n")).collect();
+                                let cases = VALUE_PATHS
+                                    .iter()
+                                    .map(|p| {
+                                        (format!("module M\n{preamble}let u = {p}\n"), *p, false)
+                                    })
+                                    .chain(TYPE_PATHS.iter().map(|p| {
+                                        (
+                                            format!(
+                                                "module M\n{preamble}let x : {p} = \
                                              Unchecked.defaultof<_>\n"
-                                        ),
-                                        *p,
-                                        true,
-                                    )
-                                }));
-                            for (src, path, type_position) in cases {
-                                let before_res = resolve(&src, &base).resolution_at(at(&src, path));
-                                let after_res =
-                                    resolve(&src, &perturbed).resolution_at(at(&src, path));
-                                let before = describe_resolution(&base, before_res);
-                                let after = describe_resolution(&perturbed, after_res);
-                                checked += 1;
-                                // A same-named MODULE is not a type-position
-                                // candidate at all, so a *bare* type path — one
-                                // whose rooting IS its final segment — must be
-                                // untouched by it. (With a tail it may
-                                // legitimately contest: a module is a fine
-                                // container, so two containers can then supply
-                                // the same nested type.)
-                                if perturbation == Perturbation::AsModule
-                                    && type_position
-                                    && !path.ends_with(".Inner")
-                                {
-                                    assert_eq!(
-                                        before, after,
-                                        "a module cannot occupy a terminal type position, so \
-                                         adding one must not perturb {path:?}\nsource:\n{src}"
-                                    );
-                                }
-                                if before == after {
-                                    continue;
-                                }
-                                let kind = match perturbation {
-                                    Perturbation::Clone => "duplicating",
-                                    Perturbation::AsModule => "adding a same-named MODULE beside",
-                                };
-                                let context = format!(
-                                    "{kind} {}.Color changed {path:?} from {before} to {after}\n\
-                                 source:\n{src}",
-                                    dup_ns.join(".")
-                                );
-                                let rooted_at_dup = match before_res {
-                                    Some(Resolution::Entity(h)) => roots.contains(&h),
-                                    Some(Resolution::Member { parent, .. }) => {
-                                        roots.contains(&parent)
-                                    }
-                                    _ => false,
-                                };
-                                assert!(
-                                    rooted_at_dup,
-                                    "a duplicate may not perturb a path that does not root at it — \
+                                            ),
+                                            *p,
+                                            true,
+                                        )
+                                    }));
+                                for (src, path, type_position) in cases {
+                                    let before_rf = resolve(&src, &base);
+                                    let after_rf = resolve(&src, &perturbed);
+                                    // Probe the range the position actually
+                                    // records at. A resolved static member spans
+                                    // the WHOLE value path, but a nested type
+                                    // records at its own FINAL SEGMENT — so
+                                    // querying a type path by its whole range
+                                    // reads "None both sides" for every
+                                    // nested-tail case: trivially equal, and
+                                    // silently uncovered. (Comparing the two
+                                    // ranges against each other is not
+                                    // like-for-like: a deferral records per
+                                    // segment where a member records once.)
+                                    let probe = if type_position {
+                                        path.rsplit('.').next().expect("a path segment")
+                                    } else {
+                                        path
+                                    };
+                                    {
+                                        let before_res = before_rf.resolution_at(at(&src, probe));
+                                        let after_res = after_rf.resolution_at(at(&src, probe));
+                                        let before = describe_resolution(&base, before_res);
+                                        let after = describe_resolution(&perturbed, after_res);
+                                        checked += 1;
+                                        // A same-named MODULE is not a type-position
+                                        // candidate at all, so a *bare* type path — one
+                                        // whose rooting IS its final segment — must be
+                                        // untouched by it. (With a tail it may
+                                        // legitimately contest: a module is a fine
+                                        // container, so two containers can then supply
+                                        // the same nested type.)
+                                        let module_at_terminal = match perturbation {
+                                            // The rooting itself is the module.
+                                            Perturbation::AsModule => !path.ends_with(".Inner"),
+                                            // The *nested* segment is the module.
+                                            Perturbation::NestedInnerAsModule => {
+                                                path.ends_with(".Inner")
+                                            }
+                                            _ => false,
+                                        };
+                                        if type_position && module_at_terminal {
+                                            assert_eq!(
+                                                before, after,
+                                                "a module cannot occupy a terminal type position at ANY \
+                                         depth, so adding one must not perturb {path:?}\n\
+                                         source:\n{src}"
+                                            );
+                                        }
+                                        // A candidate that supplies NOTHING is one
+                                        // FCS simply skips, so it must change
+                                        // nothing — however many candidates the
+                                        // *supplying* DLL contributes (a type and
+                                        // that type's companion module can both
+                                        // carry the member; that is one supplier,
+                                        // not two). This is the half the
+                                        // "may degrade at its own root" clause below
+                                        // cannot see, because such a degradation IS
+                                        // at its own root.
+                                        if perturbation == Perturbation::CloneWithoutMembers
+                                            && path.ends_with(".StaticCount")
+                                        {
+                                            assert_eq!(
+                                                before, after,
+                                                "a member-less candidate supplies no member tail, so \
+                                             adding one must not perturb {path:?}\nsource:\n{src}"
+                                            );
+                                        }
+                                        if before == after {
+                                            continue;
+                                        }
+                                        let context = format!(
+                                            "{perturbation:?} of {}.Color changed {path:?} from {before} \
+                                     to {after}\nsource:\n{src}",
+                                            dup_ns.join(".")
+                                        );
+                                        let rooted_at_dup = match before_res {
+                                            Some(Resolution::Entity(h)) => roots.contains(&h),
+                                            Some(Resolution::Member { parent, .. }) => {
+                                                roots.contains(&parent)
+                                            }
+                                            _ => false,
+                                        };
+                                        // An **opaque alias** is the one perturbation
+                                        // that adds *unknown content*: FCS can chase
+                                        // it and we cannot, so it may legitimately
+                                        // make a higher-priority reading of the same
+                                        // path uncertain — including one the base
+                                        // resolved at a lower tier. It is held only
+                                        // to the no-wrong-target half below;
+                                        // `a_root_tier_contest_does_not_preempt_an_open`
+                                        // pins the tier-locality it must respect.
+                                        assert!(
+                                            rooted_at_dup
+                                                || perturbation == Perturbation::AsOpaqueAlias,
+                                            "a duplicate may not perturb a path that does not root at it — \
                                  the lower/uncontested reading still wins in FCS: {context}"
-                                );
-                                assert!(
-                                    after == "deferred" || after == "none",
-                                    "a contested rooting may only DEGRADE its own path to a \
+                                        );
+                                        assert!(
+                                            after == "deferred" || after == "none",
+                                            "a contested rooting may only DEGRADE its own path to a \
                                  deferral, never re-target it: {context}"
-                                );
+                                        );
+                                    }
+                                }
                             }
                         }
                     }

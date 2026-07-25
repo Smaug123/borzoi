@@ -24,6 +24,24 @@ enum ContestedSuppliers<T> {
     Many,
 }
 
+/// The reading a sole surviving supplier at a **contested** rooting yields.
+///
+/// A supplier that actually resolves is returned as-is. One that only *defers*
+/// names no target, and its own defer flavour may be **preemptive** —
+/// `ProjectShadowed` trips the as-written-root veto in
+/// `Resolver::resolve_assembly_path_tiered` and skips the higher-priority
+/// opens. That veto is for a lexical project-bound head; a cross-DLL contest is
+/// not one, so the defer is downgraded to the tier-local
+/// [`AssemblyPath::ContestedRooting`] and a higher-priority open still wins
+/// (codex review round 5 — the same tier-locality round 1 established for the
+/// plural case, re-entering through the sole-supplier path).
+fn tier_local_at_a_contest<T>(reading: AssemblyPath<T>) -> AssemblyPath<T> {
+    match reading {
+        resolved @ AssemblyPath::Resolved { .. } => resolved,
+        _ => AssemblyPath::ContestedRooting,
+    }
+}
+
 impl<'a> Resolver<'a> {
     /// Compute — *without recording* — how a dotted path resolves into the
     /// referenced assemblies, under an opened-namespace `prefix` (empty for a
@@ -101,9 +119,12 @@ impl<'a> Resolver<'a> {
             .assemblies
             .public_types_named_at_arity(&names[..k], &names[k], 0);
         if self.assemblies.distinct_dlls(&candidates) > 1 {
-            let suppliers = self.contested_suppliers(candidates, |handle| {
-                self.assembly_path_records_from_root(&names, segments, base, k, handle)
-            });
+            let suppliers = self.contested_suppliers(
+                candidates,
+                Some(type_handle),
+                |handle| self.assembly_path_records_from_root(&names, segments, base, k, handle),
+                AssemblyPath::may_own_path,
+            );
             return match suppliers {
                 // No candidate supplies the tail: an ordinary **partial**
                 // reading a lower priority may supersede. Its records defer at
@@ -121,7 +142,7 @@ impl<'a> Resolver<'a> {
                         .collect(),
                     owns_path: false,
                 },
-                ContestedSuppliers::One(reading) => reading,
+                ContestedSuppliers::One(reading) => tier_local_at_a_contest(reading),
                 ContestedSuppliers::Many => AssemblyPath::ContestedRooting,
             };
         }
@@ -148,26 +169,45 @@ impl<'a> Resolver<'a> {
     /// verdict off the count. `may_own_path` is the supplier test: everything
     /// except a genuinely-absent tail, so a candidate that *defers* still
     /// counts (it may satisfy the path on a surface we do not model).
+    /// `preferred` is the rooting the walk itself selected (the first-wins
+    /// slot): when one DLL supplies the path through *several* candidates — its
+    /// type and that type's companion module both carrying the name — that
+    /// within-DLL precedence is already decided, so the slot's pick is returned
+    /// rather than bucket order (codex review round 5).
+    ///
+    /// `is_supplier` is the position's own test, since "can satisfy the path"
+    /// is not the same question in both walks: the type walk additionally
+    /// rejects a **module leaf**, which is outside the terminal type namespace
+    /// at every depth (codex review round 5).
     fn contested_suppliers<T>(
         &self,
         candidates: Vec<EntityHandle>,
+        preferred: Option<EntityHandle>,
         walk: impl Fn(EntityHandle) -> AssemblyPath<T>,
+        is_supplier: impl Fn(&AssemblyPath<T>) -> bool,
     ) -> ContestedSuppliers<T> {
-        let mut only: Option<AssemblyPath<T>> = None;
+        let mut suppliers: Vec<(EntityHandle, AssemblyPath<T>)> = Vec::new();
         for handle in candidates {
             let reading = walk(handle);
-            if !reading.may_own_path() {
-                continue;
+            if is_supplier(&reading) {
+                suppliers.push((handle, reading));
             }
-            if only.is_some() {
-                return ContestedSuppliers::Many;
-            }
-            only = Some(reading);
         }
-        match only {
-            Some(reading) => ContestedSuppliers::One(reading),
-            None => ContestedSuppliers::None,
+        if suppliers.is_empty() {
+            return ContestedSuppliers::None;
         }
+        // Count supplying *DLLs*, not supplying handles: a collision is
+        // cross-assembly by definition, and F#'s within-DLL precedence is
+        // deterministic (codex review round 5).
+        let handles: Vec<EntityHandle> = suppliers.iter().map(|(h, _)| *h).collect();
+        if self.assemblies.distinct_dlls(&handles) > 1 {
+            return ContestedSuppliers::Many;
+        }
+        let chosen = suppliers
+            .iter()
+            .position(|(h, _)| Some(*h) == preferred)
+            .unwrap_or(0);
+        ContestedSuppliers::One(suppliers.swap_remove(chosen).1)
     }
 
     /// One reading's walk *below* an already-chosen rooting type — the body of
@@ -660,9 +700,34 @@ impl<'a> Resolver<'a> {
         // module and a `type Alias = Widget` beside a generic `type Alias<'T>`
         // keep resolving as before.
         if self.assemblies.distinct_dlls(&candidates) > 1 {
-            let suppliers = self.contested_suppliers(candidates, |handle| {
-                self.assembly_type_path_from_root(&names, segments.len(), base, k, arity, handle)
-            });
+            let suppliers = self.contested_suppliers(
+                candidates,
+                Some(type_handle),
+                |handle| {
+                    self.assembly_type_path_from_root(
+                        &names,
+                        segments.len(),
+                        base,
+                        k,
+                        arity,
+                        handle,
+                    )
+                },
+                // A candidate whose walk lands on a **module** leaf supplies no
+                // *type*: a module is outside the terminal type namespace at
+                // every depth, so it must not contest another DLL's real nested
+                // type (codex review round 5).
+                |reading| {
+                    reading.may_own_path()
+                        && !matches!(
+                            reading,
+                            AssemblyPath::Resolved { payload, .. }
+                                if payload.leaf.is_some_and(|leaf| {
+                                    self.assemblies.entity(leaf).kind == EntityKind::Module
+                                })
+                        )
+                },
+            );
             return match suppliers {
                 ContestedSuppliers::None => AssemblyPath::Resolved {
                     payload: TypePathReading {
@@ -675,7 +740,7 @@ impl<'a> Resolver<'a> {
                     },
                     owns_path: false,
                 },
-                ContestedSuppliers::One(reading) => reading,
+                ContestedSuppliers::One(reading) => tier_local_at_a_contest(reading),
                 ContestedSuppliers::Many => AssemblyPath::ContestedRooting,
             };
         }
