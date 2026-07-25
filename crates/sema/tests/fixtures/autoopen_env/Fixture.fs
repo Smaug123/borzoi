@@ -797,6 +797,32 @@ module DirectSub =
 type GlobalPlain() =
     member _.Decoy = 3
 
+// ===== Root-namespace VALUE surfaces (no `open` required at all) =====
+//
+// A global union's cases are bare-visible because the union type itself is,
+// with no `open` anywhere. So `GlobalCaseShadow ()` binds THIS case, not the
+// same-named class below (fsi-verified) — the constructor fallback must not
+// treat "no open imports it" as "no value binds it".
+type GlobalUnionHost =
+    | GlobalCaseShadow of unit
+    | GlobalCasePlain of int
+
+// The constructible-class decoy the case above must outrank.
+type GlobalCaseShadow() =
+    member _.Decoy = 20
+
+// A `[<RequireQualifiedAccess>]` union: its cases need the type qualifier, so
+// bare `RqaCaseName` does NOT bind here and the class decoy below stays
+// resolvable. The veto is allowed to be conservative and defer it — but this
+// records that FCS does not shadow, so an over-broad veto is visible as an
+// availability loss rather than passing unnoticed.
+[<RequireQualifiedAccess>]
+type GlobalRqaHost =
+    | RqaCaseName of unit
+
+type RqaCaseName() =
+    member _.Decoy = 21
+
 // The decoy for `DirectOps`'s PRIVATE nested type of the same name: the
 // private one is not importable, so FCS binds THIS one bare (fsi-verified) —
 // the manifest-module shadow surface must let it commit.

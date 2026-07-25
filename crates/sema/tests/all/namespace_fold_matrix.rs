@@ -432,6 +432,15 @@ const CELLS: &[Cell] = &[
 /// resolves"; naming a target, or FCS falling silent, fails the ratchet.
 const KNOWN_GAPS: &[(&str, &str)] = &[
     (
+        "class / unique type, expression",
+        "the matrix env includes the autoopen fixture, whose deliberately unresolvable \
+         `[<assembly: AutoOpen(\"SemaAutoOpen.NoSuchPath\")>]` makes the env-wide auto-open \
+         surface unknowable — an unseen auto-open could supply a *value* of any name, so the \
+         bare-constructor fallback withholds every commitment in this closure \
+         (`assembly_bare_value_surface_could_supply`, arm 0). Availability, not correctness: \
+         the same cell resolves in an env whose auto-open metadata is readable",
+    ),
+    (
         "exn / unique exception, expression",
         "a namespace-half exception folds opaque (§8 option A): a later open's constructible \
          type would evict it from the constructor slot, which bare-name lookup does not model",

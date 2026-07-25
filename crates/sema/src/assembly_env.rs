@@ -2128,52 +2128,143 @@ impl AssemblyEnv {
             })
     }
 
-    /// Whether a retained module-shaped manifest auto-open could import a
-    /// **value** named `name` into bare *expression* scope.
+    /// Whether **any** assembly-side surface F# makes bare-visible *without an
+    /// explicit `open`* could supply a **value** named `name`.
     ///
-    /// The entity-keyed twin above deliberately scans only nested entities,
-    /// which is right for **type** position: a module's `let` binds a value, and
-    /// a value never shadows a type there. Expression position is the mirror
-    /// image — FCS binds the imported value over a same-named class at a lower
-    /// tier (fsi-verified: `DirectValueShadow ()` returns the module value's
-    /// `int`, not the global-namespace class) — so the constructor fallback
-    /// needs this separate question. A module's `let` compiles to a public
-    /// static member of the module class, so the surface is
-    /// [`Self::open_static_entries`], plus — FCS opens `[<AutoOpen>]`
-    /// submodules recursively — each public auto-open child's.
+    /// The single question the expression-position constructor fallback asks
+    /// before committing a class. It exists because that fallback's precondition
+    /// — the value frame missed, so nothing binds this name — is only
+    /// *conservative*: the surfaces below are imported by F# but land in no value
+    /// frame, so `lookup` cannot see them. Answering them one at a time is
+    /// unbounded (each is a separate review finding); this is the one place they
+    /// are enumerated, and
+    /// `bare_constructor_fallback_is_sound_over_every_bare_value_surface` sweeps
+    /// the enumeration against FCS so a missing arm fails a test rather than
+    /// waiting for a reader to notice.
     ///
-    /// Name-keyed only: unlike the entity twin this does **not** fold in the
-    /// coarse `namespace_has_dropped_type` / unknowable-abbreviation arms,
-    /// which are namespace-wide and would defer every bare constructor use in a
-    /// closure holding any manifest module-shaped auto-open. The residual gap is
-    /// a value hidden behind an undecodable member signature.
-    /// Deferral-only: a `true` never resolves anything, it withholds a commit.
-    pub(crate) fn manifest_auto_open_module_could_supply_value_named(&self, name: &str) -> bool {
-        self.auto_open_module_handles
+    /// Deliberately the **value** twin of
+    /// [`Self::retained_auto_open_could_supply_entity_named`], not a reuse of it:
+    /// a value never shadows a type, so the entity query is right to scan nested
+    /// entities and blind in exactly this position. Every arm is deferral-only —
+    /// a `true` withholds a commitment, it never resolves anything — so
+    /// over-approximation is always sound, and preferred wherever the metadata is
+    /// uncertain.
+    pub(crate) fn assembly_bare_value_surface_could_supply(&self, name: &str) -> bool {
+        // (0) Unknowable auto-open metadata: an assembly whose auto-open list
+        // could not be read, or whose projection was skipped, may auto-open a
+        // module supplying any name at all. Mirrors the entity query's first arm.
+        if self.extension_surface_unknowable {
+            return true;
+        }
+        // (1) Retained module-shaped manifest auto-opens: `[<assembly:
+        // AutoOpen("N.Ops")>]` naming a module imports its `let` bindings.
+        if self
+            .auto_open_module_handles
             .iter()
             .any(|&(h, effectively_public)| {
-                effectively_public && self.module_open_surface_has_value_named(h, name)
+                effectively_public && self.bare_value_surface_of(h, name)
             })
+        {
+            return true;
+        }
+        // (2) Contested auto-open namespaces: shared by two DLLs, so dropped from
+        // the implicit opens and parked in `contested_auto_opens`. FCS still
+        // applies each contributor's open, so its auto-open modules' values bind.
+        // The coarse per-namespace arms come along for the same reason they do in
+        // the entity query: a dropped type or an undecodable pickle hides names.
+        if self.contested_auto_opens.iter().any(|(contributor, ns)| {
+            self.namespace_has_dropped_type(ns)
+                || self.unknowable_abbreviations_in_namespace(ns)
+                || self.types_in_namespace(ns).iter().any(|&h| {
+                    self.assembly_provenance(h) == Some(*contributor)
+                        && self.bare_value_surface_of(h, name)
+                })
+        }) {
+            return true;
+        }
+        // (3) The ROOT namespace, which needs no open at all. Only two shapes
+        // there contribute *values* to bare scope, and getting this wrong is an
+        // over-deferral trap: a plain root module's `let`s still need an `open`,
+        // so walking every root module's statics (or its unknowable-extension
+        // flag) would defer every bare constructor use in the closure.
+        self.types_in_namespace(&[]).iter().any(|&h| {
+            if !self.is_public(h) {
+                return false;
+            }
+            let e = self.entity(h);
+            // A root `[<AutoOpen>]` module is opened with no source `open`.
+            (e.kind == EntityKind::Module && e.is_auto_open && self.bare_value_surface_of(h, name))
+                // A root union's cases are bare-visible because the union type
+                // itself is — no open anywhere. `[<RequireQualifiedAccess>]`
+                // withholds exactly that, so it contributes nothing here.
+                || (e.kind == EntityKind::Union && self.union_declares_bare_case(h, name))
+        })
     }
 
-    /// The value half of [`Self::module_open_surface_has_entity_named`]: the
-    /// module's own public statics, then each public `[<AutoOpen>]` child's.
-    fn module_open_surface_has_value_named(&self, handle: EntityHandle, name: &str) -> bool {
-        if self
-            .open_static_entries(handle)
-            .iter()
-            .any(|(entry, _)| *entry == name)
+    /// Whether union `handle` makes a **bare** case named `name` visible: its
+    /// declared cases, unless `[<RequireQualifiedAccess>]` withholds them. A case
+    /// list the pickle did not supply (`None`) may declare anything, so it counts.
+    fn union_declares_bare_case(&self, handle: EntityHandle, name: &str) -> bool {
+        let e = self.entity(handle);
+        if e.is_require_qualified_access {
+            return false;
+        }
+        match &e.union_case_names {
+            None => true,
+            Some(cases) => cases.iter().any(|case| case == name),
+        }
+    }
+
+    /// Whether entity `handle` contributes a bare-visible **value** named `name`
+    /// once its owning surface is opened (or, for the root namespace, with no
+    /// open at all).
+    ///
+    /// Conservative on every uncertainty the projection can carry, matching
+    /// [`Self::module_qualified_occupied`]'s treatment of the same shapes:
+    /// a member whose signature would not decode
+    /// ([`Entity::skipped_members`]) is a *possible* value of that name, an
+    /// unknowable extension surface hides anything, and a union whose case list
+    /// the pickle did not supply (`union_case_names` of `None`) may declare any
+    /// case. FCS opens `[<AutoOpen>]` submodules recursively, so the walk does.
+    fn bare_value_surface_of(&self, handle: EntityHandle, name: &str) -> bool {
+        // A member the projection could not decode may be exactly this value.
+        if self.has_skipped_member(handle, name) {
+            return true;
+        }
+        let e = self.entity(handle);
+        if e.kind == EntityKind::Module
+            && matches!(
+                self.module_extension_members(handle),
+                ExtensionMembers::Unknowable
+            )
         {
+            return true;
+        }
+        // A module's `let` compiles to a public static member of the module class.
+        if e.kind == EntityKind::Module
+            && self
+                .open_static_entries(handle)
+                .iter()
+                .any(|(entry, _)| *entry == name)
+        {
+            return true;
+        }
+        // A union's cases are bare-visible wherever the union type is.
+        if e.kind == EntityKind::Union && self.union_declares_bare_case(handle, name) {
             return true;
         }
         self.children(handle).iter().any(|&child| {
             if !self.is_public(child) {
                 return false;
             }
-            let e = self.entity(child);
-            e.kind == EntityKind::Module
-                && e.is_auto_open
-                && self.module_open_surface_has_value_named(child, name)
+            let c = self.entity(child);
+            // FCS opens `[<AutoOpen>]` submodules recursively, so their values
+            // come along; a child union's cases are bare-visible because the
+            // enclosing open makes the union type itself bare-visible.
+            if c.kind == EntityKind::Module && c.is_auto_open {
+                return self.bare_value_surface_of(child, name);
+            }
+            c.kind == EntityKind::Union && self.union_declares_bare_case(child, name)
         })
     }
 

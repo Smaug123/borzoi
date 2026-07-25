@@ -172,9 +172,19 @@ fn sweep_sound(src: &str) -> (usize, usize) {
     // including when FCS reports no use there at all (an FS0039-erroring
     // annotation yields none, so a sema commitment on it is a divergence the
     // lenient "only if covered" form silently passed; codex P2, round 6).
-    // The generated probes share one template, so the region is derivable.
-    let anno_start = src.find("(x: ").expect("probe template") + "(x: ".len();
-    let anno_end = src.find(") = x").expect("probe template");
+    // The generated probes come from two templates — the type-position
+    // `let f (x: N) = x` and the expression-position `let x = N ()` — so the
+    // region is derivable from whichever one this case used.
+    let (anno_start, anno_end) = match src.find("(x: ") {
+        Some(at) => (
+            at + "(x: ".len(),
+            src.find(") = x").expect("type probe template"),
+        ),
+        None => {
+            let at = src.rfind("let x = ").expect("expr probe template") + "let x = ".len();
+            (at, src.len())
+        }
+    };
     for (range, res) in rf.resolutions() {
         if !matches!(res, Resolution::Entity(_) | Resolution::Member { .. }) {
             continue;
@@ -263,5 +273,117 @@ fn manifest_module_surface_type_positions_are_sound_against_fcs() {
     assert!(
         agreed >= 4,
         "sweep vacuous: only {agreed} agreements — the decoy commits should agree"
+    );
+}
+
+/// The **expression**-position twin of
+/// [`manifest_module_surface_type_positions_are_sound_against_fcs`]: every name
+/// the fixture's bare-visible surfaces could supply, used as a bare constructor
+/// (`let x = <Name> ()`), checked certain-implies-exact against FCS.
+///
+/// This is the systematic backstop for
+/// [`AssemblyEnv::assembly_bare_value_surface_could_supply`]. The type sweep
+/// cannot stand in for it: the two positions ask different questions of the same
+/// metadata — a value never shadows a type, so type position is *right* to
+/// ignore module values and union cases, and expression position is precisely
+/// where they win. Every arm of that query is therefore invisible to the sweep
+/// above, and each omitted arm was a separate review finding until this existed.
+///
+/// The name set is enumerated from the assembly rather than hand-listed, so a
+/// shape added to the fixture is probed automatically.
+#[test]
+fn bare_constructor_fallback_is_sound_over_every_bare_value_surface() {
+    let fixture = ensure_autoopen_fixture_built();
+    let bytes = std::fs::read(fixture).expect("read autoopen fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse autoopen fixture dll");
+    use borzoi_assembly::EcmaView;
+    let entities = view.enumerate_type_defs().expect("enumerate fixture");
+
+    // Candidate names: everything under the manifest-opened module (its values,
+    // nested types and submodule contents), every global-namespace public name,
+    // and every union case anywhere — the three surfaces the value query walks.
+    let mut names = BTreeSet::new();
+    let direct_ops = entities
+        .iter()
+        .find(|e| e.namespace == ["SemaAutoOpen"] && e.name == "DirectOps")
+        .expect("fixture must declare SemaAutoOpen.DirectOps");
+    collect_names(direct_ops, &mut names);
+    // The manifest-opened module's own `let` values — public statics, the
+    // surface `lookup` cannot see and the reason this sweep exists.
+    for m in &direct_ops.members {
+        if plain_ident(member_name(m)) {
+            names.insert(member_name(m).to_string());
+        }
+    }
+    // The ROOT namespace: public names, the values of its modules, and its
+    // unions' cases — all bare-visible with no `open` at all.
+    //
+    // Deliberately root-scoped, matching the query's arms. A namespace-scoped
+    // union's cases need an `open` and are not this query's business, and
+    // sweeping every assembly module's members would drag in the *implicit*
+    // `Microsoft.FSharp.Core` open — a different mechanism, resolved through the
+    // auto-open member path (a `Resolution::Member`, which the constructor
+    // fallback cannot emit) and divergent from FCS for reasons predating it.
+    for e in entities.iter().filter(|e| e.namespace.is_empty()) {
+        if e.access != Access::Public {
+            continue;
+        }
+        if plain_ident(source_name(e)) {
+            names.insert(source_name(e).to_string());
+        }
+        if let Some(cases) = &e.union_case_names {
+            for case in cases.iter().filter(|c| plain_ident(c)) {
+                names.insert(case.clone());
+            }
+        }
+        if e.kind == EntityKind::Module {
+            for m in &e.members {
+                if plain_ident(member_name(m)) {
+                    names.insert(member_name(m).to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        names.len() > 20,
+        "expected a broad candidate set, got {}",
+        names.len()
+    );
+
+    let mut cases = BTreeSet::new();
+    for name in &names {
+        cases.insert(format!("let x = {name} ()\n"));
+        cases.insert(format!("let x = {name}\n"));
+    }
+
+    let (mut agreed, mut fixture_uses) = (0usize, 0usize);
+    for case in &cases {
+        let (a, f) = sweep_sound(case);
+        agreed += a;
+        fixture_uses += f;
+    }
+    // Non-vacuity, and the one thing this sweep *cannot* assert.
+    //
+    // FCS must actually bind fixture symbols across the sweep, or the oracle is
+    // miswired. But we deliberately do NOT require any agreement: this fixture
+    // declares `[<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]`, an
+    // unresolvable target, which makes the whole env's auto-open surface
+    // `extension_surface_unknowable` — so an unseen auto-open really could
+    // supply any name, and total deferral is the *correct* answer here, not a
+    // disabled fallback. Requiring agreements would force the veto to be
+    // narrower than the metadata justifies.
+    //
+    // Non-vacuity for the commit side therefore lives where the metadata is
+    // knowable: `resolve_assembly_diff`'s
+    // `bare_constructor_fallback_is_sound_over_every_demo_type`, whose C#
+    // fixture has no manifest auto-opens at all, asserts the fallback resolves.
+    assert!(
+        fixture_uses >= cases.len() / 4,
+        "sweep vacuous: only {fixture_uses} fixture uses across {} cases",
+        cases.len()
+    );
+    eprintln!(
+        "[value-surface-sweep] {agreed} agreed / {fixture_uses} fixture uses over {} cases",
+        cases.len()
     );
 }

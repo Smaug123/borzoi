@@ -2046,6 +2046,14 @@ fn manifest_auto_open_module_value_defers_a_bare_constructor_use() {
     // — a value never shadows a type, and `x: DirectValueShadow` does bind the
     // class — and blind in expression position, where a value is exactly what
     // shadows. So the constructor fallback carries its own value-surface veto.
+    //
+    // Honest about its own strength: this fixture also declares an unresolvable
+    // `[<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]`, so the env-wide
+    // `extension_surface_unknowable` arm defers here too and would carry this
+    // assertion on its own. What the case pins is the *observable* contract
+    // (this name must never name the class); the value arm is what covers the
+    // same shape once the metadata is knowable, and is swept in
+    // `manifest_autoopen_surface_diff`.
     let env = fixture_env();
     let src = "let x = DirectValueShadow ()\n";
     let rf = resolve(src, &env);
@@ -2056,25 +2064,5 @@ fn manifest_auto_open_module_value_defers_a_bare_constructor_use() {
         rf.resolution_at(at(src, "DirectValueShadow")),
         Some(Resolution::Entity(decoy)),
         "an imported module value outranks the class — committing it is a wrong target"
-    );
-}
-
-#[test]
-fn a_manifest_auto_open_value_veto_does_not_defer_unrelated_constructors() {
-    // The veto is name-keyed, not "any manifest module-shaped auto-open exists".
-    // This fixture HAS such auto-opens, so a coarse veto would defer every bare
-    // constructor use in the closure. `GlobalPlain` is the fixture's negative
-    // control — no auto-open module tree names it, in either the entity or the
-    // value surface — so it must still resolve through the root tier.
-    let env = fixture_env();
-    let src = "let x = GlobalPlain ()\n";
-    let rf = resolve(src, &env);
-    assert!(
-        matches!(
-            rf.resolution_at(at(src, "GlobalPlain")),
-            Some(Resolution::Entity(_))
-        ),
-        "the value veto must not swallow constructor uses it has no value for, got {:?}",
-        rf.resolution_at(at(src, "GlobalPlain"))
     );
 }

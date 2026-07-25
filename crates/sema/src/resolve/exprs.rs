@@ -891,15 +891,16 @@ impl<'a> Resolver<'a> {
         if !allow_opened_type
             || self.own_binder_simple_names.contains(name)
             || self.head_entry_staled(name)
-            // A module-shaped manifest auto-open imports its `let` VALUES into
-            // bare expression scope, and those are not in any value frame — so
-            // the miss above is conservative here too. This is the one guard
-            // `decide_type_path` cannot supply: its manifest veto scans nested
-            // entities, which is correct for type position (a value does not
-            // shadow a type) and blind in exactly this position.
+            // Every assembly-side surface F# makes bare-visible without an
+            // explicit `open` — auto-opened module values, contested contributor
+            // surfaces, global union cases — lands in no value frame, so the
+            // miss above is conservative there too. This is the one guard
+            // `decide_type_path` cannot supply: its vetoes scan nested entities,
+            // which is correct for type position (a value does not shadow a
+            // type) and blind in exactly this position.
             || self
                 .assemblies
-                .manifest_auto_open_module_could_supply_value_named(name)
+                .assembly_bare_value_surface_could_supply(name)
         {
             return None;
         }
