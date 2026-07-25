@@ -1356,6 +1356,13 @@ impl<'a> Resolver<'a> {
             return TypePathResolution::Deferred;
         }
 
+        // A **dropped TypeDef** anywhere the walk would look may be the very
+        // type FCS binds. Path-scoped and pre-walk, not a per-tier
+        // [`ShadowVeto`] — see [`Self::dropped_type_could_root_this_path`].
+        if self.dropped_type_could_root_this_path(names) {
+            return TypePathResolution::Deferred;
+        }
+
         // Resolve through the shared precedence walk (opens → enclosing namespace
         // → root), with the arity-aware token-free type record-generator as the
         // leaf. A project *module* sharing the as-written name does not veto the
@@ -1722,13 +1729,14 @@ impl<'a> Resolver<'a> {
     /// resolves anything, it only withholds a claim).
     ///
     /// The tiered walk itself applies the name-keyed [`ShadowVeto`]s only to
-    /// *single-segment* names, and consults dropped types not at all (the
-    /// assembly env documents that as the caller's check — a dropped type is a
-    /// property of a *path*, `any_split_of_a_module_path_has_a_dropped_type`).
-    /// So per searched prefix, over the full path `prefix ++ names`:
+    /// *single-segment* names. **Dropped types** it does not consult per-tier
+    /// either — they are a property of a *path*, not a reading — but it no
+    /// longer ignores them: [`Self::dropped_type_could_root_this_path`] is the
+    /// shared pre-walk gate every type-position consumer runs, this one
+    /// included (hence the delegation below, rather than a second copy of the
+    /// split scan). What remains here is the rest of the scan, per searched
+    /// prefix, over the full path `prefix ++ names`:
     ///
-    /// - a **dropped type at any split** could be the very type FCS binds
-    ///   (or a same-FQN merge partner supplying it);
     /// - an **unknowable-abbreviation namespace at any split** could alias
     ///   the segment looked up there (the walk's `OnNoMatch` veto covers
     ///   exactly the single-segment shape; a qualified candidate's splits are
@@ -1764,43 +1772,43 @@ impl<'a> Resolver<'a> {
         }) {
             return true;
         }
+        if self.dropped_type_could_root_this_path(names) {
+            return true;
+        }
         self.assembly_prefixes_by_priority().any(|prefix| {
             let mut full = prefix.to_vec();
             full.extend(names.iter().cloned());
-            self.assemblies
-                .any_split_of_a_module_path_has_a_dropped_type(&full)
-                || (prefix.len()..full.len()).any(|k| {
-                    let ns = &full[..k];
-                    // The auto-open shadow is asked about the segment supplied
-                    // AT this split — the name the lookup would root or extend
-                    // with there — not the candidate's leaf: an auto-open
-                    // module supplying the *head* of `[<A.B>]` re-roots the
-                    // whole path at higher priority (codex round 3).
-                    self.assemblies.unknowable_abbreviations_in_namespace(ns)
-                        || self
-                            .assemblies
-                            .auto_open_modules_in_namespace_shadow_type_named(ns, &full[k])
-                        || !self.opened_assembly_modules(ns).is_empty()
-                        || {
-                            // Occupancy is accessibility-blind: FCS resolves an
-                            // *inaccessible* suffixed candidate (then errors)
-                            // rather than falling through to the written one,
-                            // so an internal occupant is not a clean miss
-                            // (codex round 4). Trustworthy only as exactly one
-                            // public entity that is also what the first-wins
-                            // slot answers.
-                            let occupants = self.assemblies.entities_named(ns, &full[k]);
-                            match occupants.as_slice() {
-                                [] => false,
-                                [only] => {
-                                    !self.assemblies.is_public(*only)
-                                        || self.assemblies.lookup_type(ns, &full[k], 0)
-                                            != Some(*only)
-                                }
-                                _ => true,
+            (prefix.len()..full.len()).any(|k| {
+                let ns = &full[..k];
+                // The auto-open shadow is asked about the segment supplied
+                // AT this split — the name the lookup would root or extend
+                // with there — not the candidate's leaf: an auto-open
+                // module supplying the *head* of `[<A.B>]` re-roots the
+                // whole path at higher priority (codex round 3).
+                self.assemblies.unknowable_abbreviations_in_namespace(ns)
+                    || self
+                        .assemblies
+                        .auto_open_modules_in_namespace_shadow_type_named(ns, &full[k])
+                    || !self.opened_assembly_modules(ns).is_empty()
+                    || {
+                        // Occupancy is accessibility-blind: FCS resolves an
+                        // *inaccessible* suffixed candidate (then errors)
+                        // rather than falling through to the written one,
+                        // so an internal occupant is not a clean miss
+                        // (codex round 4). Trustworthy only as exactly one
+                        // public entity that is also what the first-wins
+                        // slot answers.
+                        let occupants = self.assemblies.entities_named(ns, &full[k]);
+                        match occupants.as_slice() {
+                            [] => false,
+                            [only] => {
+                                !self.assemblies.is_public(*only)
+                                    || self.assemblies.lookup_type(ns, &full[k], 0) != Some(*only)
                             }
+                            _ => true,
                         }
-                })
+                    }
+            })
         })
     }
 
@@ -1874,50 +1882,27 @@ impl<'a> Resolver<'a> {
     /// [`Self::resolve_assembly_path_tiered`] shares — [`Self::decide_type_path`]
     /// and the qualified-union-case-pattern walk
     /// ([`Resolver::assembly_case_pattern_reading`](super::Resolver)), whose head
-    /// is a type lookup too. Sharing it is structural, not tidiness: the two
-    /// walks previously each spelled the ladder out, and a shadow source added
-    /// to one silently missed the other.
+    /// is a type lookup too. Sharing it is structural, not tidiness: a shadow
+    /// source spelled out per-walk reaches only the walk it was added to, and
+    /// nothing makes the omission visible in the other.
     ///
     /// `bare_name` is `Some` when the lookup is for a **single** source segment
     /// — the whole path for `decide_type_path`, the head `Type` of a
     /// `Type.Case` pattern — and `None` for a dotted path, whose tail segments
     /// the bare-name surfaces below cannot supply.
     ///
-    /// The ladder, strongest first:
+    /// **Dropped types are not in this ladder.** They are a property of a
+    /// *path*, not of a reading, and no per-tier verdict can express them
+    /// soundly — see [`Self::dropped_type_could_root_this_path`], the pre-walk
+    /// gate that handles them, for why. The ladder, strongest first:
     ///
-    /// 1. A **dropped TypeDef** in this reading
-    ///    ([`AssemblyEnv::namespace_has_dropped_type`]). The reading's type set
-    ///    is *incomplete* and the missing name is unknowable — the drop record
-    ///    keeps only the enclosing namespace — so the dropped type may be the
-    ///    very name being resolved: another DLL's same-FQN half, which FCS
-    ///    merges and orders by reference (an order we do not model), or a
-    ///    same-name sibling at the arity written here. Two things follow, both
-    ///    distinguishing it from (3):
-    ///    - [`ShadowVeto::Preemptive`], not [`ShadowVeto::OnNoMatch`].
-    ///      `OnNoMatch` asks "did this tier bind nothing?", and the hazard is
-    ///      live precisely when it *did*: the surviving `Foo` gets committed
-    ///      while a dropped `Foo` at the same reading is what FCS binds. A tier
-    ///      that yields a match is exactly as untrustworthy as one that does not.
-    ///    - It applies at **every path length**, `bare_name` or not: a dotted
-    ///      `Outer.Inner` roots its head in this reading too, and a dropped
-    ///      `Outer` there is the same wrong-target risk.
-    ///
-    ///    This is the type-position half of a treatment the **value** and
-    ///    **open** paths have had since review rounds 9–23
-    ///    (`incomplete_open_prefixes`, `names_uncovered_dropped_path`, and the
-    ///    fold's `path_dropped` residue, all in [`super::decls`]). Because an
-    ///    `open` of a dropped-bearing namespace already raises
-    ///    `unmodelled_open_active` there — which [`Self::decide_type_path`]
-    ///    defers on before the walk starts — the tiers it actually adds cover
-    ///    for are the **enclosing namespace** and the **root** reading, which no
-    ///    `open` statement guards.
-    /// 2. An in-scope assembly `[<AutoOpen>]` module with an accessible nested
+    /// 1. An in-scope assembly `[<AutoOpen>]` module with an accessible nested
     ///    type/module of exactly this name
     ///    ([`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`]):
     ///    exact metadata, so [`ShadowVeto::Preemptive`] — it outranks even a
     ///    same-tier real match (FCS-probe-confirmed, review round 6 on
     ///    `docs/completed/r2-annotation-typing-plan.md`).
-    /// 3. The coarse, name-blind risks — a project `[<AutoOpen>]` module, an
+    /// 2. The coarse, name-blind risks — a project `[<AutoOpen>]` module, an
     ///    unknowable-abbreviation namespace ([`Self::unmodelled_type_shadow_at`])
     ///    — at [`ShadowVeto::OnNoMatch`] only: checking them pre-emptively would
     ///    defer every other real type under the same reading (rounds 2/3 of the
@@ -1927,9 +1912,6 @@ impl<'a> Resolver<'a> {
         prefix: &[String],
         bare_name: Option<&str>,
     ) -> ShadowVeto {
-        if self.assemblies.namespace_has_dropped_type(prefix) {
-            return ShadowVeto::Preemptive;
-        }
         match bare_name {
             Some(name)
                 if self
@@ -1941,6 +1923,64 @@ impl<'a> Resolver<'a> {
             Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
             _ => ShadowVeto::None,
         }
+    }
+
+    /// Whether a **dropped TypeDef** could be what FCS binds for the source path
+    /// `names` — the pre-walk gate every type-position consumer runs before
+    /// trusting [`Self::resolve_assembly_path_tiered`]:
+    /// [`Self::decide_type_path`], the qualified-union-case-pattern walk
+    /// ([`Resolver::assembly_case_pattern_reading`](super::Resolver), whose
+    /// `names` is the bare head), and
+    /// [`Self::attribute_candidate_unrulable`]. A hit is deferral-only: it never
+    /// resolves anything, it withholds a claim.
+    ///
+    /// A projection that dropped a type recorded only the *enclosing namespace*,
+    /// never the name — so a drop anywhere the lookup passes through may be the
+    /// very entity being resolved: another DLL's same-FQN half, which FCS merges
+    /// and orders by reference (an order we do not model), or a same-name
+    /// sibling at the written arity. Committing the survivor is then a wrong
+    /// target, not a missed one (D5).
+    ///
+    /// Three properties it needs, none of which a per-tier [`ShadowVeto`] can
+    /// express — the reason this is a gate and not a verdict:
+    ///
+    /// - **Path-scoped, not prefix-scoped.** The question is asked of every
+    ///   split of `prefix ++ names`
+    ///   ([`AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type`]), not
+    ///   of the reading prefix alone. `(x : Demo.Sub.T)` is looked up in
+    ///   namespace `Demo.Sub` even when the *reading* is the root `[]`, so a
+    ///   drop in `Demo.Sub` is invisible to a check keyed on `[]`.
+    /// - **Every reading, not just the winning one.** The walk stops calling a
+    ///   per-tier verdict once it holds a partial fallback, but a *complete*
+    ///   reading at a lower tier out-ranks a partial at a higher one — so a
+    ///   dropped type below a held fallback is exactly the reading FCS would
+    ///   prefer. Scanning all of [`Self::assembly_prefixes_by_priority`] up
+    ///   front is immune to that ordering, and to the truncated prefix
+    ///   sequences [`Self::resolve_assembly_path_over`] is given elsewhere.
+    /// - **Any path length.** A dotted path roots its head in the reading too;
+    ///   the ladder's bare-name sources cannot supply a dotted tail, but a
+    ///   dropped type at a split can.
+    ///
+    /// This is the type-position half of a treatment the **value** and **open**
+    /// paths have had since review rounds 9–23 (`incomplete_open_prefixes`,
+    /// `names_uncovered_dropped_path`, and the fold's `path_dropped` residue,
+    /// all in [`super::decls`]). Because an `open` of a dropped-bearing
+    /// namespace already raises `unmodelled_open_active` there — which
+    /// [`Self::decide_type_path`] defers on before the walk starts — the
+    /// readings this adds cover for are chiefly the **enclosing namespace** and
+    /// the **root** reading, which no `open` statement guards.
+    ///
+    /// Deliberately coarse, and affordable: over 4,330 real assemblies (the
+    /// .NET 10 shared runtime, the ref pack, and a full NuGet global-packages
+    /// cache) the projector drops **one** type, so the deferrals this can cause
+    /// are vanishingly rare in practice.
+    pub(super) fn dropped_type_could_root_this_path(&self, names: &[String]) -> bool {
+        self.assembly_prefixes_by_priority().any(|prefix| {
+            let mut full = prefix.to_vec();
+            full.extend(names.iter().cloned());
+            self.assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(&full)
+        })
     }
 
     /// Whether `names` **strictly descends into** a project *nested* module (a path

@@ -1578,13 +1578,13 @@ fn a_dropped_type_in_the_enclosing_namespace_defers_a_type_annotation() {
     );
 }
 
-/// The same hazard at the **opened** tier. This one passed *before* the veto
-/// existed, and stays deliberately: the open-side fold already goes opaque on an
-/// `open` whose path carries a dropped split (`names_uncovered_dropped_path` and
-/// the fold's `path_dropped` residue, `resolve/decls.rs`), raising
-/// `unmodelled_open_active`, which `decide_type_path` defers on before the walk
-/// starts. So it pins the *boundary* of the new veto's job — the opened tier is
-/// somebody else's — and would catch a regression in that older guard.
+/// The same hazard at the **opened** tier, which a *different* guard owns: the
+/// open-side fold goes opaque on an `open` whose path carries a dropped split
+/// (`names_uncovered_dropped_path` and the fold's `path_dropped` residue,
+/// `resolve/decls.rs`), raising `unmodelled_open_active`, which
+/// `decide_type_path` defers on before the walk starts. So this pins the
+/// *boundary* of `dropped_type_could_root_this_path`'s job — the opened tier is
+/// somebody else's — and fails if that older guard regresses.
 #[test]
 fn a_dropped_type_in_an_opened_namespace_defers_a_type_annotation() {
     let src = "namespace Consumer\n\
@@ -1647,3 +1647,69 @@ fn a_dropped_type_in_the_enclosing_namespace_defers_a_qualified_case_pattern() {
     );
     assert_eq!(rf.resolution_at(at(src, "Shape.Circle")), None);
 }
+
+/// Why the gate is keyed on the **path**, not the reading: a qualified
+/// annotation is looked up in `prefix ++ names[..n-1]`, which is not the reading
+/// prefix. Here the root tier's prefix is `[]` while the type is found in
+/// `Demo.CasePat`, so `namespace_has_dropped_type(prefix)` would answer about
+/// `[]` and commit the survivor. Hence
+/// `any_split_of_a_module_path_has_a_dropped_type` over `prefix ++ names`.
+#[test]
+fn a_dropped_type_at_a_qualified_paths_split_defers_the_annotation() {
+    let src = "namespace Consumer\n\
+               module M =\n\
+               \x20   let f (x: Demo.CasePat.Shape) = x\n";
+
+    let clean = fixture_env();
+    let shape = clean
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    assert_eq!(
+        resolve(src, &clean).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: the fully-qualified path commits at the root reading"
+    );
+
+    // The drop is in the namespace the *leaf* is looked up in — which no tier
+    // prefix of this walk equals.
+    let mut dropped = fixture_env();
+    dropped.mark_namespace_dropped_type(vec!["Demo".into(), "CasePat".into()]);
+    assert!(
+        !matches!(
+            resolve(src, &dropped).resolution_at(at(src, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "the dropped TypeDef sits at a split of `Demo.CasePat.Shape`, not at the \
+         root reading the walk visits — got {:?}",
+        resolve(src, &dropped).resolution_at(at(src, "Shape"))
+    );
+
+    // And at an intermediate split: a drop in `Demo` may be a module `CasePat`
+    // whose own `Shape` FCS merges in at the same path.
+    let mut mid = fixture_env();
+    mid.mark_namespace_dropped_type(vec!["Demo".into()]);
+    assert!(
+        !matches!(
+            resolve(src, &mid).resolution_at(at(src, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "a drop at the `Demo` split may be a same-FQN `Demo.CasePat` half — got {:?}",
+        resolve(src, &mid).resolution_at(at(src, "Shape"))
+    );
+}
+
+// The one dropped-TypeDef property with no case here, and why. A per-tier
+// verdict stops being consulted once `resolve_assembly_path_over` holds a
+// partial fallback, while a complete reading at a lower tier out-ranks a
+// partial at a higher one — so a dropped type below a held fallback is exactly
+// the reading FCS prefers. `dropped_type_could_root_this_path` scans every
+// reading before the walk runs, so `fallback` cannot suppress it and the
+// property holds by construction.
+//
+// No test asserts it because none would discriminate: every witness
+// constructible against this fixture — a drop under the `open`ed path, at the
+// root reading, or at the file's own enclosing namespace — is already deferred
+// by the open-side opacity fold or the enclosing-namespace guard, so the
+// assertion passes whether or not the gate is consulted. Such a test reads as
+// coverage it is not. The property may be unreachable through today's
+// resolver; it is part of the walk's contract either way.

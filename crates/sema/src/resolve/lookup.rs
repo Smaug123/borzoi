@@ -3445,13 +3445,16 @@ impl<'a> Resolver<'a> {
     /// union roots past a later-`open`ed `SynType` module that shadows it only in
     /// the value/module namespace.
     ///
-    /// A pattern head is a type lookup, so the per-tier [`ShadowVeto`] is the
-    /// shared type-position one ([`Self::type_position_shadow_at`]), passed the
-    /// head as its `bare_name`: `Type` is a single segment under the tier's
-    /// prefix, the `Case` being the constructor tail. Every shadow source that
-    /// can hide a same-named union — a dropped TypeDef in the reading, an
-    /// assembly auto-open module's type of this name, a coarse unmodelled
-    /// shadow — therefore reaches this walk by construction.
+    /// A pattern head is a type lookup, so this shares the type path's two
+    /// shadow checks rather than restating them — which is what keeps a source
+    /// added to one walk from silently missing the other. The pre-walk
+    /// path-scoped dropped-TypeDef gate is
+    /// [`Self::dropped_type_could_root_this_path`] (over the bare head: a drop
+    /// at any of its readings may be another same-named union owning this very
+    /// case), and the per-tier verdict is
+    /// [`Self::type_position_shadow_at`], passed the head as its `bare_name` —
+    /// `Type` is a single segment under the tier's prefix, the `Case` being the
+    /// constructor tail.
     ///
     /// `None` — a sound decline, never a wrong target — when nothing resolves or
     /// the walk shadow-defers. The reading is a **contender**, not yet a binding:
@@ -3472,6 +3475,12 @@ impl<'a> Resolver<'a> {
             .assemblies
             .retained_auto_open_could_supply_entity_named(type_name)
         {
+            return None;
+        }
+        // A **dropped TypeDef** at any split of any reading of the head may be
+        // another same-named union owning this very case — path-scoped and
+        // pre-walk, see [`Self::dropped_type_could_root_this_path`].
+        if self.dropped_type_could_root_this_path(&[type_name.to_owned()]) {
             return None;
         }
         match self.resolve_assembly_path_tiered(
