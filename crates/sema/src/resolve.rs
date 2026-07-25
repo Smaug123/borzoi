@@ -1605,6 +1605,7 @@ impl<'a> Resolver<'a> {
             real_nested_module_exports: Vec::new(),
             type_path_exports: Vec::new(),
             imports: implicit_open_groups(assemblies),
+            implicit_import_count: implicit_open_groups(assemblies).len(),
             open_shortening_prefixes: implicit_open_namespaces(assemblies),
             incomplete_open_prefixes: Vec::new(),
             explicit_open_prefixes: Vec::new(),

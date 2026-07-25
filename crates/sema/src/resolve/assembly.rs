@@ -297,6 +297,21 @@ impl<'a> Resolver<'a> {
             .flat_map(|open| open.readings.iter().map(Vec::as_slice))
     }
 
+    /// The [`Self::open_reading_prefixes`] contributed by **explicit source
+    /// `open`s** only — the leading prefixes of that walk (explicit opens are
+    /// appended after the implicit seed, so the latest-first iteration yields
+    /// them first; `implicit_import_count` marks the split). The priority
+    /// stratum that outranks a module-shaped manifest auto-open's surface:
+    /// that surface is opened at file start, so every explicit open is later
+    /// and wins ([`Resolver::decide_type_path`]'s manifest veto walks exactly
+    /// these before deferring).
+    pub(super) fn explicit_open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
+        self.imports[self.implicit_import_count..]
+            .iter()
+            .rev()
+            .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+    }
+
     /// Every prefix a dotted path may be read under, in strict F# precedence
     /// order — the readings [`Self::resolve_assembly_path_tiered`] walks:
     /// 1. **opens** ([`Self::open_reading_prefixes`]);
@@ -390,6 +405,30 @@ impl<'a> Resolver<'a> {
         as_written_vetoes_opens: bool,
         shadow_at: impl Fn(&[String]) -> ShadowVeto,
     ) -> TieredResolution<R> {
+        self.resolve_assembly_path_over(
+            self.assembly_prefixes_by_priority(),
+            records,
+            as_written_vetoes_opens,
+            shadow_at,
+        )
+    }
+
+    /// [`Self::resolve_assembly_path_tiered`]'s walk over an **explicit
+    /// prefix sequence** instead of the full
+    /// [`Self::assembly_prefixes_by_priority`] — for a caller that must stop
+    /// the walk at a priority boundary an unmodelled surface sits below
+    /// ([`Resolver::decide_type_path`]'s manifest veto walks only
+    /// [`Self::explicit_open_reading_prefixes`]: a complete reading there
+    /// outranks the manifest module surface; anything lower may not).
+    /// `prefixes` must be a prefix of the full priority sequence, or the
+    /// tier ordering the verdicts assume does not hold.
+    pub(super) fn resolve_assembly_path_over<'p, R>(
+        &self,
+        prefixes: impl Iterator<Item = &'p [String]>,
+        records: impl Fn(&[String]) -> AssemblyPath<R>,
+        as_written_vetoes_opens: bool,
+        shadow_at: impl Fn(&[String]) -> ShadowVeto,
+    ) -> TieredResolution<R> {
         // The veto's root reading is held and consumed when the walk reaches the
         // ROOT tier (the final, empty prefix), instead of recomputing it —
         // `records` is pure, and the root reading is the common case's most
@@ -409,7 +448,7 @@ impl<'a> Resolver<'a> {
         // consulted once a fallback has been seen.
         let mut fallback: Option<R> = None;
 
-        for prefix in self.assembly_prefixes_by_priority() {
+        for prefix in prefixes {
             let veto = if fallback.is_none() {
                 shadow_at(prefix)
             } else {

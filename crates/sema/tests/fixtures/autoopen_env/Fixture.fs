@@ -284,6 +284,23 @@ module DirectOps =
     type private DirectPrivate() =
         member _.Marker = 5
 
+    // A nested module whose name matches NO type anywhere in the surface: a
+    // module cannot bind TYPE position, so a bare annotation `DirectHeadOnly`
+    // falls through to the same-named global-namespace type below
+    // (fsi-verified) — the shadow surface must not veto a single-segment
+    // type path on a module-only match.
+    module DirectHeadOnly =
+        let headOnlyInner () = 6
+
+// A namespace with a type sharing the auto-opened module's nested-type name:
+// an explicit `open SemaAutoOpen.ExplicitBeats` is applied AFTER the manifest
+// open, so latest-open-wins binds bare `DirectShadow` HERE (fsi-verified) —
+// the one reading that outranks the manifest module surface.
+namespace SemaAutoOpen.ExplicitBeats
+
+type DirectShadow() =
+    member _.ExplicitMarker = 7
+
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
 // A path that exists nowhere — FCS warns and skips it; it must not sink or
@@ -688,3 +705,10 @@ type GlobalPlain() =
 // the manifest-module shadow surface must let it commit.
 type DirectPrivate() =
     member _.Decoy = 4
+
+// The decoy for `DirectOps`'s nested MODULE `DirectHeadOnly`: a module cannot
+// bind type position, so FCS binds THIS type for a bare annotation
+// (fsi-verified) — a module-only surface match must not veto a single-segment
+// type path.
+type DirectHeadOnly() =
+    member _.Decoy = 5

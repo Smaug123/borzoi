@@ -1308,25 +1308,6 @@ impl<'a> Resolver<'a> {
             return TypePathResolution::InFileType(id);
         }
 
-        // A module/type-shaped manifest auto-open (`[<assembly:
-        // AutoOpen("N.Ops")>]` naming a module) is kept out of the tiered
-        // walk below entirely (`record_assembly_auto_opens` narrowing 2),
-        // yet FCS opens the target like a module: its nested types and
-        // modules are bare-visible at open priority, above the
-        // enclosing-namespace and root tiers (fsi-verified against a
-        // `namespace global` decoy). So any tier match for a HEAD the
-        // surface could supply may be a wrong target — the head is the only
-        // segment an open can contest, since it is where a bare or dotted
-        // path roots. Name-keyed to the retained surfaces' trees, so only
-        // paths such a module could actually shadow pay the deferral; the
-        // arity-blind over-approximation only defers, never resolves.
-        if names.first().is_some_and(|head| {
-            self.assemblies
-                .manifest_auto_open_module_could_supply_entity_named(head)
-        }) {
-            return TypePathResolution::Deferred;
-        }
-
         // Inside a `rec` block a forward-declared project type may not be in
         // `type_defs` yet, but it still outranks any same-named assembly
         // type — unlike [`Self::unmodelled_type_shadow_at`] below, a tiered
@@ -1394,23 +1375,61 @@ impl<'a> Resolver<'a> {
             [only] => Some(only.as_str()),
             _ => None,
         };
-        match self.resolve_assembly_path_tiered(
-            |prefix| self.assembly_type_path_core(prefix, names, arity),
-            false,
-            |prefix| match only_name {
-                // The exact, name-keyed check first — it is the stronger
-                // verdict, and where it fires the coarse one is subsumed.
-                Some(name)
-                    if self
-                        .assemblies
-                        .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
-                {
-                    ShadowVeto::Preemptive
+        let core = |prefix: &[String]| self.assembly_type_path_core(prefix, names, arity);
+        let shadow_at = |prefix: &[String]| match only_name {
+            // The exact, name-keyed check first — it is the stronger
+            // verdict, and where it fires the coarse one is subsumed.
+            Some(name)
+                if self
+                    .assemblies
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
+            {
+                ShadowVeto::Preemptive
+            }
+            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
+            _ => ShadowVeto::None,
+        };
+
+        // A module/type-shaped manifest auto-open (`[<assembly:
+        // AutoOpen("N.Ops")>]` naming a module) is kept out of the walk's
+        // prefixes entirely (`record_assembly_auto_opens` narrowing 2), yet
+        // FCS opens the target like a module: its imported surface is
+        // bare-visible at open priority — below every explicit source `open`
+        // (the manifest open is applied at file start, and F# is
+        // latest-open-wins) but above the enclosing-namespace and root tiers
+        // (both directions fsi-verified against `namespace global` /
+        // `open SemaAutoOpen.ExplicitBeats` decoys). Only the HEAD is
+        // contestable — it is where a bare or dotted path roots — and a
+        // module-only surface match cannot contest a single-segment path (a
+        // module never binds type position; FCS falls through). So when the
+        // surface could supply the head, walk ONLY the explicit-open
+        // readings: a complete reading there outranks the surface and
+        // commits; anything less — a partial (FCS prefers a complete reading
+        // even at lower priority, and the surface may hold one), a shadow, a
+        // no-match — defers rather than let a lower tier commit a wrong
+        // target. Deferral-only below the explicit tier: never a new
+        // resolution.
+        if names.first().is_some_and(|head| {
+            self.assemblies
+                .manifest_auto_open_module_could_supply_entity_named(head, names.len() == 1)
+        }) {
+            return match self.resolve_assembly_path_over(
+                self.explicit_open_reading_prefixes(),
+                core,
+                false,
+                shadow_at,
+            ) {
+                TieredResolution::Resolved(reading) if reading.leaf.is_some() => {
+                    TypePathResolution::Assembly {
+                        idx_recs: reading.idx_recs,
+                        leaf: reading.leaf,
+                    }
                 }
-                Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
-                _ => ShadowVeto::None,
-            },
-        ) {
+                _ => TypePathResolution::Deferred,
+            };
+        }
+
+        match self.resolve_assembly_path_tiered(core, false, shadow_at) {
             TieredResolution::Resolved(reading) => TypePathResolution::Assembly {
                 idx_recs: reading.idx_recs,
                 leaf: reading.leaf,

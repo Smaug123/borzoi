@@ -795,6 +795,51 @@ fn manifest_auto_open_module_plain_submodule_contents_do_not_veto_bare_use() {
 }
 
 #[test]
+fn an_explicit_open_outranks_the_manifest_module_surface() {
+    // The manifest open is applied at file start; an explicit source `open`
+    // comes later, and F# is latest-open-wins — so after
+    // `open SemaAutoOpen.ExplicitBeats`, bare `DirectShadow` binds THAT
+    // namespace's type, not the auto-opened module's nested one
+    // (fsi-verified). A complete explicit-open reading must therefore
+    // commit, not defer (codex P2 on this change).
+    let env = fixture_env();
+    let src = "open SemaAutoOpen.ExplicitBeats\nlet f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    let expected = env
+        .lookup_type(
+            &["SemaAutoOpen".into(), "ExplicitBeats".into()],
+            "DirectShadow",
+            0,
+        )
+        .expect("fixture must declare SemaAutoOpen.ExplicitBeats.DirectShadow");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectShadow")),
+        Some(Resolution::Entity(expected)),
+        "a complete explicit-open reading outranks the manifest module surface"
+    );
+}
+
+#[test]
+fn a_module_only_surface_match_does_not_veto_a_single_segment_type_path() {
+    // `DirectOps` nests a MODULE `DirectHeadOnly` and no type of that name:
+    // a module cannot bind type position, so FCS falls through to the
+    // global-namespace `type DirectHeadOnly` (fsi-verified). The surface
+    // match must be kind-aware — a module-only hit vetoes a dotted head,
+    // never a single-segment type annotation (codex P2 on this change).
+    let env = fixture_env();
+    let src = "let f (x: DirectHeadOnly) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectHeadOnly", 0)
+        .expect("fixture must declare a global-namespace DirectHeadOnly type");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectHeadOnly")),
+        Some(Resolution::Entity(root)),
+        "a module-only surface match must not defer a single-segment type annotation"
+    );
+}
+
+#[test]
 fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
     // Over-defer control: `GlobalPlain` appears in no auto-open module's
     // tree, so the manifest-module shadow check must not touch it — it keeps
