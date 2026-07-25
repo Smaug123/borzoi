@@ -633,3 +633,32 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn an_active_pattern_argument_never_becomes_an_or_pattern_binder() {
+    // `DivBy x x` puts two *different* roles on one name inside one
+    // alternative: the first `x` is the recognizer's argument — an expression,
+    // evaluated in the enclosing scope — and the second binds the payload. They
+    // are not one binding, so or-pattern canonicalisation must not conflate
+    // them; it pairs each alternative's k-th binding of a name with the other's.
+    //
+    // FCS-verified (`fcs-dump uses`): the two argument `x`s are uses of the
+    // enclosing parameter, the first alternative's payload `x` is the
+    // declaration, and the second alternative's payload and the body are uses
+    // of it.
+    let src = "let (|DivBy|_|) divisor n = if n % divisor = 0 then Some n else None\nlet outer x n =\n    match n with\n    | DivBy x x\n    | DivBy x x -> x\n";
+    let rf = resolve(src);
+    let param = nth(src, "x", 0);
+    let first_arg = nth(src, "x", 1);
+    let payload = nth(src, "x", 2);
+    let second_arg = nth(src, "x", 3);
+
+    // The recognizer arguments are expressions against the enclosing scope.
+    assert_resolves_to(&rf, first_arg, param);
+    assert_resolves_to(&rf, second_arg, param);
+    // The payload binds, the second alternative's payload aliases it, and the
+    // body sees that one binding — not the enclosing parameter.
+    assert_resolves_to(&rf, payload, payload);
+    assert_resolves_to(&rf, nth(src, "x", 4), payload);
+    assert_resolves_to(&rf, nth(src, "x", 5), payload);
+}

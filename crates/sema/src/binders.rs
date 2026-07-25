@@ -30,9 +30,11 @@ pub enum BinderRole {
 ///
 /// Each is a [`PatternName::Binder`] except in an or-pattern, which binds one
 /// name **once**: the earliest alternative's occurrence binds and every later
-/// spelling of that name is a [`PatternName::Alias`] of it. That is also FCS's
-/// identity for an or-pattern, so a consumer that interns only the binders and
-/// records the aliases as uses agrees with the oracle by construction.
+/// alternative's spelling of that name is a [`PatternName::Alias`] of it. That
+/// is also FCS's identity for an or-pattern, so a consumer that interns only the
+/// binders and records the aliases as uses agrees with the oracle by
+/// construction. Repeats *within* one alternative are left alone: `DivBy x x`
+/// is an argument expression plus a payload binder, not one name twice.
 ///
 /// Pure and structural: it recurses through `Paren` / `Typed` (the type
 /// annotation contributes no binders) / `Tuple`, and `Wildcard` / `Const` /
@@ -255,24 +257,25 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
         Pat::Or(p) => {
             // `A v | B v` binds the same names on both branches (F# requires the
             // two sides to agree) — and binds each of them *once*. The two
-            // spellings of `v` are one binding, so only the earliest is a binder
-            // and the rest alias it; that is also FCS's identity, which declares
-            // the first alternative's occurrence and reports every later one as a
-            // use of it. Value deconstruction, never a function-binding head, so
-            // both operands descend the context.
+            // spellings of `v` are one binding, so the left one binds and the
+            // right aliases it; that is also FCS's identity, which declares the
+            // first alternative's occurrence and reports every later one as a use
+            // of it. Value deconstruction, never a function-binding head, so both
+            // operands descend the context.
             //
-            // Canonicalising over the whole or-subtree at once — rather than
-            // pairwise at each `Or` — makes the answer independent of how a chain
-            // of `|` associates: whichever way `A v | B v | C v` nests, the winner
-            // is the first `v` in *source* order.
+            // Only *across* the two operands, which is what makes a chain of `|`
+            // associate-agnostic: whichever way `A v | B v | C v` nests, each
+            // pairing is left-of-`|` against right-of-`|`, so the winner is the
+            // first `v` in source order either way.
             let start = out.len();
             if let Some(lhs) = p.lhs() {
                 collect(&lhs, ctx.descend(), out);
             }
+            let boundary = out.len();
             if let Some(rhs) = p.rhs() {
                 collect(&rhs, ctx.descend(), out);
             }
-            canonicalise_alternatives(&mut out[start..]);
+            canonicalise_alternatives(&mut out[start..], boundary - start);
         }
         Pat::LongIdent(p) => {
             // `arg_pats` spans both `SynArgPats` shapes: the curried list
@@ -340,13 +343,27 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
     }
 }
 
-/// Collapse the repeated names in one or-pattern's occurrences (`names`, in
-/// source order) to a single binding each: the first occurrence of a name stays
-/// a [`PatternName::Binder`] and every later one becomes an
-/// [`PatternName::Alias`] of it.
+/// Collapse one `Or`'s two alternatives — `names[..left]` and `names[left..]`,
+/// each in source order — to a single binding per name: the right alternative's
+/// binders become [`PatternName::Alias`]es of their counterparts on the left.
 ///
-/// Names are compared after [`id_text`] normalisation, so ``A `v` | B v``
-/// is one binding, exactly as F# reads it.
+/// Pairing is **by name, then by position among that name's bindings**: the
+/// right alternative's k-th binding of `v` denotes the left's k-th. Name-first
+/// is what makes `A b, B v | B v, A b` pair each name with its namesake rather
+/// than with whatever sits in the same slot; position only breaks the tie when
+/// one alternative binds a name more than once. Names are compared after
+/// [`id_text`] normalisation, so ``A `v` | B v`` is one binding, exactly as F#
+/// reads it.
+///
+/// **Never within one alternative.** Two occurrences of a name on the *same*
+/// side are not one binding — F# rejects a genuine duplicate, and the shape that
+/// does occur is a parameterised active pattern (`DivBy x x`), where the first
+/// `x` is an argument *expression* evaluated in the enclosing scope and only the
+/// second binds. This walk cannot tell those apart (which argument is a
+/// parameter is an arity question the resolver settles later), so conflating
+/// them would silently swallow the payload binder. FCS-verified: in
+/// `DivBy x x | DivBy x x -> x` both argument `x`s are uses of the enclosing
+/// parameter and the second alternative's *payload* aliases the first's.
 ///
 /// **Provisional heads are left alone.** A constructor-shaped nullary head
 /// (`A None | B None`) is only a binder if the name turns out not to name a
@@ -356,29 +373,54 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
 /// binding where the source has none. Leaving them provisional keeps resolution
 /// free to drop or resolve each on its own.
 ///
-/// Aliases already present in `names` come from a nested `Or` that this call's
-/// subtree encloses. Their target may itself be demoted here, so each is
-/// re-pointed at whatever the demoted binder now aliases — the demotion always
-/// precedes the alias in source order, so one left-to-right pass suffices.
-fn canonicalise_alternatives(names: &mut [PatternName]) {
+/// Aliases already present come from a nested `Or` inside either alternative.
+/// One on the right points at a right-hand binder that may itself be demoted
+/// here, so it is re-pointed at that binder's new target — the demotion always
+/// precedes it in source order, so a single left-to-right pass suffices.
+fn canonicalise_alternatives(names: &mut [PatternName], left: usize) {
     // Small, linear-scanned association lists: an or-pattern binds a handful of
     // names, so a hash map would cost more than it saves.
-    let mut canonical: Vec<(String, TextRange)> = Vec::new();
+    let left_binders: Vec<(String, TextRange)> = names[..left]
+        .iter()
+        .filter_map(|name| match name {
+            PatternName::Binder(def) if !def.provisional => {
+                Some((id_text(&def.name).to_string(), def.range))
+            }
+            _ => None,
+        })
+        .collect();
+    // How many bindings of each name the right alternative has used up, so its
+    // k-th `v` claims the left's k-th rather than all of them claiming the first.
+    let mut claimed: Vec<(String, usize)> = Vec::new();
     let mut demoted: Vec<(TextRange, TextRange)> = Vec::new();
-    for name in names.iter_mut() {
+    for name in names[left..].iter_mut() {
         match name {
             PatternName::Binder(def) if !def.provisional => {
                 let key = id_text(&def.name);
-                match canonical.iter().find(|(seen, _)| seen == key) {
-                    Some(&(_, binder)) => {
-                        demoted.push((def.range, binder));
-                        *name = PatternName::Alias {
-                            range: def.range,
-                            binder,
-                        };
+                let index = match claimed.iter_mut().find(|(seen, _)| seen == key) {
+                    Some((_, count)) => {
+                        *count += 1;
+                        *count - 1
                     }
-                    None => canonical.push((key.to_string(), def.range)),
-                }
+                    None => {
+                        claimed.push((key.to_string(), 1));
+                        0
+                    }
+                };
+                // No counterpart on the left (illegal F# — the alternatives must
+                // agree — so keep the binder rather than lose the name).
+                let Some(&(_, binder)) = left_binders
+                    .iter()
+                    .filter(|(seen, _)| seen == key)
+                    .nth(index)
+                else {
+                    continue;
+                };
+                demoted.push((def.range, binder));
+                *name = PatternName::Alias {
+                    range: def.range,
+                    binder,
+                };
             }
             PatternName::Binder(_) => {}
             PatternName::Alias { binder, .. } => {
@@ -927,6 +969,20 @@ mod tests {
             pattern_names(&head_pat("(A None | B None)"), BinderRole::Pattern)
                 .iter()
                 .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
+        );
+    }
+
+    #[test]
+    fn a_name_repeated_within_one_alternative_is_not_aliased() {
+        // `DivBy x x` is not one binding spelled twice: the first `x` is the
+        // recognizer's argument (an expression) and only the second binds — a
+        // distinction this resolution-free walk cannot make, so it must not
+        // collapse them. Across the alternatives the pairing is positional
+        // among that name's occurrences: right's 1st `x` denotes left's 1st,
+        // right's 2nd denotes left's 2nd (FCS-verified).
+        assert_eq!(
+            occurrences("(DivBy x x | DivBy x x)", BinderRole::Pattern),
+            ["x@7..8", "x@9..10", "x@19..20->7..8", "x@21..22->9..10"]
         );
     }
 

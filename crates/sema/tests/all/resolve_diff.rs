@@ -214,6 +214,12 @@ const CORPUS: &[&str] = &[
     // pattern span, which we do not model — an unmodelled-symbol gap, not an
     // or-pattern one. It is pinned FCS-free in `resolve_scoping.rs`.)
     "type T = A of int | B of int\nlet f = function A v | B v -> v\n",
+    // a parameterised active pattern inside an or-pattern puts two roles on one
+    // name within a single alternative: `DivBy x x`'s first `x` is the
+    // recognizer's *argument* (an expression seeing the enclosing parameter) and
+    // only the second binds. Canonicalisation pairs across the alternatives, so
+    // the second alternative's payload aliases the first's — never the argument.
+    "let (|DivBy|_|) divisor n = if n % divisor = 0 then Some n else None\nlet outer x n = match n with DivBy x x | DivBy x x -> x | _ -> 0\n",
     // a constructor-shaped head repeated across alternatives is **not** one
     // binding: `Red` names the union case on both sides, so each occurrence is an
     // independent *case reference* pointing at the case definition — the

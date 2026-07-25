@@ -165,6 +165,15 @@ impl<'a> Resolver<'a> {
                 // already bound (`let (A v | B v) = …`): one binding, so this
                 // occurrence is a *use* of it — no interning, no export, no second
                 // scope entry.
+                // An active-pattern *parameter* argument (`let (Scale divisor) =
+                // …`): the shape-keyed split (run by `resolve_pat_types` above) has
+                // resolved it as an expression and excluded its range. Skip it
+                // whichever kind it is — before the alias and `provisional`
+                // branches — leaving that expression resolution intact and no
+                // scope entry.
+                if self.excluded_param_ranges.contains(&pat_name.range()) {
+                    continue;
+                }
                 let def = match pat_name {
                     PatternName::Alias { range, binder } => {
                         if let Some(res) = aliases.resolution_of(binder) {
@@ -174,14 +183,6 @@ impl<'a> Resolver<'a> {
                     }
                     PatternName::Binder(def) => def,
                 };
-                // An active-pattern *parameter* argument (`let (Scale divisor) =
-                // …`): the shape-keyed split (run by `resolve_pat_types` above) has
-                // resolved it as an expression and excluded its fabricated binder
-                // range. Skip it — before the `provisional` branch — leaving no
-                // recorded self-resolution and no scope entry.
-                if self.excluded_param_ranges.contains(&def.range) {
-                    continue;
-                }
                 // Provisional maybe-var head (`None` in `let (x, None) = …`,
                 // `let f None = …`): a constructor-shaped head naming a known
                 // union case in scope is a case *reference*, so resolve it;
@@ -388,6 +389,11 @@ impl<'a> Resolver<'a> {
                 for pat_name in pattern_names(&head, BinderRole::Let) {
                     // An or-pattern alias (`let (A v | B v) = …`) is a use of the
                     // first alternative's binder, as in `prepare_binding`.
+                    // An active-pattern *parameter* argument: excluded whichever
+                    // kind it is, as in `prepare_binding`.
+                    if self.excluded_param_ranges.contains(&pat_name.range()) {
+                        continue;
+                    }
                     let def = match pat_name {
                         PatternName::Alias { range, binder } => {
                             if let Some(res) = aliases.resolution_of(binder) {
@@ -397,13 +403,6 @@ impl<'a> Resolver<'a> {
                         }
                         PatternName::Binder(def) => def,
                     };
-                    // An active-pattern *parameter* argument: the shape-keyed split
-                    // (run by `resolve_pat_types` above) has resolved it as an
-                    // expression and excluded its fabricated binder range. Skip it —
-                    // before the `provisional` branch — as in `prepare_binding`.
-                    if self.excluded_param_ranges.contains(&def.range) {
-                        continue;
-                    }
                     // Provisional maybe-var head (`None` in `let f None = …`):
                     // resolve a known union-case reference, else decline (drop),
                     // as in `prepare_binding`.

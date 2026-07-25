@@ -756,6 +756,16 @@ impl<'a> Resolver<'a> {
                 // already bound (`match … with A v | B v -> …`): one binding, so
                 // this occurrence is a *use* of it — no interning, no second scope
                 // entry (the canonical binder's entry already carries the name).
+                // An active-pattern *parameter* argument (`divisor` in `match n
+                // with DivBy divisor -> …`, and either `x` in `DivBy x x`): the
+                // shape-keyed split ([`Self::split_active_pattern_args`], run by
+                // `resolve_pat_types` just above) has already resolved it as an
+                // expression and excluded its range. Skip it whichever kind it
+                // is — before the alias and `provisional` branches — so nothing
+                // overwrites that expression resolution.
+                if self.excluded_param_ranges.contains(&pat_name.range()) {
+                    continue;
+                }
                 let def = match pat_name {
                     PatternName::Alias { range, binder } => {
                         if let Some(res) = aliases.resolution_of(binder) {
@@ -765,16 +775,6 @@ impl<'a> Resolver<'a> {
                     }
                     PatternName::Binder(def) => def,
                 };
-                // An active-pattern *parameter* argument (`divisor` in `match n
-                // with DivBy divisor -> …`): the shape-keyed split
-                // ([`Self::split_active_pattern_args`], run by `resolve_pat_types`
-                // just above) has already resolved it as an expression and excluded
-                // its fabricated binder range. Skip it — before the `provisional`
-                // branch, so a would-be provisional case-reference head is dropped
-                // too — leaving no recorded self-resolution and no scope entry.
-                if self.excluded_param_ranges.contains(&def.range) {
-                    continue;
-                }
                 // Provisional maybe-var head (`None` in `match … with None -> …`,
                 // `fun None -> …`): resolve a known union-case reference, else
                 // decline (drop). See the module-level "Provisional pattern
