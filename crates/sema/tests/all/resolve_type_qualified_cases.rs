@@ -2086,3 +2086,140 @@ fn an_inaccessible_same_file_type_still_yields_to_its_companion_module() {
         "binds the nearer companion value `let Red = 99`, not the outer union case"
     );
 }
+
+// ---- companion module beside the type (`type Kind` + `module Kind`) ----
+
+/// The three-file `WoofWare.Incremental` shape, reduced: an earlier file's
+/// namespace-level `type Kind` whose `ArrayFold` leaf collides with a
+/// `module ForAnalyzer`'s own `type Kind`, next to that type's companion
+/// `module Kind`.
+fn companion_project(companion_body: &str, probe_indent: &str, probe: &str) -> [String; 2] {
+    [
+        "namespace Lib\n\ntype Kind =\n    | ArrayFold\n    | Const\n".to_string(),
+        format!(
+            "namespace Lib\n\nmodule ForAnalyzer =\n    [<RequireQualifiedAccess>]\n    type Kind =\n        | ArrayFold\n        | Const\n\n{companion_body}{probe_indent}{probe}\n"
+        ),
+    ]
+}
+
+#[test]
+fn type_qualified_case_resolves_from_inside_the_companion_module() {
+    // FS0039: inside `module Kind`, the module's own name is not in scope as a
+    // head, so `Kind.ArrayFold` names the enclosing `type Kind`'s case — even
+    // though the module declares its own `ArrayFold` (FCS-probed). Falling
+    // through here bound the *earlier file*'s `Lib.Kind.ArrayFold`: a wrong
+    // go-to-definition, and the whole of `WoofWare.Incremental`'s corpus-diff
+    // divergence class.
+    let [src0, src1] = companion_project(
+        "    module Kind =\n        let ArrayFold = 99\n",
+        "        ",
+        "let probe = Kind.ArrayFold",
+    );
+    let proj = resolve_project(
+        &[impl_file(&src0), impl_file(&src1)],
+        &AssemblyEnv::default(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(nth(&src1, "Kind.ArrayFold", 0))
+        .expect("Kind.ArrayFold resolves");
+    let (file_idx, def) = proj.item_def(res).expect("resolves to an item");
+    assert_eq!(file_idx, 1, "the file's own case, not the earlier file's");
+    assert_eq!(
+        def.range,
+        nth(&src1, "ArrayFold", 0),
+        "→ ForAnalyzer.Kind's"
+    );
+    assert_eq!(def.kind, DefKind::UnionCase);
+}
+
+#[test]
+fn type_qualified_case_resolves_past_a_companion_module_without_the_case() {
+    // Beside the companion rather than inside it: the module provably lacks
+    // `ArrayFold`, so F# backtracks past it to the type (FCS-probed). The
+    // module-like shadow must be residual-aware, not blanket.
+    let [src0, src1] = companion_project(
+        "    module Kind =\n        let describe = 1\n",
+        "\n    ",
+        "let probe = Kind.ArrayFold",
+    );
+    let proj = resolve_project(
+        &[impl_file(&src0), impl_file(&src1)],
+        &AssemblyEnv::default(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(nth(&src1, "Kind.ArrayFold", 0))
+        .expect("Kind.ArrayFold resolves past the companion");
+    let (file_idx, def) = proj.item_def(res).expect("resolves to an item");
+    assert_eq!(file_idx, 1);
+    assert_eq!(def.range, nth(&src1, "ArrayFold", 0));
+}
+
+#[test]
+fn type_qualified_case_never_falls_through_to_an_earlier_files_same_leaf_case() {
+    // Soundness backstop, independent of whether the shadow is residual-aware:
+    // a companion module owning `ArrayFold` blocks the same-file case in
+    // *pattern* position (a value is no pattern constructor to us — see
+    // `companion_module_case_matrix`'s known gaps), and the cross-file index
+    // must not then commit the earlier file's same-written-path case. Defer.
+    let [src0, src1] = companion_project(
+        "    module Kind =\n        let ArrayFold = 99\n",
+        "\n    ",
+        "let probe x = match x with Kind.ArrayFold -> 1 | _ -> 0",
+    );
+    let proj = resolve_project(
+        &[impl_file(&src0), impl_file(&src1)],
+        &AssemblyEnv::default(),
+    );
+    match proj.file(1).resolution_at(nth(&src1, "Kind.ArrayFold", 0)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        other => panic!("must not commit the earlier file's case, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_companion_module_owning_the_residual_still_shadows_the_type() {
+    // The control the residual-awareness must not break: a companion module
+    // that *does* own `ArrayFold` wins the member access in expression
+    // position (FCS: `Lib.ForAnalyzer.KindModule.ArrayFold`), so the type's
+    // case must not be emitted.
+    let [src0, src1] = companion_project(
+        "    module Kind =\n        let ArrayFold = 99\n",
+        "\n    ",
+        "let probe = Kind.ArrayFold",
+    );
+    let proj = resolve_project(
+        &[impl_file(&src0), impl_file(&src1)],
+        &AssemblyEnv::default(),
+    );
+    let res = proj
+        .file(1)
+        .resolution_at(nth(&src1, "Kind.ArrayFold", 0))
+        .expect("Kind.ArrayFold resolves to the module's value");
+    let (file_idx, def) = proj.item_def(res).expect("resolves to an item");
+    assert_eq!(file_idx, 1);
+    assert_eq!(
+        def.range,
+        nth(&src1, "ArrayFold", 1),
+        "→ the companion module's let, not the type's case"
+    );
+}
+
+#[test]
+fn an_inner_type_without_the_case_still_resolves_to_an_earlier_file() {
+    // The boundary the same-file-rooted stop must not overshoot: when the
+    // innermost same-named type owns **no** such case, F# keeps searching
+    // outward and binds the earlier file's (FCS-probed). Only a same-file type
+    // that positively owns the case blocks the cross-file fall-through.
+    let src0 = "namespace Lib\ntype Color = Red | Blue\n";
+    let src1 = "namespace Lib\nmodule M =\n    type Color = Green\n    let x = Color.Red\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let res = proj
+        .file(1)
+        .resolution_at(nth(src1, "Color.Red", 0))
+        .expect("Color.Red resolves outward to the earlier file");
+    let (file_idx, def) = proj.item_def(res).expect("resolves to an item");
+    assert_eq!(file_idx, 0, "→ the earlier file's Color.Red");
+    assert_eq!(def.range, nth(src0, "Red", 0));
+}
