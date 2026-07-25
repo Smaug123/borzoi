@@ -573,7 +573,10 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   for a module (probed: the sig attribute fires over a bare
   implementation type), so the marker is contributed by the screen —
   `SigScreen::auto_open_type_containers` — not read off the
-  implementation's flag. Pinned by
+  implementation's flag, and collected inside
+  `collect_sig_container_exports`, the one place every container shape
+  (named header, namespace-direct module, headerless implicit filename
+  module) meets its decls, so no shape can be missed. Pinned by
   `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
   `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
   `a_signature_only_auto_open_type_blocks_the_fall_through`; swept

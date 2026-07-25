@@ -645,6 +645,7 @@ fn collect_sig_container_exports(
     access_floor: Option<usize>,
     defs: &mut Vec<Def>,
     exports: &mut Vec<model::SigExport>,
+    auto_open_type_containers: &mut Vec<Vec<String>>,
 ) {
     debug_assert!(
         access_floor.is_none_or(|f| f < container.len()),
@@ -703,6 +704,15 @@ fn collect_sig_container_exports(
             }
             SigDecl::Types(types) => {
                 for defn in types.defns() {
+                    // Report the container's `[<AutoOpen>]` types before any
+                    // `continue`: this is where *every* container shape — a
+                    // named `module M.N` header, a namespace-direct `module
+                    // N`, a headerless file's implicit filename module —
+                    // meets its decls, so no shape can be forgotten
+                    // ([`model::SigScreen::auto_open_type_containers`]).
+                    if attrs_auto_open(defn.attributes()) {
+                        auto_open_type_containers.push(container.to_vec());
+                    }
                     // Accessibility on the type or its representation
                     // (`type private T`, `type T = private | …`) is Stage 3:
                     // skip — the screen keeps the cases deferred.
@@ -808,10 +818,8 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         access_floor,
                         &mut defs,
                         &mut exports,
+                        &mut auto_open_type_containers,
                     );
-                    if sig_container_has_auto_open_type(fragment.sig_decls()) {
-                        auto_open_type_containers.push(path.clone());
-                    }
                     roots.push(model::SigRoot {
                         path,
                         auto_open: attrs_auto_open(fragment.attributes()),
@@ -824,9 +832,6 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                     .long_id()
                     .map(|li| li.idents().map(|t| id_text(t.text()).to_string()).collect())
                     .unwrap_or_default();
-                if sig_container_has_auto_open_type(fragment.sig_decls()) {
-                    auto_open_type_containers.push(ns.clone());
-                }
                 for decl in fragment.sig_decls() {
                     match decl {
                         SigDecl::NestedModule(nm) => {
@@ -847,13 +852,11 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                                 access_floor,
                                 &mut defs,
                                 &mut exports,
+                                &mut auto_open_type_containers,
                             );
                             let auto_open = attrs_auto_open(nm.attributes());
                             if auto_open {
                                 auto_open_nested.push(path.clone());
-                            }
-                            if sig_container_has_auto_open_type(nm.sig_decls()) {
-                                auto_open_type_containers.push(path.clone());
                             }
                             roots.push(model::SigRoot {
                                 path,
@@ -869,6 +872,12 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         // over-collected RQA case only defers more).
                         SigDecl::Types(types) => {
                             for defn in types.defns() {
+                                // A type declared *directly* under the
+                                // namespace has no container walker to report
+                                // it: the namespace itself is the container.
+                                if attrs_auto_open(defn.attributes()) {
+                                    auto_open_type_containers.push(ns.clone());
+                                }
                                 let case_idents: Vec<SyntaxToken> = match defn.repr() {
                                     Some(TypeDefnRepr::Union(u)) => {
                                         u.cases().filter_map(|c| c.ident()).collect()
@@ -937,6 +946,7 @@ fn signature_surface(sig: &SigFile, qnof: &QualifiedNameOfFile) -> SignatureSurf
                         None,
                         &mut defs,
                         &mut exports,
+                        &mut auto_open_type_containers,
                     );
                     roots.push(model::SigRoot {
                         path,
@@ -1919,22 +1929,6 @@ pub(crate) fn collect_nested_module_names(
 }
 
 /// Whether the attribute lists mark a module `[<AutoOpen>]`.
-/// Whether a signature container declares an `[<AutoOpen>]` **type**.
-///
-/// Opening such a container publishes the type's static members, and an
-/// abbreviation borrows them from the abbreviated type — names the `.fsi`
-/// text never mentions, so no screen bounds them
-/// ([`model::SigScreen::auto_open_type_containers`]). The signature's
-/// attribute is authoritative on its own (fsc-probed 2026-07-25: it fires
-/// with a bare implementation `type Alias = Target.T`), so this is read off
-/// the signature rather than the implementation's flag.
-fn sig_container_has_auto_open_type(mut decls: impl Iterator<Item = SigDecl>) -> bool {
-    decls.any(|decl| match decl {
-        SigDecl::Types(types) => types.defns().any(|defn| attrs_auto_open(defn.attributes())),
-        _ => false,
-    })
-}
-
 fn attrs_auto_open(attrs: impl Iterator<Item = AttributeList>) -> bool {
     attrs
         .flat_map(|list| list.attributes().collect::<Vec<_>>())
@@ -1953,6 +1947,65 @@ pub(crate) fn id_text(raw: &str) -> &str {
     raw.strip_prefix("``")
         .and_then(|s| s.strip_suffix("``"))
         .unwrap_or(raw)
+}
+
+#[cfg(test)]
+mod signature_surface_tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use borzoi_cst::parser::parse_sig;
+
+    /// Every signature *container* must declare its `[<AutoOpen>]` types to
+    /// the screen, whatever shape its header takes — a named `module M.N`, a
+    /// namespace-direct `module N`, or (here) the **implicit filename
+    /// module** of a headerless `.fsi`. Opening such a container publishes
+    /// the type's static members, which an abbreviation borrows from the
+    /// abbreviated type, so its hidden-value marker must stay
+    /// `HiddenNames::Borrowed` and the open-fold generation bump must not
+    /// move before the assembly fold (`ProjectItems::opaque_hidden_value_modules`).
+    ///
+    /// This shape is pinned on the screen directly rather than through an
+    /// FCS differential: the RefLib fixture declares no *root-level* module,
+    /// so an implicit filename module has nothing to collide with and the
+    /// behaviour has no observable use site. The collidable shapes are swept
+    /// in `auto_open_type_matrix_agrees_with_fcs`.
+    #[test]
+    fn every_container_shape_reports_its_auto_open_types() {
+        for (label, src, expected) in [
+            (
+                "headerless",
+                "[<AutoOpen>]\ntype Alias = Target.T\n",
+                vec!["Shared".to_string()],
+            ),
+            (
+                "named module",
+                "module ProbeNs.Shared\n\n[<AutoOpen>]\ntype Alias = Target.T\n",
+                vec!["ProbeNs".to_string(), "Shared".to_string()],
+            ),
+            (
+                "namespace-direct module",
+                "namespace ProbeNs\n\nmodule Shared =\n    [<AutoOpen>]\n    type Alias = Target.T\n",
+                vec!["ProbeNs".to_string(), "Shared".to_string()],
+            ),
+        ] {
+            let parsed = parse_sig(src);
+            assert!(parsed.errors.is_empty(), "{label}: {:?}", parsed.errors);
+            let sig = SigFile::cast(parsed.root).expect("signature file");
+            let qnof = crate::qualified_names(
+                &[SourceFile::Sig(sig.clone())],
+                &[PathBuf::from("/p/Shared.fsi")],
+            )
+            .pop()
+            .expect("one qnof");
+            let surface = signature_surface(&sig, &qnof);
+            assert!(
+                surface.screen.auto_open_type_containers.contains(&expected),
+                "{label}: {expected:?} missing from {:?}",
+                surface.screen.auto_open_type_containers
+            );
+        }
+    }
 }
 
 #[cfg(test)]

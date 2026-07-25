@@ -2992,9 +2992,14 @@ fn accessibility_matrix_agrees_with_fcs() {
 /// abbreviated type's statics / declared members, whose names *are* in the
 /// signature text) × where the `[<AutoOpen>]` **attribute** sits (signature
 /// only — authoritative on its own — implementation only, or both) × the
-/// referenced-assembly collision. Every cell is site-keyed against FCS with
-/// the same certain-implies-exact rule as the accessibility matrix: only the
-/// no-auto-open cells may commit the colliding assembly member.
+/// **container shape** (a named `module ProbeNs.Shared` header vs a
+/// namespace-direct `module Shared`, the two shapes that can collide with
+/// the RefLib; the headerless implicit filename module has no root-level
+/// assembly module to collide with, so it is pinned on the screen itself by
+/// `signature_surface_tests::every_container_shape_reports_its_auto_open_types`)
+/// × the referenced-assembly collision. Every cell is site-keyed against FCS
+/// with the same certain-implies-exact rule as the accessibility matrix:
+/// only the no-auto-open cells may commit the colliding assembly member.
 #[test]
 fn auto_open_type_matrix_agrees_with_fcs() {
     let reflib = ensure_reflib_built();
@@ -3021,76 +3026,93 @@ fn auto_open_type_matrix_agrees_with_fcs() {
             } else {
                 ""
             };
-            let (sig_src, impl_src) = match shape {
-                "none" => (
-                    "module ProbeNs.Shared\n\nval shown: int\n".to_string(),
-                    "module ProbeNs.Shared\n\nlet shown = 1\n".to_string(),
-                ),
-                "abbrev" => (
-                    format!("module ProbeNs.Shared\n\n{sig_attr}type Alias = Target.T\n"),
-                    format!("module ProbeNs.Shared\n\n{impl_attr}type Alias = Target.T\n"),
-                ),
-                _ => (
-                    format!(
-                        "module ProbeNs.Shared\n\n{sig_attr}type Helper =\n    static member asmOnly: string\n"
-                    ),
-                    format!(
-                        "module ProbeNs.Shared\n\n{impl_attr}type Helper =\n    static member asmOnly = \"from-helper\"\n"
-                    ),
-                ),
-            };
-            for collision in [false, true] {
-                let files: Vec<(&str, &str)> = vec![
-                    ("Target.fs", target),
-                    ("A.fsi", sig_src.as_str()),
-                    ("A.fs", impl_src.as_str()),
-                    (
-                        "Use.fs",
-                        "module Use\n\nopen ProbeNs.Shared\n\nlet v = asmOnly\n",
-                    ),
-                ];
-                let label = format!(
-                    "sig3ao_{shape}_{placement}_{}",
-                    if collision { "coll" } else { "nocoll" }
-                );
-                let (root, written) = temp_fs_tree(&label, &files);
-                let paths: Vec<&Path> = written.iter().map(|(path, _)| path.as_path()).collect();
-                let refs: Vec<&Path> = if collision { vec![reflib] } else { vec![] };
-                let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
-                let fcs_files = parse_fcs_uses_project(&json, &written);
-
-                let srcs: Vec<SourceFile> = files
-                    .iter()
-                    .map(|(rel, src)| source_file(rel, src))
-                    .collect();
-                let full_paths: Vec<PathBuf> =
-                    written.iter().map(|(path, _)| path.clone()).collect();
-                let qnofs = qualified_names(&srcs, &full_paths);
-                let input: Vec<ProjectFile> = srcs
-                    .into_iter()
-                    .zip(qnofs)
-                    .map(|(file, qnof)| ProjectFile::new(file, qnof))
-                    .collect();
-                let env = if collision {
-                    reflib_env()
-                } else {
-                    AssemblyEnv::default()
-                };
-                let proj = resolve_project_files(&input, &env);
-                let _ = std::fs::remove_dir_all(&root);
-
-                let what = format!("{label}: Use.fs");
-                match site_verdict_vs_fcs(&proj, &fcs_files, &written, 3, "asmOnly", &what) {
-                    SiteVerdict::SigCommit => sig_commits += 1,
-                    SiteVerdict::AssemblyCommit => {
-                        assert_eq!(
-                            shape, "none",
-                            "{what}: an auto-open type publishes names the signature does not \
-                             bound, so the assembly member must not win here"
-                        );
-                        assembly_commits += 1;
+            for container in ["named", "nsdirect"] {
+                // The same container path, `ProbeNs.Shared`, reached two ways.
+                let body = |attr: &str, decls: &str| -> String {
+                    let indented: String =
+                        decls.lines().map(|line| format!("    {line}\n")).collect();
+                    let attr_line = if attr.is_empty() {
+                        String::new()
+                    } else {
+                        "    [<AutoOpen>]\n".to_string()
+                    };
+                    if container == "named" {
+                        format!("module ProbeNs.Shared\n\n{attr}{decls}")
+                    } else {
+                        format!("namespace ProbeNs\n\nmodule Shared =\n{attr_line}{indented}")
                     }
-                    SiteVerdict::Defer => deferrals += 1,
+                };
+                let (sig_src, impl_src) = match shape {
+                    "none" => (body("", "val shown: int\n"), body("", "let shown = 1\n")),
+                    "abbrev" => (
+                        body(sig_attr, "type Alias = Target.T\n"),
+                        body(impl_attr, "type Alias = Target.T\n"),
+                    ),
+                    _ => (
+                        body(
+                            sig_attr,
+                            "type Helper =\n    static member asmOnly: string\n",
+                        ),
+                        body(
+                            impl_attr,
+                            "type Helper =\n    static member asmOnly = \"from-helper\"\n",
+                        ),
+                    ),
+                };
+                for collision in [false, true] {
+                    let files: Vec<(&str, &str)> = vec![
+                        ("Target.fs", target),
+                        ("A.fsi", sig_src.as_str()),
+                        ("A.fs", impl_src.as_str()),
+                        (
+                            "Use.fs",
+                            "module Use\n\nopen ProbeNs.Shared\n\nlet v = asmOnly\n",
+                        ),
+                    ];
+                    let label = format!(
+                        "sig3ao_{shape}_{placement}_{container}_{}",
+                        if collision { "coll" } else { "nocoll" }
+                    );
+                    let (root, written) = temp_fs_tree(&label, &files);
+                    let paths: Vec<&Path> =
+                        written.iter().map(|(path, _)| path.as_path()).collect();
+                    let refs: Vec<&Path> = if collision { vec![reflib] } else { vec![] };
+                    let json = invoke_fcs_dump_project_with_refs(&paths, &refs);
+                    let fcs_files = parse_fcs_uses_project(&json, &written);
+
+                    let srcs: Vec<SourceFile> = files
+                        .iter()
+                        .map(|(rel, src)| source_file(rel, src))
+                        .collect();
+                    let full_paths: Vec<PathBuf> =
+                        written.iter().map(|(path, _)| path.clone()).collect();
+                    let qnofs = qualified_names(&srcs, &full_paths);
+                    let input: Vec<ProjectFile> = srcs
+                        .into_iter()
+                        .zip(qnofs)
+                        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                        .collect();
+                    let env = if collision {
+                        reflib_env()
+                    } else {
+                        AssemblyEnv::default()
+                    };
+                    let proj = resolve_project_files(&input, &env);
+                    let _ = std::fs::remove_dir_all(&root);
+
+                    let what = format!("{label}: Use.fs");
+                    match site_verdict_vs_fcs(&proj, &fcs_files, &written, 3, "asmOnly", &what) {
+                        SiteVerdict::SigCommit => sig_commits += 1,
+                        SiteVerdict::AssemblyCommit => {
+                            assert_eq!(
+                                shape, "none",
+                                "{what}: an auto-open type publishes names the signature does not \
+                             bound, so the assembly member must not win here"
+                            );
+                            assembly_commits += 1;
+                        }
+                        SiteVerdict::Defer => deferrals += 1,
+                    }
                 }
             }
         }
@@ -3104,8 +3126,8 @@ fn auto_open_type_matrix_agrees_with_fcs() {
          {deferrals} deferrals"
     );
     assert!(
-        assembly_commits >= 1,
+        assembly_commits >= 2,
         "assembly commits: {assembly_commits}"
     );
-    assert!(deferrals >= 12, "deferrals: {deferrals}");
+    assert!(deferrals >= 24, "deferrals: {deferrals}");
 }
