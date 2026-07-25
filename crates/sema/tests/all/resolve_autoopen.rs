@@ -673,6 +673,286 @@ fn manifest_auto_open_module_path_is_skipped_conservatively() {
 }
 
 #[test]
+fn manifest_auto_open_module_nested_type_defers_a_bare_type_annotation() {
+    // `SemaAutoOpen.DirectOps` — a MODULE named by an assembly-level
+    // AutoOpen — declares a nested `type DirectShadow`, and the fixture's
+    // GLOBAL namespace declares a decoy of the same name. FCS opens the
+    // module, and that open outranks the root tier: bare `DirectShadow`
+    // binds `SemaAutoOpen.DirectOps.DirectShadow`, not the root decoy
+    // (fsi-verified in both type and expression position). Sema keeps the
+    // module surface out of its prefix walk, so committing the root decoy
+    // — what the walk finds — would be a wrong go-to-definition. The sound
+    // verdict is a shadowable deferral.
+    let env = fixture_env();
+    let src = "let f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root_decoy = env
+        .lookup_type(&[], "DirectShadow", 0)
+        .expect("fixture must declare a global-namespace DirectShadow decoy");
+    let got = rf.resolution_at(at(src, "DirectShadow"));
+    assert_ne!(
+        got,
+        Some(Resolution::Entity(root_decoy)),
+        "FCS binds the auto-opened module's DirectShadow — the root decoy is a wrong target"
+    );
+    assert_eq!(
+        got,
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "a name the manifest module-shaped AutoOpen could supply must defer shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_nested_type_defers_without_a_decoy() {
+    // The decoy-free twin: `DirectOnly` exists ONLY as a nested type of the
+    // auto-opened module. FCS resolves it there (fsi-verified), so the
+    // verdict must be a shadowable deferral — a clean no-match would tell
+    // consumers "no shadow possible", which is false.
+    let env = fixture_env();
+    let src = "let f (x: DirectOnly) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectOnly")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an auto-opened module's nested type must mark the bare annotation shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_nested_module_defers_a_dotted_head() {
+    // The dotted-head shape: `DirectOps` also nests a `module DirectSub`,
+    // bare-visible through the manifest open, so `DirectSub.DirectSubT`
+    // roots there in FCS (fsi-verified) — not at the fixture's same-named
+    // global-namespace module. Neither segment may commit the decoy path;
+    // a multi-segment deferral records nothing.
+    let env = fixture_env();
+    let src = "let f (x: DirectSub.DirectSubT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSub")),
+        None,
+        "the head must not commit the global-namespace DirectSub"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSubT")),
+        None,
+        "the leaf must not commit the global-namespace DirectSub.DirectSubT"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_transitive_auto_open_nested_type_defers() {
+    // FCS opens `[<AutoOpen>]` submodules recursively with their parent, so
+    // `DirectOps.DirectAuto`'s nested `DirectAutoT` is bare-visible too
+    // (fsi-verified) — the imported-surface walk must descend through the
+    // auto-open child and defer the name.
+    let env = fixture_env();
+    let src = "let f (x: DirectAutoT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectAutoT")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "a transitively auto-opened nested type must mark the bare annotation shadowable"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_private_nested_type_does_not_veto() {
+    // `DirectOps` also nests a PRIVATE `DirectPrivate`, never importable
+    // cross-assembly: FCS binds the same-named global-namespace decoy
+    // (fsi-verified), so the shadow surface must not count the private child
+    // — the root commitment stands. This is the shape that matters at scale:
+    // FSharp.Core's auto-open modules are full of private compiler-generated
+    // closure classes (codex review of this change).
+    let env = fixture_env();
+    let src = "let f (x: DirectPrivate) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectPrivate", 0)
+        .expect("fixture must declare a global-namespace DirectPrivate");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectPrivate")),
+        Some(Resolution::Entity(root)),
+        "a private nested type is not imported — the global-namespace type must commit"
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_plain_submodule_contents_do_not_veto_bare_use() {
+    // `DirectSub` is NOT `[<AutoOpen>]`, so opening `DirectOps` makes it a
+    // dotted head but does not import its contents: bare `DirectSubT` is
+    // FS0039 in FCS (fsi-verified). Nothing else declares the name, so the
+    // sound verdict is a clean no-match (nothing recorded) — a whole-tree
+    // scan would have deferred it.
+    let env = fixture_env();
+    let src = "let f (x: DirectSubT) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectSubT")),
+        None,
+        "a plain submodule's nested type is not bare-visible — no shadow, no record"
+    );
+}
+
+#[test]
+fn an_explicit_open_outranks_the_manifest_module_surface() {
+    // The manifest open is applied at file start; an explicit source `open`
+    // comes later, and F# is latest-open-wins — so after
+    // `open SemaAutoOpen.ExplicitBeats`, bare `DirectShadow` binds THAT
+    // namespace's type, not the auto-opened module's nested one
+    // (fsi-verified). A complete explicit-open reading must therefore
+    // commit, not defer (codex P2 on this change).
+    let env = fixture_env();
+    let src = "open SemaAutoOpen.ExplicitBeats\nlet f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    let expected = env
+        .lookup_type(
+            &["SemaAutoOpen".into(), "ExplicitBeats".into()],
+            "DirectShadow",
+            0,
+        )
+        .expect("fixture must declare SemaAutoOpen.ExplicitBeats.DirectShadow");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectShadow")),
+        Some(Resolution::Entity(expected)),
+        "a complete explicit-open reading outranks the manifest module surface"
+    );
+}
+
+#[test]
+fn a_module_only_surface_match_does_not_veto_a_single_segment_type_path() {
+    // `DirectOps` nests a MODULE `DirectHeadOnly` and no type of that name:
+    // a module cannot bind type position, so FCS falls through to the
+    // global-namespace `type DirectHeadOnly` (fsi-verified). The surface
+    // match must be kind-aware — a module-only hit vetoes a dotted head,
+    // never a single-segment type annotation (codex P2 on this change).
+    let env = fixture_env();
+    let src = "let f (x: DirectHeadOnly) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectHeadOnly", 0)
+        .expect("fixture must declare a global-namespace DirectHeadOnly type");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectHeadOnly")),
+        Some(Resolution::Entity(root)),
+        "a module-only surface match must not defer a single-segment type annotation"
+    );
+}
+
+#[test]
+fn an_arity_mismatched_surface_type_does_not_veto_a_bare_annotation() {
+    // `DirectOps` nests `DirectArity<'T>`; the global namespace declares a
+    // NON-generic `DirectArity`. FCS keys the bare-annotation lookup on
+    // arity, so `x: DirectArity` falls through to the global type
+    // (fsi-verified) — the surface match must compare the written arity
+    // (codex P2, round 4).
+    let env = fixture_env();
+    let src = "let f (x: DirectArity) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "DirectArity", 0)
+        .expect("fixture must declare a global-namespace DirectArity");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectArity")),
+        Some(Resolution::Entity(root)),
+        "an arity-mismatched surface type must not defer the bare annotation"
+    );
+}
+
+#[test]
+fn an_arity_matched_surface_type_still_defers_the_applied_annotation() {
+    // The control: `x: DirectArity<int>` matches the surface type's arity,
+    // and FCS binds the auto-opened `DirectOps.DirectArity<'T>` over any
+    // lower tier (fsi-verified) — the written arity 1 must defer.
+    let env = fixture_env();
+    let src = "let f (x: DirectArity<int>) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectArity")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "an arity-matched surface type must still defer the applied annotation"
+    );
+}
+
+#[test]
+fn an_internal_manifest_target_does_not_veto() {
+    // `[<assembly: AutoOpen("SemaAutoOpen.InternalTarget")>]` names an
+    // INTERNAL module: FCS does not import its surface cross-assembly, so a
+    // bare `InternalShadow` binds the global-namespace decoy (fsi-verified)
+    // — the veto must ignore the inaccessible target (codex P2, round 5).
+    let env = fixture_env();
+    let src = "let f (x: InternalShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "InternalShadow", 0)
+        .expect("fixture must declare a global-namespace InternalShadow");
+    assert_eq!(
+        rf.resolution_at(at(src, "InternalShadow")),
+        Some(Resolution::Entity(root)),
+        "an internal manifest target's surface must not defer the global decoy"
+    );
+}
+
+#[test]
+fn a_generic_surface_type_does_not_veto_a_dotted_head_at_arity_zero() {
+    // The surface's `DirectGenHead<'T>` is generic; a dotted head is keyed
+    // at arity 0, so FCS skips it and `DirectGenHead.Nested` binds the
+    // global module's nested type (fsi-verified) — a dotted head's type
+    // match must be arity-0-keyed (codex P2, round 5). Only the head is
+    // asserted committed: the nested-type tail is recorded at its own
+    // segment by the same walk.
+    let env = fixture_env();
+    let src = "let f (x: DirectGenHead.Nested) = x\n";
+    let rf = resolve(src, &env);
+    let root_module = env
+        .lookup_type(&[], "DirectGenHead", 0)
+        .expect("fixture must declare a global-namespace DirectGenHead module");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectGenHead")),
+        Some(Resolution::Entity(root_module)),
+        "an arity-1 surface type must not defer a dotted head keyed at arity 0"
+    );
+}
+
+#[test]
+fn a_wrong_arity_surface_type_defers_a_bare_annotation_with_no_exact_arity_type() {
+    // FCS's arity preference is a FALLBACK, not a filter: bare
+    // `DirectGenHead` has no arity-0 type anywhere (the global decoy of
+    // that name is a MODULE), so FCS binds the surface's generic
+    // `DirectGenHead<'T>` with an arity error — the sweep caught the
+    // arity-narrowed veto committing the global module here (a wrong
+    // target). With the surface holding the name at a different arity, a
+    // commitment is trustworthy only for an exact-arity type; anything
+    // else defers.
+    let env = fixture_env();
+    let src = "let f (x: DirectGenHead) = x\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectGenHead")),
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "with no exact-arity type, FCS falls back to the surface generic — defer"
+    );
+}
+
+#[test]
+fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
+    // Over-defer control: `GlobalPlain` appears in no auto-open module's
+    // tree, so the manifest-module shadow check must not touch it — it keeps
+    // resolving through the root tier as any `namespace global` type does.
+    let env = fixture_env();
+    let src = "let f (x: GlobalPlain) = x\n";
+    let rf = resolve(src, &env);
+    let expected = env
+        .lookup_type(&[], "GlobalPlain", 0)
+        .expect("fixture must declare a global-namespace GlobalPlain");
+    assert_eq!(
+        rf.resolution_at(at(src, "GlobalPlain")),
+        Some(Resolution::Entity(expected)),
+        "a root type no auto-open module names must keep resolving"
+    );
+}
+
+#[test]
 fn contested_manifest_namespace_defers_instead_of_wrongly_resolving() {
     // The fsi-verified shape behind the contested-namespace drop (codex P2,
     // round 3): FCS opens the CONTRIBUTING assembly's namespace entity only,
