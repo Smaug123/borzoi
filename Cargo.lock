@@ -163,6 +163,7 @@ dependencies = [
  "borzoi-msbuild",
  "borzoi-sema",
  "borzoi-spawn",
+ "borzoi-stats",
  "lsp-types",
  "rowan",
  "serde",

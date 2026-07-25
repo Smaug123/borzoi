@@ -10,7 +10,10 @@ use sha1::{Digest, Sha1};
 
 const OBSERVATION_SCHEMA_VERSION: u32 = 1;
 const GENERATOR_SCHEMA_VERSION: u32 = 1;
-const FSHARP_CORPUS_SOURCE: &str = "dotnet/fsharp";
+const PROJECT_CORPUS_SCHEMA_VERSION: u32 = 1;
+/// The pinned F# compiler source tree the per-file sweeps walk, identified by
+/// its own commit. Also [`RecordInput`]'s default corpus source.
+pub const FSHARP_CORPUS_SOURCE: &str = "dotnet/fsharp";
 const INDEX_HTML: &str = include_str!("site/index.html");
 
 #[derive(Debug, Clone)]
@@ -23,6 +26,10 @@ pub struct RecordInput {
     pub run_id: u64,
     pub run_number: u64,
     pub run_attempt: u32,
+    /// Which corpus this measurement walked, as `OWNER/NAME`. A measurement
+    /// walks one corpus, and the series key already separates measurements, so
+    /// the source itself does not enter the series digest — the revision does.
+    pub corpus_source: String,
     pub corpus_revision: String,
     pub flake_lock_hash: String,
 }
@@ -129,7 +136,7 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
             ),
         },
         corpus: Corpus {
-            source: FSHARP_CORPUS_SOURCE.to_string(),
+            source: input.corpus_source.clone(),
             revision: input.corpus_revision.clone(),
         },
         flake_lock_hash: input.flake_lock_hash.clone(),
@@ -175,6 +182,229 @@ pub fn build_site(history: &Path, output: &Path) -> Result<usize, StatsError> {
     Ok(observations.len())
 }
 
+/// One project of the pinned project corpus: a repository at an exact
+/// revision, and the `.fsproj` within it to measure.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedProject {
+    /// `OWNER/REPO` on GitHub.
+    pub repository: String,
+    /// The exact commit to check out. A branch or tag would let the corpus
+    /// drift under a series that claims to be comparable.
+    pub revision: String,
+    /// The `.fsproj` to measure, relative to the repository root.
+    pub project: String,
+}
+
+/// The pinned corpus of real F# projects the project-resolution differential
+/// measures. Read from `nix/project-corpus.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectCorpus {
+    pub schema_version: u32,
+    pub projects: Vec<PinnedProject>,
+}
+
+impl ProjectCorpus {
+    /// The corpus revision to record this corpus under: a digest over every
+    /// pin, so a bumped revision, an added project, or a dropped one all start
+    /// a new comparable series. Order in the file is not part of the identity —
+    /// the runner's counts are aggregates — so the pins are digested sorted.
+    ///
+    /// 40 hex characters, matching the shape [`RecordInput::corpus_revision`]
+    /// takes for a single-repository corpus.
+    ///
+    /// The digest is taken over each pin's *identity*, not its text, so that
+    /// re-spelling a pin without changing what it points at leaves the series
+    /// intact: re-casing a repository name checks out the same code, and a
+    /// digest that moved would restart the dashboard's trend for no reason.
+    /// Validation has already rejected the spellings that cannot be
+    /// canonicalised this way — revisions must be lowercase — so this and the
+    /// corpus validator agree on what "the same pin" means.
+    pub fn revision(&self) -> String {
+        let mut pins: Vec<(String, &str, &str)> = self
+            .projects
+            .iter()
+            .map(|pin| {
+                (
+                    repository_identity(&pin.repository),
+                    pin.revision.as_str(),
+                    pin.project.as_str(),
+                )
+            })
+            .collect();
+        pins.sort();
+        let mut hash = Sha1::new();
+        hash.update(b"borzoi-project-corpus\0");
+        hash.update(self.schema_version.to_string().as_bytes());
+        for (repository, revision, project) in pins {
+            for field in [repository.as_str(), revision, project] {
+                hash.update(b"\0");
+                hash.update(field.as_bytes());
+            }
+        }
+        format!("{:x}", hash.finalize())
+    }
+}
+
+/// Read and validate the pinned project corpus.
+pub fn read_project_corpus(path: &Path) -> Result<ProjectCorpus, StatsError> {
+    let corpus: ProjectCorpus = read_json(path)?;
+    validate_project_corpus(&corpus)?;
+    Ok(corpus)
+}
+
+fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
+    if corpus.schema_version != PROJECT_CORPUS_SCHEMA_VERSION {
+        return invalid(format!(
+            "unsupported project corpus schema version {} (expected {PROJECT_CORPUS_SCHEMA_VERSION})",
+            corpus.schema_version
+        ));
+    }
+    if corpus.projects.is_empty() {
+        return invalid("project corpus must pin at least one project");
+    }
+    let mut seen: std::collections::BTreeMap<String, (&String, &String)> =
+        std::collections::BTreeMap::new();
+    for pin in &corpus.projects {
+        if !valid_repository(&pin.repository) {
+            return invalid(format!(
+                "project corpus repository must be OWNER/REPO with path-safe components, got {:?}",
+                pin.repository
+            ));
+        }
+        // `owner/repo` and `owner/repo.git` clone the same repository, but the
+        // duplicate and revision checks below compare these strings literally,
+        // so both spellings survive as separate pins, get separate checkout
+        // directories, and measure one project twice — doubling every count it
+        // contributes while the workflow's comparable-count assertion still
+        // passes. GitHub repository names cannot end in `.git`, so refusing
+        // costs nothing.
+        if pin.repository.ends_with(".git") {
+            return invalid(format!(
+                "project corpus repository must not carry a `.git` suffix, which aliases the \
+                 same repository under a second spelling, got {:?}",
+                pin.repository
+            ));
+        }
+        validate_hex("project corpus revision", &pin.revision, 40)?;
+        // Git resolves an uppercase object ID to the same commit, so two
+        // casings of one revision check out identical code — but
+        // `ProjectCorpus::revision` hashes the text, so they would produce
+        // different digests and split one corpus across two series. Requiring
+        // lowercase is the *only* spelling rather than folding it, so the file
+        // and the digest agree by construction.
+        if pin.revision.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            return invalid(format!(
+                "project corpus revision must be lowercase hexadecimal, got {:?}",
+                pin.revision
+            ));
+        }
+        if !valid_relative_project_path(&pin.project) {
+            return invalid(format!(
+                "project corpus project must be a relative `.fsproj` path in its only spelling \
+                 (no `.` or `..` components, no whitespace, no path-list separator), got {:?}",
+                pin.project
+            ));
+        }
+        // One checkout per repository, so two revisions of it cannot both be
+        // measured; and one measurement per project, so nothing double-counts.
+        //
+        // Both comparisons are by *identity*, not by text, because the corpus
+        // is keyed on things that alias. See `repository_identity`.
+        let identity = repository_identity(&pin.repository);
+        if let Some((existing_repository, existing_revision)) =
+            seen.insert(identity.clone(), (&pin.repository, &pin.revision))
+        {
+            if existing_revision != &pin.revision {
+                return invalid(format!(
+                    "project corpus pins {} at two revisions ({existing_revision} and {})",
+                    pin.repository, pin.revision
+                ));
+            }
+            if existing_repository != &pin.repository {
+                return invalid(format!(
+                    "project corpus spells one repository two ways ({existing_repository} and \
+                     {}); GitHub resolves both to the same repository, so it would be cloned \
+                     and measured twice",
+                    pin.repository
+                ));
+            }
+        }
+        if corpus
+            .projects
+            .iter()
+            .filter(|other| {
+                repository_identity(&other.repository) == identity && other.project == pin.project
+            })
+            .count()
+            > 1
+        {
+            return invalid(format!(
+                "project corpus pins {}/{} more than once",
+                pin.repository, pin.project
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The identity two pins are the *same repository* under.
+///
+/// Every check in this module compares pins to catch a project being measured
+/// twice, and a comparison is only as good as the identity it uses. GitHub
+/// resolves owner and repository names case-insensitively, so
+/// `Smaug123/WoofWare.Expect` and `smaug123/woofware.expect` are one
+/// repository that a literal comparison sees as two — and the workflow would
+/// clone both, into two directories that a case-sensitive Linux filesystem
+/// keeps happily distinct, and count the project twice while the job's
+/// comparable-count assertion still passed.
+///
+/// ASCII case folding is *complete* here rather than one more entry on a list
+/// of forbidden spellings: [`valid_repo_component`] admits only ASCII
+/// alphanumerics, `-`, `_` and `.`, so ASCII lowercasing is the whole of the
+/// case equivalence and no further alias exists to discover.
+///
+/// The project path is deliberately **not** folded: it names a file on the
+/// runner's case-sensitive filesystem, where `A/B.fsproj` and `A/b.fsproj`
+/// really are different files.
+fn repository_identity(repository: &str) -> String {
+    repository.to_ascii_lowercase()
+}
+
+/// A repository-relative `.fsproj` path that cannot escape its checkout. The
+/// workflow interpolates this into a shell path, so it must also be free of
+/// whitespace and of the tab the plan output uses as its separator.
+///
+/// The path must additionally be in its *only* spelling, because duplicate
+/// detection compares these strings literally: `A/B.fsproj` and `A/./B.fsproj`
+/// name one file but survive as two pins, and the runner would then visit that
+/// project twice and double every count it contributes — a corrupted series
+/// reported as a healthy one. Traversal components are therefore rejected
+/// rather than normalised: no pin has any reason to contain one, so refusing
+/// is both simpler and louder than rewriting.
+///
+/// It must also survive the journey to the runner intact. The workflow joins
+/// these paths with the platform path-list separator and
+/// `BORZOI_PROJECT_LIST` splits them with [`std::env::split_paths`], so a path
+/// containing `:` — legal on Linux — would arrive as two nonexistent
+/// fragments. Both separators are refused, not just the host's, since the pin
+/// file is read on whichever machine runs the measurement.
+fn valid_relative_project_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.ends_with(".fsproj")
+        && !value.starts_with('/')
+        && !value.contains('\\')
+        && !value.contains("//")
+        && !value.contains(':')
+        && !value.contains(';')
+        && !value.bytes().any(|byte| byte.is_ascii_whitespace())
+        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && value
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
 fn validate_record_input(input: &RecordInput) -> Result<(), StatsError> {
     validate_provenance(Provenance {
         repository: &input.repository,
@@ -182,6 +412,7 @@ fn validate_record_input(input: &RecordInput) -> Result<(), StatsError> {
         measured_at: &input.measured_at,
         run_id: input.run_id,
         run_attempt: input.run_attempt,
+        corpus_source: &input.corpus_source,
         corpus_revision: &input.corpus_revision,
         flake_lock_hash: &input.flake_lock_hash,
     })?;
@@ -197,6 +428,7 @@ struct Provenance<'a> {
     measured_at: &'a str,
     run_id: u64,
     run_attempt: u32,
+    corpus_source: &'a str,
     corpus_revision: &'a str,
     flake_lock_hash: &'a str,
 }
@@ -206,6 +438,12 @@ fn validate_provenance(provenance: Provenance<'_>) -> Result<(), StatsError> {
         return invalid(format!(
             "repository must be OWNER/REPO with path-safe components, got {:?}",
             provenance.repository
+        ));
+    }
+    if !valid_repository(provenance.corpus_source) {
+        return invalid(format!(
+            "corpus source must be OWNER/NAME with path-safe components, got {:?}",
+            provenance.corpus_source
         ));
     }
     validate_hex("commit", provenance.commit, 40)?;
@@ -267,6 +505,7 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
         measured_at: &observation.measured_at,
         run_id: observation.workflow.run_id,
         run_attempt: observation.workflow.run_attempt,
+        corpus_source: &observation.corpus.source,
         corpus_revision: &observation.corpus.revision,
         flake_lock_hash: &observation.flake_lock_hash,
     })?;
@@ -274,12 +513,6 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
         return invalid("workflow run number must be non-zero");
     }
     validate_generator(&observation.generator)?;
-    if observation.corpus.source != FSHARP_CORPUS_SOURCE {
-        return invalid(format!(
-            "unsupported corpus source {:?}",
-            observation.corpus.source
-        ));
-    }
     let expected_url = format!(
         "https://github.com/{}/actions/runs/{}",
         observation.repository, observation.workflow.run_id
@@ -315,6 +548,11 @@ fn observation_order(a: &Observation, b: &Observation) -> std::cmp::Ordering {
     .then(a.commit.cmp(&b.commit))
 }
 
+/// The identity of a comparable series. The corpus *source* is deliberately
+/// absent: a measurement walks exactly one corpus, and the measurement name is
+/// already digested, so two sources cannot meet inside one series. Adding it
+/// would also renumber every series already published to `stats-data`, and
+/// [`validate_observation`] recomputes this key over historical observations.
 fn series_key(
     generator: &GeneratorSummary,
     corpus_revision: &str,
@@ -374,8 +612,12 @@ fn valid_repository(value: &str) -> bool {
     parts.next().is_none() && valid_repo_component(owner) && valid_repo_component(repo)
 }
 
+/// A dot is legal inside a name (`WoofWare.PawPrint`), so an all-dots
+/// component is the one shape to exclude: `.` and `..` traverse rather than
+/// name, and these components reach both a URL and a directory path.
 fn valid_repo_component(value: &str) -> bool {
     !value.is_empty()
+        && value.bytes().any(|byte| byte != b'.')
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))

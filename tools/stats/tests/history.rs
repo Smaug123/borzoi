@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use borzoi_stats::{RecordInput, build_site, record_observation};
+use borzoi_stats::{RecordInput, build_site, read_project_corpus, record_observation};
 use serde_json::{Value, json};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -304,6 +304,242 @@ fn site_rejects_a_symlinked_history_or_observations_root() {
     }
 }
 
+/// A second corpus files, plots and validates alongside the F# one, and its
+/// source is carried through to the observation. The dashboard separates the
+/// two by measurement and series, so nothing has to know the source exists.
+#[test]
+fn a_measurement_over_another_corpus_records_and_validates() {
+    let temp = tempfile::tempdir().unwrap();
+    let summary = write_summary(temp.path(), "project-corpus-diff", json!({ "stride": 1 }));
+    let mut input = input(temp.path(), summary);
+    input.corpus_source = "Smaug123/borzoi-project-corpus".into();
+    input.corpus_revision = "1111111111111111111111111111111111111111".into();
+
+    let recorded = record_observation(&input).expect("record project-corpus observation");
+    let json: Value = serde_json::from_str(&fs::read_to_string(&recorded).unwrap()).unwrap();
+    assert_eq!(json["corpus"]["source"], "Smaug123/borzoi-project-corpus");
+    assert_eq!(
+        json["corpus"]["revision"],
+        "1111111111111111111111111111111111111111"
+    );
+
+    // The F# measurements still record, and `site` validates the mixed history.
+    let fsharp = write_summary(temp.path(), "parser-divergence", json!({}));
+    record_observation(&self::input(temp.path(), fsharp)).expect("record fsharp observation");
+    let count = build_site(&temp.path().join("history"), &temp.path().join("site"))
+        .expect("site over a mixed-corpus history");
+    assert_eq!(count, 2);
+
+    let mut unsafe_source = input.clone();
+    unsafe_source.corpus_source = "../escape".into();
+    let err = record_observation(&unsafe_source).unwrap_err().to_string();
+    assert!(err.contains("corpus source"), "{err}");
+}
+
+#[test]
+fn the_corpus_digest_covers_every_pin_but_not_their_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let one = pin("Smaug123/A", &"a".repeat(40), "A/A.fsproj");
+    let two = pin("Smaug123/B", &"b".repeat(40), "B/B.fsproj");
+
+    let forwards = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [one.clone(), two.clone()] }),
+    ))
+    .expect("valid corpus");
+    let backwards = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [two.clone(), one.clone()] }),
+    ))
+    .expect("valid corpus");
+    let digest = forwards.revision();
+    assert_eq!(digest.len(), 40, "{digest}");
+    assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(digest, backwards.revision());
+
+    // Every field is part of the identity: a bumped revision, a different
+    // project in the same repository, and an added or dropped pin must each
+    // start a new series rather than silently joining the old one.
+    for changed in [
+        json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"c".repeat(40), "A/A.fsproj"), two.clone()] }),
+        json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/Other.fsproj"), two.clone()] }),
+        json!({ "schema_version": 1, "projects": [one.clone()] }),
+        json!({ "schema_version": 1, "projects": [one.clone(), two.clone(), pin("Smaug123/C", &"c".repeat(40), "C/C.fsproj")] }),
+    ] {
+        let other = read_project_corpus(&write_corpus(temp.path(), changed)).expect("valid corpus");
+        assert_ne!(digest, other.revision());
+    }
+
+    // Re-spelling a pin without changing what it points at must leave the
+    // series intact. A repository name re-cased checks out identical code, so
+    // a digest that moved would restart the dashboard's trend for nothing.
+    let recased = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            pin("smaug123/a", &"a".repeat(40), "A/A.fsproj"),
+            two.clone(),
+        ] }),
+    ))
+    .expect("valid corpus");
+    assert_eq!(digest, recased.revision());
+
+    // The project path is *not* case-folded: it names a file on a
+    // case-sensitive filesystem, where these really are different files.
+    let repathed = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            pin("Smaug123/A", &"a".repeat(40), "A/a.fsproj"),
+            two.clone(),
+        ] }),
+    ))
+    .expect("valid corpus");
+    assert_ne!(digest, repathed.revision());
+
+    // The digest is what `record` files the observation under, so it has to be
+    // accepted as a corpus revision.
+    let summary = write_summary(temp.path(), "project-corpus-diff", json!({}));
+    let mut input = input(temp.path(), summary);
+    input.corpus_source = "Smaug123/borzoi-project-corpus".into();
+    input.corpus_revision = digest;
+    record_observation(&input).expect("the corpus digest is a valid corpus revision");
+}
+
+#[test]
+fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let good = pin("Smaug123/A", &"a".repeat(40), "A/A.fsproj");
+    for (expected, corpus) in [
+        (
+            "schema version",
+            json!({ "schema_version": 2, "projects": [good.clone()] }),
+        ),
+        (
+            "at least one",
+            json!({ "schema_version": 1, "projects": [] }),
+        ),
+        (
+            "repository",
+            json!({ "schema_version": 1, "projects": [pin("no-owner", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        (
+            "revision",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", "main", "A/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "../escape/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "/abs/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/A.csproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A dir/A.fsproj")] }),
+        ),
+        // A second spelling of one path would pass the literal duplicate check
+        // below and be measured twice, doubling that project's contribution to
+        // every count in the series.
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/./A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "./A/A.fsproj")] }),
+        ),
+        // The workflow joins these with the path-list separator and the runner
+        // splits them again, so a separator inside a pin arrives as two
+        // fragments that name nothing.
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A:B/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A;B/A.fsproj")] }),
+        ),
+        // `owner/repo` and `owner/repo.git` clone one repository under two
+        // names, so both pins survive and the project is measured twice.
+        (
+            ".git",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A.git", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        // GitHub resolves repository names case-insensitively, so these are
+        // one repository; a case-sensitive Linux filesystem would keep two
+        // checkouts of it and each project would be counted twice. Distinct
+        // projects, so this reaches the repository-spelling check rather than
+        // the duplicate-project one below.
+        (
+            "two ways",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("smaug123/a", &"a".repeat(40), "Other/Other.fsproj")] }),
+        ),
+        // The same alias with one project reaches the duplicate check instead;
+        // either way it must not survive to be measured twice.
+        (
+            "more than once",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("smaug123/a", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        // Git resolves an uppercase object ID to the same commit, so this
+        // pins identical code under a spelling that would hash differently.
+        (
+            "lowercase",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"A".repeat(40), "A/A.fsproj")] }),
+        ),
+        (
+            "two revisions",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("Smaug123/A", &"b".repeat(40), "A/Other.fsproj")] }),
+        ),
+        (
+            "more than once",
+            json!({ "schema_version": 1, "projects": [good.clone(), good.clone()] }),
+        ),
+    ] {
+        let path = write_corpus(temp.path(), corpus);
+        let err = read_project_corpus(&path).unwrap_err().to_string();
+        assert!(err.contains(expected), "expected {expected:?}, got {err}");
+    }
+
+    // One repository contributing *several* projects is legitimate and must be
+    // accepted — it is the shape a multi-project repository takes. The
+    // workflow's checkout loop reads one line per project and so must clone at
+    // most once per repository; this is the case that makes that necessary,
+    // and rejecting it here would hide the requirement rather than meet it.
+    let two_from_one = write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            good.clone(),
+            pin("Smaug123/A", &"a".repeat(40), "Other/Other.fsproj"),
+        ] }),
+    );
+    let corpus =
+        read_project_corpus(&two_from_one).expect("one repository may pin several projects");
+    assert_eq!(corpus.projects.len(), 2);
+    // Exactly one checkout is needed, at exactly one revision.
+    let revisions: std::collections::BTreeSet<&str> = corpus
+        .projects
+        .iter()
+        .map(|pin| pin.revision.as_str())
+        .collect();
+    assert_eq!(revisions.len(), 1);
+}
+
+/// The corpus the workflow actually checks out. A typo here fails the
+/// measurement job several minutes into a clone, so parse it in-process.
+#[test]
+fn the_checked_in_project_corpus_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/project-corpus.json");
+    let corpus = read_project_corpus(&path).expect("nix/project-corpus.json is a valid corpus");
+    assert!(
+        corpus.projects.len() >= 2,
+        "a one-project corpus cannot exercise cross-project references"
+    );
+}
+
 fn input(root: &Path, summary: PathBuf) -> RecordInput {
     RecordInput {
         summary,
@@ -314,9 +550,20 @@ fn input(root: &Path, summary: PathBuf) -> RecordInput {
         run_id: 42,
         run_number: 42,
         run_attempt: 1,
+        corpus_source: borzoi_stats::FSHARP_CORPUS_SOURCE.into(),
         corpus_revision: CORPUS.into(),
         flake_lock_hash: LOCK_HASH.into(),
     }
+}
+
+fn write_corpus(root: &Path, value: Value) -> PathBuf {
+    let path = root.join("project-corpus.json");
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    path
+}
+
+fn pin(repository: &str, revision: &str, project: &str) -> Value {
+    json!({ "repository": repository, "revision": revision, "project": project })
 }
 
 fn write_summary(root: &Path, measurement: &str, configuration: Value) -> PathBuf {
