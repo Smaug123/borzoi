@@ -776,10 +776,41 @@ pub struct ProjectUse {
     pub start: usize,
     pub end: usize,
     pub is_from_definition: bool,
-    pub decl: Option<DeclSite>,
+    pub decl: UseDecl,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
 }
+
+/// Where FCS says the used symbol is declared, classified by what the
+/// differential can do with it.
+///
+/// The distinction matters because a decl range outside the project is
+/// **normal**, not a load failure: only [`Self::InProject`] can be compared
+/// against our own definition site, and the rest are adjudicated by assembly
+/// identity (or counted as having no oracle) instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UseDecl {
+    /// A declaration in one of the project's loaded Compile sources.
+    InProject(DeclSite),
+    /// FCS reported no declaration range at all, or one of its pseudo-file
+    /// sentinels — `startup`, `unknown`, `commandLineArgs`
+    /// (`FSharp.Compiler.Text.Range`). `rangeStartup` is the range of the
+    /// initial type-check environment, so **every symbol imported from a
+    /// referenced assembly** — a BCL namespace, an imported type — declares
+    /// "at startup". FCS is saying *no source location*, not naming a file.
+    Unlocated,
+    /// A real file that is not one of the project's Compile items. An F#
+    /// assembly carries its original source ranges in its signature data, so
+    /// FSharp.Core's symbols declare at the build machine's paths
+    /// (`D:\a\_work\1\s\src\fsharp\src\FSharp.Core\prim-types.fsi`);
+    /// a linked file compiled into another project lands here too.
+    OutsideProject(PathBuf),
+}
+
+/// FCS's pseudo-file names for a range with no source of its own
+/// (`FSharp.Compiler.Text.Range`: `unknownFileName` / `startupFileName` /
+/// `commandLineArgsFileName`).
+const FCS_PSEUDO_FILES: [&str; 3] = ["unknown", "startup", "commandLineArgs"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclSite {
@@ -892,18 +923,26 @@ pub fn parse_project_uses(
                 .uses
                 .into_iter()
                 .map(|u| {
-                    let decl = if let Some(d) = u.decl_range {
-                        let (dpath, dsrc) = lookup(&d.file).ok_or_else(|| {
-                            ParseProjectUsesError::UnknownDeclFile(PathBuf::from(&d.file))
-                        })?;
-                        let didx = LineIndex::new(dsrc);
-                        Some(DeclSite {
-                            file: dpath.to_path_buf(),
-                            start: didx.offset(d.start.line, d.start.col),
-                            end: didx.offset(d.end.line, d.end.col),
-                        })
-                    } else {
-                        None
+                    let decl = match u.decl_range {
+                        None => UseDecl::Unlocated,
+                        Some(d) if FCS_PSEUDO_FILES.contains(&d.file.as_str()) => {
+                            UseDecl::Unlocated
+                        }
+                        Some(d) => match lookup(&d.file) {
+                            Some((dpath, dsrc)) => {
+                                let didx = LineIndex::new(dsrc);
+                                UseDecl::InProject(DeclSite {
+                                    file: dpath.to_path_buf(),
+                                    start: didx.offset(d.start.line, d.start.col),
+                                    end: didx.offset(d.end.line, d.end.col),
+                                })
+                            }
+                            // Not a file we loaded, so its line/col cannot be
+                            // turned into an offset — and must not be, since
+                            // indexing our own source at them would invent a
+                            // declaration site.
+                            None => UseDecl::OutsideProject(PathBuf::from(&d.file)),
+                        },
                     };
                     Ok(ProjectUse {
                         name: u.symbol_name,
@@ -929,7 +968,6 @@ pub fn parse_project_uses(
 pub enum ParseProjectUsesError {
     Json(serde_json::Error),
     UnknownFile(PathBuf),
-    UnknownDeclFile(PathBuf),
 }
 
 impl fmt::Display for ParseProjectUsesError {
@@ -939,11 +977,6 @@ impl fmt::Display for ParseProjectUsesError {
             Self::UnknownFile(p) => write!(
                 f,
                 "FCS reported a file outside the loaded project: {}",
-                p.display()
-            ),
-            Self::UnknownDeclFile(p) => write!(
-                f,
-                "FCS reported a declaration outside the loaded project: {}",
                 p.display()
             ),
         }
@@ -974,6 +1007,13 @@ pub struct Comparison {
     pub deferrals: usize,
     pub assembly_deferrals: usize,
     pub skipped_uses: SkippedUses,
+    /// Our *defining* occurrences at ranges FCS reports nothing about. FCS
+    /// emits a binder once even where the source binds it several times — an
+    /// or-pattern (`| Ldarg _n | Ldarga _n | …`) reports `_n` at the first
+    /// alternative only — while our model resolves each occurrence to itself.
+    /// The oracle is silent there, and silence is not a contradiction, so
+    /// these are counted rather than reported as reverse divergences.
+    pub unoracled_definitions: usize,
     pub divergences: Vec<Divergence>,
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
@@ -985,6 +1025,10 @@ pub struct SkippedUses {
     pub definitions: usize,
     pub zero_width: usize,
     pub non_project_declarations: usize,
+    /// FCS declared the symbol in a real file the project does not compile
+    /// ([`UseDecl::OutsideProject`]) *and* gave no assembly identity to
+    /// compare instead, so nothing can adjudicate the use.
+    pub out_of_project_declarations: usize,
     pub no_oracle_declaration: usize,
 }
 
@@ -993,6 +1037,7 @@ impl SkippedUses {
         self.definitions
             + self.zero_width
             + self.non_project_declarations
+            + self.out_of_project_declarations
             + self.no_oracle_declaration
     }
 
@@ -1000,6 +1045,7 @@ impl SkippedUses {
         self.definitions += other.definitions;
         self.zero_width += other.zero_width;
         self.non_project_declarations += other.non_project_declarations;
+        self.out_of_project_declarations += other.out_of_project_declarations;
         self.no_oracle_declaration += other.no_oracle_declaration;
     }
 }
@@ -1037,6 +1083,8 @@ pub struct CorpusSummary {
     pub project_deferrals: usize,
     pub assembly_deferrals: usize,
     pub skipped_uses: SkippedUses,
+    /// Aggregate of [`Comparison::unoracled_definitions`].
+    pub unoracled_definitions: usize,
     pub project_divergences: usize,
     pub assembly_divergences: usize,
     pub reverse_divergences: usize,
@@ -1119,6 +1167,7 @@ impl CorpusSummary {
         self.project_divergences += comparison.divergences.len();
         self.assembly_divergences += comparison.assembly_divergences.len();
         self.reverse_divergences += comparison.reverse_divergences.len();
+        self.unoracled_definitions += comparison.unoracled_definitions;
     }
 
     pub fn total_uses_considered(&self) -> usize {
@@ -1227,12 +1276,14 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} non-project declarations | {} no-oracle declarations | {} total",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences unoracled)",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
             self.skipped_uses.non_project_declarations,
+            self.skipped_uses.out_of_project_declarations,
             self.skipped_uses.no_oracle_declaration,
-            self.skipped_uses.total()
+            self.skipped_uses.total(),
+            self.unoracled_definitions
         )
         .expect("write String");
         if !self.build_properties.is_empty() {
@@ -1906,7 +1957,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 u32::try_from(u.start).expect("use start fits u32").into(),
                 u32::try_from(u.end).expect("use end fits u32").into(),
             );
-            let Some(expected) = &u.decl else {
+            let UseDecl::InProject(expected) = &u.decl else {
                 match assembly_decl(u) {
                     Some(expected) => {
                         comparison.assembly_uses_considered += 1;
@@ -1916,7 +1967,12 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                             }
                             Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
-                                if actual == expected {
+                                if actual.assembly == expected.assembly
+                                    && assembly_full_name_agrees(
+                                        &actual.full_name,
+                                        &expected.full_name,
+                                    )
+                                {
                                     comparison.assembly_matches += 1;
                                 } else {
                                     comparison.assembly_divergences.push(AssemblyDivergence {
@@ -1941,6 +1997,15 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                                 })
                             }
                         }
+                    }
+                    // No assembly identity to compare against either. An
+                    // out-of-project *file* is its own bucket: it says the
+                    // symbol has a real source we simply do not hold (an F#
+                    // assembly's embedded ranges, a linked file), which is
+                    // worth seeing in the report rather than folding into the
+                    // oracle-said-nothing count.
+                    None if matches!(u.decl, UseDecl::OutsideProject(_)) => {
+                        comparison.skipped_uses.out_of_project_declarations += 1;
                     }
                     None if u.assembly.is_some() || u.full_name.is_some() => {
                         comparison.skipped_uses.non_project_declarations += 1;
@@ -2065,12 +2130,24 @@ fn add_reverse_divergences(
             {
                 continue;
             }
-            let covering_oracles = file_uses
+            let covering_oracles: Vec<String> = file_uses
                 .uses
                 .iter()
                 .filter(|u| fcs_use_covers_range(u, start, end))
                 .map(fcs_oracle_summary)
                 .collect();
+            // No covering use at all: the oracle did not speak here, so it
+            // cannot be contradicting us. That is routine for a *defining*
+            // occurrence — FCS emits a binder once even where the source binds
+            // it several times (an or-pattern's alternatives), and the forward
+            // direction does not grade FCS's definitions either. Count it so
+            // the silence stays visible.
+            if covering_oracles.is_empty()
+                && is_defining_occurrence(loaded, *file_idx, res, start, end)
+            {
+                comparison.unoracled_definitions += 1;
+                continue;
+            }
             comparison.reverse_divergences.push(ReverseDivergence {
                 file: loaded.parses.paths[*file_idx].clone(),
                 range: (start, end),
@@ -2079,6 +2156,21 @@ fn add_reverse_divergences(
             });
         }
     }
+}
+
+/// Whether the resolution at `start..end` is the binder's **own** declaration
+/// site — its definition range is the range itself.
+fn is_defining_occurrence(
+    loaded: &LoadedProject,
+    file_idx: usize,
+    res: Resolution,
+    start: usize,
+    end: usize,
+) -> bool {
+    matches!(res, Resolution::Local(_) | Resolution::Item(_))
+        && resolution_def(loaded, file_idx, res).is_some_and(|(def_file_idx, def)| {
+            def_file_idx == file_idx && range_pair(def.range) == (start, end)
+        })
 }
 
 fn is_concrete_resolution(res: Resolution) -> bool {
@@ -2104,7 +2196,7 @@ fn fcs_use_confirms_resolution(
     }
     match res {
         Resolution::Local(_) | Resolution::Item(_) => {
-            let Some(expected) = &use_.decl else {
+            let UseDecl::InProject(expected) = &use_.decl else {
                 return false;
             };
             resolution_def(loaded, file_idx, res).is_some_and(|(actual_file_idx, def)| {
@@ -2121,6 +2213,33 @@ fn fcs_use_confirms_resolution(
     }
 }
 
+/// Whether our rendering of an imported symbol's full name agrees with FCS's,
+/// modulo the two ways FCS names a symbol differently from us without
+/// disagreeing about *which* symbol it is:
+///
+/// - **backticks.** FCS escapes identifiers that need it —
+///   ``Microsoft.FSharp.Core.Operators.``not```. A backtick never occurs inside
+///   a real identifier, so stripping them on both sides is safe.
+/// - **an unqualified FCS name.** FCS reports an imported F# module's
+///   `FullName` as the bare display name (`Seq`, `List`, `Option`), with no
+///   namespace to compare against our `Microsoft.FSharp.Collections.Seq`. When
+///   FCS's name carries no qualification *at all*, the only thing it can
+///   witness is the leaf, so that is what we compare — a dotted FCS name still
+///   has to agree in full. (The residual risk is a same-leaf symbol elsewhere
+///   in the same assembly; the assembly itself must already match.)
+///
+/// The sibling harness `resolve_real_project_diff` (in the `borzoi` crate)
+/// normalises the same two, which is why it scored these as matches while this
+/// runner called them divergences.
+fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
+    let strip = |s: &str| s.replace('`', "");
+    let (actual, expected) = (strip(actual), strip(expected));
+    if actual == expected {
+        return true;
+    }
+    !expected.contains('.') && actual.rsplit('.').next() == Some(expected.as_str())
+}
+
 fn assembly_resolution_confirms_decl(
     env: &AssemblyEnv,
     res: Resolution,
@@ -2132,13 +2251,15 @@ fn assembly_resolution_confirms_decl(
     }
     match res {
         Resolution::Entity(_) => {
-            actual.full_name == expected.full_name
+            assembly_full_name_agrees(&actual.full_name, &expected.full_name)
                 || expected
                     .full_name
                     .strip_prefix(&actual.full_name)
                     .is_some_and(|tail| tail.starts_with('.'))
         }
-        Resolution::Member { .. } => actual.full_name == expected.full_name,
+        Resolution::Member { .. } => {
+            assembly_full_name_agrees(&actual.full_name, &expected.full_name)
+        }
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)
@@ -2151,13 +2272,19 @@ fn fcs_use_covers_range(use_: &ProjectUse, start: usize, end: usize) -> bool {
 }
 
 fn fcs_oracle_summary(use_: &ProjectUse) -> String {
-    if let Some(decl) = &use_.decl {
-        return format!(
-            "project {}:{}..{}",
-            decl.file.display(),
-            decl.start,
-            decl.end
-        );
+    match &use_.decl {
+        UseDecl::InProject(decl) => {
+            return format!(
+                "project {}:{}..{}",
+                decl.file.display(),
+                decl.start,
+                decl.end
+            );
+        }
+        UseDecl::OutsideProject(file) if assembly_decl(use_).is_none() => {
+            return format!("declared outside the project at {}", file.display());
+        }
+        UseDecl::OutsideProject(_) | UseDecl::Unlocated => {}
     }
     if let Some(decl) = assembly_decl(use_) {
         return format!("assembly {} full_name {}", decl.assembly, decl.full_name);
@@ -3062,7 +3189,7 @@ mod tests {
         assert_eq!(parsed[1].path, b_path);
         assert_eq!(
             parsed[1].uses[0].decl,
-            Some(DeclSite {
+            UseDecl::InProject(DeclSite {
                 file: a_path,
                 start: 13,
                 end: 14,
@@ -3070,8 +3197,96 @@ mod tests {
         );
     }
 
+    /// One `uses-project` file entry with a single use whose `DeclRange`
+    /// names `decl_file`.
+    fn one_use_json(path: &Path, decl_file: &str) -> String {
+        format!(
+            r#"{{
+  "Files": [
+    {{
+      "Path": "{}",
+      "Diagnostics": [],
+      "Uses": [
+        {{
+          "SymbolName": "x",
+          "Range": {{ "File": "{}", "Start": {{ "Line": 3, "Col": 8 }}, "End": {{ "Line": 3, "Col": 9 }} }},
+          "IsFromDefinition": false,
+          "DeclRange": {{ "File": "{}", "Start": {{ "Line": 2, "Col": 4 }}, "End": {{ "Line": 2, "Col": 5 }} }},
+          "Assembly": null,
+          "FullName": null
+        }}
+      ]
+    }}
+  ]
+}}"#,
+            path.display(),
+            path.display(),
+            decl_file.replace('\\', "\\\\"),
+        )
+    }
+
+    /// FCS escapes identifiers that need it and names imported F# modules
+    /// unqualified; neither says the resolution went to a different symbol.
+    /// A *dotted* FCS name still has to agree in full.
     #[test]
-    fn parser_rejects_unknown_decl_file() {
+    fn assembly_full_names_agree_modulo_fcs_rendering() {
+        assert!(assembly_full_name_agrees(
+            "Microsoft.FSharp.Core.Operators.not",
+            "Microsoft.FSharp.Core.Operators.``not``"
+        ));
+        assert!(assembly_full_name_agrees(
+            "Microsoft.FSharp.Collections.Seq",
+            "Seq"
+        ));
+        assert!(!assembly_full_name_agrees(
+            "Microsoft.FSharp.Collections.Seq",
+            "List"
+        ));
+        assert!(!assembly_full_name_agrees(
+            "Microsoft.FSharp.Collections.Seq",
+            "Microsoft.FSharp.Collections.List"
+        ));
+        // An unqualified FCS name matches the *whole* leaf, not a suffix of it.
+        assert!(!assembly_full_name_agrees("System.Collections.Bag", "ag"));
+    }
+
+    /// FCS's `rangeStartup` sentinel (`range.fs`: `startupFileName = "startup"`)
+    /// is the range of the initial type-check environment, so every symbol
+    /// imported from a referenced assembly — a BCL namespace, a type — declares
+    /// "at startup". It is FCS saying *no source location*, not a file we
+    /// failed to load, so it parses as [`UseDecl::Unlocated`] and the use is
+    /// adjudicated by assembly identity instead.
+    #[test]
+    fn a_startup_decl_range_is_unlocated() {
+        let path = PathBuf::from("/tmp/corpus_diff_parse_startup/Program.fs");
+        let src: Arc<str> = Arc::from("module A\nlet x = 1\nlet y = x\n");
+        let parsed = parse_project_uses(&one_use_json(&path, "startup"), &[(path, src)])
+            .expect("a startup decl range is not a load failure");
+        assert_eq!(parsed[0].uses[0].decl, UseDecl::Unlocated);
+    }
+
+    /// An F# assembly carries its *original* source ranges in its signature
+    /// data, so FSharp.Core's symbols declare at the build machine's paths.
+    /// Those are real files, just not ours: the use keeps the path (so the
+    /// report can name it) and is adjudicated by assembly identity.
+    #[test]
+    fn a_decl_range_outside_the_compile_set_keeps_its_path() {
+        let path = PathBuf::from("/tmp/corpus_diff_parse_outside/Program.fs");
+        let src: Arc<str> = Arc::from("module A\nlet x = 1\nlet y = x\n");
+        let foreign = concat!(
+            r"D:\a\_work\1\s\src\fsharp\src\FSharp.Core\",
+            "prim-types.fsi"
+        );
+        let parsed = parse_project_uses(&one_use_json(&path, foreign), &[(path, src)])
+            .expect("an out-of-project decl file is not a load failure");
+        assert_eq!(
+            parsed[0].uses[0].decl,
+            UseDecl::OutsideProject(PathBuf::from(foreign))
+        );
+    }
+
+    #[test]
+    fn parser_keeps_an_unknown_decl_file_out_of_the_project_comparison() {
         let root = PathBuf::from("/tmp/corpus_diff_parse_unknown_decl");
         let path = root.join("Program.fs");
         let src: Arc<str> = Arc::from("module A\nlet x = 1\nlet y = x\n");
@@ -3099,10 +3314,12 @@ mod tests {
             path.display(),
             unknown.display(),
         );
-        match parse_project_uses(&json, &[(path, src)]) {
-            Err(ParseProjectUsesError::UnknownDeclFile(p)) => assert_eq!(p, unknown),
-            other => panic!("expected unknown decl file, got {other:?}"),
-        }
+        let parsed = parse_project_uses(&json, &[(path, src)]).expect("parse project uses");
+        assert_eq!(
+            parsed[0].uses[0].decl,
+            UseDecl::OutsideProject(unknown),
+            "an unloadable decl file must not be mistaken for an in-project declaration"
+        );
     }
 
     #[test]
@@ -3372,8 +3589,10 @@ mod tests {
                 definitions: 2,
                 zero_width: 1,
                 non_project_declarations: 3,
+                out_of_project_declarations: 0,
                 no_oracle_declaration: 4,
             },
+            unoracled_definitions: 0,
             divergences: vec![Divergence {
                 file: PathBuf::from("/tmp/B.fs"),
                 range: (20, 21),
