@@ -1027,13 +1027,18 @@ fn two_dll_env(a: Vec<borzoi_assembly::Entity>, b: Vec<borzoi_assembly::Entity>)
 }
 
 #[test]
-fn nested_alias_below_a_cross_dll_colliding_root_defers_in_type_position() {
-    // Both DLLs export a public top-level `N.Container`; the first nests
-    // `type Alias = Widget` (a marker with a Local target). FCS merges the
-    // containers by reference order, so `children` of the first-indexed root
-    // may miss the other DLL's contribution — the type-position walk must
-    // defer the nested-alias chase (recording nothing at a multi-segment
-    // tail), exactly as the value-path walk already does.
+fn a_nested_alias_below_a_cross_dll_colliding_root_binds_its_sole_supplier() {
+    // Both DLLs export a public top-level `N.Container`; only the first nests
+    // `type Alias = Widget` (a marker with a Local target).
+    //
+    // Same-named modules from different assemblies genuinely **merge** — they
+    // do not shadow. fsi-verified 2026-07-25 with two probe libraries each
+    // exporting `namespace N; module Container`: `N.Container.onlyInA`,
+    // `N.Container.onlyInB` and the *earlier* reference's nested
+    // `N.Container.AliasA` all resolve. So when exactly one merged container
+    // supplies the name, FCS binds it, and the walk — which now asks every
+    // candidate rather than only the first-indexed one — binds it too.
+    // Deferring here would under-resolve a path FCS resolves.
     use borzoi_assembly::EntityKind;
     let widget = synth_entity("A", &["N"], "Widget", EntityKind::Class);
     let mut container_a = synth_entity("A", &["N"], "Container", EntityKind::Module);
@@ -1046,11 +1051,35 @@ fn nested_alias_below_a_cross_dll_colliding_root_defers_in_type_position() {
     let env = two_dll_env(vec![widget, container_a], vec![container_b]);
     let src = "module M\nlet f (x : N.Container.Alias) = x\n";
     let rf = resolve(src, &env);
+    assert!(
+        rf.resolution_at(at(src, "Alias")).is_some(),
+        "exactly one merged container supplies `Alias`, so FCS binds it"
+    );
+}
+
+#[test]
+fn a_nested_alias_supplied_by_both_colliding_roots_defers() {
+    // The companion control: when BOTH merged containers nest an `Alias`, FCS
+    // binds the latest *accessible* reference's, which we do not model — so
+    // this one must still defer rather than chase the first-indexed subtree.
+    use borzoi_assembly::EntityKind;
+    let widget = synth_entity("A", &["N"], "Widget", EntityKind::Class);
+    let alias = || {
+        let mut m = synth_marker("A", &[], "Alias", &["N", "Widget"]);
+        m.namespace = Vec::new();
+        m
+    };
+    let mut container_a = synth_entity("A", &["N"], "Container", EntityKind::Module);
+    container_a.nested_types = vec![alias()];
+    let mut container_b = synth_entity("B", &["N"], "Container", EntityKind::Module);
+    container_b.nested_types = vec![alias()];
+    let env = two_dll_env(vec![widget, container_a], vec![container_b]);
+    let src = "module M\nlet f (x : N.Container.Alias) = x\n";
+    let rf = resolve(src, &env);
     assert_eq!(
         rf.resolution_at(at(src, "Alias")),
         None,
-        "a nested alias below a cross-DLL-colliding root must defer, not chase \
-         out of the first-indexed subtree"
+        "two suppliers at a merged root are undecidable for us — defer"
     );
 }
 

@@ -2530,6 +2530,178 @@ fn a_contested_root_that_supplies_the_tail_still_defers_over_a_lower_open() {
     }
 }
 
+// ----- Contestants are per lookup-channel, and counted 0 / 1 / many -----
+//
+// A same-FQN collision is only a *contest* among candidates FCS's lookup would
+// actually consider together at that position, and even then only when more
+// than one of them can satisfy the path. fsi-verified 2026-07-25 with
+// `ClassLib` (`namespace Ns; type Color`) and `ModuleLib`
+// (`namespace Ns; module Color` holding `greeting` and a nested `Inner`):
+//
+//   * `let y : Ns.Color = Ns.Color()` binds the **class** in BOTH reference
+//     orders — a module never occupies a terminal type position;
+//   * with `ModuleLib` alone, that same annotation is FS0039 — FCS does not
+//     fall back to the module;
+//   * `Ns.Color.greeting` and `let z : Ns.Color.Inner` both resolve regardless
+//     — a module still roots a *tail*, as a container.
+//
+// So type-position eligibility filters the candidates before they are counted,
+// and a *single* surviving supplier binds rather than defers (`OnlyOnA = 7`
+// upstream: FCS picks the one contestant that has the member, even when it is
+// not the latest reference).
+
+#[test]
+fn a_class_and_a_module_at_one_fqn_are_not_a_type_position_contest() {
+    let (class_color, module_color) = class_and_module_color();
+    // Both reference orders, since first-wins indexing is order-sensitive and
+    // FCS is not.
+    for (order, ents) in [
+        (
+            "class first",
+            vec![class_color.clone(), module_color.clone()],
+        ),
+        (
+            "module first",
+            vec![module_color.clone(), class_color.clone()],
+        ),
+    ] {
+        let env = AssemblyEnv::from_entities(ents);
+        let class_handle = env
+            .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+            .into_iter()
+            .find(|&h| env.entity(h).kind == EntityKind::Class)
+            .expect("the class contestant is in the env");
+        let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+        let rf = resolve(src, &env);
+        assert_eq!(
+            rf.resolution_at(at(src, "Color")),
+            Some(Resolution::Entity(class_handle)),
+            "a module is not a type-position candidate, so the class binds ({order})"
+        );
+    }
+}
+
+#[test]
+fn a_lone_module_still_roots_a_terminal_type_reading() {
+    // The scope boundary of the eligibility filter. fsi: with only `ModuleLib`
+    // referenced, `let y : Ns.Color` is FS0039 — a module is not a type. We do
+    // not model what FCS falls through to instead, so a *lone* module keeps
+    // rooting the reading and the leaf-kind check downstream declines it
+    // (`attr_resolution_diff::module_shaped_leaf_defers` pins that path). The
+    // filter exists to stop a module *contesting* a real type across DLLs, not
+    // to re-decide the lone-module case — which is unchanged here, gap and all.
+    let (_, module_color) = class_and_module_color();
+    let env = AssemblyEnv::from_entities(vec![module_color]);
+    let module_handle = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .next()
+        .expect("the module is in the env");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Color")),
+        Some(Resolution::Entity(module_handle)),
+        "a lone module still roots the reading — the leaf-kind check, not the \
+         contest filter, is what declines it"
+    );
+}
+
+#[test]
+fn a_module_still_roots_a_nested_type_tail() {
+    // The other half: type-position eligibility is about the TERMINAL segment
+    // only. A module is a perfectly good container for a nested type.
+    let (class_color, module_color) = class_and_module_color();
+    let env = AssemblyEnv::from_entities(vec![class_color, module_color]);
+    let module_handle = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .find(|&h| env.entity(h).kind == EntityKind::Module)
+        .expect("the module contestant is in the env");
+    let inner = env
+        .nested(module_handle, "Inner", 0)
+        .expect("Ns.Color.Inner under the module");
+    let src = "module M\nlet x : Ns.Color.Inner = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Inner")),
+        Some(Resolution::Entity(inner)),
+        "a module roots a nested-type tail even beside a same-named class"
+    );
+}
+
+#[test]
+fn one_contestant_supplying_the_tail_binds_rather_than_defers() {
+    // fsi (`OnlyOnA = 7`): among same-FQN contestants FCS binds the one that
+    // supplies the tail, even when it is not the latest reference. Only a
+    // genuine *plurality* of suppliers is undecidable for us.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut with_member = widget.clone();
+    with_member.namespace = vec!["Ns".to_string()];
+    with_member.name = "Color".to_string();
+    with_member.nested_types = vec![];
+    let mut without_member = with_member.clone();
+    without_member.assembly.name = "OtherLib".to_string();
+    without_member.members = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![with_member, without_member]);
+    let supplier = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .find(|&h| env.entity(h).assembly.name != "OtherLib")
+        .expect("the supplying contestant is in the env");
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Ns.Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == supplier => {}
+        other => {
+            panic!("exactly one contestant has `StaticCount`, so FCS binds it — got {other:?}")
+        }
+    }
+}
+
+/// A public class and a public F# module, both `Ns.Color`, in *differently
+/// named* DLLs — the cross-lookup-channel collision that is not a contest.
+fn class_and_module_color() -> (Entity, Entity) {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let inner = {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i
+    };
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.nested_types = vec![];
+    let mut module_color = widget;
+    module_color.namespace = vec!["Ns".to_string()];
+    module_color.name = "Color".to_string();
+    module_color.kind = EntityKind::Module;
+    module_color.nested_types = vec![inner];
+    module_color.assembly.name = "OtherLib".to_string();
+    (class_color, module_color)
+}
+
 // ----- The invariant behind the two guard revisions, checked exhaustively -----
 //
 // Both codex rounds on the contested-rooting guard were the same mistake in
@@ -2605,6 +2777,17 @@ fn sweep_color(
     e
 }
 
+/// The perturbations the sweep applies — a same-FQN entity contributed by a
+/// differently-named DLL. A byte-identical clone is the pure collision; the
+/// **module**-kinded variant is the cross-lookup-channel one, which is not a
+/// contest at all in type position (a module cannot be a terminal type) and so
+/// must perturb even less (codex review round 4).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Perturbation {
+    Clone,
+    AsModule,
+}
+
 #[test]
 fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
     let ents = fixture_entities();
@@ -2662,63 +2845,94 @@ fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
                 // differently-named DLL — the shape `lookup_type`'s first-wins
                 // slot cannot see and FCS merges.
                 for dup in 0..catalogue.len() {
-                    let base = AssemblyEnv::from_entities(catalogue.clone());
-                    let mut perturbed_ents = catalogue.clone();
-                    let mut clone = catalogue[dup].clone();
-                    clone.assembly.name = "OtherLib".to_string();
-                    perturbed_ents.push(clone);
-                    let perturbed = AssemblyEnv::from_entities(perturbed_ents);
+                    for perturbation in [Perturbation::Clone, Perturbation::AsModule] {
+                        let base = AssemblyEnv::from_entities(catalogue.clone());
+                        let mut perturbed_ents = catalogue.clone();
+                        let mut clone = catalogue[dup].clone();
+                        clone.assembly.name = "OtherLib".to_string();
+                        if perturbation == Perturbation::AsModule {
+                            clone.kind = EntityKind::Module;
+                        }
+                        perturbed_ents.push(clone);
+                        let perturbed = AssemblyEnv::from_entities(perturbed_ents);
 
-                    let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
-                    let roots = base
-                        .public_types_named_at_arity(&dup_ns, "Color", 0)
-                        .into_iter()
-                        .flat_map(|h| subtree(&base, h))
-                        .collect::<Vec<_>>();
+                        let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
+                        let roots = base
+                            .public_types_named_at_arity(&dup_ns, "Color", 0)
+                            .into_iter()
+                            .flat_map(|h| subtree(&base, h))
+                            .collect::<Vec<_>>();
 
-                    for opens in OPEN_SEQUENCES {
-                        let preamble: String =
-                            opens.iter().map(|o| format!("open {o}\n")).collect();
-                        let cases = VALUE_PATHS
-                            .iter()
-                            .map(|p| (format!("module M\n{preamble}let u = {p}\n"), *p))
-                            .chain(TYPE_PATHS.iter().map(|p| {
-                                (
-                                    format!(
-                                        "module M\n{preamble}let x : {p} = Unchecked.defaultof<_>\n"
-                                    ),
-                                    *p,
-                                )
-                            }));
-                        for (src, path) in cases {
-                            let before_res = resolve(&src, &base).resolution_at(at(&src, path));
-                            let after_res = resolve(&src, &perturbed).resolution_at(at(&src, path));
-                            let before = describe_resolution(&base, before_res);
-                            let after = describe_resolution(&perturbed, after_res);
-                            checked += 1;
-                            if before == after {
-                                continue;
-                            }
-                            let context = format!(
-                                "duplicating {}.Color changed {path:?} from {before} to {after}\n\
+                        for opens in OPEN_SEQUENCES {
+                            let preamble: String =
+                                opens.iter().map(|o| format!("open {o}\n")).collect();
+                            let cases = VALUE_PATHS
+                                .iter()
+                                .map(|p| (format!("module M\n{preamble}let u = {p}\n"), *p, false))
+                                .chain(TYPE_PATHS.iter().map(|p| {
+                                    (
+                                        format!(
+                                            "module M\n{preamble}let x : {p} = \
+                                             Unchecked.defaultof<_>\n"
+                                        ),
+                                        *p,
+                                        true,
+                                    )
+                                }));
+                            for (src, path, type_position) in cases {
+                                let before_res = resolve(&src, &base).resolution_at(at(&src, path));
+                                let after_res =
+                                    resolve(&src, &perturbed).resolution_at(at(&src, path));
+                                let before = describe_resolution(&base, before_res);
+                                let after = describe_resolution(&perturbed, after_res);
+                                checked += 1;
+                                // A same-named MODULE is not a type-position
+                                // candidate at all, so a *bare* type path — one
+                                // whose rooting IS its final segment — must be
+                                // untouched by it. (With a tail it may
+                                // legitimately contest: a module is a fine
+                                // container, so two containers can then supply
+                                // the same nested type.)
+                                if perturbation == Perturbation::AsModule
+                                    && type_position
+                                    && !path.ends_with(".Inner")
+                                {
+                                    assert_eq!(
+                                        before, after,
+                                        "a module cannot occupy a terminal type position, so \
+                                         adding one must not perturb {path:?}\nsource:\n{src}"
+                                    );
+                                }
+                                if before == after {
+                                    continue;
+                                }
+                                let kind = match perturbation {
+                                    Perturbation::Clone => "duplicating",
+                                    Perturbation::AsModule => "adding a same-named MODULE beside",
+                                };
+                                let context = format!(
+                                    "{kind} {}.Color changed {path:?} from {before} to {after}\n\
                                  source:\n{src}",
-                                dup_ns.join(".")
-                            );
-                            let rooted_at_dup = match before_res {
-                                Some(Resolution::Entity(h)) => roots.contains(&h),
-                                Some(Resolution::Member { parent, .. }) => roots.contains(&parent),
-                                _ => false,
-                            };
-                            assert!(
-                                rooted_at_dup,
-                                "a duplicate may not perturb a path that does not root at it — \
+                                    dup_ns.join(".")
+                                );
+                                let rooted_at_dup = match before_res {
+                                    Some(Resolution::Entity(h)) => roots.contains(&h),
+                                    Some(Resolution::Member { parent, .. }) => {
+                                        roots.contains(&parent)
+                                    }
+                                    _ => false,
+                                };
+                                assert!(
+                                    rooted_at_dup,
+                                    "a duplicate may not perturb a path that does not root at it — \
                                  the lower/uncontested reading still wins in FCS: {context}"
-                            );
-                            assert!(
-                                after == "deferred" || after == "none",
-                                "a contested rooting may only DEGRADE its own path to a \
+                                );
+                                assert!(
+                                    after == "deferred" || after == "none",
+                                    "a contested rooting may only DEGRADE its own path to a \
                                  deferral, never re-target it: {context}"
-                            );
+                                );
+                            }
                         }
                     }
                 }

@@ -1753,8 +1753,20 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> usize {
+        self.distinct_dlls(&self.public_types_named_at_arity(namespace, name, arity))
+    }
+
+    /// How many **distinct loaded DLLs** the given entities come from, by
+    /// per-DLL provenance (falling back to manifest identity for
+    /// provenance-less envs — [`Self::from_entities`]).
+    ///
+    /// The count [`Self::distinct_dlls_with_public_type`] is defined in terms
+    /// of, so a caller that first *narrows* the candidate set (a type-position
+    /// walk drops module candidates: a module cannot be a terminal type)
+    /// counts collisions by exactly the same rule over its narrowed set.
+    pub fn distinct_dlls(&self, handles: &[EntityHandle]) -> usize {
         let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
-        for handle in self.public_types_named_at_arity(namespace, name, arity) {
+        for &handle in handles {
             let key = self.assembly_key(handle);
             if !keys.contains(&key) {
                 keys.push(key);
