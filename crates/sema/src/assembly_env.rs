@@ -3203,6 +3203,7 @@ impl AssemblyEnv {
     /// after building the env, since the projection happens outside this crate.
     pub fn mark_extension_surface_unknowable(&mut self) {
         self.extension_surface_unknowable = true;
+        self.invalidate_bare_value_index();
     }
 
     /// Mark the env's loaded-DLL **identity set incomplete** — the host skipped a
@@ -3232,6 +3233,17 @@ impl AssemblyEnv {
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
         self.namespaces_with_dropped_types.insert(namespace);
+        self.invalidate_bare_value_index();
+    }
+
+    /// Drop the memoised [`Self::bare_value_index`].
+    ///
+    /// Called by every mutator of an input it folds in. The index answers a
+    /// *soundness* question, so a stale `false` is a wrong commitment, not a
+    /// stale optimisation — a mark that arrives after the first query must still
+    /// take effect. `&mut self` makes this a plain reset rather than a race.
+    fn invalidate_bare_value_index(&mut self) {
+        self.bare_value_index = std::sync::OnceLock::new();
     }
 
     /// Whether a referenced assembly **dropped an undecodable type** in `namespace`

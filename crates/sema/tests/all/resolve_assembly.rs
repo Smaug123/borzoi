@@ -6116,3 +6116,24 @@ fn an_in_file_auto_open_type_defers_the_constructor_fallback() {
         "an auto-open type's borrowed statics must keep the fallback off the class"
     );
 }
+
+#[test]
+fn an_auto_open_descendants_hidden_values_defer_the_constructor_fallback() {
+    // The marker for an `[<AutoOpen>] type` sits on the container that declares
+    // it — here the nested `[<AutoOpen>] module A`, so at `M.A`. A later use in
+    // `M` is still in scope of A's borrowed statics (FCS opens A into the rest of
+    // M), so checking only `M` and its ancestors misses it: the veto must reach
+    // auto-open *descendants* too, exactly as the project-side twin walks
+    // `auto_open_modules_directly_in`.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\n[<AutoOpen>]\nmodule A =\n    [<AutoOpen>]\n    type T = Demo.Calc\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "an auto-open descendant's borrowed statics must keep the fallback off the class"
+    );
+}

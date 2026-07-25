@@ -901,10 +901,33 @@ impl<'a> Resolver<'a> {
             if self.modules_with_hidden_values.contains(&path) {
                 return true;
             }
+            // …and the `[<AutoOpen>]` modules *inside* it, whose contents F# folds
+            // into the rest of this container. The marker is stored on the
+            // declaring container, so a nested auto-open module's borrowed values
+            // are recorded at the child path — invisible to the ancestor walk.
+            // Recurses, since an auto-open module may hold another.
+            let mut frontier = self.auto_open_modules_directly_in(&path);
+            while let Some(module) = frontier.pop() {
+                if self.modules_with_hidden_values.contains(&module) {
+                    return true;
+                }
+                frontier.extend(self.auto_open_modules_directly_in(&module));
+            }
             if path.pop().is_none() {
                 return false;
             }
         }
+    }
+
+    /// The `[<AutoOpen>]` modules declared *directly* in `container`, from this
+    /// file's own pre-scan. The in-file twin of
+    /// `ProjectItems::auto_open_modules_directly_in`.
+    fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
+        self.auto_open_module_paths
+            .iter()
+            .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
+            .map(|(p, _)| p.clone())
+            .collect()
     }
 
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
