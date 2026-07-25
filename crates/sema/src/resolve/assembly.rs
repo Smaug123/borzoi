@@ -1,5 +1,6 @@
 //! Resolution of dotted paths into referenced assemblies.
 
+use borzoi_assembly::EntityKind;
 use borzoi_cst::syntax::SyntaxToken;
 use rowan::TextRange;
 
@@ -395,6 +396,114 @@ impl<'a> Resolver<'a> {
         AssemblyPath::Resolved {
             payload: recs,
             owns_path,
+        }
+    }
+
+    /// The **union-case pattern** sibling of [`Self::assembly_type_path_core`]:
+    /// decide — without recording — how a bare `Type.Case` *pattern* reads under
+    /// one namespace `prefix`. A pattern head is a lookup in F#'s *constructor*
+    /// namespace, not the value one, which is what makes this a third leaf rather
+    /// than a reuse of either sibling:
+    ///
+    /// - a **module** named `type_name` is transparent (a module is not a type),
+    ///   so a prefix holding only modules is [`AssemblyPath::NoMatch`] and the
+    ///   walk continues outward — this is what roots `Fantomas.FCS.Syntax.SynType`
+    ///   past a later-`open`ed `WoofWare.Whippet.Fantomas.SynType` *module*;
+    /// - the reading **owns its prefix** ([`AssemblyPath::Resolved`]'s `owns_path`)
+    ///   as soon as a union here declares the case, keyed on
+    ///   [`union_case_names`](borzoi_assembly::Entity::union_case_names) rather
+    ///   than on a nested type existing. A **nullary** case compiles to a
+    ///   singleton with no nested IL type, so keying ownership on the nested walk
+    ///   (as [`Self::assembly_type_path_core`] must) would demote it to a
+    ///   fallback a lower prefix could beat — a wrong target, not a missed one.
+    ///
+    /// Anything else named `type_name` here — a non-union type, an abbreviation,
+    /// a union with an unknowable case list or one lacking this case, or a second
+    /// union owning it (distinct arities; the pattern writes none) — makes the
+    /// reading [`AssemblyPath::ProjectShadowed`]: the walk decides at this prefix
+    /// and never falls through past it. A **cross-DLL** collision defers the same
+    /// way (FCS merges same-FQN roots by reference order, which sema does not
+    /// model); a same-DLL companion — a `type Shape` beside its `module Shape` —
+    /// is not a collision.
+    ///
+    /// That is a **conservative** decline, not F#'s rule. F# keeps searching
+    /// outward for something that declares the case, so a class or a caseless
+    /// union of the name is in fact transparent too (FCS-pinned by
+    /// `resolve_case_pattern_gen_diff.rs`, which resolves the union past both).
+    /// Telling "provably cannot supply this name" from "occupies it" needs the
+    /// entity's whole member/nested/literal surface, which not every projected
+    /// entity has; until it does, declining costs availability at those prefixes
+    /// and never a wrong target.
+    pub(super) fn assembly_case_pattern_records(
+        &self,
+        prefix: &[String],
+        type_name: &str,
+        case_name: &str,
+        type_seg: &SyntaxToken,
+        case_seg: &SyntaxToken,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        let here = self.assemblies.public_entities_named(prefix, type_name);
+        if here.is_empty() {
+            return AssemblyPath::NoMatch;
+        }
+        // Distinct loaded-DLL *provenance* — see the doc comment. Not the
+        // manifest identity: two loaded DLLs can share one, and merging them
+        // here would hide a module-vs-union collision FCS resolves by reference
+        // order. [`AssemblyEnv::distinct_dlls`] is the one rule for that, shared
+        // with the rooting-collision counts, so the two cannot drift apart into
+        // disagreeing about what a collision is.
+        if self.assemblies.distinct_dlls(&here) > 1 {
+            return AssemblyPath::ProjectShadowed;
+        }
+        let mut owning: Option<EntityHandle> = None;
+        let mut binds = false;
+        for &h in &here {
+            let entity = self.assemblies.entity(h);
+            match entity.kind {
+                EntityKind::Module => {}
+                EntityKind::Union
+                    if entity
+                        .union_case_names
+                        .as_ref()
+                        .is_some_and(|cases| cases.iter().any(|c| c == case_name)) =>
+                {
+                    binds |= owning.replace(h).is_some();
+                }
+                _ => binds = true,
+            }
+        }
+        if binds {
+            return AssemblyPath::ProjectShadowed;
+        }
+        // Only plain modules here: a transparent prefix the walk reads past.
+        let Some(union) = owning else {
+            return AssemblyPath::NoMatch;
+        };
+        // A field-carrying case compiles to a nested type; a generic union's
+        // carrier carries the union's own generic parameters, so key the nested
+        // lookup on the union's arity (falling back to arity 0 for a non-generic
+        // union). A nullary case has no carrier at all — a known case reference
+        // with an opaque target, exactly as an opened assembly case folds.
+        let arity = self.assemblies.entity(union).generic_parameters.len();
+        let nested_case = self
+            .assemblies
+            .nested(union, case_name, arity)
+            .or_else(|| self.assemblies.nested(union, case_name, 0))
+            .filter(|&h| self.assemblies.is_public(h));
+        let whole = TextRange::new(type_seg.text_range().start(), case_seg.text_range().end());
+        let recs = vec![
+            (type_seg.text_range(), Resolution::Entity(union)),
+            (
+                whole,
+                match nested_case {
+                    Some(case) => Resolution::Entity(case),
+                    None => Resolution::Deferred(DeferredReason::QualifiedAccess),
+                },
+            ),
+        ];
+        AssemblyPath::Resolved {
+            payload: recs,
+            owns_path: true,
         }
     }
 

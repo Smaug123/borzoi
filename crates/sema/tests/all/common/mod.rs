@@ -931,6 +931,56 @@ pub fn ensure_abbrev_fixture_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **duplicate-identity** fixture (`tests/fixtures/case_pattern_dup_env`)
+/// once per test binary and return its `.dll` path. Its `<AssemblyName>` is
+/// deliberately the *same* as [`ensure_abbrev_fixture_built`]'s, so loading both
+/// gives an [`AssemblyEnv`](borzoi_sema::AssemblyEnv) two distinct DLLs sharing
+/// one manifest identity — the shape a collision check keyed on the identity
+/// rather than on per-DLL provenance silently merges. Behind the shared
+/// [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_case_pattern_dup_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/case_pattern_dup_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(
+                &project,
+                "dotnet build case-pattern duplicate-identity fixture",
+            );
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaFSharpAbbrevFixture.dll")
+        })
+        .as_path()
+}
+
+/// Build the **retained manifest auto-open** fixture
+/// (`tests/fixtures/case_pattern_autoopen_env`) once per test binary and return
+/// its `.dll` path. Its `[<AutoOpen>] module Cases.Retained.Auto` declares
+/// `Target`, the head `fsharp_abbrev_env`'s `Cases.Union` also declares, so
+/// loading both puts a bare-scope reading no namespace-prefix walk can see above
+/// one it can. Behind the shared [`BUILD_LOCK`] like the other fixtures.
+pub fn ensure_case_pattern_autoopen_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/case_pattern_autoopen_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build case-pattern auto-open fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaCasePatternAutoOpenFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **module-vs-type qualifier** fixture
 /// (`tests/fixtures/qualifier_env`, `SemaQualifierFixture.dll`) once per test
 /// binary and return its `.dll` path. The deliberate `Collide` module/type

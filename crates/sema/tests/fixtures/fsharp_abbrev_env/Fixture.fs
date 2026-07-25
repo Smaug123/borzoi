@@ -382,3 +382,100 @@ module DupB =
     // Collides with DupA's `dupVal`: two module opens contest by position —
     // the latest open wins, no reference-order uncertainty.
     let dupVal () = 312
+
+// ==== The qualified case-PATTERN resolver (`resolve_fsharp_abbrev.rs`) ====
+// A referenced-assembly union matched by a `Type.Case` pattern (`match x with
+// Shape.Circle r -> …`). `Circle` carries a field, so it compiles to a nested
+// IL type (the head + tail both resolve to `Entity`s); `Dot` is nullary, so it
+// is a singleton with no nested type (the head resolves, the case tail defers,
+// as an opened assembly case does). `ShadowedUnion` deliberately shares its
+// source name with the `ShadowedUnion` MODULE in namespace `Demo.CasePat.Later`
+// below: after `open Demo.CasePat.Later` then `open Demo.CasePat`, a value-space
+// head lookup binds the later-opened module, but a *pattern* head must find the
+// union — the case-pattern resolver walks the type/constructor namespace, so it
+// skips the module and roots the union (the `SynType`/`WoofWare…SynType` shape
+// that motivated this).
+namespace Demo.CasePat
+
+type Shape =
+    | Circle of radius: int
+    | Dot
+
+type ShadowedUnion =
+    | Shaded of int
+    | Plain
+
+// A GENERIC union: a qualified case pattern writes no type arguments, so the
+// resolver must find it arity-agnostically (an arity-0 lookup would exclude it).
+type GenericShape<'T> =
+    | GenericCircle of 'T
+    | GenericDot
+
+namespace Demo.CasePat.Later
+
+// A MODULE whose source name collides with `Demo.CasePat.ShadowedUnion` — the
+// value/module namespace shadow the pattern resolver must see past.
+module ShadowedUnion =
+    let helper () = 1
+
+// An `[<AutoOpen>]` module declaring a type that shadows its own namespace's
+// same-named union. FCS binds `Demo.CasePatAuto.Auto.Hidden`, not the direct
+// `Demo.CasePatAuto.Hidden` — the auto-open's contents out-rank the namespace's
+// own direct members — so a `Hidden.HiddenA` pattern under `open
+// Demo.CasePatAuto` must DECLINE (the tiered walk's `ShadowVeto::Preemptive`).
+namespace Demo.CasePatAuto
+
+type Hidden =
+    | HiddenA of int
+    | HiddenB
+
+[<AutoOpen>]
+module Auto =
+    type Hidden =
+        | AutoOnly of int
+
+// ==== The generative case-pattern sweep (`resolve_case_pattern_gen_diff.rs`) ====
+// One union to find, plus one namespace per *shadowing* shape that can sit at a
+// higher precedence tier than it. Every entity is called `Target`, so the sweep
+// picks a union namespace and a shadow namespace and opens them in either order.
+// Each shadow answers a different question about the head lookup: is the shape
+// transparent to the constructor namespace (a module is), does it *bind* the
+// head (a class, a caseless union), does FCS chase it (an abbreviation), or does
+// it out-rank its own namespace's direct members (an `[<AutoOpen>]` type)?
+namespace Cases.Union
+
+type Target =
+    | Carrier of int
+    | Nullary
+
+namespace Cases.GenericUnion
+
+type Target<'T> =
+    | Carrier of 'T
+    | Nullary
+
+namespace Cases.ModuleShadow
+
+module Target =
+    let helper () = 1
+
+namespace Cases.TypeShadow
+
+type Target() =
+    member _.X = 1
+
+namespace Cases.AbbrevShadow
+
+type Target = Cases.Union.Target
+
+namespace Cases.AutoOpenShadow
+
+[<AutoOpen>]
+module Auto =
+    type Target =
+        | AutoOnly of int
+
+namespace Cases.CaselessUnion
+
+type Target =
+    | Other of int

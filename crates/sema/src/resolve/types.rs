@@ -1882,7 +1882,7 @@ impl<'a> Resolver<'a> {
     /// bare, unopened name bind to it, so the root tier needs the same check
     /// as every opened/enclosing one — found by review against
     /// `docs/completed/r2-annotation-typing-plan.md`.
-    fn unmodelled_type_shadow_at(&self, prefix: &[String]) -> bool {
+    pub(super) fn unmodelled_type_shadow_at(&self, prefix: &[String]) -> bool {
         self.project_auto_open_module_in_namespace(prefix)
             || self
                 .assemblies

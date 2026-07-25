@@ -501,6 +501,9 @@ pub struct AssemblyEnv {
     /// open-type set so a bare `printfn` resolves to the module's static
     /// member — see `Resolver::open_auto_open_modules_in`.
     auto_open_modules: HashMap<Vec<String>, Vec<EntityHandle>>,
+    /// The nested types that are *union-case carriers* — see
+    /// [`Self::index_union_case_carriers`], which fills it.
+    union_case_carriers: HashSet<EntityHandle>,
     /// Namespaces where an assembly whose **abbreviations are unknowable**
     /// ([`AbbreviationVisibility::Unknowable`]: its signature pickle failed to
     /// decode, or it embeds foreign CCU pickles we never decode) is known —
@@ -1135,6 +1138,49 @@ impl AssemblyEnv {
             .chain(source_named_module_keys)
         {
             self.index_first_type(key, handle);
+        }
+        self.index_union_case_carriers();
+    }
+
+    /// Record every **union-case carrier**: the compiler-generated nested type a
+    /// *field-carrying* F# union case compiles to (`Shape` → `Shape/Circle`).
+    ///
+    /// The carrier is projected as an ordinary nested class, so nothing about the
+    /// entity itself says "union case" — [`Self::entity_class`] would call it a
+    /// [`SemanticClass::Type`] and a hover would render the generated class where
+    /// FCS names the case. Only the *parent* union knows, through
+    /// [`union_case_names`](borzoi_assembly::Entity::union_case_names), and
+    /// entities carry no parent link, so the relation is indexed once here rather
+    /// than rediscovered per query.
+    ///
+    /// A **nullary** case has no carrier at all (it is a singleton), so it is
+    /// absent from this set and simply never asked about.
+    fn index_union_case_carriers(&mut self) {
+        let unions: Vec<(EntityHandle, Vec<String>, usize)> = (0..self.nodes.len())
+            .map(EntityHandle::new)
+            .filter_map(|handle| {
+                let entity = self.entity(handle);
+                if entity.kind != EntityKind::Union {
+                    return None;
+                }
+                Some((
+                    handle,
+                    entity.union_case_names.clone()?,
+                    entity.generic_parameters.len(),
+                ))
+            })
+            .collect();
+        for (union, cases, arity) in unions {
+            for case in &cases {
+                // A generic union's carrier carries the union's own generic
+                // parameters; a non-generic one's is at arity 0.
+                if let Some(carrier) = self
+                    .nested(union, case, arity)
+                    .or_else(|| self.nested(union, case, 0))
+                {
+                    self.union_case_carriers.insert(carrier);
+                }
+            }
         }
     }
 
@@ -2228,6 +2274,14 @@ impl AssemblyEnv {
     }
 
     pub fn entity_class(&self, handle: EntityHandle) -> Option<SemanticClass> {
+        // A field-carrying union case is projected as an ordinary nested class;
+        // only [`Self::union_case_carriers`] knows it is a case. When the F#
+        // signature is not authoritative the case list it was derived from is an
+        // IL heuristic FCS does not share, so decline rather than claim either
+        // class — the same rule the `Module` arm below applies.
+        if self.union_case_carriers.contains(&handle) {
+            return (!self.fsharp_signature_unreliable(handle)).then_some(SemanticClass::UnionCase);
+        }
         match self.entity(handle).kind {
             // A module's kind is trustworthy only from an authoritative F# pickle;
             // a non-authoritative assembly's `Module` is an IL heuristic FCS does

@@ -18,7 +18,7 @@ use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, resolve_file,
 };
-use rowan::TextRange;
+use rowan::{TextRange, TextSize};
 
 /// Budget for one fixture `dotnet build`. A cold build restores packages and runs
 /// the F# compiler, which is legitimately minutes, so the bound sits far above the
@@ -1143,4 +1143,395 @@ fn absent_child_past_a_chased_alias_defers_instead_of_ceding() {
         "an absent child past a chased alias must defer the path, not fall \
          through to the lower open's same-named type"
     );
+}
+
+/// The head of a `Type.Case` PATTERN whose type is a referenced-assembly union
+/// resolves to that union's `Entity`, and — for a field-carrying case, which
+/// compiles to a nested IL type — the whole `Type.Case` span resolves to the
+/// case's nested `Entity`. This is the pattern-position sibling of how the
+/// value path resolves `SynAccess.Internal` as an expression: before this, the
+/// qualified case-pattern path consulted only in-file / cross-project tables
+/// and recorded *nothing* for an assembly union, surfacing as
+/// "No definition available".
+#[test]
+fn qualified_case_pattern_resolves_into_an_assembly_union() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | Shape.Dot -> 0\n";
+    let rf = resolve(src, &env);
+
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape union in env");
+    let circle = env
+        .nested(shape, "Circle", 0)
+        .expect("Shape.Circle compiles to a nested case type");
+
+    // Head `Shape` (first occurrence, in `Shape.Circle`) → the union entity.
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "the qualified case-pattern head must resolve to the assembly union"
+    );
+    // Whole `Shape.Circle` span → the field-carrying case's nested type.
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape.Circle")),
+        Some(Resolution::Entity(circle)),
+        "a field-carrying case tail resolves to its nested IL type"
+    );
+}
+
+/// A *nullary* case has no nested IL type (it is a singleton), so the case tail
+/// defers — but the head still resolves to the union, exactly as an opened
+/// assembly case is a known case *reference* with an opaque target.
+#[test]
+fn qualified_nullary_case_pattern_resolves_head_defers_tail() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Dot -> 0\n\
+               \x20       | _ -> 1\n";
+    let rf = resolve(src, &env);
+
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape union in env");
+    let whole = at(src, "Shape.Dot");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(5u32));
+
+    assert_eq!(
+        rf.resolution_at(head),
+        Some(Resolution::Entity(shape)),
+        "the nullary case-pattern head still resolves to the assembly union"
+    );
+    assert_eq!(
+        rf.resolution_at(whole),
+        Some(Resolution::Deferred(DeferredReason::QualifiedAccess)),
+        "a nullary case has no nested type, so the case tail defers"
+    );
+}
+
+/// The motivating shape (`SynType.Var` under `open Fantomas.FCS.Syntax` +
+/// `open WoofWare.Whippet.Fantomas`, which also declares a `SynType` module): a
+/// later-opened MODULE shares the union's source name, shadowing it in the
+/// value/module namespace. A pattern head is a type/constructor lookup, so the
+/// resolver must see PAST the module and root the union.
+#[test]
+fn qualified_case_pattern_sees_past_a_shadowing_module() {
+    let env = fixture_env();
+    // `Demo.CasePat.Later` (the module) is opened LAST, so it wins the
+    // value/module namespace — but the pattern must still find the union.
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               open Demo.CasePat.Later\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | ShadowedUnion.Shaded n -> n\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+
+    let union = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "ShadowedUnion", 0)
+        .expect("Demo.CasePat.ShadowedUnion union in env");
+    let shaded = env
+        .nested(union, "Shaded", 0)
+        .expect("ShadowedUnion.Shaded nested case type");
+
+    assert_eq!(
+        rf.resolution_at(at(src, "ShadowedUnion")),
+        Some(Resolution::Entity(union)),
+        "the case-pattern head must root the union, not the shadowing module"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "ShadowedUnion.Shaded")),
+        Some(Resolution::Entity(shaded)),
+        "the case tail resolves to the union case, not through the module"
+    );
+}
+
+/// A qualified case pattern writes no generic arguments, so a *generic* union
+/// (`GenericShape<'T>`) must resolve arity-agnostically — an arity-0 lookup
+/// would exclude every generic DU (`Result`, `Choice`, …).
+#[test]
+fn qualified_generic_union_case_pattern_resolves() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | GenericShape.GenericCircle v -> v\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let generic = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "GenericShape", 1)
+        .expect("Demo.CasePat.GenericShape<'T> union in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "GenericShape")),
+        Some(Resolution::Entity(generic)),
+        "a generic union head must resolve despite writing no type arguments"
+    );
+}
+
+/// A project type / abbreviation of the same simple name shadows any assembly
+/// union in the constructor namespace — FCS chases the project abbreviation to
+/// its target's cases, which this branch does not model, so it must DECLINE
+/// (record nothing) rather than root the assembly union (a wrong target).
+#[test]
+fn qualified_case_pattern_declines_when_a_project_type_shadows() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   type Shape = int\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "Shape.Circle");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(5u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "a project type of the same name must suppress the assembly union reading"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// An assembly **abbreviation** aliasing a union (`Lib.UAlias = Lib.U`, and `U`
+/// owns `UCase`) binds the head, but this branch does not chase the alias to its
+/// target's cases — so it DECLINES rather than skip the abbreviation and commit
+/// an unrelated lower-tier reading.
+#[test]
+fn qualified_case_pattern_declines_through_an_assembly_abbreviation() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Lib\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | UAlias.UCase -> 0\n\
+               \x20       | _ -> 1\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "UAlias.UCase");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "an unchased assembly abbreviation head must decline, not mis-root"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// A cross-DLL name collision at the rooting tier: FCS merges same-FQN roots by
+/// reference order, which sema does not model — so a case pattern whose union
+/// FQN is exported by more than one loaded DLL DECLINES.
+#[test]
+fn qualified_case_pattern_declines_on_cross_dll_collision() {
+    let env = fixture_env_doubled();
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape")),
+        None,
+        "a union FQN exported by two DLLs must decline (unmodelled merge order)"
+    );
+}
+
+/// The same collision, between two loaded DLLs that share a manifest
+/// **identity** (same name, version and public key) but export different things
+/// at the name: the main fixture's `Cases.Union.Target` union against the
+/// duplicate-identity fixture's `Cases.Union.Target` *module*. A module is
+/// transparent to a constructor-namespace head lookup, so nothing here trips the
+/// "two unions own the case" check — only per-DLL **provenance** sees the
+/// contest. Keyed on the identity instead, the pair reads as one DLL and the
+/// union is committed regardless of reference order, where FCS may bind the
+/// module (codex review).
+#[test]
+fn qualified_case_pattern_declines_on_same_identity_dll_collision() {
+    let main = std::fs::read(ensure_fixture_built()).expect("read main fixture dll");
+    let dup = std::fs::read(crate::common::ensure_case_pattern_dup_fixture_built())
+        .expect("read duplicate-identity fixture dll");
+    let main = Ecma335Assembly::parse(&main).expect("parse main fixture dll");
+    let dup = Ecma335Assembly::parse(&dup).expect("parse duplicate-identity fixture dll");
+    let env = AssemblyEnv::from_views(&[main, dup]).expect("build AssemblyEnv");
+
+    let src = "namespace Consumer\n\
+               open Cases.Union\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Target.Carrier r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "Target.Carrier");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "a union contested by a same-identity DLL's module must decline"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// A union imported through an `open` of an assembly **module** (not a
+/// namespace) is a documented completeness gap: `assembly_prefixes_by_priority`
+/// carries only namespace readings, and the module open sets
+/// `opaque_value_open`, so `record_qualified_case_pattern` returns before the
+/// assembly branch runs. The point of this test is that the gap is a **sound
+/// decline** (records nothing), never a wrong target — resolving assembly-module
+/// opens here is a follow-up.
+#[test]
+fn module_opened_union_case_pattern_declines_soundly() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.MOpen.UnionMod\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | MUnion.MCaseA -> 0\n\
+               \x20       | _ -> 1\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "MUnion.MCaseA");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(rf.resolution_at(head), None);
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// The **enclosing-namespace** tier of the shared walk: no `open` at all, the
+/// file's own `namespace Demo.CasePat` supplies the prefix.
+#[test]
+fn qualified_case_pattern_resolves_at_the_enclosing_namespace() {
+    let env = fixture_env();
+    let src = "namespace Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape union in env");
+    let circle = env
+        .nested(shape, "Circle", 0)
+        .expect("Shape.Circle compiles to a nested case type");
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "the enclosing namespace is a reading tier of its own"
+    );
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape.Circle")),
+        Some(Resolution::Entity(circle))
+    );
+}
+
+/// An `[<AutoOpen>]` module in the opened namespace declaring a type of the
+/// head's name out-ranks the namespace's own direct members (FCS-probed), and
+/// its nested content is not in the direct bucket — so the tier's
+/// `ShadowVeto::Preemptive` vetoes even the real same-tier union. Decline.
+#[test]
+fn qualified_case_pattern_declines_under_an_auto_open_type_shadow() {
+    let env = fixture_env();
+    let src = "namespace Consumer\n\
+               open Demo.CasePatAuto\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Hidden.HiddenA n -> n\n\
+               \x20       | _ -> 0\n";
+    let rf = resolve(src, &env);
+    let whole = at(src, "Hidden.HiddenA");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+    assert_eq!(
+        rf.resolution_at(head),
+        None,
+        "`Demo.CasePatAuto.Auto.Hidden` out-ranks the direct `Hidden` — decline"
+    );
+    assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// The cross-tier interleave. A project union `Consumer.Shape` in an earlier
+/// file is reachable at the *enclosing-namespace* tier, and an assembly union
+/// `Demo.CasePat.Shape` owning the same case name is reachable through a later
+/// `open` — which out-ranks it, so FCS binds the assembly case. Sema cannot
+/// commit the assembly reading (a project type of the head's simple name is in
+/// scope, and FCS would chase a project abbreviation of that name to its
+/// target's cases), so the site DECLINES. Before the interleave the project
+/// reading was committed unconditionally: a wrong target, not a missed one.
+#[test]
+fn assembly_open_outranks_a_project_case_at_the_enclosing_namespace() {
+    let env = fixture_env();
+    let earlier = "namespace Consumer\n\
+                   type Shape =\n\
+                   \x20   | Circle of int\n\
+                   \x20   | Square\n";
+    let later = "namespace Consumer\n\
+                 open Demo.CasePat\n\
+                 module M =\n\
+                 \x20   let f x =\n\
+                 \x20       match x with\n\
+                 \x20       | Shape.Circle r -> r\n\
+                 \x20       | _ -> 0\n";
+    let files: Vec<_> = [earlier, later]
+        .iter()
+        .map(|src| {
+            let parsed = parse(src);
+            assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+            ImplFile::cast(parsed.root).expect("impl file")
+        })
+        .collect();
+    let contended = borzoi_sema::resolve_project(&files, &env);
+    let whole = at(later, "Shape.Circle");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(5u32));
+    assert_eq!(
+        contended.file(1).resolution_at(head),
+        None,
+        "the assembly union's `open` out-ranks the project union's namespace"
+    );
+    assert_eq!(contended.file(1).resolution_at(whole), None);
+
+    // Controls: the decline is caused by the *contending assembly union*, not by
+    // some unrelated effect of having an `open` at all. With no open, and with
+    // an open of a namespace that supplies no `Shape`, the project case binds.
+    for control in [
+        later.replace("open Demo.CasePat\n", ""),
+        later.replace("open Demo.CasePat\n", "open Demo.CasePat.Later\n"),
+    ] {
+        let files: Vec<_> = [earlier, control.as_str()]
+            .iter()
+            .map(|src| {
+                let parsed = parse(src);
+                assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+                ImplFile::cast(parsed.root).expect("impl file")
+            })
+            .collect();
+        let uncontended = borzoi_sema::resolve_project(&files, &env);
+        let whole = at(&control, "Shape.Circle");
+        assert!(
+            matches!(
+                uncontended.file(1).resolution_at(whole),
+                Some(Resolution::Item(_))
+            ),
+            "uncontended, the project case binds ({control:?}): {:?}",
+            uncontended.file(1).resolution_at(whole)
+        );
+    }
 }

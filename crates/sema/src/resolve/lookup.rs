@@ -13,8 +13,8 @@ use crate::def::{DefId, DefKind};
 use super::id_text;
 use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
 use super::state::{
-    ActivePatternShape, AssemblyPath, OpenInterpretation, Resolver, SameFileQualified, ScopeEntry,
-    ShadowVeto, TieredResolution,
+    ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
+    ScopeEntry, ShadowVeto, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -988,6 +988,21 @@ impl<'a> Resolver<'a> {
     /// without declaration-block provenance, which sema does not model). FCS resolves
     /// some of these to the case; we say nothing (never a wrong target).
     pub(super) fn cross_file_type_case(&self, written: &[String], rooted: bool) -> Option<ItemId> {
+        self.cross_file_type_case_tiered(written, rooted)
+            .map(|(_, id)| id)
+    }
+
+    /// [`Self::cross_file_type_case`], additionally reporting the [`CaseTier`]
+    /// the hit won at — what
+    /// [`record_qualified_case_pattern`](Self::record_qualified_case_pattern)
+    /// orders this project reading against a competing referenced-assembly one
+    /// with. Callers that only bind the case (there is no assembly reading to
+    /// contend with) take the tier-free wrapper.
+    fn cross_file_type_case_tiered(
+        &self,
+        written: &[String],
+        rooted: bool,
+    ) -> Option<(CaseTier, ItemId)> {
         // An `open type T` (modelled or not) sets `unmodelled_open_active`: T's
         // unmodelled nested types could supply the head segment, shadowing the
         // project type for the qualifier (`open Lib; open type Demo.Thing; Inner.Red`
@@ -1013,14 +1028,14 @@ impl<'a> Resolver<'a> {
             {
                 let mut full = target.to_vec();
                 full.extend_from_slice(rest);
-                return hit(&full);
+                return hit(&full).map(|id| (CaseTier::Alias, id));
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
                 let mut full = prefix.clone();
                 full.extend_from_slice(written);
                 if let Some(id) = hit(&full) {
-                    return Some(id);
+                    return Some((CaseTier::Namespace, id));
                 }
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first.
@@ -1028,12 +1043,12 @@ impl<'a> Resolver<'a> {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(written);
                 if let Some(id) = hit(&full) {
-                    return Some(id);
+                    return Some((CaseTier::Namespace, id));
                 }
             }
         }
         // Tier 3 — the path as written (root / fully-qualified).
-        hit(written)
+        hit(written).map(|id| (CaseTier::Namespace, id))
     }
 
     /// Bring the **direct** exported values of project module `module_path` into
@@ -3282,20 +3297,194 @@ impl<'a> Resolver<'a> {
             if self.sig_screens_case_reading_of(&written) {
                 return;
             }
-            if let Some(id) = self.cross_file_type_case(&written, false) {
-                let (first, last) = (
-                    segs.first().expect("non-empty"),
-                    segs.last().expect("non-empty"),
-                );
-                let whole = TextRange::new(first.text_range().start(), last.text_range().end());
-                self.record(whole, Resolution::Item(id));
-                for seg in &segs[..segs.len() - 1] {
-                    self.record(
-                        seg.text_range(),
-                        Resolution::Deferred(DeferredReason::QualifiedAccess),
+            let project = self.cross_file_type_case_tiered(&written, false);
+            // Order the project reading against the referenced assemblies by the
+            // tier each reaches the head at. An `open` out-ranks the enclosing
+            // namespace and the root, and a project module **alias** head
+            // out-ranks everything (it is definitive for the head).
+            //
+            // Against a project reading the assembly side is weighed as a
+            // *contender*, not as a candidate binding
+            // ([`Self::assembly_case_head_contends_at_an_open`]): whenever a
+            // project case reading exists, a project type of the head's simple
+            // name exists with it — the case's own union — and FCS binds *that*
+            // over any assembly entity, so the assembly reading could never be
+            // committed here anyway. What matters is only whether something
+            // assembly-side occupies the head at a higher tier, in which case
+            // neither side may commit. That is deliberately coarser than
+            // "resolves to a union owning the case": an assembly entity we
+            // decline to resolve *through* (an unchaseable abbreviation, a
+            // cross-DLL collision, a type whose surface we cannot enumerate) is
+            // still something FCS may bind the head to, so it must veto the
+            // project reading just the same.
+            let winner = match project {
+                Some((CaseTier::Alias, id)) => Some(Ok(id)),
+                Some((_, id)) => match segs {
+                    [type_seg, _]
+                        if self
+                            .assembly_case_head_contends_at_an_open(id_text(type_seg.text())) =>
+                    {
+                        None
+                    }
+                    _ => Some(Ok(id)),
+                },
+                // Nothing project-side reads the path: the assembly walk decides,
+                // subject to the project-simple-name guard.
+                None => match segs {
+                    [type_seg, case_seg]
+                        if !self.project_binds_type_simple_name(id_text(type_seg.text())) =>
+                    {
+                        self.assembly_case_pattern_reading(type_seg, case_seg)
+                            .map(Err)
+                    }
+                    _ => None,
+                },
+            };
+            match winner {
+                Some(Ok(id)) => {
+                    let (first, last) = (
+                        segs.first().expect("non-empty"),
+                        segs.last().expect("non-empty"),
                     );
+                    let whole = TextRange::new(first.text_range().start(), last.text_range().end());
+                    self.record(whole, Resolution::Item(id));
+                    for seg in &segs[..segs.len() - 1] {
+                        self.record(
+                            seg.text_range(),
+                            Resolution::Deferred(DeferredReason::QualifiedAccess),
+                        );
+                    }
                 }
+                Some(Err(asm)) => {
+                    for (range, res) in asm {
+                        self.record(range, res);
+                    }
+                }
+                None => {}
             }
+        }
+    }
+
+    /// Whether an **explicit** `open` puts a referenced-assembly entity named
+    /// `type_name` in scope — directly, or through an `[<AutoOpen>]` module in
+    /// that namespace declaring a type of the name. An explicit `open` out-ranks
+    /// the enclosing namespace and the root, so such an entity occupies the head
+    /// of a `Type.Case` pattern above any project case reading those lower tiers
+    /// supply.
+    ///
+    /// Deliberately name-keyed and *kind-blind*: the question is not "does this
+    /// resolve to a union owning the case" (that is
+    /// [`Self::assembly_case_pattern_reading`]) but "could FCS bind the head
+    /// here", and an entity we decline to resolve through still answers yes.
+    ///
+    /// Just as deliberately **explicit-only** —
+    /// [`Self::explicit_open_reading_prefixes`], not
+    /// [`Self::open_reading_prefixes`]. The two surfaces this excludes both
+    /// sit *below* the enclosing namespace, so a project case reading beats them
+    /// and vetoing on them would lose resolutions we already had:
+    ///
+    /// - the **implicit** opens. F# auto-opens `Microsoft.FSharp.Core` into every
+    ///   file, so a project union named `Option` / `Result` / `Choice` — names
+    ///   FSharp.Core also declares — would never resolve its cases again
+    ///   (FCS-pinned by `resolve_case_pattern_gen_diff`'s implicit-open arm;
+    ///   codex review).
+    /// - a **retained manifest auto-open**, which
+    ///   [`Self::assembly_case_pattern_reading`] does still guard against,
+    ///   because there the competing reading is the assembly walk's own and can
+    ///   sit at the root. FCS binds the enclosing namespace over such an
+    ///   auto-open (pinned by the same sweep's retained arm), so it must not veto
+    ///   a project reading that reached the head there.
+    ///
+    /// The coarse, name-*blind* shadow sources the tiered walk carries as
+    /// [`ShadowVeto::OnNoMatch`] — an unknowable abbreviation somewhere in an
+    /// opened namespace — are excluded for the same reason, magnified: they carry
+    /// no evidence about *this* name at all. All of these stay documented
+    /// completeness gaps, the same status the type path gives them.
+    fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
+        self.explicit_open_reading_prefixes().any(|prefix| {
+            !self
+                .assemblies
+                .public_entities_named(prefix, type_name)
+                .is_empty()
+                || self
+                    .assemblies
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
+        })
+    }
+
+    /// Whether a **project** type or abbreviation of this simple name is in
+    /// scope — this file's own ([`Self::own_type_simple_names`]) or an earlier
+    /// Compile-order file's
+    /// ([`ProjectItems::project_type_simple_names`](super::model::ProjectItems)).
+    /// FCS binds it over any referenced-assembly entity of the name (chasing a
+    /// project abbreviation to its target's cases), which sema does not model in
+    /// pattern position, so an assembly union-case reading must not be committed
+    /// while one is in scope.
+    fn project_binds_type_simple_name(&self, name: &str) -> bool {
+        self.own_type_simple_names.contains(name)
+            || self.preceding.project_type_simple_names.contains(name)
+    }
+
+    /// Resolve a bare `Type.Case` PATTERN against the referenced assemblies — the
+    /// pattern-position sibling of how the value path resolves an assembly union
+    /// case (`SynAccess.Internal` as an expression), through the same shared
+    /// precedence walk ([`Self::resolve_assembly_path_tiered`]) with the
+    /// **constructor-namespace** leaf ([`Self::assembly_case_pattern_records`]):
+    /// opens latest-first, then the enclosing namespace, then the root. A
+    /// same-named *module* at a higher tier is transparent, so the `SynType`
+    /// union roots past a later-`open`ed `SynType` module that shadows it only in
+    /// the value/module namespace.
+    ///
+    /// The per-tier [`ShadowVeto`] is the **type path**'s
+    /// ([`Self::decide_type_path`]) — a pattern head is a type lookup: an
+    /// [assembly auto-open module in the namespace with a type of this
+    /// name](AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named)
+    /// out-ranks the direct bucket ([`ShadowVeto::Preemptive`]), and at a tier
+    /// with nothing directly an [unmodelled type
+    /// shadow](Self::unmodelled_type_shadow_at) could be a same-named union
+    /// ([`ShadowVeto::OnNoMatch`]).
+    ///
+    /// `None` — a sound decline, never a wrong target — when nothing resolves or
+    /// the walk shadow-defers. The reading is a **contender**, not yet a binding:
+    /// [`Self::project_binds_type_simple_name`] can still stop it committing, and
+    /// its caller applies that at commit time so a contender the project cannot
+    /// bind still gets to out-rank — and so veto — a lower-tier project reading.
+    fn assembly_case_pattern_reading(
+        &self,
+        type_seg: &SyntaxToken,
+        case_seg: &SyntaxToken,
+    ) -> Option<Vec<(TextRange, Resolution)>> {
+        let type_name = id_text(type_seg.text());
+        let case_name = id_text(case_seg.text());
+        // A *retained* manifest auto-open surface sits above every prefix the
+        // walk visits and is invisible to it — see
+        // [`Self::assembly_case_head_contends_at_an_open`].
+        if self
+            .assemblies
+            .retained_auto_open_could_supply_entity_named(type_name)
+        {
+            return None;
+        }
+        match self.resolve_assembly_path_tiered(
+            |prefix| {
+                self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
+            },
+            false,
+            |prefix| {
+                if self
+                    .assemblies
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
+                {
+                    ShadowVeto::Preemptive
+                } else if self.unmodelled_type_shadow_at(prefix) {
+                    ShadowVeto::OnNoMatch
+                } else {
+                    ShadowVeto::None
+                }
+            },
+        ) {
+            TieredResolution::Resolved(reading) => Some(reading),
+            TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
         }
     }
 

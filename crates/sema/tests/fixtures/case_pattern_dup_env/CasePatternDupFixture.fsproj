@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- A second assembly whose manifest identity is byte-for-byte the main
+       `fsharp_abbrev_env` fixture's — same `AssemblyName`, same (default)
+       version, both unsigned — while exporting *different* content at a name
+       the main fixture also exports: `module Cases.Union.Target` where the main
+       fixture has `type Cases.Union.Target` (a union).
+
+       Two distinct loaded DLLs can share an `AssemblyIdentity` (the same
+       library resolved twice down different paths), and FCS then picks between
+       them by reference order. A collision check keyed on the identity rather
+       than on per-DLL provenance collapses the pair into one DLL, misses the
+       module-vs-union contest, and commits the union — a wrong target
+       (codex review). `AssemblyEnv::spans_multiple_dlls` keys on provenance;
+       this fixture is what holds it to that. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaFSharpAbbrevFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Fixture.fs" />
+  </ItemGroup>
+
+</Project>
