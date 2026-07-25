@@ -1176,6 +1176,104 @@ fn nested_module_exact_name_as_type_resolves_the_assembly() {
     );
 }
 
+/// An authoritative F# module is a path **container**, not a type an annotation
+/// can denote. The property holds independently of metadata/reference order:
+/// when a real type and a module occupy the same source-name slot, the type is
+/// the terminal; when a later `open` supplies only a same-named module, lookup
+/// continues to the earlier open's type.
+#[test]
+fn authoritative_assembly_module_never_wins_a_type_terminal() {
+    let template = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Thing")
+        .expect("Demo.Thing in fixture");
+
+    let entity = |assembly: &str, namespace: &str, kind: EntityKind| {
+        let mut e = template.clone();
+        e.assembly.name = assembly.to_string();
+        e.namespace = vec![namespace.to_string()];
+        e.name = "Ident".to_string();
+        e.kind = kind;
+        e.members = vec![];
+        e.nested_types = vec![];
+        e
+    };
+    let type_entity = entity("TypeLib", "Shared", EntityKind::Class);
+    let module_entity = entity("ModuleLib", "Shared", EntityKind::Module);
+
+    // Exhaust both reference/metadata orders. FCS's type namespace selects the
+    // real type in either order; the module occupies no terminal type slot.
+    for module_first in [false, true] {
+        let entities = if module_first {
+            vec![module_entity.clone(), type_entity.clone()]
+        } else {
+            vec![type_entity.clone(), module_entity.clone()]
+        };
+        let env = AssemblyEnv::from_entities(entities);
+        let src = "open Shared\nlet keep (value: Ident) = value\n";
+        let rf = resolve(src, &env);
+        let Some(Resolution::Entity(handle)) = rf.resolution_at(at(src, "Ident")) else {
+            panic!(
+                "the real type must resolve with module_first={module_first}; got {:?}",
+                rf.resolution_at(at(src, "Ident"))
+            );
+        };
+        assert_eq!(env.entity(handle).assembly.name, "TypeLib");
+        assert_eq!(env.entity(handle).kind, EntityKind::Class);
+    }
+
+    // The motivating precedence shape: the later open is searched first, but
+    // its same-named module is a clean type-position miss, so the earlier
+    // open's real type wins.
+    let mut opened_type = type_entity;
+    opened_type.namespace = vec!["Types".to_string()];
+    let mut opened_module = module_entity;
+    opened_module.namespace = vec!["Helpers".to_string()];
+    let env = AssemblyEnv::from_entities(vec![opened_type, opened_module]);
+    let src = "open Types\nopen Helpers\nlet keep (value: Ident) = value\n";
+    let rf = resolve(src, &env);
+    let Some(Resolution::Entity(handle)) = rf.resolution_at(at(src, "Ident")) else {
+        panic!(
+            "a later-opened module must not mask the earlier-opened type; got {:?}",
+            rf.resolution_at(at(src, "Ident"))
+        );
+    };
+    assert_eq!(env.entity(handle).assembly.name, "TypeLib");
+    assert_eq!(env.entity(handle).kind, EntityKind::Class);
+}
+
+#[test]
+fn authoritative_assembly_module_remains_a_type_path_container() {
+    let template = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Thing")
+        .expect("Demo.Thing in fixture");
+    let mut nested = template.clone();
+    nested.namespace = vec![];
+    nested.name = "Nested".to_string();
+    nested.members = vec![];
+    nested.nested_types = vec![];
+
+    let mut module = template;
+    module.namespace = vec!["Helpers".to_string()];
+    module.name = "Container".to_string();
+    module.kind = EntityKind::Module;
+    module.members = vec![];
+    module.nested_types = vec![nested];
+
+    let env = AssemblyEnv::from_entities(vec![module]);
+    let src = "let keep (value: Helpers.Container.Nested) = value\n";
+    let rf = resolve(src, &env);
+    let Some(Resolution::Entity(handle)) = rf.resolution_at(at(src, "Nested")) else {
+        panic!(
+            "a module must still contain a nested terminal type; got {:?}",
+            rf.resolution_at(at(src, "Nested"))
+        );
+    };
+    assert_eq!(env.entity(handle).name, "Nested");
+    assert_ne!(env.entity(handle).kind, EntityKind::Module);
+}
+
 #[test]
 fn unknown_open_does_not_resolve() {
     // Opening a namespace that nothing declares must not make a path resolve

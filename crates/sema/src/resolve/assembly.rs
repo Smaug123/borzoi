@@ -507,8 +507,17 @@ impl<'a> Resolver<'a> {
         // the final segment only — an encloser in the path is keyed at arity 0.
         let arity_at = |k: usize| if k == n - 1 { arity } else { 0 };
         let Some((k, type_handle)) = (base..n).rev().find_map(|k| {
-            self.assemblies
-                .lookup_type(&names[..k], &names[k], arity_at(k))
+            let handle = if k == n - 1 {
+                // The last written segment is the type the annotation denotes:
+                // an authoritative F# module is a clean miss here, even though
+                // its CLR TypeDef remains a valid path container.
+                self.assemblies
+                    .lookup_terminal_type(&names[..k], &names[k], arity_at(k))
+            } else {
+                self.assemblies
+                    .lookup_type(&names[..k], &names[k], arity_at(k))
+            };
+            handle
                 .filter(|&handle| self.assemblies.is_public(handle))
                 .map(|handle| (k, handle))
         }) else {
@@ -586,11 +595,13 @@ impl<'a> Resolver<'a> {
         let mut i = k + 1;
         let mut owns_path = true;
         while i < n {
-            if let Some(child) = self
-                .assemblies
-                .nested(parent, &names[i], arity_at(i))
-                .filter(|&h| self.assemblies.is_public(h))
-            {
+            let child = if i == n - 1 {
+                self.assemblies
+                    .nested_terminal_type(parent, &names[i], arity_at(i))
+            } else {
+                self.assemblies.nested(parent, &names[i], arity_at(i))
+            };
+            if let Some(child) = child.filter(|&h| self.assemblies.is_public(h)) {
                 // A nested abbreviation marker (`Lib.Auto.Foo` where `Foo` is
                 // a module-scoped abbreviation): same chase-or-defer as the
                 // rooting case above, including the rooting collision guard —
