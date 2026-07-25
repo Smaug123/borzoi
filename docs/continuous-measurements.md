@@ -76,6 +76,18 @@ embeds a path or an oracle error mints a fresh metric per run and none of them
 are comparable. Keep those in the report artifact and put closed enumerations
 (asset status, error kind) in `statistics`.
 
+**Emit the same keys every run.** A metric is not merely a number; it is a
+number that is *always there*. The dashboard skips observations whose value is
+absent, so a key that disappears when its count falls to zero leaves the older,
+nonzero point showing as "Latest" — a fixed problem still reading as broken,
+which is the exact failure this workflow exists to catch. A closed enumeration
+emitted sparsely is an open one: iterate the variants and emit zeros, never
+`counts.iter().map(…).collect()` over the observed ones. Nothing in the
+recorder can check this, because a summary with a missing key is
+indistinguishable from a measurement that genuinely has fewer metrics; the
+generator has to be exhaustive by construction. `borzoi-corpus-diff`'s
+`every_asset_status_is_a_metric_even_at_zero` pins that for the asset statuses.
+
 ## Two corpora
 
 A corpus is identified by `corpus.source` (an `OWNER/NAME` label) and

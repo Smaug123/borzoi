@@ -416,6 +416,17 @@ fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
             "project",
             json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A dir/A.fsproj")] }),
         ),
+        // A second spelling of one path would pass the literal duplicate check
+        // below and be measured twice, doubling that project's contribution to
+        // every count in the series.
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/./A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "./A/A.fsproj")] }),
+        ),
         (
             "two revisions",
             json!({ "schema_version": 1, "projects": [good.clone(), pin("Smaug123/A", &"b".repeat(40), "A/Other.fsproj")] }),

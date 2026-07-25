@@ -94,6 +94,19 @@ pub enum ProjectAssetsStatusKind {
 }
 
 impl ProjectAssetsStatusKind {
+    /// Every variant, for callers that must emit the whole enumeration rather
+    /// than only the values they observed — see [`render_generator_summary`].
+    /// Keep in step with the `json_key` match below, which is exhaustive and
+    /// so fails to compile when a variant is added.
+    pub const ALL: [Self; 6] = [
+        Self::NotChecked,
+        Self::ProjectDirectoryUnavailable,
+        Self::DotnetRootUnavailable,
+        Self::Missing,
+        Self::Resolved,
+        Self::ResolutionFailed,
+    ];
+
     fn json_key(self) -> &'static str {
         match self {
             Self::NotChecked => "not_checked",
@@ -1948,10 +1961,23 @@ pub fn render_generator_summary(
                 total: summary.skipped_uses.total(),
             },
             unoracled_definitions: summary.unoracled_definitions,
-            project_assets_by_status: summary
-                .project_assets_by_status
-                .iter()
-                .map(|(status, count)| (status.json_key(), *count))
+            // Every variant, including the ones that did not occur. A metric
+            // that vanishes when its count reaches zero is worse than useless
+            // here: the dashboard skips observations whose value is absent, so
+            // a status dropping from two to none would leave the *older*,
+            // nonzero point showing as the latest — a fixed problem still
+            // reading as broken. A closed enumeration emitted sparsely is an
+            // open one.
+            project_assets_by_status: ProjectAssetsStatusKind::ALL
+                .into_iter()
+                .map(|status| {
+                    let count = summary
+                        .project_assets_by_status
+                        .get(&status)
+                        .copied()
+                        .unwrap_or(0);
+                    (status.json_key(), count)
+                })
                 .collect(),
         },
     };
@@ -4375,6 +4401,40 @@ mod tests {
 
         // A list and a walk are never the same series, whatever the knobs.
         assert_ne!(render(&listed), walked);
+    }
+
+    /// A metric that disappears when its count reaches zero reads, on the
+    /// dashboard, as if it had never improved: absent values are filtered out,
+    /// so the newest observation is skipped and an older nonzero point still
+    /// shows as "Latest". Every variant of a closed enumeration is therefore
+    /// emitted on every run, whether or not it occurred.
+    #[test]
+    fn every_asset_status_is_a_metric_even_at_zero() {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison::default());
+        summary.record_project_assets(PathBuf::from("/A.fsproj"), ProjectAssetsStatus::NotChecked);
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_generator_summary(&summary, &generator_settings()).expect("render"),
+        )
+        .expect("valid JSON");
+        let by_status = &json["statistics"]["project_assets_by_status"];
+
+        for status in ProjectAssetsStatusKind::ALL {
+            assert!(
+                by_status[status.json_key()].is_number(),
+                "{} is absent, so a run where it drops to zero would be skipped \
+                 and the previous nonzero value would still read as the latest",
+                status.json_key()
+            );
+        }
+        assert_eq!(by_status["not_checked"], 1);
+        assert_eq!(by_status["resolved"], 0);
+        assert_eq!(
+            by_status.as_object().expect("object").len(),
+            ProjectAssetsStatusKind::ALL.len()
+        );
     }
 
     /// The point of the series: deferrals are counted, never gated, so this is

@@ -257,7 +257,8 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
         validate_hex("project corpus revision", &pin.revision, 40)?;
         if !valid_relative_project_path(&pin.project) {
             return invalid(format!(
-                "project corpus project must be a relative `.fsproj` path without `..`, got {:?}",
+                "project corpus project must be a relative `.fsproj` path in its only spelling \
+                 (no `.` or `..` components, no whitespace), got {:?}",
                 pin.project
             ));
         }
@@ -290,6 +291,14 @@ fn validate_project_corpus(corpus: &ProjectCorpus) -> Result<(), StatsError> {
 /// A repository-relative `.fsproj` path that cannot escape its checkout. The
 /// workflow interpolates this into a shell path, so it must also be free of
 /// whitespace and of the tab the plan output uses as its separator.
+///
+/// The path must additionally be in its *only* spelling, because duplicate
+/// detection compares these strings literally: `A/B.fsproj` and `A/./B.fsproj`
+/// name one file but survive as two pins, and the runner would then visit that
+/// project twice and double every count it contributes — a corrupted series
+/// reported as a healthy one. Traversal components are therefore rejected
+/// rather than normalised: no pin has any reason to contain one, so refusing
+/// is both simpler and louder than rewriting.
 fn valid_relative_project_path(value: &str) -> bool {
     !value.is_empty()
         && value.ends_with(".fsproj")
@@ -300,7 +309,7 @@ fn valid_relative_project_path(value: &str) -> bool {
         && !value.bytes().any(|byte| byte.is_ascii_control())
         && value
             .split('/')
-            .all(|part| !part.is_empty() && part != "..")
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
 fn validate_record_input(input: &RecordInput) -> Result<(), StatsError> {
