@@ -5,7 +5,8 @@
 > Stage-1 matrix; Stage 2 with the implementation notes in its section).
 > Of Stage 3+, the **accessibility slice** is implemented — val/module
 > `internal`/`public`, `val private`, and `module private` (see its
-> notes); the rest not started.
+> notes) — and so is the **open-fold fall-through** (bare names after an
+> `open` of a signatured module; see its notes); the rest not started.
 >
 > **Grounded in an FCS `uses-project` probe sweep (2026-07-18), including
 > reference-assembly-collision probes** (a built `RefLib.dll`). Every semantic
@@ -267,11 +268,13 @@ signature's own threaded contribution for the incremental fold. The
 signature's `[<AutoOpen>]` verdict is authoritative in **both** directions
 (probe: an implementation-only attribute is FS0039-ignored by FCS), so a
 screened file publishes exactly the signature's auto-opens. Bare names after
-an `open` of a signatured module all defer (the module is marked
-hidden-valued, so the conservative project-module-open machinery shadows
-earlier opens — load-bearing: a sig-exposed name must shadow an earlier
-open's same-named value); the qualified forms keep the per-name
-fall-through. A **headerless** signature roots its screen at the implicit
+an `open` of a signatured module keep the per-name fall-through too, like
+the qualified forms (the open-fold slice below): the module is still marked
+hidden-valued so the generation barrier shadows earlier opens — load-bearing:
+a sig-exposed name must shadow an earlier open's same-named value — but when
+every hidden marker for the opened path is sig-screened the barrier fires
+*before* the open's own assembly fold, and the per-name screen demotion is
+what stands between those entries and the names the signature could expose. A **headerless** signature roots its screen at the implicit
 filename module (codex round 3), and the same sweep surfaced a
 *pre-existing, signature-independent* hole the fold now also closes: an
 **unpaired headerless implementation**'s values live under the implicit
@@ -490,14 +493,10 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   bar` and member access through `let private Shared`, each colliding
   with `RefLib`, bind the assembly cleanly), so this also removed an
   impl-side over-deferral. `module private` stays screen-deferred (FCS
-  resolves through it only with FS1092/FS1094 errors). Known
-  over-deferral (codex round 1 P2, probed): after an `open` of the
-  signatured module, a bare reading of the sig-private name colliding
-  with an assembly member defers where FCS binds the assembly — the
-  Stage-1 blanket hidden-valued marking demotes every assembly entry of a
-  signatured root's open, the same documented class as the hidden-name
-  open over-deferral; deferral only, never a wrong commit (pinned by
-  `open_bare_private_collision_defers_but_never_commits_a_project_item`).
+  resolves through it only with FS1092/FS1094 errors). The codex round 1
+  P2 over-deferral — a bare reading after an `open` of the signatured
+  module, sig-private name colliding with an assembly member — was
+  pinned here and is fixed by the **open-fold slice** below.
   Oracles: the accessibility × collision × site matrix
   (`accessibility_matrix_agrees_with_fcs`), the widened FCS-free exposure
   matrix (header × style × access), the same-module-subtree differentials
@@ -534,14 +533,99 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   proper-prefix defer-shadow, pre-existing and independent of
   accessibility — FCS binds RefLib cleanly there; pinned by
   `namespace_direct_module_private_collision_defers_but_never_commits`);
-  (b) the module *entity* itself carries no accessibility (an `open` of
-  the private module from outside binds the assembly module in FCS;
-  ours stays a defer-shadow — the P2 open-fold class above). Oracles:
+  (b) the module *entity* itself carries no accessibility — the open
+  fold's bare names now fall through (the open-fold slice below), but
+  the open's own target ident still resolves to no project entity, and
+  the qualified-entity channels stay accessibility-blind. Oracles:
   the matrix gained a **module-header axis** (`{"", internal, private}`
-  × val access × collision × site — 72 site-keyed cells, observed
-  36 sig commits / 18 assembly commits / 18 deferrals), plus the
-  `sig3_module_private_*` differentials (sibling, earlier-fragment,
-  dotted, inner-`val private`, assembly-collision).
+  × val access × collision × site — 72 site-keyed cells at the time),
+  plus the `sig3_module_private_*` differentials (sibling,
+  earlier-fragment, dotted, inner-`val private`, assembly-collision).
+
+  **Open-fold fall-through (implemented 2026-07-19).** Bare names after
+  an `open` of a signatured module keep the qualified forms' per-name
+  fall-through. Root cause of the old blanket deferral was never the
+  screen — `sig_screened_open_name` already *exempts* exactly-exported
+  paths (private `val`s included) and demotes only names in the sig
+  token soup — but the hidden-values generation bump: every signatured
+  root is blanket-marked hidden-valued, and the bump ran *after* the
+  open's own assembly-half fold, staling entries the screen had
+  deliberately let through. The fix is a **marker-provenance split**
+  (`ProjectItems::opaque_hidden_value_modules`): when every hidden
+  marker for the opened path is sig-screened, the bump fires *before*
+  the assembly fold — sound because such a marker's names are bounded by
+  the `.fsi` text, so the per-name soup demotion covers exactly what the
+  barrier fears for this open's own entries; earlier opens' entries are
+  still staled by the bump either way. A marker is opaque when the
+  signature does **not** bound it, which every push site now states
+  explicitly (`HiddenNames::{SigDeclared, Borrowed}`, so a new marker
+  kind must answer the question): every marker of a file without a
+  paired signature, plus the *name-borrowing* markers of a signatured
+  one — an `[<AutoOpen>]` type and a module abbreviation. The auto-open
+  type is the sharp case (codex review of this slice, fsc-probed
+  2026-07-25): `[<AutoOpen>] type Alias = Target.T` in both halves makes
+  a bare `asmOnly` after the open bind `Target.T.asmOnly`, not the
+  colliding RefLib member, and the `.fsi` text never mentions the
+  abbreviated type's members — so the screen cannot demote them.
+  (Inherited statics do not forward; the decl does not distinguish an
+  abbreviation, so every auto-open type declines.) The signature's
+  `[<AutoOpen>]` verdict is authoritative for a *type* exactly as it is
+  for a module (probed: the sig attribute fires over a bare
+  implementation type), so the marker is contributed by the screen —
+  `SigScreen::auto_open_type_containers` — not read off the
+  implementation's flag, and collected inside
+  `collect_sig_container_exports`, the one place every container shape
+  (named header, namespace-direct module, headerless implicit filename
+  module) meets its decls, so no shape can be missed — recursively, so a
+  type nested any depth down marks the container it actually sits in.
+  A borrowed marker blocks the rescue when it lies **anywhere at or
+  under** the opened path, since an `open` publishes the module's own
+  names *and* its `[<AutoOpen>]` descendants' (fsc-probed: an auto-open
+  nested module holding an auto-open abbreviation publishes the
+  abbreviated type's statics at the outer `open`). That subtree is
+  exactly the set of names the open can bring, which closes the
+  soundness argument instead of enumerating leak paths. A **module
+  abbreviation** is not a borrowed-name producer: F# makes it
+  file-local, so no other file's `open` reaches the target through it
+  (fsc-probed) — treating one as opaque would cost the fall-through
+  across ordinary code. Two deliberate over-deferrals remain (codex
+  round 5, both sound): an *implementation-only* `[<AutoOpen>]` type
+  attribute still marks its container, though F# ignores it under a
+  signature — a cheap backstop against a gap in the screen's own
+  collection — and the subtree test does not check `[<AutoOpen>]`
+  *reachability*, so a borrowed marker under a non-auto-open nested
+  module blocks an ancestor's open. Tightening either re-opens the
+  enumerate-the-leak-paths obligation this design exists to avoid. A
+  third, pre-existing and shared with every auto-open consumer: an
+  **aliased** `AutoOpenAttribute` reads as absent (`attrs_auto_open`
+  matches the last path segment), which fsc itself warns about because
+  its own project-graph resolution misses it too (FS3561). Pinned by
+  `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
+  `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
+  `a_signature_only_auto_open_type_blocks_the_fall_through`; swept
+  mechanically by `auto_open_type_matrix_agrees_with_fcs` (type shape ×
+  attribute placement × collision, site-keyed against FCS — the sweep
+  that turns "which construct does the `.fsi` text fail to bound?" from
+  a review question into a gate).
+  FCS-probed (op1–op6, 2026-07-19): after an outside `open` of the
+  signatured module, a sig-`private` val and a sig-hidden impl-only val
+  colliding with RefLib both bind the **assembly** diagnostics-clean, as
+  does an assembly-only name; the sig-exposed val binds the `.fsi`
+  (project folds last). For a `module private` header, the outside open
+  binds every colliding name to the assembly and FS39s sig-only names;
+  the same-namespace sibling open binds the sig surface (and
+  assembly-only names to the assembly). A partially modelled sig (a
+  record riding along) behaves identically — the rescue keys on marker
+  provenance, not on full modelling. Without a collision the hidden
+  names are FS39, so deferral stays right. Oracles: the accessibility
+  matrix gained the two **open sites** (outside + same-namespace
+  sibling — 120 site-keyed cells, observed 66 sig commits / 27 assembly
+  commits / 27 deferrals), the `sig3_open_*` differentials, and the
+  Stage-1 open test now asserts the assembly commits
+  (`open_of_signatured_module_drops_bare_hidden_names_to_the_assembly`).
+  Unchanged over-deferral classes: the namespace-open arm of the screen
+  (strictly-under-the-open, Stage-1 known over-deferral (2)) and
+  `open_project_namespace_values`' per-child barriers.
 - **Active-pattern `val`s** — `val (|Even|Odd|)` / `val (|DivBy|_|)`, wired to the
   Stage-3a active-pattern-case export path (`docs/export-decl-model-plan.md`),
   recognizer span in the `.fsi` as identity.
