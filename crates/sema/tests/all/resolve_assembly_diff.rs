@@ -761,3 +761,91 @@ fn type_position_resolution_is_complete_in_the_assembly_envelope() {
     // doesn't reconstruct a nested type's enclosing-chain full name, so it's not
     // re-checked here.)
 }
+
+/// Every **binding form** that can introduce a bare-visible value named `Thing`,
+/// each with a use inside its own scope, checked certain-implies-exact against
+/// FCS ([`sweep_sound`]).
+///
+/// The third axis of the constructor fallback's soundness, and the one review
+/// found one case at a time. `bare_constructor_fallback_is_sound_under_every_shadowing_declaration`
+/// sweeps *declaration* forms and
+/// `bare_constructor_fallback_is_sound_over_every_bare_value_surface` sweeps
+/// *assembly* surfaces; neither reaches a binder written as an **expression**.
+/// The binder pre-scan walks `Pat` nodes, so every such form is invisible to it
+/// — `extern`, a union case, and a query range variable each arrived as a
+/// separate review finding before this existed.
+///
+/// A form our parser rejects is reported as a coverage gap, not a soundness
+/// failure: the sweep is about what we resolve, not what we parse.
+#[test]
+fn bare_constructor_fallback_is_sound_under_every_binding_form() {
+    // Each snippet binds `Thing` and uses it bare within that binding's scope.
+    const FORMS: &[&str] = &[
+        // Query operators — binders written as expressions, not patterns.
+        "let q xs ys =\n    query {\n        for x in xs do\n        join Thing in ys on (x = Thing)\n        select Thing\n    }\n",
+        "let q xs ys =\n    query {\n        for x in xs do\n        groupJoin Thing in ys on (x = Thing) into g\n        select g\n    }\n",
+        "let q xs =\n    query {\n        for Thing in xs do\n        select Thing\n    }\n",
+        // Computation-expression binders.
+        "let f x =\n    async {\n        let! Thing = x\n        return Thing\n    }\n",
+        "let f x =\n    async {\n        use! Thing = x\n        return Thing\n    }\n",
+        // Ordinary value binders in every position that can hold one.
+        "let f = fun Thing -> Thing\n",
+        "let f xs =\n    for Thing in xs do\n        ignore Thing\n",
+        "let f (d: System.IDisposable) =\n    use Thing = d\n    ignore Thing\n",
+        "let f x =\n    match x with\n    | Thing -> Thing\n",
+        "let f =\n    function\n    | Thing -> Thing\n",
+        "let f x =\n    let Thing = x\n    Thing\n",
+        "let f xs = seq { for Thing in xs -> Thing }\n",
+        "let f xs = [ for Thing in xs -> Thing ]\n",
+        // Member and constructor parameters.
+        "type C(Thing: int) =\n    member _.X = Thing\n",
+        "type C() =\n    member _.M(Thing: int) = Thing\n",
+    ];
+
+    // Control: with no binder in scope the fallback *must* commit, or every
+    // "deferred, therefore sound" verdict below holds vacuously — a fallback that
+    // never fires would pass the whole sweep.
+    let (agreed, _) = sweep_sound("module M\nopen Demo\nlet f () = Thing ()\n");
+    assert_eq!(
+        agreed, 1,
+        "unbound control must resolve — otherwise the binding sweep is vacuous"
+    );
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut unparsed: Vec<String> = Vec::new();
+    for form in FORMS {
+        let src = format!("module M\nopen Demo\n{form}");
+        if !parse(&src).errors.is_empty() {
+            unparsed.push(src);
+            continue;
+        }
+        let guard = silence_panics_here();
+        let outcome = catch_unwind(AssertUnwindSafe(|| sweep_sound(&src)));
+        drop(guard);
+        match outcome {
+            Ok((agreed, total)) => eprintln!("[binding-sweep] {agreed}/{total} {src:?}"),
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "<non-string panic>".to_string());
+                eprintln!("[binding-sweep] UNSOUND {src:?}");
+                failures.push((src, msg));
+            }
+        }
+    }
+    for src in &unparsed {
+        eprintln!("[binding-sweep] UNPARSED (coverage gap, not unsound) {src:?}");
+    }
+    assert!(
+        failures.is_empty(),
+        "the constructor fallback wrong-targets under {} binding form(s):\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(src, msg)| format!("  {src:?}\n    {msg}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
