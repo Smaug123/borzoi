@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 
-use borzoi_stats::{RecordInput, build_site, record_observation};
+use borzoi_stats::{RecordInput, build_site, read_project_corpus, record_observation};
 use serde_json::{Value, json};
 
 const COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -304,6 +304,145 @@ fn site_rejects_a_symlinked_history_or_observations_root() {
     }
 }
 
+/// A second corpus files, plots and validates alongside the F# one, and its
+/// source is carried through to the observation. The dashboard separates the
+/// two by measurement and series, so nothing has to know the source exists.
+#[test]
+fn a_measurement_over_another_corpus_records_and_validates() {
+    let temp = tempfile::tempdir().unwrap();
+    let summary = write_summary(temp.path(), "project-corpus-diff", json!({ "stride": 1 }));
+    let mut input = input(temp.path(), summary);
+    input.corpus_source = "Smaug123/borzoi-project-corpus".into();
+    input.corpus_revision = "1111111111111111111111111111111111111111".into();
+
+    let recorded = record_observation(&input).expect("record project-corpus observation");
+    let json: Value = serde_json::from_str(&fs::read_to_string(&recorded).unwrap()).unwrap();
+    assert_eq!(json["corpus"]["source"], "Smaug123/borzoi-project-corpus");
+    assert_eq!(
+        json["corpus"]["revision"],
+        "1111111111111111111111111111111111111111"
+    );
+
+    // The F# measurements still record, and `site` validates the mixed history.
+    let fsharp = write_summary(temp.path(), "parser-divergence", json!({}));
+    record_observation(&self::input(temp.path(), fsharp)).expect("record fsharp observation");
+    let count = build_site(&temp.path().join("history"), &temp.path().join("site"))
+        .expect("site over a mixed-corpus history");
+    assert_eq!(count, 2);
+
+    let mut unsafe_source = input.clone();
+    unsafe_source.corpus_source = "../escape".into();
+    let err = record_observation(&unsafe_source).unwrap_err().to_string();
+    assert!(err.contains("corpus source"), "{err}");
+}
+
+#[test]
+fn the_corpus_digest_covers_every_pin_but_not_their_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let one = pin("Smaug123/A", &"a".repeat(40), "A/A.fsproj");
+    let two = pin("Smaug123/B", &"b".repeat(40), "B/B.fsproj");
+
+    let forwards = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [one.clone(), two.clone()] }),
+    ))
+    .expect("valid corpus");
+    let backwards = read_project_corpus(&write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [two.clone(), one.clone()] }),
+    ))
+    .expect("valid corpus");
+    let digest = forwards.revision();
+    assert_eq!(digest.len(), 40, "{digest}");
+    assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(digest, backwards.revision());
+
+    // Every field is part of the identity: a bumped revision, a different
+    // project in the same repository, and an added or dropped pin must each
+    // start a new series rather than silently joining the old one.
+    for changed in [
+        json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"c".repeat(40), "A/A.fsproj"), two.clone()] }),
+        json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/Other.fsproj"), two.clone()] }),
+        json!({ "schema_version": 1, "projects": [one.clone()] }),
+        json!({ "schema_version": 1, "projects": [one.clone(), two.clone(), pin("Smaug123/C", &"c".repeat(40), "C/C.fsproj")] }),
+    ] {
+        let other = read_project_corpus(&write_corpus(temp.path(), changed)).expect("valid corpus");
+        assert_ne!(digest, other.revision());
+    }
+
+    // The digest is what `record` files the observation under, so it has to be
+    // accepted as a corpus revision.
+    let summary = write_summary(temp.path(), "project-corpus-diff", json!({}));
+    let mut input = input(temp.path(), summary);
+    input.corpus_source = "Smaug123/borzoi-project-corpus".into();
+    input.corpus_revision = digest;
+    record_observation(&input).expect("the corpus digest is a valid corpus revision");
+}
+
+#[test]
+fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
+    let temp = tempfile::tempdir().unwrap();
+    let good = pin("Smaug123/A", &"a".repeat(40), "A/A.fsproj");
+    for (expected, corpus) in [
+        (
+            "schema version",
+            json!({ "schema_version": 2, "projects": [good.clone()] }),
+        ),
+        (
+            "at least one",
+            json!({ "schema_version": 1, "projects": [] }),
+        ),
+        (
+            "repository",
+            json!({ "schema_version": 1, "projects": [pin("no-owner", &"a".repeat(40), "A/A.fsproj")] }),
+        ),
+        (
+            "revision",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", "main", "A/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "../escape/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "/abs/A.fsproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A/A.csproj")] }),
+        ),
+        (
+            "project",
+            json!({ "schema_version": 1, "projects": [pin("Smaug123/A", &"a".repeat(40), "A dir/A.fsproj")] }),
+        ),
+        (
+            "two revisions",
+            json!({ "schema_version": 1, "projects": [good.clone(), pin("Smaug123/A", &"b".repeat(40), "A/Other.fsproj")] }),
+        ),
+        (
+            "more than once",
+            json!({ "schema_version": 1, "projects": [good.clone(), good.clone()] }),
+        ),
+    ] {
+        let path = write_corpus(temp.path(), corpus);
+        let err = read_project_corpus(&path).unwrap_err().to_string();
+        assert!(err.contains(expected), "expected {expected:?}, got {err}");
+    }
+}
+
+/// The corpus the workflow actually checks out. A typo here fails the
+/// measurement job several minutes into a clone, so parse it in-process.
+#[test]
+fn the_checked_in_project_corpus_is_valid() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../nix/project-corpus.json");
+    let corpus = read_project_corpus(&path).expect("nix/project-corpus.json is a valid corpus");
+    assert!(
+        corpus.projects.len() >= 2,
+        "a one-project corpus cannot exercise cross-project references"
+    );
+}
+
 fn input(root: &Path, summary: PathBuf) -> RecordInput {
     RecordInput {
         summary,
@@ -314,9 +453,20 @@ fn input(root: &Path, summary: PathBuf) -> RecordInput {
         run_id: 42,
         run_number: 42,
         run_attempt: 1,
+        corpus_source: borzoi_stats::FSHARP_CORPUS_SOURCE.into(),
         corpus_revision: CORPUS.into(),
         flake_lock_hash: LOCK_HASH.into(),
     }
+}
+
+fn write_corpus(root: &Path, value: Value) -> PathBuf {
+    let path = root.join("project-corpus.json");
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    path
+}
+
+fn pin(repository: &str, revision: &str, project: &str) -> Value {
+    json!({ "repository": repository, "revision": revision, "project": project })
 }
 
 fn write_summary(root: &Path, measurement: &str, configuration: Value) -> PathBuf {

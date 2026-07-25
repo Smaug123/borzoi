@@ -100,6 +100,13 @@ Optional reporting and oracle settings:
 - `BORZOI_PROJECT_REPORT_JSONL`: writes one newline-terminated JSON summary
   record to this path, replacing previous contents. The record includes the
   effective MSBuild property profile.
+- `BORZOI_PROJECT_SUMMARY_JSON`: writes the continuous-measurements *generator
+  contract* (`docs/continuous-measurements.md`) to this path. This is the
+  compact, durable half of the same run — counts only, keyed so that every key
+  means the same thing in every run of a series — and it is what
+  `borzoi-stats record` publishes. The `REPORT_JSONL` above stays the full
+  picture, worklists included; the two are written from one run and never
+  disagree.
 - `BORZOI_FCS_DUMP`: path to a prebuilt `fcs-dump` binary. If unset, the
   runner builds `tools/fcs-dump` and invokes the generated DLL.
 

@@ -22,4 +22,8 @@ serde_json = "1"
 [dev-dependencies]
 borzoi-assembly = { path = "../assembly" }
 borzoi-cst = { path = "../cst" }
+# The recorder that publishes this crate's generator summary. A dev-dependency
+# so the contract is checked by the real validator rather than by a second copy
+# of its rules restated in an assertion.
+borzoi-stats = { path = "../../tools/stats" }
 tempfile = "3"

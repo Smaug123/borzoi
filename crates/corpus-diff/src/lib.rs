@@ -1778,6 +1778,229 @@ struct CorpusProjectAssetsReport<'a> {
     by_status: BTreeMap<&'static str, usize>,
 }
 
+/// The continuous-measurements generator contract
+/// (`docs/continuous-measurements.md`): the compact, durable half of the run,
+/// which `borzoi-stats record` wraps in reproducibility metadata and files on
+/// the `stats-data` branch.
+///
+/// It is a strict subset of [`CorpusJsonReport`], not a rival to it. The full
+/// report keeps the worklists — which project skipped, for what reason, which
+/// use went unadjudicated — and rides along as a workflow artifact. This one
+/// keeps only counts, because `statistics` is a *metric namespace*: the
+/// dashboard discovers a plottable metric per nested number, so every key here
+/// has to mean the same thing in every run of the series. That rules out
+/// arrays (which the recorder rejects outright) and equally rules out
+/// open-ended string keys — `skipped_by_reason` is keyed by messages that
+/// embed paths and oracle errors, so it would mint a new metric per run and
+/// none of them would be comparable. Asset status is a closed enum, so it
+/// stays.
+#[derive(Debug, Serialize)]
+struct GeneratorSummary<'a> {
+    schema_version: u32,
+    measurement: &'static str,
+    configuration: GeneratorConfiguration<'a>,
+    statistics: GeneratorStatistics,
+}
+
+/// Everything about *how* the run was configured that changes the numbers.
+/// This is digested into the series key, so it must not carry anything
+/// incidental — absolute checkout paths above all, which differ per CI run and
+/// would put every observation in its own series of one. Which projects were
+/// measured is the corpus's identity, recorded as the corpus revision.
+#[derive(Debug, Serialize)]
+struct GeneratorConfiguration<'a> {
+    selection: GeneratorSelection,
+    build_properties: &'a BTreeMap<String, String>,
+}
+
+/// How the run chose its projects — a sum, because the knobs are not shared.
+/// [`project_candidates_from_settings`] applies `stride` and `limit` only when
+/// walking a directory; an explicit list visits all of it. Recording them for
+/// a list run would claim a knob that did nothing, and worse, would split the
+/// series if a default ever moved.
+#[derive(Debug, Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+enum GeneratorSelection {
+    None,
+    List {
+        max_files: Option<usize>,
+    },
+    Corpus {
+        exhaustive: bool,
+        stride: usize,
+        limit: Option<usize>,
+        max_files: Option<usize>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratorStatistics {
+    projects: CorpusProjectCounts,
+    files_compared: usize,
+    uses: CorpusUsesReport,
+    matches: CorpusProjectAssemblyCount,
+    /// The headline series: a use we resolved to nothing concrete where FCS
+    /// resolved to something. Not a wrong answer, so no gate fails on it —
+    /// which is exactly why it needs plotting, since a change that makes us
+    /// more timid is otherwise invisible.
+    deferrals: CorpusProjectAssemblyCount,
+    divergences: CorpusTieredCount,
+    coverage: CorpusCoverageBasisPoints,
+    skipped_uses: CorpusSkippedUsesCounts,
+    unoracled_definitions: usize,
+    project_assets_by_status: BTreeMap<&'static str, usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusProjectCounts {
+    discovered: usize,
+    visited: usize,
+    comparable: usize,
+    skipped: usize,
+    skipped_basis_points: Option<u64>,
+    discovery_errors: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusCoverageBasisPoints {
+    basis_points: Option<u64>,
+}
+
+#[derive(Debug, Serialize)]
+struct CorpusSkippedUsesCounts {
+    definitions: usize,
+    zero_width: usize,
+    non_project_declarations: usize,
+    out_of_project_declarations: usize,
+    no_oracle_declaration: usize,
+    total: usize,
+}
+
+/// The measurement name this generator files under. A path segment on the
+/// `stats-data` branch, so it never changes without starting a fresh history.
+pub const PROJECT_CORPUS_MEASUREMENT: &str = "project-corpus-diff";
+
+/// Render the [continuous-measurements generator
+/// contract](docs/continuous-measurements.md) for one run.
+pub fn render_generator_summary(
+    summary: &CorpusSummary,
+    settings: &ProjectCandidateSettings,
+) -> Result<String, serde_json::Error> {
+    let generator = GeneratorSummary {
+        schema_version: 1,
+        measurement: PROJECT_CORPUS_MEASUREMENT,
+        configuration: GeneratorConfiguration {
+            selection: match settings.source {
+                ProjectCandidateSource::None => GeneratorSelection::None,
+                ProjectCandidateSource::List(_) => GeneratorSelection::List {
+                    max_files: settings.max_files.map(NonZeroUsize::get),
+                },
+                ProjectCandidateSource::Corpus(_) => GeneratorSelection::Corpus {
+                    exhaustive: settings.exhaustive,
+                    stride: settings.stride.get(),
+                    limit: settings.limit.map(NonZeroUsize::get),
+                    max_files: settings.max_files.map(NonZeroUsize::get),
+                },
+            },
+            build_properties: &summary.build_properties,
+        },
+        statistics: GeneratorStatistics {
+            projects: CorpusProjectCounts {
+                discovered: summary.projects_discovered,
+                visited: summary.projects_visited,
+                comparable: summary.comparable_projects,
+                skipped: summary.skipped_projects.len(),
+                skipped_basis_points: summary.skipped_projects_basis_points(),
+                discovery_errors: summary.project_discovery_errors.len(),
+            },
+            files_compared: summary.files_compared,
+            uses: CorpusUsesReport {
+                fcs_reported: summary.fcs_uses_reported,
+                project_considered: summary.project_uses_considered,
+                assembly_considered: summary.assembly_uses_considered,
+                total_considered: summary.total_uses_considered(),
+            },
+            matches: CorpusProjectAssemblyCount {
+                project: summary.project_matches,
+                assembly: summary.assembly_matches,
+                total: summary.total_matches(),
+            },
+            deferrals: CorpusProjectAssemblyCount {
+                project: summary.project_deferrals,
+                assembly: summary.assembly_deferrals,
+                total: summary.total_deferrals(),
+            },
+            divergences: CorpusTieredCount {
+                project: summary.project_divergences,
+                assembly: summary.assembly_divergences,
+                reverse: summary.reverse_divergences,
+                total: summary.total_divergences(),
+            },
+            coverage: CorpusCoverageBasisPoints {
+                basis_points: summary.coverage_basis_points(),
+            },
+            skipped_uses: CorpusSkippedUsesCounts {
+                definitions: summary.skipped_uses.definitions,
+                zero_width: summary.skipped_uses.zero_width,
+                non_project_declarations: summary.skipped_uses.non_project_declarations,
+                out_of_project_declarations: summary.skipped_uses.out_of_project_declarations,
+                no_oracle_declaration: summary.skipped_uses.no_oracle_declaration,
+                total: summary.skipped_uses.total(),
+            },
+            unoracled_definitions: summary.unoracled_definitions,
+            project_assets_by_status: summary
+                .project_assets_by_status
+                .iter()
+                .map(|(status, count)| (status.json_key(), *count))
+                .collect(),
+        },
+    };
+    let mut json = serde_json::to_string_pretty(&generator)?;
+    json.push('\n');
+    Ok(json)
+}
+
+/// Write [`render_generator_summary`] to `path`, replacing what is there.
+pub fn write_generator_summary(
+    path: &Path,
+    summary: &CorpusSummary,
+    settings: &ProjectCandidateSettings,
+) -> Result<(), GeneratorSummaryError> {
+    let json =
+        render_generator_summary(summary, settings).map_err(GeneratorSummaryError::Serialise)?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(GeneratorSummaryError::Write)?;
+    }
+    std::fs::write(path, json).map_err(GeneratorSummaryError::Write)
+}
+
+#[derive(Debug)]
+pub enum GeneratorSummaryError {
+    Serialise(serde_json::Error),
+    Write(std::io::Error),
+}
+
+impl fmt::Display for GeneratorSummaryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Serialise(error) => write!(f, "serialise generator summary: {error}"),
+            Self::Write(error) => write!(f, "write generator summary: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for GeneratorSummaryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Serialise(error) => Some(error),
+            Self::Write(error) => Some(error),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct FsprojCollection {
     pub projects: Vec<PathBuf>,
@@ -4040,5 +4263,149 @@ mod tests {
         let text = std::fs::read_to_string(report_path).expect("read report");
         let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(report["unoracled_definitions"], 7);
+    }
+
+    fn generator_settings() -> ProjectCandidateSettings {
+        ProjectCandidateSettings {
+            source: ProjectCandidateSource::List(vec![PathBuf::from("/checkout/A.fsproj")]),
+            exhaustive: false,
+            stride: NonZeroUsize::new(1).expect("non-zero"),
+            limit: None,
+            max_files: None,
+        }
+    }
+
+    /// The contract is only worth having if the recorder accepts it, so check
+    /// it with the recorder — not with a restatement of its rules here, which
+    /// would drift the moment `borzoi-stats` tightened one.
+    #[test]
+    fn the_generator_summary_is_accepted_by_the_stats_recorder() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let summary_path = tmp.path().join("summary.json");
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison::default());
+
+        write_generator_summary(&summary_path, &summary, &generator_settings())
+            .expect("write generator summary");
+
+        let recorded = borzoi_stats::record_observation(&borzoi_stats::RecordInput {
+            summary: summary_path,
+            history: tmp.path().join("history"),
+            repository: "Smaug123/borzoi".into(),
+            commit: "0".repeat(40),
+            measured_at: "2026-07-25T10:00:00Z".into(),
+            run_id: 1,
+            run_number: 1,
+            run_attempt: 1,
+            corpus_source: "Smaug123/borzoi-project-corpus".into(),
+            corpus_revision: "1".repeat(40),
+            flake_lock_hash: "a".repeat(64),
+        })
+        .expect("the stats recorder accepts our generator summary");
+        assert!(
+            recorded
+                .to_string_lossy()
+                .contains(PROJECT_CORPUS_MEASUREMENT),
+            "{recorded:?}"
+        );
+    }
+
+    /// Two runs that measured the same thing must land in the same series, and
+    /// the checkout path is the trap: in CI it is a fresh temp directory every
+    /// run, so leaking it into the configuration would file every observation
+    /// under a series of one and no trend would ever appear.
+    #[test]
+    fn the_configuration_records_the_knobs_but_no_checkout_path() {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison::default());
+
+        let here = render_generator_summary(&summary, &generator_settings()).expect("render");
+        let mut elsewhere_settings = generator_settings();
+        elsewhere_settings.source =
+            ProjectCandidateSource::List(vec![PathBuf::from("/other/run/B.fsproj")]);
+        let elsewhere = render_generator_summary(&summary, &elsewhere_settings).expect("render");
+        assert_eq!(here, elsewhere);
+        assert!(!here.contains("/checkout/"), "{here}");
+
+        let json: serde_json::Value = serde_json::from_str(&here).expect("valid JSON");
+        assert_eq!(json["measurement"], PROJECT_CORPUS_MEASUREMENT);
+        assert_eq!(json["configuration"]["selection"]["source"], "list");
+    }
+
+    /// The configuration is digested into the series key, so it must record
+    /// the knobs that *acted* and no others. `stride` and `limit` act only on
+    /// a directory walk — [`project_candidates_from_settings`] visits an
+    /// explicit list whole — so recording them for a list run would claim an
+    /// influence they never had and would split the series if a default moved.
+    #[test]
+    fn the_configuration_records_only_the_knobs_that_selection_actually_applied() {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison::default());
+        let render = |settings: &ProjectCandidateSettings| -> serde_json::Value {
+            serde_json::from_str(&render_generator_summary(&summary, settings).expect("render"))
+                .expect("valid JSON")
+        };
+
+        // The pinned corpus is an explicit list, and stride is *13* by default
+        // even there, so this is the live case rather than a hypothetical.
+        let mut listed = generator_settings();
+        listed.stride = NonZeroUsize::new(13).expect("non-zero");
+        listed.limit = NonZeroUsize::new(4);
+        let selection = render(&listed)["configuration"]["selection"].clone();
+        assert_eq!(selection["source"], "list");
+        assert_eq!(selection["stride"], serde_json::Value::Null);
+        assert_eq!(selection["limit"], serde_json::Value::Null);
+
+        // Walking a directory, both knobs select, so both are identity.
+        let corpus = |stride: usize, limit: Option<usize>| ProjectCandidateSettings {
+            source: ProjectCandidateSource::Corpus(PathBuf::from("/corpus")),
+            exhaustive: false,
+            stride: NonZeroUsize::new(stride).expect("non-zero"),
+            limit: limit.and_then(NonZeroUsize::new),
+            max_files: None,
+        };
+        let walked = render(&corpus(13, None));
+        assert_eq!(walked["configuration"]["selection"]["source"], "corpus");
+        assert_eq!(walked["configuration"]["selection"]["stride"], 13);
+        assert_ne!(walked, render(&corpus(1, None)));
+        assert_ne!(walked, render(&corpus(13, Some(4))));
+
+        // A list and a walk are never the same series, whatever the knobs.
+        assert_ne!(render(&listed), walked);
+    }
+
+    /// The point of the series: deferrals are counted, never gated, so this is
+    /// the only place a rise in them shows up.
+    #[test]
+    fn the_generator_statistics_carry_deferrals_and_the_counts_that_scale_them() {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison {
+            deferrals: 11,
+            assembly_deferrals: 5,
+            matches: 3,
+            assembly_matches: 1,
+            uses_considered: 14,
+            assembly_uses_considered: 6,
+            ..Comparison::default()
+        });
+
+        let json: serde_json::Value = serde_json::from_str(
+            &render_generator_summary(&summary, &generator_settings()).unwrap(),
+        )
+        .expect("valid JSON");
+        let statistics = &json["statistics"];
+        assert_eq!(statistics["deferrals"]["project"], 11);
+        assert_eq!(statistics["deferrals"]["assembly"], 5);
+        assert_eq!(statistics["deferrals"]["total"], 16);
+        // A deferral count only means something against the population it was
+        // drawn from, so the denominators travel with it.
+        assert_eq!(statistics["uses"]["total_considered"], 20);
+        assert_eq!(statistics["matches"]["total"], 4);
+        assert_eq!(statistics["coverage"]["basis_points"], 2000);
+        assert_eq!(statistics["projects"]["comparable"], 1);
     }
 }

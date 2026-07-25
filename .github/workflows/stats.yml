@@ -99,9 +99,130 @@ jobs:
           retention-days: 90
           overwrite: true
 
+  measure-project-corpus:
+    name: Measure whole-project resolution
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache cargo target/
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: true
+
+      - name: Read the pinned project corpus
+        run: |
+          nix develop --command cargo build --locked -p borzoi-stats
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" corpus \
+            --pins nix/project-corpus.json --emit plan \
+            >"$RUNNER_TEMP/project-corpus-plan.tsv"
+          cat "$RUNNER_TEMP/project-corpus-plan.tsv"
+
+      - name: Check out the pinned project corpus
+        run: |
+          while IFS=$'\t' read -r repository revision project; do
+            dir="$RUNNER_TEMP/project-corpus/$repository"
+            mkdir -p "$(dirname "$dir")"
+            git clone --quiet --no-checkout "https://github.com/$repository" "$dir"
+            # Detached at the exact pin: a branch would let the corpus drift
+            # under a series that claims its points are comparable.
+            git -C "$dir" checkout --quiet --detach "$revision"
+            test -f "$dir/$project"
+          done <"$RUNNER_TEMP/project-corpus-plan.tsv"
+
+      - name: Restore the pinned project corpus
+        # These restores must reach nuget.org. The devShell pins NuGet at the
+        # repo's own offline closure, which by design holds only what Borzoi's
+        # own builds need, not what these unrelated projects reference. The
+        # packages folder is separate from that closure so a corpus package
+        # cannot shadow one the workspace's own tests restore.
+        run: |
+          while IFS=$'\t' read -r repository _revision project; do
+            nix develop --command env \
+              RestoreSources=https://api.nuget.org/v3/index.json \
+              NUGET_PACKAGES="$RUNNER_TEMP/project-corpus-packages" \
+              dotnet restore "$RUNNER_TEMP/project-corpus/$repository/$project"
+          done <"$RUNNER_TEMP/project-corpus-plan.tsv"
+
+      - name: Generate the whole-project resolution report
+        # The corpus is the pin file itself, passed as an explicit list, so no
+        # sampling happens: `BORZOI_PROJECT_STRIDE` and `_LIMIT` select only
+        # when walking a directory. Every pinned project is visited, which is
+        # what the comparable-count assertion below relies on.
+        run: |
+          list=
+          pinned=0
+          while IFS=$'\t' read -r repository _revision project; do
+            list="${list:+$list:}$RUNNER_TEMP/project-corpus/$repository/$project"
+            pinned=$((pinned + 1))
+          done <"$RUNNER_TEMP/project-corpus-plan.tsv"
+          summary="$RUNNER_TEMP/reports/project-corpus-diff/summary.json"
+          mkdir -p "$RUNNER_TEMP/reports/project-corpus-diff"
+          set +e
+          nix develop --command env \
+            BORZOI_PROJECT_LIST="$list" \
+            BORZOI_PROJECT_REPORT_JSONL="$RUNNER_TEMP/reports/project-corpus-diff/report.jsonl" \
+            BORZOI_PROJECT_SUMMARY_JSON="$summary" \
+            cargo run --locked -p borzoi-corpus-diff
+          runner_status=$?
+          set -e
+          # The runner's own ratchets are a gate, and this job is a
+          # measurement. Failing here on a divergence would withhold the
+          # observation in exactly the run that found something, so the
+          # divergence counts travel in `statistics` and the series carries the
+          # finding. What must still fail loudly is a run that did not measure:
+          # the summary is written before those ratchets are checked, so assert
+          # against its contents rather than the exit code.
+          comparable="$(jq -er '.statistics.projects.comparable' "$summary")"
+          if [ "$comparable" -ne "$pinned" ]; then
+            echo "only $comparable of $pinned pinned projects became comparable" \
+              "(runner exit $runner_status)" >&2
+            exit 1
+          fi
+
+      - name: Add the current summary to the workflow page
+        run: |
+          {
+            echo '## Whole-project resolution'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/project-corpus-diff/summary.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload full measurement reports
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: measurement-reports-project-corpus-${{ github.sha }}
+          path: ${{ runner.temp }}/reports
+          if-no-files-found: error
+          retention-days: 90
+          overwrite: true
+
   persist:
     name: Persist observations
-    needs: measure
+    needs: [measure, measure-project-corpus]
+    # The project-corpus measurement reaches nuget.org and several external
+    # repositories, so it can fail for reasons that say nothing about Borzoi.
+    # When it does, publish the measurements that did succeed rather than
+    # losing this commit's whole observation.
+    if: ${{ !cancelled() && needs.measure.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -143,6 +264,13 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: measurement-reports-${{ github.sha }}
+          path: ${{ runner.temp }}/reports
+
+      - name: Download the whole-project measurement reports
+        if: ${{ needs.measure-project-corpus.result == 'success' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: measurement-reports-project-corpus-${{ github.sha }}
           path: ${{ runner.temp }}/reports
 
       - name: Check out or initialise the stats-data branch
@@ -199,6 +327,37 @@ jobs:
           "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
             --summary "$RUNNER_TEMP/reports/find-references-differential/summary.json" \
             "${common[@]}"
+
+      - name: Record the whole-project observation
+        if: ${{ needs.measure-project-corpus.result == 'success' }}
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        # A different corpus, so a different corpus identity: not the pinned F#
+        # tree's commit but a digest over every pin in nix/project-corpus.json,
+        # which the same binary derives. Bumping a pin therefore starts a new
+        # comparable series instead of grafting unlike points onto the old one.
+        run: |
+          corpus_revision="$("$GITHUB_WORKSPACE/target/debug/borzoi-stats" corpus \
+            --pins nix/project-corpus.json --emit digest)"
+          flake_lock_hash="$(sha256sum flake.lock | cut -d ' ' -f 1)"
+          measured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/project-corpus-diff/summary.json" \
+            --history "$HISTORY_DIR" \
+            --repository "$REPOSITORY" \
+            --commit "$COMMIT" \
+            --measured-at "$measured_at" \
+            --run-id "$RUN_ID" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --corpus-source "$REPOSITORY-project-corpus" \
+            --corpus-revision "$corpus_revision" \
+            --flake-lock-hash "$flake_lock_hash"
 
       - name: Commit and push the durable observations
         env:
