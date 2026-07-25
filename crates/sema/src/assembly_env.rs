@@ -1360,6 +1360,17 @@ impl AssemblyEnv {
     /// C#-shaped nested-public type inside an internal class carries a
     /// `Public` flag of its own), so the shadow veto keys on this rather
     /// than the terminal's flag (codex P2s, rounds 5 and 6).
+    ///
+    /// Known concession (codex round 8): when the path names a
+    /// **companion pair** (`type Target` + `[<CompilationRepresentation
+    /// (ModuleSuffix)>] module Target`), the first interned candidate wins
+    /// here, which follows metadata order rather than FCS's type-over-module
+    /// target selection. Picking the module where FCS picks the type makes
+    /// the shadow veto walk a surface FCS never opened — an over-DEFERRAL
+    /// only (never a wrong target), in a shape no real manifest exhibits
+    /// (FSharp.Core's module-shaped targets have no companion types).
+    /// Modelling it needs the pair's FCS-side selection *and* what FCS does
+    /// with a type-shaped AutoOpen target, both unprobed.
     fn assembly_entity_at_path(
         &self,
         contributor: AssemblyId,
