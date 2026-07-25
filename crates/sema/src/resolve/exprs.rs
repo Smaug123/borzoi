@@ -750,8 +750,13 @@ impl<'a> Resolver<'a> {
             // (x : T) -> …`, `:? T`) are type uses, resolved alongside the
             // binders the pattern introduces.
             self.resolve_pat_types(&pat);
+            // `resolve_pat_types` has just run the active-pattern split, so
+            // `excluded_param_ranges` now names this pattern's argument
+            // *expressions* — the occurrences the or-pattern pairing must not
+            // count as bindings. Bound before the loop so the borrow ends here.
+            let names = pattern_names(&pat, role, &self.excluded_param_ranges);
             let mut aliases = AliasTargets::default();
-            for pat_name in pattern_names(&pat, role) {
+            for pat_name in names {
                 // An or-pattern's later alternative re-spelling a name the first
                 // already bound (`match … with A v | B v -> …`): one binding, so
                 // this occurrence is a *use* of it — no interning, no second scope

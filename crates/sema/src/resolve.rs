@@ -202,9 +202,11 @@ pub fn resolve_file(
     // Only the [`PatternName::Binder`]s are read: an or-pattern alias is a
     // re-spelling of a name an earlier alternative already introduced, so it is
     // spelled identically to a binder in the same list and contributes nothing to
-    // a *name* set.
+    // a *name* set. The empty `argument_expressions` set likewise costs nothing —
+    // it makes a parameterised active pattern's argument read as a binder, which
+    // is more over-collection of the kind this oracle already accepts.
     for pat in file.syntax().descendants().filter_map(Pat::cast) {
-        for name in pattern_names(&pat, BinderRole::Let) {
+        for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
             if let PatternName::Binder(def) = name {
                 r.own_binder_simple_names
                     .insert(id_text(&def.name).to_string());

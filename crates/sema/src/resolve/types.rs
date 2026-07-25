@@ -10,6 +10,8 @@ use super::state::Frame;
 use rowan::TextRange;
 
 use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
+use std::collections::HashSet;
+
 use crate::binders::{BinderRole, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
@@ -2424,7 +2426,10 @@ impl<'a> Resolver<'a> {
     /// it may fabricate a resolution. The [`BinderRole`] only affects `DefKind`s,
     /// never ranges, so any role serves.
     fn exclude_param_binders(&mut self, arg: &Pat) {
-        for name in pattern_names(arg, BinderRole::Pattern) {
+        // No argument-expression set to give: this *is* the walk that computes
+        // one, and it reads only the occurrence ranges, which or-pattern pairing
+        // never changes.
+        for name in pattern_names(arg, BinderRole::Pattern, &HashSet::new()) {
             self.excluded_param_ranges.insert(name.range());
         }
     }

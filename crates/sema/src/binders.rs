@@ -1,6 +1,8 @@
 //! Pure extraction of the name occurrences a pattern contributes: the binders
 //! it introduces, and the or-pattern *aliases* that re-spell one of them.
 
+use std::collections::HashSet;
+
 use crate::def::{Def, DefKind};
 use crate::resolve::id_text;
 use borzoi_cst::syntax::{LongIdentPat, Pat, SyntaxToken};
@@ -33,8 +35,16 @@ pub enum BinderRole {
 /// alternative's spelling of that name is a [`PatternName::Alias`] of it. That
 /// is also FCS's identity for an or-pattern, so a consumer that interns only the
 /// binders and records the aliases as uses agrees with the oracle by
-/// construction. Repeats *within* one alternative are left alone: `DivBy x x`
-/// is an argument expression plus a payload binder, not one name twice.
+/// construction.
+///
+/// `argument_expressions` names the ranges that only *look* like binders: a
+/// parameterised active pattern's arguments (`x` in `DivBy x n`) are
+/// expressions evaluated in the enclosing scope, and which of an application's
+/// arguments those are is an arity question this walk cannot answer. The caller
+/// — which has already run the split — supplies the answer, and or-pattern
+/// pairing skips them, so `DivBy x x | Any x` lines the two *payloads* up
+/// rather than pairing the right payload with the left's argument. Pass an
+/// empty set when you only want the occurrence ranges and not the pairing.
 ///
 /// Pure and structural: it recurses through `Paren` / `Typed` (the type
 /// annotation contributes no binders) / `Tuple`, and `Wildcard` / `Const` /
@@ -65,9 +75,13 @@ pub enum BinderRole {
 /// (the type annotation contributes no binders) / `Tuple` / `As` (both
 /// operands of `p1 as p2` bind, in source order), and `Wildcard` / `Const` /
 /// `Null` bind nothing.
-pub fn pattern_names(pat: &Pat, role: BinderRole) -> Vec<PatternName> {
+pub fn pattern_names(
+    pat: &Pat,
+    role: BinderRole,
+    argument_expressions: &HashSet<TextRange>,
+) -> Vec<PatternName> {
     let mut out = Vec::new();
-    collect(pat, Ctx::from_role(role), &mut out);
+    collect(pat, Ctx::from_role(role), argument_expressions, &mut out);
     out
 }
 
@@ -157,7 +171,12 @@ impl Ctx {
     }
 }
 
-fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
+fn collect(
+    pat: &Pat,
+    ctx: Ctx,
+    argument_expressions: &HashSet<TextRange>,
+    out: &mut Vec<PatternName>,
+) {
     match pat {
         Pat::Named(p) => {
             if let Some(tok) = p.ident() {
@@ -180,13 +199,13 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
         Pat::Wildcard(_) | Pat::Const(_) | Pat::Null(_) | Pat::IsInst(_) | Pat::Quote(_) => {}
         Pat::Paren(p) => {
             if let Some(inner) = p.inner() {
-                collect(&inner, ctx.descend(), out);
+                collect(&inner, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Typed(p) => {
             // The annotation (`p.ty()`) names types, never binders.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), out);
+                collect(&inner, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Attrib(p) => {
@@ -194,12 +213,12 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // binders; only the inner pattern binds. Transparent, exactly like
             // `Typed`.
             if let Some(inner) = p.pat() {
-                collect(&inner, ctx.descend(), out);
+                collect(&inner, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Tuple(p) => {
             for el in p.elements() {
-                collect(&el, ctx.descend(), out);
+                collect(&el, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::ArrayOrList(p) => {
@@ -207,7 +226,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // names, exactly like a `Tuple` element — value deconstruction, never
             // a function-binding head, so every element descends the context.
             for el in p.elements() {
-                collect(&el, ctx.descend(), out);
+                collect(&el, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Record(p) => {
@@ -217,7 +236,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // context — exactly like a `Tuple` element.
             for field in p.fields() {
                 if let Some(value) = field.pat() {
-                    collect(&value, ctx.descend(), out);
+                    collect(&value, ctx.descend(), argument_expressions, out);
                 }
             }
         }
@@ -227,10 +246,10 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // so both operands descend the context, exactly like a `Tuple`
             // element — a `let`-head `as` is a value deconstruction.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), out);
+                collect(&lhs, ctx.descend(), argument_expressions, out);
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), out);
+                collect(&rhs, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::ListCons(p) => {
@@ -239,10 +258,10 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // both operands descend the context — exactly like a `Tuple` element
             // or an `As`.
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), out);
+                collect(&lhs, ctx.descend(), argument_expressions, out);
             }
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), out);
+                collect(&rhs, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Ands(p) => {
@@ -251,7 +270,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // deconstruction, never a function-binding head, so each operand
             // descends the context, exactly like a `Tuple` element.
             for operand in p.operands() {
-                collect(&operand, ctx.descend(), out);
+                collect(&operand, ctx.descend(), argument_expressions, out);
             }
         }
         Pat::Or(p) => {
@@ -269,13 +288,13 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
             // first `v` in source order either way.
             let start = out.len();
             if let Some(lhs) = p.lhs() {
-                collect(&lhs, ctx.descend(), out);
+                collect(&lhs, ctx.descend(), argument_expressions, out);
             }
             let boundary = out.len();
             if let Some(rhs) = p.rhs() {
-                collect(&rhs, ctx.descend(), out);
+                collect(&rhs, ctx.descend(), argument_expressions, out);
             }
-            canonicalise_alternatives(&mut out[start..], boundary - start);
+            canonicalise_alternatives(&mut out[start..], boundary - start, argument_expressions);
         }
         Pat::LongIdent(p) => {
             // `arg_pats` spans both `SynArgPats` shapes: the curried list
@@ -314,7 +333,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
                         )));
                     }
                     for arg in &args {
-                        collect(arg, Ctx::Param, out);
+                        collect(arg, Ctx::Param, argument_expressions, out);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern if has_args => {
@@ -322,7 +341,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
                     // is a reference, not a binder, so only the arguments bind —
                     // in the same context the application was reached in.
                     for arg in &args {
-                        collect(arg, ctx, out);
+                        collect(arg, ctx, argument_expressions, out);
                     }
                 }
                 Ctx::LetNested | Ctx::Param | Ctx::Pattern => {
@@ -350,20 +369,20 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
 /// Pairing is **by name, then by position among that name's bindings**: the
 /// right alternative's k-th binding of `v` denotes the left's k-th. Name-first
 /// is what makes `A b, B v | B v, A b` pair each name with its namesake rather
-/// than with whatever sits in the same slot; position only breaks the tie when
-/// one alternative binds a name more than once. Names are compared after
-/// [`id_text`] normalisation, so ``A `v` | B v`` is one binding, exactly as F#
-/// reads it.
+/// than with whatever sits in the same slot; position only breaks the tie in
+/// code F# rejects, where one alternative binds a name twice. Names are compared
+/// after [`id_text`] normalisation, so ``A `v` | B v`` is one binding, exactly
+/// as F# reads it.
 ///
-/// **Never within one alternative.** Two occurrences of a name on the *same*
-/// side are not one binding — F# rejects a genuine duplicate, and the shape that
-/// does occur is a parameterised active pattern (`DivBy x x`), where the first
-/// `x` is an argument *expression* evaluated in the enclosing scope and only the
-/// second binds. This walk cannot tell those apart (which argument is a
-/// parameter is an arity question the resolver settles later), so conflating
-/// them would silently swallow the payload binder. FCS-verified: in
-/// `DivBy x x | DivBy x x -> x` both argument `x`s are uses of the enclosing
-/// parameter and the second alternative's *payload* aliases the first's.
+/// **`argument_expressions` are not bindings** and take no part in the pairing.
+/// A parameterised active pattern's argument is pattern-*shaped* but evaluated
+/// as an expression in the enclosing scope, so `DivBy x x` contributes one
+/// binding (the payload), not two. Counting it would mis-pair the moment the
+/// alternatives spell different numbers of it — `DivBy x x | Any x` would send
+/// the right payload to the left *argument*, which the resolver then drops,
+/// leaving the right `x` unresolved. FCS-verified: both those alternatives'
+/// payloads are one binding, and the arguments are uses of the enclosing
+/// parameter.
 ///
 /// **Provisional heads are left alone.** A constructor-shaped nullary head
 /// (`A None | B None`) is only a binder if the name turns out not to name a
@@ -377,13 +396,18 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
 /// One on the right points at a right-hand binder that may itself be demoted
 /// here, so it is re-pointed at that binder's new target — the demotion always
 /// precedes it in source order, so a single left-to-right pass suffices.
-fn canonicalise_alternatives(names: &mut [PatternName], left: usize) {
+fn canonicalise_alternatives(
+    names: &mut [PatternName],
+    left: usize,
+    argument_expressions: &HashSet<TextRange>,
+) {
+    let binds = |def: &Def| !def.provisional && !argument_expressions.contains(&def.range);
     // Small, linear-scanned association lists: an or-pattern binds a handful of
     // names, so a hash map would cost more than it saves.
     let left_binders: Vec<(String, TextRange)> = names[..left]
         .iter()
         .filter_map(|name| match name {
-            PatternName::Binder(def) if !def.provisional => {
+            PatternName::Binder(def) if binds(def) => {
                 Some((id_text(&def.name).to_string(), def.range))
             }
             _ => None,
@@ -395,7 +419,7 @@ fn canonicalise_alternatives(names: &mut [PatternName], left: usize) {
     let mut demoted: Vec<(TextRange, TextRange)> = Vec::new();
     for name in names[left..].iter_mut() {
         match name {
-            PatternName::Binder(def) if !def.provisional => {
+            PatternName::Binder(def) if binds(def) => {
                 let key = id_text(&def.name);
                 let index = match claimed.iter_mut().find(|(seen, _)| seen == key) {
                     Some((_, count)) => {
@@ -523,7 +547,7 @@ mod tests {
     /// or-pattern goes through here and gets the absence checked for free; the
     /// or-pattern cases read [`pattern_names`] directly.
     fn binders(pat: &Pat, role: BinderRole) -> Vec<Def> {
-        pattern_names(pat, role)
+        pattern_names(pat, role, &HashSet::new())
             .into_iter()
             .map(|name| match name {
                 PatternName::Binder(def) => def,
@@ -887,7 +911,7 @@ mod tests {
                 usize::from(range.end()) - offset
             )
         };
-        pattern_names(&head_pat(pat_src), role)
+        pattern_names(&head_pat(pat_src), role, &HashSet::new())
             .iter()
             .map(|occurrence| match occurrence {
                 PatternName::Binder(def) => format!("{}@{}", def.name, show(def.range)),
@@ -966,10 +990,48 @@ mod tests {
             ["None@3..7", "None@12..16"]
         );
         assert!(
-            pattern_names(&head_pat("(A None | B None)"), BinderRole::Pattern)
-                .iter()
-                .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
+            pattern_names(
+                &head_pat("(A None | B None)"),
+                BinderRole::Pattern,
+                &HashSet::new()
+            )
+            .iter()
+            .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
         );
+    }
+
+    #[test]
+    fn an_active_pattern_argument_takes_no_part_in_the_pairing() {
+        // `DivBy x x | Any x`: the left alternative's first `x` is the
+        // recognizer's argument, so the two alternatives each contribute *one*
+        // binding and the right payload pairs with the left payload. Counting
+        // the argument would pair it with the right payload instead — the
+        // occurrence the resolver goes on to drop, leaving the right `x`
+        // unresolved.
+        let src = "(DivBy x x | Any x)";
+        let argument = TextRange::new(
+            ("let ".len() as u32 + 7).into(),
+            ("let ".len() as u32 + 8).into(),
+        );
+        let names = pattern_names(
+            &head_pat(src),
+            BinderRole::Pattern,
+            &HashSet::from([argument]),
+        );
+        let rendered: Vec<String> = names
+            .iter()
+            .map(|occurrence| match occurrence {
+                PatternName::Binder(def) => {
+                    format!("{}@{}", def.name, u32::from(def.range.start()) - 4)
+                }
+                PatternName::Alias { range, binder } => format!(
+                    "@{}->{}",
+                    u32::from(range.start()) - 4,
+                    u32::from(binder.start()) - 4
+                ),
+            })
+            .collect();
+        assert_eq!(rendered, ["x@7", "x@9", "@17->9"]);
     }
 
     #[test]
@@ -1307,7 +1369,7 @@ mod tests {
                 .pat()
                 .expect("head pat");
 
-            let occurrences = pattern_names(&pat, BinderRole::Let);
+            let occurrences = pattern_names(&pat, BinderRole::Let, &HashSet::new());
             let text = |range: TextRange| {
                 &src[usize::from(range.start())..usize::from(range.end())]
             };

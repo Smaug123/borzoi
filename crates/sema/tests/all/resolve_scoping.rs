@@ -662,3 +662,26 @@ fn an_active_pattern_argument_never_becomes_an_or_pattern_binder() {
     assert_resolves_to(&rf, nth(src, "x", 4), payload);
     assert_resolves_to(&rf, nth(src, "x", 5), payload);
 }
+
+#[test]
+fn asymmetric_active_pattern_alternatives_still_alias_the_payload() {
+    // The alternatives bind the same name but spell a *different number* of
+    // occurrences of it: the left has an argument `x` and a payload `x`, the
+    // right only a payload. Pairing has to line the payloads up, which means
+    // knowing which occurrences are argument expressions — a fact the pattern's
+    // shape alone does not carry.
+    //
+    // FCS-verified: the argument is a use of the enclosing parameter, the left
+    // payload is the declaration, and the right payload and the body are uses
+    // of it.
+    let src = "let (|DivBy|_|) divisor n = if n % divisor = 0 then Some n else None\nlet (|Any|) n = n\nlet outer x n =\n    match n with\n    | DivBy x x\n    | Any x -> x\n";
+    let rf = resolve(src);
+    let param = nth(src, "x", 0);
+    let argument = nth(src, "x", 1);
+    let payload = nth(src, "x", 2);
+
+    assert_resolves_to(&rf, argument, param);
+    assert_resolves_to(&rf, payload, payload);
+    assert_resolves_to(&rf, nth(src, "x", 3), payload);
+    assert_resolves_to(&rf, nth(src, "x", 4), payload);
+}

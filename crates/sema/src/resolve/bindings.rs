@@ -159,8 +159,12 @@ impl<'a> Resolver<'a> {
                 let is_private = super::decls::header_is_private(binding.syntax());
                 eager_entries = self.define_active_pattern(&apn, true, arity, is_private);
             }
+            // `resolve_let_head_pat_types` has run the active-pattern split, so
+            // `excluded_param_ranges` names this head's argument *expressions*
+            // (see `pattern_locals`). Bound before the loop so the borrow ends.
+            let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
             let mut aliases = AliasTargets::default();
-            for pat_name in pattern_names(&head, BinderRole::Let) {
+            for pat_name in names {
                 // An or-pattern's later alternative re-spelling a name the first
                 // already bound (`let (A v | B v) = …`): one binding, so this
                 // occurrence is a *use* of it — no interning, no export, no second
@@ -385,8 +389,9 @@ impl<'a> Resolver<'a> {
                     ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
+                let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
                 let mut aliases = AliasTargets::default();
-                for pat_name in pattern_names(&head, BinderRole::Let) {
+                for pat_name in names {
                     // An or-pattern alias (`let (A v | B v) = …`) is a use of the
                     // first alternative's binder, as in `prepare_binding`.
                     // An active-pattern *parameter* argument: excluded whichever
