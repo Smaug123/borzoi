@@ -674,19 +674,34 @@ impl ProjectItems {
     pub(super) fn namespace_exports_value_named(&self, namespace: &[String], name: &str) -> bool {
         let mut container = namespace.to_vec();
         loop {
-            let mut path = container.clone();
-            path.push(name.to_string());
-            if self
-                .value_exports
-                .get(&path[..])
-                .is_some_and(|history| !history.is_empty())
-            {
+            if self.container_exports_value_named(&container, name) {
                 return true;
+            }
+            // An `[<AutoOpen>]` module *inside* this container puts its values in
+            // bare scope too, and its export is keyed under the module path
+            // (`Demo.A.Thing`), which the container probe above never reaches.
+            // Recurses, since an auto-open module may hold another.
+            let mut frontier = self.auto_open_modules_directly_in(&container);
+            while let Some(module) = frontier.pop() {
+                if self.container_exports_value_named(&module, name) {
+                    return true;
+                }
+                frontier.extend(self.auto_open_modules_directly_in(&module));
             }
             if container.pop().is_none() {
                 return false;
             }
         }
+    }
+
+    /// Whether any preceding file exports a value named `name` *directly* in
+    /// `container`.
+    fn container_exports_value_named(&self, container: &[String], name: &str) -> bool {
+        let mut path = container.to_vec();
+        path.push(name.to_string());
+        self.value_exports
+            .get(&path[..])
+            .is_some_and(|history| !history.is_empty())
     }
 
     fn latest_accessible_in_file(

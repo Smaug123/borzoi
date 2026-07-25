@@ -575,6 +575,20 @@ fn namespace_merge_resolution_is_sound_against_fcs() {
     // file, and `decide_type_path` ignores values by design, so the bare
     // constructor fallback must consult the project's export surface or it
     // commits `Demo.Thing` — a wrong go-to-definition (codex round 12).
+    // The same shape one level deeper: an earlier file's `[<AutoOpen>]` module in
+    // the namespace. Its export is keyed `Demo.A.Thing`, so probing the namespace
+    // and its ancestors never reaches it — the veto must walk the auto-open
+    // fragments too (codex round 13).
+    assert_merge_sound(
+        "preceding-auto-open-value-shadows-assembly-class",
+        &[
+            (
+                "a",
+                "namespace Demo\n\n[<AutoOpen>]\nmodule A =\n    let Thing () = 1\n",
+            ),
+            ("b", "namespace Demo\n\nmodule M =\n    let x = Thing ()\n"),
+        ],
+    );
     assert_merge_sound(
         "preceding-file-case-shadows-assembly-class",
         &[

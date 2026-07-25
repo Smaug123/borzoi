@@ -2167,11 +2167,7 @@ impl AssemblyEnv {
         if self
             .effective_implicit_open_namespace_paths()
             .iter()
-            .any(|ns| {
-                self.open_namespace_fold_surfaces(ns)
-                    .iter()
-                    .any(|s| Self::fold_surface_could_supply_value(s, name))
-            })
+            .any(|ns| self.namespace_surface_could_supply_value_inner(ns, name))
         {
             return true;
         }
@@ -2181,10 +2177,7 @@ impl AssemblyEnv {
         if self.contested_auto_opens.iter().any(|(_, ns)| {
             self.namespace_has_dropped_type(ns)
                 || self.unknowable_abbreviations_in_namespace(ns)
-                || self
-                    .open_namespace_fold_surfaces(ns)
-                    .iter()
-                    .any(|s| Self::fold_surface_could_supply_value(s, name))
+                || self.namespace_surface_could_supply_value_inner(ns, name)
         }) {
             return true;
         }
@@ -2203,9 +2196,24 @@ impl AssemblyEnv {
         // The ROOT namespace, which needs no open at all: a global `[<AutoOpen>]`
         // module's values, and a global union's cases (bare-visible because the
         // union type itself is).
-        self.open_namespace_fold_surfaces(&[])
-            .iter()
-            .any(|s| Self::fold_surface_could_supply_value(s, name))
+        self.namespace_surface_could_supply_value_inner(&[], name)
+    }
+
+    /// One namespace's bare-visible **value** surface, including the per-namespace
+    /// uncertainty the fold surfaces cannot encode.
+    ///
+    /// `open_namespace_fold_surfaces` enumerates *surviving* entities, so a type
+    /// the projection dropped — which could be a union supplying a case, or an
+    /// `[<AutoOpen>]` module supplying a value — reads as a clean absence. The
+    /// dropped/unknowable markers are namespace-scoped rather than per-surface, so
+    /// they are asked here, for every namespace arm alike.
+    fn namespace_surface_could_supply_value_inner(&self, namespace: &[String], name: &str) -> bool {
+        self.namespace_has_dropped_type(namespace)
+            || self.unknowable_abbreviations_in_namespace(namespace)
+            || self
+                .open_namespace_fold_surfaces(namespace)
+                .iter()
+                .any(|s| Self::fold_surface_could_supply_value(s, name))
     }
 
     /// Whether the fold surface of `namespace` could put a **value** named `name`
@@ -2221,11 +2229,7 @@ impl AssemblyEnv {
         namespace: &[String],
         name: &str,
     ) -> bool {
-        !namespace.is_empty()
-            && self
-                .open_namespace_fold_surfaces(namespace)
-                .iter()
-                .any(|s| Self::fold_surface_could_supply_value(s, name))
+        !namespace.is_empty() && self.namespace_surface_could_supply_value_inner(namespace, name)
     }
 
     /// Whether an [`OpenFoldSurface`] could put a **value** named `name` into
