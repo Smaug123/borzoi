@@ -2740,12 +2740,17 @@ fn a_root_tier_contest_does_not_preempt_an_open() {
 
 #[test]
 fn a_terminal_module_is_not_a_value_path_supplier() {
-    // Codex review round 6, the value-path mirror of the module-leaf rule. Only
-    // `High.Color` reaches `Inner` — and reaches it as a *submodule*, which is
-    // not a value, so FCS's expression-position lookup skips it and binds the
-    // lower `Low.Color.Inner`. Counting the module as the sole supplier would
-    // commit the module entity: a wrong target, which is the one thing the
-    // whole guard exists to prevent.
+    // Codex review rounds 6 and 8, the value-path mirror of the module-leaf
+    // rule. Only `High.Color` reaches `Inner` — and reaches it as a *submodule*,
+    // which is not a value, so FCS's expression-position lookup skips it and
+    // binds the lower `Low.Color.Inner`.
+    //
+    // The eligibility test is not commit safety (a contest commits nothing); it
+    // decides whether the contest has ANY supplier, and so whether the lower
+    // reading may win at all. Counting the module would leave the contested
+    // `High` tier owning the path and suppress `Low.Color.Inner` entirely —
+    // which is why this asserts the fall-through, not merely that the module
+    // was not committed.
     let ents = fixture_entities();
     let widget = ents
         .iter()
@@ -2785,15 +2790,15 @@ fn a_terminal_module_is_not_a_value_path_supplier() {
     let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
     let src = "module M\nopen Low\nopen High\nlet u = Color.Inner\n";
     let rf = resolve(src, &env);
-    let module_leaf = env
-        .public_types_named_at_arity(&["High".to_string()], "Color", 0)
-        .into_iter()
-        .find_map(|h| env.nested(h, "Inner", 0))
-        .expect("High.Color.Inner exists as a module");
-    assert_ne!(
+    let low_inner = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .and_then(|h| env.nested(h, "Inner", 0))
+        .expect("Low.Color.Inner exists as a class");
+    assert_eq!(
         rf.resolution_at(at(src, "Inner")),
-        Some(Resolution::Entity(module_leaf)),
-        "a terminal module is not a value — committing it is a wrong target"
+        Some(Resolution::Entity(low_inner)),
+        "no `High.Color` candidate supplies a *value* tail — the module is not one — \
+         so the lower `Low.Color.Inner` must win"
     );
 }
 

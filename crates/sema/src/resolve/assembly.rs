@@ -89,7 +89,34 @@ impl<'a> Resolver<'a> {
             let supplied = self.contest_has_a_supplier(
                 candidates,
                 |handle| self.assembly_path_records_from_root(&names, segments, base, k, handle),
-                AssemblyPath::may_own_path,
+                // A reading whose **terminal segment** landed on an
+                // authoritative module supplies no *value*: FCS's
+                // expression-position lookup wants a value or member, and a
+                // module is neither, so it skips it — the value-path mirror of
+                // the type walk's module-leaf rule. This is not commit safety
+                // (nothing is committed at a contest); it decides whether the
+                // contest has *any* supplier, and so whether a lower-priority
+                // reading that does resolve may still win (codex review round
+                // 8). A resolved static member records across the whole path,
+                // not the terminal segment, so this rejects only a bare module.
+                |reading| {
+                    reading.may_own_path()
+                        && !matches!(
+                            reading,
+                            AssemblyPath::Resolved { payload, .. }
+                                if segments.last().is_some_and(|last| {
+                                    let terminal = last.text_range();
+                                    payload.iter().any(|&(range, res)| {
+                                        range == terminal
+                                            && matches!(
+                                                res,
+                                                Resolution::Entity(h)
+                                                    if self.assemblies.is_authoritative_module(h)
+                                            )
+                                    })
+                                })
+                        )
+                },
             );
             return if supplied {
                 AssemblyPath::ContestedRooting
