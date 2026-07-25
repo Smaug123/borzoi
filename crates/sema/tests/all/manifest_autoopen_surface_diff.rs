@@ -167,8 +167,14 @@ fn sweep_sound(src: &str) -> (usize, usize) {
         }
     }
 
-    // Ours → FCS: a fixture resolution we made that FCS resolves *elsewhere*
-    // (no covering fixture use) is a wrong target.
+    // Ours → FCS: every fixture resolution we made inside the probe's
+    // ANNOTATION region must be confirmed by a covering FCS fixture use —
+    // including when FCS reports no use there at all (an FS0039-erroring
+    // annotation yields none, so a sema commitment on it is a divergence the
+    // lenient "only if covered" form silently passed; codex P2, round 6).
+    // The generated probes share one template, so the region is derivable.
+    let anno_start = src.find("(x: ").expect("probe template") + "(x: ".len();
+    let anno_end = src.find(") = x").expect("probe template");
     for (range, res) in rf.resolutions() {
         if !matches!(res, Resolution::Entity(_) | Resolution::Member { .. }) {
             continue;
@@ -177,20 +183,16 @@ fn sweep_sound(src: &str) -> (usize, usize) {
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
         );
-        let covering = uses
-            .iter()
-            .filter(|u| u.start != u.end && u.start <= start && end <= u.end);
-        let (mut any_covering, mut any_fixture) = (false, false);
-        for u in covering {
-            any_covering = true;
-            if u.assembly.as_deref() == Some(FIXTURE_ASM) {
-                any_fixture = true;
-            }
+        if start < anno_start || end > anno_end {
+            continue;
         }
         assert!(
-            !any_covering || any_fixture,
-            "{src:?}: we resolved {start}..{end} into the fixture ({:?}), but FCS resolves \
-             that span elsewhere (no covering fixture use) — a wrong target",
+            uses.iter().any(|u| u.start != u.end
+                && u.start <= start
+                && end <= u.end
+                && u.assembly.as_deref() == Some(FIXTURE_ASM)),
+            "{src:?}: we resolved {start}..{end} into the fixture ({:?}), but no FCS \
+             fixture use covers that span — a wrong target or a commitment FCS errors on",
             our_assembly_full(&env, *res),
         );
     }

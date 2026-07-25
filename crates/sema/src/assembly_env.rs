@@ -606,7 +606,13 @@ pub struct AssemblyEnv {
     /// extension-absence gate ([`Self::extension_named_in_scope`]) treats their
     /// presence as an extension surface and defers, lest it falsely prove an
     /// intrinsic overload's name absent.
-    auto_open_module_handles: Vec<EntityHandle>,
+    /// Each entry is `(target handle, effectively public)` — the second
+    /// component is whether the whole AutoOpen path from its top-level root
+    /// down is public ([`Self::assembly_entity_at_path`]). FCS does not
+    /// import an inaccessible target's surface cross-assembly, so the shadow
+    /// veto skips such entries; the extension gate deliberately still folds
+    /// them (over-deferring is its safe direction).
+    auto_open_module_handles: Vec<(EntityHandle, bool)>,
     /// The assembly-level auto-opens [`Self::record_assembly_auto_opens`]
     /// **dropped** as *contested* — a namespace declared by more than one
     /// referenced assembly (narrowing 1), which sema's path-based (assembly-blind)
@@ -1269,11 +1275,14 @@ impl AssemblyEnv {
                 if segments.iter().any(String::is_empty) {
                     continue;
                 }
-                if let Some(handle) = self.assembly_entity_at_path(contributor, &segments) {
+                if let Some((handle, effectively_public)) =
+                    self.assembly_entity_at_path(contributor, &segments)
+                {
                     // Module/type-shaped: dropped from the namespace opens (its
                     // bare values are not made resolvable), but retained here so the
                     // OV-6 extension-absence gate can fold its extension members.
-                    self.auto_open_module_handles.push(handle);
+                    self.auto_open_module_handles
+                        .push((handle, effectively_public));
                     continue;
                 }
                 if !self.namespace_declared_only_by(contributor, &segments) {
@@ -1344,11 +1353,18 @@ impl AssemblyEnv {
     /// identity — must not have *its* module folded (issue #150). Matched by
     /// the name F# source writes (`source_name` when present — a suffixed
     /// module's AutoOpen path says `List`, never `ListModule`).
+    /// The second component is whether **every entity on the descent** — the
+    /// top-level root through the target itself — is public: FCS cannot
+    /// import a target whose path crosses an inaccessible entity
+    /// cross-assembly, however public the terminal (or its children — a
+    /// C#-shaped nested-public type inside an internal class carries a
+    /// `Public` flag of its own), so the shadow veto keys on this rather
+    /// than the terminal's flag (codex P2s, rounds 5 and 6).
     fn assembly_entity_at_path(
         &self,
         contributor: AssemblyId,
         path: &[String],
-    ) -> Option<EntityHandle> {
+    ) -> Option<(EntityHandle, bool)> {
         for split in 0..path.len() {
             let candidates = self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
@@ -1360,11 +1376,15 @@ impl AssemblyEnv {
             for top in candidates {
                 let mut handle = top;
                 let mut ok = true;
+                let mut effectively_public = self.is_public(top);
                 for segment in &path[split + 1..] {
                     // Nested descent stays within `top`'s assembly by
                     // construction (children were interned from its subtree).
                     match self.nested(handle, segment, 0) {
-                        Some(child) => handle = child,
+                        Some(child) => {
+                            handle = child;
+                            effectively_public = effectively_public && self.is_public(child);
+                        }
                         None => {
                             ok = false;
                             break;
@@ -1372,7 +1392,7 @@ impl AssemblyEnv {
                     }
                 }
                 if ok {
-                    return Some(handle);
+                    return Some((handle, effectively_public));
                 }
             }
         }
@@ -1934,15 +1954,17 @@ impl AssemblyEnv {
         name: &str,
         position: ManifestSurfacePosition,
     ) -> bool {
-        self.auto_open_module_handles.iter().any(|&h| {
-            if !self.is_public(h) {
-                return false;
-            }
-            let owning = &self.nodes[h.index()].owning_namespace;
-            self.namespace_has_dropped_type(owning)
-                || self.unknowable_abbreviations_in_namespace(owning)
-                || self.module_open_surface_has_entity_named(h, name, position)
-        })
+        self.auto_open_module_handles
+            .iter()
+            .any(|&(h, effectively_public)| {
+                if !effectively_public {
+                    return false;
+                }
+                let owning = &self.nodes[h.index()].owning_namespace;
+                self.namespace_has_dropped_type(owning)
+                    || self.unknowable_abbreviations_in_namespace(owning)
+                    || self.module_open_surface_has_entity_named(h, name, position)
+            })
     }
 
     /// Whether opening the module `handle` imports an entity named `name`
@@ -2874,14 +2896,17 @@ impl AssemblyEnv {
         }) {
             return true;
         }
-        if self.auto_open_module_handles.iter().any(|&h| {
+        if self.auto_open_module_handles.iter().any(|&(h, _)| {
             // A **dropped** TypeDef beneath the (surviving) auto-opened module is
             // absent from the tree walked below, yet FCS imports it through the
             // auto-open — so consult the drop marker first. A dropped nested type is
             // recorded under its **top-level namespace** (nested types share it), which
             // is exactly the handle's owning namespace; any drop there could be the
             // module's own hidden extension container, of any name (mirrors
-            // [`Self::module_may_hide_nested_modules`]).
+            // [`Self::module_may_hide_nested_modules`]). The
+            // effectively-public bit is deliberately ignored here:
+            // over-deferring an inaccessible target's extensions is the
+            // gate's safe direction.
             self.namespace_has_dropped_type(&self.nodes[h.index()].owning_namespace)
                 || self.entity_tree_has_extension_named(h, name, is_static)
         }) {
@@ -6748,6 +6773,56 @@ mod from_views_tests {
                 ManifestSurfacePosition::AnySegment
             ),
             "the skip applies in every position"
+        );
+
+        // The accessibility of the WHOLE path counts, not the terminal's
+        // flag: a public target beneath an internal ancestor is equally
+        // unimportable (codex P2, round 6). `A.Outer.M` with `Outer`
+        // internal and `M`/`C` public must supply nothing.
+        let c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let m = Entity {
+            nested_types: vec![c],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let outer = Entity {
+            access: Access::Internal,
+            nested_types: vec![m],
+            ..module_entity("Lib", &["A"], "Outer")
+        };
+        let view2 = ConfigView::new("Lib", vec![outer], &["A.Outer.M"]);
+        let env2 = AssemblyEnv::from_views(std::slice::from_ref(&view2)).expect("build env");
+        assert!(
+            !env2.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a public target under an internal ancestor is not imported either"
+        );
+
+        // Control: the same shape all-public supplies the nested type.
+        let c3 = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let m3 = Entity {
+            nested_types: vec![c3],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let outer3 = Entity {
+            nested_types: vec![m3],
+            ..module_entity("Lib", &["A"], "Outer")
+        };
+        let view3 = ConfigView::new("Lib", vec![outer3], &["A.Outer.M"]);
+        let env3 = AssemblyEnv::from_views(std::slice::from_ref(&view3)).expect("build env");
+        assert!(
+            env3.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "control: the all-public path supplies its nested type"
         );
     }
 
