@@ -887,6 +887,26 @@ impl<'a> Resolver<'a> {
     /// naming a project value binds that value where F# binds the callee's
     /// parameter — a defect that predates this fallback. Fixing it means modelling
     /// the argument shape at the walker.
+    /// Whether the container this use sits in — or any container enclosing it —
+    /// was marked as holding values the resolver cannot enumerate.
+    ///
+    /// The in-file twin of `ProjectItems::modules_with_hidden_values`. Name-blind
+    /// by necessity: the whole point of the marker is that the names are unknown,
+    /// so this defers every bare constructor use in such a container. Sound, and
+    /// the containers that set it are rare (an auto-open type abbreviation, a
+    /// module alias, an `extern`).
+    fn container_and_ancestors_hide_values(&self) -> bool {
+        let mut path = self.container_path.clone();
+        loop {
+            if self.modules_with_hidden_values.contains(&path) {
+                return true;
+            }
+            if path.pop().is_none() {
+                return false;
+            }
+        }
+    }
+
     fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
         if !allow_opened_type
             || self.own_binder_simple_names.contains(name)
@@ -916,6 +936,13 @@ impl<'a> Resolver<'a> {
             || self
                 .preceding
                 .namespace_exports_value_named(self.enclosing_namespace(), name)
+            // This file's own residue. An `[<AutoOpen>]` **type** abbreviation
+            // (`[<AutoOpen>] type T = Demo.Calc`) folds the target's statics into
+            // the rest of the container — fsi-verified — and an alias or `extern`
+            // does the same for its own names. Nothing here *declares* them, so
+            // `own_binder_simple_names` is empty for them; the container's hidden
+            // marker is the only evidence, exactly as for a preceding file.
+            || self.container_and_ancestors_hide_values()
         {
             return None;
         }

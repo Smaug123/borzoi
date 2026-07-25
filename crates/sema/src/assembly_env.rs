@@ -251,6 +251,17 @@ impl OpenFoldSurface {
     }
 }
 
+/// The precomputed answer for the closure-fixed arms of
+/// [`AssemblyEnv::assembly_bare_value_surface_could_supply`].
+///
+/// `uncertain` collapses every incompleteness marker those arms consult: once any
+/// of them is set the answer is `true` for every name, so no name set is needed.
+#[derive(Debug, Clone, Default)]
+struct BareValueIndex {
+    uncertain: bool,
+    names: std::collections::HashSet<String>,
+}
+
 /// A container's bare-visible **value** surface, paired with the uncertainty its
 /// fold surfaces cannot encode.
 ///
@@ -277,6 +288,29 @@ impl ValueSurface {
     /// deferral, never a resolution, so over-approximating is sound.
     pub fn could_supply(&self, name: &str) -> bool {
         self.uncertain || self.surfaces.iter().any(|s| s.could_supply_value(name))
+    }
+
+    /// Whether this container is uncertain at all — either its namespace-scoped
+    /// markers or any surface's residue. A caller that intends to *enumerate*
+    /// must ask this first: the name list is only meaningful when it is `false`.
+    pub fn is_uncertain(&self) -> bool {
+        self.uncertain
+            || self
+                .surfaces
+                .iter()
+                .any(|s| s.residue || s.residue_below_vals)
+    }
+
+    /// Add every value name this container definitely contributes to `out`.
+    /// Meaningful only when [`Self::is_uncertain`] is `false`.
+    pub fn collect_value_names(&self, out: &mut std::collections::HashSet<String>) {
+        for surface in &self.surfaces {
+            for e in &surface.entries {
+                if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
+                    out.insert(e.name.clone());
+                }
+            }
+        }
     }
 }
 
@@ -701,6 +735,15 @@ pub struct AssemblyEnv {
     /// [`Self::mark_extension_surface_unknowable`] (the LSP host, which observes
     /// these failures); false by default (a clean projection is trusted).
     extension_surface_unknowable: bool,
+    /// Lazily-built index behind [`Self::assembly_bare_value_surface_could_supply`]
+    /// for the arms that do **not** vary per call: the implicit-open namespaces,
+    /// the contested ones, and the root. Rebuilding their fold surfaces per name
+    /// made resolution scale as `misses × referenced entities` — measured at ~24µs
+    /// a name over a 175-assembly closure, several times the rest of resolution.
+    ///
+    /// Not the *enclosing* namespace, which is a property of the file being
+    /// resolved rather than of the closure, so it has no fixed answer to cache.
+    bare_value_index: std::sync::OnceLock<BareValueIndex>,
     /// Namespaces in which a referenced assembly **dropped an undecodable type**
     /// (possibly a C#-style `[<Extension>]` class the entity tree no longer shows).
     /// The OV-6 gate treats these as possibly-extension-bearing per
@@ -2207,47 +2250,58 @@ impl AssemblyEnv {
     /// blind in exactly this position. Every arm is deferral-only — a `true`
     /// withholds a commitment, never resolves — so over-approximating is sound.
     pub(crate) fn assembly_bare_value_surface_could_supply(&self, name: &str) -> bool {
+        let index = self
+            .bare_value_index
+            .get_or_init(|| self.build_bare_value_index());
+        index.uncertain || index.names.contains(name)
+    }
+
+    /// Build [`Self::bare_value_index`]: fold every container F# opens without a
+    /// source `open` whose identity is fixed by the closure, and collect the value
+    /// names they contribute.
+    ///
+    /// Short-circuits to `uncertain` the moment any arm is uncertain, since the
+    /// answer is then `true` for every name and the name set is dead weight.
+    fn build_bare_value_index(&self) -> BareValueIndex {
+        let uncertain = || BareValueIndex {
+            uncertain: true,
+            names: std::collections::HashSet::new(),
+        };
         // An assembly whose auto-open list could not be read, or whose projection
         // was skipped, may auto-open a container supplying any name at all.
         if self.extension_surface_unknowable {
-            return true;
+            return uncertain();
         }
-        // Namespace-shaped implicit auto-opens (`[<assembly: AutoOpen("N")>]`
-        // naming a namespace, plus the implicitly-opened FSharp.Core ones): the
-        // namespace's own exception/union cases and its `[<AutoOpen>]` modules'
-        // values are all bare-visible.
-        if self
+        let mut names = std::collections::HashSet::new();
+        // Namespace-shaped implicit auto-opens, the contested ones FCS still
+        // applies per contributor, and the root namespace (no `open` at all).
+        let namespaces = self
             .effective_implicit_open_namespace_paths()
-            .iter()
-            .any(|ns| self.namespace_value_surface(ns).could_supply(name))
-        {
-            return true;
+            .into_iter()
+            .chain(self.contested_auto_opens.iter().map(|(_, ns)| ns.clone()))
+            .chain(std::iter::once(Vec::new()));
+        for ns in namespaces {
+            let surface = self.namespace_value_surface(&ns);
+            if surface.is_uncertain() {
+                return uncertain();
+            }
+            surface.collect_value_names(&mut names);
         }
-        // Contested auto-open namespaces: shared by two DLLs, so dropped from the
-        // implicit opens above and parked here. FCS still applies each
-        // contributor's open, so the same surface question applies per namespace.
-        if self
-            .contested_auto_opens
-            .iter()
-            .any(|(_, ns)| self.namespace_value_surface(ns).could_supply(name))
-        {
-            return true;
+        // Retained module-shaped manifest auto-opens.
+        for &(h, effectively_public) in &self.auto_open_module_handles {
+            if !effectively_public {
+                continue;
+            }
+            let surface = self.module_value_surface(h);
+            if surface.is_uncertain() {
+                return uncertain();
+            }
+            surface.collect_value_names(&mut names);
         }
-        // Retained module-shaped manifest auto-opens (`[<assembly:
-        // AutoOpen("N.Ops")>]` naming a module).
-        if self
-            .auto_open_module_handles
-            .iter()
-            .any(|&(h, effectively_public)| {
-                effectively_public && self.module_value_surface(h).could_supply(name)
-            })
-        {
-            return true;
+        BareValueIndex {
+            uncertain: false,
+            names,
         }
-        // The ROOT namespace, which needs no open at all: a global `[<AutoOpen>]`
-        // module's values, and a global union's cases (bare-visible because the
-        // union type itself is).
-        self.namespace_value_surface(&[]).could_supply(name)
     }
 
     /// The bare-visible **value** surface of `namespace`: its fold surfaces plus

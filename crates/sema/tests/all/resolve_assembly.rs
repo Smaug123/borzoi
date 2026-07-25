@@ -6093,3 +6093,26 @@ fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
          wrong target — got {resolution:?}"
     );
 }
+
+#[test]
+fn an_in_file_auto_open_type_defers_the_constructor_fallback() {
+    // `[<AutoOpen>] type T = Demo.Calc` folds `Calc`'s *statics* into the rest of
+    // the container (fsi-verified: bare `Zero()` resolves through exactly this).
+    // One of them is `Thing`, colliding with the constructible `Demo.Thing`, so
+    // FCS binds the static and committing the class is a wrong target.
+    //
+    // These borrowed names are not `own_binder_simple_names` entries — nothing in
+    // this file declares `Thing` — so the file's own hidden-value marker is the
+    // only evidence, exactly as for a preceding file's.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\n[<AutoOpen>]\ntype T = Demo.Calc\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "an auto-open type's borrowed statics must keep the fallback off the class"
+    );
+}

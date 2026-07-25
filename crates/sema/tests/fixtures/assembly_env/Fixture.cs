@@ -205,6 +205,11 @@ namespace Demo
         // position that FCS binds to this parameter — never to the opened type.
         // The expression-constructor fallback must not commit `Demo.Thing` there.
         public static int Named(int Thing) => Thing;
+
+        // A static whose name collides with the sibling constructible class
+        // `Demo.Thing`. `[<AutoOpen>] type T = Demo.Calc` folds this into scope
+        // (fsi-verified), so a bare `Thing ()` binds THIS, not the class.
+        public static int Thing() => 0;
     }
 
     // A C#-style extension class: `Doubled` is an extension method (a static
