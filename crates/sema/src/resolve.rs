@@ -224,6 +224,27 @@ pub fn resolve_file(
     // either. FCS binds the LHS occurrence as the definition and later ones as
     // uses of it. Only the binding position — the LHS — names a binder; the `rhs`
     // is the source collection, an ordinary expression.
+    // A query `into` clause (`groupJoin … into Thing`, `group … into Thing`)
+    // names a further range variable. `into` lexes as an ordinary ident, so the
+    // binder is simply the ident that follows it. Scanned file-wide rather than
+    // per node kind: `into` appears under several query operators, not only
+    // `JoinInExpr`. A user value actually named `into` would over-collect the
+    // following name, which costs one deferral.
+    {
+        let mut prev_was_into = false;
+        for tok in file
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        {
+            if prev_was_into {
+                r.own_binder_simple_names
+                    .insert(id_text(tok.text()).to_string());
+            }
+            prev_was_into = id_text(tok.text()) == "into";
+        }
+    }
     for join in file.syntax().descendants().filter_map(JoinInExpr::cast) {
         let Some(lhs) = join.lhs() else { continue };
         // Every ident in the binding position, not just a bare one: the `join`

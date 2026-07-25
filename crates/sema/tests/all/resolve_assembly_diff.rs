@@ -784,6 +784,13 @@ fn bare_constructor_fallback_is_sound_under_every_binding_form() {
         // Query operators — binders written as expressions, not patterns.
         "let q xs ys =\n    query {\n        for x in xs do\n        join Thing in ys on (x = Thing)\n        select Thing\n    }\n",
         "let q xs ys =\n    query {\n        for x in xs do\n        groupJoin Thing in ys on (x = Thing) into g\n        select g\n    }\n",
+        // The *other* binding position of the same form: `into` names a second
+        // range variable. A form that binds more than one name must be probed in
+        // each position, or the sweep inherits the blind spot it exists to close.
+        "let q xs ys =\n    query {\n        for x in xs do\n        groupJoin y in ys on (x = y) into Thing\n        select Thing\n    }\n",
+        // The same `into` binder under a different query operator — the reason
+        // the scan is keyed on the clause rather than on `JoinInExpr`.
+        "let q xs =\n    query {\n        for x in xs do\n        groupBy x into Thing\n        select Thing\n    }\n",
         "let q xs =\n    query {\n        for Thing in xs do\n        select Thing\n    }\n",
         // Computation-expression binders.
         "let f x =\n    async {\n        let! Thing = x\n        return Thing\n    }\n",
