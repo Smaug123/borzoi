@@ -49,9 +49,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, LongIdent,
-    ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile,
-    SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, JoinInExpr,
+    LongIdent, ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat,
+    SigDecl, SigFile, SyntaxKind, SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
 };
 use rowan::TextRange;
 
@@ -217,6 +217,27 @@ pub fn resolve_file(
         if let Some(name) = case.ident() {
             r.own_binder_simple_names
                 .insert(id_text(name.text()).to_string());
+        }
+    }
+    // A query `join`/`groupJoin` range variable (`join Thing in ys on …`) is a
+    // value binder written as an *expression*, so the pattern walk cannot reach it
+    // either. FCS binds the LHS occurrence as the definition and later ones as
+    // uses of it. Only the binding position — the LHS — names a binder; the `rhs`
+    // is the source collection, an ordinary expression.
+    for join in file.syntax().descendants().filter_map(JoinInExpr::cast) {
+        let Some(lhs) = join.lhs() else { continue };
+        // Every ident in the binding position, not just a bare one: the `join`
+        // keyword itself lexes as an ident, so the LHS is the application
+        // `join Thing` rather than the binder alone. Over-collecting (the keyword,
+        // a `groupJoin` alias) only ever defers, which is what this oracle is for.
+        for tok in lhs
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        {
+            r.own_binder_simple_names
+                .insert(id_text(tok.text()).to_string());
         }
     }
     for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {

@@ -6137,3 +6137,25 @@ fn an_auto_open_descendants_hidden_values_defer_the_constructor_fallback() {
         "an auto-open descendant's borrowed statics must keep the fallback off the class"
     );
 }
+
+#[test]
+fn a_query_join_binder_defers_the_constructor_fallback() {
+    // `join Thing in ys on (x = Thing)` makes `Thing` a query *range variable*:
+    // FCS binds the first occurrence as its definition and the later one as a use
+    // of it. The binder pre-scan only visits `Pat`, and a range variable is an
+    // expression node, so `lookup` misses it — the same `Pat`-less in-file binder
+    // shape as `extern` and a union case. With `open Demo`, committing the
+    // constructible `Demo.Thing` at either occurrence is a wrong target.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\nlet q xs ys =\n    query {\n        for x in xs do\n        join Thing in ys on (x = Thing)\n        select x\n    }\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert!(
+        !rf.resolutions()
+            .values()
+            .any(|r| *r == Resolution::Entity(thing)),
+        "a query range variable must not resolve to the opened type"
+    );
+}
