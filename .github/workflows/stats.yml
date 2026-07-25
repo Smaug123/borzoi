@@ -139,11 +139,18 @@ jobs:
         run: |
           while IFS=$'\t' read -r repository revision project; do
             dir="$RUNNER_TEMP/project-corpus/$repository"
-            mkdir -p "$(dirname "$dir")"
-            git clone --quiet --no-checkout "https://github.com/$repository" "$dir"
-            # Detached at the exact pin: a branch would let the corpus drift
-            # under a series that claims its points are comparable.
-            git -C "$dir" checkout --quiet --detach "$revision"
+            # The plan has one line per *project*, and a repository may
+            # legitimately contribute several, so clone at most once per
+            # repository. `borzoi-stats corpus` has already rejected a corpus
+            # that pins one repository at two revisions, so a repeat visit
+            # wants the working tree that is already here.
+            if [ ! -e "$dir" ]; then
+              mkdir -p "$(dirname "$dir")"
+              git clone --quiet --no-checkout "https://github.com/$repository" "$dir"
+              # Detached at the exact pin: a branch would let the corpus drift
+              # under a series that claims its points are comparable.
+              git -C "$dir" checkout --quiet --detach "$revision"
+            fi
             test -f "$dir/$project"
           done <"$RUNNER_TEMP/project-corpus-plan.tsv"
 

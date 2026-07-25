@@ -429,6 +429,29 @@ fn the_corpus_rejects_pins_it_cannot_check_out_or_would_double_count() {
         let err = read_project_corpus(&path).unwrap_err().to_string();
         assert!(err.contains(expected), "expected {expected:?}, got {err}");
     }
+
+    // One repository contributing *several* projects is legitimate and must be
+    // accepted — it is the shape a multi-project repository takes. The
+    // workflow's checkout loop reads one line per project and so must clone at
+    // most once per repository; this is the case that makes that necessary,
+    // and rejecting it here would hide the requirement rather than meet it.
+    let two_from_one = write_corpus(
+        temp.path(),
+        json!({ "schema_version": 1, "projects": [
+            good.clone(),
+            pin("Smaug123/A", &"a".repeat(40), "Other/Other.fsproj"),
+        ] }),
+    );
+    let corpus =
+        read_project_corpus(&two_from_one).expect("one repository may pin several projects");
+    assert_eq!(corpus.projects.len(), 2);
+    // Exactly one checkout is needed, at exactly one revision.
+    let revisions: std::collections::BTreeSet<&str> = corpus
+        .projects
+        .iter()
+        .map(|pin| pin.revision.as_str())
+        .collect();
+    assert_eq!(revisions.len(), 1);
 }
 
 /// The corpus the workflow actually checks out. A typo here fails the
