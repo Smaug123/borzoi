@@ -2173,14 +2173,20 @@ impl AssemblyEnv {
     /// Whether a **module/type-shaped manifest auto-open surface**
     /// ([`Self::auto_open_module_handles`]) could supply an entity named
     /// `name` into bare scope. FCS opens such a target like a module, so its
-    /// nested types and modules *are* bare-visible — at open priority, below
-    /// every explicit source `open` (latest-open-wins; the manifest open is
-    /// applied at file start) but above the enclosing-namespace and root
-    /// tiers (fsi-verified both ways: with a same-named `namespace global`
-    /// decoy, a bare type annotation binds the auto-opened module's nested
-    /// type; after an explicit `open` of a namespace with its own same-named
-    /// type, it binds that one) — while the resolver's prefix walk never
-    /// searches the surface. Name-keyed to exactly these surfaces so the
+    /// nested types and modules *are* bare-visible — at open priority, in the
+    /// ladder
+    ///
+    /// ```text
+    /// explicit opens  >  enclosing namespace  >  manifest surface  >  root
+    /// ```
+    ///
+    /// below every explicit source `open` (latest-open-wins; the manifest open
+    /// is applied at file start) and below the enclosing namespace, but above
+    /// the root. All three boundaries fsi-verified: with a same-named
+    /// `namespace global` decoy a bare annotation binds the auto-opened
+    /// module's nested type, while after an explicit `open` of — or from
+    /// *inside* — a namespace with its own same-named type, it binds that one.
+    /// Meanwhile the resolver's prefix walk never searches the surface. Name-keyed to exactly these surfaces so the
     /// general type walk can defer the names they could shadow
     /// (`decide_type_path`'s manifest veto) without the contested-namespace
     /// arm of [`Self::retained_auto_open_could_supply_entity_named`], which
@@ -2210,6 +2216,44 @@ impl AssemblyEnv {
         name: &str,
         position: ManifestSurfacePosition,
     ) -> bool {
+        self.manifest_auto_open_target_is_uncertain()
+            || self.manifest_auto_open_surface_declares(name, position)
+    }
+
+    /// The **name-keyed** half of
+    /// [`Self::manifest_auto_open_module_could_supply_entity_named`]: the
+    /// surface demonstrably declares `name`, with no appeal to projection
+    /// uncertainty.
+    ///
+    /// Split out because the two halves license different actions. A caller
+    /// that only wants to *defer* can take the whole predicate. A caller that
+    /// wants to **commit somewhere else** — at a tier that out-ranks the
+    /// surface — may only do so on this half: when the other half is what
+    /// fired, the projection is incomplete in the target's whole owning
+    /// namespace, and a tier the walk visits can be that same namespace, so
+    /// the reading it commits may itself be the survivor of a same-FQN pair
+    /// (three review rounds landed on variants of exactly that). With this
+    /// half the uncertainty is confined to the surface, and every tier above
+    /// it is trustworthy by construction rather than by screening.
+    pub(crate) fn manifest_auto_open_surface_declares(
+        &self,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        self.auto_open_module_handles
+            .iter()
+            .any(|&(h, effectively_public)| {
+                effectively_public && self.module_open_surface_has_entity_named(h, name, position)
+            })
+    }
+
+    /// The **name-blind** half: projection uncertainty anywhere in a
+    /// module-shaped manifest auto-open target's owning namespace — a dropped
+    /// TypeDef (the marker records only the enclosing top-level namespace, so
+    /// the drop could be a descendant of the target of any name) or an
+    /// undecodable signature pickle hiding the module's nested abbreviations.
+    /// Says nothing about any particular name; licenses deferral only.
+    pub(crate) fn manifest_auto_open_target_is_uncertain(&self) -> bool {
         self.auto_open_module_handles
             .iter()
             .any(|&(h, effectively_public)| {
@@ -2219,7 +2263,21 @@ impl AssemblyEnv {
                 let owning = &self.nodes[h.index()].owning_namespace;
                 self.namespace_has_dropped_type(owning)
                     || self.unknowable_abbreviations_in_namespace(owning)
-                    || self.module_open_surface_has_entity_named(h, name, position)
+            })
+    }
+
+    /// The [`Self::retained_auto_open_could_supply_entity_named`] counterpart
+    /// of [`Self::manifest_auto_open_target_is_uncertain`]: every one of that
+    /// predicate's name-blind arms, which likewise license deferral only. The
+    /// globally-unknowable arm is here too — an unread `AutoOpen` list leaves
+    /// *no* prefix trustworthy, so a caller choosing where to commit has
+    /// nowhere to go.
+    pub(crate) fn retained_auto_open_is_uncertain(&self) -> bool {
+        self.extension_surface_unknowable
+            || self.manifest_auto_open_target_is_uncertain()
+            || self.contested_auto_opens.iter().any(|(_, ns)| {
+                self.namespace_has_dropped_type(ns)
+                    || self.unknowable_abbreviations_in_namespace(ns)
             })
     }
 

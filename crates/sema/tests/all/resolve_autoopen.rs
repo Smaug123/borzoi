@@ -841,6 +841,106 @@ fn an_explicit_open_outranks_the_manifest_module_surface() {
 }
 
 #[test]
+fn the_enclosing_namespace_outranks_the_manifest_module_surface() {
+    // The sibling of `an_explicit_open_outranks_…`, for the tier below it. The
+    // manifest surface out-ranks the ROOT tier — that is what the
+    // `namespace global` decoys pin — but NOT the enclosing namespace:
+    // declaring `namespace SemaAutoOpen.ExplicitBeats` binds that namespace's
+    // `DirectShadow`, not the auto-opened module's nested one (fsi-verified
+    // directly, `fcs-dump uses` over this very source). So the full ladder is
+    //
+    //     explicit opens > enclosing namespace > manifest surface > root
+    //
+    // and the veto must walk the enclosing namespace before deferring, or every
+    // annotation naming a type from the file's own namespace defers whenever
+    // some referenced assembly's manifest auto-open happens to declare that
+    // name.
+    let env = fixture_env();
+    let src =
+        "namespace SemaAutoOpen.ExplicitBeats\n\nmodule M =\n    let f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    let expected = env
+        .lookup_type(
+            &["SemaAutoOpen".into(), "ExplicitBeats".into()],
+            "DirectShadow",
+            0,
+        )
+        .expect("fixture must declare SemaAutoOpen.ExplicitBeats.DirectShadow");
+    assert_eq!(
+        rf.resolution_at(at(src, "DirectShadow")),
+        Some(Resolution::Entity(expected)),
+        "the enclosing namespace outranks the manifest module surface"
+    );
+}
+
+#[test]
+fn a_dropped_type_in_the_winning_prefix_still_defers_under_the_manifest_veto() {
+    // The veto branch exists *because* the projection is incomplete near this
+    // name: two of the three ways
+    // `manifest_auto_open_module_could_supply_entity_named` fires are name-blind
+    // and scoped to the auto-open target's owning NAMESPACE, not to its surface.
+    // So a walk entered on that basis must not then commit at a prefix carrying
+    // the same kind of incompleteness — the dropped type may itself be a
+    // same-named sibling FCS selects by reference order (codex review).
+    //
+    // Two marks, because they play different roles: `SemaAutoOpen` (the
+    // `DirectOps` target's owning namespace) is what makes the predicate fire
+    // name-blind, and `SemaAutoOpen.ExplicitBeats` is what makes the *winning*
+    // prefix untrustworthy.
+    let mut env = fixture_env();
+    env.mark_namespace_dropped_type(vec!["SemaAutoOpen".into()]);
+    env.mark_namespace_dropped_type(vec!["SemaAutoOpen".into(), "ExplicitBeats".into()]);
+    let src =
+        "namespace SemaAutoOpen.ExplicitBeats\n\nmodule M =\n    let f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "DirectShadow")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "a prefix carrying dropped-type uncertainty must not commit; got {:?}",
+        rf.resolution_at(at(src, "DirectShadow"))
+    );
+}
+
+#[test]
+fn a_dropped_type_in_the_surfaces_namespace_defers_conservatively() {
+    // Deliberate coarseness, and the price of closing the class above: a drop
+    // in the auto-open target's own namespace says nothing about *this* name,
+    // and an earlier revision of this fix duly screened per-prefix so an
+    // unrelated winning prefix could still commit. Three review rounds found
+    // three different holes in that screening — deeper qualified splits, a
+    // second uncertainty channel, a global arm — because it has to track every
+    // way a prefix can be incomplete, forever.
+    //
+    // So the veto now asks only *which half* of the predicate fired, and any
+    // name-blind uncertainty defers outright. That gives up this case
+    // (availability), and keeps the far larger gain: with no uncertainty at
+    // all, every annotation naming a type from the file's own namespace
+    // resolves where it used to defer
+    // (`the_enclosing_namespace_outranks_the_manifest_module_surface`).
+    //
+    // It also subsumes the shapes those rounds found, which is why none of them
+    // has a test of its own: split depth, uncertainty channel and walk membership
+    // stop being reachable questions once nothing name-blind can commit. A probe
+    // for any of them now passes whether or not the guard is present — asserting
+    // nothing — so this one test carries the whole class.
+    let mut env = fixture_env();
+    env.mark_namespace_dropped_type(vec!["SemaAutoOpen".into()]);
+    let src =
+        "namespace SemaAutoOpen.ExplicitBeats\n\nmodule M =\n    let f (x: DirectShadow) = x\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "DirectShadow")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "name-blind uncertainty defers rather than screening per prefix; got {:?}",
+        rf.resolution_at(at(src, "DirectShadow"))
+    );
+}
+
+#[test]
 fn a_module_only_surface_match_does_not_veto_a_single_segment_type_path() {
     // `DirectOps` nests a MODULE `DirectHeadOnly` and no type of that name:
     // a module cannot bind type position, so FCS falls through to the

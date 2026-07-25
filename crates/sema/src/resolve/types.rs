@@ -1379,21 +1379,27 @@ impl<'a> Resolver<'a> {
         // AutoOpen("N.Ops")>]` naming a module) is kept out of the walk's
         // prefixes entirely (`record_assembly_auto_opens` narrowing 2), yet
         // FCS opens the target like a module: its imported surface is
-        // bare-visible at open priority — below every explicit source `open`
-        // (the manifest open is applied at file start, and F# is
-        // latest-open-wins) but above the enclosing-namespace and root tiers
-        // (both directions fsi-verified against `namespace global` /
-        // `open SemaAutoOpen.ExplicitBeats` decoys). Only the HEAD is
+        // bare-visible at open priority. Its place in the ladder is
+        //
+        //     explicit opens > enclosing namespace > manifest surface > root
+        //
+        // — below every explicit source `open` (the manifest open is applied
+        // at file start, and F# is latest-open-wins) and below the enclosing
+        // namespace, but above the root. All three boundaries fsi-verified
+        // (`fcs-dump uses` over the `namespace global` /
+        // `open SemaAutoOpen.ExplicitBeats` /
+        // `namespace SemaAutoOpen.ExplicitBeats` decoys). Only the HEAD is
         // contestable — it is where a bare or dotted path roots — and a
         // single-segment path is contested only by what could bind type
         // position at the written arity (a module never binds it, and FCS
         // keys the lookup on arity; both fsi-verified). So when the surface
-        // could supply the head, walk ONLY the explicit-open readings: a
-        // complete reading there outranks the surface and commits; anything
-        // less — a partial (FCS prefers a complete reading even at lower
-        // priority, and the surface may hold one), a shadow, a no-match —
-        // defers rather than let a lower tier commit a wrong target.
-        // Deferral-only below the explicit tier: never a new resolution.
+        // could supply the head, walk exactly the readings ABOVE it — the
+        // explicit opens, then the enclosing namespace: a complete reading
+        // there outranks the surface and commits; anything less — a partial
+        // (FCS prefers a complete reading even at lower priority, and the
+        // surface may hold one), a shadow, a no-match — defers rather than
+        // let the root tier commit a wrong target. Deferral-only below those
+        // tiers: never a new resolution.
         // One modelled-away ordering within that stratum (codex round 4): a
         // namespace-shaped AutoOpen attribute LATER in the combined manifest
         // order than the module-shaped one outranks the surface in FCS, but
@@ -1432,8 +1438,29 @@ impl<'a> Resolver<'a> {
             self.assemblies
                 .manifest_auto_open_module_could_supply_entity_named(head, position)
         }) {
+            // Committing at a tier above the surface is licensed by the
+            // predicate's **name-keyed** half only
+            // ([`AssemblyEnv::manifest_auto_open_surface_declares`]). When the
+            // name-blind half is what fired, the projection is incomplete
+            // across the target's whole owning namespace — which a tier this
+            // walk visits can *be* — so the reading it would commit may itself
+            // be the survivor of a same-FQN pair, and there is no tier to
+            // prefer. Defer exactly as the pre-#181 code did.
+            //
+            // Screening each visited prefix for that uncertainty instead is
+            // what three review rounds tried and got wrong: the check has to
+            // follow every split of `prefix ++ names`, every uncertainty
+            // channel, and every walk that grows a tier later. Asking which
+            // half fired is one condition, and it covers what this branch is
+            // answerable for — whether the *surface* might have supplied the
+            // head. A dropped TypeDef in the reading this commits is somebody
+            // else's question, already answered: the caller declined ahead of
+            // the walk ([`Self::dropped_type_could_root_this_path`]).
+            if self.assemblies.manifest_auto_open_target_is_uncertain() {
+                return TypePathResolution::Deferred;
+            }
             return match self.resolve_assembly_path_over(
-                self.explicit_open_reading_prefixes(),
+                self.prefixes_outranking_the_manifest_surface(),
                 core,
                 false,
                 shadow_at,
@@ -1868,6 +1895,11 @@ impl<'a> Resolver<'a> {
     /// bare, unopened name bind to it, so the root tier needs the same check
     /// as every opened/enclosing one — found by review against
     /// `docs/completed/r2-annotation-typing-plan.md`.
+    ///
+    /// A **dropped TypeDef** is deliberately not a channel here: it is a
+    /// property of a *path*, not of a reading, so it cannot be answered per
+    /// prefix. [`Self::dropped_type_could_root_this_path`] is the gate that
+    /// owns it, ahead of the walk.
     pub(super) fn unmodelled_type_shadow_at(&self, prefix: &[String]) -> bool {
         self.project_auto_open_module_in_namespace(prefix)
             || self

@@ -523,16 +523,41 @@ impl<'a> Resolver<'a> {
     /// The [`Self::open_reading_prefixes`] contributed by **explicit source
     /// `open`s** only — the leading prefixes of that walk (explicit opens are
     /// appended after the implicit seed, so the latest-first iteration yields
-    /// them first; `implicit_import_count` marks the split). The priority
+    /// them first; `implicit_import_count` marks the split). The top of the
     /// stratum that outranks a module-shaped manifest auto-open's surface:
     /// that surface is opened at file start, so every explicit open is later
-    /// and wins ([`Resolver::decide_type_path`]'s manifest veto walks exactly
-    /// these before deferring).
+    /// and wins — see [`Self::prefixes_outranking_the_manifest_surface`] for
+    /// the whole stratum.
     pub(super) fn explicit_open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
         self.imports[self.implicit_import_count..]
             .iter()
             .rev()
             .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+    }
+
+    /// Every reading that out-ranks a **module-shaped manifest auto-open's**
+    /// imported surface, in priority order — what
+    /// [`Resolver::decide_type_path`]'s manifest veto walks before deferring.
+    ///
+    /// The surface sits at open priority but below both tiers above it:
+    ///
+    /// ```text
+    /// explicit opens  >  enclosing namespace  >  manifest surface  >  root
+    /// ```
+    ///
+    /// so this is [`Self::assembly_prefixes_by_priority`] minus the implicit
+    /// opens (the manifest surface is one of them, and the rest are seeded
+    /// beside it at file start) and minus the ROOT tier, which the surface
+    /// out-ranks. All three boundaries are fsi-verified against the
+    /// `autoopen_env` fixture's decoys — a `namespace global` type for the
+    /// root boundary, `open SemaAutoOpen.ExplicitBeats` for the explicit-open
+    /// one, and `namespace SemaAutoOpen.ExplicitBeats` for the
+    /// enclosing-namespace one.
+    pub(super) fn prefixes_outranking_the_manifest_surface(
+        &self,
+    ) -> impl Iterator<Item = &[String]> {
+        self.explicit_open_reading_prefixes()
+            .chain(Some(self.enclosing_namespace()).filter(|e| !e.is_empty()))
     }
 
     /// Every prefix a dotted path may be read under, in strict F# precedence
