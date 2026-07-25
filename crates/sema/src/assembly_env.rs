@@ -606,7 +606,13 @@ pub struct AssemblyEnv {
     /// extension-absence gate ([`Self::extension_named_in_scope`]) treats their
     /// presence as an extension surface and defers, lest it falsely prove an
     /// intrinsic overload's name absent.
-    auto_open_module_handles: Vec<EntityHandle>,
+    /// Each entry is `(target handle, effectively public)` — the second
+    /// component is whether the whole AutoOpen path from its top-level root
+    /// down is public ([`Self::assembly_entity_at_path`]). FCS does not
+    /// import an inaccessible target's surface cross-assembly, so the shadow
+    /// veto skips such entries; the extension gate deliberately still folds
+    /// them (over-deferring is its safe direction).
+    auto_open_module_handles: Vec<(EntityHandle, bool)>,
     /// The assembly-level auto-opens [`Self::record_assembly_auto_opens`]
     /// **dropped** as *contested* — a namespace declared by more than one
     /// referenced assembly (narrowing 1), which sema's path-based (assembly-blind)
@@ -649,6 +655,36 @@ pub struct AssemblyEnv {
 /// The top-level type index key: namespace segments, simple name, and generic
 /// arity (the number of type parameters the type declares).
 type TypeKey = (Vec<String>, String, usize);
+
+/// What position a queried segment sits in, for
+/// [`AssemblyEnv::manifest_auto_open_module_could_supply_entity_named`] — each
+/// variant's narrowing is fsi-verified against a global-namespace decoy that
+/// FCS binds when the surface entity cannot occupy the position:
+///
+/// - [`TypePosition`](Self::TypePosition): a single-segment type annotation.
+///   A module never binds it, and FCS keys the lookup on the **written
+///   generic arity**, so only a type child of exactly that arity contests.
+/// - [`DottedHead`](Self::DottedHead): the first segment of a dotted path. A
+///   module roots it whatever its contents, but a type head is keyed at
+///   arity **0** — a generic surface type is skipped and the path resolves
+///   at a lower tier.
+/// - [`TypeAnyArity`](Self::TypeAnyArity): the arity-FALLBACK probe. FCS's
+///   arity keying prefers an exact-arity type at any tier, but with no
+///   exact-arity type anywhere it binds the surface's generic with an arity
+///   error (sweep-caught via `DirectGenHead`) — so once
+///   [`TypePosition`](Self::TypePosition) misses, this asks whether a type
+///   child of ANY arity holds the name; a hit makes every committed leaf
+///   suspect unless it is itself an exact-arity type.
+/// - [`AnySegment`](Self::AnySegment): a position-blind attribute-scan
+///   segment (any split of the candidate path) — everything matches,
+///   arity-blind.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ManifestSurfacePosition {
+    TypePosition { arity: usize },
+    DottedHead,
+    TypeAnyArity,
+    AnySegment,
+}
 
 /// The abbreviation-chase memo: `(marker, allow_args) → chase result`. `Arc`
 /// so the derived `Clone` shares it (same immutable entity data ⇒ same
@@ -1239,11 +1275,14 @@ impl AssemblyEnv {
                 if segments.iter().any(String::is_empty) {
                     continue;
                 }
-                if let Some(handle) = self.assembly_entity_at_path(contributor, &segments) {
+                if let Some((handle, effectively_public)) =
+                    self.assembly_entity_at_path(contributor, &segments)
+                {
                     // Module/type-shaped: dropped from the namespace opens (its
                     // bare values are not made resolvable), but retained here so the
                     // OV-6 extension-absence gate can fold its extension members.
-                    self.auto_open_module_handles.push(handle);
+                    self.auto_open_module_handles
+                        .push((handle, effectively_public));
                     continue;
                 }
                 if !self.namespace_declared_only_by(contributor, &segments) {
@@ -1314,11 +1353,29 @@ impl AssemblyEnv {
     /// identity — must not have *its* module folded (issue #150). Matched by
     /// the name F# source writes (`source_name` when present — a suffixed
     /// module's AutoOpen path says `List`, never `ListModule`).
+    /// The second component is whether **every entity on the descent** — the
+    /// top-level root through the target itself — is public: FCS cannot
+    /// import a target whose path crosses an inaccessible entity
+    /// cross-assembly, however public the terminal (or its children — a
+    /// C#-shaped nested-public type inside an internal class carries a
+    /// `Public` flag of its own), so the shadow veto keys on this rather
+    /// than the terminal's flag (codex P2s, rounds 5 and 6).
+    ///
+    /// Known concession (codex round 8): when the path names a
+    /// **companion pair** (`type Target` + `[<CompilationRepresentation
+    /// (ModuleSuffix)>] module Target`), the first interned candidate wins
+    /// here, which follows metadata order rather than FCS's type-over-module
+    /// target selection. Picking the module where FCS picks the type makes
+    /// the shadow veto walk a surface FCS never opened — an over-DEFERRAL
+    /// only (never a wrong target), in a shape no real manifest exhibits
+    /// (FSharp.Core's module-shaped targets have no companion types).
+    /// Modelling it needs the pair's FCS-side selection *and* what FCS does
+    /// with a type-shaped AutoOpen target, both unprobed.
     fn assembly_entity_at_path(
         &self,
         contributor: AssemblyId,
         path: &[String],
-    ) -> Option<EntityHandle> {
+    ) -> Option<(EntityHandle, bool)> {
         for split in 0..path.len() {
             let candidates = self.top_level_types.iter().copied().filter(|&h| {
                 let e = self.entity(h);
@@ -1330,11 +1387,15 @@ impl AssemblyEnv {
             for top in candidates {
                 let mut handle = top;
                 let mut ok = true;
+                let mut effectively_public = self.is_public(top);
                 for segment in &path[split + 1..] {
                     // Nested descent stays within `top`'s assembly by
                     // construction (children were interned from its subtree).
                     match self.nested(handle, segment, 0) {
-                        Some(child) => handle = child,
+                        Some(child) => {
+                            handle = child;
+                            effectively_public = effectively_public && self.is_public(child);
+                        }
                         None => {
                             ok = false;
                             break;
@@ -1342,7 +1403,7 @@ impl AssemblyEnv {
                     }
                 }
                 if ok {
-                    return Some(handle);
+                    return Some((handle, effectively_public));
                 }
             }
         }
@@ -1753,17 +1814,49 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> usize {
+        self.distinct_dlls(&self.public_types_named_at_arity(namespace, name, arity))
+    }
+
+    /// How many **distinct loaded DLLs** the given entities come from, by
+    /// per-DLL provenance (falling back to manifest identity for
+    /// provenance-less envs — [`Self::from_entities`]).
+    ///
+    /// The count [`Self::distinct_dlls_with_public_type`] is defined in terms
+    /// of, so a caller that first *narrows* the candidate set (a type-position
+    /// walk drops module candidates: a module cannot be a terminal type)
+    /// counts collisions by exactly the same rule over its narrowed set.
+    pub fn distinct_dlls(&self, handles: &[EntityHandle]) -> usize {
         let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
-        for &handle in self.types_named(namespace, name) {
-            let e = self.entity(handle);
-            if e.generic_parameters.len() == arity && self.is_public(handle) {
-                let key = self.assembly_key(handle);
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
+        for &handle in handles {
+            let key = self.assembly_key(handle);
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
         keys.len()
+    }
+
+    /// Every public top-level type at exactly `(namespace, name, arity)` — the
+    /// **complete bucket** behind the first-wins slot [`Self::lookup_type`]
+    /// returns, in index order.
+    ///
+    /// The contestant set [`Self::distinct_dlls_with_public_type`] counts, so a
+    /// caller that must decide *which* of a merged rooting's contestants could
+    /// satisfy a path walks exactly the types the count declared contested —
+    /// the two cannot drift apart into disagreeing about what a collision is.
+    pub fn public_types_named_at_arity(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Vec<EntityHandle> {
+        self.types_named(namespace, name)
+            .iter()
+            .copied()
+            .filter(|&handle| {
+                self.entity(handle).generic_parameters.len() == arity && self.is_public(handle)
+            })
+            .collect()
     }
 
     /// The public nested **module** named `name` (by its F# *source* name — a suffixed
@@ -1822,8 +1915,9 @@ impl AssemblyEnv {
     ///   types, and its auto-open modules' trees (a dropped type in the
     ///   namespace answers `true` for every name: we cannot see what it was);
     /// - a **module/type-shaped** target ([`Self::auto_open_module_handles`]):
-    ///   its tree's entities are bare-visible, and a dropped type in its owning
-    ///   namespace could be a hidden one.
+    ///   its imported surface ([`Self::module_open_surface_has_entity_named`])
+    ///   is bare-visible, and a dropped type in its owning namespace could be
+    ///   a hidden part of it.
     ///
     /// Deferral-only for the attribute resolution (EX-3 §2(d)): a `true` here
     /// never resolves anything, it only withholds a commitment that a modeled
@@ -1855,11 +1949,126 @@ impl AssemblyEnv {
         }) {
             return true;
         }
-        self.auto_open_module_handles.iter().any(|&h| {
-            let owning = &self.nodes[h.index()].owning_namespace;
-            self.namespace_has_dropped_type(owning)
-                || self.unknowable_abbreviations_in_namespace(owning)
-                || self.entity_tree_has_entity_named(h, name)
+        // Position-blind: an attribute-path segment can be a head a module
+        // roots, so module-only matches count.
+        self.manifest_auto_open_module_could_supply_entity_named(
+            name,
+            ManifestSurfacePosition::AnySegment,
+        )
+    }
+
+    /// Whether a **module/type-shaped manifest auto-open surface**
+    /// ([`Self::auto_open_module_handles`]) could supply an entity named
+    /// `name` into bare scope. FCS opens such a target like a module, so its
+    /// nested types and modules *are* bare-visible — at open priority, below
+    /// every explicit source `open` (latest-open-wins; the manifest open is
+    /// applied at file start) but above the enclosing-namespace and root
+    /// tiers (fsi-verified both ways: with a same-named `namespace global`
+    /// decoy, a bare type annotation binds the auto-opened module's nested
+    /// type; after an explicit `open` of a namespace with its own same-named
+    /// type, it binds that one) — while the resolver's prefix walk never
+    /// searches the surface. Name-keyed to exactly these surfaces so the
+    /// general type walk can defer the names they could shadow
+    /// (`decide_type_path`'s manifest veto) without the contested-namespace
+    /// arm of [`Self::retained_auto_open_could_supply_entity_named`], which
+    /// every real project trips (FSharp.Core auto-opens `Microsoft`, which
+    /// the BCL also declares) and which would defer legitimate commitments
+    /// wholesale.
+    ///
+    /// `position` narrows the match to what could bind the queried segment —
+    /// see [`ManifestSurfacePosition`]'s variants for the per-kind rules,
+    /// each fsi-verified against a global-namespace decoy (codex P2s, rounds
+    /// 2, 4 and 5).
+    ///
+    /// An **inaccessible target** (an `internal` module named by the
+    /// attribute) is skipped entirely: FCS does not import its surface
+    /// cross-assembly (fsi-verified — the decoy wins even with the attribute
+    /// present), and its per-namespace uncertainty arms must not fire for it
+    /// either (codex P2, round 5).
+    ///
+    /// Per-surface uncertainty is folded in, name-blind: a dropped type in
+    /// the target's owning namespace could be a descendant of the target of
+    /// any name (the drop marker records only the enclosing top-level
+    /// namespace), and an undecodable signature pickle hides the module's
+    /// nested abbreviations. Deferral-only, like the coarse veto: a `true`
+    /// never resolves anything, it only withholds a commitment.
+    pub(crate) fn manifest_auto_open_module_could_supply_entity_named(
+        &self,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        self.auto_open_module_handles
+            .iter()
+            .any(|&(h, effectively_public)| {
+                if !effectively_public {
+                    return false;
+                }
+                let owning = &self.nodes[h.index()].owning_namespace;
+                self.namespace_has_dropped_type(owning)
+                    || self.unknowable_abbreviations_in_namespace(owning)
+                    || self.module_open_surface_has_entity_named(h, name, position)
+            })
+    }
+
+    /// Whether opening the module `handle` imports an entity named `name`
+    /// into bare scope: its **public direct children** (a nested type is
+    /// bare-visible; a nested module is a bare-visible dotted head), matched
+    /// by source (else IL) name and filtered per [`ManifestSurfacePosition`],
+    /// plus — FCS opens `[<AutoOpen>]` submodules recursively — the surface
+    /// of each public auto-open child module.
+    ///
+    /// The position filters trust the projection, so a child of a
+    /// **non-authoritative** F# signature
+    /// ([`Self::fsharp_signature_unreliable`]) gets none of them: its
+    /// `Module` kind is an IL heuristic FCS does not share (FCS imports the
+    /// entity as a plain type, which CAN bind type position — `entity_class`
+    /// declines the same bit), and FCS keeps such an entity's **IL** name
+    /// where the projection's source-name overlay recovers the F# one (a
+    /// `ModuleSuffix` child is `FooModule` to FCS, `Foo` to the overlay) —
+    /// so it matches either name domain, in any position, at any arity
+    /// (codex P2s, rounds 4 and 5). Over-matching only defers.
+    ///
+    /// Deliberately the *imported surface*, not the whole tree: a private
+    /// child can never be named cross-assembly (FSharp.Core's auto-open
+    /// modules carry many private compiler-generated closure classes; see
+    /// [`Self::auto_open_module_shadows_type_named`], which is public-only
+    /// for the same reason), and a non-auto-open submodule's contents stay
+    /// qualified-only (fsi-verified: with `DirectOps` manifest-opened, bare
+    /// `DirectSubT` is FS0039 while `DirectSub.DirectSubT` resolves) —
+    /// counting either would defer bare names FCS resolves elsewhere (codex
+    /// review of this change).
+    fn module_open_surface_has_entity_named(
+        &self,
+        handle: EntityHandle,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        use ManifestSurfacePosition::*;
+        self.children(handle).iter().any(|&child| {
+            if !self.is_public(child) {
+                return false;
+            }
+            let e = self.entity(child);
+            if self.fsharp_signature_unreliable(child) {
+                return e.name == name
+                    || self.entity_source_name(child) == name
+                    || (e.kind == EntityKind::Module
+                        && e.is_auto_open
+                        && self.module_open_surface_has_entity_named(child, name, position));
+            }
+            if e.kind == EntityKind::Module {
+                (!matches!(position, TypePosition { .. } | TypeAnyArity)
+                    && self.entity_source_name(child) == name)
+                    || (e.is_auto_open
+                        && self.module_open_surface_has_entity_named(child, name, position))
+            } else {
+                self.entity_source_name(child) == name
+                    && match position {
+                        TypePosition { arity } => e.generic_parameters.len() == arity,
+                        DottedHead => e.generic_parameters.is_empty(),
+                        TypeAnyArity | AnySegment => true,
+                    }
+            }
         })
     }
 
@@ -1929,6 +2138,21 @@ impl AssemblyEnv {
     /// decline regardless of how the env was built.
     fn fsharp_signature_unreliable(&self, handle: EntityHandle) -> bool {
         self.nodes[handle.index()].signature_non_authoritative
+    }
+
+    /// Whether `handle` is an F# **module** we may rely on being one.
+    ///
+    /// A module's kind is trustworthy only from an authoritative F# pickle. A
+    /// non-authoritative assembly's `Module` is an IL heuristic FCS does not
+    /// share — it imports the type through IL, where a module reads as a plain
+    /// type — so anything that *acts* on module-ness must ask this rather than
+    /// match `EntityKind::Module` directly. [`Self::entity_class`] declines
+    /// such a kind for the same reason; the resolver's type-position
+    /// eligibility filter (a module cannot be a terminal type) must decline to
+    /// *exclude* it for the same reason, or it would drop a genuine
+    /// type-position contestant from a cross-DLL contest (codex review).
+    pub fn is_authoritative_module(&self, handle: EntityHandle) -> bool {
+        self.entity(handle).kind == EntityKind::Module && !self.fsharp_signature_unreliable(handle)
     }
 
     pub fn entity_class(&self, handle: EntityHandle) -> Option<SemanticClass> {
@@ -2730,14 +2954,17 @@ impl AssemblyEnv {
         }) {
             return true;
         }
-        if self.auto_open_module_handles.iter().any(|&h| {
+        if self.auto_open_module_handles.iter().any(|&(h, _)| {
             // A **dropped** TypeDef beneath the (surviving) auto-opened module is
             // absent from the tree walked below, yet FCS imports it through the
             // auto-open — so consult the drop marker first. A dropped nested type is
             // recorded under its **top-level namespace** (nested types share it), which
             // is exactly the handle's owning namespace; any drop there could be the
             // module's own hidden extension container, of any name (mirrors
-            // [`Self::module_may_hide_nested_modules`]).
+            // [`Self::module_may_hide_nested_modules`]). The
+            // effectively-public bit is deliberately ignored here:
+            // over-deferring an inaccessible target's extensions is the
+            // gate's safe direction.
             self.namespace_has_dropped_type(&self.nodes[h.index()].owning_namespace)
                 || self.entity_tree_has_extension_named(h, name, is_static)
         }) {
@@ -4855,7 +5082,7 @@ mod active_pattern_banana_tests {
 
 #[cfg(test)]
 mod from_views_tests {
-    use super::{AssemblyEnv, InterfaceChain};
+    use super::{AssemblyEnv, InterfaceChain, ManifestSurfacePosition};
     use borzoi_assembly::{
         AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
         EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
@@ -6353,6 +6580,335 @@ mod from_views_tests {
         assert!(
             !clean_env.extension_named_in_scope(&[], "Foo", false),
             "with no drop, the auto-opened module declares no extension named Foo, so commit"
+        );
+    }
+
+    /// The manifest-module-only shadow query behind `decide_type_path`'s
+    /// pre-tier veto: name-keyed over exactly the module-shaped auto-open
+    /// surfaces. A contested NAMESPACE auto-open — which the coarse
+    /// `retained_auto_open_could_supply_entity_named` folds in, and which
+    /// every real project has (`Microsoft`) — must not fire it, or the
+    /// general type walk would defer every name a contested namespace
+    /// declares.
+    #[test]
+    fn manifest_module_shadow_query_is_name_keyed_and_module_shaped_only() {
+        let nested = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let target = Entity {
+            nested_types: vec![nested],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "the auto-opened module's nested type name could be supplied bare"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "D",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a name the module's tree does not declare cannot be supplied"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "M",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "opening a module introduces its contents, not its own name"
+        );
+
+        // The contested-namespace contrast: two assemblies declare `N`, the
+        // contributor auto-opens it, and its type `X` lives there.
+        let x = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("P", &["N"], "X")
+        };
+        let y = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Q", &["N"], "Y")
+        };
+        let contributor = ConfigView::new("P", vec![x], &["N"]);
+        let sibling = ConfigView::new("Q", vec![y], &[]);
+        let cenv = AssemblyEnv::from_views(&[contributor, sibling]).expect("build env");
+        assert!(
+            cenv.retained_auto_open_could_supply_entity_named("X"),
+            "control: the coarse veto does fold the contested namespace's own type"
+        );
+        assert!(
+            !cenv.manifest_auto_open_module_could_supply_entity_named(
+                "X",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "the module-only query must not fold contested namespace opens"
+        );
+    }
+
+    /// The query walks the module's **imported surface**, not its whole tree
+    /// (codex review): a private child is never importable cross-assembly, a
+    /// plain submodule's contents stay qualified-only, and only an
+    /// `[<AutoOpen>]` submodule is opened recursively — each fsi-verified
+    /// against the `autoopen_env` fixture's `DirectOps`.
+    #[test]
+    fn manifest_module_shadow_query_walks_the_imported_surface_only() {
+        let private_child = Entity {
+            kind: EntityKind::Class,
+            access: Access::Private,
+            ..module_entity("Lib", &["A"], "Hidden")
+        };
+        let plain_sub = Entity {
+            nested_types: vec![Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["A"], "Qualified")
+            }],
+            ..module_entity("Lib", &["A"], "PlainSub")
+        };
+        let auto_sub = Entity {
+            is_auto_open: true,
+            nested_types: vec![Entity {
+                kind: EntityKind::Class,
+                ..module_entity("Lib", &["A"], "Transitive")
+            }],
+            ..module_entity("Lib", &["A"], "AutoSub")
+        };
+        let target = Entity {
+            nested_types: vec![private_child, plain_sub, auto_sub],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "Hidden",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a private child is not imported"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "PlainSub",
+                ManifestSurfacePosition::DottedHead
+            ),
+            "a public submodule is a bare-visible dotted head"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "PlainSub",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "a module cannot bind type position — a module-only match must not \
+             veto a single-segment type path (codex P2, round 2)"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "Qualified",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a plain submodule's contents are not bare-visible"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "Transitive",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "an [<AutoOpen>] submodule is opened recursively with its parent"
+        );
+    }
+
+    /// Type-position matches are arity-keyed (codex round 4, fsi-verified:
+    /// bare `DirectArity` binds the non-generic global decoy while
+    /// `DirectArity<int>` binds the surface's generic type), and a
+    /// **non-authoritative** signature's `Module` kind is an IL heuristic
+    /// FCS imports as a plain type — neither the module-only exclusion nor
+    /// the arity key may trust it.
+    #[test]
+    fn manifest_module_shadow_query_is_arity_keyed_and_authority_aware() {
+        let generic = Entity {
+            kind: EntityKind::Class,
+            generic_parameters: vec![type_parameter(0)],
+            ..module_entity("Lib", &["A"], "Gen")
+        };
+        let target = Entity {
+            nested_types: vec![generic],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "Gen",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "an arity-1 surface type does not contest a bare (arity-0) annotation"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "Gen",
+                ManifestSurfacePosition::TypePosition { arity: 1 }
+            ),
+            "the same type contests the written arity 1"
+        );
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "Gen",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "an attribute segment stays arity-blind"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "Gen",
+                ManifestSurfacePosition::DottedHead
+            ),
+            "a dotted TYPE head is keyed at arity 0 — a generic surface type does not root it \
+             (codex round 5; fsi-verified via DirectGenHead)"
+        );
+
+        // Non-authoritative: the module-only exclusion must not trust the
+        // heuristic kind — FCS imports the child as a plain type, which CAN
+        // bind type position — and FCS keeps the child's IL name where the
+        // overlay recovers the source one, so both name domains match.
+        let mut sub = module_entity("Lib", &["A"], "SubModule");
+        sub.source_name = Some("Sub".to_string());
+        let na_target = Entity {
+            nested_types: vec![sub],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let mut na_view = ConfigView::new("Lib", vec![na_target], &["A.M"]);
+        na_view.signature_non_authoritative = true;
+        let na_env = AssemblyEnv::from_views(std::slice::from_ref(&na_view)).expect("build env");
+        assert!(
+            na_env.manifest_auto_open_module_could_supply_entity_named(
+                "Sub",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "a heuristic Module child may be a plain type to FCS — it must contest type position"
+        );
+        assert!(
+            na_env.manifest_auto_open_module_could_supply_entity_named(
+                "SubModule",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "FCS keeps a non-authoritative child's IL name — that domain must contest too \
+             (codex round 5)"
+        );
+    }
+
+    /// An `internal` module named by the manifest attribute is not imported
+    /// cross-assembly at all (fsi-verified: the global decoy wins with the
+    /// attribute present), so the query must skip the target — even a
+    /// PUBLIC-flagged child (C#-shaped IL: a nested-public type inside an
+    /// internal class) supplies nothing (codex P2, round 5).
+    #[test]
+    fn manifest_module_shadow_query_skips_an_inaccessible_target() {
+        let child = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let target = Entity {
+            access: Access::Internal,
+            nested_types: vec![child],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let view = ConfigView::new("Lib", vec![target], &["A.M"]);
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "an internal target's surface is not imported — its children supply nothing"
+        );
+        assert!(
+            !env.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "the skip applies in every position"
+        );
+
+        // The accessibility of the WHOLE path counts, not the terminal's
+        // flag: a public target beneath an internal ancestor is equally
+        // unimportable (codex P2, round 6). `A.Outer.M` with `Outer`
+        // internal and `M`/`C` public must supply nothing.
+        let c = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let m = Entity {
+            nested_types: vec![c],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let outer = Entity {
+            access: Access::Internal,
+            nested_types: vec![m],
+            ..module_entity("Lib", &["A"], "Outer")
+        };
+        let view2 = ConfigView::new("Lib", vec![outer], &["A.Outer.M"]);
+        let env2 = AssemblyEnv::from_views(std::slice::from_ref(&view2)).expect("build env");
+        assert!(
+            !env2.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "a public target under an internal ancestor is not imported either"
+        );
+
+        // Control: the same shape all-public supplies the nested type.
+        let c3 = Entity {
+            kind: EntityKind::Class,
+            ..module_entity("Lib", &["A"], "C")
+        };
+        let m3 = Entity {
+            nested_types: vec![c3],
+            ..module_entity("Lib", &["A"], "M")
+        };
+        let outer3 = Entity {
+            nested_types: vec![m3],
+            ..module_entity("Lib", &["A"], "Outer")
+        };
+        let view3 = ConfigView::new("Lib", vec![outer3], &["A.Outer.M"]);
+        let env3 = AssemblyEnv::from_views(std::slice::from_ref(&view3)).expect("build env");
+        assert!(
+            env3.manifest_auto_open_module_could_supply_entity_named(
+                "C",
+                ManifestSurfacePosition::AnySegment
+            ),
+            "control: the all-public path supplies its nested type"
+        );
+    }
+
+    /// A dropped descendant of the module-shaped target could be a nested
+    /// type of ANY name (the drop marker records only the enclosing
+    /// top-level namespace), so the query answers true for every name.
+    #[test]
+    fn manifest_module_shadow_query_defers_on_a_dropped_descendant() {
+        let mut view = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &["A.M"]);
+        view.dropped_fqns = vec!["A.M/Inner".to_string()];
+        let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build env");
+        assert!(
+            env.manifest_auto_open_module_could_supply_entity_named(
+                "Anything",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "a dropped descendant hides a possible nested type of any name"
+        );
+
+        // Control: the identical env without the drop is name-keyed again.
+        let clean = ConfigView::new("Lib", vec![module_entity("Lib", &["A"], "M")], &["A.M"]);
+        let clean_env = AssemblyEnv::from_views(std::slice::from_ref(&clean)).expect("build env");
+        assert!(
+            !clean_env.manifest_auto_open_module_could_supply_entity_named(
+                "Anything",
+                ManifestSurfacePosition::TypePosition { arity: 0 }
+            ),
+            "with no drop, the empty module tree supplies nothing"
         );
     }
 

@@ -11,15 +11,17 @@
 
 use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::{
-    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, ModuleValue, SkippedMember,
+    AbbreviationTarget, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member,
+    ModuleValue, SkippedMember,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AbbreviationVisibility, AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SemanticClass,
-    resolve_file, resolve_project,
+    AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ProjectItems,
+    Resolution, ResolvedFile, SemanticClass, resolve_file, resolve_project,
 };
 use rowan::TextRange;
+use std::path::PathBuf;
 
 fn fixture_env() -> AssemblyEnv {
     let bytes = std::fs::read(ensure_assembly_fixture_built()).expect("read fixture dll");
@@ -2312,6 +2314,1018 @@ fn colliding_assembly_types_all_count_for_eviction() {
     // Interface first (wins `by_type`), class second (the constructible one).
     let env = AssemblyEnv::from_entities(vec![iface, klass]);
     assert_head_evicted(&env);
+}
+
+// ===== Contested same-FQN rooting across differently-named DLLs =====
+//
+// fsc/FCS merges same-FQN top-level types across references and binds the
+// latest *accessible* reference (fsi-verified with two probe libraries, both
+// reference orders, in type position and through a static-member path; an
+// internal contestant is skipped regardless of order). Sema's `lookup_type`
+// slot is first-wins and does not model that merge, so a commit at a rooting
+// two distinct DLLs export could name the wrong DLL's type — it must defer
+// instead, in both the type-position and the value/member walk.
+
+/// Two *differently-named* referenced assemblies each declaring a real public
+/// class at the same FQN `Ns.Color` (cloned from the fixture's `Demo.Widget`,
+/// so member metadata stays valid — including the `StaticCount` static the
+/// member-path test walks to).
+fn contested_color_env() -> AssemblyEnv {
+    let ents = fixture_entities();
+    let mut first = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    first.namespace = vec!["Ns".to_string()];
+    first.name = "Color".to_string();
+    first.nested_types = vec![];
+    let mut second = first.clone();
+    second.assembly.name = "OtherLib".to_string();
+    AssemblyEnv::from_entities(vec![first, second])
+}
+
+fn assert_defers(rf: &ResolvedFile, src: &str, needle: &str) {
+    match rf.resolution_at(at(src, needle)) {
+        None | Some(Resolution::Deferred(_)) => {}
+        other => panic!("expected {needle:?} to defer at a contested rooting, got {other:?}"),
+    }
+}
+
+#[test]
+fn contested_same_fqn_type_defers_in_type_position() {
+    let env = contested_color_env();
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
+fn contested_same_fqn_type_defers_when_shortened_by_an_open() {
+    let env = contested_color_env();
+    let src = "module M\nopen Ns\nlet x : Color = Unchecked.defaultof<_>\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
+fn contested_same_fqn_type_defers_a_static_member_path() {
+    let env = contested_color_env();
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    assert_defers(&rf, src, "Color");
+    // A resolved static member records over the whole path span — that span
+    // must not commit either.
+    assert_defers(&rf, src, "Ns.Color.StaticCount");
+}
+
+#[test]
+fn contested_global_root_does_not_preempt_an_open_reading() {
+    // Codex review of the contested-rooting guard: the value/member walk
+    // pre-probes the as-written ROOT reading before walking opens, and a
+    // `ProjectShadowed` there vetoes the whole walk. A contested rooting is an
+    // *assembly* reading, not a lexical project-bound head — it must be
+    // tier-local (like an opaque abbreviation reading), so a higher-priority
+    // `open` whose rooting is uncontested still wins: with a *global* `Color`
+    // in two DLLs and a unique `Demo.Color`, `open Demo; Color.StaticCount`
+    // binds `Demo.Color.StaticCount` (opens outrank the root tier — the same
+    // latest-wins layering the tiered walk models).
+    let ents = fixture_entities();
+    let mut global = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    global.namespace = vec![];
+    global.name = "Color".to_string();
+    global.nested_types = vec![];
+    let mut global_rival = global.clone();
+    global_rival.assembly.name = "OtherLib".to_string();
+    let mut demo = global.clone();
+    demo.namespace = vec!["Demo".to_string()];
+    let env = AssemblyEnv::from_entities(vec![global, global_rival, demo]);
+    let demo_color = env
+        .lookup_type(&["Demo".to_string()], "Color", 0)
+        .expect("Demo.Color");
+    let src = "module M\nopen Demo\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == demo_color => {}
+        other => panic!(
+            "expected the open's uncontested `Demo.Color.StaticCount` to win over the \
+             contested global root, got {other:?}"
+        ),
+    }
+}
+
+/// The three tests below pin the *other* edge of the guard: a contested rooting
+/// owns the path only when some contestant could supply the tail. fsi-verified
+/// with three probe libraries (2026-07-25) — `DupA`/`DupB` both export
+/// `High.Color`, `LowLib` exports `Low.Color`:
+///
+/// - neither `High.Color` has `StaticCount`, `Low.Color` does →
+///   `open Low; open High; Color.StaticCount` is **42**: FCS falls *through* the
+///   contested rooting to the lower open;
+/// - only `DupA.High.Color` has `OnlyOnA` → `open High; Color.OnlyOnA` is **7**,
+///   the *earlier* reference: FCS's merge falls through *within* the group too,
+///   binding the latest contestant that supplies the tail.
+///
+/// So the guard must not return `ContestedRooting` on the mere fact of a
+/// contested rooting: when the tail is provably absent from **every**
+/// contestant, this is an ordinary *partial* reading, and a lower-priority
+/// reading that completes the path wins.
+fn contested_high_low_entities(tail_on_contestants: bool) -> (Entity, Entity, Entity) {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut high_a = widget.clone();
+    high_a.namespace = vec!["High".to_string()];
+    high_a.name = "Color".to_string();
+    high_a.nested_types = vec![];
+    if !tail_on_contestants {
+        high_a.members = vec![];
+    }
+    let mut high_b = high_a.clone();
+    high_b.assembly.name = "OtherLib".to_string();
+    // The uncontested lower reading keeps `Demo.Widget`'s members, `StaticCount`
+    // among them.
+    let mut low = widget;
+    low.namespace = vec!["Low".to_string()];
+    low.name = "Color".to_string();
+    low.nested_types = vec![];
+    (high_a, high_b, low)
+}
+
+#[test]
+fn a_contested_root_missing_the_tail_falls_through_to_a_lower_open() {
+    let (high_a, high_b, low) = contested_high_low_entities(false);
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let src = "module M\nopen Low\nopen High\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == low_color => {}
+        other => panic!(
+            "no `High.Color` contestant has `StaticCount`, so FCS binds \
+             `Low.Color.StaticCount` (fsi: 42) — got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn a_contested_root_missing_a_nested_tail_falls_through_in_type_position() {
+    // The type-walk mirror: the tail is a nested *type*, not a static member.
+    let (high_a, high_b, mut low) = contested_high_low_entities(false);
+    let ents = fixture_entities();
+    let mut inner = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.is_empty()
+        })
+        .expect("an arity-0 Demo class")
+        .clone();
+    inner.namespace = vec![];
+    inner.name = "Inner".to_string();
+    inner.nested_types = vec![];
+    low.nested_types = vec![inner];
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let low_inner = env
+        .nested(low_color, "Inner", 0)
+        .expect("Low.Color.Inner in env");
+    let src = "module M\nopen Low\nopen High\nlet x : Color.Inner = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Inner")),
+        Some(Resolution::Entity(low_inner)),
+        "no `High.Color` contestant has a nested `Inner`, so the lower open's \
+         `Low.Color.Inner` must win"
+    );
+}
+
+#[test]
+fn a_contested_root_that_supplies_the_tail_still_defers_over_a_lower_open() {
+    // The companion control: when the contestants DO have the member, FCS binds
+    // one of them (the latest accessible reference), so falling through to the
+    // lower `Low.Color.StaticCount` would be a wrong target. Defer instead.
+    let (high_a, high_b, low) = contested_high_low_entities(true);
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let src = "module M\nopen Low\nopen High\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        None | Some(Resolution::Deferred(_)) => {}
+        Some(Resolution::Member { parent, .. }) if parent == low_color => panic!(
+            "a contested rooting that supplies the tail must not cede the path to \
+             the lower open — FCS binds a `High.Color`, so this is a wrong target"
+        ),
+        other => panic!("expected the contested rooting to defer, got {other:?}"),
+    }
+}
+
+// ----- Contestants are per lookup-channel -----
+//
+// A same-FQN collision is only a *contest* among candidates FCS's lookup would
+// actually consider together at that position. fsi-verified 2026-07-25 with
+// `ClassLib` (`namespace Ns; type Color`) and `ModuleLib`
+// (`namespace Ns; module Color` holding `greeting` and a nested `Inner`):
+//
+//   * `let y : Ns.Color = Ns.Color()` binds the **class** in BOTH reference
+//     orders — a module never occupies a terminal type position;
+//   * with `ModuleLib` alone, that same annotation is FS0039 — FCS does not
+//     fall back to the module;
+//   * `Ns.Color.greeting` and `let z : Ns.Color.Inner` both resolve regardless
+//     — a module still roots a *tail*, as a container.
+//
+// So type-position eligibility filters the candidates *before* the collision is
+// counted: a class beside a module at one FQN is no contest, and the class
+// binds. Once a genuine contest remains, any candidate that could supply the
+// path makes it defer — see
+// `one_contestant_supplying_the_tail_defers_rather_than_binds` for why the
+// sole-supplier commit that would resolve more paths is deliberately not made.
+
+#[test]
+fn a_class_and_a_module_at_one_fqn_are_not_a_type_position_contest() {
+    let (class_color, module_color) = class_and_module_color();
+    // Both reference orders, since first-wins indexing is order-sensitive and
+    // FCS is not.
+    for (order, ents) in [
+        (
+            "class first",
+            vec![class_color.clone(), module_color.clone()],
+        ),
+        (
+            "module first",
+            vec![module_color.clone(), class_color.clone()],
+        ),
+    ] {
+        let env = AssemblyEnv::from_entities(ents);
+        let class_handle = env
+            .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+            .into_iter()
+            .find(|&h| env.entity(h).kind == EntityKind::Class)
+            .expect("the class contestant is in the env");
+        let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+        let rf = resolve(src, &env);
+        assert_eq!(
+            rf.resolution_at(at(src, "Color")),
+            Some(Resolution::Entity(class_handle)),
+            "a module is not a type-position candidate, so the class binds ({order})"
+        );
+    }
+}
+
+#[test]
+fn a_lone_module_does_not_occupy_a_terminal_type_position() {
+    // The scope boundary of the eligibility filter. fsi: with only `ModuleLib`
+    // referenced, `let y : Ns.Color` is FS0039 — a module is not a type.
+    //
+    // The filter exists to stop a module *contesting* a real type across DLLs;
+    // it deliberately does not re-decide the lone-module case, so the module
+    // still ROOTS the reading here. What declines it is the leaf-kind check
+    // downstream in `decide_type_path`, which #181 generalised from the
+    // attribute path to every type path (`attr_resolution_diff::
+    // module_shaped_leaf_defers` pins the attribute half). The two layers
+    // compose: eligibility settles the contest, leaf-kind settles the commit.
+    let (_, module_color) = class_and_module_color();
+    let env = AssemblyEnv::from_entities(vec![module_color]);
+    let module_handle = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .next()
+        .expect("the module is in the env");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    let resolution = rf.resolution_at(at(src, "Color"));
+    assert_ne!(
+        resolution,
+        Some(Resolution::Entity(module_handle)),
+        "a module never occupies a terminal type position (FS0039)"
+    );
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "and it declines rather than re-rooting elsewhere, got {resolution:?}"
+    );
+}
+
+#[test]
+fn a_module_roots_a_nested_type_tail_but_a_contest_still_defers_it() {
+    // The other half: type-position eligibility is about the TERMINAL segment
+    // only, so the module is NOT filtered out here — it is a perfectly good
+    // container, and fsi resolves `let z : Ns.Color.Inner`.
+    //
+    // It therefore stays a candidate, the collision stands, and the sole
+    // supplier defers rather than binds — the same deliberate trade as
+    // `one_contestant_supplying_the_tail_defers_rather_than_binds`. What must
+    // NOT happen is the class (which has no `Inner`) winning by elimination:
+    // that would be a wrong target.
+    let (class_color, module_color) = class_and_module_color();
+    let env = AssemblyEnv::from_entities(vec![class_color, module_color]);
+    let module_handle = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .find(|&h| env.entity(h).kind == EntityKind::Module)
+        .expect("the module contestant is in the env");
+    env.nested(module_handle, "Inner", 0)
+        .expect("Ns.Color.Inner exists under the module — the tail FCS resolves");
+    let src = "module M\nlet x : Ns.Color.Inner = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "Inner")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "a contested container defers its nested tail, got {:?}",
+        rf.resolution_at(at(src, "Inner"))
+    );
+}
+
+/// **Known coverage gap, chosen deliberately.** fsi (`OnlyOnA = 7`): among
+/// same-FQN contestants FCS binds the one that supplies the tail, even when it
+/// is not the latest reference — so this path *could* resolve, and an earlier
+/// revision made it.
+///
+/// It defers instead. Committing on a sole supplier requires our "supplies the
+/// path" to agree with FCS's exactly, and review found three shapes where it
+/// did not — a terminal module, a non-authoritative module kind, and a
+/// union-case tail (union constructors live in `union_case_names`, not
+/// `members`, so an owning union reads as absent). Each was a **wrong target**,
+/// the one outcome D5 forbids; deferring costs only coverage, in an
+/// already-rare shape. The evidence is kept here so the trade stays visible and
+/// reversible.
+#[test]
+fn one_contestant_supplying_the_tail_defers_rather_than_binds() {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut with_member = widget.clone();
+    with_member.namespace = vec!["Ns".to_string()];
+    with_member.name = "Color".to_string();
+    with_member.nested_types = vec![];
+    let mut without_member = with_member.clone();
+    without_member.assembly.name = "OtherLib".to_string();
+    without_member.members = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![with_member, without_member]);
+    let supplier = env
+        .public_types_named_at_arity(&["Ns".to_string()], "Color", 0)
+        .into_iter()
+        .find(|&h| env.entity(h).assembly.name != "OtherLib")
+        .expect("the supplying contestant is in the env");
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    let resolution = rf.resolution_at(at(src, "Ns.Color.StaticCount"));
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "a genuine cross-DLL collision commits nothing, even with one supplier; \
+         FCS would bind {supplier:?} — got {resolution:?}"
+    );
+}
+
+#[test]
+fn a_root_tier_contest_does_not_preempt_an_open() {
+    // Codex review round 5. The global `Color` is contested between a class
+    // that lacks `StaticCount` and another DLL's **unchaseable abbreviation**.
+    // Exactly one candidate survives the supplier test (the alias — we cannot
+    // prove it lacks the member), and its walk is a `ProjectShadowed` defer.
+    // Returned verbatim that trips the preemptive as-written-root veto, which
+    // skips the opens entirely — so `open Demo; Color.StaticCount` would defer
+    // even though FCS binds `Demo.Color.StaticCount`. A sole *deferring*
+    // supplier must therefore be downgraded to the tier-local contested defer,
+    // exactly as the plural case already was in round 1.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut global = widget.clone();
+    global.namespace = vec![];
+    global.name = "Color".to_string();
+    global.nested_types = vec![];
+    global.members = vec![];
+    let mut global_alias = global.clone();
+    global_alias.assembly.name = "OtherLib".to_string();
+    global_alias.kind = EntityKind::Abbreviation;
+    global_alias.abbreviation_target = Some(AbbreviationTarget::Named {
+        ccu: None,
+        path: vec!["Nowhere".to_string(), "Missing".to_string()],
+        args: Vec::new(),
+    });
+    // The uncontested, higher-priority reading that must win.
+    let mut demo = widget;
+    demo.namespace = vec!["Demo".to_string()];
+    demo.name = "Color".to_string();
+    demo.nested_types = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![global, global_alias, demo]);
+    let demo_color = env
+        .lookup_type(&["Demo".to_string()], "Color", 0)
+        .expect("Demo.Color");
+    let src = "module M\nopen Demo\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == demo_color => {}
+        other => panic!(
+            "the open's uncontested `Demo.Color.StaticCount` must outrank a contested \
+             ROOT-tier reading, got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn a_terminal_module_is_not_a_value_path_supplier() {
+    // Codex review rounds 6 and 8, the value-path mirror of the module-leaf
+    // rule. Only `High.Color` reaches `Inner` — and reaches it as a *submodule*,
+    // which is not a value, so FCS's expression-position lookup skips it and
+    // binds the lower `Low.Color.Inner`.
+    //
+    // The eligibility test is not commit safety (a contest commits nothing); it
+    // decides whether the contest has ANY supplier, and so whether the lower
+    // reading may win at all. Counting the module would leave the contested
+    // `High` tier owning the path and suppress `Low.Color.Inner` entirely —
+    // which is why this asserts the fall-through, not merely that the module
+    // was not committed.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let leaf = |kind: EntityKind| {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i.kind = kind;
+        i
+    };
+    let color = |namespace: &str, assembly: &str, nested: Entity| {
+        let mut e = widget.clone();
+        e.namespace = vec![namespace.to_string()];
+        e.name = "Color".to_string();
+        e.assembly.name = assembly.to_string();
+        e.nested_types = vec![nested];
+        e
+    };
+    // Two DLLs contest `High.Color`; only the first reaches `Inner`, as a module.
+    let high_a = color("High", "LibA", leaf(EntityKind::Module));
+    let mut high_b = color("High", "LibB", leaf(EntityKind::Module));
+    high_b.nested_types = vec![];
+    let low = color("Low", "LibA", leaf(EntityKind::Class));
+
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let src = "module M\nopen Low\nopen High\nlet u = Color.Inner\n";
+    let rf = resolve(src, &env);
+    let low_inner = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .and_then(|h| env.nested(h, "Inner", 0))
+        .expect("Low.Color.Inner exists as a class");
+    assert_eq!(
+        rf.resolution_at(at(src, "Inner")),
+        Some(Resolution::Entity(low_inner)),
+        "no `High.Color` candidate supplies a *value* tail — the module is not one — \
+         so the lower `Low.Color.Inner` must win"
+    );
+}
+
+#[test]
+fn a_non_authoritative_module_still_contests_a_type_position() {
+    // Codex review round 6. A module kind is trustworthy only from an
+    // authoritative F# pickle; a non-authoritative assembly's `Module` is an IL
+    // heuristic FCS does not share — it imports the type through IL, where a
+    // module reads as a plain type (the rule `AssemblyEnv::entity_class`
+    // already follows). So the type-position eligibility filter must NOT drop
+    // it: it is a genuine contestant, and dropping it would commit the other
+    // DLL's class as if uncontested, whereas FCS's winner moves with reference
+    // order.
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.nested_types = vec![];
+    let mut module_color = class_color.clone();
+    module_color.kind = EntityKind::Module;
+
+    let input = |path: &str, roots: Vec<Entity>, non_authoritative: bool| AssemblyProjectionInput {
+        path: PathBuf::from(path),
+        roots,
+        abbreviation_visibility: AbbreviationVisibility::Modelled,
+        extension_index_unknowable: false,
+        signature_non_authoritative: non_authoritative,
+        auto_opens: Vec::new(),
+        manifest_identity: None,
+        type_forwarders: Vec::new(),
+    };
+    let env = AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+        input("class.dll", vec![class_color], false),
+        // The module kind here is an IL guess, so FCS sees a type: a contest.
+        input("module.dll", vec![module_color], true),
+    ]);
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "Color")),
+            None | Some(Resolution::Deferred(_))
+        ),
+        "a non-authoritative module is a real type-position contestant, so this \
+         collision must defer rather than commit the class, got {:?}",
+        rf.resolution_at(at(src, "Color"))
+    );
+}
+
+/// A public class and a public F# module, both `Ns.Color`, in *differently
+/// named* DLLs — the cross-lookup-channel collision that is not a contest.
+fn class_and_module_color() -> (Entity, Entity) {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let inner = {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i
+    };
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.nested_types = vec![];
+    let mut module_color = widget;
+    module_color.namespace = vec!["Ns".to_string()];
+    module_color.name = "Color".to_string();
+    module_color.kind = EntityKind::Module;
+    module_color.nested_types = vec![inner];
+    module_color.assembly.name = "OtherLib".to_string();
+    (class_color, module_color)
+}
+
+// ----- The invariant behind the two guard revisions, checked exhaustively -----
+//
+// Both codex rounds on the contested-rooting guard were the same mistake in
+// opposite directions — the guard claiming more of the walk than the collision
+// justifies. Round 1: a contested *global* root preempted a higher-priority
+// open's uncontested reading. Round 2: a contested rooting owned a path no
+// contestant could supply, where FCS falls through to a lower reading. One
+// metamorphic invariant rules out both, and everything else of that shape:
+//
+//   **Duplicating a top-level type into a differently-named DLL may perturb
+//   only those paths that resolve *at that type* (or inside it), and may only
+//   degrade them to a deferral.**
+//
+// It holds because the duplicate is a byte-identical clone: it adds no name,
+// no member and no namespace, so the only thing it can change is whether the
+// rooting `(namespace, name, arity)` is contested. `duplicating_a_type_*` below
+// checks it over the *whole* small universe the guard can distinguish, rather
+// than one hand-built case per discovered bug.
+
+/// A stable, cross-env description of a resolution — entity handles are indices
+/// into one `AssemblyEnv`, so the perturbed env's handles cannot be compared to
+/// the base env's directly.
+fn describe_resolution(env: &AssemblyEnv, res: Option<Resolution>) -> String {
+    let ent = |h: EntityHandle| {
+        let e = env.entity(h);
+        format!("{}|{}|{}", e.assembly.name, e.namespace.join("."), e.name)
+    };
+    match res {
+        None => "none".to_string(),
+        Some(Resolution::Deferred(_)) => "deferred".to_string(),
+        Some(Resolution::Entity(h)) => format!("entity {}", ent(h)),
+        Some(Resolution::Member { parent, idx }) => {
+            format!(
+                "member {}::{}",
+                ent(parent),
+                member_name(env.member_at(parent, idx))
+            )
+        }
+        Some(other) => format!("{other:?}"),
+    }
+}
+
+/// `handle` and every entity nested below it — the set a resolution "roots at".
+fn subtree(env: &AssemblyEnv, handle: EntityHandle) -> Vec<EntityHandle> {
+    let mut out = vec![handle];
+    let mut i = 0;
+    while i < out.len() {
+        out.extend_from_slice(env.children(out[i]));
+        i += 1;
+    }
+    out
+}
+
+/// The catalogue entry the sweep builds its universe from: a public class at
+/// `(namespace, "Color")`, optionally carrying the fixture's static members and
+/// optionally a nested `Inner`.
+fn sweep_color(
+    widget: &Entity,
+    inner: &Entity,
+    namespace: &[&str],
+    with_statics: bool,
+    with_nested: bool,
+) -> Entity {
+    let mut e = widget.clone();
+    e.namespace = namespace.iter().map(|s| (*s).to_string()).collect();
+    e.name = "Color".to_string();
+    e.members = if with_statics { e.members } else { vec![] };
+    e.nested_types = if with_nested {
+        vec![inner.clone()]
+    } else {
+        vec![]
+    };
+    e
+}
+
+/// The perturbations the sweep applies — a same-FQN entity contributed by a
+/// differently-named DLL.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Perturbation {
+    /// A byte-identical clone: the pure collision.
+    Clone,
+    /// The cross-lookup-channel one — a module is not a terminal type
+    /// candidate, so it is no contest there at all (codex review round 4).
+    AsModule,
+    /// An abbreviation marker whose target cannot be chased. Its walk is a
+    /// *defer*, not a resolution, so it exercises the path where the sole
+    /// surviving supplier names no target (codex review round 5).
+    AsOpaqueAlias,
+    /// A clone whose nested `Inner` is a **module**. A module is outside the
+    /// terminal type namespace at *every* depth, not just at the rooting, so
+    /// this must not contest another DLL's real nested type (codex review
+    /// round 5).
+    NestedInnerAsModule,
+    /// A clone stripped of its members: the *asymmetric* collision, where the
+    /// other DLL cannot supply a member tail. Paired with a same-DLL companion
+    /// module it is the shape that proves suppliers must be counted per **DLL**
+    /// — one DLL supplying through both its type and its companion is still one
+    /// supplier (codex review round 5).
+    CloneWithoutMembers,
+}
+
+impl Perturbation {
+    fn apply(self, entity: &mut Entity) {
+        match self {
+            Perturbation::Clone => {}
+            Perturbation::AsModule => entity.kind = EntityKind::Module,
+            Perturbation::AsOpaqueAlias => {
+                entity.kind = EntityKind::Abbreviation;
+                entity.abbreviation_target = Some(AbbreviationTarget::Named {
+                    ccu: None,
+                    path: vec!["Nowhere".to_string(), "Missing".to_string()],
+                    args: Vec::new(),
+                });
+            }
+            Perturbation::NestedInnerAsModule => {
+                for nested in &mut entity.nested_types {
+                    nested.kind = EntityKind::Module;
+                }
+            }
+            Perturbation::CloneWithoutMembers => entity.members = vec![],
+        }
+    }
+
+    const ALL: [Perturbation; 5] = [
+        Perturbation::Clone,
+        Perturbation::AsModule,
+        Perturbation::AsOpaqueAlias,
+        Perturbation::NestedInnerAsModule,
+        Perturbation::CloneWithoutMembers,
+    ];
+}
+
+#[test]
+fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let inner = {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i
+    };
+
+    // Every path the universe can express, in both syntactic positions the two
+    // walks serve: a value/member path (`assembly_path_records`) and a type
+    // path (`assembly_type_path_core`, which has no member tail).
+    const VALUE_PATHS: &[&str] = &[
+        "Color",
+        "Color.StaticCount",
+        "Color.Inner",
+        "High.Color",
+        "High.Color.StaticCount",
+        "High.Color.Inner",
+        "Low.Color.StaticCount",
+    ];
+    const TYPE_PATHS: &[&str] = &["Color", "Color.Inner", "High.Color", "High.Color.Inner"];
+    const OPEN_SEQUENCES: &[&[&str]] =
+        &[&[], &["High"], &["Low"], &["High", "Low"], &["Low", "High"]];
+
+    // `High` varies over the whole flag cross-product; `Low` is the fully
+    // populated uncontested reading the fall-through cases need. Two further
+    // dimensions cover the shapes review round 5 found by hand: a *same-DLL*
+    // companion module beside each type (which must never read as a cross-DLL
+    // contest), and a nested `Inner` that is a **module** rather than a class
+    // (which is not a terminal type candidate at any depth).
+    let flag_combos = [(false, false), (false, true), (true, false), (true, true)];
+    let mut checked = 0usize;
+    for &(high_statics, high_nested) in &flag_combos {
+        for &with_global in &[false, true] {
+            for &with_companion in &[false, true] {
+                {
+                    let companion = |e: &Entity| {
+                        let mut m = e.clone();
+                        m.kind = EntityKind::Module;
+                        m.name = "ColorModule".to_string();
+                        m.source_name = Some("Color".to_string());
+                        m
+                    };
+                    let mut catalogue = vec![
+                        sweep_color(&widget, &inner, &["High"], high_statics, high_nested),
+                        sweep_color(&widget, &inner, &["Low"], true, true),
+                    ];
+                    if with_global {
+                        catalogue.push(sweep_color(&widget, &inner, &[], true, true));
+                    }
+                    if with_companion {
+                        catalogue.extend(catalogue.clone().iter().map(companion));
+                    }
+
+                    // Duplicate one catalogue entry at a time, into a
+                    // differently-named DLL — the shape `lookup_type`'s
+                    // first-wins slot cannot see and FCS merges.
+                    let originals = catalogue.len();
+                    for dup in 0..originals {
+                        for perturbation in Perturbation::ALL {
+                            let base = AssemblyEnv::from_entities(catalogue.clone());
+                            let mut perturbed_ents = catalogue.clone();
+                            let mut clone = catalogue[dup].clone();
+                            clone.assembly.name = "OtherLib".to_string();
+                            perturbation.apply(&mut clone);
+                            perturbed_ents.push(clone);
+                            let perturbed = AssemblyEnv::from_entities(perturbed_ents);
+
+                            let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
+                            let roots = base
+                                .public_types_named_at_arity(&dup_ns, "Color", 0)
+                                .into_iter()
+                                .flat_map(|h| subtree(&base, h))
+                                .collect::<Vec<_>>();
+
+                            for opens in OPEN_SEQUENCES {
+                                let preamble: String =
+                                    opens.iter().map(|o| format!("open {o}\n")).collect();
+                                let cases = VALUE_PATHS
+                                    .iter()
+                                    .map(|p| {
+                                        (format!("module M\n{preamble}let u = {p}\n"), *p, false)
+                                    })
+                                    .chain(TYPE_PATHS.iter().map(|p| {
+                                        (
+                                            format!(
+                                                "module M\n{preamble}let x : {p} = \
+                                             Unchecked.defaultof<_>\n"
+                                            ),
+                                            *p,
+                                            true,
+                                        )
+                                    }));
+                                for (src, path, type_position) in cases {
+                                    let before_rf = resolve(&src, &base);
+                                    let after_rf = resolve(&src, &perturbed);
+                                    // Probe the range the position actually
+                                    // records at. A resolved static member spans
+                                    // the WHOLE value path, but a nested type
+                                    // records at its own FINAL SEGMENT — so
+                                    // querying a type path by its whole range
+                                    // reads "None both sides" for every
+                                    // nested-tail case: trivially equal, and
+                                    // silently uncovered. (Comparing the two
+                                    // ranges against each other is not
+                                    // like-for-like: a deferral records per
+                                    // segment where a member records once.)
+                                    let probe = if type_position {
+                                        path.rsplit('.').next().expect("a path segment")
+                                    } else {
+                                        path
+                                    };
+                                    {
+                                        let before_res = before_rf.resolution_at(at(&src, probe));
+                                        let after_res = after_rf.resolution_at(at(&src, probe));
+                                        let before = describe_resolution(&base, before_res);
+                                        let after = describe_resolution(&perturbed, after_res);
+                                        checked += 1;
+                                        // A same-named MODULE is not a
+                                        // type-position candidate, so on a
+                                        // *bare* type path — one whose rooting
+                                        // IS its final segment — it is filtered
+                                        // out before the collision is even
+                                        // counted, and must leave the path
+                                        // untouched.
+                                        //
+                                        // The filter is at the ROOTING, though.
+                                        // A module *nested* under a same-FQN
+                                        // clone still contests at the rooting,
+                                        // and a genuine collision commits
+                                        // nothing — so `Color.Inner` may
+                                        // legitimately degrade to a deferral
+                                        // there, and only the no-wrong-target
+                                        // half below constrains it.
+                                        let module_at_the_rooting = perturbation
+                                            == Perturbation::AsModule
+                                            && !path.ends_with(".Inner");
+                                        if type_position && module_at_the_rooting {
+                                            assert_eq!(
+                                                before, after,
+                                                "a module cannot occupy a terminal type position, \
+                                         so adding one must not perturb {path:?}\n\
+                                         source:\n{src}"
+                                            );
+                                        }
+                                        // (A member-less candidate supplies no
+                                        // member tail, but it still *contests*
+                                        // the rooting, and a genuine collision
+                                        // commits nothing — so it may
+                                        // legitimately degrade the path to a
+                                        // deferral. See
+                                        // `one_contestant_supplying_the_tail_defers_rather_than_binds`
+                                        // for the trade. Only the
+                                        // no-wrong-target half below binds it.)
+                                        if before == after {
+                                            continue;
+                                        }
+                                        let context = format!(
+                                            "{perturbation:?} of {}.Color changed {path:?} from {before} \
+                                     to {after}\nsource:\n{src}",
+                                            dup_ns.join(".")
+                                        );
+                                        let rooted_at_dup = match before_res {
+                                            Some(Resolution::Entity(h)) => roots.contains(&h),
+                                            Some(Resolution::Member { parent, .. }) => {
+                                                roots.contains(&parent)
+                                            }
+                                            _ => false,
+                                        };
+                                        // An **opaque alias** is the one perturbation
+                                        // that adds *unknown content*: FCS can chase
+                                        // it and we cannot, so it may legitimately
+                                        // make a higher-priority reading of the same
+                                        // path uncertain — including one the base
+                                        // resolved at a lower tier. It is held only
+                                        // to the no-wrong-target half below;
+                                        // `a_root_tier_contest_does_not_preempt_an_open`
+                                        // pins the tier-locality it must respect.
+                                        assert!(
+                                            rooted_at_dup
+                                                || perturbation == Perturbation::AsOpaqueAlias,
+                                            "a duplicate may not perturb a path that does not root at it — \
+                                 the lower/uncontested reading still wins in FCS: {context}"
+                                        );
+                                        assert!(
+                                            after == "deferred" || after == "none",
+                                            "a contested rooting may only DEGRADE its own path to a \
+                                 deferral, never re-target it: {context}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 1000,
+        "the sweep must be exhaustive, ran {checked}"
+    );
+}
+
+#[test]
+fn same_fqn_across_dlls_at_different_arities_still_resolves() {
+    // DLL A declares `Ns.Color` (arity 0); a differently-named DLL B declares
+    // `Ns.Color<'T>` (arity 1). The contested-rooting guard counts distinct
+    // DLLs at the arity the lookup selected, so the arity-0 use is uncontested
+    // and must keep resolving — a bare `type Alias = Widget` beside a generic
+    // `type Alias<'T>` is a legal shape, not a merge.
+    let ents = fixture_entities();
+    let mut zero = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.is_empty()
+        })
+        .expect("an arity-0 Demo class")
+        .clone();
+    zero.namespace = vec!["Ns".to_string()];
+    zero.name = "Color".to_string();
+    zero.nested_types = vec![];
+    let mut one = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.len() == 1
+        })
+        .expect("an arity-1 Demo class")
+        .clone();
+    one.namespace = vec!["Ns".to_string()];
+    one.name = "Color".to_string();
+    one.nested_types = vec![];
+    one.assembly.name = "OtherLib".to_string();
+    let env = AssemblyEnv::from_entities(vec![zero, one]);
+    let handle = env
+        .lookup_type(&["Ns".to_string()], "Color", 0)
+        .expect("arity-0 Ns.Color");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Color")),
+        Some(Resolution::Entity(handle)),
+        "an arity-scoped non-collision must keep resolving"
+    );
+}
+
+#[test]
+fn same_dll_type_and_companion_module_still_resolve() {
+    // One DLL's `type Color` beside its companion `module Color` (compiled
+    // `ColorModule`, source name `Color`) shares the `(namespace, name)` bucket
+    // without any cross-DLL contest — the FSharp.Core-critical shape (`type
+    // Result` + `module Result`). The guard counts DLLs, not bucket entries,
+    // so this must keep resolving to the type.
+    let ents = fixture_entities();
+    let mut ty = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    ty.namespace = vec!["Ns".to_string()];
+    ty.name = "Color".to_string();
+    ty.nested_types = vec![];
+    let mut module = ty.clone();
+    module.kind = EntityKind::Module;
+    module.name = "ColorModule".to_string();
+    module.source_name = Some("Color".to_string());
+    let env = AssemblyEnv::from_entities(vec![ty, module]);
+    let handle = env
+        .lookup_type(&["Ns".to_string()], "Color", 0)
+        .expect("Ns.Color");
+    let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Color")),
+        Some(Resolution::Entity(handle)),
+        "a same-DLL type/companion-module bucket is not a cross-DLL contest"
+    );
 }
 
 // ===== Extension members never enter unqualified scope (autoopen plan ⚠) =====
@@ -4782,6 +5796,70 @@ fn non_authoritative_assembly_declines_module_classification() {
     );
 }
 
+/// The same authority split governs the **module-leaf filter** on type
+/// paths: an *authoritative* module can never BE a type (FCS errors on the
+/// annotation without a symbol use — the manifest-surface sweep caught the
+/// walk committing one), but a *non-authoritative* "module" is a plain type
+/// to FCS, so the annotation genuinely binds it and must keep committing
+/// (codex round 7). Same builder as
+/// [`non_authoritative_assembly_declines_module_classification`].
+#[test]
+fn module_leaf_filter_honours_signature_authority() {
+    let calc = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc in fixture");
+    let mut module = calc;
+    module.namespace = vec!["Ns".to_string()];
+    module.name = "Mod".to_string();
+    module.kind = EntityKind::Module;
+    module.members = vec![];
+    module.nested_types = vec![];
+
+    let build = |non_authoritative: bool| {
+        AssemblyEnv::from_assemblies_with_projection_knowability(vec![
+            borzoi_sema::AssemblyProjectionInput {
+                path: std::path::PathBuf::from("Test.dll"),
+                roots: vec![module.clone()],
+                abbreviation_visibility: AbbreviationVisibility::Modelled,
+                extension_index_unknowable: false,
+                signature_non_authoritative: non_authoritative,
+                auto_opens: Vec::new(),
+                manifest_identity: None,
+                type_forwarders: Vec::new(),
+            },
+        ])
+    };
+    let src = "module M\nlet f (x: Ns.Mod) = x\n";
+
+    // Non-authoritative: FCS imports `Mod` as a plain type — the annotation
+    // binds it, so the resolution must commit.
+    let na_env = build(true);
+    let na_rf = resolve(src, &na_env);
+    let handle = na_env
+        .lookup_type(&["Ns".to_string()], "Mod", 0)
+        .expect("Ns.Mod");
+    assert_eq!(
+        na_rf.resolution_at(at(src, "Mod")),
+        Some(Resolution::Entity(handle)),
+        "a non-authoritative 'module' is a plain type to FCS — the annotation commits"
+    );
+
+    // Authoritative (control): a genuine module never binds type position —
+    // FCS errors with no use, so committing it would be a divergence.
+    let auth_env = build(false);
+    let auth_rf = resolve(src, &auth_env);
+    assert_ne!(
+        auth_rf.resolution_at(at(src, "Mod")),
+        Some(Resolution::Entity(
+            auth_env
+                .lookup_type(&["Ns".to_string()], "Mod", 0)
+                .expect("Ns.Mod")
+        )),
+        "an authoritative module leaf must not commit in type position"
+    );
+}
+
 /// The same authority split governs **module-qualified member ownership**
 /// (`static_lookup` → `qualified_path_occupied`): an *authoritative* module
 /// takes the in-module search domain (no base chain, so `Object`'s members do
@@ -4853,5 +5931,55 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
         equals(&build(true)),
         StaticLookup::Uncertain,
         "a non-authoritative module takes the type rule, whose base chain occupies `Equals`"
+    );
+}
+
+/// Codex review round 7 (P1): the union-case shape that made the sole-supplier
+/// commit unsafe. F# union constructors are deliberately absent from
+/// `Entity::members` — their names live in `union_case_names` — so a union that
+/// genuinely owns `Color.Red` walks as a *partial* reading. With
+/// `[union Color = Red, class Color with static Red, union Color = Red]` the
+/// supplier test saw only the class and committed its member, while FCS binds
+/// the latest union case: a wrong target. Committing nothing at a contest makes
+/// the shape safe by construction, so this pins the deferral.
+#[test]
+fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let union_color = |assembly: &str| {
+        let mut e = widget.clone();
+        e.namespace = vec!["Ns".to_string()];
+        e.name = "Color".to_string();
+        e.assembly.name = assembly.to_string();
+        e.kind = EntityKind::Union;
+        e.members = vec![];
+        e.nested_types = vec![];
+        e.union_case_names = Some(vec!["Red".to_string()]);
+        e
+    };
+    // The middle candidate is a class whose STATIC is named `Red` — the member
+    // the old sole-supplier rule would have committed.
+    let mut class_color = widget.clone();
+    class_color.namespace = vec!["Ns".to_string()];
+    class_color.name = "Color".to_string();
+    class_color.assembly.name = "ClassLib".to_string();
+    class_color.nested_types = vec![];
+
+    let env = AssemblyEnv::from_entities(vec![
+        union_color("UnionA"),
+        class_color,
+        union_color("UnionB"),
+    ]);
+    let src = "module M\nlet u = Ns.Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    let resolution = rf.resolution_at(at(src, "Ns.Color.StaticCount"));
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "three DLLs contest `Ns.Color`; committing any one DLL's member is a \
+         wrong target — got {resolution:?}"
     );
 }

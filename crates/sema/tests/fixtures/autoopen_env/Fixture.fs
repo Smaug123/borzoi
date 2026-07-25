@@ -247,8 +247,86 @@ namespace SemaAutoOpen
 module DirectOps =
     let directValue () = 11
 
+    // A nested TYPE in the module-shaped target. FCS's open makes it
+    // bare-visible at opens-tier priority — fsi-verified: with a same-named
+    // type in the GLOBAL namespace (below), bare `DirectShadow` in both type
+    // and expression position binds THIS one, not the root one. Sema does not
+    // model the module-shaped open, so type-position resolution must defer
+    // the name rather than commit the root decoy (a wrong target).
+    type DirectShadow() =
+        member _.Marker = 1
+
+    // The decoy-free twin: `DirectOnly` names nothing anywhere else, so the
+    // sound verdict is a shadowable deferral, never a clean no-match.
+    type DirectOnly() =
+        member _.Marker = 2
+
+    // A nested MODULE: opening `DirectOps` also makes `DirectSub` a
+    // bare-visible dotted HEAD (`DirectSub.DirectSubT`), outranking the
+    // same-named global-namespace module below. Its CONTENTS are not
+    // bare-visible, though — `DirectSub` is not `[<AutoOpen>]`, so a bare
+    // `DirectSubT` is FS0039 (fsi-verified): the shadow surface is the
+    // imported one, not the whole tree.
+    module DirectSub =
+        type DirectSubT() =
+            member _.Marker = 3
+
+    // An `[<AutoOpen>]` nested module: FCS opens it transitively with its
+    // parent, so ITS nested type is bare-visible too (fsi-verified).
+    [<AutoOpen>]
+    module DirectAuto =
+        type DirectAutoT() =
+            member _.Marker = 4
+
+    // A PRIVATE nested type: never importable cross-assembly, so the
+    // same-named global-namespace type below stays FCS's binding for a bare
+    // `DirectPrivate` (fsi-verified) — the shadow surface must not count it.
+    type private DirectPrivate() =
+        member _.Marker = 5
+
+    // A nested module whose name matches NO type anywhere in the surface: a
+    // module cannot bind TYPE position, so a bare annotation `DirectHeadOnly`
+    // falls through to the same-named global-namespace type below
+    // (fsi-verified) — the shadow surface must not veto a single-segment
+    // type path on a module-only match.
+    module DirectHeadOnly =
+        let headOnlyInner () = 6
+
+    // A GENERIC nested type: FCS keys bare-annotation lookup on arity, so
+    // `x: DirectArity` falls through to the non-generic global-namespace
+    // type below while `x: DirectArity<int>` binds THIS one (fsi-verified)
+    // — the shadow surface match must compare the written arity.
+    type DirectArity<'T>() =
+        member _.Marker = 8
+
+    // A generic type whose name is also a ROOT module: resolving the dotted
+    // `DirectGenHead.Nested` skips this arity-1 type (a dotted type head is
+    // keyed at arity 0) and binds the global module's nested type below
+    // (fsi-verified) — a dotted head's surface match must be arity-0-keyed
+    // for types, arityless only for modules.
+    type DirectGenHead<'T>() =
+        member _.Marker = 10
+
+// A namespace with a type sharing the auto-opened module's nested-type name:
+// an explicit `open SemaAutoOpen.ExplicitBeats` is applied AFTER the manifest
+// open, so latest-open-wins binds bare `DirectShadow` HERE (fsi-verified) —
+// the one reading that outranks the manifest module surface.
+namespace SemaAutoOpen.ExplicitBeats
+
+type DirectShadow() =
+    member _.ExplicitMarker = 7
+
+// An INTERNAL module named by the manifest: FCS does not import its surface
+// cross-assembly (fsi-verified: with the attribute below, a bare
+// `InternalShadow` still binds the global-namespace decoy), so the shadow
+// veto must ignore the target entirely.
+module internal InternalTarget =
+    type InternalShadow() =
+        member _.Marker = 9
+
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
+[<assembly: AutoOpen("SemaAutoOpen.InternalTarget")>]
 // A path that exists nowhere — FCS warns and skips it; it must not sink or
 // skew resolution.
 [<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]
@@ -625,3 +703,56 @@ module AutoMod =
 
 module ClassShape =
     let mhPjClass () = 403
+
+// ===== Global-namespace decoys for the manifest module-shaped AutoOpen =====
+//
+// Same simple names as `SemaAutoOpen.DirectOps`'s nested type/module. FCS
+// binds the auto-opened module's ones (an open — even the manifest-applied
+// kind — outranks the root tier; fsi-verified in both type and expression
+// position), so a resolver that never searches the module surface would
+// wrongly commit these. `GlobalPlain` is the negative control: no auto-open
+// module tree names it, so it must keep resolving via the root tier.
+namespace global
+
+type DirectShadow() =
+    member _.Decoy = 1
+
+module DirectSub =
+    type DirectSubT() =
+        member _.Decoy = 2
+
+type GlobalPlain() =
+    member _.Decoy = 3
+
+// The decoy for `DirectOps`'s PRIVATE nested type of the same name: the
+// private one is not importable, so FCS binds THIS one bare (fsi-verified) —
+// the manifest-module shadow surface must let it commit.
+type DirectPrivate() =
+    member _.Decoy = 4
+
+// The decoy for `DirectOps`'s nested MODULE `DirectHeadOnly`: a module cannot
+// bind type position, so FCS binds THIS type for a bare annotation
+// (fsi-verified) — a module-only surface match must not veto a single-segment
+// type path.
+type DirectHeadOnly() =
+    member _.Decoy = 5
+
+// The arity decoy: non-generic, so a bare `DirectArity` annotation binds THIS
+// one (FCS keys the lookup on arity; the surface's generic `DirectArity<'T>`
+// does not contest it — fsi-verified) while `DirectArity<int>` binds the
+// surface's.
+type DirectArity() =
+    member _.Decoy = 6
+
+// The dotted-head arity decoy: `DirectGenHead.Nested` binds THIS module's
+// nested type — the surface's generic `DirectGenHead<'T>` is skipped at the
+// head's arity 0 (fsi-verified).
+module DirectGenHead =
+    type Nested() =
+        member _.Decoy = 7
+
+// The decoy for the INTERNAL manifest target's nested type: the internal
+// surface is not imported cross-assembly, so FCS binds THIS one bare
+// (fsi-verified).
+type InternalShadow() =
+    member _.Decoy = 8

@@ -2237,12 +2237,13 @@ impl<'a> Resolver<'a> {
                             self.assembly_prefixes_by_priority().any(|prefix| {
                                 match self.assembly_path_records(prefix, segments) {
                                     AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    // A higher abbreviation-defer / self-module
-                                    // reading is uncertain, so the root binding is
-                                    // unsafe.
+                                    // A higher abbreviation-defer / self-module /
+                                    // contested-rooting reading is uncertain, so the
+                                    // root binding is unsafe.
                                     AssemblyPath::ProjectShadowed
                                     | AssemblyPath::SelfModuleShadowed
-                                    | AssemblyPath::AbbreviationOpaque => true,
+                                    | AssemblyPath::AbbreviationOpaque
+                                    | AssemblyPath::ContestedRooting => true,
                                     AssemblyPath::NoMatch => false,
                                 }
                             });
@@ -2259,6 +2260,7 @@ impl<'a> Resolver<'a> {
                     AssemblyPath::ProjectShadowed
                     | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
+                    | AssemblyPath::ContestedRooting
                     | AssemblyPath::NoMatch => None,
                 }
             } else {
