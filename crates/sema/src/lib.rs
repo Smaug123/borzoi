@@ -6,7 +6,8 @@
 //! finished phase 1 plan.
 //!
 //! The definition model ([`Def`], [`DefKind`]) and pure pattern *binder
-//! extraction* ([`binders`]) provide the names a pattern introduces. On top of
+//! extraction* ([`pattern_names`]) provide the name occurrences a pattern
+//! contributes. On top of
 //! them, [`resolve_file`] builds a position-ordered scope tree from a parsed
 //! file and resolves every name *use* the current parser subset can express to
 //! its defining binder, returning a [`ResolvedFile`]. [`resolve_project`] folds
@@ -50,7 +51,7 @@ pub use assembly_env::{
     MemberIndex, OpenFoldName, OpenFoldSpace, OpenFoldSurface, OpenFoldTarget, StaticLookup,
     ValueSurface,
 };
-pub use binders::{BinderRole, binders};
+pub use binders::{BinderRole, PatternName, pattern_names};
 pub use def::{Def, DefId, DefKind, SemanticClass};
 pub use diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 pub use infer::{InferredFile, infer_file};

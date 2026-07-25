@@ -584,3 +584,49 @@ fn attribute_use_participates_in_references() {
         }
     );
 }
+
+#[test]
+fn or_pattern_alternatives_are_references_to_one_binder() {
+    // `A v | B v -> v` binds a single `v`. Every alternative's spelling is a
+    // reference to it, so a cursor anywhere among them finds the whole set —
+    // and go-to-definition from the *second* alternative lands on the first,
+    // not on itself.
+    let src =
+        "type T = A of int | B of int\nlet f t =\n    match t with\n    | A v\n    | B v -> v\n";
+    let (mut state, uri) = orphan_state(src);
+
+    let first = lsp_types::Position {
+        line: 3,
+        character: 8,
+    };
+    let second = lsp_types::Position {
+        line: 4,
+        character: 8,
+    };
+    let body = lsp_types::Position {
+        line: 4,
+        character: 13,
+    };
+
+    for cursor in [first, second, body] {
+        let locs = run(&mut state, &uri, cursor.line, cursor.character, true);
+        assert_eq!(
+            locs.len(),
+            3,
+            "the binder and both later occurrences, from {cursor:?}: {locs:#?}"
+        );
+        let starts: Vec<_> = locs.iter().map(|l| l.range.start).collect();
+        for expected in [first, second, body] {
+            assert!(
+                starts.contains(&expected),
+                "missing {expected:?}: {locs:#?}"
+            );
+        }
+    }
+
+    // Only the first alternative is the declaration: excluding it leaves the
+    // second alternative and the body use.
+    let locs = run(&mut state, &uri, first.line, first.character, false);
+    assert_eq!(locs.len(), 2, "{locs:#?}");
+    assert!(locs.iter().all(|l| l.range.start != first), "{locs:#?}");
+}

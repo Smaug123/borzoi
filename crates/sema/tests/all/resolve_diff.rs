@@ -191,6 +191,34 @@ const CORPUS: &[&str] = &[
     // resolves to it; the scrutinee `t` resolves to the parameter. The payload
     // type `int` is out-of-file (skipped).
     "type T = A | B of int\nlet f t = match t with A -> 0 | B n -> n\n",
+    // an or-pattern binds one name *once*: FCS makes the earliest alternative's
+    // occurrence the declaration and reports every later alternative's spelling
+    // of it as a **use** of that one, so both the second `v` and the result's
+    // `v` must point at the first `v`.
+    "type T = A of int | B of int\nlet f t = match t with A v | B v -> v\n",
+    // …and across three alternatives, which pins the answer independently of how
+    // the parser nests a chain of `|` (whichever way it associates, the canonical
+    // binder is the first in *source* order, not the innermost).
+    "type T = A of int | B of int | C of int\nlet f t = match t with A v | B v | C v -> v\n",
+    // …matched by name, not by position within the alternative: `b`/`v` swap
+    // places between the two sides, and each still denotes the first alternative's
+    // binder of that name.
+    "type T = A of int | B of int\nlet g x y = match x, y with A b, B v | B v, A b -> b | _ -> 0\n",
+    // …and nested below a constructor argument, where the or-pattern is not the
+    // clause's top-level pattern.
+    "type U = W of int\ntype T = A of U | B of U\nlet f t = match t with A (W v) | B (W v) -> v\n",
+    // an or-pattern in a `function` clause: the same canonicalisation in a
+    // pattern position that is not a `match` clause. (The `fun (A v | B v) -> …`
+    // lambda form cannot enter this strict corpus: FCS synthesises an `_arg1`
+    // parameter for a non-simple lambda pattern and reports it over the *whole*
+    // pattern span, which we do not model — an unmodelled-symbol gap, not an
+    // or-pattern one. It is pinned FCS-free in `resolve_scoping.rs`.)
+    "type T = A of int | B of int\nlet f = function A v | B v -> v\n",
+    // a constructor-shaped head repeated across alternatives is **not** one
+    // binding: `Red` names the union case on both sides, so each occurrence is an
+    // independent *case reference* pointing at the case definition — the
+    // canonicalisation must not swallow it into a binder alias.
+    "type Color = Red | Green\ntype T = A of Color | B of Color\nlet f t = match t with A Red | B Red -> 0 | _ -> 1\n",
     // value/case source-order shadowing: a later case shadows an earlier value
     // (`let Red = 0` then the union; `let c = Red` resolves to the case), and the
     // reverse — a later value shadows an earlier case. FCS resolves the use to the

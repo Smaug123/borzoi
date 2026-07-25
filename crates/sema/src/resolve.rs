@@ -25,7 +25,8 @@
 //! A nullary single-segment `LongIdent` pattern head — `None` in `match x with
 //! None -> …`, `let (x, None) = …`, `fun None -> …` — is constructor-shaped (the
 //! parser routes lower-case idents to `Named`, so these are always upper-case)
-//! and [`binders`](crate::binders) flags it [`provisional`](crate::Def::provisional).
+//! and [`pattern_names`](crate::pattern_names) flags it
+//! [`provisional`](crate::Def::provisional).
 //! Whether it is a real binder or a constructor reference depends on whether the
 //! name resolves to a nullary constructor / literal: FCS binds an upper-case
 //! *variable* like `X` in `let f X = X` (with warning FS0049) but treats `None`
@@ -56,7 +57,7 @@ use borzoi_cst::syntax::{
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
-use crate::binders::{BinderRole, binders};
+use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
 
@@ -190,16 +191,24 @@ pub fn resolve_file(
     }
     // Every value-binder simple name in the file — the constructor fallback's
     // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
-    // pattern through the resolution-independent [`binders`] walk, which yields a
-    // binder *before* the resolution stage's provisional/interning drops, so a
-    // would-be-shadowed local and a provisional uppercase parameter are both
+    // pattern through the resolution-independent [`pattern_names`] walk, which
+    // yields a binder *before* the resolution stage's provisional/interning drops,
+    // so a would-be-shadowed local and a provisional uppercase parameter are both
     // captured. Called on every pattern node (not just outermost) so no construct
-    // `binders` might not recurse can hide a name — over-collection only defers.
-    // File-global and order-independent, like the type-name pre-scans above.
+    // `pattern_names` might not recurse can hide a name — over-collection only
+    // defers. File-global and order-independent, like the type-name pre-scans
+    // above.
+    //
+    // Only the [`PatternName::Binder`]s are read: an or-pattern alias is a
+    // re-spelling of a name an earlier alternative already introduced, so it is
+    // spelled identically to a binder in the same list and contributes nothing to
+    // a *name* set.
     for pat in file.syntax().descendants().filter_map(Pat::cast) {
-        for def in binders(&pat, BinderRole::Let) {
-            r.own_binder_simple_names
-                .insert(id_text(&def.name).to_string());
+        for name in pattern_names(&pat, BinderRole::Let) {
+            if let PatternName::Binder(def) = name {
+                r.own_binder_simple_names
+                    .insert(id_text(&def.name).to_string());
+            }
         }
     }
     // An `extern` prototype is the one value-namespace binder with no pattern for
@@ -1717,6 +1726,7 @@ impl<'a> Resolver<'a> {
             defs: Vec::new(),
             items: Vec::new(),
             resolutions: HashMap::new(),
+            or_pattern_aliases: HashSet::new(),
             scopes: Vec::new(),
             typar_scopes: Vec::new(),
             type_defs: HashMap::new(),
@@ -1884,6 +1894,7 @@ impl<'a> Resolver<'a> {
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
+            or_pattern_aliases: self.or_pattern_aliases,
             attribute_resolutions: self.attribute_resolutions,
             own_type_simple_names: self.own_type_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
@@ -1922,6 +1933,15 @@ impl<'a> Resolver<'a> {
 
     fn record(&mut self, range: TextRange, res: Resolution) {
         self.resolutions.insert(range, res);
+    }
+
+    /// Record an **or-pattern alias**: a later alternative spelling a name the
+    /// first alternative binds. It resolves exactly like a use of that binder,
+    /// and is additionally remembered as an alias — see
+    /// [`ResolvedFile::is_or_pattern_alias`].
+    fn record_or_pattern_alias(&mut self, range: TextRange, res: Resolution) {
+        self.record(range, res);
+        self.or_pattern_aliases.insert(range);
     }
 }
 

@@ -517,6 +517,49 @@ fn nullary_constructor_pattern_head_does_not_bind() {
     assert_resolves_to(&rf, nth(src, "opt", 1), nth(src, "opt", 0));
 }
 
+// An or-pattern's alternatives are one binding per name, so every later
+// alternative's spelling *and* every body use point at the first alternative's
+// binder. `resolve_diff.rs` pins that identity against FCS for the `match`,
+// `function` and `let`-head positions; the lambda form cannot enter that strict
+// corpus (FCS synthesises an `_arg1` parameter over the whole pattern, which we
+// do not model), so it is pinned here instead.
+
+#[test]
+fn or_pattern_alternatives_resolve_to_the_first_binder() {
+    let src =
+        "type T = A of int | B of int | C of int\nlet f t = match t with A v | B v | C v -> v\n";
+    let rf = resolve(src);
+    let first = nth(src, "v", 0);
+    assert_resolves_to(&rf, first, first);
+    for occurrence in 1..=3 {
+        assert_resolves_to(&rf, nth(src, "v", occurrence), first);
+    }
+}
+
+#[test]
+fn or_pattern_in_a_lambda_parameter_resolves_to_the_first_binder() {
+    let src = "type T = A of int | B of int\nlet f = fun (A v | B v) -> v\n";
+    let rf = resolve(src);
+    let first = nth(src, "v", 0);
+    assert_resolves_to(&rf, first, first);
+    assert_resolves_to(&rf, nth(src, "v", 1), first);
+    assert_resolves_to(&rf, nth(src, "v", 2), first);
+}
+
+#[test]
+fn or_pattern_alternatives_do_not_shadow_an_outer_binder_twice() {
+    // The alternatives are one binding, so the clause frame gains exactly one
+    // `v` — the outer `let v` stays reachable *after* the match, and the alias
+    // never installs a second entry that could outlive the first.
+    let src = "type T = A of int | B of int\nlet v = 0\nlet f t = match t with A v | B v -> v\nlet w = v\n";
+    let rf = resolve(src);
+    let outer = nth(src, "v", 0);
+    let clause = nth(src, "v", 1);
+    assert_resolves_to(&rf, nth(src, "v", 2), clause);
+    assert_resolves_to(&rf, nth(src, "v", 3), clause);
+    assert_resolves_to(&rf, nth(src, "v", 4), outer);
+}
+
 #[test]
 fn unbound_name_is_deferred_not_unresolved() {
     // A name we cannot find locally is Deferred (it may be an import / assembly

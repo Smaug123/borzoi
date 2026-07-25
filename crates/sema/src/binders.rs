@@ -1,7 +1,10 @@
-//! Pure extraction of the binders a pattern introduces.
+//! Pure extraction of the name occurrences a pattern contributes: the binders
+//! it introduces, and the or-pattern *aliases* that re-spell one of them.
 
 use crate::def::{Def, DefKind};
+use crate::resolve::id_text;
 use borzoi_cst::syntax::{LongIdentPat, Pat, SyntaxToken};
+use rowan::TextRange;
 
 /// The role a pattern plays where it appears, which fixes the [`DefKind`] of
 /// the names it introduces.
@@ -23,7 +26,13 @@ pub enum BinderRole {
     Pattern,
 }
 
-/// The names `pat` introduces, in source order.
+/// Every name occurrence `pat` contributes, in source order.
+///
+/// Each is a [`PatternName::Binder`] except in an or-pattern, which binds one
+/// name **once**: the earliest alternative's occurrence binds and every later
+/// spelling of that name is a [`PatternName::Alias`] of it. That is also FCS's
+/// identity for an or-pattern, so a consumer that interns only the binders and
+/// records the aliases as uses agrees with the oracle by construction.
 ///
 /// Pure and structural: it recurses through `Paren` / `Typed` (the type
 /// annotation contributes no binders) / `Tuple`, and `Wildcard` / `Const` /
@@ -54,10 +63,44 @@ pub enum BinderRole {
 /// (the type annotation contributes no binders) / `Tuple` / `As` (both
 /// operands of `p1 as p2` bind, in source order), and `Wildcard` / `Const` /
 /// `Null` bind nothing.
-pub fn binders(pat: &Pat, role: BinderRole) -> Vec<Def> {
+pub fn pattern_names(pat: &Pat, role: BinderRole) -> Vec<PatternName> {
     let mut out = Vec::new();
     collect(pat, Ctx::from_role(role), &mut out);
     out
+}
+
+/// One name occurrence a pattern contributes.
+///
+/// Most patterns contribute only [`PatternName::Binder`]s — one per name they
+/// introduce. An *or*-pattern is the exception: `A v | B v` binds a single `v`,
+/// spelled twice, so only the first spelling is a binder and the second is an
+/// [`PatternName::Alias`] of it. Splitting the two here rather than returning a
+/// flat `Vec<Def>` is what stops a consumer from interning the same binding
+/// twice and giving one name two identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatternName {
+    /// A binding occurrence: this range *introduces* the name.
+    Binder(Def),
+    /// A later or-pattern alternative's re-spelling of a name an earlier
+    /// alternative already introduced — a *use* of that binder, not a second
+    /// binding of the same name.
+    Alias {
+        /// The re-spelling's own ident-token range.
+        range: TextRange,
+        /// The [`Def::range`] of the binder this occurrence denotes. Always
+        /// belongs to a [`PatternName::Binder`] earlier in the same list.
+        binder: TextRange,
+    },
+}
+
+impl PatternName {
+    /// The ident-token range of this occurrence, whichever kind it is.
+    pub fn range(&self) -> TextRange {
+        match self {
+            PatternName::Binder(def) => def.range,
+            PatternName::Alias { range, .. } => *range,
+        }
+    }
 }
 
 /// The context a sub-pattern is reached in. Richer than the public
@@ -112,11 +155,11 @@ impl Ctx {
     }
 }
 
-fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
+fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<PatternName>) {
     match pat {
         Pat::Named(p) => {
             if let Some(tok) = p.ident() {
-                out.push(Def::from_token(&tok, ctx.leaf_kind()));
+                out.push(PatternName::Binder(Def::from_token(&tok, ctx.leaf_kind())));
             }
         }
         Pat::OptionalVal(p) => {
@@ -125,7 +168,7 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
             // optional); the bound ident is `x`, backticks already stripped by
             // the token text.
             if let Some(tok) = p.ident() {
-                out.push(Def::from_token(&tok, ctx.leaf_kind()));
+                out.push(PatternName::Binder(Def::from_token(&tok, ctx.leaf_kind())));
             }
         }
         // Refutable heads that introduce no names. `IsInst` (`:? T`) tests a
@@ -210,18 +253,26 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
             }
         }
         Pat::Or(p) => {
-            // `A | B` binds the same names on both branches (F# requires the two
-            // sides to agree). We collect from both — each branch's binder is a
-            // genuine binding-occurrence token (both should be found by
-            // go-to-def / rename), and the scope frame's last-wins lookup
-            // tolerates the duplicate. Precise one-logical-binding unification
-            // across the branches is a deeper sema concern, not modelled here.
+            // `A v | B v` binds the same names on both branches (F# requires the
+            // two sides to agree) — and binds each of them *once*. The two
+            // spellings of `v` are one binding, so only the earliest is a binder
+            // and the rest alias it; that is also FCS's identity, which declares
+            // the first alternative's occurrence and reports every later one as a
+            // use of it. Value deconstruction, never a function-binding head, so
+            // both operands descend the context.
+            //
+            // Canonicalising over the whole or-subtree at once — rather than
+            // pairwise at each `Or` — makes the answer independent of how a chain
+            // of `|` associates: whichever way `A v | B v | C v` nests, the winner
+            // is the first `v` in *source* order.
+            let start = out.len();
             if let Some(lhs) = p.lhs() {
                 collect(&lhs, ctx.descend(), out);
             }
             if let Some(rhs) = p.rhs() {
                 collect(&rhs, ctx.descend(), out);
             }
+            canonicalise_alternatives(&mut out[start..]);
         }
         Pat::LongIdent(p) => {
             // `arg_pats` spans both `SynArgPats` shapes: the curried list
@@ -252,12 +303,12 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
                         .filter(|_| !names_active_pat(p))
                         .and_then(|li| li.idents().last())
                     {
-                        out.push(Def::from_token(
+                        out.push(PatternName::Binder(Def::from_token(
                             &head,
                             DefKind::Value {
                                 is_function: has_args,
                             },
-                        ));
+                        )));
                     }
                     for arg in &args {
                         collect(arg, Ctx::Param, out);
@@ -278,8 +329,61 @@ fn collect(pat: &Pat, ctx: Ctx, out: &mut Vec<Def>) {
                     // really a nullary constructor / literal. A multi-segment
                     // head (`A.B`) is a qualified reference and binds nothing.
                     if let Some(name) = single_segment(p) {
-                        out.push(Def::provisional_from_token(&name, ctx.leaf_kind()));
+                        out.push(PatternName::Binder(Def::provisional_from_token(
+                            &name,
+                            ctx.leaf_kind(),
+                        )));
                     }
+                }
+            }
+        }
+    }
+}
+
+/// Collapse the repeated names in one or-pattern's occurrences (`names`, in
+/// source order) to a single binding each: the first occurrence of a name stays
+/// a [`PatternName::Binder`] and every later one becomes an
+/// [`PatternName::Alias`] of it.
+///
+/// Names are compared after [`id_text`] normalisation, so ``A `v` | B v``
+/// is one binding, exactly as F# reads it.
+///
+/// **Provisional heads are left alone.** A constructor-shaped nullary head
+/// (`A None | B None`) is only a binder if the name turns out not to name a
+/// nullary constructor — a question this pure walk cannot answer. When it *is*
+/// a constructor, the two occurrences are two independent references to it (FCS
+/// reports exactly that), and aliasing the second to the first would invent a
+/// binding where the source has none. Leaving them provisional keeps resolution
+/// free to drop or resolve each on its own.
+///
+/// Aliases already present in `names` come from a nested `Or` that this call's
+/// subtree encloses. Their target may itself be demoted here, so each is
+/// re-pointed at whatever the demoted binder now aliases — the demotion always
+/// precedes the alias in source order, so one left-to-right pass suffices.
+fn canonicalise_alternatives(names: &mut [PatternName]) {
+    // Small, linear-scanned association lists: an or-pattern binds a handful of
+    // names, so a hash map would cost more than it saves.
+    let mut canonical: Vec<(String, TextRange)> = Vec::new();
+    let mut demoted: Vec<(TextRange, TextRange)> = Vec::new();
+    for name in names.iter_mut() {
+        match name {
+            PatternName::Binder(def) if !def.provisional => {
+                let key = id_text(&def.name);
+                match canonical.iter().find(|(seen, _)| seen == key) {
+                    Some(&(_, binder)) => {
+                        demoted.push((def.range, binder));
+                        *name = PatternName::Alias {
+                            range: def.range,
+                            binder,
+                        };
+                    }
+                    None => canonical.push((key.to_string(), def.range)),
+                }
+            }
+            PatternName::Binder(_) => {}
+            PatternName::Alias { binder, .. } => {
+                if let Some(&(_, target)) = demoted.iter().find(|(from, _)| from == binder) {
+                    *binder = target;
                 }
             }
         }
@@ -369,6 +473,24 @@ mod tests {
 
     fn names(defs: &[Def]) -> Vec<String> {
         defs.iter().map(|d| d.name.clone()).collect()
+    }
+
+    /// The binders of `pat`, asserting it contributes no or-pattern alias.
+    ///
+    /// Only an `Or` produces an alias, so every case that is not *about* an
+    /// or-pattern goes through here and gets the absence checked for free; the
+    /// or-pattern cases read [`pattern_names`] directly.
+    fn binders(pat: &Pat, role: BinderRole) -> Vec<Def> {
+        pattern_names(pat, role)
+            .into_iter()
+            .map(|name| match name {
+                PatternName::Binder(def) => def,
+                PatternName::Alias { range, binder } => panic!(
+                    "unexpected alias at {range:?} of the binder at {binder:?}: \
+                     only an or-pattern aliases, and this case is not one"
+                ),
+            })
+            .collect()
     }
 
     #[test]
@@ -710,6 +832,114 @@ mod tests {
         }
     }
 
+    /// Each occurrence of `pat`, rendered as `"name@start..end"` for a binder
+    /// and `"name@start..end->start..end"` for an alias (its own range, then its
+    /// binder's) — enough to pin *which* alternative won without spelling out
+    /// `TextRange` literals.
+    fn occurrences(pat_src: &str, role: BinderRole) -> Vec<String> {
+        let offset = "let ".len();
+        let show = |range: TextRange| {
+            format!(
+                "{}..{}",
+                usize::from(range.start()) - offset,
+                usize::from(range.end()) - offset
+            )
+        };
+        pattern_names(&head_pat(pat_src), role)
+            .iter()
+            .map(|occurrence| match occurrence {
+                PatternName::Binder(def) => format!("{}@{}", def.name, show(def.range)),
+                PatternName::Alias { range, binder } => {
+                    let name = &pat_src
+                        [usize::from(range.start()) - offset..usize::from(range.end()) - offset];
+                    format!("{name}@{}->{}", show(*range), show(*binder))
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn or_pattern_binds_the_first_alternative_and_aliases_the_second() {
+        assert_eq!(
+            occurrences("(A v | B v)", BinderRole::Pattern),
+            ["v@3..4", "v@9..10->3..4"]
+        );
+    }
+
+    #[test]
+    fn every_later_or_alternative_aliases_the_first() {
+        // Whichever way the parser nests a `|` chain, the canonical binder is the
+        // first in *source* order — never the innermost.
+        assert_eq!(
+            occurrences("(A v | B v | C v)", BinderRole::Pattern),
+            ["v@3..4", "v@9..10->3..4", "v@15..16->3..4"]
+        );
+    }
+
+    #[test]
+    fn or_alternatives_are_matched_by_name_not_by_position() {
+        // `b` and `v` swap places between the alternatives; each still denotes
+        // its namesake in the first.
+        assert_eq!(
+            occurrences("(A b, B v | B v, A b)", BinderRole::Pattern),
+            ["b@3..4", "v@8..9", "v@14..15->8..9", "b@19..20->3..4"]
+        );
+    }
+
+    #[test]
+    fn an_or_pattern_below_a_constructor_argument_still_canonicalises() {
+        assert_eq!(
+            occurrences("(C (x | y | x))", BinderRole::Pattern),
+            ["x@4..5", "y@8..9", "x@12..13->4..5"]
+        );
+    }
+
+    #[test]
+    fn nested_or_alternatives_alias_the_outermost_first_binder() {
+        // The inner `Or` canonicalises to the first `v` of *its* subtree; the
+        // outer one then re-points that binder's own aliases at the winner.
+        assert_eq!(
+            occurrences("((v | v) | (v | v))", BinderRole::Pattern),
+            ["v@2..3", "v@6..7->2..3", "v@12..13->2..3", "v@16..17->2..3"]
+        );
+    }
+
+    #[test]
+    fn a_backticked_alternative_aliases_its_plain_namesake() {
+        // `` `v` `` and `v` are one name in F#, so the second alternative aliases
+        // the first even though the token texts differ.
+        assert_eq!(
+            occurrences("(A ``v`` | B v)", BinderRole::Pattern),
+            ["``v``@3..8", "v@13..14->3..8"]
+        );
+    }
+
+    #[test]
+    fn repeated_constructor_shaped_heads_stay_independent_provisional_binders() {
+        // `None` in both alternatives is *not* one binding: when the name really
+        // names a nullary case each occurrence is its own reference to it, which
+        // is what FCS reports. Aliasing them would invent a binding.
+        assert_eq!(
+            occurrences("(A None | B None)", BinderRole::Pattern),
+            ["None@3..7", "None@12..16"]
+        );
+        assert!(
+            pattern_names(&head_pat("(A None | B None)"), BinderRole::Pattern)
+                .iter()
+                .all(|o| matches!(o, PatternName::Binder(def) if def.provisional))
+        );
+    }
+
+    #[test]
+    fn or_alternatives_binding_different_names_each_bind() {
+        // Illegal F# (the sides must agree), but the walk is resolution-free and
+        // must not lose a name: only a *repeat* aliases.
+        assert_eq!(
+            occurrences("(A x | B y)", BinderRole::Pattern),
+            ["x@3..4", "y@9..10"]
+        );
+    }
+
     // ---- property test ----------------------------------------------------
     //
     // Generate a *value* pattern (the structural recursion: leaves +
@@ -732,6 +962,14 @@ mod tests {
         /// upper-case reference, never a binder). Only generated *nested*, so
         /// it is always a deconstruction rather than a function-binding head.
         Ctor(Vec<Shape>),
+        /// A parenthesised or-pattern of `1 + extra` alternatives, all of which
+        /// are the *same* shape — F# requires every alternative to bind the same
+        /// names, and rendering one alternative's source repeatedly is the
+        /// simplest way to guarantee that.
+        Or {
+            alternative: Box<Shape>,
+            extra: usize,
+        },
     }
 
     fn atom_strategy() -> impl Strategy<Value = Shape> {
@@ -806,6 +1044,24 @@ mod tests {
                         }
                     }
                 }
+            }
+            Shape::Or { alternative, extra } => {
+                // Render one alternative, then emit that source verbatim once per
+                // alternative: identical text binds identical names, which is what
+                // F# requires of an or-pattern — and it makes `expected` (every
+                // name occurrence in source order) a plain repetition.
+                let mut alt_src = String::new();
+                let mut alt_names = Vec::new();
+                render(alternative, counter, &mut alt_names, &mut alt_src);
+                out.push('(');
+                for i in 0..=*extra {
+                    if i > 0 {
+                        out.push_str(" | ");
+                    }
+                    out.push_str(&alt_src);
+                    expected.extend(alt_names.iter().cloned());
+                }
+                out.push(')');
             }
         }
     }
@@ -927,6 +1183,118 @@ mod tests {
                 let span = usize::from(d.range.start())..usize::from(d.range.end());
                 prop_assert_eq!(&src[span], d.name.as_str());
                 prop_assert_eq!(d.kind, DefKind::Value { is_function: false });
+            }
+        }
+    }
+
+    // ---- property test: or-patterns ---------------------------------------
+    //
+    // The invariant the `Or` arm exists to keep: an or-pattern's alternatives
+    // are *one* binding per name, however deeply the `|`s nest. Stated without
+    // replaying the canonicalisation, so a bug in it cannot satisfy the oracle:
+    //
+    // 1. nothing is lost — every name occurrence in the source comes back, in
+    //    source order (this is what stops "bind once" being met by dropping the
+    //    later alternatives outright);
+    // 2. no name is bound twice;
+    // 3. every alias names a binder that *precedes* it and spells the same name
+    //    (which is also what fixes the choice of canonical alternative: the
+    //    earliest, matching FCS).
+
+    /// A pattern that always contains at least one or-pattern, with more nested
+    /// anywhere below. The head is an `Or` (itself parenthesised), so no
+    /// constructor inside is ever read as a function-binding head.
+    fn or_shape_strategy() -> impl Strategy<Value = Shape> {
+        let leaf = prop_oneof![Just(Shape::Ident), Just(Shape::Wild), Just(Shape::Const)];
+        let inner = leaf.prop_recursive(4, 32, 3, |inner| {
+            prop_oneof![
+                inner.clone().prop_map(|s| Shape::Paren(Box::new(s))),
+                atom_strategy().prop_map(|s| Shape::TypedAtom(Box::new(s))),
+                prop::collection::vec(inner.clone(), 2..=3).prop_map(Shape::Tuple),
+                prop::collection::vec(ctor_arg_strategy(), 0..=3).prop_map(Shape::Ctor),
+                (inner, 1usize..=2).prop_map(|(alternative, extra)| Shape::Or {
+                    alternative: Box::new(alternative),
+                    extra,
+                }),
+            ]
+        });
+        (inner, 1usize..=2).prop_map(|(alternative, extra)| Shape::Or {
+            alternative: Box::new(alternative),
+            extra,
+        })
+    }
+
+    proptest! {
+        #[test]
+        fn an_or_pattern_binds_each_name_once(shape in or_shape_strategy()) {
+            let mut counter = 0;
+            let mut expected = Vec::new();
+            let mut pat_src = String::new();
+            render(&shape, &mut counter, &mut expected, &mut pat_src);
+
+            let src = format!("let {pat_src} = 0\n");
+            let parsed = parse(&src);
+            prop_assert!(
+                parsed.errors.is_empty(),
+                "parse errors for {src:?}: {:?}",
+                parsed.errors
+            );
+
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let module = file.modules().next().expect("module");
+            let ModuleDecl::Let(let_decl) =
+                module.decls().next().expect("decl") else { unreachable!() };
+            let pat = let_decl
+                .bindings()
+                .next()
+                .expect("binding")
+                .pat()
+                .expect("head pat");
+
+            let occurrences = pattern_names(&pat, BinderRole::Let);
+            let text = |range: TextRange| {
+                &src[usize::from(range.start())..usize::from(range.end())]
+            };
+
+            // 1. Every name occurrence comes back, in source order.
+            let seen: Vec<String> =
+                occurrences.iter().map(|o| text(o.range()).to_string()).collect();
+            prop_assert_eq!(&seen, &expected, "occurrences differ for {:?}", src);
+
+            // 2. No name is bound twice. Provisional heads are exempt: a
+            //    constructor-shaped nullary name (`None`) is a *reference* when
+            //    it names a case, so its repeats are two references, not one
+            //    binding — FCS reports exactly that.
+            let mut bound: Vec<&str> = Vec::new();
+            for occurrence in &occurrences {
+                if let PatternName::Binder(def) = occurrence
+                    && !def.provisional
+                {
+                    let name = id_text(&def.name);
+                    prop_assert!(
+                        !bound.contains(&name),
+                        "{:?} binds {name:?} twice",
+                        src
+                    );
+                    bound.push(name);
+                }
+            }
+
+            // 3. Every alias names an earlier binder that spells the same name.
+            for (i, occurrence) in occurrences.iter().enumerate() {
+                let PatternName::Alias { range, binder } = occurrence else {
+                    continue;
+                };
+                let target = occurrences[..i].iter().find_map(|o| match o {
+                    PatternName::Binder(def) if def.range == *binder => Some(def),
+                    _ => None,
+                });
+                let Some(def) = target else {
+                    return Err(TestCaseError::fail(format!(
+                        "{src:?}: alias at {range:?} names no earlier binder"
+                    )));
+                };
+                prop_assert_eq!(id_text(&def.name), id_text(text(*range)));
             }
         }
     }

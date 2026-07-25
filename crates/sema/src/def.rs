@@ -8,7 +8,7 @@ use rowan::TextRange;
 /// parameter, and (in later stages) modules and local pattern binders.
 ///
 /// Stage A produces `Def`s only from pattern binder extraction
-/// ([`crate::binders`]). The scope tree that interns them and assigns stable
+/// ([`crate::pattern_names`]). The scope tree that interns them and assigns stable
 /// identifiers lands in Stage C, so a `Def` carries no id yet.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Def {

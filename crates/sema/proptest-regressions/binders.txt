@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 863a33167867de6a9710165067debf47b6a471c923d2ae228ca9756dca16abeb # shrinks to shape = Or { alternative: Or { alternative: Or { alternative: Ident, extra: 1 }, extra: 1 }, extra: 1 }

@@ -462,14 +462,15 @@ fn lsp_loader_reports_causal_details_for_uncertain_compile_items() {
     }
 }
 
-/// FCS emits a pattern binder **once** even when the source binds it in
-/// several alternatives of an or-pattern (`| Ldarg _n | Ldarga _n | …`
-/// reports `_n` at the first alternative only), while our model resolves each
-/// occurrence to itself. The repeats are ranges the oracle says *nothing*
-/// about, and silence is not evidence: they must be counted, not reported as
-/// resolutions FCS contradicts.
+/// An or-pattern binds one name **once**: `| A _n | B _n -> _n` has a single
+/// `_n`, declared at the first alternative, and the second alternative's
+/// spelling is a *use* of it. FCS agrees — and for an underscore-prefixed name
+/// it reports nothing at all at the later alternatives, so those occurrences
+/// are ranges the oracle is silent about. Silence is not evidence: they must be
+/// counted, not reported as resolutions FCS contradicts — while the body use,
+/// which the oracle *does* report, must match.
 #[test]
-fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
+fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
     let src = "module B\n\ntype T =\n    | A of int\n    | B of int\n\nlet f (t: T) =\n    match t with\n    | A _n\n    | B _n -> _n\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let file = loaded.parses.paths[0].clone();
@@ -513,6 +514,15 @@ fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
             ],
         }],
     );
+    // The body use is the one occurrence the oracle *does* report, and it names
+    // the first alternative's binder — so it is graded, and it matches.
+    assert_eq!(
+        comparison.divergences,
+        Vec::new(),
+        "the body use points at the alternative FCS declares"
+    );
+    assert_eq!(comparison.matches, 1, "the body use is compared and agrees");
+
     // The fixture's oracle deliberately lists only the binder's two FCS uses,
     // so other names in the file have no covering oracle either; this asserts
     // about the second alternative's `_n` specifically.
@@ -522,13 +532,17 @@ fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
             .reverse_divergences
             .iter()
             .any(|d| d.range == (second, second + 2)),
-        "the second alternative's binder has no covering oracle, so it is not a \
-         divergence: {:?}",
+        "the second alternative's spelling has no covering oracle, so it is not \
+         a divergence: {:?}",
         comparison.reverse_divergences
+    );
+    assert_eq!(
+        comparison.unoracled_or_pattern_aliases, 1,
+        "the silently-skipped alias must still be counted"
     );
     assert!(
         comparison.unoracled_definitions > 0,
-        "the silently-skipped defining occurrences must still be counted"
+        "the file's other binders are unoracled definitions, counted separately"
     );
 }
 
