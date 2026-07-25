@@ -1814,17 +1814,49 @@ impl AssemblyEnv {
         name: &str,
         arity: usize,
     ) -> usize {
+        self.distinct_dlls(&self.public_types_named_at_arity(namespace, name, arity))
+    }
+
+    /// How many **distinct loaded DLLs** the given entities come from, by
+    /// per-DLL provenance (falling back to manifest identity for
+    /// provenance-less envs — [`Self::from_entities`]).
+    ///
+    /// The count [`Self::distinct_dlls_with_public_type`] is defined in terms
+    /// of, so a caller that first *narrows* the candidate set (a type-position
+    /// walk drops module candidates: a module cannot be a terminal type)
+    /// counts collisions by exactly the same rule over its narrowed set.
+    pub fn distinct_dlls(&self, handles: &[EntityHandle]) -> usize {
         let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
-        for &handle in self.types_named(namespace, name) {
-            let e = self.entity(handle);
-            if e.generic_parameters.len() == arity && self.is_public(handle) {
-                let key = self.assembly_key(handle);
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
+        for &handle in handles {
+            let key = self.assembly_key(handle);
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
         keys.len()
+    }
+
+    /// Every public top-level type at exactly `(namespace, name, arity)` — the
+    /// **complete bucket** behind the first-wins slot [`Self::lookup_type`]
+    /// returns, in index order.
+    ///
+    /// The contestant set [`Self::distinct_dlls_with_public_type`] counts, so a
+    /// caller that must decide *which* of a merged rooting's contestants could
+    /// satisfy a path walks exactly the types the count declared contested —
+    /// the two cannot drift apart into disagreeing about what a collision is.
+    pub fn public_types_named_at_arity(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Vec<EntityHandle> {
+        self.types_named(namespace, name)
+            .iter()
+            .copied()
+            .filter(|&handle| {
+                self.entity(handle).generic_parameters.len() == arity && self.is_public(handle)
+            })
+            .collect()
     }
 
     /// The public nested **module** named `name` (by its F# *source* name — a suffixed
@@ -2106,6 +2138,21 @@ impl AssemblyEnv {
     /// decline regardless of how the env was built.
     fn fsharp_signature_unreliable(&self, handle: EntityHandle) -> bool {
         self.nodes[handle.index()].signature_non_authoritative
+    }
+
+    /// Whether `handle` is an F# **module** we may rely on being one.
+    ///
+    /// A module's kind is trustworthy only from an authoritative F# pickle. A
+    /// non-authoritative assembly's `Module` is an IL heuristic FCS does not
+    /// share — it imports the type through IL, where a module reads as a plain
+    /// type — so anything that *acts* on module-ness must ask this rather than
+    /// match `EntityKind::Module` directly. [`Self::entity_class`] declines
+    /// such a kind for the same reason; the resolver's type-position
+    /// eligibility filter (a module cannot be a terminal type) must decline to
+    /// *exclude* it for the same reason, or it would drop a genuine
+    /// type-position contestant from a cross-DLL contest (codex review).
+    pub fn is_authoritative_module(&self, handle: EntityHandle) -> bool {
+        self.entity(handle).kind == EntityKind::Module && !self.fsharp_signature_unreliable(handle)
     }
 
     pub fn entity_class(&self, handle: EntityHandle) -> Option<SemanticClass> {
