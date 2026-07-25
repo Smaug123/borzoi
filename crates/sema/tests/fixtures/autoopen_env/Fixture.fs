@@ -307,6 +307,60 @@ module DirectOps =
     type DirectGenHead<'T>() =
         member _.Marker = 10
 
+// ===== ModuleSuffix / companion-pair manifest targets =====
+//
+// FCS derefs a manifest AutoOpen path through the contributing assembly's
+// entity table keyed by LOGICAL/COMPILED names
+// (TypedTree.fs `AllEntitiesByCompiledAndLogicalMangledNames`) — never the
+// demangled source name a *source-level* `open` resolves by. Four
+// fsi-verified consequences, one shape each below. The module half of each
+// companion pair is declared FIRST so a metadata-order pick lands on the
+// module — the order FCS's keyed deref makes irrelevant.
+
+// The bare spelling `AutoOpen("SemaAutoOpen.CompanionOps")` names only the
+// TYPE half (the suffixed module is keyed `CompanionOpsModule`), and an F#
+// type's pickled module contents are empty: FCS silently opens NOTHING —
+// no FS0970, and `CompanionShadow` stays unresolvable bare (fsi-verified).
+// The global decoy below is FCS's binding for the bare name.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module CompanionOps =
+    type CompanionShadow() =
+        member _.Marker = 20
+
+type CompanionOps() =
+    member _.Marker = 21
+
+// The COMPILED spelling `AutoOpen("SemaAutoOpen.MangledOpsModule")` is the
+// key the deref table actually holds for the module half: FCS opens the
+// module, and its nested type outranks the same-named global decoy in both
+// type and expression position (fsi-verified).
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module MangledOps =
+    type MangledShadow() =
+        member _.Marker = 22
+
+type MangledOps() =
+    member _.Marker = 23
+
+// A SOLO suffixed module (no companion type): its source spelling matches no
+// key at all — FCS warns FS0970 and ignores the attribute (fsi-verified), so
+// the global decoy stays the binding for the bare name.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module SoloSuffixOps =
+    type SoloSuffixShadow() =
+        member _.Marker = 24
+
+// A GENERIC companion type: its logical name is arity-mangled
+// (`GenCompanionOps`1`), so the bare spelling finds neither half — FS0970
+// warn-and-ignore again (fsi-verified), and the decoy stays the binding.
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module GenCompanionOps =
+    type GenCompanionShadow() =
+        member _.Marker = 25
+
+type GenCompanionOps<'T>() =
+    member _.Marker = 26
+
 // A namespace with a type sharing the auto-opened module's nested-type name:
 // an explicit `open SemaAutoOpen.ExplicitBeats` is applied AFTER the manifest
 // open, so latest-open-wins binds bare `DirectShadow` HERE (fsi-verified) —
@@ -327,6 +381,10 @@ module internal InternalTarget =
 [<assembly: AutoOpen("SemaAutoOpen.FromManifest")>]
 [<assembly: AutoOpen("SemaAutoOpen.DirectOps")>]
 [<assembly: AutoOpen("SemaAutoOpen.InternalTarget")>]
+[<assembly: AutoOpen("SemaAutoOpen.CompanionOps")>]
+[<assembly: AutoOpen("SemaAutoOpen.MangledOpsModule")>]
+[<assembly: AutoOpen("SemaAutoOpen.SoloSuffixOps")>]
+[<assembly: AutoOpen("SemaAutoOpen.GenCompanionOps")>]
 // A path that exists nowhere — FCS warns and skips it; it must not sink or
 // skew resolution.
 [<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]
@@ -756,3 +814,25 @@ module DirectGenHead =
 // (fsi-verified).
 type InternalShadow() =
     member _.Decoy = 8
+
+// The companion-pair decoy: the manifest's bare spelling derefs to the TYPE
+// half and opens nothing, so FCS binds THIS one bare (fsi-verified).
+type CompanionShadow() =
+    member _.Decoy = 9
+
+// The compiled-spelling decoy: `MangledOpsModule` IS a deref-table key, the
+// module is opened, and its nested type outranks this one (fsi-verified) —
+// committing this decoy would be a wrong target.
+type MangledShadow() =
+    member _.Decoy = 10
+
+// The solo-suffixed decoy: the manifest's source spelling matches no key
+// (FS0970 warn-and-ignore), so FCS binds THIS one bare (fsi-verified).
+type SoloSuffixShadow() =
+    member _.Decoy = 11
+
+// The generic-companion decoy: the type half's logical name is arity-mangled,
+// so the manifest path matches no key (FS0970) and FCS binds THIS one bare
+// (fsi-verified).
+type GenCompanionShadow() =
+    member _.Decoy = 12

@@ -953,6 +953,96 @@ fn a_global_namespace_type_unnamed_by_auto_open_modules_still_resolves() {
 }
 
 #[test]
+fn a_companion_pair_manifest_target_opens_nothing_so_the_decoy_commits() {
+    // `AutoOpen("SemaAutoOpen.CompanionOps")` names a companion PAIR. FCS
+    // derefs the manifest path through the assembly's compiled/logical-name
+    // table (TypedTree.fs `AllEntitiesByCompiledAndLogicalMangledNames`),
+    // where the bare spelling keys only the TYPE half — whose pickled module
+    // contents are empty — so the attribute silently opens NOTHING
+    // (fsi-verified: bare `CompanionShadow` stays FS0039, and no FS0970 is
+    // raised). The global decoy is FCS's binding and must commit; deferring
+    // it was the round-8 metadata-order concession.
+    let env = fixture_env();
+    let src = "let f (x: CompanionShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "CompanionShadow", 0)
+        .expect("fixture must declare a global-namespace CompanionShadow decoy");
+    assert_eq!(
+        rf.resolution_at(at(src, "CompanionShadow")),
+        Some(Resolution::Entity(root)),
+        "a companion pair's bare spelling opens nothing — the global decoy must commit"
+    );
+}
+
+#[test]
+fn a_mangled_spelled_manifest_target_opens_the_suffixed_module() {
+    // `AutoOpen("SemaAutoOpen.MangledOpsModule")` spells the suffixed
+    // module's COMPILED name — the key FCS's deref table actually holds — so
+    // FCS opens the module, and its nested `MangledShadow` outranks the
+    // same-named global decoy in both positions (fsi-verified). Committing
+    // the decoy is a wrong target; the sound verdict is a shadowable
+    // deferral. A source-name-keyed deref cannot see this target at all.
+    let env = fixture_env();
+    let src = "let f (x: MangledShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root_decoy = env
+        .lookup_type(&[], "MangledShadow", 0)
+        .expect("fixture must declare a global-namespace MangledShadow decoy");
+    let got = rf.resolution_at(at(src, "MangledShadow"));
+    assert_ne!(
+        got,
+        Some(Resolution::Entity(root_decoy)),
+        "FCS binds the opened module's MangledShadow — the decoy is a wrong target"
+    );
+    assert_eq!(
+        got,
+        Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+        "a compiled-name-spelled manifest module target must defer its nested type"
+    );
+}
+
+#[test]
+fn a_solo_suffixed_manifest_target_spelled_by_source_name_is_ignored() {
+    // `AutoOpen("SemaAutoOpen.SoloSuffixOps")` spells a solo ModuleSuffix
+    // module by its SOURCE name, which matches no deref-table key (the
+    // module is keyed only `SoloSuffixOpsModule`): FCS warns FS0970 and
+    // ignores the attribute (fsi-verified), so the global decoy stays the
+    // binding for the bare name and must commit.
+    let env = fixture_env();
+    let src = "let f (x: SoloSuffixShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "SoloSuffixShadow", 0)
+        .expect("fixture must declare a global-namespace SoloSuffixShadow decoy");
+    assert_eq!(
+        rf.resolution_at(at(src, "SoloSuffixShadow")),
+        Some(Resolution::Entity(root)),
+        "a solo suffixed module's source spelling is warn-and-ignored — the decoy commits"
+    );
+}
+
+#[test]
+fn a_generic_companion_manifest_target_is_ignored() {
+    // `AutoOpen("SemaAutoOpen.GenCompanionOps")` names a pair whose type
+    // half is GENERIC: a generic type's logical name is arity-mangled
+    // (`GenCompanionOps` + "`1"), so the bare spelling keys neither half —
+    // FCS warns FS0970 and ignores the attribute (fsi-verified), and the
+    // global decoy stays the binding for the bare name.
+    let env = fixture_env();
+    let src = "let f (x: GenCompanionShadow) = x\n";
+    let rf = resolve(src, &env);
+    let root = env
+        .lookup_type(&[], "GenCompanionShadow", 0)
+        .expect("fixture must declare a global-namespace GenCompanionShadow decoy");
+    assert_eq!(
+        rf.resolution_at(at(src, "GenCompanionShadow")),
+        Some(Resolution::Entity(root)),
+        "a generic companion's bare spelling keys nothing — the decoy commits"
+    );
+}
+
+#[test]
 fn contested_manifest_namespace_defers_instead_of_wrongly_resolving() {
     // The fsi-verified shape behind the contested-namespace drop (codex P2,
     // round 3): FCS opens the CONTRIBUTING assembly's namespace entity only,
