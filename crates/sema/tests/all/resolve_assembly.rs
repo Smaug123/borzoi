@@ -2585,14 +2585,17 @@ fn a_class_and_a_module_at_one_fqn_are_not_a_type_position_contest() {
 }
 
 #[test]
-fn a_lone_module_still_roots_a_terminal_type_reading() {
+fn a_lone_module_does_not_occupy_a_terminal_type_position() {
     // The scope boundary of the eligibility filter. fsi: with only `ModuleLib`
-    // referenced, `let y : Ns.Color` is FS0039 — a module is not a type. We do
-    // not model what FCS falls through to instead, so a *lone* module keeps
-    // rooting the reading and the leaf-kind check downstream declines it
-    // (`attr_resolution_diff::module_shaped_leaf_defers` pins that path). The
-    // filter exists to stop a module *contesting* a real type across DLLs, not
-    // to re-decide the lone-module case — which is unchanged here, gap and all.
+    // referenced, `let y : Ns.Color` is FS0039 — a module is not a type.
+    //
+    // The filter exists to stop a module *contesting* a real type across DLLs;
+    // it deliberately does not re-decide the lone-module case, so the module
+    // still ROOTS the reading here. What declines it is the leaf-kind check
+    // downstream in `decide_type_path`, which #181 generalised from the
+    // attribute path to every type path (`attr_resolution_diff::
+    // module_shaped_leaf_defers` pins the attribute half). The two layers
+    // compose: eligibility settles the contest, leaf-kind settles the commit.
     let (_, module_color) = class_and_module_color();
     let env = AssemblyEnv::from_entities(vec![module_color]);
     let module_handle = env
@@ -2602,11 +2605,15 @@ fn a_lone_module_still_roots_a_terminal_type_reading() {
         .expect("the module is in the env");
     let src = "module M\nlet x : Ns.Color = Unchecked.defaultof<_>\n";
     let rf = resolve(src, &env);
-    assert_eq!(
-        rf.resolution_at(at(src, "Color")),
+    let resolution = rf.resolution_at(at(src, "Color"));
+    assert_ne!(
+        resolution,
         Some(Resolution::Entity(module_handle)),
-        "a lone module still roots the reading — the leaf-kind check, not the \
-         contest filter, is what declines it"
+        "a module never occupies a terminal type position (FS0039)"
+    );
+    assert!(
+        matches!(resolution, None | Some(Resolution::Deferred(_))),
+        "and it declines rather than re-rooting elsewhere, got {resolution:?}"
     );
 }
 

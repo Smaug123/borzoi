@@ -685,10 +685,11 @@ impl<'a> Resolver<'a> {
         //
         // With *no* eligible candidate the slot is kept as-is: a lone module in
         // terminal type position still roots the reading, and the leaf-kind
-        // check downstream ([`TypePathReading::leaf`]) declines it — the
-        // established path for "FCS binds no module here, and we do not model
-        // what it falls through to". (That a plain annotation still records the
-        // module is a pre-existing gap, unrelated to cross-DLL contests.)
+        // check downstream in `Resolver::decide_type_path` declines it off
+        // [`TypePathReading::leaf`]. The two layers divide the work — this
+        // filter settles which candidates *contest*, the leaf-kind check
+        // settles whether the winner may be *committed* — so a module that is
+        // the only thing at an FQN needs no special case here.
         let Some((k, candidates, type_handle)) = (base..n).rev().find_map(|k| {
             let candidates = type_position_candidates(k);
             let slot = self
