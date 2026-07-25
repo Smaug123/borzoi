@@ -64,28 +64,88 @@ impl<'a> Resolver<'a> {
 
         // The rooting's top-level FQN exported by more than one loaded DLL, at
         // the **arity `lookup_type` selected** (0): FCS merges same-FQN roots
-        // across references and binds the latest *accessible* one (fsi-verified
-        // with two probe libraries, both reference orders; an internal
-        // contestant is skipped regardless of order), which sema does not model
-        // — `lookup_type` is first-wins. Any commit at a merged rooting could
-        // therefore name the wrong DLL's type, and any descent below it walks
-        // the first-indexed subtree, which may miss the other DLL's
-        // contribution (only a **top-level** FQN merges across DLLs; nested
-        // entities are interned within one parent's subtree). So this reading
-        // defers (D5: defer, never a wrong target) — *tier-locally*
-        // ([`AssemblyPath::ContestedRooting`]), so a higher-priority open with
-        // an uncontested rooting still wins over a contested root-tier reading
-        // (codex review). Counting *distinct DLLs at arity 0* (not all
-        // same-named entities) keeps a same-DLL companion module — and a
-        // `type Alias = Widget` beside a generic `type Alias<'T>` in one DLL —
-        // resolving (codex review).
+        // across references, which sema does not model — `lookup_type` is
+        // first-wins — so a commit at a merged rooting could name the wrong
+        // DLL's type, and a descent below it walks the first-indexed subtree,
+        // missing the other DLL's contribution (only a **top-level** FQN merges
+        // across DLLs; nested entities are interned within one parent's
+        // subtree).
+        //
+        // But a merge does not make the reading *own* the path. FCS's merged
+        // lookup is tail-sensitive: it binds the latest contestant that
+        // supplies the tail, and falls through the rooting entirely when none
+        // does (fsi-verified 2026-07-25 with three probe libraries — see
+        // `a_contested_root_missing_the_tail_falls_through_to_a_lower_open`).
+        // So walk *every* contestant, not the first-wins slot alone:
+        //
+        // - some contestant may own the path → we cannot tell which FCS binds
+        //   (latest *accessible* reference; fsi-verified both orders, an
+        //   internal contestant skipped regardless): defer (D5: defer, never a
+        //   wrong target), *tier-locally*
+        //   ([`AssemblyPath::ContestedRooting`]) so a higher-priority open with
+        //   an uncontested rooting still wins (codex review round 1);
+        // - the tail is provably absent from all of them → this is an ordinary
+        //   **partial** reading a lower priority may supersede (codex review
+        //   round 2). Its records defer at every segment: the rooting resolves,
+        //   but naming which DLL's type it is remains the thing we cannot do.
+        //
+        // Counting *distinct DLLs at arity 0* (not all same-named entities)
+        // keeps a same-DLL companion module — and a `type Alias = Widget`
+        // beside a generic `type Alias<'T>` in one DLL — resolving (codex
+        // review).
         if self
             .assemblies
             .distinct_dlls_with_public_type(&names[..k], &names[k], 0)
             > 1
         {
-            return AssemblyPath::ContestedRooting;
+            let contested_owns = self
+                .assemblies
+                .public_types_named_at_arity(&names[..k], &names[k], 0)
+                .into_iter()
+                .any(|handle| {
+                    self.assembly_path_records_from_root(&names, segments, base, k, handle)
+                        .may_own_path()
+                });
+            return if contested_owns {
+                AssemblyPath::ContestedRooting
+            } else {
+                AssemblyPath::Resolved {
+                    payload: segments
+                        .iter()
+                        .map(|seg| {
+                            (
+                                seg.text_range(),
+                                Resolution::Deferred(DeferredReason::QualifiedAccess),
+                            )
+                        })
+                        .collect(),
+                    owns_path: false,
+                }
+            };
         }
+
+        self.assembly_path_records_from_root(&names, segments, base, k, type_handle)
+    }
+
+    /// One reading's walk *below* an already-chosen rooting type — the body of
+    /// [`Self::assembly_path_records`] past its longest-public-type-prefix
+    /// search, parameterised by the rooting `type_handle` so a **contested**
+    /// rooting can ask the same question of each contestant rather than of the
+    /// first-wins slot alone.
+    ///
+    /// `names` is the full prefix-plus-segments path, `base` the prefix length
+    /// and `k` the index of the rooting segment (`names[k]`, source token
+    /// `segments[k - base]`). Never returns [`AssemblyPath::NoMatch`]: the
+    /// rooting is given, so the reading at minimum matches partially.
+    fn assembly_path_records_from_root(
+        &self,
+        names: &[String],
+        segments: &[SyntaxToken],
+        base: usize,
+        k: usize,
+        type_handle: EntityHandle,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        let n = names.len();
 
         // A type-abbreviation marker: the name binds, and FCS chases the
         // abbreviation to its target (`S.Format` where `type S = System.String`
@@ -513,28 +573,80 @@ impl<'a> Resolver<'a> {
         };
 
         // The rooting's top-level FQN exported by more than one loaded DLL, at
-        // the arity `lookup_type` selected: FCS merges same-FQN roots across
-        // references and binds the latest *accessible* one (fsi-verified with
-        // two probe libraries, both reference orders; an internal contestant
-        // is skipped regardless of order), which sema does not model —
-        // `lookup_type` is first-wins. Any commit at a merged rooting could
-        // therefore name the wrong DLL's type, and any descent below it walks
-        // the first-indexed subtree, which may miss the other DLL's
-        // contribution (only a **top-level** FQN merges across DLLs; nested
-        // entities are interned within one parent's subtree). So this reading
-        // defers (D5; mirrors the value-path walk), *tier-locally*
-        // ([`AssemblyPath::ContestedRooting`]) so a higher-priority open with
-        // an uncontested rooting still wins. Counting *distinct DLLs at the
-        // selected arity* (not all same-named entities) keeps a same-DLL
-        // companion module — and a `type Alias = Widget` beside a generic
-        // `type Alias<'T>` in one DLL — resolving (codex review).
+        // the arity `lookup_type` selected — the type-path mirror of the
+        // value/member walk's contested combinator, with the same two outcomes
+        // and the same reasons (see [`Self::assembly_path_records`]): defer
+        // *tier-locally* ([`AssemblyPath::ContestedRooting`]) when some
+        // contestant may own the path, and read as an ordinary **partial**
+        // reading when the nested tail is provably absent from every one of
+        // them, so a lower-priority reading that completes the path still wins.
+        // Counting *distinct DLLs at the selected arity* (not all same-named
+        // entities) keeps a same-DLL companion module — and a
+        // `type Alias = Widget` beside a generic `type Alias<'T>` in one DLL —
+        // resolving (codex review).
         if self
             .assemblies
             .distinct_dlls_with_public_type(&names[..k], &names[k], arity_at(k))
             > 1
         {
-            return AssemblyPath::ContestedRooting;
+            let contested_owns = self
+                .assemblies
+                .public_types_named_at_arity(&names[..k], &names[k], arity_at(k))
+                .into_iter()
+                .any(|handle| {
+                    self.assembly_type_path_from_root(
+                        &names,
+                        segments.len(),
+                        base,
+                        k,
+                        arity,
+                        handle,
+                    )
+                    .may_own_path()
+                });
+            return if contested_owns {
+                AssemblyPath::ContestedRooting
+            } else {
+                AssemblyPath::Resolved {
+                    payload: TypePathReading {
+                        idx_recs: (0..segments.len())
+                            .map(|idx| (idx, Resolution::Deferred(DeferredReason::QualifiedAccess)))
+                            .collect(),
+                        // A partial reading names no whole-path type; here the
+                        // rooting is unnameable too.
+                        leaf: None,
+                    },
+                    owns_path: false,
+                }
+            };
         }
+
+        self.assembly_type_path_from_root(&names, segments.len(), base, k, arity, type_handle)
+    }
+
+    /// One reading's walk *below* an already-chosen rooting type — the body of
+    /// [`Self::assembly_type_path_core`] past its longest-public-type-prefix
+    /// search, parameterised by the rooting `type_handle` so a **contested**
+    /// rooting can ask the same question of each contestant rather than of the
+    /// first-wins slot alone (the type-path mirror of
+    /// [`Self::assembly_path_records_from_root`]).
+    ///
+    /// `names` is the full prefix-plus-segments path, `segment_count` the
+    /// source-segment count `idx_recs` is keyed against, `base` the prefix
+    /// length, `k` the index of the rooting segment, and `arity` the generic
+    /// arity that applies to the path's final segment. Never returns
+    /// [`AssemblyPath::NoMatch`]: the rooting is given.
+    fn assembly_type_path_from_root(
+        &self,
+        names: &[String],
+        segment_count: usize,
+        base: usize,
+        k: usize,
+        arity: usize,
+        type_handle: EntityHandle,
+    ) -> AssemblyPath<TypePathReading> {
+        let n = names.len();
+        let arity_at = |k: usize| if k == n - 1 { arity } else { 0 };
 
         // A type-abbreviation *marker* (a metadata-invisible F# abbreviation
         // surfaced name-only from the signature pickle): the name is really
@@ -618,7 +730,7 @@ impl<'a> Resolver<'a> {
         }
         // An unresolvable tail (a nested type we don't model, or a non-type
         // segment) is modeled-but-unresolved: defer, never drop.
-        for idx in (i - base)..segments.len() {
+        for idx in (i - base)..segment_count {
             idx_recs.push((idx, deferred));
         }
         AssemblyPath::Resolved {

@@ -1754,16 +1754,36 @@ impl AssemblyEnv {
         arity: usize,
     ) -> usize {
         let mut keys: Vec<AssemblyKey<'_>> = Vec::new();
-        for &handle in self.types_named(namespace, name) {
-            let e = self.entity(handle);
-            if e.generic_parameters.len() == arity && self.is_public(handle) {
-                let key = self.assembly_key(handle);
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
+        for handle in self.public_types_named_at_arity(namespace, name, arity) {
+            let key = self.assembly_key(handle);
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
         keys.len()
+    }
+
+    /// Every public top-level type at exactly `(namespace, name, arity)` — the
+    /// **complete bucket** behind the first-wins slot [`Self::lookup_type`]
+    /// returns, in index order.
+    ///
+    /// The contestant set [`Self::distinct_dlls_with_public_type`] counts, so a
+    /// caller that must decide *which* of a merged rooting's contestants could
+    /// satisfy a path walks exactly the types the count declared contested —
+    /// the two cannot drift apart into disagreeing about what a collision is.
+    pub fn public_types_named_at_arity(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Vec<EntityHandle> {
+        self.types_named(namespace, name)
+            .iter()
+            .copied()
+            .filter(|&handle| {
+                self.entity(handle).generic_parameters.len() == arity && self.is_public(handle)
+            })
+            .collect()
     }
 
     /// The public nested **module** named `name` (by its F# *source* name — a suffixed

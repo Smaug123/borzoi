@@ -255,9 +255,37 @@ pub(super) enum AssemblyPath<R> {
     /// reading (codex review on the contested-FQN guard). Reached in priority
     /// order, it defers like [`Self::ProjectShadowed`]: FCS binds one of the
     /// contestants at that tier, so no lower tier may re-root the path.
+    ///
+    /// Raised only when some contestant could actually *supply the tail*
+    /// ([`Self::may_own_path`]). A contested rooting whose tail is provably
+    /// absent from **every** contestant is an ordinary partial reading, not
+    /// this: FCS falls through such a rooting to a lower reading that completes
+    /// the path (fsi-verified — see the walk's contested combinator).
     ContestedRooting,
     /// Not an assembly path at all.
     NoMatch,
+}
+
+impl<T> AssemblyPath<T> {
+    /// Whether this reading could **capture the whole path**, so a lower-priority
+    /// reading must not be applied over it — every outcome except the two that
+    /// prove the path unreachable through this reading: a genuinely-absent tail
+    /// (a *partial* [`Self::Resolved`]) and [`Self::NoMatch`].
+    ///
+    /// The predicate a *merged* rooting is judged by: FCS falls through a
+    /// contested rooting exactly when no contestant supplies the tail, so the
+    /// walk asks this of each contestant rather than of the first-wins slot
+    /// alone (codex review round 2 on the contested-FQN guard).
+    pub(super) fn may_own_path(&self) -> bool {
+        !matches!(
+            self,
+            AssemblyPath::NoMatch
+                | AssemblyPath::Resolved {
+                    owns_path: false,
+                    ..
+                }
+        )
+    }
 }
 
 /// The token-free decision for one reading of a **type** path — the payload

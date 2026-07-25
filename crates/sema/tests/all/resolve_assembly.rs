@@ -16,8 +16,8 @@ use borzoi_assembly::{
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AbbreviationVisibility, AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SemanticClass,
-    resolve_file, resolve_project,
+    AbbreviationVisibility, AssemblyEnv, EntityHandle, ProjectItems, Resolution, ResolvedFile,
+    SemanticClass, resolve_file, resolve_project,
 };
 use rowan::TextRange;
 
@@ -2412,6 +2412,323 @@ fn contested_global_root_does_not_preempt_an_open_reading() {
              contested global root, got {other:?}"
         ),
     }
+}
+
+/// The three tests below pin the *other* edge of the guard: a contested rooting
+/// owns the path only when some contestant could supply the tail. fsi-verified
+/// with three probe libraries (2026-07-25) — `DupA`/`DupB` both export
+/// `High.Color`, `LowLib` exports `Low.Color`:
+///
+/// - neither `High.Color` has `StaticCount`, `Low.Color` does →
+///   `open Low; open High; Color.StaticCount` is **42**: FCS falls *through* the
+///   contested rooting to the lower open;
+/// - only `DupA.High.Color` has `OnlyOnA` → `open High; Color.OnlyOnA` is **7**,
+///   the *earlier* reference: FCS's merge falls through *within* the group too,
+///   binding the latest contestant that supplies the tail.
+///
+/// So the guard must not return `ContestedRooting` on the mere fact of a
+/// contested rooting: when the tail is provably absent from **every**
+/// contestant, this is an ordinary *partial* reading, and a lower-priority
+/// reading that completes the path wins.
+fn contested_high_low_entities(tail_on_contestants: bool) -> (Entity, Entity, Entity) {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let mut high_a = widget.clone();
+    high_a.namespace = vec!["High".to_string()];
+    high_a.name = "Color".to_string();
+    high_a.nested_types = vec![];
+    if !tail_on_contestants {
+        high_a.members = vec![];
+    }
+    let mut high_b = high_a.clone();
+    high_b.assembly.name = "OtherLib".to_string();
+    // The uncontested lower reading keeps `Demo.Widget`'s members, `StaticCount`
+    // among them.
+    let mut low = widget;
+    low.namespace = vec!["Low".to_string()];
+    low.name = "Color".to_string();
+    low.nested_types = vec![];
+    (high_a, high_b, low)
+}
+
+#[test]
+fn a_contested_root_missing_the_tail_falls_through_to_a_lower_open() {
+    let (high_a, high_b, low) = contested_high_low_entities(false);
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let src = "module M\nopen Low\nopen High\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        Some(Resolution::Member { parent, .. }) if parent == low_color => {}
+        other => panic!(
+            "no `High.Color` contestant has `StaticCount`, so FCS binds \
+             `Low.Color.StaticCount` (fsi: 42) — got {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn a_contested_root_missing_a_nested_tail_falls_through_in_type_position() {
+    // The type-walk mirror: the tail is a nested *type*, not a static member.
+    let (high_a, high_b, mut low) = contested_high_low_entities(false);
+    let ents = fixture_entities();
+    let mut inner = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.is_empty()
+        })
+        .expect("an arity-0 Demo class")
+        .clone();
+    inner.namespace = vec![];
+    inner.name = "Inner".to_string();
+    inner.nested_types = vec![];
+    low.nested_types = vec![inner];
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let low_inner = env
+        .nested(low_color, "Inner", 0)
+        .expect("Low.Color.Inner in env");
+    let src = "module M\nopen Low\nopen High\nlet x : Color.Inner = Unchecked.defaultof<_>\n";
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "Inner")),
+        Some(Resolution::Entity(low_inner)),
+        "no `High.Color` contestant has a nested `Inner`, so the lower open's \
+         `Low.Color.Inner` must win"
+    );
+}
+
+#[test]
+fn a_contested_root_that_supplies_the_tail_still_defers_over_a_lower_open() {
+    // The companion control: when the contestants DO have the member, FCS binds
+    // one of them (the latest accessible reference), so falling through to the
+    // lower `Low.Color.StaticCount` would be a wrong target. Defer instead.
+    let (high_a, high_b, low) = contested_high_low_entities(true);
+    let env = AssemblyEnv::from_entities(vec![high_a, high_b, low]);
+    let low_color = env
+        .lookup_type(&["Low".to_string()], "Color", 0)
+        .expect("Low.Color");
+    let src = "module M\nopen Low\nopen High\nlet u = Color.StaticCount\n";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "Color.StaticCount")) {
+        None | Some(Resolution::Deferred(_)) => {}
+        Some(Resolution::Member { parent, .. }) if parent == low_color => panic!(
+            "a contested rooting that supplies the tail must not cede the path to \
+             the lower open — FCS binds a `High.Color`, so this is a wrong target"
+        ),
+        other => panic!("expected the contested rooting to defer, got {other:?}"),
+    }
+}
+
+// ----- The invariant behind the two guard revisions, checked exhaustively -----
+//
+// Both codex rounds on the contested-rooting guard were the same mistake in
+// opposite directions — the guard claiming more of the walk than the collision
+// justifies. Round 1: a contested *global* root preempted a higher-priority
+// open's uncontested reading. Round 2: a contested rooting owned a path no
+// contestant could supply, where FCS falls through to a lower reading. One
+// metamorphic invariant rules out both, and everything else of that shape:
+//
+//   **Duplicating a top-level type into a differently-named DLL may perturb
+//   only those paths that resolve *at that type* (or inside it), and may only
+//   degrade them to a deferral.**
+//
+// It holds because the duplicate is a byte-identical clone: it adds no name,
+// no member and no namespace, so the only thing it can change is whether the
+// rooting `(namespace, name, arity)` is contested. `duplicating_a_type_*` below
+// checks it over the *whole* small universe the guard can distinguish, rather
+// than one hand-built case per discovered bug.
+
+/// A stable, cross-env description of a resolution — entity handles are indices
+/// into one `AssemblyEnv`, so the perturbed env's handles cannot be compared to
+/// the base env's directly.
+fn describe_resolution(env: &AssemblyEnv, res: Option<Resolution>) -> String {
+    let ent = |h: EntityHandle| {
+        let e = env.entity(h);
+        format!("{}|{}|{}", e.assembly.name, e.namespace.join("."), e.name)
+    };
+    match res {
+        None => "none".to_string(),
+        Some(Resolution::Deferred(_)) => "deferred".to_string(),
+        Some(Resolution::Entity(h)) => format!("entity {}", ent(h)),
+        Some(Resolution::Member { parent, idx }) => {
+            format!(
+                "member {}::{}",
+                ent(parent),
+                member_name(env.member_at(parent, idx))
+            )
+        }
+        Some(other) => format!("{other:?}"),
+    }
+}
+
+/// `handle` and every entity nested below it — the set a resolution "roots at".
+fn subtree(env: &AssemblyEnv, handle: EntityHandle) -> Vec<EntityHandle> {
+    let mut out = vec![handle];
+    let mut i = 0;
+    while i < out.len() {
+        out.extend_from_slice(env.children(out[i]));
+        i += 1;
+    }
+    out
+}
+
+/// The catalogue entry the sweep builds its universe from: a public class at
+/// `(namespace, "Color")`, optionally carrying the fixture's static members and
+/// optionally a nested `Inner`.
+fn sweep_color(
+    widget: &Entity,
+    inner: &Entity,
+    namespace: &[&str],
+    with_statics: bool,
+    with_nested: bool,
+) -> Entity {
+    let mut e = widget.clone();
+    e.namespace = namespace.iter().map(|s| (*s).to_string()).collect();
+    e.name = "Color".to_string();
+    e.members = if with_statics { e.members } else { vec![] };
+    e.nested_types = if with_nested {
+        vec![inner.clone()]
+    } else {
+        vec![]
+    };
+    e
+}
+
+#[test]
+fn duplicating_a_type_perturbs_only_paths_that_root_at_it() {
+    let ents = fixture_entities();
+    let widget = ents
+        .iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget")
+        .clone();
+    let inner = {
+        let mut i = ents
+            .iter()
+            .find(|e| {
+                e.namespace == ["Demo"]
+                    && e.kind == EntityKind::Class
+                    && e.generic_parameters.is_empty()
+            })
+            .expect("an arity-0 Demo class")
+            .clone();
+        i.namespace = vec![];
+        i.name = "Inner".to_string();
+        i.nested_types = vec![];
+        i
+    };
+
+    // Every path the universe can express, in both syntactic positions the two
+    // walks serve: a value/member path (`assembly_path_records`) and a type
+    // path (`assembly_type_path_core`, which has no member tail).
+    const VALUE_PATHS: &[&str] = &[
+        "Color",
+        "Color.StaticCount",
+        "Color.Inner",
+        "High.Color",
+        "High.Color.StaticCount",
+        "High.Color.Inner",
+        "Low.Color.StaticCount",
+    ];
+    const TYPE_PATHS: &[&str] = &["Color", "Color.Inner", "High.Color", "High.Color.Inner"];
+    const OPEN_SEQUENCES: &[&[&str]] =
+        &[&[], &["High"], &["Low"], &["High", "Low"], &["Low", "High"]];
+
+    let flag_combos = [(false, false), (false, true), (true, false), (true, true)];
+    let mut checked = 0usize;
+    for &(high_statics, high_nested) in &flag_combos {
+        for &(low_statics, low_nested) in &flag_combos {
+            for &with_global in &[false, true] {
+                let mut catalogue = vec![
+                    sweep_color(&widget, &inner, &["High"], high_statics, high_nested),
+                    sweep_color(&widget, &inner, &["Low"], low_statics, low_nested),
+                ];
+                if with_global {
+                    catalogue.push(sweep_color(&widget, &inner, &[], true, true));
+                }
+
+                // Duplicate one catalogue entry at a time, into a
+                // differently-named DLL — the shape `lookup_type`'s first-wins
+                // slot cannot see and FCS merges.
+                for dup in 0..catalogue.len() {
+                    let base = AssemblyEnv::from_entities(catalogue.clone());
+                    let mut perturbed_ents = catalogue.clone();
+                    let mut clone = catalogue[dup].clone();
+                    clone.assembly.name = "OtherLib".to_string();
+                    perturbed_ents.push(clone);
+                    let perturbed = AssemblyEnv::from_entities(perturbed_ents);
+
+                    let dup_ns: Vec<String> = catalogue[dup].namespace.clone();
+                    let roots = base
+                        .public_types_named_at_arity(&dup_ns, "Color", 0)
+                        .into_iter()
+                        .flat_map(|h| subtree(&base, h))
+                        .collect::<Vec<_>>();
+
+                    for opens in OPEN_SEQUENCES {
+                        let preamble: String =
+                            opens.iter().map(|o| format!("open {o}\n")).collect();
+                        let cases = VALUE_PATHS
+                            .iter()
+                            .map(|p| (format!("module M\n{preamble}let u = {p}\n"), *p))
+                            .chain(TYPE_PATHS.iter().map(|p| {
+                                (
+                                    format!(
+                                        "module M\n{preamble}let x : {p} = Unchecked.defaultof<_>\n"
+                                    ),
+                                    *p,
+                                )
+                            }));
+                        for (src, path) in cases {
+                            let before_res = resolve(&src, &base).resolution_at(at(&src, path));
+                            let after_res = resolve(&src, &perturbed).resolution_at(at(&src, path));
+                            let before = describe_resolution(&base, before_res);
+                            let after = describe_resolution(&perturbed, after_res);
+                            checked += 1;
+                            if before == after {
+                                continue;
+                            }
+                            let context = format!(
+                                "duplicating {}.Color changed {path:?} from {before} to {after}\n\
+                                 source:\n{src}",
+                                dup_ns.join(".")
+                            );
+                            let rooted_at_dup = match before_res {
+                                Some(Resolution::Entity(h)) => roots.contains(&h),
+                                Some(Resolution::Member { parent, .. }) => roots.contains(&parent),
+                                _ => false,
+                            };
+                            assert!(
+                                rooted_at_dup,
+                                "a duplicate may not perturb a path that does not root at it — \
+                                 the lower/uncontested reading still wins in FCS: {context}"
+                            );
+                            assert!(
+                                after == "deferred" || after == "none",
+                                "a contested rooting may only DEGRADE its own path to a \
+                                 deferral, never re-target it: {context}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        checked > 1000,
+        "the sweep must be exhaustive, ran {checked}"
+    );
 }
 
 #[test]
