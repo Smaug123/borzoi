@@ -3445,14 +3445,13 @@ impl<'a> Resolver<'a> {
     /// union roots past a later-`open`ed `SynType` module that shadows it only in
     /// the value/module namespace.
     ///
-    /// The per-tier [`ShadowVeto`] is the **type path**'s
-    /// ([`Self::decide_type_path`]) — a pattern head is a type lookup: an
-    /// [assembly auto-open module in the namespace with a type of this
-    /// name](AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named)
-    /// out-ranks the direct bucket ([`ShadowVeto::Preemptive`]), and at a tier
-    /// with nothing directly an [unmodelled type
-    /// shadow](Self::unmodelled_type_shadow_at) could be a same-named union
-    /// ([`ShadowVeto::OnNoMatch`]).
+    /// A pattern head is a type lookup, so the per-tier [`ShadowVeto`] is the
+    /// shared type-position one ([`Self::type_position_shadow_at`]), passed the
+    /// head as its `bare_name`: `Type` is a single segment under the tier's
+    /// prefix, the `Case` being the constructor tail. Every shadow source that
+    /// can hide a same-named union — a dropped TypeDef in the reading, an
+    /// assembly auto-open module's type of this name, a coarse unmodelled
+    /// shadow — therefore reaches this walk by construction.
     ///
     /// `None` — a sound decline, never a wrong target — when nothing resolves or
     /// the walk shadow-defers. The reading is a **contender**, not yet a binding:
@@ -3480,18 +3479,7 @@ impl<'a> Resolver<'a> {
                 self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
             },
             false,
-            |prefix| {
-                if self
-                    .assemblies
-                    .auto_open_modules_in_namespace_shadow_type_named(prefix, type_name)
-                {
-                    ShadowVeto::Preemptive
-                } else if self.unmodelled_type_shadow_at(prefix) {
-                    ShadowVeto::OnNoMatch
-                } else {
-                    ShadowVeto::None
-                }
-            },
+            |prefix| self.type_position_shadow_at(prefix, Some(type_name)),
         ) {
             TieredResolution::Resolved(reading) => Some(reading),
             TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,

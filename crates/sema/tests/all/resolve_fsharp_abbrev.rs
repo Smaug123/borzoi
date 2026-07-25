@@ -1535,3 +1535,115 @@ fn assembly_open_outranks_a_project_case_at_the_enclosing_namespace() {
         );
     }
 }
+
+/// A **dropped TypeDef** in the reading the walk commits at makes that reading's
+/// type set incomplete, and the missing name is unknowable: the drop record
+/// keeps only the namespace, so the dropped type may *be* a same-named type FCS
+/// binds instead — another DLL's same-FQN half at a reference order we do not
+/// model, or a same-name/other-arity sibling in this one. Committing the
+/// survivor is then a wrong target, not a missed one, so a dropped type in a
+/// visited reading must veto the whole walk (D5).
+///
+/// This is the type-position counterpart of the *value* path's long-established
+/// treatment of the same marker (`a_lone_module_under_a_dropped_type_names_no_
+/// definite_target` and neighbours in `resolve_assembly.rs`), which the type
+/// path did not share.
+#[test]
+fn a_dropped_type_in_the_enclosing_namespace_defers_a_type_annotation() {
+    let src = "namespace Demo.CasePat\n\
+               module M =\n\
+               \x20   let f (x: Shape) = x\n";
+
+    // Control: with a complete projection the enclosing-namespace tier commits.
+    let clean = fixture_env();
+    let shape = clean
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    assert_eq!(
+        resolve(src, &clean).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: a clean `Demo.CasePat` commits the annotation"
+    );
+
+    let mut dropped = fixture_env();
+    dropped.mark_namespace_dropped_type(vec!["Demo".into(), "CasePat".into()]);
+    assert!(
+        !matches!(
+            resolve(src, &dropped).resolution_at(at(src, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "a dropped TypeDef in `Demo.CasePat` may itself be the `Shape` FCS binds; \
+         the surviving one is not a safe target — got {:?}",
+        resolve(src, &dropped).resolution_at(at(src, "Shape"))
+    );
+}
+
+/// The same hazard at the **opened** tier. This one passed *before* the veto
+/// existed, and stays deliberately: the open-side fold already goes opaque on an
+/// `open` whose path carries a dropped split (`names_uncovered_dropped_path` and
+/// the fold's `path_dropped` residue, `resolve/decls.rs`), raising
+/// `unmodelled_open_active`, which `decide_type_path` defers on before the walk
+/// starts. So it pins the *boundary* of the new veto's job — the opened tier is
+/// somebody else's — and would catch a regression in that older guard.
+#[test]
+fn a_dropped_type_in_an_opened_namespace_defers_a_type_annotation() {
+    let src = "namespace Consumer\n\
+               open Demo.CasePat\n\
+               module M =\n\
+               \x20   let f (x: Shape) = x\n";
+
+    let clean = fixture_env();
+    let shape = clean
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    assert_eq!(
+        resolve(src, &clean).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: a clean opened namespace commits the annotation"
+    );
+
+    let mut dropped = fixture_env();
+    dropped.mark_namespace_dropped_type(vec!["Demo".into(), "CasePat".into()]);
+    assert!(
+        !matches!(
+            resolve(src, &dropped).resolution_at(at(src, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "an opened namespace with a dropped TypeDef names no definite type — got {:?}",
+        resolve(src, &dropped).resolution_at(at(src, "Shape"))
+    );
+}
+
+/// The qualified-union-case-pattern walk shares the type path's per-tier verdict,
+/// so it inherits the same hole: the head `Shape` is looked up in a reading whose
+/// dropped TypeDef may be another `Shape` owning a `Circle` case of its own.
+#[test]
+fn a_dropped_type_in_the_enclosing_namespace_defers_a_qualified_case_pattern() {
+    let src = "namespace Demo.CasePat\n\
+               module M =\n\
+               \x20   let f x =\n\
+               \x20       match x with\n\
+               \x20       | Shape.Circle r -> r\n\
+               \x20       | _ -> 0\n";
+
+    // Control: `qualified_case_pattern_resolves_at_the_enclosing_namespace` pins
+    // the clean commit; repeat it here so this test cannot go vacuous on its own.
+    let clean = fixture_env();
+    assert!(
+        matches!(
+            resolve(src, &clean).resolution_at(at(src, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "control: a clean `Demo.CasePat` commits the case pattern"
+    );
+
+    let mut dropped = fixture_env();
+    dropped.mark_namespace_dropped_type(vec!["Demo".into(), "CasePat".into()]);
+    let rf = resolve(src, &dropped);
+    assert_eq!(
+        rf.resolution_at(at(src, "Shape")),
+        None,
+        "a dropped TypeDef in `Demo.CasePat` may own the `Circle` case FCS binds"
+    );
+    assert_eq!(rf.resolution_at(at(src, "Shape.Circle")), None);
+}

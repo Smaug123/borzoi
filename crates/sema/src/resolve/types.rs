@@ -1360,35 +1360,15 @@ impl<'a> Resolver<'a> {
         // → root), with the arity-aware token-free type record-generator as the
         // leaf. A project *module* sharing the as-written name does not veto the
         // opens tier (a module is not a type), so `as_written_vetoes_opens` is
-        // false here. For a single-segment name, the per-tier [`ShadowVeto`]
-        // verdict also participates in that *same* walk (V1/V3), at the two
-        // strengths its variants document: [`ShadowVeto::Preemptive`] for an
-        // in-scope auto-open module's accessible nested type/module named
-        // `name` (exact metadata — outranks even a same-tier real match,
-        // FCS-probe-confirmed: review round 6 on
-        // `docs/completed/r2-annotation-typing-plan.md`), and [`ShadowVeto::OnNoMatch`]
-        // for the coarse, name-blind risks (project auto-open modules and
-        // unknowable-abbreviation namespaces) that must not pre-emptively
-        // defer every other real type under the same reading (rounds 2/3 of
-        // the same review).
+        // false here. The per-tier [`ShadowVeto`] verdict participates in that
+        // *same* walk (V1/V3) — see [`Self::type_position_shadow_at`], the one
+        // definition every type-position walk shares.
         let only_name = match names {
             [only] => Some(only.as_str()),
             _ => None,
         };
         let core = |prefix: &[String]| self.assembly_type_path_core(prefix, names, arity);
-        let shadow_at = |prefix: &[String]| match only_name {
-            // The exact, name-keyed check first — it is the stronger
-            // verdict, and where it fires the coarse one is subsumed.
-            Some(name)
-                if self
-                    .assemblies
-                    .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
-            {
-                ShadowVeto::Preemptive
-            }
-            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
-            _ => ShadowVeto::None,
-        };
+        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, only_name);
 
         // A module/type-shaped manifest auto-open (`[<assembly:
         // AutoOpen("N.Ops")>]` naming a module) is kept out of the walk's
@@ -1887,6 +1867,80 @@ impl<'a> Resolver<'a> {
             || self
                 .assemblies
                 .unknowable_abbreviations_in_namespace(prefix)
+    }
+
+    /// The per-tier [`ShadowVeto`] for a **type-position** lookup: the single
+    /// definition every type-position walk over
+    /// [`Self::resolve_assembly_path_tiered`] shares — [`Self::decide_type_path`]
+    /// and the qualified-union-case-pattern walk
+    /// ([`Resolver::assembly_case_pattern_reading`](super::Resolver)), whose head
+    /// is a type lookup too. Sharing it is structural, not tidiness: the two
+    /// walks previously each spelled the ladder out, and a shadow source added
+    /// to one silently missed the other.
+    ///
+    /// `bare_name` is `Some` when the lookup is for a **single** source segment
+    /// — the whole path for `decide_type_path`, the head `Type` of a
+    /// `Type.Case` pattern — and `None` for a dotted path, whose tail segments
+    /// the bare-name surfaces below cannot supply.
+    ///
+    /// The ladder, strongest first:
+    ///
+    /// 1. A **dropped TypeDef** in this reading
+    ///    ([`AssemblyEnv::namespace_has_dropped_type`]). The reading's type set
+    ///    is *incomplete* and the missing name is unknowable — the drop record
+    ///    keeps only the enclosing namespace — so the dropped type may be the
+    ///    very name being resolved: another DLL's same-FQN half, which FCS
+    ///    merges and orders by reference (an order we do not model), or a
+    ///    same-name sibling at the arity written here. Two things follow, both
+    ///    distinguishing it from (3):
+    ///    - [`ShadowVeto::Preemptive`], not [`ShadowVeto::OnNoMatch`].
+    ///      `OnNoMatch` asks "did this tier bind nothing?", and the hazard is
+    ///      live precisely when it *did*: the surviving `Foo` gets committed
+    ///      while a dropped `Foo` at the same reading is what FCS binds. A tier
+    ///      that yields a match is exactly as untrustworthy as one that does not.
+    ///    - It applies at **every path length**, `bare_name` or not: a dotted
+    ///      `Outer.Inner` roots its head in this reading too, and a dropped
+    ///      `Outer` there is the same wrong-target risk.
+    ///
+    ///    This is the type-position half of a treatment the **value** and
+    ///    **open** paths have had since review rounds 9–23
+    ///    (`incomplete_open_prefixes`, `names_uncovered_dropped_path`, and the
+    ///    fold's `path_dropped` residue, all in [`super::decls`]). Because an
+    ///    `open` of a dropped-bearing namespace already raises
+    ///    `unmodelled_open_active` there — which [`Self::decide_type_path`]
+    ///    defers on before the walk starts — the tiers it actually adds cover
+    ///    for are the **enclosing namespace** and the **root** reading, which no
+    ///    `open` statement guards.
+    /// 2. An in-scope assembly `[<AutoOpen>]` module with an accessible nested
+    ///    type/module of exactly this name
+    ///    ([`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`]):
+    ///    exact metadata, so [`ShadowVeto::Preemptive`] — it outranks even a
+    ///    same-tier real match (FCS-probe-confirmed, review round 6 on
+    ///    `docs/completed/r2-annotation-typing-plan.md`).
+    /// 3. The coarse, name-blind risks — a project `[<AutoOpen>]` module, an
+    ///    unknowable-abbreviation namespace ([`Self::unmodelled_type_shadow_at`])
+    ///    — at [`ShadowVeto::OnNoMatch`] only: checking them pre-emptively would
+    ///    defer every other real type under the same reading (rounds 2/3 of the
+    ///    same review).
+    pub(super) fn type_position_shadow_at(
+        &self,
+        prefix: &[String],
+        bare_name: Option<&str>,
+    ) -> ShadowVeto {
+        if self.assemblies.namespace_has_dropped_type(prefix) {
+            return ShadowVeto::Preemptive;
+        }
+        match bare_name {
+            Some(name)
+                if self
+                    .assemblies
+                    .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
+            {
+                ShadowVeto::Preemptive
+            }
+            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
+            _ => ShadowVeto::None,
+        }
     }
 
     /// Whether `names` **strictly descends into** a project *nested* module (a path
