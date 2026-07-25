@@ -551,17 +551,26 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   root is blanket-marked hidden-valued, and the bump ran *after* the
   open's own assembly-half fold, staling entries the screen had
   deliberately let through. The fix is a **marker-provenance split**
-  (`ProjectItems::opaque_hidden_value_modules`: markers from files
-  *without* a paired signature): when every hidden marker for the opened
-  path is sig-screened, the bump fires *before* the assembly fold —
-  sound because a sig-paired file's whole cross-file surface is bounded
-  by its `.fsi` text, so the per-name soup demotion covers exactly what
-  the barrier fears for this open's own entries; earlier opens' entries
-  are still staled by the bump either way. An opaque marker (an
-  `[<AutoOpen>]` type's unenumerable statics, an alias, an `extern` in
-  an unscreened fragment of the same path) keeps the bump after the
-  fold — pinned by
-  `an_unscreened_fragment_blocks_the_open_fold_fall_through`.
+  (`ProjectItems::opaque_hidden_value_modules`): when every hidden
+  marker for the opened path is sig-screened, the bump fires *before*
+  the assembly fold — sound because such a marker's names are bounded by
+  the `.fsi` text, so the per-name soup demotion covers exactly what the
+  barrier fears for this open's own entries; earlier opens' entries are
+  still staled by the bump either way. A marker is opaque when the
+  signature does **not** bound it, which every push site now states
+  explicitly (`HiddenNames::{SigDeclared, Borrowed}`, so a new marker
+  kind must answer the question): every marker of a file without a
+  paired signature, plus the *name-borrowing* markers of a signatured
+  one — an `[<AutoOpen>]` type and a module abbreviation. The auto-open
+  type is the sharp case (codex review of this slice, fsc-probed
+  2026-07-25): `[<AutoOpen>] type Alias = Target.T` in both halves makes
+  a bare `asmOnly` after the open bind `Target.T.asmOnly`, not the
+  colliding RefLib member, and the `.fsi` text never mentions the
+  abbreviated type's members — so the screen cannot demote them.
+  (Inherited statics do not forward; the decl does not distinguish an
+  abbreviation, so every auto-open type declines.) Pinned by
+  `an_unscreened_fragment_blocks_the_open_fold_fall_through` and
+  `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through`.
   FCS-probed (op1–op6, 2026-07-19): after an outside `open` of the
   signatured module, a sig-`private` val and a sig-hidden impl-only val
   colliding with RefLib both bind the **assembly** diagnostics-clean, as

@@ -1958,6 +1958,47 @@ fn an_unscreened_fragment_blocks_the_open_fold_fall_through() {
     );
 }
 
+/// An `[<AutoOpen>]` type in a **signatured** file blocks the fall-through
+/// too: the names it brings to the open site are the *type's* members, and
+/// an abbreviation borrows them from the abbreviated type — so the `.fsi`
+/// text never mentions them and the per-name screen cannot demote them.
+/// fsc-probed 2026-07-25 (`dotnet build`, both halves declaring
+/// `[<AutoOpen>] type Alias = Target.T` where `Target.T.asmOnly: string`,
+/// against the RefLib whose `ProbeNs.Shared.asmOnly` is `int`): the bare
+/// `asmOnly` after the open type-checks as `string`, i.e. binds
+/// `Target.T.asmOnly`; deleting the abbreviation flips it to the assembly's
+/// `int`. Committing the assembly member here would be a wrong commit.
+/// (Inherited statics do *not* forward — the same probe with `inherit
+/// Target.Base` binds the assembly `int` — so the leak is
+/// abbreviation-shaped; sema declines for every auto-open type, since the
+/// export decl does not distinguish them.)
+#[test]
+fn an_auto_open_type_in_a_signatured_file_blocks_the_fall_through() {
+    let files = [
+        (
+            "/p/Target.fs",
+            "module Target\n\ntype T =\n    static member asmOnly = \"from-target\"\n",
+        ),
+        (
+            "/p/A.fsi",
+            "module ProbeNs.Shared\n\n[<AutoOpen>]\ntype Alias = Target.T\n",
+        ),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\n[<AutoOpen>]\ntype Alias = Target.T\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet v = asmOnly\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_uncommitted(
+        res_at(&proj, &files, 3, "asmOnly"),
+        "an auto-open type abbreviation forwards names the signature never names",
+    );
+}
+
 /// Incremental ≡ cold when an edit turns the sig-private collision case
 /// on: the opaque-hidden-marker provenance must thread through the
 /// incremental fold too.

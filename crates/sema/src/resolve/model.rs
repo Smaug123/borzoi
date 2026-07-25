@@ -268,16 +268,23 @@ pub struct ProjectItems {
     /// [`Resolver::modules_with_hidden_values`](super::state::Resolver::modules_with_hidden_values)). A later file's `open M` of one
     /// must bump the open generation so it shadows earlier opens.
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
-    /// The subset of [`Self::modules_with_hidden_values`] whose markers came
-    /// from a file **without** a paired signature. A sig-paired file's whole
-    /// cross-file surface is bounded by its `.fsi` text (the screen's
-    /// foundational invariant — a name absent from the signature provably
-    /// cannot be exposed), so the per-name screen demotion at the open fold
-    /// ([`ProjectItems::sig_screened_open_name`]) covers everything such a
-    /// file's markers fear. An **unscreened** file's unenumerable
-    /// value-space names (an active pattern, an alias target, …) have no
-    /// such bound: an `open` of a path marked here must still stale its own
-    /// assembly entries via the generation bump, not just earlier opens'.
+    /// The subset of [`Self::modules_with_hidden_values`] whose markers no
+    /// signature bounds — so an `open` of a path marked here must stale its
+    /// **own** assembly entries via the generation bump, not just earlier
+    /// opens'. Two sources:
+    ///
+    /// - every marker of a file **without** a paired signature: its
+    ///   unenumerable value-space names (an active pattern, an alias
+    ///   target, …) have no bound at all;
+    /// - a **name-borrowing** marker of a signatured file — today an
+    ///   `[<AutoOpen>]` type, whose members an abbreviation borrows from the
+    ///   abbreviated type (fsc-probed; see the marker's push site).
+    ///
+    /// Everything else a *signatured* file marks is bounded by its `.fsi`
+    /// text — a value, case or active pattern the signature does not declare
+    /// provably cannot be exposed — so the per-name screen demotion at the
+    /// open fold ([`ProjectItems::sig_screened_open_name`]) already covers
+    /// exactly what those markers fear.
     pub(super) opaque_hidden_value_modules: HashSet<Vec<String>>,
     /// Each earlier-file **non-`private`** `[<AutoOpen>]` module *fragment*,
     /// paired with the Compile-order file that declared it, in Compile order —
@@ -1209,12 +1216,37 @@ struct FileExportIndices {
     auto_open_module_paths: Vec<Vec<String>>,
 }
 
-/// Record `path`'s **container** (`path` minus its last segment) as a
-/// hidden-value module — the derivation of the `note_hidden_value_module`
-/// markers whose legacy path is `self.container_path`.
-fn push_container_hidden(fi: &mut FileExportIndices, path: &[String]) {
+/// Where the names a hidden-value marker fears come from — the one question
+/// [`ProjectItems::opaque_hidden_value_modules`] turns on, asked at every
+/// marker push so a new marker kind cannot inherit an answer by accident.
+#[derive(Clone, Copy)]
+enum HiddenNames {
+    /// Names the file itself declares in value space (a value, case, active
+    /// pattern, `extern`). A paired signature gates every one of them: a
+    /// name absent from the `.fsi` text provably cannot be exposed
+    /// cross-file, so the per-name screen demotion covers this marker.
+    SigDeclared,
+    /// Names **borrowed** from elsewhere — an abbreviated type's static
+    /// members, a module alias's target. A signature can declare the
+    /// borrower without naming any of them, so no screen bounds this
+    /// marker and every consumer must stay conservative.
+    Borrowed,
+}
+
+/// Record `path` as a hidden-value module, filed by marker provenance.
+fn push_hidden(fi: &mut FileExportIndices, path: Vec<String>, names: HiddenNames) {
+    if matches!(names, HiddenNames::Borrowed) {
+        fi.opaque_hidden_value_modules.push(path.clone());
+    }
+    fi.modules_with_hidden_values.push(path);
+}
+
+/// [`push_hidden`] for `path`'s **container** (`path` minus its last
+/// segment) — the derivation of the `note_hidden_value_module` markers whose
+/// legacy path is `self.container_path`.
+fn push_container_hidden(fi: &mut FileExportIndices, path: &[String], names: HiddenNames) {
     if let Some((_, container)) = path.split_last() {
-        fi.modules_with_hidden_values.push(container.to_vec());
+        push_hidden(fi, container.to_vec(), names);
     }
 }
 
@@ -1273,7 +1305,7 @@ impl FileExportIndices {
                         if screen.is_some()
                             && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
                     {
-                        push_container_hidden(&mut fi, &decl.path);
+                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
                     }
                     Some(item_idx) => {
                         let it = &file.exports.items[*item_idx];
@@ -1315,7 +1347,7 @@ impl FileExportIndices {
                             anon,
                             "an Item decl with no ExportedItem must be anonymous-root"
                         );
-                        push_container_hidden(&mut fi, &decl.path);
+                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
                     }
                 },
                 ExportDeclKind::Type { info, auto_open } => {
@@ -1339,7 +1371,16 @@ impl FileExportIndices {
                     if *auto_open {
                         // A `[<AutoOpen>]` type marks its container hidden (fires
                         // under an anonymous root too — the legacy call is unguarded).
-                        push_container_hidden(&mut fi, &decl.path);
+                        // The names it publishes are the *type's* members, and an
+                        // abbreviation borrows them from the abbreviated type, so a
+                        // paired signature's text need not mention them: the marker
+                        // is unbounded even under a screen (fsc-probed 2026-07-25 —
+                        // `[<AutoOpen>] type Alias = Target.T` in both halves makes
+                        // a bare `asmOnly` after the open bind `Target.T.asmOnly`,
+                        // not the colliding referenced-assembly member; inherited
+                        // statics do not forward, but the decl does not distinguish
+                        // an abbreviation, so every auto-open type declines).
+                        push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
                     }
                 }
                 ExportDeclKind::Module {
@@ -1375,7 +1416,9 @@ impl FileExportIndices {
                 ExportDeclKind::ModuleAbbrev => {
                     if !anon {
                         fi.nested_module_paths.push(decl.path.clone());
-                        fi.modules_with_hidden_values.push(decl.path.clone());
+                        // Whatever the alias target holds — a signature that
+                        // declares the abbreviation names none of it.
+                        push_hidden(&mut fi, decl.path.clone(), HiddenNames::Borrowed);
                     }
                 }
                 ExportDeclKind::ExceptionTycon => {
@@ -1392,7 +1435,9 @@ impl FileExportIndices {
                     // The hidden marker is recorded unconditionally (the legacy
                     // `note_hidden_value_module` call is unguarded), on the
                     // container — which is `decl.path` itself for an `Extern`.
-                    fi.modules_with_hidden_values.push(decl.path.clone());
+                    // The name is the file's own: a signature must declare it as
+                    // a `val` for the `extern` to be reachable cross-file.
+                    push_hidden(&mut fi, decl.path.clone(), HiddenNames::SigDeclared);
                 }
                 ExportDeclKind::Namespace => {
                     fi.namespace_paths.push(decl.path.clone());
@@ -1405,7 +1450,7 @@ impl FileExportIndices {
                         if screen.is_some()
                             && matches!(file.exports.items[*item_idx].def, ExportDef::Own(_)) =>
                     {
-                        push_container_hidden(&mut fi, &decl.path);
+                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
                     }
                     Some(item_idx) => {
                         // Stage 3a: the AP case rides `value_exports` as a
@@ -1437,7 +1482,7 @@ impl FileExportIndices {
                     None => {
                         // Anonymous root: no cross-file handle, so keep today's
                         // conservative hidden-value marker for the container.
-                        push_container_hidden(&mut fi, &decl.path);
+                        push_container_hidden(&mut fi, &decl.path, HiddenNames::SigDeclared);
                     }
                 },
             }
@@ -1448,20 +1493,22 @@ impl FileExportIndices {
             // root must shadow conservatively (the generation bump) even
             // when the implementation's own decls produced no marker.
             for root in &screen.roots {
-                fi.modules_with_hidden_values.push(root.path.clone());
+                push_hidden(&mut fi, root.path.clone(), HiddenNames::SigDeclared);
             }
             // Signature-declared `[<AutoOpen>]` nested modules (conclusion 6)
             // — auto-open even when the implementation carries no attribute,
             // and hidden so the namespace fold's barrier fires for them.
             for path in &screen.auto_open_nested {
                 fi.auto_open_module_paths.push(path.clone());
-                fi.modules_with_hidden_values.push(path.clone());
+                push_hidden(&mut fi, path.clone(), HiddenNames::SigDeclared);
             }
         } else {
             // No signature bounds this file's surface, so nothing name-screens
-            // what its markers fear: they are opaque
-            // ([`ProjectItems::opaque_hidden_value_modules`]).
-            fi.opaque_hidden_value_modules = fi.modules_with_hidden_values.clone();
+            // what *any* of its markers fear: all of them are opaque
+            // ([`ProjectItems::opaque_hidden_value_modules`]) — a superset of
+            // the name-borrowing ones already pushed above.
+            fi.opaque_hidden_value_modules
+                .clone_from(&fi.modules_with_hidden_values);
         }
         fi
     }
