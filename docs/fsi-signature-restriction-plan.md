@@ -584,7 +584,18 @@ Each an FCS-differential-gated slice; the semantics are pinned by the sweep:
   nested module holding an auto-open abbreviation publishes the
   abbreviated type's statics at the outer `open`). That subtree is
   exactly the set of names the open can bring, which closes the
-  soundness argument instead of enumerating leak paths. Pinned by
+  soundness argument instead of enumerating leak paths. A **module
+  abbreviation** is not a borrowed-name producer: F# makes it
+  file-local, so no other file's `open` reaches the target through it
+  (fsc-probed) — treating one as opaque would cost the fall-through
+  across ordinary code. Two deliberate over-deferrals remain (codex
+  round 5, both sound): an *implementation-only* `[<AutoOpen>]` type
+  attribute still marks its container, though F# ignores it under a
+  signature — a cheap backstop against a gap in the screen's own
+  collection — and the subtree test does not check `[<AutoOpen>]`
+  *reachability*, so a borrowed marker under a non-auto-open nested
+  module blocks an ancestor's open. Tightening either re-opens the
+  enumerate-the-leak-paths obligation this design exists to avoid. Pinned by
   `an_unscreened_fragment_blocks_the_open_fold_fall_through`,
   `an_auto_open_type_in_a_signatured_file_blocks_the_fall_through` and
   `a_signature_only_auto_open_type_blocks_the_fall_through`; swept

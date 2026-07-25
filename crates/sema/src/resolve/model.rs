@@ -1398,6 +1398,14 @@ impl FileExportIndices {
                         // not the colliding referenced-assembly member; inherited
                         // statics do not forward, but the decl does not distinguish
                         // an abbreviation, so every auto-open type declines).
+                        //
+                        // Under a screen the *signature's* verdict is what FCS
+                        // honours, and it arrives via
+                        // [`SigScreen::auto_open_type_containers`]; this marker
+                        // then only adds an over-defer for an attribute F#
+                        // ignores (impl-only), which is kept deliberately as a
+                        // backstop against a gap in that collection — the class
+                        // that produced two findings in this slice's review.
                         push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
                     }
                 }
@@ -1434,9 +1442,15 @@ impl FileExportIndices {
                 ExportDeclKind::ModuleAbbrev => {
                     if !anon {
                         fi.nested_module_paths.push(decl.path.clone());
-                        // Whatever the alias target holds — a signature that
-                        // declares the abbreviation names none of it.
-                        push_hidden(&mut fi, decl.path.clone(), HiddenNames::Borrowed);
+                        // A module abbreviation is **file-local**: no other
+                        // file's `open` can see the alias, let alone reach the
+                        // target's contents through it (fsc-probed — an
+                        // outside open past one still binds the colliding
+                        // assembly member), so it borrows nothing across the
+                        // boundary this classification is about. The same-file
+                        // half is handled at the open itself, which
+                        // canonicalises a resolvable alias to its target.
+                        push_hidden(&mut fi, decl.path.clone(), HiddenNames::SigDeclared);
                     }
                 }
                 ExportDeclKind::ExceptionTycon => {

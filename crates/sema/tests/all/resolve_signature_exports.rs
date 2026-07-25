@@ -2001,6 +2001,39 @@ fn an_auto_open_type_in_a_signatured_file_blocks_the_fall_through() {
     );
 }
 
+/// A **module abbreviation** inside the signatured module does not block
+/// the fall-through: F# module abbreviations are file-local, so no other
+/// file's `open` can see the alias — let alone the alias target's contents
+/// — and the marker it leaves is bounded like the file's own declarations.
+/// fsc-probed 2026-07-25 (`module HiddenAlias = Target` beside the sig's
+/// `val shown`): the bare `asmOnly` after an outside `open` type-checks as
+/// the RefLib's `int`, not `Target.asmOnly : string`. Codex round 5 P2 —
+/// file-local aliases are common, so treating one as a borrowed-name
+/// producer would cost the fall-through across ordinary code.
+#[test]
+fn a_file_local_module_abbreviation_keeps_the_fall_through() {
+    let files = [
+        (
+            "/p/Target.fs",
+            "module Target\n\nlet asmOnly = \"from-target\"\n",
+        ),
+        ("/p/A.fsi", "module ProbeNs.Shared\n\nval shown: int\n"),
+        (
+            "/p/A.fs",
+            "module ProbeNs.Shared\n\nmodule HiddenAlias = Target\n\nlet shown = 1\n",
+        ),
+        (
+            "/p/Use.fs",
+            "module Use\n\nopen ProbeNs.Shared\n\nlet v = asmOnly\n",
+        ),
+    ];
+    let proj = resolve_project_files(&project(&files), &reflib_env());
+    assert_member(
+        res_at(&proj, &files, 3, "asmOnly"),
+        "assembly-only name past a file-local module abbreviation",
+    );
+}
+
 /// Borrowed names reach the open site through the opened module's
 /// **auto-open descendants** too, so the marker that blocks the pre-fold
 /// bump need not sit on the opened path itself: an `[<AutoOpen>]` nested
