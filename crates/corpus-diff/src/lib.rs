@@ -2474,7 +2474,9 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
                                 if canonical_assembly(&actual.assembly)
                                     == canonical_assembly(&expected.assembly)
-                                    && assembly_full_name_agrees(
+                                    && assembly_full_name_agrees_for(
+                                        &loaded.assembly_env,
+                                        res,
                                         &actual.full_name,
                                         &expected.full_name,
                                     )
@@ -2778,6 +2780,202 @@ fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     unquote(actual) == unquote(expected)
 }
 
+/// [`assembly_full_name_agrees`] against an oracle name whose **generic-arity
+/// marker** our own resolution certifies — see [`certified_expected`]. An
+/// uncertified name is compared exactly as given.
+fn assembly_full_name_agrees_for(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &str,
+    expected: &str,
+) -> bool {
+    let certified = certified_expected(env, res, actual, expected);
+    assembly_full_name_agrees(actual, certified.as_deref().unwrap_or(expected))
+}
+
+/// The oracle's full name with a **certified** generic-arity marker removed, or
+/// `None` when there is no marker or the certification refuses it.
+///
+/// FCS renders a member's enclosing generic type with its type arguments —
+/// `MethodReturnType<_>.Returns` from `GetDisplayName(withUnderscoreTypars)`,
+/// `ImmutableArray<WoofWare.PawPrint.ConcreteTypeHandle>.Empty` from
+/// `NicePrint.outputType` on an instantiated one — while our `AssemblyEnv` full
+/// names carry no arity at all. Left alone, a *correct* resolution scores as a
+/// divergence in both directions (518 of the 530 measured on
+/// `WoofWare.PawPrint`'s main library).
+///
+/// Stripping the marker unconditionally is not available: a type and its
+/// companion module render the same name, and `System.Collections.Immutable`
+/// ships a non-generic `ImmutableArray` beside `ImmutableArray<'T>` — so blind
+/// stripping would let the *wrong* member of a candidate set score as
+/// agreement, the exact failure the head-choice differential exists to catch.
+///
+/// So the marker is elided only where our own resolution witnesses that the
+/// decorated segment is the same declaration: the marked segment must name one
+/// of the entities in the enclosing chain **we** resolved, that entity must not
+/// be a module (a module is never generic), and its generic parameter count
+/// must equal the marker's top-level argument count. Every other shape — a
+/// marker on a segment we resolved nothing for, two markers, an argument list
+/// we cannot read — is refused, leaving the site the divergence it is today.
+///
+/// The chain rather than just the last entity, because the marker often sits on
+/// an *encloser*: a union case with a field is a type nested in its union, so
+/// `MethodReturnType<_>.Returns` decorates the union while the entity we
+/// resolved is the case's carrier below it.
+fn certified_expected(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &str,
+    expected: &str,
+) -> Option<String> {
+    let expected_segments = name_segments(expected);
+    let MarkerScan::One { index, args } = scan_marker(&expected_segments) else {
+        return None;
+    };
+    // Where the chain's names sit in *our* rendering: a full name is the
+    // outermost entity's namespace, one segment per chain entry, and — for a
+    // member — the member's own name last.
+    let (chain, trailing) = match res {
+        Resolution::Entity(handle) => (env.enclosing_chain(handle), 0),
+        Resolution::Member { parent, .. } => (env.enclosing_chain(parent), 1),
+        Resolution::Local(_)
+        | Resolution::Item(_)
+        | Resolution::Deferred(_)
+        | Resolution::Unresolved => return None,
+    };
+    let start = env.entity(*chain.first()?).namespace.len();
+    // A rendering we cannot line up with the chain certifies nothing.
+    if name_segments(actual).len() != start + chain.len() + trailing {
+        return None;
+    }
+    let entity = *chain.get(index.checked_sub(start)?)?;
+    if env.is_module(entity) || env.entity(entity).generic_parameters.len() != args {
+        return None;
+    }
+    let mut segments = expected_segments;
+    let marked = segments[index];
+    let open = unquoted_angle_open(marked).expect("a marked segment opens its list");
+    segments[index] = &marked[..open];
+    Some(segments.join("."))
+}
+
+/// A rendered full name's dot-separated segments.
+///
+/// The dots *inside* a generic argument list (`ImmutableDictionary<A.B,C.D>`)
+/// or a double-backtick-quoted identifier (`` ``a.b`` ``) are part of a
+/// segment, not separators between two.
+fn name_segments(name: &str) -> Vec<&str> {
+    let mut segments = Vec::new();
+    let mut depth = 0usize;
+    let mut quoted = false;
+    let mut start = 0usize;
+    let bytes = name.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'`' && i + 1 < bytes.len() && bytes[i + 1] == b'`' {
+            quoted = !quoted;
+            i += 2;
+            continue;
+        }
+        if !quoted {
+            match bytes[i] {
+                b'<' => depth += 1,
+                b'>' => depth = depth.saturating_sub(1),
+                b'.' if depth == 0 => {
+                    segments.push(&name[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    segments.push(&name[start..]);
+    segments
+}
+
+/// What [`certified_expected`] found when it looked for a generic-arity marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerScan {
+    /// No segment carries an argument list; the name is compared as given.
+    None,
+    /// Exactly one segment carries one, holding `args` top-level arguments.
+    One { index: usize, args: usize },
+    /// A shape the certification declines to read: more than one marked
+    /// segment, an argument list that is not a trailing `<…>`, an empty one, or
+    /// `NicePrint`'s shortened `<...>` static-parameter form. Refusing keeps
+    /// the comparison exact rather than guessing at an arity.
+    Unsupported,
+}
+
+fn scan_marker(segments: &[&str]) -> MarkerScan {
+    let mut found = MarkerScan::None;
+    for (index, segment) in segments.iter().enumerate() {
+        let Some(open) = unquoted_angle_open(segment) else {
+            continue;
+        };
+        if found != MarkerScan::None {
+            return MarkerScan::Unsupported;
+        }
+        if !segment.ends_with('>') {
+            return MarkerScan::Unsupported;
+        }
+        let body = &segment[open + 1..segment.len() - 1];
+        match top_level_argument_count(body) {
+            Some(args) => found = MarkerScan::One { index, args },
+            None => return MarkerScan::Unsupported,
+        }
+    }
+    found
+}
+
+/// The byte offset of the `<` that opens a segment's argument list, ignoring
+/// any inside a quoted identifier.
+fn unquoted_angle_open(segment: &str) -> Option<usize> {
+    let bytes = segment.as_bytes();
+    let mut quoted = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'`' && i + 1 < bytes.len() && bytes[i + 1] == b'`' {
+            quoted = !quoted;
+            i += 2;
+            continue;
+        }
+        if !quoted && bytes[i] == b'<' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// How many arguments an argument list's body holds, counting the commas that
+/// separate *its own* arguments rather than a nested list's, a tuple's
+/// parentheses' or an array rank's. `None` for a body no count can be read
+/// from: empty, unbalanced, or the literal `...` NicePrint writes when it
+/// shortens a static-parameter list.
+fn top_level_argument_count(body: &str) -> Option<usize> {
+    if body.is_empty() || body == "..." {
+        return None;
+    }
+    let mut depth = 0isize;
+    let mut args = 1usize;
+    for ch in body.chars() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            ',' if depth == 0 => args += 1,
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(args)
+}
+
 fn assembly_resolution_confirms_decl(
     env: &AssemblyEnv,
     res: Resolution,
@@ -2787,17 +2985,18 @@ fn assembly_resolution_confirms_decl(
     if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
         return false;
     }
+    // The prefix rule below compares against a name the oracle may have
+    // rendered with an arity marker, so it runs on the certified form too.
+    let certified = certified_expected(env, res, &actual.full_name, &expected.full_name);
+    let expected_full = certified.as_deref().unwrap_or(&expected.full_name);
     match res {
         Resolution::Entity(_) => {
-            assembly_full_name_agrees(&actual.full_name, &expected.full_name)
-                || expected
-                    .full_name
+            assembly_full_name_agrees(&actual.full_name, expected_full)
+                || expected_full
                     .strip_prefix(&actual.full_name)
                     .is_some_and(|tail| tail.starts_with('.'))
         }
-        Resolution::Member { .. } => {
-            assembly_full_name_agrees(&actual.full_name, &expected.full_name)
-        }
+        Resolution::Member { .. } => assembly_full_name_agrees(&actual.full_name, expected_full),
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)
@@ -3752,6 +3951,9 @@ fn collect_fsprojs_into(dir: &Path, collection: &mut FsprojCollection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use borzoi_assembly::EntityKind;
+    use borzoi_sema::EntityHandle;
+    use proptest::prelude::*;
     use std::ffi::OsString;
 
     fn bps(value: u16) -> BasisPoints {
@@ -3883,6 +4085,468 @@ mod tests {
             "Microsoft.FSharp.Collections.Seq",
             "Microsoft.FSharp.Collections.List"
         ));
+    }
+
+    /// A rendered name splits on the dots that separate *segments* — not on the
+    /// dots inside a generic argument list, nor inside a quoted identifier.
+    #[test]
+    fn name_segments_split_only_at_segment_dots() {
+        assert_eq!(name_segments("A.B.C"), vec!["A", "B", "C"]);
+        assert_eq!(
+            name_segments("System.Collections.Immutable.ImmutableArray<A.B.C>.Empty"),
+            vec![
+                "System",
+                "Collections",
+                "Immutable",
+                "ImmutableArray<A.B.C>",
+                "Empty"
+            ]
+        );
+        assert_eq!(
+            name_segments("M.ImmutableDictionary<A.B,C.D<E.F>>.Empty"),
+            vec!["M", "ImmutableDictionary<A.B,C.D<E.F>>", "Empty"]
+        );
+        // A double-backtick-quoted identifier may contain a dot or an angle
+        // bracket; neither is structure.
+        assert_eq!(name_segments("M.``a.b``.c"), vec!["M", "``a.b``", "c"]);
+        assert_eq!(name_segments("M.``a<b``"), vec!["M", "``a<b``"]);
+    }
+
+    /// The marker scan reports *where* the single generic argument list sits and
+    /// how many top-level arguments it holds — the two facts the certification
+    /// needs. Anything it cannot read that way is refused, not guessed at.
+    #[test]
+    fn marker_scan_counts_top_level_arguments_only() {
+        assert_eq!(scan_marker(&name_segments("M.T.Member")), MarkerScan::None);
+        assert_eq!(
+            scan_marker(&name_segments("M.T<_>.Member")),
+            MarkerScan::One { index: 1, args: 1 }
+        );
+        assert_eq!(
+            scan_marker(&name_segments("M.T<_,_>.Member")),
+            MarkerScan::One { index: 1, args: 2 }
+        );
+        // Commas inside a nested argument belong to that argument.
+        assert_eq!(
+            scan_marker(&name_segments("M.T<A.B<C,D>>.Member")),
+            MarkerScan::One { index: 1, args: 1 }
+        );
+        assert_eq!(
+            scan_marker(&name_segments("M.T<A,B<C,D>>.Member")),
+            MarkerScan::One { index: 1, args: 2 }
+        );
+        // A tuple argument renders with `*`, a function one with `->`; neither
+        // is a separator, and a parenthesised or array argument keeps its own
+        // brackets' commas to itself.
+        assert_eq!(
+            scan_marker(&name_segments("M.T<(A * B),C[,]>.Member")),
+            MarkerScan::One { index: 1, args: 2 }
+        );
+        // Two marked segments, an empty list, and NicePrint's shortened
+        // static-parameter form are all beyond what the certification can read.
+        assert_eq!(
+            scan_marker(&name_segments("M.T<_>.U<_>.Member")),
+            MarkerScan::Unsupported
+        );
+        assert_eq!(
+            scan_marker(&name_segments("M.T<>.Member")),
+            MarkerScan::Unsupported
+        );
+        assert_eq!(
+            scan_marker(&name_segments("M.T<...>.Member")),
+            MarkerScan::Unsupported
+        );
+        // A `<` inside a quoted identifier is part of the name, so there is no
+        // marker at all and the comparison stays the exact one.
+        assert_eq!(scan_marker(&name_segments("M.``a<b``")), MarkerScan::None);
+        // A `<` outside one that does not open a *trailing* list is refused
+        // rather than read as an arity.
+        assert_eq!(
+            scan_marker(&name_segments("M.T<A>x")),
+            MarkerScan::Unsupported
+        );
+    }
+
+    /// One `Demo.Holder` name held three ways at once — the generic type, a
+    /// same-named non-generic type, and the companion module — plus a
+    /// two-parameter `Demo.Pair` and a `Demo.Outer<'a>.Inner`. This is the
+    /// candidate set a marker has to be read *against*: every refusal the
+    /// certification makes has a witness here.
+    fn marker_fixture_env() -> AssemblyEnv {
+        let generic_holder = fixture_entity("Holder", EntityKind::Class, 1, &["Empty"]);
+        let plain_holder = fixture_entity("Holder", EntityKind::Class, 0, &["Empty"]);
+        let module_holder = fixture_entity("Holder", EntityKind::Module, 0, &["Empty"]);
+        let pair = fixture_entity("Pair", EntityKind::Class, 2, &["Empty"]);
+        let mut outer = fixture_entity("Outer", EntityKind::Class, 1, &[]);
+        // A nested type re-declares its encloser's type parameters in ECMA-335,
+        // so `Inner` carries arity 1 without spelling one of its own.
+        outer.nested_types = vec![fixture_entity("Inner", EntityKind::Class, 1, &["Empty"])];
+        AssemblyEnv::from_entities(vec![
+            generic_holder,
+            plain_holder,
+            module_holder,
+            pair,
+            outer,
+        ])
+    }
+
+    fn fixture_entity(
+        name: &str,
+        kind: EntityKind,
+        arity: usize,
+        fields: &[&str],
+    ) -> borzoi_assembly::Entity {
+        borzoi_assembly::Entity {
+            assembly: borzoi_assembly::AssemblyIdentity {
+                name: "Demo".to_string(),
+                version: borzoi_assembly::Version {
+                    major: 1,
+                    minor: 0,
+                    build: 0,
+                    revision: 0,
+                },
+                public_key_token: None,
+            },
+            namespace: vec!["Demo".to_string()],
+            name: name.to_string(),
+            kind,
+            access: borzoi_assembly::Access::Public,
+            is_sealed: false,
+            generic_parameters: (0..arity).map(|i| type_parameter(i)).collect(),
+            base_type: None,
+            interfaces: vec![],
+            members: fields.iter().map(|f| static_field(f)).collect(),
+            skipped_members: vec![],
+            method_def_tokens: vec![],
+            nested_types: vec![],
+            is_readonly: false,
+            is_byref_like: false,
+            is_struct: false,
+            is_auto_open: false,
+            is_require_qualified_access: false,
+            is_no_equality: false,
+            is_no_comparison: false,
+            is_structural_equality: false,
+            is_structural_comparison: false,
+            is_allow_null_literal: false,
+            obsolete: None,
+            experimental: None,
+            default_member: None,
+            compiler_feature_required: vec![],
+            source_name: None,
+            extension_member_names: vec![],
+            union_case_names: None,
+            static_extension_member_names: Vec::new(),
+            is_extension_container: false,
+            custom_attrs: vec![],
+            abbreviation_target: None,
+            definition_range: None,
+        }
+    }
+
+    fn type_parameter(index: usize) -> borzoi_assembly::TypeParameter {
+        borzoi_assembly::TypeParameter {
+            name: format!("T{index}"),
+            variance: borzoi_assembly::Variance::Invariant,
+            reference_type_constraint: false,
+            value_type_constraint: false,
+            default_constructor_constraint: false,
+            is_unmanaged: false,
+            allows_ref_struct: false,
+            nullability: borzoi_assembly::Nullability::Oblivious,
+            type_constraints: vec![],
+        }
+    }
+
+    fn static_field(name: &str) -> borzoi_assembly::Member {
+        borzoi_assembly::Member::Field(borzoi_assembly::Field {
+            name: name.to_string(),
+            access: borzoi_assembly::Access::Public,
+            ty: borzoi_assembly::TypeRef::Primitive(borzoi_assembly::Primitive::I4),
+            is_static: true,
+            is_init_only: false,
+            is_volatile: false,
+            is_literal: false,
+            is_required: false,
+            compiler_feature_required: vec![],
+            nullability: borzoi_assembly::Nullability::Oblivious,
+            custom_attrs: vec![],
+        })
+    }
+
+    /// The handle for `Demo.<name>` at `arity`, as a module or as a type.
+    fn fixture_handle(env: &AssemblyEnv, name: &str, arity: usize, module: bool) -> EntityHandle {
+        env.public_entities_named(&["Demo".to_string()], name)
+            .into_iter()
+            .find(|h| {
+                env.entity(*h).generic_parameters.len() == arity && env.is_module(*h) == module
+            })
+            .unwrap_or_else(|| panic!("Demo.{name} at arity {arity} (module: {module})"))
+    }
+
+    /// A `Resolution::Member` naming `member` on `Demo.<name>`, with the name we
+    /// would render for it.
+    fn fixture_member(
+        env: &AssemblyEnv,
+        name: &str,
+        arity: usize,
+        module: bool,
+        member: &str,
+    ) -> (Resolution, String) {
+        let parent = fixture_handle(env, name, arity, module);
+        let idx = env
+            .member(parent, member)
+            .unwrap_or_else(|| panic!("member {member} on Demo.{name}"));
+        let res = Resolution::Member { parent, idx };
+        let decl = assembly_resolution_decl(env, res);
+        (res, decl.full_name)
+    }
+
+    /// A marker is elided only where *our* resolution certifies the decorated
+    /// segment names the same declaration: a non-module entity whose generic
+    /// parameter count is the marker's argument count. FCS renders the
+    /// enclosing type either with underscore typars (`Holder<_>`) or fully
+    /// instantiated (`Holder<A.B>`); both say arity 1.
+    #[test]
+    fn a_certified_marker_is_elided_at_the_declaring_segment() {
+        let env = marker_fixture_env();
+        let (res, ours) = fixture_member(&env, "Holder", 1, false, "Empty");
+        assert_eq!(ours, "Demo.Holder.Empty");
+        for expected in [
+            "Demo.Holder<_>.Empty",
+            "Demo.Holder<Demo.Thing>.Empty",
+            "Demo.Holder<Demo.Pair<A,B>>.Empty",
+        ] {
+            assert_eq!(
+                certified_expected(&env, res, &ours, expected).as_deref(),
+                Some("Demo.Holder.Empty"),
+                "{expected}"
+            );
+        }
+        // The two-parameter type certifies a two-argument marker, and nothing else.
+        let (pair_res, pair_ours) = fixture_member(&env, "Pair", 2, false, "Empty");
+        assert_eq!(
+            certified_expected(&env, pair_res, &pair_ours, "Demo.Pair<_,_>.Empty").as_deref(),
+            Some("Demo.Pair.Empty")
+        );
+        assert_eq!(
+            certified_expected(&env, pair_res, &pair_ours, "Demo.Pair<_>.Empty"),
+            None
+        );
+    }
+
+    /// The pin the task asks for: a companion module's member must stay a
+    /// divergence against a marked name. A module has no type parameters, so it
+    /// can never certify a marker — which is exactly why stripping is done
+    /// against our resolution rather than against the string.
+    #[test]
+    fn a_module_never_certifies_a_marker() {
+        let env = marker_fixture_env();
+        let (module_res, module_ours) = fixture_member(&env, "Holder", 0, true, "Empty");
+        assert_eq!(module_ours, "Demo.Holder.Empty");
+        assert_eq!(
+            certified_expected(&env, module_res, &module_ours, "Demo.Holder<_>.Empty"),
+            None
+        );
+        // Nor does a same-named *type* of the wrong arity — `ImmutableArray`
+        // and `ImmutableArray<'T>` are both real, and only one has `Empty`.
+        let (plain_res, plain_ours) = fixture_member(&env, "Holder", 0, false, "Empty");
+        assert_eq!(
+            certified_expected(&env, plain_res, &plain_ours, "Demo.Holder<_>.Empty"),
+            None
+        );
+    }
+
+    /// An *encloser* of the entity we resolved certifies a marker on its own
+    /// segment — the shape a union case takes, since a case with a field is a
+    /// type nested in its (generic) union. Each segment is certified by the
+    /// entity it names, so the arity checked is that entity's.
+    #[test]
+    fn an_enclosing_entity_certifies_the_marker_on_its_own_segment() {
+        let env = marker_fixture_env();
+        let outer = fixture_handle(&env, "Outer", 1, false);
+        let inner = env
+            .children(outer)
+            .iter()
+            .copied()
+            .find(|h| env.entity(*h).name == "Inner")
+            .expect("Demo.Outer.Inner");
+        let idx = env.member(inner, "Empty").expect("Inner.Empty");
+        let res = Resolution::Member { parent: inner, idx };
+        let ours = assembly_resolution_decl(&env, res).full_name;
+        assert_eq!(ours, "Demo.Outer.Inner.Empty");
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Outer<_>.Inner.Empty").as_deref(),
+            Some("Demo.Outer.Inner.Empty")
+        );
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Outer.Inner<_>.Empty").as_deref(),
+            Some("Demo.Outer.Inner.Empty")
+        );
+        // Neither encloser has two type parameters, so neither certifies this.
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Outer<_,_>.Inner.Empty"),
+            None
+        );
+    }
+
+    /// A marker on a segment our resolution accounts for nothing at — a
+    /// *namespace* segment, or a name whose shape does not line up with the
+    /// chain at all — is refused rather than guessed at.
+    #[test]
+    fn a_marker_outside_the_resolved_chain_is_refused() {
+        let env = marker_fixture_env();
+        let (res, ours) = fixture_member(&env, "Holder", 1, false, "Empty");
+        // `Demo` is a namespace: we resolved no entity for that segment.
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo<_>.Holder.Empty"),
+            None
+        );
+        // A deeper oracle name than our own rendering has: the segments cannot
+        // be lined up, so no segment is certified.
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Extra.Demo.Holder<_>.Empty"),
+            None
+        );
+    }
+
+    /// A use of the *type* certifies a marker on the last segment — including
+    /// when the oracle names a member below it, which the reverse pass compares
+    /// by prefix.
+    #[test]
+    fn an_entity_resolution_certifies_the_marker_on_its_own_segment() {
+        let env = marker_fixture_env();
+        let handle = fixture_handle(&env, "Holder", 1, false);
+        let res = Resolution::Entity(handle);
+        let ours = assembly_resolution_decl(&env, res).full_name;
+        assert_eq!(ours, "Demo.Holder");
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Holder<_>").as_deref(),
+            Some("Demo.Holder")
+        );
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Holder<_>.Empty").as_deref(),
+            Some("Demo.Holder.Empty")
+        );
+        assert!(assembly_resolution_confirms_decl(
+            &env,
+            res,
+            &AssemblyDecl {
+                assembly: "Demo".to_string(),
+                full_name: "Demo.Holder<_>.Empty".to_string(),
+            }
+        ));
+        // …but not one whose arity contradicts ours.
+        assert!(!assembly_resolution_confirms_decl(
+            &env,
+            res,
+            &AssemblyDecl {
+                assembly: "Demo".to_string(),
+                full_name: "Demo.Holder<_,_>.Empty".to_string(),
+            }
+        ));
+    }
+
+    /// An unmarked name is compared exactly as before: normalisation happens
+    /// only when there is a marker to certify.
+    #[test]
+    fn an_unmarked_name_is_left_alone() {
+        let env = marker_fixture_env();
+        let (res, ours) = fixture_member(&env, "Holder", 1, false, "Empty");
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Holder.Empty"),
+            None
+        );
+        assert_eq!(
+            certified_expected(&env, res, &ours, "Demo.Other.Empty"),
+            None
+        );
+    }
+
+    /// One declaration in the generated candidate set: `Demo.<name>.<member>`
+    /// held by an entity of `arity` parameters, as a module or a type.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct Decl {
+        name: char,
+        arity: usize,
+        module: bool,
+        member: char,
+    }
+
+    fn decl_strategy() -> impl Strategy<Value = Decl> {
+        ("[A-C]", 0_usize..3, any::<bool>(), "[x-y]").prop_map(|(name, arity, module, member)| {
+            Decl {
+                name: name.chars().next().expect("one-character name"),
+                // A module is never generic, so the pair (module, arity > 0) is
+                // not a state the oracle can render.
+                arity: if module { 0 } else { arity },
+                module,
+                member: member.chars().next().expect("one-character member"),
+            }
+        })
+    }
+
+    /// How FCS renders `decl`'s enclosing type: with underscore typars when
+    /// `instantiate` is false, else with argument types that carry their own
+    /// dots, commas and nesting — the two forms measured on real projects.
+    fn fcs_rendering(decl: &Decl, instantiate: bool) -> String {
+        if decl.arity == 0 {
+            return format!("Demo.{}.{}", decl.name, decl.member);
+        }
+        let args: Vec<&str> = if instantiate {
+            ["Demo.Pair<A.B,C>", "Microsoft.FSharp.Core.int", "(A * B)"]
+                .into_iter()
+                .take(decl.arity)
+                .collect()
+        } else {
+            std::iter::repeat_n("_", decl.arity).collect()
+        };
+        format!("Demo.{}<{}>.{}", decl.name, args.join(","), decl.member)
+    }
+
+    proptest! {
+        /// The certification's whole job is to elide a *rendering* difference
+        /// without ever equating two different declarations. Stated as a
+        /// reference formula over the generated candidate set: a marked oracle
+        /// name agrees with our resolution exactly when both name the same
+        /// `Demo.<name>.<member>` **and** our entity is a non-module of the
+        /// marker's arity. When the oracle writes no marker (arity 0) the
+        /// comparison is the pre-existing exact one — a name alone cannot tell
+        /// an arity-0 type from its companion module, and this change does not
+        /// pretend otherwise.
+        #[test]
+        fn certification_never_equates_distinct_declarations(
+            ours in decl_strategy(),
+            theirs in decl_strategy(),
+            instantiate in any::<bool>(),
+        ) {
+            let entity = fixture_entity(
+                &ours.name.to_string(),
+                if ours.module { EntityKind::Module } else { EntityKind::Class },
+                ours.arity,
+                &[&ours.member.to_string()],
+            );
+            let env = AssemblyEnv::from_entities(vec![entity]);
+            let parent = fixture_handle(&env, &ours.name.to_string(), ours.arity, ours.module);
+            let idx = env.member(parent, &ours.member.to_string()).expect("planted member");
+            let res = Resolution::Member { parent, idx };
+            let our_name = assembly_resolution_decl(&env, res).full_name;
+
+            let expected = fcs_rendering(&theirs, instantiate);
+            let same_declaration = ours.name == theirs.name && ours.member == theirs.member;
+            let want = if theirs.arity == 0 {
+                same_declaration
+            } else {
+                same_declaration && ours.arity == theirs.arity && !ours.module
+            };
+            prop_assert_eq!(
+                assembly_full_name_agrees_for(&env, res, &our_name, &expected),
+                want,
+                "ours {:?} vs oracle {}",
+                ours,
+                expected
+            );
+        }
     }
 
     /// FCS's `rangeStartup` sentinel (`range.fs`: `startupFileName = "startup"`)

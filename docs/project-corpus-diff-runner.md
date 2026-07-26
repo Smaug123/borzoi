@@ -215,6 +215,22 @@ was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
 (`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the
 comparison here stays exact.
 
+One more rendering difference is normalised: FCS writes a member's **enclosing
+generic type with its type arguments** — `MethodReturnType<_>.Returns`,
+`ImmutableArray<WoofWare.PawPrint.ConcreteTypeHandle>.Empty` — while our full
+names carry no arity at all. The marker is *not* stripped on sight: a type and
+its companion module render the same name, and `System.Collections.Immutable`
+ships a non-generic `ImmutableArray` beside `ImmutableArray<'T>`, so blind
+stripping would score the wrong member of a candidate set as agreement. Instead
+the marker is elided only where our own resolution certifies it
+(`certified_expected`): it must decorate the segment naming the entity **we**
+resolved, that entity must not be a module, and its generic parameter count must
+equal the marker's top-level argument count. Anything else — a marker on another
+segment, two markers, an argument list that cannot be counted — is refused and
+the site stays a divergence. That the argument count *is* the declaring type's
+arity is pinned against the real oracle by
+`crates/sema/tests/all/companion_head_diff.rs`.
+
 The default soundness gate allows zero divergences.
 
 ## Current Failure Gates

@@ -165,6 +165,7 @@ dependencies = [
  "borzoi-spawn",
  "borzoi-stats",
  "lsp-types",
+ "proptest",
  "rowan",
  "serde",
  "serde_json",

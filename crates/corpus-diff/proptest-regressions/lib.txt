@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc efef9447695ea852b7b2d1156404f42dcbb89ca381aa263c623423672a08dd87 # shrinks to ours = Decl { name: 'C', arity: 0, module: false, member: 'y' }, theirs = Decl { name: 'C', arity: 1, module: false, member: 'y' }, instantiate = false
