@@ -90,6 +90,43 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // `open`s, which come later still, out-rank it. Order-independent, and not
     // specific to manifest surfaces: a bare `Option` from inside a namespace
     // declaring its own `Option` binds that one, not FSharp.Core's.
+    //
+    // **Reordering the walk alone does not fix this, and the cost was
+    // measured.** Moving the enclosing namespace above the implicit opens
+    // clears all six rows below and introduces no new divergence — and costs
+    // `resolve_real_project_diff` 617 assembly resolutions on
+    // WoofWare.PawPrint and 618 on WoofWare.PawPrint.Domain, every one a
+    // deferral where FCS binds. The reason is that the walk's *shadow risks*
+    // are keyed by the namespace prefix they live in but take their **rank**
+    // from wherever that prefix happens to sit in the walk, so moving a tier
+    // moves every veto attached to it. Four separate models are entangled with
+    // the ladder, each measured on the way down:
+    //
+    //  1. `self_module_shadow_only` recognises a self-qualifier only in its
+    //     *as-written* spelling, so the same reference reached under the
+    //     enclosing-namespace prefix (`N.List.rev` for a written `List.rev`)
+    //     is classified `ProjectShadowed` and preempts the opens the
+    //     `module List` augmentation idiom relies on.
+    //  2. `unmodelled_type_shadow_at`'s project-`[<AutoOpen>]` half is
+    //     name-blind and `Preemptive`, so once the enclosing namespace is
+    //     above the implicit opens it defers *every* bare annotation in any
+    //     file whose namespace holds an auto-open module. Narrowing it by
+    //     `project_type_named` — the file-global `TypeDefn` pre-scan already
+    //     knows every project type's name — recovers 586 of Domain's 618.
+    //  3. The **value** path cannot model FCS's per-member merge of a project
+    //     module with an assembly namespace, so a project `module List` in the
+    //     enclosing namespace preempts `Microsoft.FSharp.Collections`. 580 of
+    //     PawPrint's 617; restricting the reorder to type position leaves 37.
+    //  4. Those last 37 are all a bare `Result` vetoed by
+    //     `auto_open_modules_in_namespace_shadow_type_named` at the enclosing
+    //     prefix — but an assembly `[<AutoOpen>]` module enters scope at
+    //     assembly-import time, *below* the enclosing namespace, so consulting
+    //     it there is the rank/keying conflation in its purest form.
+    //
+    // So the fix is to give each shadow risk an explicit rank instead of
+    // inheriting the prefix's position, and only then move the tier. Until
+    // that lands these rows stay, and a reorder that clears them without
+    // addressing (1)–(4) trades a rare wrong target for hundreds of lost ones.
     (
         "TEnNs/contributor-first",
         "implicit opens outrank the enclosing namespace in our ladder; FCS puts them below it",
