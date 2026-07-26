@@ -890,3 +890,25 @@ type SoloSuffixShadow() =
 // (fsi-verified).
 type GenCompanionShadow() =
     member _.Decoy = 12
+
+// ===== Dotted-head shadowing by an `[<AutoOpen>]` module =====
+//
+// A namespace holding BOTH a direct `module DottedHead` with a nested type and
+// an `[<AutoOpen>]` module whose own nested `DottedHead` has a same-named
+// nested type. For a file in this namespace, `DottedHead.Leaf` binds the
+// AUTO-OPEN module's nested type, not the namespace's direct one — the
+// auto-open surface out-ranks the namespace's direct members exactly as it
+// does for a single-segment annotation (fsc-verified with a two-project probe:
+// `x.FromAuto` compiles, `x.Direct` is FS0039).
+//
+// So a shadow check keyed only on single-segment paths misses this: the head of
+// a dotted path is a bare name too, and it is where the path roots.
+namespace DottedShadow
+
+module DottedHead =
+    type Leaf = { Direct : int }
+
+[<AutoOpen>]
+module DottedAuto =
+    module DottedHead =
+        type Leaf = { FromAuto : int }
