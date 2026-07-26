@@ -115,14 +115,29 @@ const EXEMPT: &[Exemption] = &[
     // The .NET Framework targeting packs ship two shapes the reader refuses
     // whole. Both are real gaps of the same kind #199 fixed — a per-item
     // degradation propagated as a whole-image error — but they are reachable
-    // only from a net4x target, so whether to close them waits on whether
-    // borzoi supports net4x at all. Tracked separately; exempt, not forgotten.
+    // only from a **net4x** target, which borzoi does not support.
     //
-    // Pinned to the exact assemblies, one per pack version, because that is
-    // what the justification claims. Any *other* assembly refused for either
-    // cause — one with a linked `ManifestResource`, another `mscorlib.dll` from
-    // a .NET Core pack — is a new loss and must fail the gate. A pack version
-    // not listed here has not been looked at, and unvetted should be loud.
+    // Unsupported means "will not be invested in", not "refused": nothing
+    // declines a `net472` project today — `select_target_framework` serves a
+    // declared one, and `NuGetFramework::is_resolver_project_framework` accepts
+    // `.NETFramework` — so these are accepted *degradation on an unsupported
+    // target*, not gaps that stopped existing. Anyone opening a net4x project
+    // gets less of it, and that is the trade being made here.
+    //
+    // Nothing follows for the TFM vocabulary either way: parsing `net472`, and
+    // modelling NuGet's acceptance of `.NETFramework`, are requirements of the
+    // MSBuild and NuGet differentials, which must reproduce what those tools do
+    // regardless of which targets borzoi chooses to serve well.
+    //
+    // The entries stay rather than being dropped from the gate, because a
+    // *sweep* over a real package cache still meets these files and an
+    // unexplained loss must be loud. Pinned to the exact assemblies, one per
+    // pack version, because that is what the justification claims. Any *other*
+    // assembly refused for either cause — one with a linked `ManifestResource`,
+    // another `mscorlib.dll` from a .NET Core pack — is a new loss and must fail
+    // the gate: those causes are not net4x-specific, and only the bytes make the
+    // net4x claim true. A pack version not listed here has not been looked at,
+    // and unvetted should be loud.
     Exemption {
         stage: Stage::Parse,
         error: "unsupported ECMA-335 layout: assembly has no Assembly manifest record",
@@ -134,7 +149,7 @@ const EXEMPT: &[Exemption] = &[
             "6df6434254369996b10a973122327c9c24154985",
             "7c5786b97a926c37257b735380d2b071d6356d87",
         ],
-        why: "netmodule in the net4x targeting pack; pending the net4x-support decision",
+        why: "netmodule in the net4x targeting pack; net4x is an unsupported target",
     },
     Exemption {
         stage: Stage::Parse,
@@ -148,7 +163,7 @@ const EXEMPT: &[Exemption] = &[
             "e5da999106ee53a79430a49383a7f5b6048fd50d",
             "4166aff8193cb55b0a9bccd20c6517cc19ae1d2d",
         ],
-        why: "net4x targeting-pack mscorlib; pending the net4x-support decision",
+        why: "net4x targeting-pack mscorlib; net4x is an unsupported target",
     },
 ];
 
