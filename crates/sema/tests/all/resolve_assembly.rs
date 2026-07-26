@@ -11,8 +11,8 @@
 
 use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::{
-    AbbreviationTarget, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member,
-    ModuleValue, SkippedMember,
+    AbbreviationTarget, Access, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind,
+    Member, ModuleValue, SkippedMember,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -2230,6 +2230,61 @@ fn a_name_whose_only_occupant_is_at_another_arity_defers_rather_than_denying() {
         resolve(absent, &env).resolution_at(at(absent, "Absent")),
         None,
         "control: nothing declares `Absent` at any arity, so the no-match stands"
+    );
+}
+
+/// The fallback occupant is looked for across **every** colliding handle, not
+/// in the first-wins per-arity slot.
+///
+/// `first_by_arity` keeps one handle per `(namespace, name, arity)` in
+/// interning order, so a non-public type from an earlier-referenced DLL owns
+/// the slot and hides a public same-keyed one behind it. Answering from the
+/// slot would deny a fallback FCS does make (codex review).
+#[test]
+fn the_arity_fallback_sees_a_public_occupant_behind_a_private_one() {
+    let ents = fixture_entities();
+    let mut private_color = ents
+        .iter()
+        .find(|e| {
+            e.namespace == ["Demo"]
+                && e.kind == EntityKind::Class
+                && e.generic_parameters.len() == 1
+        })
+        .expect("an arity-1 Demo class in the fixture")
+        .clone();
+    private_color.namespace = vec!["Ns".to_string()];
+    private_color.name = "Color".to_string();
+    private_color.members = vec![];
+    private_color.nested_types = vec![];
+    let mut public_color = private_color.clone();
+    private_color.access = Access::Private;
+    public_color.assembly.name = "OtherLib".to_string();
+
+    // The private one is interned first, so it owns the arity-1 slot.
+    let env = AssemblyEnv::from_entities(vec![private_color, public_color]);
+    let src = "module M\nopen Ns\nlet f (x: Color) = x\n";
+    let got = resolve(src, &env).resolution_at(at(src, "Color"));
+    assert!(
+        matches!(got, Some(Resolution::Deferred(_))),
+        "the public arity-1 `Ns.Color` is a fallback occupant even though a private \
+         one owns the slot — got {got:?}"
+    );
+}
+
+/// An authoritative F# **module** is not a fallback occupant.
+///
+/// A module cannot occupy terminal type position, so FCS reports no
+/// type-symbol use for a written `Ops<int>` whose only same-named entity is
+/// `module Ops`. Deferring there would claim a shadow that cannot exist
+/// (codex review).
+#[test]
+fn the_arity_fallback_does_not_count_an_authoritative_module() {
+    let env = env_shadow_color(EntityKind::Module, false, 0);
+    let src = "module M\nopen Ns\nlet f (x: Color<int>) = x\n";
+    assert_eq!(
+        resolve(src, &env).resolution_at(at(src, "Color")),
+        None,
+        "a module cannot bind terminal type position at any arity, so the no-match stands"
     );
 }
 

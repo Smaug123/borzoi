@@ -968,13 +968,13 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     ("VRoMRo/decoy-first", "Hidden@Root", decline::HIDDEN_WINS),
     // The arity fallback, in both forms — the `W` (bare) and `J` (dotted)
     // families. No tier holds the written arity, so the arity-keyed walk finds
-    // nothing, and FCS binds a wrong-arity occupant instead. Both decline. 40
-    // cases.
+    // nothing, and FCS binds a wrong-arity occupant instead. Both decline, and
+    // for the same reason: FCS's arity preference is a fallback, not a filter.
+    // 40 cases.
     //
-    // The bare half used to *deny* here, which was the stronger and wrong
-    // answer: silence on a single-segment name is the resolver's "no shadow is
-    // possible" claim, and FCS does bind. Deferring is what the two forms have
-    // in common, so they now share a reason.
+    // A decline and not a denial even in the bare form, where silence would be
+    // the resolver's "no shadow is possible" claim: FCS does bind here, so that
+    // claim would be false.
     (
         "WEn/contributor-first",
         "Enclosing",
