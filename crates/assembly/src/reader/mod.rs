@@ -120,13 +120,6 @@ pub enum Error {
     /// data directory (unbacked RVA, short section, or a length/offset past the
     /// declared region).
     ResourceDataOutOfRange,
-    /// A `TypeRef` resolved through a scope outside the supported subset: a
-    /// `ModuleRef` scope (multi-module assemblies) or a null scope
-    /// (`ExportedType` lookup). The supported scopes are `AssemblyRef`, a nested
-    /// `TypeRef`, and the current module (module-self, which F# emits freely);
-    /// the refused ones are rejected rather than mis-attributed to the wrong
-    /// assembly.
-    UnsupportedTypeRefScope,
 }
 
 impl fmt::Display for Error {
@@ -143,9 +136,6 @@ impl fmt::Display for Error {
                 write!(f, "manifest resource is not embedded in this file")
             }
             Error::ResourceDataOutOfRange => write!(f, "manifest resource data out of range"),
-            Error::UnsupportedTypeRefScope => {
-                write!(f, "unsupported TypeRef resolution scope")
-            }
         }
     }
 }

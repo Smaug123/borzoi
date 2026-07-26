@@ -1654,11 +1654,21 @@ impl Ecma335Assembly {
             chain.push(strip_arity(&r.name.name).to_string());
             arities.push(arity_suffix(&r.name.name));
             let (namespace, assembly) = match r.scope {
-                RefScope::Nested(TypeRefId(p)) => {
+                // The row named a scope the reader does not model, so this
+                // reference cannot be attributed to an assembly. Refuse *here*,
+                // where a type actually walks out through it: the caller turns
+                // that into a recorded drop of the referencing type, leaving
+                // every type that does not name the row untouched.
+                Err(unsupported) => {
+                    return Err(ImportError::UnsupportedEcmaLayout {
+                        detail: format!("unsupported TypeRef resolution scope: {unsupported}"),
+                    });
+                }
+                Ok(RefScope::Nested(TypeRefId(p))) => {
                     cur = p as usize;
                     continue;
                 }
-                RefScope::AssemblyRef(AssemblyRefId(a)) => {
+                Ok(RefScope::AssemblyRef(AssemblyRefId(a))) => {
                     let aref = self.image.references.get(a as usize).ok_or_else(|| {
                         ImportError::UnsupportedEcmaLayout {
                             detail: format!("TypeRef AssemblyRef scope out of range: {a}"),
@@ -1670,7 +1680,7 @@ impl Ecma335Assembly {
                     (r.name.namespace.clone(), assembly)
                 }
                 // Module-self alias: a type defined in this image.
-                RefScope::Module => (r.name.namespace.clone(), None),
+                Ok(RefScope::Module) => (r.name.namespace.clone(), None),
             };
             chain.reverse();
             arities.reverse();
@@ -4969,7 +4979,7 @@ mod tests {
 
         // A `TypeRef` `Nested` self-loop: row 0 is its own enclosing scope.
         assert!(!view.image.type_refs.is_empty(), "fixture carries TypeRefs");
-        view.image.type_refs[0].scope = RefScope::Nested(TypeRefId(0));
+        view.image.type_refs[0].scope = Ok(RefScope::Nested(TypeRefId(0)));
         match view
             .qualified_typeref_name(0)
             .expect_err("a cyclic TypeRef nesting chain must be refused")

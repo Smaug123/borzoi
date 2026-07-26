@@ -97,7 +97,7 @@ impl Coded {
     /// Tag bits the family reserves in the low end of the coded value. This is
     /// `ceil(log2(number-of-encodable-slots))`, *including* the "not used" slots
     /// some families leave in the tag space (e.g. `CustomAttributeType`).
-    fn tag_bits(self) -> u32 {
+    pub(super) fn tag_bits(self) -> u32 {
         match self {
             // 2 slots → 1 bit.
             Coded::HasFieldMarshal
@@ -122,7 +122,7 @@ impl Coded {
     /// (II.24.2.6). [`RESERVED`] marks a slot no real emitter uses; it pins the
     /// tag space so later tags decode at the right index, but contributes no
     /// rows to the width rule and is refused on decode.
-    fn slots(self) -> &'static [usize] {
+    pub(super) fn slots(self) -> &'static [usize] {
         use table::*;
         match self {
             Coded::TypeDefOrRef => &[TYPE_DEF, TYPE_REF, TYPE_SPEC],

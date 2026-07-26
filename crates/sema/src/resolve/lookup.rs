@@ -3580,33 +3580,71 @@ impl<'a> Resolver<'a> {
     ) -> Option<Vec<(TextRange, Resolution)>> {
         let type_name = id_text(type_seg.text());
         let case_name = id_text(case_seg.text());
-        // A *retained* manifest auto-open surface sits above every prefix the
-        // walk visits and is invisible to it — see
-        // [`Self::assembly_case_head_contends_at_an_open`].
-        if self
-            .assemblies
-            .retained_auto_open_could_supply_entity_named(type_name)
-        {
-            return None;
-        }
-        // A **dropped TypeDef** at any split of any reading of the head may be
-        // another same-named union owning this very case — path-scoped and
-        // pre-walk, see [`Self::dropped_type_could_root_this_path`].
         // The head is the whole source path this walk looks up — the `Case` is a
         // constructor tail under whatever `Type` binds, not a further segment of
         // it — so both the gate and the per-tier verdict take it as a
         // single-segment path.
         let head_path = [type_name.to_owned()];
+        // A **dropped TypeDef** at any split of any reading of the head may be
+        // another same-named union owning this very case — path-scoped and
+        // pre-walk, see [`Self::dropped_type_could_root_this_path`]. Ahead of
+        // both branches below, since each commits a reading of its own.
         if self.dropped_type_could_root_this_path(&head_path) {
             return None;
         }
-        match self.resolve_assembly_path_tiered(
-            |prefix| {
-                self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
-            },
-            false,
-            |prefix| self.type_position_shadow_at(prefix, &head_path),
-        ) {
+        let leaf = |prefix: &[String]| {
+            self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
+        };
+        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, &head_path);
+
+        // A **retained manifest auto-open** surface is invisible to the prefix
+        // walk and out-ranks the ROOT tier, so when it could supply the head,
+        // walk only the tiers above it
+        // ([`Self::prefixes_outranking_the_manifest_surface`]) and defer if none
+        // resolves — the same shape [`Self::decide_type_path`]'s manifest veto
+        // uses, and strictly better than the outright decline this replaces: the
+        // tiers above the surface can commit, and only the root tier is lost.
+        //
+        // The **coarse** predicate on purpose, not the module-shaped one
+        // `decide_type_path` narrowed to. Every arm it adds is another surface
+        // that is retained, above the root, and unwalkable: a *contested*
+        // namespace auto-open (dropped from `imports` into `contested_auto_opens`
+        // and applied contributor-scoped by FCS), and a globally unknowable
+        // extension surface. Narrowing to the module-shaped arm dropped both and
+        // let the full walk commit a root-tier reading FCS binds above it (codex
+        // review). `decide_type_path` can afford the narrow predicate because the
+        // coarse one fires on essentially every *type* name — FSharp.Core
+        // auto-opens `Microsoft`, which the BCL also declares — but a
+        // case-pattern head is a union name, a far narrower target (measured:
+        // this branch leaves WoofWare.Myriad.Plugins' resolution unchanged).
+        if self
+            .assemblies
+            .retained_auto_open_could_supply_entity_named(type_name)
+        {
+            // Only the predicate's **name-keyed** arms license committing at a
+            // tier above the surface; every name-blind one
+            // ([`AssemblyEnv::retained_auto_open_is_uncertain`] — a dropped
+            // type, an undecodable pickle, an unread `AutoOpen` list) means the
+            // projection is incomplete somewhere the walk itself visits, so
+            // there is no trustworthy tier to prefer. Same reasoning, and the
+            // same one-condition shape, as [`Self::decide_type_path`]'s veto.
+            // A dropped TypeDef in the reading this would commit is not among
+            // the risks left here: the pre-walk gate above has already declined
+            // for it, on this branch and the full walk alike.
+            if self.assemblies.retained_auto_open_is_uncertain() {
+                return None;
+            }
+            return match self.resolve_assembly_path_over(
+                self.prefixes_outranking_the_manifest_surface(),
+                leaf,
+                false,
+                shadow_at,
+            ) {
+                TieredResolution::Resolved(recs) => Some(recs),
+                TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+            };
+        }
+        match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
             TieredResolution::Resolved(reading) => Some(reading),
             TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
         }

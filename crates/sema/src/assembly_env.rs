@@ -750,6 +750,25 @@ pub struct AssemblyEnv {
     /// Not the *enclosing* namespace, which is a property of the file being
     /// resolved rather than of the closure, so it has no fixed answer to cache.
     bare_value_index: std::sync::OnceLock<BareValueIndex>,
+    /// Lazily-built index behind
+    /// [`Self::contested_child_namespace_declares`]: the first segments of every
+    /// child namespace a contested auto-open's *contributor* declares under it,
+    /// flattened across the contested opens (the predicate asks whether **any**
+    /// of them supplies the head).
+    ///
+    /// Indexed rather than scanned because the query sits on the dotted-path
+    /// resolution path and `Microsoft` is contested in every real closure
+    /// (FSharp.Core auto-opens it; the BCL also declares it), so a linear walk of
+    /// the top-level types would run for every dotted head that is not a direct
+    /// member — `System.String` included — making resolution scale as
+    /// `dotted uses × referenced entities` (codex review).
+    contested_child_namespace_heads: std::sync::OnceLock<std::collections::HashSet<String>>,
+    /// Lazily-built companion to [`Self::contested_child_namespace_heads`] for
+    /// the *member* half of [`Self::contested_auto_open_surface_declares`]: the
+    /// contributor-owned top-level entities of every contested auto-open's
+    /// namespace. See [`Self::build_contested_surface_members`] for why the
+    /// provenance filter is what needs caching.
+    contested_surface_members: std::sync::OnceLock<Vec<EntityHandle>>,
     /// Namespaces in which a referenced assembly **dropped an undecodable type**
     /// (possibly a C#-style `[<Extension>]` class the entity tree no longer shows).
     /// The OV-6 gate treats these as possibly-extension-bearing per
@@ -2177,14 +2196,20 @@ impl AssemblyEnv {
     /// Whether a **module/type-shaped manifest auto-open surface**
     /// ([`Self::auto_open_module_handles`]) could supply an entity named
     /// `name` into bare scope. FCS opens such a target like a module, so its
-    /// nested types and modules *are* bare-visible — at open priority, below
-    /// every explicit source `open` (latest-open-wins; the manifest open is
-    /// applied at file start) but above the enclosing-namespace and root
-    /// tiers (fsi-verified both ways: with a same-named `namespace global`
-    /// decoy, a bare type annotation binds the auto-opened module's nested
-    /// type; after an explicit `open` of a namespace with its own same-named
-    /// type, it binds that one) — while the resolver's prefix walk never
-    /// searches the surface. Name-keyed to exactly these surfaces so the
+    /// nested types and modules *are* bare-visible — at open priority, in the
+    /// ladder
+    ///
+    /// ```text
+    /// explicit opens  >  enclosing namespace  >  manifest surface  >  root
+    /// ```
+    ///
+    /// below every explicit source `open` (latest-open-wins; the manifest open
+    /// is applied at file start) and below the enclosing namespace, but above
+    /// the root. All three boundaries fsi-verified: with a same-named
+    /// `namespace global` decoy a bare annotation binds the auto-opened
+    /// module's nested type, while after an explicit `open` of — or from
+    /// *inside* — a namespace with its own same-named type, it binds that one.
+    /// Meanwhile the resolver's prefix walk never searches the surface. Name-keyed to exactly these surfaces so the
     /// general type walk can defer the names they could shadow
     /// (`decide_type_path`'s manifest veto) without the contested-namespace
     /// arm of [`Self::retained_auto_open_could_supply_entity_named`], which
@@ -2214,6 +2239,44 @@ impl AssemblyEnv {
         name: &str,
         position: ManifestSurfacePosition,
     ) -> bool {
+        self.manifest_auto_open_target_is_uncertain()
+            || self.manifest_auto_open_surface_declares(name, position)
+    }
+
+    /// The **name-keyed** half of
+    /// [`Self::manifest_auto_open_module_could_supply_entity_named`]: the
+    /// surface demonstrably declares `name`, with no appeal to projection
+    /// uncertainty.
+    ///
+    /// Split out because the two halves license different actions. A caller
+    /// that only wants to *defer* can take the whole predicate. A caller that
+    /// wants to **commit somewhere else** — at a tier that out-ranks the
+    /// surface — may only do so on this half: when the other half is what
+    /// fired, the projection is incomplete in the target's whole owning
+    /// namespace, and a tier the walk visits can be that same namespace, so
+    /// the reading it commits may itself be the survivor of a same-FQN pair
+    /// (three review rounds landed on variants of exactly that). With this
+    /// half the uncertainty is confined to the surface, and every tier above
+    /// it is trustworthy by construction rather than by screening.
+    pub(crate) fn manifest_auto_open_surface_declares(
+        &self,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        self.auto_open_module_handles
+            .iter()
+            .any(|&(h, effectively_public)| {
+                effectively_public && self.module_open_surface_has_entity_named(h, name, position)
+            })
+    }
+
+    /// The **name-blind** half: projection uncertainty anywhere in a
+    /// module-shaped manifest auto-open target's owning namespace — a dropped
+    /// TypeDef (the marker records only the enclosing top-level namespace, so
+    /// the drop could be a descendant of the target of any name) or an
+    /// undecodable signature pickle hiding the module's nested abbreviations.
+    /// Says nothing about any particular name; licenses deferral only.
+    pub(crate) fn manifest_auto_open_target_is_uncertain(&self) -> bool {
         self.auto_open_module_handles
             .iter()
             .any(|&(h, effectively_public)| {
@@ -2223,8 +2286,145 @@ impl AssemblyEnv {
                 let owning = &self.nodes[h.index()].owning_namespace;
                 self.namespace_has_dropped_type(owning)
                     || self.unknowable_abbreviations_in_namespace(owning)
-                    || self.module_open_surface_has_entity_named(h, name, position)
             })
+    }
+
+    /// The [`Self::retained_auto_open_could_supply_entity_named`] counterpart
+    /// of [`Self::manifest_auto_open_target_is_uncertain`]: every one of that
+    /// predicate's name-blind arms, which likewise license deferral only. The
+    /// globally-unknowable arm is here too — an unread `AutoOpen` list leaves
+    /// *no* prefix trustworthy, so a caller choosing where to commit has
+    /// nowhere to go.
+    pub(crate) fn retained_auto_open_is_uncertain(&self) -> bool {
+        self.extension_surface_unknowable
+            || self.manifest_auto_open_target_is_uncertain()
+            || self.contested_auto_open_is_uncertain()
+    }
+
+    /// The **contested** twin of
+    /// [`Self::manifest_auto_open_surface_declares`]: whether the
+    /// contributor-scoped surface of a *contested* namespace-shaped
+    /// `[<assembly: AutoOpen("N")>]` demonstrably declares `name` at
+    /// `position`, with no appeal to projection uncertainty.
+    ///
+    /// FCS applies such an auto-open even though more than one assembly
+    /// declares `N`; it just opens the **contributing CCU's** namespace entity,
+    /// so only that assembly's own content there enters scope — hence the
+    /// provenance filter. Our env keeps the namespace out of
+    /// [`Self::effective_implicit_open_namespace_paths`] entirely, so no prefix
+    /// the resolver walks can see this surface, and a name it supplies is
+    /// invisible to a caller that does not ask.
+    ///
+    /// The surface is exactly what an `open N` of the contributor's half
+    /// projects: its top-level entities by source name, and — recursively —
+    /// its `[<AutoOpen>]` modules' trees. That is the same per-member rule an
+    /// opened *module* obeys, so it goes through the same
+    /// [`Self::open_surface_member_binds`], `position` and all: the coarse
+    /// contested arm of [`Self::retained_auto_open_could_supply_entity_named`]
+    /// walks whole trees name-blind, which is right for a predicate that only
+    /// ever defers and far too wide for one that has to leave ordinary
+    /// commitments alone.
+    ///
+    /// Like its twin, this half licenses **committing at a tier above the
+    /// surface**; the name-blind half is [`Self::contested_auto_open_is_uncertain`].
+    pub(crate) fn contested_auto_open_surface_declares(
+        &self,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        self.contested_surface_members
+            .get_or_init(|| self.build_contested_surface_members())
+            .iter()
+            .any(|&h| self.open_surface_member_binds(h, name, position))
+            || self.contested_child_namespace_declares(name, position)
+    }
+
+    /// Build [`Self::contested_surface_members`]: every top-level entity in a
+    /// contested auto-open's namespace that the *contributor* declares.
+    ///
+    /// The provenance filter is the whole point of caching it. A contested
+    /// namespace is by definition declared by more than one assembly, so its
+    /// bucket holds every sibling's content too — a contributor that adds one
+    /// type to `System` would otherwise make each query walk the BCL's whole
+    /// `System` (codex review). What survives is only what an `open` of the
+    /// contributing CCU's half puts in scope.
+    ///
+    /// Deliberately a handle list rather than a name set: the per-member
+    /// question is position-keyed, and [`Self::open_surface_member_binds`] is
+    /// the one place that rule lives. Precomputing *which members to ask about*
+    /// keeps it that way; precomputing the answers would fork the rule.
+    fn build_contested_surface_members(&self) -> Vec<EntityHandle> {
+        self.contested_auto_opens
+            .iter()
+            .flat_map(|(contributor, ns)| {
+                self.types_in_namespace(ns)
+                    .iter()
+                    .copied()
+                    .filter(|&h| self.assembly_provenance(h) == Some(*contributor))
+            })
+            .collect()
+    }
+
+    /// The **child-namespace** half of the contested surface: opening `N` makes
+    /// every `N.Sub` the contributor declares writable as the bare dotted head
+    /// `Sub`, so `Sub.T` roots inside the surface with no prefix the walk visits
+    /// able to see it (FCS-verified against purpose-built DLLs, and
+    /// order-dependent against a root-level `Sub` exactly as the direct members
+    /// are).
+    ///
+    /// Absent from the module-shaped twin because a module has no child
+    /// namespaces — its nested modules are ordinary members and reach bare scope
+    /// through [`Self::open_surface_member_binds`] like everything else.
+    ///
+    /// A namespace can only ever be a dotted *head*, never a type-position leaf,
+    /// so this arm obeys the same position rule an opened module's nested-module
+    /// child does.
+    fn contested_child_namespace_declares(
+        &self,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
+        if matches!(
+            position,
+            ManifestSurfacePosition::TypePosition { .. } | ManifestSurfacePosition::TypeAnyArity
+        ) {
+            return false;
+        }
+        self.contested_child_namespace_heads
+            .get_or_init(|| self.build_contested_child_namespace_heads())
+            .contains(name)
+    }
+
+    /// Build [`Self::contested_child_namespace_heads`]: for every contested
+    /// auto-open, the segment immediately below its namespace in each namespace
+    /// the *contributor* declares into. Only the contributor's content enters
+    /// scope through a contested open, so a sibling's child namespace of the
+    /// same path contributes nothing.
+    fn build_contested_child_namespace_heads(&self) -> std::collections::HashSet<String> {
+        let mut out = std::collections::HashSet::new();
+        for (contributor, ns) in &self.contested_auto_opens {
+            for &h in &self.top_level_types {
+                if self.assembly_provenance(h) != Some(*contributor) || !self.is_public(h) {
+                    continue;
+                }
+                let declared = &self.entity(h).namespace;
+                if declared.len() > ns.len() && declared.starts_with(ns) {
+                    out.insert(declared[ns.len()].clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// The **name-blind** half of the contested surface: projection uncertainty
+    /// anywhere in a contested auto-open's namespace — a dropped TypeDef, or an
+    /// undecodable signature pickle hiding the namespace's type abbreviations.
+    /// Either could be the contributor's, and could be named anything, so this
+    /// says nothing about a particular name and licenses deferral only.
+    pub(crate) fn contested_auto_open_is_uncertain(&self) -> bool {
+        self.contested_auto_opens.iter().any(|(_, ns)| {
+            self.namespace_has_dropped_type(ns) || self.unknowable_abbreviations_in_namespace(ns)
+        })
     }
 
     /// Whether **any** assembly-side surface F# makes bare-visible *without an
@@ -2389,33 +2589,55 @@ impl AssemblyEnv {
         name: &str,
         position: ManifestSurfacePosition,
     ) -> bool {
+        self.children(handle)
+            .iter()
+            .any(|&child| self.open_surface_member_binds(child, name, position))
+    }
+
+    /// Whether one member of a container F# has **opened** contributes the bare
+    /// name `name` at `position`.
+    ///
+    /// The single definition of that rule, folded by
+    /// [`Self::module_open_surface_has_entity_named`] over an opened module's
+    /// children and by [`Self::contested_auto_open_surface_declares`] over an
+    /// opened namespace's top-level entities. The two containers differ in what
+    /// they hold, not in how an `open` of them projects a member into bare
+    /// scope: a module member and a namespace member are both bare-visible by
+    /// source name, both decline type position when they are a `module`, and
+    /// both open recursively when they are an `[<AutoOpen>]` module. Splitting
+    /// the rule per container is what lets one of them silently miss a position
+    /// filter the other gained.
+    fn open_surface_member_binds(
+        &self,
+        child: EntityHandle,
+        name: &str,
+        position: ManifestSurfacePosition,
+    ) -> bool {
         use ManifestSurfacePosition::*;
-        self.children(handle).iter().any(|&child| {
-            if !self.is_public(child) {
-                return false;
-            }
-            let e = self.entity(child);
-            if self.fsharp_signature_unreliable(child) {
-                return e.name == name
-                    || self.entity_source_name(child) == name
-                    || (e.kind == EntityKind::Module
-                        && e.is_auto_open
-                        && self.module_open_surface_has_entity_named(child, name, position));
-            }
-            if e.kind == EntityKind::Module {
-                (!matches!(position, TypePosition { .. } | TypeAnyArity)
-                    && self.entity_source_name(child) == name)
-                    || (e.is_auto_open
-                        && self.module_open_surface_has_entity_named(child, name, position))
-            } else {
-                self.entity_source_name(child) == name
-                    && match position {
-                        TypePosition { arity } => e.generic_parameters.len() == arity,
-                        DottedHead => e.generic_parameters.is_empty(),
-                        TypeAnyArity | AnySegment => true,
-                    }
-            }
-        })
+        if !self.is_public(child) {
+            return false;
+        }
+        let e = self.entity(child);
+        if self.fsharp_signature_unreliable(child) {
+            return e.name == name
+                || self.entity_source_name(child) == name
+                || (e.kind == EntityKind::Module
+                    && e.is_auto_open
+                    && self.module_open_surface_has_entity_named(child, name, position));
+        }
+        if e.kind == EntityKind::Module {
+            (!matches!(position, TypePosition { .. } | TypeAnyArity)
+                && self.entity_source_name(child) == name)
+                || (e.is_auto_open
+                    && self.module_open_surface_has_entity_named(child, name, position))
+        } else {
+            self.entity_source_name(child) == name
+                && match position {
+                    TypePosition { arity } => e.generic_parameters.len() == arity,
+                    DottedHead => e.generic_parameters.is_empty(),
+                    TypeAnyArity | AnySegment => true,
+                }
+        }
     }
 
     /// Whether `handle` **is** `System.Runtime.CompilerServices.ExtensionAttribute`
@@ -3240,14 +3462,18 @@ impl AssemblyEnv {
         self.invalidate_bare_value_index();
     }
 
-    /// Drop the memoised [`Self::bare_value_index`].
+    /// Drop the memoised [`Self::bare_value_index`],
+    /// [`Self::contested_child_namespace_heads`] and
+    /// [`Self::contested_surface_members`].
     ///
-    /// Called by every mutator of an input it folds in. The index answers a
+    /// Called by every mutator of an input they fold in. Both answer a
     /// *soundness* question, so a stale `false` is a wrong commitment, not a
     /// stale optimisation — a mark that arrives after the first query must still
     /// take effect. `&mut self` makes this a plain reset rather than a race.
     fn invalidate_bare_value_index(&mut self) {
         self.bare_value_index = std::sync::OnceLock::new();
+        self.contested_child_namespace_heads = std::sync::OnceLock::new();
+        self.contested_surface_members = std::sync::OnceLock::new();
     }
 
     /// Whether a referenced assembly **dropped an undecodable type** in `namespace`

@@ -5,16 +5,16 @@
 //! import surface FCS computes along several independent dimensions —
 //! accessibility (private children are not imported), submodule opening (a
 //! plain nested module is a dotted head only; an `[<AutoOpen>]` one opens
-//! recursively), priority (below explicit source `open`s, above the
-//! enclosing-namespace and root tiers), and position (a module never binds
+//! recursively), priority (below explicit source `open`s and below the
+//! enclosing namespace, above the root tier), and position (a module never binds
 //! type position). Each dimension the veto under-modelled was a separate
 //! review round; this sweep replaces that reviewer intelligence with an
 //! oracle.
 //!
 //! The cases are **generated, not curated**: every type name reachable in the
 //! fixture's `DirectOps` tree, every global-namespace decoy, and every
-//! `Module.Type` pair under `DirectOps`, each probed bare and under an
-//! explicit `open` — so a fixture edit that adds a new surface shape is swept
+//! `Module.Type` pair under `DirectOps`, each probed bare, under an explicit
+//! `open`, and from *inside* the decoy namespace — so a fixture edit that adds a new surface shape is swept
 //! automatically. The property is D5 soundness, certain-implies-exact in both
 //! directions: whenever we commit an `Entity` at a range FCS also resolves
 //! into the fixture, the `(assembly, full name)` must agree exactly; whenever
@@ -36,6 +36,22 @@ use rowan::TextRange;
 
 /// The fixture's `<AssemblyName>`, as FCS reports declaring assemblies.
 const FIXTURE_ASM: &str = "SemaAutoOpenFixture";
+
+/// Which precedence stratum a generated probe reaches the head from — the two
+/// that out-rank the module-shaped manifest AutoOpen surface, and the bare one
+/// that does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Stratum {
+    /// No `open`, no enclosing namespace: only the surface and the root tier
+    /// below it are in play.
+    Bare,
+    /// `open SemaAutoOpen.ExplicitBeats` — latest-open-wins puts this above the
+    /// surface, which is applied at file start.
+    ExplicitOpen,
+    /// `namespace SemaAutoOpen.ExplicitBeats` — the same decoy namespace,
+    /// declared rather than opened. Also above the surface.
+    EnclosingNamespace,
+}
 
 fn span(start: usize, end: usize) -> TextRange {
     TextRange::new(
@@ -246,22 +262,53 @@ fn manifest_module_surface_type_positions_are_sound_against_fcs() {
         }
     }
 
-    let mut cases = BTreeSet::new();
+    // Three strata, because two of them out-rank the manifest surface and one
+    // does not: bare (the surface wins over the root tier below it), under an
+    // explicit `open`, and from *inside* the decoy namespace. The last is the
+    // one whose absence let the ladder be mis-stated as "surface above the
+    // enclosing-namespace tier" — a sweep that only probes bare and under an
+    // explicit `open` never enters that tier, so nothing contradicted it.
+    let mut cases: BTreeSet<(Stratum, String)> = BTreeSet::new();
     for name in names.iter().chain(dotted.iter()) {
-        cases.insert(format!("let f (x: {name}) = x\n"));
-        // The explicit-open stratum: an explicit source `open` outranks the
-        // manifest surface, so every name is probed under one too.
-        cases.insert(format!(
-            "open SemaAutoOpen.ExplicitBeats\nlet f (x: {name}) = x\n"
+        cases.insert((Stratum::Bare, format!("let f (x: {name}) = x\n")));
+        cases.insert((
+            Stratum::ExplicitOpen,
+            format!("open SemaAutoOpen.ExplicitBeats\nlet f (x: {name}) = x\n"),
+        ));
+        cases.insert((
+            Stratum::EnclosingNamespace,
+            format!(
+                "namespace SemaAutoOpen.ExplicitBeats\n\nmodule M =\n    let f (x: {name}) = x\n"
+            ),
         ));
     }
 
     let (mut agreed, mut fixture_uses) = (0usize, 0usize);
-    for case in &cases {
+    let (mut by_open, mut by_enclosing) = (0usize, 0usize);
+    for (stratum, case) in &cases {
         let (a, f) = sweep_sound(case);
         agreed += a;
         fixture_uses += f;
+        match stratum {
+            Stratum::ExplicitOpen => by_open += a,
+            Stratum::EnclosingNamespace => by_enclosing += a,
+            Stratum::Bare => {}
+        }
     }
+
+    // The **availability** invariant, and the reason this sweep can catch an
+    // over-deferral at all: certain-implies-exact tolerates a decline, so the
+    // soundness property above is blind to a resolution we stop making. Both
+    // of these strata out-rank the manifest surface by the *same* margin and
+    // reach the *same* decoy namespace, so whatever the explicit-open stratum
+    // commits, the enclosing-namespace one must commit too. A veto that walks
+    // only the explicit opens breaks this and nothing else in the sweep
+    // notices. Self-maintaining: growing the fixture moves both sides.
+    assert_eq!(
+        by_enclosing, by_open,
+        "the enclosing-namespace stratum must commit whatever the explicit-open \
+         stratum does — both out-rank the manifest surface"
+    );
     // Non-vacuity: the sweep must both see fixture bindings (FCS resolves the
     // decoys and surface types) and agree on some (the decoy commits) — a
     // silent all-deferral or an oracle wiring failure would zero these.

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The *contributor* half of the tier-order corpus
+       (tests/all/tier_order_diff.rs). One assembly declaring the same simple
+       name at every scope F# makes bare-visible without an explicit `open`
+       in the probe: a namespace an explicit `open` can name, the probe's own
+       enclosing namespace, a namespace-shaped `[<assembly: AutoOpen>]`, a
+       module-shaped one, and a namespace-shaped one the decoy fixture
+       contests.
+
+       `Generated.fs` is NOT checked in: it is emitted from the `Tier` enum by
+       crates/sema/tests/all/common/tier_corpus.rs before this project is
+       built, so the F# universe and the Rust side's tier matrix cannot drift
+       apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaTierFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>
