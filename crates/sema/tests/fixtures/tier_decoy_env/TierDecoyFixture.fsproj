@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The *decoy* half of the tier-order corpus
+       (tests/all/tier_order_diff.rs). Two jobs, both of which need to sit in
+       an assembly separate from the contributor's:
+
+       - it declares the ROOT-namespace half of the corpus, so the sweep can
+         vary which assembly is referenced first and observe that FCS decides
+         the manifest-surface/root contest by reference order rather than by
+         a fixed tier;
+       - it re-declares `Tier.Contested`, which is what makes the
+         contributor's `[<assembly: AutoOpen("Tier.Contested")>]` *contested*
+         — declared by more than one assembly, so FCS applies it
+         contributor-scoped and our env keeps it out of the prefix walk.
+
+       `Generated.fs` is emitted alongside the contributor's; see that
+       project's comment. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaTierDecoyFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>
