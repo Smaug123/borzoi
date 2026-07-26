@@ -139,13 +139,47 @@ impl<'a> MetadataFile<'a> {
         };
 
         // CLI header data directory (RVA, Size).
+        //
+        // Whether the slot *exists* is declared, not inferred from the file
+        // length: `NumberOfRvaAndSizes` is the last optional-header field
+        // before the array, and `SizeOfOptionalHeader` bounds the header.
+        //
+        // [`Error::NoCliHeader`] is returned from exactly the two places below
+        // that establish absence *positively* — a directory count that does not
+        // reach the CLI index, and an RVA read as zero. Everything else here is
+        // a truncated or self-inconsistent image, which is
+        // [`Error::NotPortableExecutable`]: a file too short to hold what its
+        // own headers promise says nothing about whether it is managed, and its
+        // consumers (the projection-skip gate's native-PE exemption above all)
+        // read `NoCliHeader` as proof that it is not.
+        let optional_end = optional_start.checked_add(size_optional).ok_or(pe)?;
+        let count_at = optional_start + data_dirs_at - 4;
+        // The count itself must lie inside the declared header. Reading it from
+        // beyond `SizeOfOptionalHeader` would take whatever follows — section
+        // headers, padding — as a directory count, and a zero there reads as a
+        // declaration this image never made.
+        if count_at.checked_add(4).ok_or(pe)? > optional_end {
+            return Err(pe);
+        }
+        let num_rva_and_sizes = Cursor::at(image, count_at).read_u32().ok_or(pe)? as usize;
+        if num_rva_and_sizes <= CLI_HEADER_DIRECTORY {
+            return Err(Error::NoCliHeader);
+        }
         let cli_dir = optional_start + data_dirs_at + CLI_HEADER_DIRECTORY * 8;
+        // The count claims the slot exists but `SizeOfOptionalHeader` cannot
+        // hold it: the two declarations contradict each other.
+        if cli_dir.checked_add(8).ok_or(pe)? > optional_end {
+            return Err(pe);
+        }
         let mut dc = Cursor::at(image, cli_dir);
-        let cli_rva = dc.read_u32().ok_or(Error::NoCliHeader)?;
-        let _cli_size = dc.read_u32().ok_or(Error::NoCliHeader)?;
+        let cli_rva = dc.read_u32().ok_or(pe)?;
         if cli_rva == 0 {
             return Err(Error::NoCliHeader);
         }
+        // A nonzero RVA is the image declaring a CLI header, so from here a
+        // failure is this reader's inability to follow it, not evidence that
+        // the file is unmanaged — including a truncation between the two words.
+        let _cli_size = dc.read_u32().ok_or(Error::UnreadableCliHeader)?;
 
         // --- Section headers (40 bytes each) ---
         let mut sc = Cursor::at(image, optional_start + size_optional);
@@ -169,14 +203,18 @@ impl<'a> MetadataFile<'a> {
         // Reads are bounded to the CLI header's own section raw data, so a
         // header straddling the end of a section is refused rather than read
         // out of the next section.
-        let cli_region = rva_to_slice(image, &sections, cli_rva).ok_or(Error::NoCliHeader)?;
+        // Past this point the image has *declared* a CLI header (`cli_rva != 0`),
+        // so a failure to follow it is this reader's, not a sign the file is
+        // unmanaged — see [`Error::UnreadableCliHeader`].
+        let cli_region =
+            rva_to_slice(image, &sections, cli_rva).ok_or(Error::UnreadableCliHeader)?;
         let mut cli = Cursor::new(cli_region);
-        cli.skip(4 + 2 + 2).ok_or(Error::NoCliHeader)?; // cb, Major/MinorRuntimeVersion
-        let metadata_rva = cli.read_u32().ok_or(Error::NoCliHeader)?;
-        let metadata_size = cli.read_u32().ok_or(Error::NoCliHeader)? as usize;
-        cli.skip(4 + 4).ok_or(Error::NoCliHeader)?; // Flags, EntryPointToken
-        let resources_rva = cli.read_u32().ok_or(Error::NoCliHeader)?;
-        let resources_size = cli.read_u32().ok_or(Error::NoCliHeader)?;
+        cli.skip(4 + 2 + 2).ok_or(Error::UnreadableCliHeader)?; // cb, Major/MinorRuntimeVersion
+        let metadata_rva = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
+        let metadata_size = cli.read_u32().ok_or(Error::UnreadableCliHeader)? as usize;
+        cli.skip(4 + 4).ok_or(Error::UnreadableCliHeader)?; // Flags, EntryPointToken
+        let resources_rva = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
+        let resources_size = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
 
         // --- Metadata root, II.24.2.1 ---
         let bad = Error::BadMetadataRoot;

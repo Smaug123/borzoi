@@ -92,8 +92,20 @@ use std::fmt;
 pub enum Error {
     /// Not a PE/COFF image (missing `MZ`/`PE` signature or a malformed header).
     NotPortableExecutable,
-    /// No CLI (COM descriptor) data directory, or it points nowhere.
+    /// The image declares **no** CLI (COM descriptor) data directory: its RVA
+    /// is zero, or the optional header is too short to carry the entry. Such a
+    /// file is not a managed assembly at all — a native DLL or EXE — and every
+    /// ECMA-335 reader refuses it, so this is a statement about the input
+    /// rather than a limitation of this one. Distinct from
+    /// [`Self::UnreadableCliHeader`] for exactly that reason.
     NoCliHeader,
+    /// The image *does* declare a CLI header, but this reader could not follow
+    /// it: the RVA maps into no section, or the header is truncated within its
+    /// section. Unlike [`Self::NoCliHeader`] this says nothing about the input
+    /// being unmanaged — a managed assembly whose RVA mapping we get wrong
+    /// lands here, which is a reader gap and must never be mistaken for a
+    /// native file.
+    UnreadableCliHeader,
     /// The metadata root is malformed (bad `BSJB` signature, truncated stream
     /// headers, or an out-of-range stream region).
     BadMetadataRoot,
@@ -127,6 +139,7 @@ impl fmt::Display for Error {
         match self {
             Error::NotPortableExecutable => write!(f, "not a portable executable"),
             Error::NoCliHeader => write!(f, "no CLI header"),
+            Error::UnreadableCliHeader => write!(f, "declared CLI header is unreadable"),
             Error::BadMetadataRoot => write!(f, "malformed metadata root"),
             Error::MissingHeap(name) => write!(f, "missing metadata heap {name}"),
             Error::HeapOffsetOutOfRange => write!(f, "heap offset out of range"),
