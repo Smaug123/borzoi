@@ -9,15 +9,16 @@
 //! winner with no third party to confound it.
 //!
 //! **Pairs, and not larger subsets, because that was measured.** Extending
-//! [`corpus`] to unordered triples is a three-line change, and it was run:
-//! across the four families whose per-tier arity does not itself depend on the
-//! subset planted (every one but the two split families, where a triple is a
-//! different experiment from its pairs rather than a composition of them), FCS
-//! picked the pairwise champion in 160 of 160 three-way contests, in both
-//! reference orders. Its ladder is a total order on these scopes, so a triple
-//! is determined by its pairs and buys only cases. Should a scope ever be
-//! added whose ranking is *contextual*, that measurement is what stops being
-//! true, and the loop to re-run is the one right below.
+//! [`corpus`] to unordered triples is a three-line change, and it was run over
+//! the six families whose per-tier arity does not itself depend on the subset
+//! planted — `T`/`D`/`G`/`W`/`H`/`J`, i.e. every one but the four split
+//! families, where a triple is a different experiment from its pairs rather
+//! than a composition of them. FCS picked the pairwise champion in **240 of
+//! 240** three-way contests, in both reference orders. Its ladder is a total
+//! order on these scopes, so a triple is determined by its pairs and buys only
+//! cases. Should a scope ever be added whose ranking is *contextual*, that
+//! measurement is what stops being true; re-run it by extending the loop right
+//! below, and re-derive the count whenever [`FAMILIES`] changes.
 //!
 //! [`Form`] is the second, orthogonal dimension: a bare name and a *dotted
 //! head* reach a scope through different channels. An opened namespace
