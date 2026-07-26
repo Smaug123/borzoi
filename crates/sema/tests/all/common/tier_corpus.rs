@@ -200,11 +200,20 @@ impl Arity {
 /// metadata records the name, FCS falls through to the visible plant, and
 /// nothing but this sweep says so.
 ///
-/// The two project variants are a square of their own, over what the module
-/// *holds* rather than what shape it holds it in: a name no plant wears against
-/// the plant's own. There the claim is not about form but about keying — a veto
-/// that reads the module's presence answers the same for both cells, and a veto
-/// that reads its names cannot.
+/// The three project variants are a square of their own, over what the module
+/// *holds*:
+///
+/// |                | holds nothing of the name | holds it as a **type** | holds it as a **module** |
+/// |----------------|---------------------------|------------------------|--------------------------|
+/// | [`Bare`]       | `…P`, must commit         | `…Q`, must decline     | `…R`, must commit        |
+/// | [`DottedHead`] | `…P`, must commit         | `…R`, must commit      | `…Q`, must decline       |
+///
+/// The `P` column is the keying claim: a veto that reads the module's mere
+/// presence answers the same there as in `Q`, and a veto that reads its names
+/// cannot. The `Q`/`R` pair is the *form* claim, and it is the only reason the
+/// bare and dotted heads may consult different indices — `R` is exactly the
+/// shape that wears the name but cannot bind the probe, so a head widened to
+/// the other index fails there and nowhere else.
 ///
 /// [`HiddenType`]: Risk::HiddenType
 /// [`HiddenModule`]: Risk::HiddenModule
@@ -241,6 +250,19 @@ pub enum Risk {
     /// `project_shadow_at` does. The cross-file case that separates
     /// them lives in `resolve_fsharp_abbrev`.
     ProjectAutoOpenHiding,
+    /// The same module holding the plant's name in the shape that **cannot**
+    /// bind the probe's form: a module for a [`Form::Bare`] plant, a type for a
+    /// [`Form::DottedHead`] one. FCS falls through to the visible plant in both
+    /// (fsc-verified — a record `type Demo` in an auto-open module leaves
+    /// `Demo.CasePat.Shape` compiling against the referenced namespace), so
+    /// every one of these must commit.
+    ///
+    /// This is the off-diagonal of the project square, and it is what makes the
+    /// channel's keying *by form* a measured property rather than a documented
+    /// one: widening the bare head to the module index fails the `S…R` cells,
+    /// and widening the dotted head to the type index fails the `V…R` cells.
+    /// Without them the only guard is a single hand-written case.
+    ProjectAutoOpenHidingWrongShape,
 }
 
 impl Risk {
@@ -251,7 +273,9 @@ impl Risk {
         match self {
             Risk::None => None,
             Risk::HiddenType(t) | Risk::HiddenModule(t) => Some(t),
-            Risk::ProjectAutoOpen | Risk::ProjectAutoOpenHiding => Some(Tier::Enclosing),
+            Risk::ProjectAutoOpen
+            | Risk::ProjectAutoOpenHiding
+            | Risk::ProjectAutoOpenHidingWrongShape => Some(Tier::Enclosing),
         }
     }
 
@@ -263,6 +287,7 @@ impl Risk {
             Risk::HiddenModule(t) => format!("M{}", t.tag()),
             Risk::ProjectAutoOpen => "P".to_string(),
             Risk::ProjectAutoOpenHiding => "Q".to_string(),
+            Risk::ProjectAutoOpenHidingWrongShape => "R".to_string(),
         }
     }
 }
@@ -481,7 +506,11 @@ pub fn corpus() -> Vec<Plant> {
             for risk in RISK_TIERS
                 .iter()
                 .flat_map(|&t| [Risk::HiddenType(t), Risk::HiddenModule(t)])
-                .chain([Risk::ProjectAutoOpen, Risk::ProjectAutoOpenHiding])
+                .chain([
+                    Risk::ProjectAutoOpen,
+                    Risk::ProjectAutoOpenHiding,
+                    Risk::ProjectAutoOpenHidingWrongShape,
+                ])
             {
                 out.push(Plant {
                     name: format!("{prefix}{}{}", tier.tag(), risk.tag()),
@@ -672,6 +701,18 @@ pub fn probe_source(plant: &Plant) -> String {
             ),
             Form::DottedHead => format!(
                 "    module {} =\n        type {MARKER}() =\n            member _.Tier = \"project\"\n",
+                plant.name
+            ),
+        }),
+        // The shape that cannot bind the probe's form: a module where the probe
+        // writes a bare type annotation, a type where it writes a dotted head.
+        Risk::ProjectAutoOpenHidingWrongShape => Some(match plant.form {
+            Form::Bare => format!(
+                "    module {} =\n        type {MARKER}() =\n            member _.Tier = \"project\"\n",
+                plant.name
+            ),
+            Form::DottedHead => format!(
+                "    type {}() =\n        member _.Tier = \"project\"\n",
                 plant.name
             ),
         }),

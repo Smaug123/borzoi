@@ -821,6 +821,36 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
         "Hidden@Project",
         decline::MANIFEST_SURFACE,
     ),
+    // The `R` cells at the same two tiers. Their project-side declaration is
+    // the shape that *cannot* bind the probe, so FCS binds the plant and the
+    // project channel is silent — these decline purely on the contested /
+    // manifest channels, exactly as the `Q` cells above do. At the four tiers
+    // the walk visits as prefixes they commit, which is where they carry their
+    // claim (the non-vacuity floor).
+    (
+        "SCoR/contributor-first",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
+    ("SCoR/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "SMoR/contributor-first",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    ("SMoR/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VCoR/contributor-first",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
+    ("VCoR/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "VMoR/contributor-first",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    ("VMoR/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
     // Correct declines: FCS really does bind the hidden entity. Recorded so
     // that a change which starts committing here has to say so. 32 cases.
     (
@@ -1991,19 +2021,23 @@ fn tier_ladder_is_sound_against_fcs() {
     // and `VCoP`/`VMoP` are absent: the contested and manifest channels decline
     // those regardless, so they cannot floor anything.)
     //
-    // What these cells cannot floor is the channel's keying *by form*. A `…P`
-    // probe declares nothing of the plant's name on the project side at all, so
-    // it commits whichever index a dotted head consults — widening that head to
-    // the type index would leave every cell here green. The guard for it is
-    // `a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`,
-    // whose auto-open module declares a *type* of the written head's name.
+    // The `…R` entries floor the channel's keying **by form**, which the `…P`
+    // ones cannot: a `P` probe declares nothing of the plant's name on the
+    // project side at all, so it commits whichever index a head consults. An
+    // `R` probe declares the name in the shape that cannot bind the probe — a
+    // module where a bare annotation is written, a type where a dotted head is
+    // — so a bare head widened to the module index fails `S…R`, and a dotted
+    // head widened to the type index fails `V…R`, and neither shows up
+    // anywhere else in the sweep.
     for control in [
         "TEx", "TEn", "TNs", "TRo", //
         "DEx", "DEn", "DNs", "DRo", //
         "GEx", "GEn", "GNs", "GRo", //
         "HEx", "HEn", "HNs", "HRo", //
         "SExP", "SEnP", "SNsP", "SRoP", //
-        "VExP", "VEnP", "VNsP", "VRoP",
+        "VExP", "VEnP", "VNsP", "VRoP", //
+        "SExR", "SEnR", "SNsR", "SRoR", //
+        "VExR", "VEnR", "VNsR", "VRoR",
     ] {
         for order in Order::ALL {
             let key = format!("{control}/{}", order.label());
