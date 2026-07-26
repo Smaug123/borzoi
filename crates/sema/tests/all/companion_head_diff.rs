@@ -31,15 +31,14 @@
 //! - the **leaf**: whenever we commit for the whole path, FCS must agree — with
 //!   generic-arity markers stripped from both sides, since FCS renders a member's
 //!   enclosing generic type as `Foo<_>.Tail` and our full names carry no marker
-//!   (the same rendering difference corpus-diff normalises — against a
-//!   certificate, since it has no separate head comparison to lean on). The head
+//!   (corpus-diff faces the same rendering difference, and — having no separate
+//!   head comparison to lean on — resolves it from the oracle's *structural*
+//!   declaring-entity fields instead of by reading the rendering). The head
 //!   comparison already pins *which* container the leaf came from, so the
 //!   stripping cannot launder a container mix-up.
 //!
-//! The certificate corpus-diff uses is that a marker's argument count is the
-//! declaring type's arity;
-//! [`a_rendered_arity_marker_counts_the_declaring_types_parameters`] pins that
-//! fact about FCS's renderer here, where a real oracle is already running.
+//! [`the_oracle_names_a_declaring_entity_structurally`] pins those fields here,
+//! where a real oracle is already running, since that harness depends on them.
 //!
 //! Both are ratcheted, in **two** tables kept apart because the debts are not
 //! alike: [`KNOWN_GAPS`] records a cell where we defer and FCS resolves (sound —
@@ -346,9 +345,6 @@ struct Observation {
     site: Site,
     ours: Ours,
     fcs: Option<Target>,
-    /// The cell's declared type arity — what a rendered `Foo<…>` marker in the
-    /// oracle's name must be counting.
-    arity: usize,
     /// [`Plant::path_type_checks`] — `false` means FCS reports no symbol at
     /// *either* site because the path is an error, so the case constrains only
     /// that we do not claim to own the path.
@@ -375,7 +371,6 @@ fn observe() -> BTreeMap<String, Observation> {
                     site,
                     ours: ours[&site].clone(),
                     fcs: fcs[&site].clone(),
-                    arity: plant.arity.count(),
                     type_checks: plant.path_type_checks(),
                 },
             );
@@ -518,61 +513,64 @@ fn companion_head_choice_is_sound_against_fcs() {
     );
 }
 
-/// The number of top-level arguments in a name's single trailing `<…>` marker,
-/// or `None` when it carries none. Commas inside a nested list, a tuple's
-/// parentheses or an array rank belong to that argument, not to the list.
-fn marker_arguments(full: &str) -> Option<usize> {
-    let open = full.find('<')?;
-    let body = full[open + 1..].strip_suffix('>').or_else(|| {
-        // `Foo<_>.Tail` — the marker closes before the remaining segments.
-        let close = full[open..].find(">.")? + open;
-        Some(&full[open + 1..close])
-    })?;
-    let mut depth = 0isize;
-    let mut args = 1usize;
-    for ch in body.chars() {
-        match ch {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => args += 1,
-            _ => {}
+/// The structural facts corpus-diff certifies an oracle declaration against:
+/// FCS names the entity a member is declared in, and how many type parameters
+/// that entity has, *without* rendering it.
+///
+/// The rendered `FullName` cannot stand in for either — it prints the enclosing
+/// type through `NicePrint`, so its arguments carry commas that are not
+/// separators (`ImmutableArray<Probe.A,B>` is one argument, of the type
+/// ``A,B``) and `>`s that close nothing (`Holder<(int -> string)>`). Both were
+/// measured; the pin here is that the *structural* fields agree with what the
+/// corpus planted, which is the premise the other harness relies on.
+#[test]
+fn the_oracle_names_a_declaring_entity_structurally() {
+    let mut checked = 0usize;
+    for plant in companion_corpus::corpus() {
+        let src = plant.probe_source();
+        let path = temp_fs_file("companion_declaring", &src);
+        let json = invoke_fcs_dump_with_refs("uses", &path, &[ensure_companion_corpus_built()]);
+        let _ = std::fs::remove_file(&path);
+        let uses = parse_fcs_uses(&json, &src);
+        let (ps, pe) = plant.path_span(&src);
+        for u in uses {
+            if u.start != ps || u.end != pe || u.is_from_definition {
+                continue;
+            }
+            let Some(declaring) = u.declaring_full_name.as_deref() else {
+                continue;
+            };
+            // The declaring entity is named, not drawn: no type arguments in it.
+            assert!(
+                !declaring.contains('<'),
+                "{}: structural declaring name is rendered: {declaring}",
+                plant.key()
+            );
+            // Its arity is the plant's when the leaf sits on the type; a leaf on
+            // the companion module is declared in a module, which is never
+            // generic.
+            let arity = u
+                .declaring_generic_arity
+                .unwrap_or_else(|| panic!("{}: declaring name without arity", plant.key()));
+            let expected = if declaring.ends_with("Module") || arity == 0 {
+                arity
+            } else {
+                plant.arity.count()
+            };
+            assert_eq!(
+                arity,
+                expected,
+                "{}: declaring {declaring} reports arity {arity}",
+                plant.key()
+            );
+            checked += 1;
         }
     }
-    Some(args)
-}
-
-/// The rendering fact `corpus-diff` certifies a marker against: when FCS writes
-/// a generic-arity marker into a name, the arguments it holds are the declaring
-/// type's type parameters — so their **count is that type's arity**.
-///
-/// That harness elides such a marker only where our own resolution witnesses a
-/// non-module entity of exactly that arity (`certified_expected`), which is
-/// what stops the elision from equating a type with its companion module. The
-/// witness is worth nothing if the premise is wrong, and the premise is about
-/// FCS's renderer rather than about our code — so it is pinned here, against
-/// the real oracle, on the sweep's own planted arities.
-#[test]
-fn a_rendered_arity_marker_counts_the_declaring_types_parameters() {
-    let observations = observe();
-    let mut marked = 0usize;
-    for (key, obs) in &observations {
-        let Some(target) = &obs.fcs else { continue };
-        let Some(args) = marker_arguments(&target.full_name) else {
-            continue;
-        };
-        marked += 1;
-        assert_eq!(
-            args, obs.arity,
-            "{key}: FCS rendered {} with {args} argument(s), but the cell's type declares {}",
-            target.full_name, obs.arity
-        );
-    }
-    // Non-vacuity: a corpus that stopped planting generic holders, or an oracle
-    // that stopped rendering the marker, would make the assertion above hold
-    // for nothing at all.
+    // Non-vacuity: a corpus that stopped planting leaves, or an oracle that
+    // stopped reporting declaring entities, would satisfy the loop trivially.
     assert!(
-        marked > 0,
-        "no FCS name carried an arity marker — corpus or oracle changed?"
+        checked > 0,
+        "no use reported a declaring entity — corpus or oracle changed?"
     );
 }
 

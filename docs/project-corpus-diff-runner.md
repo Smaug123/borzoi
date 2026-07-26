@@ -215,20 +215,31 @@ was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
 (`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the
 comparison here stays exact.
 
-One more rendering difference is normalised: FCS writes a member's **enclosing
-generic type with its type arguments** — `MethodReturnType<_>.Returns`,
+One more difference is normalised, and how says something about the currency.
+FCS's full name for a member **renders** its enclosing type with type arguments
+— `MethodReturnType<_>.Returns`,
 `ImmutableArray<WoofWare.PawPrint.ConcreteTypeHandle>.Empty` — while our full
-names carry no arity at all. The marker is *not* stripped on sight: a type and
-its companion module render the same name, and `System.Collections.Immutable`
-ships a non-generic `ImmutableArray` beside `ImmutableArray<'T>`, so blind
-stripping would score the wrong member of a candidate set as agreement. Instead
-the marker is elided only where our own resolution certifies it
-(`certified_expected`): it must decorate the segment naming the entity **we**
-resolved, that entity must not be a module, and its generic parameter count must
-equal the marker's top-level argument count. Anything else — a marker on another
-segment, two markers, an argument list that cannot be counted — is refused and
-the site stays a divergence. That the argument count *is* the declaring type's
-arity is pinned against the real oracle by
+names carry no arity at all, so a correct resolution scored as a divergence in
+both directions.
+
+That decoration is not parsed back off. Its arguments carry commas that are not
+separators (`ImmutableArray<Probe.A,B>` is *one* argument, of the type
+``A,B`` — FCS drops the quoting) and `>`s that close nothing (an F# function
+argument renders `(int -> string)`); both are measured, and either read as the
+wrong arity. So `fcs-dump` emits the enclosing entity **structurally** beside
+the rendering — `DeclaringFullName` (``Probe.Holder`1``) and
+`DeclaringGenericArity` — and the comparison uses those.
+
+The oracle's structural declaration is accepted only where our own resolution
+certifies it (`certified_expected`): the enclosing chain we resolved must hold
+an entity of that full name, that entity must not be a module (a module is never
+generic), and its generic parameter count must equal the reported arity. The
+chain rather than just the entity we resolved, because the declaring entity is
+often an *encloser* — a union case carrying a field is a type nested in its
+union. Without the arity check the acceptance would launder a wrong answer:
+`Holder<'T>` and `Holder<'T,'U>` share a full name, as do a type and its
+companion module. A use with no declaring entity is compared exactly as it
+arrives. The structural fields themselves are pinned against the real oracle by
 `crates/sema/tests/all/companion_head_diff.rs`.
 
 The default soundness gate allows zero divergences.

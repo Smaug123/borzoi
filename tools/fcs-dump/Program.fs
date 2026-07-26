@@ -4754,6 +4754,49 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         match u.Symbol with
         | :? FSharpEntity as e -> (try box e.GenericParameters.Count with _ -> null)
         | _ -> null
+    // The entity a member/field/case hangs off, named **structurally**.
+    //
+    // `FullName` above is a *rendering*: `SymbolHelpers.FullNameOfItem` prints
+    // the enclosing type through `NicePrint`, so it arrives decorated with type
+    // arguments — `Holder<_>.Value`, `ImmutableArray<(int -> string)>.Empty`,
+    // `ImmutableArray<Probe.A,B>.Empty` (that last one is *one* argument whose
+    // type is named ``A,B``, with the quoting dropped). A consumer that needs
+    // the enclosing type's identity and arity cannot recover them from that
+    // string: the arguments carry commas that are not separators and `>`s that
+    // do not close the list. So emit the two facts directly — the declaring
+    // entity's own full name and its type-parameter count — and leave the
+    // rendering to be read by humans.
+    let declaringEntity : FSharpEntity option =
+        try
+            match u.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as m -> m.DeclaringEntity
+            | :? FSharpField as f -> f.DeclaringEntity
+            | :? FSharpUnionCase as c -> Some c.DeclaringEntity
+            | :? FSharpEntity as e -> e.DeclaringEntity
+            | _ -> None
+        with _ ->
+            None
+    // Qualified exactly as `qualifiedFullName` is: FCS reports an F# module's
+    // `FullName` bare (`Seq`), and an unqualified name cannot witness which
+    // entity was named.
+    let declaringFullName : objnull =
+        match declaringEntity with
+        | None -> null
+        | Some e ->
+            try
+                let name = e.FullName
+                if name.Contains "." then
+                    box name
+                else
+                    match e.AccessPath with
+                    | "" | "global" -> box name
+                    | path -> box (path + "." + name)
+            with _ ->
+                null
+    let declaringGenericArity : objnull =
+        match declaringEntity with
+        | None -> null
+        | Some e -> (try box e.GenericParameters.Count with _ -> null)
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4761,7 +4804,9 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        Assembly = assemblyName
        FullName = qualifiedFullName
        SymbolKind = symbolKind
-       GenericArity = genericArity |}
+       GenericArity = genericArity
+       DeclaringFullName = declaringFullName
+       DeclaringGenericArity = declaringGenericArity |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

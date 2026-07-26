@@ -325,6 +325,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
                 }),
                 assembly: None,
                 full_name: None,
+                declaring: None,
             }],
         }],
     );
@@ -604,6 +605,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "_n".to_string(),
@@ -617,6 +619,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
             ],
         }],
@@ -689,6 +692,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "_n".to_string(),
@@ -702,6 +706,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "_n".to_string(),
@@ -715,6 +720,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
             ],
         }],
@@ -755,6 +761,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "x".to_string(),
@@ -768,6 +775,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "printfn".to_string(),
@@ -777,6 +785,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     decl: UseDecl::Unlocated,
                     assembly: Some("FSharp.Core".to_string()),
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "intrinsic".to_string(),
@@ -786,6 +795,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     decl: UseDecl::Unlocated,
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
             ],
         }],
@@ -830,6 +840,7 @@ fn comparison_matches_assembly_oracle_declarations() {
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Value".to_string()),
+                declaring: None,
             }],
         }],
     );
@@ -862,6 +873,7 @@ fn comparison_reports_wrong_assembly_resolution() {
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Other".to_string()),
+                declaring: None,
             }],
         }],
     );
@@ -903,6 +915,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "x".to_string(),
@@ -916,6 +929,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
                 ProjectUse {
                     name: "y".to_string(),
@@ -929,6 +943,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     }),
                     assembly: None,
                     full_name: None,
+                    declaring: None,
                 },
             ],
         }],

@@ -1368,6 +1368,14 @@ pub struct NormalisedUse {
     /// The entity's declared generic arity — the second half of that witness,
     /// since two types at one name differ only by it. `None` for a non-entity.
     pub generic_arity: Option<usize>,
+    /// The entity a member/field/case is declared in, named **structurally**
+    /// (`Probe.Holder`1`, ECMA arity mangling included) rather than rendered.
+    /// [`full_name`](Self::full_name) prints that entity through `NicePrint`,
+    /// so it arrives decorated with type arguments and its identity cannot be
+    /// read back off the string; corpus-diff certifies against this instead.
+    pub declaring_full_name: Option<String>,
+    /// How many type parameters that declaring entity declares.
+    pub declaring_generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1396,6 +1404,10 @@ struct RawUse {
     kind: Option<String>,
     #[serde(rename = "GenericArity", default)]
     generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringFullName", default)]
+    declaring_full_name: Option<String>,
+    #[serde(rename = "DeclaringGenericArity", default)]
+    declaring_generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1445,6 +1457,8 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                 full_name: u.full_name,
                 kind: u.kind,
                 generic_arity: u.generic_arity,
+                declaring_full_name: u.declaring_full_name,
+                declaring_generic_arity: u.declaring_generic_arity,
             }
         })
         .collect()
