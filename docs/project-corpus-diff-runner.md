@@ -231,6 +231,10 @@ include:
   captured import/SDK/item/condition diagnostics that made them untrustworthy;
 - projects over `BORZOI_PROJECT_MAX_FILES`;
 - missing semantic project data;
+- an **uncacheable reference set** — a transient C# sidecar transport failure
+  means the LSP caches nothing, so the oracle's references and the env the fold
+  resolves against would come from two separate resolutions that may differ;
+  comparing across them is evidence of nothing either way;
 - FCS invocation or JSON parse failures;
 - FCS error diagnostics in one or more files. The reason quotes the leading
   errors with their sites — one per file before any file's second, so the
