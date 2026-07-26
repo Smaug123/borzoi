@@ -2875,6 +2875,46 @@ impl AssemblyEnv {
     /// The F# source full name of `handle`: namespace segments, enclosing
     /// entity names for nested types, and the entity's source name when metadata
     /// records one (`List`, not `ListModule`).
+    /// The entities whose names [`Self::entity_full_name`] joins after the
+    /// namespace: the enclosing chain outermost-first, ending at `handle`.
+    ///
+    /// A consumer that has to line a *rendered* name up with the entities behind
+    /// it needs this — the segments of a full name are the outermost entity's
+    /// namespace followed by exactly one segment per chain entry, so a caller
+    /// can say which entity any given segment names. (The differential
+    /// harnesses use it to decide whether a generic-arity marker FCS wrote onto
+    /// a segment is one our own resolution vouches for.)
+    pub fn enclosing_chain(&self, handle: EntityHandle) -> Vec<EntityHandle> {
+        let mut chain = Vec::new();
+        for &root in &self.top_level_types {
+            if self.push_enclosing_chain_from(root, handle, &mut chain) {
+                return chain;
+            }
+        }
+        // Unreachable from a root: `entity_full_name` falls back to the
+        // entity's own namespace and name, which is a one-entry chain.
+        vec![handle]
+    }
+
+    fn push_enclosing_chain_from(
+        &self,
+        current: EntityHandle,
+        target: EntityHandle,
+        chain: &mut Vec<EntityHandle>,
+    ) -> bool {
+        chain.push(current);
+        if current == target {
+            return true;
+        }
+        for &child in self.children(current) {
+            if self.push_enclosing_chain_from(child, target, chain) {
+                return true;
+            }
+        }
+        chain.pop();
+        false
+    }
+
     pub fn entity_full_name(&self, handle: EntityHandle) -> String {
         let mut segments = Vec::new();
         if self.push_entity_full_name(handle, &mut segments) {
@@ -5884,7 +5924,7 @@ mod active_pattern_banana_tests {
 
 #[cfg(test)]
 mod from_views_tests {
-    use super::{AssemblyEnv, InterfaceChain, ManifestSurfacePosition};
+    use super::{AssemblyEnv, EntityHandle, InterfaceChain, ManifestSurfacePosition};
     use borzoi_assembly::{
         AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
         EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
@@ -6016,6 +6056,53 @@ mod from_views_tests {
         }
         fn fsharp_resources(&self) -> Result<Vec<FSharpResource>, ImportError> {
             Ok(vec![])
+        }
+    }
+
+    /// A full name is its outermost entity's namespace followed by **exactly
+    /// one segment per enclosing-chain entry**.
+    ///
+    /// That correspondence is what lets a consumer of a rendered name say which
+    /// entity any given segment names — corpus-diff certifies FCS's
+    /// generic-arity markers with it. Asserted for every interned handle,
+    /// nested ones included, since the two walks are separate code.
+    #[test]
+    fn a_full_name_is_the_namespace_then_one_segment_per_chain_entry() {
+        let mut outer = module_entity("A", &["Ns", "Sub"], "Outer");
+        outer.kind = EntityKind::Class;
+        let mut inner = module_entity("A", &[], "Inner");
+        inner.kind = EntityKind::Class;
+        let mut leaf = module_entity("A", &[], "Leaf");
+        leaf.kind = EntityKind::Class;
+        inner.nested_types = vec![leaf];
+        outer.nested_types = vec![inner];
+        let env = AssemblyEnv::from_entities(vec![
+            outer,
+            module_entity("A", &["Ns"], "Standalone"),
+            module_entity("A", &[], "Global"),
+        ]);
+
+        for index in 0..env.nodes.len() {
+            let handle = EntityHandle::new(index);
+            let chain = env.enclosing_chain(handle);
+            assert_eq!(
+                *chain.last().expect("a chain ends at its own entity"),
+                handle
+            );
+            let mut expected: Vec<String> = env.entity(chain[0]).namespace.clone();
+            expected.extend(chain.iter().map(|&h| {
+                let entity = env.entity(h);
+                entity
+                    .source_name
+                    .as_deref()
+                    .unwrap_or(&entity.name)
+                    .to_string()
+            }));
+            assert_eq!(
+                env.entity_full_name(handle),
+                expected.join("."),
+                "chain and full name disagree for {handle:?}"
+            );
         }
     }
 
