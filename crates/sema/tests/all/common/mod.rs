@@ -1368,6 +1368,17 @@ pub struct NormalisedUse {
     /// The entity's declared generic arity — the second half of that witness,
     /// since two types at one name differ only by it. `None` for a non-entity.
     pub generic_arity: Option<usize>,
+    /// The entity a member/field/case is declared in, named **structurally**:
+    /// one `(compiled name, generic parameter count)` per segment, outermost
+    /// first. [`full_name`](Self::full_name) prints that entity through
+    /// `NicePrint`, so it arrives decorated with type arguments and its identity
+    /// cannot be read back off the string — and a compiled name may itself
+    /// contain a dot, so a dotted form could not be split either. corpus-diff
+    /// certifies against this instead.
+    pub declaring_path: Option<Vec<(String, usize)>>,
+    /// Whether the use is a constructor, which names its own type rather than a
+    /// member of it.
+    pub is_constructor: bool,
 }
 
 #[derive(Deserialize)]
@@ -1396,6 +1407,18 @@ struct RawUse {
     kind: Option<String>,
     #[serde(rename = "GenericArity", default)]
     generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringPath", default)]
+    declaring_path: Option<Vec<RawDeclaringSegment>>,
+    #[serde(rename = "IsConstructor", default)]
+    is_constructor: bool,
+}
+
+#[derive(Deserialize)]
+struct RawDeclaringSegment {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Arity")]
+    arity: usize,
 }
 
 #[derive(Deserialize)]
@@ -1445,6 +1468,12 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                 full_name: u.full_name,
                 kind: u.kind,
                 generic_arity: u.generic_arity,
+                declaring_path: u.declaring_path.map(|path| {
+                    path.into_iter()
+                        .map(|segment| (segment.name, segment.arity))
+                        .collect()
+                }),
+                is_constructor: u.is_constructor,
             }
         })
         .collect()

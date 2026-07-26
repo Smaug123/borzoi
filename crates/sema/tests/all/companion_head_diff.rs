@@ -31,9 +31,14 @@
 //! - the **leaf**: whenever we commit for the whole path, FCS must agree — with
 //!   generic-arity markers stripped from both sides, since FCS renders a member's
 //!   enclosing generic type as `Foo<_>.Tail` and our full names carry no marker
-//!   (the same rendering difference corpus-diff normalises). The head comparison
-//!   already pins *which* container the leaf came from, so the stripping cannot
-//!   launder a container mix-up.
+//!   (corpus-diff faces the same rendering difference, and — having no separate
+//!   head comparison to lean on — resolves it from the oracle's *structural*
+//!   declaring-entity fields instead of by reading the rendering). The head
+//!   comparison already pins *which* container the leaf came from, so the
+//!   stripping cannot launder a container mix-up.
+//!
+//! [`the_oracle_names_a_declaring_entity_structurally`] pins those fields here,
+//! where a real oracle is already running, since that harness depends on them.
 //!
 //! Both are ratcheted, in **two** tables kept apart because the debts are not
 //! alike: [`KNOWN_GAPS`] records a cell where we defer and FCS resolves (sound —
@@ -505,6 +510,75 @@ fn companion_head_choice_is_sound_against_fcs() {
         },
         gaps.len(),
         observations.len(),
+    );
+}
+
+/// The structural facts corpus-diff certifies an oracle declaration against:
+/// FCS names the entity a member is declared in as a *path* of compiled names
+/// with their generic-parameter counts, rather than rendering it.
+///
+/// The rendered `FullName` cannot stand in for it — it prints the enclosing type
+/// through `NicePrint`, so its arguments carry commas that are not separators
+/// (`ImmutableArray<Probe.A,B>` is one argument, of the type ``A,B``) and `>`s
+/// that close nothing (`Holder<(int -> string)>`), all measured. Nor could a
+/// dotted structural *string*: `[<CompiledName "Clr.Holder">]` puts a dot inside
+/// one identifier.
+///
+/// What is asserted here is what the corpus **planted**, never what the oracle
+/// happened to report: the leaf of a cell whose tail sits on the type is
+/// declared in that type, at that type's arity. A regression that reported the
+/// wrong entity, or arity 0 for everything, has to fail this.
+#[test]
+fn the_oracle_names_a_declaring_entity_structurally() {
+    let mut checked = 0usize;
+    for plant in companion_corpus::corpus() {
+        // Only the cells whose leaf is on the *type* have a planted expectation
+        // that does not depend on the oracle: the module half's compiled name
+        // depends on whether fsc needed the `Module` suffix, which is the
+        // fixture's business rather than this assertion's.
+        if plant.tail != companion_corpus::Tail::Type || !plant.path_type_checks() {
+            continue;
+        }
+        let src = plant.probe_source();
+        let path = temp_fs_file("companion_declaring", &src);
+        let json = invoke_fcs_dump_with_refs("uses", &path, &[ensure_companion_corpus_built()]);
+        let _ = std::fs::remove_file(&path);
+        let (ps, pe) = plant.path_span(&src);
+        for u in parse_fcs_uses(&json, &src) {
+            if u.is_from_definition
+                || u.name != companion_corpus::TAIL
+                || u.start > ps
+                || pe > u.end
+            {
+                continue;
+            }
+            let Some(declaring) = u.declaring_path.as_deref() else {
+                continue;
+            };
+            let (name, arity) = declaring.last().expect("a path has a last segment");
+            // ECMA-335 mangles the arity into the name; the projection strips it
+            // and keeps the count, which is the domain corpus-diff compares in.
+            let spelling = name.rsplit_once('`').map_or(name.as_str(), |(head, tail)| {
+                if tail.parse::<usize>().is_ok() {
+                    head
+                } else {
+                    name
+                }
+            });
+            assert_eq!(
+                (spelling, *arity),
+                (plant.name.as_str(), plant.arity.count()),
+                "{}: the leaf is declared in {declaring:?}",
+                plant.key()
+            );
+            checked += 1;
+        }
+    }
+    // Non-vacuity: a corpus that stopped planting type-side leaves, or an oracle
+    // that stopped reporting declaring entities, would satisfy the loop.
+    assert!(
+        checked > 0,
+        "no type-side leaf reported a declaring entity — corpus or oracle changed?"
     );
 }
 

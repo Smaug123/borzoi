@@ -26,4 +26,5 @@ borzoi-cst = { path = "../cst" }
 # so the contract is checked by the real validator rather than by a second copy
 # of its rules restated in an assertion.
 borzoi-stats = { path = "../../tools/stats" }
+proptest = "1"
 tempfile = "3"

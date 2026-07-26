@@ -93,6 +93,16 @@ pub enum Arity {
 impl Arity {
     pub const ALL: [Arity; 2] = [Arity::Mono, Arity::Generic];
 
+    /// How many type parameters the plant's type declares — the number FCS
+    /// writes into a rendered `Foo<…>` marker, and the number a consumer of
+    /// that rendering must be able to recover.
+    pub fn count(self) -> usize {
+        match self {
+            Arity::Mono => 0,
+            Arity::Generic => 1,
+        }
+    }
+
     fn tag(self) -> &'static str {
         match self {
             Arity::Mono => "0",

@@ -215,6 +215,49 @@ was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
 (`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the
 comparison here stays exact.
 
+One more difference is normalised, and how says something about the currency.
+FCS's full name for a member **renders** its enclosing type with type arguments
+— `MethodReturnType<_>.Returns`,
+`ImmutableArray<WoofWare.PawPrint.ConcreteTypeHandle>.Empty` — while our full
+names carry no arity at all, so a correct resolution scored as a divergence in
+both directions.
+
+That decoration is not parsed back off. Its arguments carry commas that are not
+separators (`ImmutableArray<Probe.A,B>` is *one* argument, of the type
+``A,B`` — FCS drops the quoting) and `>`s that close nothing (an F# function
+argument renders `(int -> string)`); both are measured, and either read as the
+wrong arity. So `fcs-dump` emits the enclosing entity **structurally** beside
+the rendering: `DeclaringPath`, one `(compiled name, generic parameter count)`
+per segment outermost-first, plus the namespace it sits in and whether the use
+is a constructor.
+
+A path of segments rather than a dotted name, because a compiled name may
+itself contain a dot — `[<CompiledName "Clr.Holder">] type H<'T>` declares its
+cases in `Renamed.Clr.Holder`, one metadata identifier — so anything that split
+on dots would read one entity as two.
+
+The oracle's structural declaration is accepted only where our own resolution
+certifies it (`certified_expected` / `chain_position`): the enclosing chain we
+resolved must match the path segment for segment — same namespace, each
+segment's compiled name equal to ours (one domain: `Entity::name`, with ECMA's
+arity mangling stripped from both, since matching *either* spelling would not be
+injective across crossed `[<CompiledName>]`s), each segment's generic parameter
+count equal to ours — and the entity it names must not be a module. The chain
+rather than just the entity we resolved, because the declaring entity is often
+an *encloser*: a union case carrying a field is a type nested in its union.
+Without the arity check the acceptance would launder a wrong answer:
+`Holder<'T>` and `Holder<'T,'U>` share a name, as do ``Outer`1.Inner`1`` and
+``Outer`2.Inner``, and so do a type and its companion module.
+
+What comes back is *our* name for the entity that certified — the declaring
+entity alone for a constructor, which names its own type, and otherwise that
+entity plus the used symbol's name. It is an **additional** accepted name, never
+a substitute: FCS names a constructor use by its type, so substituting would
+turn agreement into a divergence. A use with no declaring entity is compared
+exactly as it arrives. The structural fields themselves are pinned against the
+real oracle by `crates/sema/tests/all/companion_head_diff.rs`, against what its
+corpus planted rather than against what the oracle reported.
+
 The default soundness gate allows zero divergences.
 
 ## Current Failure Gates

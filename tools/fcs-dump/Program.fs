@@ -4754,6 +4754,89 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         match u.Symbol with
         | :? FSharpEntity as e -> (try box e.GenericParameters.Count with _ -> null)
         | _ -> null
+    // The entity a member/field/case hangs off, named **structurally**.
+    //
+    // `FullName` above is a *rendering*: `SymbolHelpers.FullNameOfItem` prints
+    // the enclosing type through `NicePrint`, so it arrives decorated with type
+    // arguments — `Holder<_>.Value`, `ImmutableArray<(int -> string)>.Empty`,
+    // `ImmutableArray<Probe.A,B>.Empty` (that last one is *one* argument whose
+    // type is named ``A,B``, with the quoting dropped). A consumer that needs
+    // the enclosing type's identity and arity cannot recover them from that
+    // string: the arguments carry commas that are not separators and `>`s that
+    // do not close the list. So emit the two facts directly — the declaring
+    // entity's own full name and its type-parameter count — and leave the
+    // rendering to be read by humans.
+    let declaringEntity : FSharpEntity option =
+        try
+            match u.Symbol with
+            | :? FSharpMemberOrFunctionOrValue as m -> m.DeclaringEntity
+            | :? FSharpField as f -> f.DeclaringEntity
+            | :? FSharpUnionCase as c -> Some c.DeclaringEntity
+            | :? FSharpEntity as e -> e.DeclaringEntity
+            | _ -> None
+        with _ ->
+            None
+    // Emitted as a **path of segments**, not a dotted string. A compiled name
+    // may itself contain a dot — `[<CompiledName "Clr.Holder">] type H<'T>`
+    // declares its cases in `Renamed.Clr.Holder`, one metadata identifier —
+    // so a consumer that split on dots would read one entity as two. Each
+    // segment carries the entity's *compiled* name and its own generic-parameter
+    // count (cumulative through nesting, as ECMA-335 declares them), which is
+    // the domain a metadata reader is already in; the enclosing namespace rides
+    // alongside, since it is what pins the path to a place rather than to a
+    // shape.
+    let rec declaringSegments (e: FSharpEntity) : FSharpEntity list =
+        match (try e.DeclaringEntity with _ -> None) with
+        | Some parent when not (try parent.IsNamespace with _ -> true) ->
+            declaringSegments parent @ [ e ]
+        | Some _
+        | None -> [ e ]
+    let declaringPath : objnull =
+        match declaringEntity with
+        | None -> null
+        | Some e ->
+            try
+                declaringSegments e
+                |> List.map (fun segment ->
+                    {| Name = segment.CompiledName
+                       Arity = segment.GenericParameters.Count |})
+                |> List.toArray
+                |> box
+            with _ ->
+                null
+    /// The namespace the path's outermost segment sits in, `null` for the
+    /// **root** one.
+    ///
+    /// `FSharpEntity.Namespace` rather than `AccessPath`: the latter renders the
+    /// root as the string `global`, which a namespace *called* ``global`` also
+    /// renders as, so a root declaration and a `global.…` one would arrive
+    /// indistinguishable. `Namespace` is `None` only for the root (and only ever
+    /// `Some` when every access-path component is a namespace, which the
+    /// outermost segment's are by construction).
+    let declaringNamespace : objnull =
+        match declaringEntity with
+        | None -> null
+        | Some e ->
+            try
+                let outermost = List.head (declaringSegments e)
+                match outermost.Namespace with
+                | None -> null
+                | Some path -> box path
+            with _ ->
+                null
+    // A constructor use names its *type*: FCS reports the display name of the
+    // type for it, so composing "declaring entity plus symbol name" would name
+    // `Dictionary.Enumerator.Enumerator` for `Dictionary<_,_>.Enumerator()`.
+    // Reported rather than guessed at from the spelling.
+    // Always a JSON boolean, never `null`: the consumers deserialise it as a
+    // `bool`, and a null would fail the *whole* dump's parse — turning one
+    // unreadable symbol into a skipped project. `false` on failure is the
+    // fail-closed answer: a constructor read as an ordinary member composes a
+    // name that matches nothing, so the site stays a divergence.
+    let isConstructor : bool =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
+        | _ -> false
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4761,7 +4844,10 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        Assembly = assemblyName
        FullName = qualifiedFullName
        SymbolKind = symbolKind
-       GenericArity = genericArity |}
+       GenericArity = genericArity
+       DeclaringPath = declaringPath
+       DeclaringNamespace = declaringNamespace
+       IsConstructor = isConstructor |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()
