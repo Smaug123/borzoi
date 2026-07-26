@@ -40,6 +40,32 @@
 //!
 //! Declining is always the fail-safe (an availability loss, not a soundness bug);
 //! a wrong or divergent target fails.
+//!
+//! ## What this sweep says about the tier order
+//!
+//! A self-qualifier reached under a **prefix** is something today's ladder never
+//! gets to: the opens are walked first and supply the name before the enclosing
+//! namespace is tried. Move the enclosing namespace above the opens in
+//! `assembly_prefixes_by_priority` and this sweep goes red *vacuously* — no
+//! self-qualified head reaches FSharp.Core at all.
+//!
+//! Two rules are needed to make it green there, and only the first is in place:
+//!
+//! - `assembly_path_records` asks `self_module_shadow_only` about the **source**
+//!   path rather than the prefix-expanded one. `N.List.rev` for a written
+//!   `List.rev` has head `N`, a namespace segment in no module chain, so asking
+//!   there classifies the reading `ProjectShadowed` and preempts the opens.
+//! - `resolve_assembly_path_over` must stop returning `ShadowDeferred` at an
+//!   `AssemblyPath::SelfModuleShadowed` reading, so a lower one can answer.
+//!   **Not done, and not separable** — see the note on
+//!   `tier_order_diff`'s `KNOWN_DIVERGENCES`. That reading can still supply the
+//!   member from the *assembly* side when the project module shares an FQN with
+//!   a referenced entity, and the walk has no way to say "the project half is
+//!   shadowed, the assembly half still answers". Modelling that is the
+//!   per-member merge, so the two land together.
+//!
+//! Run the reorder experiment before touching either rule; it is the only thing
+//! that exercises them.
 
 use std::path::{Path, PathBuf};
 

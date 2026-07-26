@@ -122,20 +122,15 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // deferral where FCS binds. The reason is that the walk's *shadow risks*
     // are keyed by the namespace prefix they live in but take their **rank**
     // from wherever that prefix happens to sit in the walk, so moving a tier
-    // moves every veto attached to it. Three models are still entangled with
+    // moves every veto attached to it. Two models are still entangled with
     // the ladder, each isolated by disabling one arm and re-running rrpd:
     //
-    //  1. `self_module_shadow_only` recognises a self-qualifier only in its
-    //     *as-written* spelling, so the same reference reached under the
-    //     enclosing-namespace prefix (`N.List.rev` for a written `List.rev`)
-    //     is classified `ProjectShadowed` and preempts the opens the
-    //     `module List` augmentation idiom relies on.
-    //  2. The **value** path cannot model FCS's per-member merge of a project
+    //  1. The **value** path cannot model FCS's per-member merge of a project
     //     module with an assembly namespace, so a project `module List` in the
     //     enclosing namespace preempts `Microsoft.FSharp.Collections`. That is
     //     the bulk of PawPrint's 627; restricting the reorder to type position
     //     left 37 when it was measured against a 617-loss tree.
-    //  3. Those last 37 are all a bare `Result` vetoed by
+    //  2. Those last 37 are all a bare `Result` vetoed by
     //     `auto_open_modules_in_namespace_shadow_type_named` at the enclosing
     //     prefix — but an assembly `[<AutoOpen>]` module enters scope at
     //     assembly-import time, *below* the enclosing namespace, so consulting
@@ -155,7 +150,25 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // So the fix is to give each remaining shadow risk an explicit rank instead
     // of inheriting the prefix's position, and only then move the tier. Until
     // that lands these rows stay, and a reorder that clears them without
-    // addressing (1)–(3) trades a rare wrong target for hundreds of lost ones.
+    // addressing (1) and (2) trades a rare wrong target for hundreds of lost
+    // ones.
+    //
+    // The self-qualifier model was recorded as a third entry until it turned
+    // out not to be separable. Its *recognition* half is settled:
+    // `assembly_path_records` asks `self_module_shadow_only` about the source
+    // path, so `N.List.rev` for a written `List.rev` is no longer classified
+    // `ProjectShadowed` on account of a head the walk itself supplied.
+    //
+    // Its other half — letting a lower reading answer once a self shadow is
+    // seen, instead of deferring at it — folds into (1). A `SelfModuleShadowed`
+    // reading can still supply the member from the *assembly* side when the
+    // project module shares an FQN with a referenced entity (`Calc.Zero()`
+    // inside `Demo.Calc` binds the assembly's `Demo.Calc.Zero`, not a lower
+    // open's `Demo.Sub.Calc.Zero`), and nothing in the walk can say "the
+    // project half is shadowed, the assembly half still answers". That *is*
+    // the per-member merge, so the two land together and neither is a slice on
+    // its own. `resolve_self_qualifier_gen_diff`'s module docs carry the
+    // reorder experiment that exercises them.
     (
         "TEnNs/contributor-first",
         "NsAuto",

@@ -368,6 +368,47 @@ fn rf_head(env: &AssemblyEnv, src: &str, head: &str, n: usize) -> Option<Resolut
     resolve(src, env).resolution_at(nth(src, head, n))
 }
 
+/// A written self-qualifier whose *prefixed* reading names a different
+/// project module still binds that project member.
+///
+/// The self-module relaxation is asked of the **written** path, so `List.rev`
+/// inside `module List` is recognised for what it is wherever the walk reaches
+/// it. That recognition must not become a licence over every prefixed reading:
+/// here the `open Q` reading `Q.List.rev` names a preceding file's real member,
+/// which is what FCS binds, and falling through to FSharp.Core would be a wrong
+/// go-to-definition (codex review raised this shape).
+///
+/// It passes because the project item resolves ahead of the assembly walk, not
+/// because of the walk's own self-shadow guard — so this pins the *answer*, and
+/// the guard is a second line behind it.
+#[test]
+fn a_self_qualifier_whose_open_names_another_project_module_binds_that_member() {
+    let env = fsharp_core_env();
+    let list = list_module(&env);
+    let file1 = "namespace Q\n\nmodule List =\n    let rev = 1\n";
+    let file2 = "namespace X\n\n\
+                 open Q\n\n\
+                 module List =\n\
+                 \x20\x20\x20\x20let g = List.rev\n";
+    let proj = resolve_project(&[impl_file(file1), impl_file(file2)], &env);
+    let f2 = proj.file(1);
+
+    assert!(
+        matches!(
+            f2.resolution_at(nth(file2, "List.rev", 0)),
+            Some(Resolution::Item(_))
+        ),
+        "`open Q` brings a project `Q.List` that supplies `rev`, and that is what \
+         FCS binds; got {:?}",
+        f2.resolution_at(nth(file2, "List.rev", 0))
+    );
+    assert_ne!(
+        f2.resolution_at(nth(file2, "List", 1)),
+        Some(Resolution::Entity(list)),
+        "…so the head must not commit FSharp.Core's `List` either"
+    );
+}
+
 #[test]
 fn self_qualified_member_of_a_split_module_does_not_bind_fsharp_core() {
     // A module split across files: FCS merges `module N.List` over the namespace,

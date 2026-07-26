@@ -69,7 +69,33 @@ impl<'a> Resolver<'a> {
         // it (`List.fold` inside `module List` → `Microsoft.FSharp.Collections`):
         // it defers at the *root* but must not preempt the opens tier.
         if self.path_is_project_shadowed(&names) {
-            return if self.self_module_shadow_only(&names) {
+            // Two questions, and they are not the same one:
+            //
+            // - is the **written** path a self-qualifier? A fact about what the
+            //   user wrote, so it is asked of the source slice. The
+            //   prefix-expanded `N.List.rev` for a written `List.rev` has head
+            //   `N`, a namespace segment in no module chain, so asking it there
+            //   classifies the reading `ProjectShadowed` and preempts the very
+            //   opens the `module List` augmentation idiom falls through to.
+            // - is *this reading's* shadow that same self module? Only then may
+            //   the reading be held rather than deferred at. A prefixed reading
+            //   can be shadowed by something else entirely — with a preceding
+            //   file's `Q.List.rev` and `namespace X; open Q; module List`, the
+            //   `Q` reading is shadowed by a real project member FCS binds, and
+            //   holding it would let the walk fall through to FSharp.Core.
+            //   The self module's own reading is exactly the reconstructed self
+            //   path, so that equality is the test; a self-qualifier the
+            //   reconstruction cannot place (`rooted_at_current_module` alone)
+            //   is conservatively a plain project shadow.
+            //
+            // For the as-written reading the two slices are equal and the
+            // expanded path is the source path, so only prefixed readings change.
+            let source = &names[base..];
+            let shadow_is_the_self_module = base == 0
+                || self
+                    .self_qualified_member_path(source)
+                    .is_some_and(|reconstructed| reconstructed == names);
+            return if shadow_is_the_self_module && self.self_module_shadow_only(source) {
                 AssemblyPath::SelfModuleShadowed
             } else {
                 AssemblyPath::ProjectShadowed
