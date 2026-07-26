@@ -1372,12 +1372,8 @@ impl<'a> Resolver<'a> {
         // false here. The per-tier [`ShadowVeto`] verdict participates in that
         // *same* walk (V1/V3) — see [`Self::type_position_shadow_at`], the one
         // definition every type-position walk shares.
-        let only_name = match names {
-            [only] => Some(only.as_str()),
-            _ => None,
-        };
         let core = |prefix: &[String]| self.assembly_type_path_core(prefix, names, arity);
-        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, only_name);
+        let shadow_at = |prefix: &[String]| self.type_position_shadow_at(prefix, names);
 
         // A module/type-shaped manifest auto-open (`[<assembly:
         // AutoOpen("N.Ops")>]` naming a module) is kept out of the walk's
@@ -1888,10 +1884,11 @@ impl<'a> Resolver<'a> {
     /// source spelled out per-walk reaches only the walk it was added to, and
     /// nothing makes the omission visible in the other.
     ///
-    /// `bare_name` is `Some` when the lookup is for a **single** source segment
-    /// — the whole path for `decide_type_path`, the head `Type` of a
-    /// `Type.Case` pattern — and `None` for a dotted path, whose tail segments
-    /// the bare-name surfaces below cannot supply.
+    /// `names` is the **whole source path** being looked up — the annotation for
+    /// `decide_type_path`, the single head `Type` of a `Type.Case` pattern. Both
+    /// arms below key off its head, which is where the path roots and therefore
+    /// the only segment a reading can contest; but they key off its *length*
+    /// differently, and the asymmetry is the point (see each arm).
     ///
     /// **Dropped types are not in this ladder.** They are a property of a
     /// *path*, not of a reading, and no per-tier verdict can express them
@@ -1899,11 +1896,35 @@ impl<'a> Resolver<'a> {
     /// gate that handles them, for why. The ladder, strongest first:
     ///
     /// 1. An in-scope assembly `[<AutoOpen>]` module with an accessible nested
-    ///    type/module of exactly this name
+    ///    type/module of exactly the head's name
     ///    ([`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`]):
     ///    exact metadata, so [`ShadowVeto::Preemptive`] — it outranks even a
     ///    same-tier real match (FCS-probe-confirmed, review round 6 on
     ///    `docs/completed/r2-annotation-typing-plan.md`).
+    ///
+    ///    This arm applies **at any path length**. The predicate matches a
+    ///    nested *module* as readily as a nested type, and such a module owns
+    ///    the whole tail from the head onwards — fsc binds the auto-open
+    ///    module's `DottedHead.Leaf` over the namespace's direct one, exactly
+    ///    as it does for a bare annotation (see
+    ///    `an_auto_open_module_shadows_a_dotted_paths_head_at_the_enclosing_namespace`).
+    ///    Being keyed on a name the metadata actually declares, it costs a
+    ///    deferral only where a real collision exists.
+    ///
+    ///    It is a **name** match, not a reading: for a dotted path it asks only
+    ///    whether the head is declared, not whether that child could own the
+    ///    tail. FCS falls through to the lower candidate when it could not —
+    ///    fsc-verified, an auto-open `type Head<'T>` beside a direct
+    ///    `module Head = type Leaf` leaves `Head.Leaf` compiling against the
+    ///    direct module — so a name-only match over-defers on that shape. The
+    ///    narrowing (walk the tail through the child, at the head's arity 0)
+    ///    is well-defined, since an auto-open module's contents are exactly the
+    ///    modelled metadata this arm already reads. It is deliberately not done
+    ///    here: narrowing a veto is the direction that manufactures wrong
+    ///    targets, and the over-deferral is worth nothing to fix today —
+    ///    `resolve_real_project_diff` is byte-identical across three real
+    ///    projects, and on WoofWare.Myriad.Plugins this arm fires 33 times for
+    ///    dotted paths without changing a single count.
     /// 2. The coarse, **name-blind** risks ([`Self::unmodelled_type_shadow_at`]):
     ///    a project `[<AutoOpen>]` module in the reading, or a namespace an
     ///    assembly with unknowable abbreviations declares into. Also
@@ -1916,22 +1937,37 @@ impl<'a> Resolver<'a> {
     ///    and an invisible abbreviation merges with the visible entity across
     ///    references. Asking only on a no-match answers a question whose answer
     ///    does not bear on the risk.
+    ///
+    ///    This arm is **single-segment only**, and deliberately so. A
+    ///    `Preemptive` verdict ends the whole walk, root tier included, so
+    ///    extending a name-blind veto to dotted heads would stop a
+    ///    *fully-qualified* path resolving in any file whose namespace holds a
+    ///    project auto-open module — measured on the abbrev fixture, and the
+    ///    commonest shape in F# there is (`System.Text.Json.JsonException` and
+    ///    friends). The hazard it would cover needs the hidden entity to be a
+    ///    *module* colliding with a qualified path's first segment — typically
+    ///    `System`, `Microsoft`, or the project's own root — where the exact
+    ///    arm above already fires for every collision the metadata records.
+    ///    `a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`
+    ///    pins the cost side of that trade so widening it is a deliberate act.
     pub(super) fn type_position_shadow_at(
         &self,
         prefix: &[String],
-        bare_name: Option<&str>,
+        names: &[String],
     ) -> ShadowVeto {
-        match bare_name {
-            Some(name)
-                if self
-                    .assemblies
-                    .auto_open_modules_in_namespace_shadow_type_named(prefix, name) =>
-            {
-                ShadowVeto::Preemptive
-            }
-            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::Preemptive,
-            _ => ShadowVeto::None,
+        let Some(head) = names.first() else {
+            return ShadowVeto::None;
+        };
+        if self
+            .assemblies
+            .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
+        {
+            return ShadowVeto::Preemptive;
         }
+        if names.len() == 1 && self.unmodelled_type_shadow_at(prefix) {
+            return ShadowVeto::Preemptive;
+        }
+        ShadowVeto::None
     }
 
     /// Whether a **dropped TypeDef** could be what FCS binds for the source path
