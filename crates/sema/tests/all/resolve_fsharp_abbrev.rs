@@ -2202,6 +2202,38 @@ fn a_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for() {
     );
 }
 
+/// A **module abbreviation** in the auto-open module is not a shadow risk, and
+/// the module index must not treat it as one.
+///
+/// fsc-verified: `[<AutoOpen>] module Auto = module Lst =
+/// Microsoft.FSharp.Collections.List` leaves a *sibling* module's `Lst.length`
+/// failing with FS0039. An abbreviation binds a name inside its own container
+/// and is published nowhere — so it cannot be the unmodelled declaration this
+/// channel guards against.
+///
+/// Inside that container it *is* in scope, but there it is not unmodelled
+/// either: `Resolver::module_aliases` resolves same-file abbreviations
+/// directly. Everything this index carries is a declaration nothing else
+/// models, which is what makes a name in it evidence of a real hazard.
+#[test]
+fn a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow() {
+    let env = fixture_env();
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    let src = "namespace Demo.CasePat\n\
+               [<AutoOpen>]\n\
+               module Auto =\n\
+               \x20   module Demo = Microsoft.FSharp.Collections.List\n\
+               module M =\n\
+               \x20   let f (y: Demo.CasePat.Shape) = y\n";
+    assert_eq!(
+        resolve(src, &env).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "an abbreviation publishes nothing, so it hides no `Demo` from this path"
+    );
+}
+
 /// The dotted channel in isolation, across files — the module-index twin of
 /// [`a_cross_file_project_auto_open_module_defers_only_a_name_the_project_declares`],
 /// and for the same reason: `tier_order_diff`'s probes are all one file, so the

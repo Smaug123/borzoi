@@ -155,25 +155,43 @@ pub fn resolve_file(
                 .insert(id_text(name.text()).to_string());
         }
     }
-    // Every *nested* module's simple name in the file, for the dotted half of
-    // the project `[<AutoOpen>]` shadow (`Resolver::project_module_named`):
-    // what owns a dotted head is a module. Definitions and abbreviations both —
-    // an abbreviation's LHS binds a name that owns whatever its target owns.
+    // Every *nested module definition*'s simple name in the file, for the
+    // dotted half of the project `[<AutoOpen>]` shadow
+    // (`Resolver::project_module_named`): what owns a dotted head is a module.
+    //
+    // Definitions only. A `module X = A.B` **abbreviation** binds a name inside
+    // its own container and publishes it nowhere — fsc-verified, an abbreviation
+    // in an `[<AutoOpen>] module Auto` leaves a *sibling* module's use of the
+    // name at FS0039 — so it can never be the hidden declaration this index
+    // stands for. Within its container it is in scope, but there it is not
+    // unmodelled either: `Resolver::module_aliases` resolves same-file
+    // abbreviations directly. Everything collected here is a declaration
+    // nothing else models, which is what makes a name in it evidence of a real
+    // hazard rather than of a name merely occurring.
+    //
     // A file's own top-level `module M` header is a `MODULE_OR_NAMESPACE` and
-    // so is not collected, which is exactly right: the risk this bounds is a
-    // declaration nested inside an `[<AutoOpen>]` module, and a top-level
-    // header can never be one. Whole-file and order-independent like the type
-    // pre-scan above, and over-approximate for the same reason.
-    for decl in file.syntax().descendants().filter_map(ModuleDecl::cast) {
-        let name = match decl {
-            // A nested header is written `module X`; `long_id` is dotted only
-            // on a malformed one, where the last segment is still the module
-            // the body hangs off.
-            ModuleDecl::NestedModule(nm) => nm.long_id().and_then(|li| li.idents().last()),
-            ModuleDecl::ModuleAbbrev(ab) => ab.ident().and_then(|li| li.idents().last()),
-            _ => None,
-        };
-        if let Some(name) = name {
+    // so is not collected, which is exactly right for the same reason: the risk
+    // this bounds is a declaration nested inside an `[<AutoOpen>]` module, and a
+    // top-level header can never be one.
+    //
+    // A `module private X` **is** collected, though F# does not publish it past
+    // its parent either (fsc-verified: a private child of an auto-open module
+    // loses `Demo.CasePat.Shape` to the referenced assembly). Inside that parent
+    // it is both visible and unmodelled — sema does not model a nested module's
+    // members — and this pre-scan is position-blind, so it cannot tell the two
+    // sites apart. Keeping it over-defers uses outside the parent; dropping it
+    // would wrong-target uses inside.
+    //
+    // Whole-file and order-independent like the type pre-scan above.
+    for nm in file
+        .syntax()
+        .descendants()
+        .filter_map(NestedModuleDecl::cast)
+    {
+        // A nested header is written `module X`; `long_id` is dotted only on a
+        // malformed one, where the last segment is still the module the body
+        // hangs off.
+        if let Some(name) = nm.long_id().and_then(|li| li.idents().last()) {
             r.own_module_simple_names
                 .insert(id_text(name.text()).to_string());
         }
