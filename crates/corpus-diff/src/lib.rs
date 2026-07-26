@@ -17,7 +17,7 @@ use std::time::Duration;
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::smallest_resolution_with_range;
-use borzoi::project_assets::resolve_assemblies_root_only;
+use borzoi::project_assets::{resolve_assemblies_for_tfm, resolve_assemblies_root_only};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::{ProjectParses, SemanticState};
 use borzoi::workspace::Workspace;
@@ -139,6 +139,10 @@ pub enum LoadSkip {
         max_files: NonZeroUsize,
     },
     SemanticUnavailable,
+    /// The LSP declined to cache this project's reference set (a transient C#
+    /// sidecar transport failure), so the oracle's references and the env the
+    /// fold resolves against would come from two different resolutions.
+    ReferenceSetUnstable,
 }
 
 impl fmt::Display for LoadSkip {
@@ -155,6 +159,10 @@ impl fmt::Display for LoadSkip {
                 write!(f, "too many Compile items ({files} > {max_files})")
             }
             Self::SemanticUnavailable => f.write_str("LSP semantic project load returned None"),
+            Self::ReferenceSetUnstable => f.write_str(
+                "the reference set was not cacheable (transient C# sidecar failure), so the \
+                 oracle and the fold would see different assemblies",
+            ),
         }
     }
 }
@@ -272,7 +280,7 @@ pub fn load_lsp_project_with_options(
 
     let define_constants = parsed.define_constants.clone();
     let lang_version = parsed.lang_version.clone();
-    let (fcs_extra_refs, project_assets) = fcs_extra_refs(project, &mut workspace);
+    let (fcs_extra_refs, project_assets) = fcs_extra_refs(project, &mut workspace, &mut semantic)?;
     let parses = semantic
         .parses_for_project(project, &mut workspace, &docs)
         .cloned()
@@ -301,51 +309,84 @@ pub fn load_lsp_project_with_options(
     })
 }
 
+/// The reference set to hand the oracle, and what the project's assets file
+/// said.
+///
+/// The refs are [`SemanticState::env_reference_dlls_for_project`] — not merely
+/// the same *composition* the `AssemblyEnv` this run compares against is built
+/// from, but the very list *that* env was built from, out of the same cache
+/// entry: the assets file's package and
+/// framework DLLs, each F# `<ProjectReference>`'s built output DLL, and the C#
+/// sidecar's metadata DLLs. Composing a second set here from the assets file
+/// alone is what kept every project with a `<ProjectReference>` out of the
+/// corpus: our side resolved the referenced project's types (the env has its
+/// output DLL) while the oracle, handed only packages and frameworks, answered
+/// FS0039 on every use of them — 8473 errors across 113 files on
+/// `WoofWare.PawPrint`'s main library, which the runner could only report as a
+/// count of erroring files.
+///
+/// Nothing is filtered out. FSharp.Core and the framework DLLs go to FCS
+/// alongside its own SDK's, which it tolerates (the diff currency is
+/// `(assembly simple name, full name)`, so a duplicate under one simple name
+/// cannot change a verdict), and dropping either would recreate the asymmetry
+/// this exists to remove.
+///
+/// A project whose reference set the LSP declined to *cache* — a transient C#
+/// sidecar transport failure — is refused ([`LoadSkip::ReferenceSetUnstable`]):
+/// nothing then guarantees the fold below resolves against the env these refs
+/// built, and a comparison across two reference sets is not evidence either way.
+///
+/// [`ProjectAssetsStatus`] describes the **assets file**, so its counts cover
+/// only the assets-derived part of the set; a reference the composition adds (an
+/// F# project ref) or omits (an unbuilt one) is not visible in them. It reads
+/// that file the way the env fold does — by the served TFM where one is known,
+/// which is the only way a multi-target restore resolves at all — so a status of
+/// `ResolutionFailed` still means the refs above are empty for the same reason.
 fn fcs_extra_refs(
     project: &Path,
     workspace: &mut Workspace,
-) -> (Vec<PathBuf>, ProjectAssetsStatus) {
+    semantic: &mut SemanticState,
+) -> Result<(Vec<PathBuf>, ProjectAssetsStatus), LoadSkip> {
     let Some(dir) = project.parent() else {
-        return (Vec::new(), ProjectAssetsStatus::ProjectDirectoryUnavailable);
+        return Ok((Vec::new(), ProjectAssetsStatus::ProjectDirectoryUnavailable));
     };
     let assets = dir.join("obj").join("project.assets.json");
     if !assets.is_file() {
-        return (Vec::new(), ProjectAssetsStatus::Missing { path: assets });
+        return Ok((Vec::new(), ProjectAssetsStatus::Missing { path: assets }));
     }
     let Some(dotnet_root) = workspace.dotnet_root_for_project(project) else {
-        return (
+        return Ok((
             Vec::new(),
             ProjectAssetsStatus::DotnetRootUnavailable { path: assets },
-        );
+        ));
     };
-    match resolve_assemblies_root_only(&assets, &dotnet_root) {
-        Ok(resolved) => {
-            let package_dlls = resolved.package_dlls.len();
-            let framework_dlls = resolved.framework_dlls.len();
-            let project_refs = resolved.project_ref_tfms.len();
-            let refs = resolved
-                .package_dlls
-                .into_iter()
-                .chain(resolved.framework_dlls)
-                .collect();
-            (
-                refs,
-                ProjectAssetsStatus::Resolved {
-                    path: assets,
-                    package_dlls,
-                    framework_dlls,
-                    project_refs,
-                },
-            )
-        }
-        Err(err) => (
-            Vec::new(),
-            ProjectAssetsStatus::ResolutionFailed {
-                path: assets,
-                message: err.to_string(),
-            },
-        ),
+    let target_framework = workspace.served_tfm_for_project(project);
+    let (refs, retryable) = semantic.env_reference_dlls_for_project(
+        project,
+        Some(dotnet_root.as_path()),
+        &target_framework,
+        workspace,
+    );
+    if retryable {
+        return Err(LoadSkip::ReferenceSetUnstable);
     }
+    let assets_resolve = match target_framework.as_deref() {
+        Some(tfm) => resolve_assemblies_for_tfm(&assets, &dotnet_root, tfm),
+        None => resolve_assemblies_root_only(&assets, &dotnet_root),
+    };
+    let status = match assets_resolve {
+        Ok(resolved) => ProjectAssetsStatus::Resolved {
+            path: assets,
+            package_dlls: resolved.package_dlls.len(),
+            framework_dlls: resolved.framework_dlls.len(),
+            project_refs: resolved.project_ref_tfms.len(),
+        },
+        Err(err) => ProjectAssetsStatus::ResolutionFailed {
+            path: assets,
+            message: err.to_string(),
+        },
+    };
+    Ok((refs, status))
 }
 
 fn items_uncertainty_details(parsed: &ParsedProject) -> LoadUncertaintyDetails {
@@ -756,9 +797,16 @@ pub struct FileUses {
 
 impl FileUses {
     pub fn has_error_diagnostics(&self) -> bool {
+        self.error_diagnostics().next().is_some()
+    }
+
+    /// The file's error-severity diagnostics — the single definition of what
+    /// counts as an oracle error, so the predicate above and the skip reason's
+    /// quotes cannot disagree about which project is comparable.
+    pub fn error_diagnostics(&self) -> impl Iterator<Item = &FcsDiagnostic> {
         self.diagnostics
             .iter()
-            .any(|d| d.severity.eq_ignore_ascii_case("Error"))
+            .filter(|d| d.severity.eq_ignore_ascii_case("Error"))
     }
 }
 
@@ -809,6 +857,82 @@ pub struct DeclSite {
     pub file: PathBuf,
     pub start: usize,
     pub end: usize,
+}
+
+/// One Compile file the oracle reported **errors** for, with those errors.
+///
+/// The diagnostics ride along rather than being counted and dropped: an
+/// oracle-side error means the comparison is off for the whole project, so the
+/// skip reason it produces is the only account of *why* — see
+/// [`fcs_error_skip_reason`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FcsErrorFile {
+    pub path: PathBuf,
+    pub errors: Vec<FcsDiagnostic>,
+}
+
+/// How many of an erroring project's diagnostics the skip reason quotes.
+/// Bounded because a project missing a reference errors on nearly every line
+/// (8473 diagnostics across 113 files, measured on `WoofWare.PawPrint`) and the
+/// reason is one line of a report.
+const QUOTED_FCS_ERRORS: usize = 3;
+
+/// The longest message body a quote keeps; FS0072's runs past 200 characters of
+/// advice that says nothing about *this* project.
+const QUOTED_FCS_MESSAGE_CHARS: usize = 110;
+
+/// The skip reason for a project the oracle could not type-check: the counts,
+/// then the leading errors with their sites, then the number of errors not
+/// quoted.
+///
+/// One error is quoted per file before any file's second error, so a single
+/// pathological file cannot crowd out the diagnostic that names the cause.
+pub fn fcs_error_skip_reason(error_files: &[FcsErrorFile]) -> String {
+    let total: usize = error_files.iter().map(|f| f.errors.len()).sum();
+    let mut quotes = Vec::new();
+    // Round-robin over files: rank 0 takes each file's first error, rank 1 its
+    // second, and so on.
+    let deepest = error_files
+        .iter()
+        .map(|f| f.errors.len())
+        .max()
+        .unwrap_or(0);
+    'quoting: for rank in 0..deepest {
+        for file in error_files {
+            if let Some(diag) = file.errors.get(rank) {
+                quotes.push(quote_fcs_error(&file.path, diag));
+                if quotes.len() == QUOTED_FCS_ERRORS {
+                    break 'quoting;
+                }
+            }
+        }
+    }
+    let mut reason = format!(
+        "{} files had FCS error diagnostics ({total} errors): {}",
+        error_files.len(),
+        quotes.join("; ")
+    );
+    let omitted = total.saturating_sub(quotes.len());
+    if omitted > 0 {
+        let _ = write!(reason, " (+{omitted} more)");
+    }
+    reason
+}
+
+fn quote_fcs_error(path: &Path, diag: &FcsDiagnostic) -> String {
+    let file = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let message = diag.message.replace('\n', " ");
+    let message = match message.char_indices().nth(QUOTED_FCS_MESSAGE_CHARS) {
+        Some((cut, _)) => format!("{}…", &message[..cut]),
+        None => message,
+    };
+    format!(
+        "{file}:{}:{} FS{:04} {message}",
+        diag.range.start.line, diag.range.start.col, diag.error_number
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1017,7 +1141,7 @@ pub struct Comparison {
     pub divergences: Vec<Divergence>,
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
-    pub fcs_error_files: Vec<PathBuf>,
+    pub fcs_error_files: Vec<FcsErrorFile>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -1597,10 +1721,7 @@ pub fn run_project_corpus_diff_with_options(
         if !comparison.fcs_error_files.is_empty() {
             summary.record_skip(
                 loaded.project.clone(),
-                format!(
-                    "{} files had FCS error diagnostics",
-                    comparison.fcs_error_files.len()
-                ),
+                fcs_error_skip_reason(&comparison.fcs_error_files),
             );
             continue;
         }
@@ -2196,7 +2317,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
 
     for file_uses in fcs {
         if file_uses.has_error_diagnostics() {
-            comparison.fcs_error_files.push(file_uses.path.clone());
+            comparison.fcs_error_files.push(FcsErrorFile {
+                path: file_uses.path.clone(),
+                errors: file_uses.error_diagnostics().cloned().collect(),
+            });
             continue;
         }
         let Some(&file_idx) = index_by_path.get(&path_key(&file_uses.path)) else {

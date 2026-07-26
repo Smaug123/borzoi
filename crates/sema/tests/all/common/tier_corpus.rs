@@ -9,15 +9,16 @@
 //! winner with no third party to confound it.
 //!
 //! **Pairs, and not larger subsets, because that was measured.** Extending
-//! [`corpus`] to unordered triples is a three-line change, and it was run:
-//! across the four families whose per-tier arity does not itself depend on the
-//! subset planted (every one but the two split families, where a triple is a
-//! different experiment from its pairs rather than a composition of them), FCS
-//! picked the pairwise champion in 160 of 160 three-way contests, in both
-//! reference orders. Its ladder is a total order on these scopes, so a triple
-//! is determined by its pairs and buys only cases. Should a scope ever be
-//! added whose ranking is *contextual*, that measurement is what stops being
-//! true, and the loop to re-run is the one right below.
+//! [`corpus`] to unordered triples is a three-line change, and it was run over
+//! the six families whose per-tier arity does not itself depend on the subset
+//! planted — `T`/`D`/`G`/`W`/`H`/`J`, i.e. every one but the four split
+//! families, where a triple is a different experiment from its pairs rather
+//! than a composition of them. FCS picked the pairwise champion in **240 of
+//! 240** three-way contests, in both reference orders. Its ladder is a total
+//! order on these scopes, so a triple is determined by its pairs and buys only
+//! cases. Should a scope ever be added whose ranking is *contextual*, that
+//! measurement is what stops being true; re-run it by extending the loop right
+//! below, and re-derive the count whenever [`FAMILIES`] changes.
 //!
 //! [`Form`] is the second, orthogonal dimension: a bare name and a *dotted
 //! head* reach a scope through different channels. An opened namespace
@@ -125,8 +126,13 @@ pub enum Form {
 /// The generic-arity shape of a plant: what arity each declaring tier declares
 /// it at, and what arity the probe writes. The sweep's third dimension.
 ///
-/// Only meaningful for [`Form::Bare`] — a [`Form::DottedHead`] container is a
-/// namespace or a module, neither of which can be generic.
+/// Orthogonal to [`Form`], because the arity belongs to the **leaf**, not to
+/// the head: a [`Form::DottedHead`] container is a namespace or a module and so
+/// cannot be generic, but the [`MARKER`] type it holds can, and
+/// `assembly_type_path_core` keys the *final* segment on the written arity
+/// while every segment above it is looked up at arity 0. Probing the dotted
+/// channel only at arity 0 would leave that split — head-tier precedence versus
+/// final-segment arity — unmeasured (codex review).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Arity {
     /// Non-generic at every declaring tier, probed bare. Every tier holds the
@@ -174,13 +180,20 @@ pub const MARKER: &str = "Marker";
 /// Every `(form, arity)` family and the letter its plant names start with.
 /// Each plants the whole tier matrix independently, so a name never carries
 /// two shapes.
-const FAMILIES: [(Form, Arity, char); 6] = [
+const FAMILIES: [(Form, Arity, char); 10] = [
     (Form::Bare, Arity::Mono, 'T'),
     (Form::DottedHead, Arity::Mono, 'D'),
     (Form::Bare, Arity::Generic, 'G'),
     (Form::Bare, Arity::Fallback, 'W'),
     (Form::Bare, Arity::GenericFirst, 'F'),
     (Form::Bare, Arity::GenericRest, 'R'),
+    // The dotted channel at every arity shape the bare one runs: the arity is
+    // the leaf's, so the head's tier contest and the leaf's arity keying are
+    // exercised together.
+    (Form::DottedHead, Arity::Generic, 'H'),
+    (Form::DottedHead, Arity::Fallback, 'J'),
+    (Form::DottedHead, Arity::GenericFirst, 'K'),
+    (Form::DottedHead, Arity::GenericRest, 'L'),
 ];
 
 /// The `<AssemblyName>` of the contributor fixture.
@@ -342,7 +355,8 @@ fn child_namespace_containers(plants: &[Plant], tier: Tier, parent: &str) -> Str
             format!("{parent}.{}", p.name)
         };
         out.push_str(&format!(
-            "\nnamespace {ns}\n\ntype {MARKER}() =\n    member _.Tier = \"{tier:?}\"\n"
+            "\nnamespace {ns}\n\ntype {MARKER}{}() =\n    member _.Tier = \"{tier:?}\"\n",
+            generic_params(p.declared_arity(tier)),
         ));
     }
     out
@@ -370,8 +384,9 @@ pub fn contributor_source(plants: &[Plant]) -> String {
     out.push_str(&bare_decls(plants, Tier::ModAuto, "    "));
     for p in plants_at(plants, Tier::ModAuto, Form::DottedHead) {
         out.push_str(&format!(
-            "\n    module {} =\n        type {MARKER}() =\n            member _.Tier = \"ModAuto\"\n",
-            p.name
+            "\n    module {} =\n        type {MARKER}{}() =\n            member _.Tier = \"ModAuto\"\n",
+            p.name,
+            generic_params(p.declared_arity(Tier::ModAuto)),
         ));
     }
     out.push_str("\nnamespace Tier.Contested\n\n");
