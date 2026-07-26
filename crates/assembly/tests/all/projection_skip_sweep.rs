@@ -22,8 +22,9 @@
 //! rejects the valid pre-TFM flat `lib/Foo.dll`. Since a misclassification in
 //! the rejecting direction silently hides exactly the regression this exists to
 //! catch, the sweep looks at every assembly it can find and justifies each loss
-//! individually instead. An [`Exemption`] does name the *file* it excuses — but
-//! see there for why that position is the safe one.
+//! individually instead. An [`Exemption`] identifies what it excuses by the
+//! file's **bytes** — no path is consulted anywhere in a verdict, so no cache
+//! layout, sweep root, symlink or basename collision can perturb one.
 //!
 //! `#[ignore]`d and env-driven: it needs a populated package cache, not a
 //! fixture, so it is a local ratchet in the mould of `resolve_real_project_diff`
@@ -34,6 +35,16 @@ use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_oracle_harness::panic_silence::catch_unwind_silent;
+use sha1::{Digest, Sha1};
+
+/// Lowercase hex SHA-1 of `bytes` — the identity an [`Exemption`] pins. Not a
+/// security boundary: it answers "are these the bytes somebody vetted?".
+fn sha1_hex(bytes: &[u8]) -> String {
+    Sha1::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
 
 /// Extensions NuGet's content model accepts as a compile assembly, matched
 /// case-insensitively (`borzoi_nuget::assets`). `.exe` is not decorative:
@@ -48,11 +59,10 @@ const ASSEMBLY_EXTENSIONS: &[&str] = &["dll", "exe", "winmd"];
 /// justification is a claim about *which files* must also say which files, and
 /// only excuses losses there.
 ///
-/// Note the direction. Narrowing an *exemption* can only turn a pass into a
-/// failure, so a wrong predicate here is loud; narrowing the *population* (the
-/// compile-asset filter this sweep used to have) turns a failure into a pass,
-/// so a wrong predicate there is silent. That asymmetry is why matching on a
-/// path is right in this position and wrong in that one.
+/// Note the direction, which is why a wrong entry here is survivable at all:
+/// narrowing an *exemption* can only turn a pass into a failure, so a mistake
+/// is loud; narrowing the *population* (the compile-asset filter this sweep
+/// used to have) turns a failure into a pass, so a mistake there is silent.
 struct Exemption {
     /// The step that must have refused the file.
     stage: Stage,
@@ -61,16 +71,18 @@ struct Exemption {
     /// substring match would let a package choose which exemption its failure
     /// lands in.
     error: &'static str,
-    /// Assembly file names this excuses, spelled out (see [`is_named`]).
-    /// **Empty** only when the justification is a property of the *bytes*,
-    /// independent of which file carries them.
+    /// SHA-1 of the exact files this excuses. **Empty** only when the
+    /// justification is a property of any bytes that produce the error, rather
+    /// than a claim about particular assemblies.
     ///
-    /// The file's name rather than its package, because a name is the one part
-    /// of a path that no cache layout, sweep root, or symlink can move: a
-    /// directory-based scope has to decide which component is the package id
-    /// (root-relative? any component?) and has to survive aliasing, and every
-    /// answer to those has been a hole.
-    files: &'static [&'static str],
+    /// A digest, because every weaker identity has been a hole: a path
+    /// substring matched unrelated caches; a package component had to decide
+    /// which component (root-relative? any?) and had to survive symlink
+    /// aliasing; a file name is not unique — the .NET Core packs alone ship
+    /// dozens of distinct `mscorlib.dll`. The bytes are the asset. They also
+    /// make the claim exact: an exemption reads "somebody looked at *this
+    /// file*", and any other file, however named or located, fails the gate.
+    digests: &'static [&'static str],
     why: &'static str,
 }
 
@@ -87,7 +99,7 @@ const EXEMPT: &[Exemption] = &[
     Exemption {
         stage: Stage::Parse,
         error: "unsupported ECMA-335 layout: assembly reader: no CLI header",
-        files: &[],
+        digests: &[],
         why: "not a managed assembly (native PE); fsc refuses it too",
     },
     // The .NET Framework targeting packs ship two shapes the reader refuses
@@ -96,20 +108,36 @@ const EXEMPT: &[Exemption] = &[
     // only from a net4x target, so whether to close them waits on whether
     // borzoi supports net4x at all. Tracked separately; exempt, not forgotten.
     //
-    // Scoped to the two files, because that is what the justification claims.
-    // Some *other* assembly refused for either cause — say one with a linked
-    // `ManifestResource` — is a new loss and must fail the gate.
+    // Pinned to the exact assemblies, one per pack version, because that is
+    // what the justification claims. Any *other* assembly refused for either
+    // cause — one with a linked `ManifestResource`, another `mscorlib.dll` from
+    // a .NET Core pack — is a new loss and must fail the gate. A pack version
+    // not listed here has not been looked at, and unvetted should be loud.
     Exemption {
         stage: Stage::Parse,
         error: "unsupported ECMA-335 layout: assembly has no Assembly manifest record",
-        files: &["System.EnterpriseServices.Wrapper.dll"],
+        // System.EnterpriseServices.Wrapper.dll, net461/462/472/48/481.
+        digests: &[
+            "129ef43a4e4aac3b8750bd665fd6027b1e204884",
+            "45ccca533bb16d3d886d2da201e9afe74a746731",
+            "0c196418d9239d854658e9a36dd25e0024cdd631",
+            "6df6434254369996b10a973122327c9c24154985",
+            "7c5786b97a926c37257b735380d2b071d6356d87",
+        ],
         why: "netmodule in the net4x targeting pack; pending the net4x-support decision",
     },
     Exemption {
         stage: Stage::Parse,
         error: "unsupported ECMA-335 layout: assembly reader: manifest resource is not embedded \
                 in this file",
-        files: &["mscorlib.dll"],
+        // mscorlib.dll, net461/462/472/48/481.
+        digests: &[
+            "2a16c49e125e5884ee7b2275486fe0924d861b53",
+            "c6a21b80778b2fdb7c19de9db2746d8eacf80065",
+            "4e7be17ac0430819db3fb299aed9e468b9c51ac9",
+            "e5da999106ee53a79430a49383a7f5b6048fd50d",
+            "4166aff8193cb55b0a9bccd20c6517cc19ae1d2d",
+        ],
         why: "net4x targeting-pack mscorlib; pending the net4x-support decision",
     },
 ];
@@ -145,15 +173,26 @@ enum Outcome {
     /// substring lets input-controlled text inside the error (a resource name
     /// the reader echoes back, say) select an exemption written for something
     /// else.
-    Skipped { stage: Stage, error: String },
+    Skipped {
+        stage: Stage,
+        error: String,
+        /// SHA-1 of the file's bytes, or `None` when they could not be read.
+        /// This is the identity an [`Exemption`] is matched on — see there.
+        digest: Option<String>,
+    },
 }
 
 impl Outcome {
-    /// The exemption justifying this loss of the assembly at `path`, if any.
-    /// All three halves must hold: same stage, *exactly* the same error, and a
-    /// path where the entry's justification says it applies.
-    fn exemption(&self, path: &Path) -> Option<&'static str> {
-        let Outcome::Skipped { stage, error } = self else {
+    /// The exemption justifying this loss, if any. All three must hold: same
+    /// stage, *exactly* the same error, and — unless the entry excuses the
+    /// error whatever carries it — exactly these bytes.
+    fn exemption(&self) -> Option<&'static str> {
+        let Outcome::Skipped {
+            stage,
+            error,
+            digest,
+        } = self
+        else {
             return None;
         };
         EXEMPT
@@ -161,7 +200,8 @@ impl Outcome {
             .find(|e| {
                 e.stage == *stage
                     && e.error == error
-                    && (e.files.is_empty() || e.files.iter().any(|f| is_named(path, f)))
+                    && (e.digests.is_empty()
+                        || digest.as_deref().is_some_and(|d| e.digests.contains(&d)))
             })
             .map(|e| e.why)
     }
@@ -170,29 +210,28 @@ impl Outcome {
     fn describe(&self) -> String {
         match self {
             Outcome::Projected { .. } => "projected".to_owned(),
-            Outcome::Skipped { stage, error } => format!("{stage:?}: {error}"),
+            Outcome::Skipped { stage, error, .. } => format!("{stage:?}: {error}"),
         }
     }
 }
 
-/// Whether `path` names an assembly file called `file` (case-insensitively).
-///
-/// The file's own name, not a directory anywhere above it. A directory-based
-/// scope has to answer "which of these components is the package id?", which
-/// depends on the sweep root, and it has to survive symlinks, which rewrite the
-/// components above the file but never the file's own name.
-fn is_named(path: &Path, file: &str) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.eq_ignore_ascii_case(file))
-}
-
 /// Run the LSP's pipeline over one assembly file.
 fn probe_assembly(path: &Path) -> Outcome {
-    let skipped = |stage, error: String| Outcome::Skipped { stage, error };
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
-        Err(e) => return skipped(Stage::Read, e.to_string()),
+        Err(e) => {
+            return Outcome::Skipped {
+                stage: Stage::Read,
+                error: e.to_string(),
+                digest: None,
+            };
+        }
+    };
+    let digest = Some(sha1_hex(&bytes));
+    let skipped = |stage, error: String| Outcome::Skipped {
+        stage,
+        error,
+        digest: digest.clone(),
     };
     let parsed = match catch_unwind_silent(|| Ecma335Assembly::parse(&bytes)) {
         Err(_) => return skipped(Stage::Parse, "reader panicked".to_owned()),
@@ -232,13 +271,10 @@ struct Found {
     /// Keyed by canonical path, so an assembly reached twice — through
     /// overlapping roots, or through a symlink — is probed and counted once;
     /// duplicates would otherwise inflate the population against
-    /// `MIN_PROJECTED`. The value is **every** logical path it was reached by.
-    ///
-    /// All of them, not the first: an [`Exemption`] is matched against the
-    /// logical path, so keeping one alias would let traversal order decide
-    /// whether a loss is excused. The bytes are probed once and the verdict
-    /// must hold for every name the cache exposes them under.
-    assemblies: BTreeMap<PathBuf, Vec<PathBuf>>,
+    /// `MIN_PROJECTED`. The value is a path to open it by; which alias it is
+    /// does not matter, since a verdict is decided by the bytes and the
+    /// refusal, never by where the file was found.
+    assemblies: BTreeMap<PathBuf, PathBuf>,
     unexamined: Vec<(PathBuf, String)>,
 }
 
@@ -290,7 +326,7 @@ fn collect_assemblies(root: &Path, found: &mut Found, visited: &mut BTreeSet<Pat
         } else if meta.is_file() && is_assembly_file(&path) {
             match path.canonicalize() {
                 Ok(canonical) => {
-                    found.assemblies.entry(canonical).or_default().push(path);
+                    found.assemblies.entry(canonical).or_insert(path);
                 }
                 Err(e) => found.unexamined.push((path, e.to_string())),
             }
@@ -334,11 +370,7 @@ fn no_assembly_is_skipped_whole_without_a_named_reason() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    // One entry per distinct assembly, carrying every name the cache exposes it
-    // under. The bytes are probed once (through the first alias — they are the
-    // same bytes) and the verdict must hold for all of them.
-    let aliases: Vec<Vec<PathBuf>> = found.assemblies.into_values().collect();
-    let files: Vec<PathBuf> = aliases.iter().map(|names| names[0].clone()).collect();
+    let files: Vec<PathBuf> = found.assemblies.into_values().collect();
     eprintln!("[skip-sweep] {} assemblies under {roots:?}", files.len());
 
     let results = probe_all(&files);
@@ -366,21 +398,13 @@ fn no_assembly_is_skipped_whole_without_a_named_reason() {
     // The gate. Grouped by cause so one reader gap reads as one line rather
     // than as its hundred affected package versions — which is how #199's
     // single root cause presented, as 77 separately skipped files.
-    // Judged against *every* alias, and excused only if every one is excused:
-    // an exemption keyed on the file's name must not depend on which of an
-    // assembly's names the traversal happened to reach first.
     let mut by_cause: BTreeMap<String, Vec<&Path>> = BTreeMap::new();
-    for (names, (_, outcome)) in aliases.iter().zip(&results) {
-        if !matches!(outcome, Outcome::Skipped { .. }) {
-            continue;
-        }
-        for name in names {
-            if outcome.exemption(name).is_none() {
-                by_cause
-                    .entry(outcome.describe())
-                    .or_default()
-                    .push(name.as_path());
-            }
+    for (path, outcome) in &results {
+        if matches!(outcome, Outcome::Skipped { .. }) && outcome.exemption().is_none() {
+            by_cause
+                .entry(outcome.describe())
+                .or_default()
+                .push(path.as_path());
         }
     }
     assert!(
@@ -460,8 +484,8 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
          | unreadable AutoOpen lists: {unreadable_auto_opens}"
     );
     let mut exempted: BTreeMap<&str, usize> = BTreeMap::new();
-    for (path, outcome) in results {
-        if let Some(why) = outcome.exemption(path) {
+    for (_, outcome) in results {
+        if let Some(why) = outcome.exemption() {
             *exempted.entry(why).or_default() += 1;
         }
     }
@@ -489,81 +513,76 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
     // it is *not* exempt — the exemption is narrow, as intended.
     assert!(!error.is_empty(), "the refusal names a cause");
     assert_eq!(
-        outcome.exemption(&not_an_assembly),
+        outcome.exemption(),
         None,
         "an unrecognised refusal must reach the gate, not be waved through"
     );
 
-    // A **scoped** exemption excuses the loss only for the file its
-    // justification names. The same refusal from any other assembly is a new
-    // loss: the error is the reader's output, and matching on it alone would
-    // wave through, say, an arbitrary assembly carrying a linked
-    // `ManifestResource`.
-    let scoped = EXEMPT
+    // A **pinned** exemption excuses exactly the bytes it names. The same
+    // refusal from any other assembly is a new loss: the error is the reader's
+    // output, and matching on it alone would wave through an arbitrary assembly
+    // carrying a linked `ManifestResource`, or any of the dozens of distinct
+    // `mscorlib.dll` the .NET Core packs ship.
+    let pinned = EXEMPT
         .iter()
-        .find(|e| !e.files.is_empty())
-        .expect("a scoped exemption to exercise");
-    let skipped = Outcome::Skipped {
-        stage: scoped.stage,
-        error: scoped.error.to_owned(),
+        .find(|e| !e.digests.is_empty())
+        .expect("a pinned exemption to exercise");
+    let at = |digest: Option<&str>| Outcome::Skipped {
+        stage: pinned.stage,
+        error: pinned.error.to_owned(),
+        digest: digest.map(str::to_owned),
     };
-    let scoped_file = scoped.files[0];
     assert_eq!(
-        skipped.exemption(Path::new(&format!("/c/packages/p/1.0.3/{scoped_file}"))),
-        Some(scoped.why),
-        "the loss its justification covers is excused"
+        at(Some(pinned.digests[0])).exemption(),
+        Some(pinned.why),
+        "the vetted bytes are excused"
     );
-    // Anywhere at all, since the name is the whole scope — a cache root, a
-    // symlinked package, a layout nobody anticipated. That invariance is why
-    // the name is the scope.
+    // Location is irrelevant by construction — the verdict never sees a path —
+    // which is why no cache layout, sweep root or symlink can perturb it.
     assert_eq!(
-        skipped.exemption(Path::new(&format!("/elsewhere/{scoped_file}"))),
-        Some(scoped.why),
-        "the same file under a different layout is the same file"
+        at(Some("0000000000000000000000000000000000000000")).exemption(),
+        None,
+        "the same refusal from other bytes must reach the gate"
     );
-    for near_miss in [
-        "Other.dll".to_owned(),
-        format!("prefix-{scoped_file}"),
-        format!("{scoped_file}.bak"),
-    ] {
-        assert_eq!(
-            skipped.exemption(Path::new(&format!("/c/packages/p/1.0.0/{near_miss}"))),
-            None,
-            "{near_miss} is not the file the exemption names"
-        );
-    }
+    assert_eq!(
+        at(None).exemption(),
+        None,
+        "a loss whose bytes were never read cannot be one of the vetted files"
+    );
 
     // An exemption is matched in FULL, so an error that merely *contains* one
     // is not excused. Otherwise a package could pick its exemption by naming a
     // resource after it — the reader echoes such names back into the message.
-    let unscoped = EXEMPT
+    let unpinned = EXEMPT
         .iter()
-        .find(|e| e.files.is_empty())
-        .expect("an unscoped exemption to exercise");
+        .find(|e| e.digests.is_empty())
+        .expect("an unpinned exemption to exercise");
     assert_eq!(
         Outcome::Skipped {
-            stage: unscoped.stage,
+            stage: unpinned.stage,
             error: format!(
                 "unknown FSharp* resource name: FSharpSignature-{}",
-                unscoped.error
+                unpinned.error
             ),
+            digest: Some("deadbeef".to_owned()),
         }
-        .exemption(Path::new("/c/packages/some.pkg/1.0.0/lib/net8.0/x.dll")),
+        .exemption(),
         None,
         "an error that merely embeds an exempt one must reach the gate",
     );
     // …and the stage is part of the match, so the same words from a different
     // step are a different failure.
-    let elsewhere = match unscoped.stage {
+    let elsewhere = match unpinned.stage {
         Stage::Parse => Stage::Enumerate,
         Stage::Read | Stage::Enumerate => Stage::Parse,
     };
     assert_eq!(
         Outcome::Skipped {
             stage: elsewhere,
-            error: unscoped.error.to_owned(),
+            error: unpinned.error.to_owned(),
+            digest: Some("deadbeef".to_owned()),
         }
-        .exemption(Path::new("/c/packages/some.pkg/1.0.0/lib/net8.0/x.dll")),
+        .exemption(),
         None,
         "the same words from another stage are a different failure",
     );
@@ -633,35 +652,20 @@ fn traversal_follows_links_and_counts_each_assembly_once() {
             "the assembly behind the link is found: {:?}",
             found.assemblies
         );
-        // …and it is remembered by the path it was *found under*, not the link
-        // target: the exemption is matched against the logical name, which
-        // canonicalisation can rewrite.
-        let (canonical, logical) = found.assemblies.iter().next().expect("the one assembly");
-        assert!(
-            logical.iter().all(|p| p.starts_with(&linked)),
-            "the logical paths go through the link: {logical:?}"
-        );
-        assert!(
-            !canonical.starts_with(&linked),
-            "the dedup key is the resolved target: {}",
-            canonical.display()
-        );
-
-        // Two links to the same file keep **both** names. Dropping one would
-        // let traversal order decide whether a name-scoped exemption fires.
+        // The key is the resolved target, so the same bytes reached under two
+        // names are one entry. Which alias is kept to open them by does not
+        // matter: a verdict is decided by the bytes and the refusal, never by
+        // where the file was found, so traversal order cannot change it.
         let second = dir.path().join("second-alias.dll");
         std::os::unix::fs::symlink(pkg.join("Real.dll"), &second).expect("symlink");
         let mut found = Found::default();
-        let mut visited = BTreeSet::new();
-        collect_assemblies(dir.path(), &mut found, &mut visited);
-        let (_, names) = found
-            .assemblies
-            .iter()
-            .find(|(_, names)| names.len() > 1)
-            .expect("the aliased assembly keeps every name it was reached by");
-        assert!(
-            names.iter().any(|n| n == &second),
-            "the second alias survives deduplication: {names:?}"
+        collect_assemblies(dir.path(), &mut found, &mut BTreeSet::new());
+        assert!(found.unexamined.is_empty(), "{:?}", found.unexamined);
+        assert_eq!(
+            found.assemblies.len(),
+            1,
+            "one file under two names is one assembly: {:?}",
+            found.assemblies
         );
         std::fs::remove_file(&second).expect("clean up");
 
@@ -698,35 +702,30 @@ fn every_exemption_is_justified_and_can_fire() {
             "exemption {:?} does not look like a whole refusal",
             e.error,
         );
-        // A scope is one path component, so an id written with a separator in
-        // it could never equal one and the exemption would sit inert — and an
-        // exemption that never fires is not the hole it was written to be; the
-        // loss it was meant to cover would fail the gate instead.
-        for file in e.files {
-            assert_eq!(
-                Path::new(file).components().count(),
-                1,
-                "{file:?} must be a bare file name, not a path"
-            );
+        // A digest written in the wrong shape can never equal one the sweep
+        // computes, so the exemption would sit inert — and an exemption that
+        // never fires is not the hole it was written to be; the loss it was
+        // meant to cover would fail the gate instead.
+        for digest in e.digests {
+            assert_eq!(digest.len(), 40, "{digest:?} is not a SHA-1 hex digest");
             assert!(
-                is_assembly_file(Path::new(file)),
-                "{file:?} must be an assembly the sweep would actually probe"
+                digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+                "{digest:?} must be lowercase hex to match"
             );
         }
         // Round-trip: the entry must actually excuse the loss it describes. An
         // `error` that does not match the reader's wording verbatim — a typo, a
         // message reworded upstream — would otherwise sit here doing nothing
         // until the gate failed on the loss it was supposed to cover.
-        let path = PathBuf::from(format!(
-            "/c/packages/p/1.0.0/lib/net8.0/{}",
-            e.files.first().unwrap_or(&"any.dll")
-        ));
         assert_eq!(
             Outcome::Skipped {
                 stage: e.stage,
                 error: e.error.to_owned(),
+                digest: Some(e.digests.first().unwrap_or(&"any").to_string()),
             }
-            .exemption(&path),
+            .exemption(),
             Some(e.why),
             "exemption {:?} does not excuse its own loss",
             e.error,
