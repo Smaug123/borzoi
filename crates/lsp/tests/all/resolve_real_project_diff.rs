@@ -196,12 +196,11 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
 /// with, so `entity_full_name` has nothing to print where FCS writes
 /// `ImmutableArray<byte>.Empty`.
 ///
-/// The **arity equality** is the adjudication, and it comes from the *oracle*
-/// rather than from counting arguments in the rendering — a quoted identifier
-/// containing a comma would read as two. The shape it must not admit is our
-/// binding a same-named companion *module*, which has no generic parameters
-/// where this rendering has at least one argument. Mirrors
-/// `borzoi_corpus_diff`'s allowance, which is what CI gates on.
+/// Two independent facts must line up, and neither is read out of the
+/// rendering's shape: the arity comes from the *oracle*, and the name must
+/// match once the argument lists are gone. Mirrors `borzoi_corpus_diff`'s
+/// allowance — see there for why a CLR arity marker or a quoted segment makes
+/// the rendering undecidable and is declined rather than approximated.
 fn generic_instantiation_matches(
     env: &AssemblyEnv,
     res: Resolution,
@@ -219,42 +218,49 @@ fn generic_instantiation_matches(
     if env.entity(entity).generic_parameters.len() != arity {
         return false;
     }
-    // Display normalisation only: strip the argument groups (an arrow's `>`
-    // does not close one) and each segment's CLR arity marker, which FCS keeps
-    // on an enclosing segment of a nested generic.
-    let strip_markers = |name: &str| {
-        name.split('.')
-            .map(|seg| match seg.rsplit_once('`') {
-                Some((head, tail))
-                    if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
-                {
-                    head
-                }
-                _ => seg,
-            })
-            .collect::<Vec<_>>()
-            .join(".")
-    };
-    let stripped = {
-        let f = fcs.replace("``", "");
-        let mut out = String::with_capacity(f.len());
-        let mut depth = 0usize;
-        let mut prev = '\0';
-        for ch in f.chars() {
-            match ch {
-                '<' => depth += 1,
-                '>' if prev != '-' => depth = depth.saturating_sub(1),
-                _ if depth == 0 => out.push(ch),
-                _ => {}
-            }
-            prev = ch;
-        }
-        strip_markers(&out)
+    let Some(stripped) = strip_type_arguments(fcs) else {
+        return false;
     };
     let ours = our_assembly_full(env, res);
     let unquote = |s: &str| s.replace("``", "");
-    strip_markers(&unquote(&ours.qualified)) == stripped
-        || strip_markers(&unquote(&ours.unqualified)) == stripped
+    let stripped = unquote(&stripped);
+    unquote(&ours.qualified) == stripped || unquote(&ours.unqualified) == stripped
+}
+
+/// `fcs` with its type-argument lists removed, or `None` when the rendering is
+/// one this cannot normalise exactly. The twin of `borzoi_corpus_diff`'s
+/// function of the same name; kept in step with it.
+fn strip_type_arguments(fcs: &str) -> Option<String> {
+    let mut out = String::with_capacity(fcs.len());
+    let mut depth = 0usize;
+    let mut prev = '\0';
+    let mut chars = fcs.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '`' if chars.peek() == Some(&'`') && depth == 0 => {
+                chars.next();
+                out.push_str("``");
+                loop {
+                    match chars.next() {
+                        None => return None,
+                        Some('`') if chars.peek() == Some(&'`') => {
+                            chars.next();
+                            out.push_str("``");
+                            break;
+                        }
+                        Some(c) => out.push(c),
+                    }
+                }
+            }
+            '`' if depth == 0 && chars.peek().is_some_and(char::is_ascii_digit) => return None,
+            '<' => depth += 1,
+            '>' if prev != '-' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+        prev = ch;
+    }
+    (depth == 0).then_some(out)
 }
 
 /// Our resolution's full name with a **nested** entity's enclosing chain

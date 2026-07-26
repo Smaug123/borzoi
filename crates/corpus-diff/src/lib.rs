@@ -2801,48 +2801,60 @@ fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     unquote(actual) == unquote(expected)
 }
 
-/// `expected` with its type-argument lists and CLR arity markers removed —
-/// `` ImmutableArray`1<byte>.Empty `` → `ImmutableArray.Empty`.
+/// `expected` with its type-argument lists removed — `ImmutableArray<byte>.Empty`
+/// → `ImmutableArray.Empty` — or `None` when the rendering is one this cannot
+/// normalise without guessing.
 ///
-/// This is a *display* normalisation only. It cannot certify anything on its
-/// own, and deliberately does not try to: the arity that guards the allowance
-/// comes from the oracle ([`ProjectUse::declaring_entity_arity`]), so the worst
-/// a mis-strip here can do is fail to recognise a match. Counting arguments in
-/// the rendering was tried and is unsound — a quoted F# identifier containing a
-/// comma reads as two.
+/// Two things make a rendering undecidable here, and both **decline** rather
+/// than get an approximation. A backtick arity marker means a *nested generic*,
+/// where the arity is distributed over the path (`Outer<T>.Inner` and
+/// `Outer.Inner<T>` have the same total, and `entity_full_name` renders both
+/// the same way), so no total-arity check can tell the families apart. A
+/// double-backtick quoted segment can contain anything at all, angle brackets
+/// included, so its contents are not type arguments and must not be scanned.
 ///
-/// A `>` closing an `->` does not close a group: FCS writes a function type
-/// literally, so `Foo<(int -> string)>.M` has one group, not one that ends at
-/// the arrow.
-fn strip_type_arguments(expected: &str) -> String {
+/// Declining costs a *match* the harness could have adjudicated, which shows up
+/// as a divergence to look at. Accepting on a guess costs soundness. The
+/// allowance exists to remove noise, so it is only worth having where it is
+/// certain, and the shapes it declines do not occur in the corpus — the
+/// measurements are the same with and without them.
+fn strip_type_arguments(expected: &str) -> Option<String> {
     let mut out = String::with_capacity(expected.len());
     let mut depth = 0usize;
     let mut prev = '\0';
-    for ch in expected.chars() {
+    let mut chars = expected.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
+            // A quoted identifier is opaque: copy it through verbatim,
+            // delimiters and all, so nothing inside is read as syntax.
+            '`' if chars.peek() == Some(&'`') && depth == 0 => {
+                chars.next();
+                out.push_str("``");
+                loop {
+                    match chars.next() {
+                        None => return None,
+                        Some('`') if chars.peek() == Some(&'`') => {
+                            chars.next();
+                            out.push_str("``");
+                            break;
+                        }
+                        Some(c) => out.push(c),
+                    }
+                }
+            }
+            // A lone backtick outside a quoted segment introduces a CLR arity
+            // marker when digits follow — the nested-generic case above.
+            '`' if depth == 0 && chars.peek().is_some_and(char::is_ascii_digit) => return None,
             '<' => depth += 1,
+            // An arrow's `>` closes nothing: FCS writes a function type
+            // literally, so `Foo<(int -> string)>.M` has one group.
             '>' if prev != '-' => depth = depth.saturating_sub(1),
             _ if depth == 0 => out.push(ch),
             _ => {}
         }
         prev = ch;
     }
-    strip_arity_markers(&out)
-}
-
-/// Each segment's trailing `` `<digits> `` removed. FCS keeps the CLR arity
-/// marker on an *enclosing* segment of a nested generic
-/// (`` Outer`1.Inner<int>.M ``), while `entity_full_name` carries none.
-fn strip_arity_markers(name: &str) -> String {
-    name.split('.')
-        .map(|seg| match seg.rsplit_once('`') {
-            Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => {
-                head
-            }
-            _ => seg,
-        })
-        .collect::<Vec<_>>()
-        .join(".")
+    (depth == 0).then_some(out)
 }
 
 /// Whether our resolution names the same symbol as FCS, differing only because
@@ -2862,11 +2874,13 @@ fn strip_arity_markers(name: &str) -> String {
 /// measured by printing our entity at each one: all were a `Struct` or `Class`
 /// of arity 1 or 2, never a module, and in every case the arity equalled FCS's.
 ///
-/// The **arity equality** is what makes this an adjudicated match rather than a
-/// loosening, and it is taken from the oracle rather than read out of the
-/// rendering: the shape it must not admit is our binding a same-named companion
-/// *module*, or the wrong member of a generic family, and only a structural
-/// arity rules those out. An oracle that reports none (`None`) declines.
+/// Two independent facts have to line up, and neither is read out of the
+/// rendering's *shape*: the arity comes from the oracle
+/// ([`ProjectUse::declaring_entity_arity`]), and the name must match once the
+/// argument lists are gone. The arity is what stops a same-named companion
+/// *module* (no generic parameters) or the wrong member of a generic family
+/// from being blessed; [`strip_type_arguments`] declines outright on any
+/// rendering it cannot normalise exactly.
 fn generic_instantiation_agrees(
     env: &AssemblyEnv,
     res: Resolution,
@@ -2885,8 +2899,10 @@ fn generic_instantiation_agrees(
     if env.entity(entity).generic_parameters.len() != arity {
         return false;
     }
-    let unquote = |s: &str| s.replace("``", "");
-    strip_type_arguments(&unquote(expected)) == strip_arity_markers(&unquote(actual))
+    strip_type_arguments(expected).is_some_and(|stripped| {
+        let unquote = |s: &str| s.replace("``", "");
+        unquote(&stripped) == unquote(actual)
+    })
 }
 
 fn assembly_resolution_confirms_decl(
@@ -4518,12 +4534,14 @@ mod tests {
     }
 
     /// The display normalisation the generic-instantiation allowance rests on.
+    ///
     /// It certifies nothing by itself — the arity guard comes from the oracle —
-    /// so the risk here is a *missed* match, and these are the renderings FCS
-    /// actually produces.
+    /// but it must never *lose* a distinction, because a name it flattens onto
+    /// another symbol's would let the arity check bless the wrong one. So the
+    /// interesting cases here are the `None`s: shapes it refuses to normalise.
     #[test]
-    fn type_arguments_and_arity_markers_are_stripped() {
-        let cases = [
+    fn type_arguments_are_stripped_or_the_rendering_is_declined() {
+        let normalised = [
             ("System.String", "System.String"),
             (
                 "System.Collections.Immutable.ImmutableArray<Microsoft.FSharp.Core.byte>.Empty",
@@ -4532,19 +4550,43 @@ mod tests {
             ("A.Map<K,V>.Item", "A.Map.Item"),
             // A nested group closes with its own `>`.
             ("A.Holder<A.Box<int>>.M", "A.Holder.M"),
-            // FCS keeps the CLR arity marker on an enclosing segment of a
-            // nested generic; `entity_full_name` carries none.
-            ("A.Outer`1.Inner<int,string>.M", "A.Outer.Inner.M"),
             // A function type is written literally, and its arrow's `>` must
             // not close the argument list.
             ("A.Holder<(int -> string)>.Empty", "A.Holder.Empty"),
-            // A backtick that is not an arity marker survives — a quoted
-            // identifier may contain one.
-            ("A.We`ird.M", "A.We`ird.M"),
+            // A quoted segment is opaque: angle brackets inside it are part of
+            // the identifier, not type arguments, so `` ``Foo<Bar>`` `` must not
+            // flatten onto `Foo` — which has the same arity and would then be
+            // blessed as a match for it.
+            ("A.``Foo<Bar>``.M", "A.``Foo<Bar>``.M"),
         ];
-        for (input, want) in cases {
-            assert_eq!(strip_type_arguments(input), want, "for {input}");
+        for (input, want) in normalised {
+            assert_eq!(
+                strip_type_arguments(input).as_deref(),
+                Some(want),
+                "for {input}"
+            );
         }
+
+        // A CLR arity marker means a *nested* generic, whose arity is spread
+        // over the path: `Outer<T>.Inner` and `Outer.Inner<T>` share a total of
+        // 1 and `entity_full_name` renders both `Outer.Inner`, so no
+        // total-arity check separates them. Declining keeps them divergences to
+        // look at rather than guesses to trust.
+        for undecidable in [
+            "A.Outer`1.Inner<int>.M",
+            "A.Outer`2.Inner<int,string>.M",
+            // An unterminated group is not a rendering we understand either.
+            "A.Holder<int.M",
+            "A.``unterminated.M",
+        ] {
+            assert_eq!(strip_type_arguments(undecidable), None, "for {undecidable}");
+        }
+
+        // A backtick that is not an arity marker is just part of a name.
+        assert_eq!(
+            strip_type_arguments("A.We`ird.M").as_deref(),
+            Some("A.We`ird.M")
+        );
     }
 
     /// A summary carrying `project`/`assembly`/`reverse` divergences, for the
