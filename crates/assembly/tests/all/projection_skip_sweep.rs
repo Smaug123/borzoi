@@ -255,16 +255,23 @@ fn probe_assembly(path: &Path) -> Outcome {
     }
 }
 
+/// Whether the file name ends in one of [`ASSEMBLY_SUFFIXES`].
+///
+/// Compares the name's *encoded bytes*, so a name that is not valid UTF-8 — a
+/// raw `b"\xff.dll"` on Unix — is still recognised. Going through `to_str`
+/// would drop it silently, which is the one outcome this sweep may not have:
+/// an assembly neither probed nor recorded as unexamined is an assembly the
+/// conservation check cannot miss the absence of. The suffixes are ASCII, and
+/// `OsStr` is WTF-8 on Windows and arbitrary bytes on Unix, so an ASCII suffix
+/// comparison on the encoded form is well defined on both.
 fn is_assembly_file(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|name| {
-            ASSEMBLY_SUFFIXES.iter().any(|suffix| {
-                name.len() >= suffix.len()
-                    && name.as_bytes()[name.len() - suffix.len()..]
-                        .eq_ignore_ascii_case(suffix.as_bytes())
-            })
+    path.file_name().is_some_and(|name| {
+        let name = name.as_encoded_bytes();
+        ASSEMBLY_SUFFIXES.iter().any(|suffix| {
+            name.len() >= suffix.len()
+                && name[name.len() - suffix.len()..].eq_ignore_ascii_case(suffix.as_bytes())
         })
+    })
 }
 
 /// What a traversal found: the assemblies to probe, and every place it could
@@ -604,6 +611,24 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
         assert!(
             !is_assembly_file(Path::new(name)),
             "{name} is not an assembly"
+        );
+    }
+    // A name that is not valid UTF-8 still has an ASCII suffix. Matching
+    // through `to_str` would drop it silently — and an assembly that is neither
+    // probed nor recorded as unexamined is one the conservation check cannot
+    // notice the absence of.
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"\xff.dll");
+        assert!(
+            is_assembly_file(Path::new(raw)),
+            "a non-UTF-8 name with an assembly suffix is an assembly"
+        );
+        let raw = std::ffi::OsStr::from_bytes(b"\xff.pdb");
+        assert!(
+            !is_assembly_file(Path::new(raw)),
+            "a non-UTF-8 name without one is not"
         );
     }
 
