@@ -1900,6 +1900,16 @@ impl<'a> Resolver<'a> {
     ///   rests on the pre-scan being whole-file and the fold recording each
     ///   file's names alongside its auto-open module paths — the same
     ///   `record_file` call, so no file can contribute one without the other.
+    ///
+    ///   Both sides of that pairing are derived from the **implementation**:
+    ///   `FileExportIndices::derive` walks the `.fs`'s export decls and lets a
+    ///   paired signature screen them, and `own_type_simple_names` is the
+    ///   `.fs`'s own unscreened pre-scan. A signature can attribute a module
+    ///   `[<AutoOpen>]` that the implementation left bare, but it cannot
+    ///   conjure a type into it: a signature slot with no implementation is a
+    ///   compile error. So the only shape this misses is a `.fsi`/`.fs` pair
+    ///   that disagrees about whether a type exists, where the project does not
+    ///   build at all.
     /// - a namespace declared into by an assembly whose abbreviations are
     ///   [unknowable](borzoi_sema::AbbreviationVisibility) — its signature
     ///   pickle failed to decode, so its metadata-invisible abbreviations (V3)
