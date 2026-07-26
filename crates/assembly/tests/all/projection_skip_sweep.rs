@@ -231,11 +231,13 @@ fn probe_assembly(path: &Path) -> Outcome {
             };
         }
     };
-    let digest = Some(sha1_hex(&bytes));
+    // Hashed on the skip path only. A projected outcome never consults a
+    // digest, and projection is ~98% of a package cache, so hashing eagerly
+    // would add a full SHA-1 pass over many GiB to every run of the gate.
     let skipped = |stage, error: String| Outcome::Skipped {
         stage,
         error,
-        digest: digest.clone(),
+        digest: Some(sha1_hex(&bytes)),
     };
     let parsed = match catch_unwind_silent(|| Ecma335Assembly::parse(&bytes)) {
         Err(_) => return skipped(Stage::Parse, "reader panicked".to_owned()),
