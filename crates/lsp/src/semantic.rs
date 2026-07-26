@@ -1824,12 +1824,20 @@ fn resolve_reference_dlls(
         .chain(csharp_ref_dlls)
         .collect();
     let edges: Vec<ReferenceEdge> = fsharp_edges.into_iter().chain(csharp_edges).collect();
-    // Conservation: every declared edge is accounted for, so a reference that
-    // contributed nothing is *recorded* as missing rather than inferred from a
-    // shortfall — the distinction the whole grade rests on. A `debug_assert`
-    // rather than a hard error: a miscount would mean a reference silently
-    // stopped being tracked, which the suite must catch, but in release the
-    // right degradation is to serve what we have.
+    // Conservation: every edge the graph walk *retained* is accounted for, so a
+    // reference that contributed nothing is recorded as missing rather than
+    // inferred from a shortfall — the distinction the whole grade rests on. A
+    // `debug_assert` rather than a hard error: a miscount would mean a
+    // reference silently stopped being tracked, which the suite must catch, but
+    // in release the right degradation is to serve what we have.
+    //
+    // "Retained" is the honest scope, and it is not the whole story: a project
+    // whose `<ProjectReference>`s the evaluator could not trust
+    // (`project_references_uncertain`) has its *entire* edge list emptied by
+    // `workspace::edges_of` before `GraphRefTargets` is built, so those
+    // references never reach this count and the env stays complete. Carrying
+    // that suppression through the graph is tracked separately; it needs a
+    // marker on the node, because by here the edges are simply gone.
     debug_assert_eq!(
         edges.len(),
         ref_targets.fsharp.len() + ref_targets.csharp.len(),
@@ -2170,9 +2178,21 @@ fn locate_fsharp_output_dll(
                 continue;
             }
             let dll = tfm_dir.join(&dll_name);
-            if dll.is_file() {
-                candidates.push(dll);
-                tfm_dirs.push(dir_name.to_ascii_lowercase());
+            // `Path::is_file` folds a failed `stat` into `false`, which would
+            // put an output we could not examine into the proven-absence
+            // bucket. Ask for the metadata so a non-`NotFound` error is a
+            // refusal to decide instead.
+            match dll.metadata() {
+                Ok(meta) if meta.is_file() => {
+                    candidates.push(dll);
+                    tfm_dirs.push(dir_name.to_ascii_lowercase());
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    tracing::info!(dll = %dll.display(), error = %err, "cannot stat a candidate output");
+                    return OutputLocation::Undecidable("a candidate output could not be examined");
+                }
             }
         }
     }
