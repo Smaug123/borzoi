@@ -1444,7 +1444,14 @@ fn build_assembly_env(
             references = ?unread,
             "project references could not be read; the env's identity set is incomplete"
         );
+        // Both marks, exactly as `build_env_from_dll_paths` applies them to the
+        // equivalent whole-DLL loss. An unread reference could carry an
+        // assembly-level `[<AutoOpen>]` reaching any namespace, or a C#-style
+        // `[<Extension>]` class, and the OV-6 gate treats an unmarked surface as
+        // complete — so marking only the identity set would leave the
+        // bare-value, attribute and overload gates committing past it.
         env.mark_referenced_assemblies_incomplete();
+        env.mark_extension_surface_unknowable();
     }
     // Unbuilt references are logged but deliberately not an incompleteness —
     // see `ReferenceOutcome::NotBuilt` for the trade.
@@ -2091,11 +2098,14 @@ fn fsharp_project_ref_outcome(
             return ReferenceOutcome::Unread("no trustworthy TFM verdict");
         }
     };
-    // A trustworthy name and TFM but no file: the project simply has not been
-    // built. The one grade that does *not* mark the env incomplete.
+    // A trustworthy name and TFM, and a `bin` tree we read and found nothing
+    // in: the project simply has not been built. That is the one grade which
+    // does *not* mark the env incomplete, so it must be a proven absence —
+    // anything the locator could not decide grades as unread instead.
     match located {
-        Some(dll) => ReferenceOutcome::Resolved(vec![dll]),
-        None => ReferenceOutcome::NotBuilt,
+        OutputLocation::Found(dll) => ReferenceOutcome::Resolved(vec![dll]),
+        OutputLocation::Absent => ReferenceOutcome::NotBuilt,
+        OutputLocation::Undecidable(why) => ReferenceOutcome::Unread(why),
     }
 }
 
@@ -2128,18 +2138,27 @@ fn locate_fsharp_output_dll(
     fsproj: &Path,
     producer_tfm: Option<&str>,
     output_name: &str,
-) -> Option<PathBuf> {
+) -> OutputLocation {
     let mut dll_name = std::ffi::OsString::from(output_name);
     dll_name.push(".dll");
-    let bin = fsproj.parent()?.join("bin");
+    let Some(project_dir) = fsproj.parent() else {
+        return OutputLocation::Undecidable("the project path has no parent directory");
+    };
+    let bin = project_dir.join("bin");
 
     // `bin/<config>/<tfm>/<stem>.dll` — collect every built variant on disk.
     // TFM directory names are compared case-insensitively, matching MSBuild's
     // case-insensitive property comparison on the path segment it writes.
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut tfm_dirs: Vec<String> = Vec::new();
-    for config in child_dirs(&bin) {
-        for tfm_dir in child_dirs(&config) {
+    let Some(configs) = child_dirs(&bin) else {
+        return OutputLocation::Undecidable("the bin directory could not be read");
+    };
+    for config in configs {
+        let Some(tfm_dirs_on_disk) = child_dirs(&config) else {
+            return OutputLocation::Undecidable("a bin subdirectory could not be read");
+        };
+        for tfm_dir in tfm_dirs_on_disk {
             let Some(dir_name) = tfm_dir.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
@@ -2163,21 +2182,55 @@ fn locate_fsharp_output_dll(
             tfms = ?tfm_dirs,
             "several TFM variants built and no producer TFM known; skipping the ref rather than guessing"
         );
-        return None;
+        return OutputLocation::Undecidable("several TFM variants built and none selected");
     }
     candidates.sort();
-    candidates
+    match candidates
         .iter()
         .find(|p| path_has_debug_config(p))
         .cloned()
         .or_else(|| candidates.into_iter().next())
+    {
+        Some(dll) => OutputLocation::Found(dll),
+        None => OutputLocation::Absent,
+    }
 }
 
-/// The immediate subdirectories of `dir`, sorted for determinism. Empty when
-/// `dir` is absent or unreadable (an unbuilt project has no `bin/`).
-fn child_dirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+/// Where a referenced F# project's built output is, or why we cannot say.
+///
+/// The distinction [`OutputLocation::Absent`] draws is load-bearing: it is the
+/// only outcome that grades as [`ReferenceOutcome::NotBuilt`], which leaves the
+/// env *complete*. So it must be a **proven** absence — a `bin` tree we read
+/// and found nothing matching in — and never a stand-in for "we could not
+/// look". Collapsing the two is how the reference-omission hole this whole
+/// module now guards against was written in the first place, one layer up.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OutputLocation {
+    /// The DLL to fold.
+    Found(PathBuf),
+    /// Read the tree, found no matching output: the project is not built.
+    Absent,
+    /// Could not decide — the tree exists but would not be read, or several TFM
+    /// variants are built and nothing selects between them. Grades as
+    /// [`ReferenceOutcome::Unread`].
+    Undecidable(&'static str),
+}
+
+/// The immediate subdirectories of `dir`, sorted for determinism.
+///
+/// `Some(vec![])` when `dir` simply does not exist — the ordinary shape of an
+/// unbuilt project, and a *proven* absence. `None` when it exists but could not
+/// be read (permissions, an I/O fault): the caller must not read that as
+/// "nothing was built", because it is the opposite — something may be there and
+/// we cannot see it.
+fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(Vec::new()),
+        Err(err) => {
+            tracing::info!(dir = %dir.display(), error = %err, "cannot read a bin subdirectory");
+            return None;
+        }
     };
     let mut dirs: Vec<PathBuf> = entries
         .flatten()
@@ -2185,7 +2238,7 @@ fn child_dirs(dir: &Path) -> Vec<PathBuf> {
         .filter(|p| p.is_dir())
         .collect();
     dirs.sort();
-    dirs
+    Some(dirs)
 }
 
 /// True when any path component is the served build-configuration directory
@@ -4136,7 +4189,8 @@ mod tests {
     fn locate_output_dll_finds_built_dll() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Release", "net10.0", b"stub");
-        let found = locate_fsharp_output_dll(&proj, None, "Lib").expect("built DLL is located");
+        let found =
+            locate_fsharp_output_dll(&proj, None, "Lib").expect_found("built DLL is located");
         assert!(found.ends_with("bin/Release/net10.0/Lib.dll"), "{found:?}");
     }
 
@@ -4146,7 +4200,10 @@ mod tests {
         let proj = tmp.path().join("Lib.fsproj");
         write(&proj, "<Project />");
         // No bin/ at all.
-        assert!(locate_fsharp_output_dll(&proj, None, "Lib").is_none());
+        assert!(!matches!(
+            locate_fsharp_output_dll(&proj, None, "Lib"),
+            OutputLocation::Found(_)
+        ));
     }
 
     #[test]
@@ -4159,7 +4216,7 @@ mod tests {
         write(&debug, "");
         std::fs::write(&debug, b"dbg").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, None, "Lib").expect("a DLL is located");
+        let found = locate_fsharp_output_dll(&proj, None, "Lib").expect_found("a DLL is located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Lib.dll"),
             "expected the Debug build to win, got {found:?}"
@@ -4175,7 +4232,10 @@ mod tests {
         write(&proj, "<Project />");
         let other = tmp.path().join("bin/Debug/net10.0/Other.dll");
         write(&other, "");
-        assert!(locate_fsharp_output_dll(&proj, None, "Lib").is_none());
+        assert!(!matches!(
+            locate_fsharp_output_dll(&proj, None, "Lib"),
+            OutputLocation::Found(_)
+        ));
     }
 
     /// The 3.3a `<AssemblyName>`-override fix: when the caller recovered the
@@ -4190,9 +4250,12 @@ mod tests {
         write(&renamed, "");
 
         // Stem-based lookup misses (there is no Lib.dll)…
-        assert!(locate_fsharp_output_dll(&proj, None, "Lib").is_none());
+        assert!(!matches!(
+            locate_fsharp_output_dll(&proj, None, "Lib"),
+            OutputLocation::Found(_)
+        ));
         // …but the recovered name finds the override's output.
-        let found = locate_fsharp_output_dll(&proj, None, "Renamed").expect("located");
+        let found = locate_fsharp_output_dll(&proj, None, "Renamed").expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Renamed.dll"),
             "{found:?}"
@@ -4206,7 +4269,10 @@ mod tests {
     fn locate_output_dll_recovered_name_never_falls_back_to_stem() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stub");
-        assert!(locate_fsharp_output_dll(&proj, None, "Renamed").is_none());
+        assert!(!matches!(
+            locate_fsharp_output_dll(&proj, None, "Renamed"),
+            OutputLocation::Found(_)
+        ));
     }
 
     /// Without a producer TFM, outputs under *several distinct* TFM
@@ -4222,7 +4288,10 @@ mod tests {
         write(&eight, "");
         std::fs::write(&eight, b"eight").unwrap();
         assert!(
-            locate_fsharp_output_dll(&proj, None, "Lib").is_none(),
+            !matches!(
+                locate_fsharp_output_dll(&proj, None, "Lib"),
+                OutputLocation::Found(_)
+            ),
             "two TFM variants with no producer TFM must skip, not guess"
         );
     }
@@ -4239,7 +4308,7 @@ mod tests {
         write(&eight, "");
         std::fs::write(&eight, b"eight").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib").expect("located");
+        let found = locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib").expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net8.0/Lib.dll"),
             "expected the producer TFM's build, got {found:?}"
@@ -4253,7 +4322,21 @@ mod tests {
     fn locate_output_dll_skips_when_producer_tfm_output_absent() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"ten");
-        assert!(locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib").is_none());
+        assert!(!matches!(
+            locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib"),
+            OutputLocation::Found(_)
+        ));
+    }
+
+    impl OutputLocation {
+        /// The located DLL, panicking with `msg` on any other outcome — for the
+        /// tests that are about *which* output is chosen.
+        fn expect_found(self, msg: &str) -> PathBuf {
+            match self {
+                OutputLocation::Found(dll) => dll,
+                other => panic!("{msg}: {other:?}"),
+            }
+        }
     }
 
     /// A [`FsharpRefTarget`] whose graph-carried name is the project-file
@@ -4488,6 +4571,83 @@ mod tests {
     }
 
     // ---- reference-edge conservation and grading --------------------------
+
+    /// `child_dirs` must separate "not there" from "could not look", because
+    /// only the first is evidence that a project is unbuilt.
+    #[test]
+    fn child_dirs_separates_an_absent_tree_from_an_unreadable_one() {
+        let tmp = TempDir::new().unwrap();
+        assert_eq!(
+            child_dirs(&tmp.path().join("nope")),
+            Some(Vec::new()),
+            "an absent directory is a proven absence"
+        );
+        // A plain file where a directory was expected: `read_dir` fails with
+        // something other than `NotFound`, which is the portable stand-in for
+        // any tree we cannot enumerate (a permission bit would need root-aware
+        // test setup to be reliable).
+        let not_a_dir = tmp.path().join("bin");
+        write(&not_a_dir, "");
+        assert_eq!(
+            child_dirs(&not_a_dir),
+            None,
+            "a tree we cannot read must not read as empty"
+        );
+    }
+
+    /// A `bin` tree we cannot enumerate is **unread**, not unbuilt.
+    ///
+    /// The locator answers `None` for several unrelated reasons, and reading
+    /// that single `None` as "not built" would put an unreadable reference in
+    /// the one grade that leaves the env complete — the same collapse of
+    /// distinct causes into one absence that the edge conservation exists to
+    /// prevent, one layer down.
+    #[test]
+    fn an_unreadable_bin_tree_is_unread_not_unbuilt() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Lib").join("Lib.fsproj");
+        write(&proj, "<Project />");
+        write(&tmp.path().join("Lib").join("bin"), "");
+
+        assert!(
+            matches!(
+                locate_fsharp_output_dll(&proj, Some("net10.0"), "Lib"),
+                OutputLocation::Undecidable(_)
+            ),
+            "an unreadable bin tree is undecidable, not a proven absence"
+        );
+        assert!(matches!(
+            fsharp_ref_outcome(
+                &[ref_target(proj, NodeTfm::Known("net10.0".into()))],
+                &BTreeMap::new()
+            ),
+            ReferenceOutcome::Unread(_)
+        ));
+    }
+
+    /// Several TFM variants built and nothing to select between them is
+    /// likewise undecidable, not unbuilt: the outputs are right there.
+    #[test]
+    fn an_ambiguous_multi_tfm_output_is_unread_not_unbuilt() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("Lib");
+        let proj = root.join("Lib.fsproj");
+        write(&proj, "<Project />");
+        write(&root.join("bin/Debug/net10.0/Lib.dll"), "ten");
+        write(&root.join("bin/Debug/net8.0/Lib.dll"), "eight");
+
+        assert!(
+            matches!(
+                locate_fsharp_output_dll(&proj, None, "Lib"),
+                OutputLocation::Undecidable(_)
+            ),
+            "two built TFMs and no producer TFM cannot be resolved"
+        );
+        assert!(matches!(
+            fsharp_ref_outcome(&[ref_target(proj, NodeTfm::NoneDeclared)], &BTreeMap::new()),
+            ReferenceOutcome::Unread(_)
+        ));
+    }
 
     /// Every declared edge yields exactly one outcome, whatever became of it.
     ///
