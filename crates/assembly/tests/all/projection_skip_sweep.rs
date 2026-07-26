@@ -46,10 +46,14 @@ fn sha1_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// Extensions NuGet's content model accepts as a compile assembly, matched
-/// case-insensitively (`borzoi_nuget::assets`). `.exe` is not decorative:
-/// `microsoft.build.runtime/…/ref/net472/MSBuild.exe` is a real compile asset.
-const ASSEMBLY_EXTENSIONS: &[&str] = &["dll", "exe", "winmd"];
+/// Suffixes NuGet's content model accepts as a compile assembly, matched
+/// case-insensitively (`borzoi_nuget::assets::is_assembly`). `.exe` is not
+/// decorative: `microsoft.build.runtime/…/ref/net472/MSBuild.exe` is a real
+/// compile asset. The leading dots are part of the suffix, because that model
+/// matches a *suffix of the file name* rather than an extension — a file named
+/// exactly `.dll` is an assembly to it, and `Path::extension` calls that
+/// extensionless.
+const ASSEMBLY_SUFFIXES: &[&str] = &[".dll", ".exe", ".winmd"];
 
 /// One tolerated whole-assembly loss.
 ///
@@ -252,12 +256,14 @@ fn probe_assembly(path: &Path) -> Outcome {
 }
 
 fn is_assembly_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|ext| {
-            ASSEMBLY_EXTENSIONS
-                .iter()
-                .any(|known| ext.eq_ignore_ascii_case(known))
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|name| {
+            ASSEMBLY_SUFFIXES.iter().any(|suffix| {
+                name.len() >= suffix.len()
+                    && name.as_bytes()[name.len() - suffix.len()..]
+                        .eq_ignore_ascii_case(suffix.as_bytes())
+            })
         })
 }
 
@@ -587,9 +593,11 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
         "the same words from another stage are a different failure",
     );
 
-    // Every extension NuGet accepts is swept, case-insensitively; a `.pdb`
-    // beside them is not.
-    for name in ["A.dll", "B.EXE", "C.WinMD"] {
+    // Every suffix NuGet accepts is swept, case-insensitively; a `.pdb` beside
+    // them is not. `.dll` with no stem is included: the content model matches a
+    // suffix of the file name, and `Path::extension` reports that one as having
+    // no extension at all.
+    for name in ["A.dll", "B.EXE", "C.WinMD", ".dll", ".WinMD"] {
         assert!(is_assembly_file(Path::new(name)), "{name} is an assembly");
     }
     for name in ["A.pdb", "B.xml", "C"] {
