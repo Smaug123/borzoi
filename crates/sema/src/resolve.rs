@@ -75,7 +75,9 @@ pub use model::{
     ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
 };
 pub use state::ActivePatternShape;
-use state::{Resolver, implicit_open_groups, implicit_open_namespaces};
+use state::{
+    Resolver, implicit_open_groups, implicit_open_namespaces, implicit_shortening_prefixes,
+};
 
 /// Resolve every name use in `file` to its defining binder — within this file,
 /// through `preceding` to module-qualified bindings of earlier Compile-order
@@ -297,7 +299,10 @@ pub fn resolve_file(
         // to the implicit auto-opens at each block — mirroring the per-nested-
         // module save/restore in [`Resolver::nested_module`].
         r.imports = implicit_open_groups(r.assemblies);
-        r.open_shortening_prefixes = implicit_open_namespaces(r.assemblies);
+        // The implicit auto-opens are namespace readings, so they lend their
+        // `[<AutoOpen>]` modules as shortening prefixes too
+        // (`Resolver::auto_open_shortening_prefixes`).
+        r.open_shortening_prefixes = implicit_shortening_prefixes(r.assemblies);
         // Block-scoped like every other open state: an incomplete module opened in one
         // top-level block must not veto a sibling block's opens (review round 11).
         r.incomplete_open_prefixes = Vec::new();
@@ -1755,7 +1760,7 @@ impl<'a> Resolver<'a> {
             type_path_exports: Vec::new(),
             imports: implicit_open_groups(assemblies),
             implicit_import_count: implicit_open_groups(assemblies).len(),
-            open_shortening_prefixes: implicit_open_namespaces(assemblies),
+            open_shortening_prefixes: implicit_shortening_prefixes(assemblies),
             incomplete_open_prefixes: Vec::new(),
             explicit_open_prefixes: Vec::new(),
             module_open_prefixes: Vec::new(),

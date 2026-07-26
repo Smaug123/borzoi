@@ -190,10 +190,28 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
     unquote(&ours.qualified) == f || unquote(&ours.unqualified) == f
 }
 
-/// Whether our name is a *nested-type rendering gap*: `AssemblyEnv` stores a
-/// nested type (`System.Environment.SpecialFolder`) with an empty namespace and
-/// only the leaf name, so we cannot reconstruct its enclosing type chain. When
-/// our namespace-less name is a proper whole-segment tail of FCS's fully-
+/// Our resolution's full name with a **nested** entity's enclosing chain
+/// restored: `Entity::namespace` is empty for one, so [`our_assembly_full`]'s
+/// cheap rendering drops everything above the leaf
+/// (`Checked.int64` for `Microsoft.FSharp.Core.Operators.Checked.int64`).
+/// [`AssemblyEnv::entity_full_name`] reconstructs it, at the cost of a search
+/// from the top-level roots — hence its use only after the cheap form missed,
+/// not for every one of the tens of thousands of assembly uses.
+fn our_assembly_full_nested(env: &AssemblyEnv, res: Resolution) -> Option<String> {
+    match res {
+        Resolution::Entity(h) => Some(env.entity_full_name(h)),
+        Resolution::Member { parent, idx } => Some(format!(
+            "{}.{}",
+            env.entity_full_name(parent),
+            env.member_display_name(parent, idx)
+        )),
+        _ => None,
+    }
+}
+
+/// Whether our name is a *nested-type rendering gap*: a nested entity whose
+/// enclosing chain [`our_assembly_full_nested`] could not reconstruct either.
+/// When our namespace-less name is a proper whole-segment tail of FCS's fully-
 /// qualified name, that's this gap — skip it rather than report a false
 /// divergence. (A genuinely wrong resolution — a name that is *not* such a tail,
 /// or in another assembly — still diverges.)
@@ -437,6 +455,13 @@ fn project_resolution_matches_fcs() {
                     Some(r @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                         let ours = our_assembly_full(&env, r);
                         if &ours.assembly == asm && full_matches(&ours, full) {
+                            tally.asm_match += 1;
+                        } else if &ours.assembly == asm
+                            && our_assembly_full_nested(&env, r)
+                                .is_some_and(|n| n.replace("``", "") == full.replace("``", ""))
+                        {
+                            // A nested entity named in full — an adjudicated
+                            // match, not a rendering gap.
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm && nested_rendering_gap(&ours, full) {
                             tally.gaps += 1;

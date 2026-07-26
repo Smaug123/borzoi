@@ -14,7 +14,7 @@ use super::id_text;
 use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
-    ScopeEntry, ShadowVeto, TieredResolution,
+    ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -422,8 +422,17 @@ impl<'a> Resolver<'a> {
                 out.push((full, false));
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
+            // Each opened container also lends the `[<AutoOpen>]` modules it
+            // folds as prefixes, ahead of the container itself
+            // ([`Self::auto_open_shortening_prefixes`]); a module cannot hold a
+            // namespace, so no namespace is reachable at one of those.
             for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.clone();
+                for auto in self.auto_open_shortening_prefixes(prefix) {
+                    let mut full = auto;
+                    full.extend_from_slice(written);
+                    out.push((full, false));
+                }
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 out.push((full, true));
             }
@@ -437,6 +446,104 @@ impl<'a> Resolver<'a> {
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
         out.push((written.to_vec(), true));
+        out
+    }
+
+    /// The extra shortening prefixes an **opened container** lends: the
+    /// **referenced-assembly** `[<AutoOpen>]` modules that opening `prefix`
+    /// folds, transitively.
+    ///
+    /// FCS enters every nested module of an opened container into
+    /// `eModulesAndNamespaces` under its short name and *then* recurses into
+    /// the auto-open ones, whose own submodules are entered the same way
+    /// (`AddModuleOrNamespaceRefsToNameEnv`). So `open Demo.Auto` makes
+    /// `Demo.Auto.Extra`'s submodules openable unqualified, and the implicit
+    /// `open Microsoft.FSharp.Core` makes `Operators`' — which is what lets a
+    /// bare `open Checked` name `Operators.Checked` and bind the
+    /// overflow-checking conversions.
+    ///
+    /// Ordered **highest priority first**, and every entry out-ranks `prefix`
+    /// itself: the recursion's additions are layered on top of the container's
+    /// own submodules, so where a container holds both a direct `M` and an
+    /// auto-open module holding its own `M`, `open M` names the latter
+    /// (`open_shortening_matrix`'s `precedence / …` cell, FCS-diffed).
+    ///
+    /// Two limits, both deliberate:
+    ///
+    /// - **project** auto-open modules lend no prefix. FCS auto-opens one
+    ///   *fragment*, not the merged module, so `[<AutoOpen>] module A` in one
+    ///   file does not make a `Pick` declared by a plain `module A` augmentation
+    ///   in another file answer to its short name (fcs-dump-verified: FS0039).
+    ///   Deciding that needs the declaring file of a nested module, which
+    ///   `ProjectItems` does not carry — its own slice.
+    /// - where `prefix` is a namespace in one assembly and a module in another,
+    ///   the two halves' prefixes are not interleaved by reference order, so a
+    ///   short name both halves' auto-open roots expose takes the module half's.
+    ///   FCS orders by CCU; the same-FQN *value* merge defers instead of
+    ///   guessing (`Demo.ModuleOpen.Merged`), and this contest needs the
+    ///   contributor plumbing that defer has.
+    ///
+    /// Both limits, and the implicit-open scoping noted below, are one axis: a
+    /// prefix is a **path**, and the candidate it yields is later resolved
+    /// against every assembly exposing that path
+    /// ([`Self::opened_assembly_modules`], which merges deliberately — for a
+    /// path the source *wrote*, merging is what FCS does). An auto-open-derived
+    /// prefix is not written, so it should carry its contributor and restrict
+    /// the resolution to it; where assembly A's `[<AutoOpen>] module N.Auto`
+    /// makes `Auto` answer to a short name, a plain `module N.Auto` in assembly
+    /// B contributes its submodules to `open <short>` too, though FCS recurses
+    /// only through A's entity. Threading an assembly restriction through the
+    /// candidate tuple is the fix, and it is its own slice.
+    fn auto_open_shortening_prefixes(&self, prefix: &ShorteningPrefix) -> Vec<Vec<String>> {
+        let base = prefix.path.as_slice();
+        let mut out: Vec<Vec<String>> = Vec::new();
+        // Two assemblies may expose the same auto-open module FQN, and a
+        // container can be both a namespace and a module path; one prefix is
+        // enough either way, since the candidate it yields resolves against
+        // every assembly at that path. The **last** occurrence keeps the rank:
+        // the list is position-ranked and later folds win, so collapsing
+        // `Auto, Other, Auto` onto the first `Auto` would rank `Other` above a
+        // later reference's `Auto`.
+        fn push(out: &mut Vec<Vec<String>>, path: Vec<String>) {
+            out.retain(|p| *p != path);
+            out.push(path);
+        }
+        // The **namespace** half — precomputed at index time, since a
+        // namespace's auto-open closure does not depend on the open site. Gated
+        // on the open having actually read `base` as a namespace: the index is
+        // keyed by path alone, so a module-only open of a path that is also an
+        // assembly namespace would otherwise fold that namespace's auto-opens
+        // (see [`ShorteningPrefix::namespace_reading`]).
+        //
+        // For an *implicitly* opened namespace this inherits a scoping the whole
+        // implicit-open path already has: FCS applies an assembly-level
+        // `[<AutoOpen>]` inside the declaring assembly only, while
+        // `effective_implicit_open_namespace_paths` is a set of namespace paths
+        // applied across every assembly, so a second assembly's auto-open module
+        // in `Microsoft.FSharp.Core` is folded here as it already is by
+        // `open_auto_open_modules_in`. Scoping that to the contributor is one
+        // change to both, not a special case of this walk.
+        if prefix.namespace_reading {
+            for path in self.assemblies.auto_open_module_paths_in_namespace(base) {
+                push(&mut out, path.clone());
+            }
+        }
+        // The **module** half: `base` may itself be a module (a chained `open`),
+        // whose auto-open submodules are folded just the same. Their paths
+        // extend `base`, which is how they were found. Gated on the open having
+        // read a module: an assembly-level `[<AutoOpen>]` names a namespace, and
+        // a same-FQN module in an unrelated reference was not opened by it.
+        if prefix.module_reading {
+            for handle in self.opened_assembly_modules(base) {
+                for (_, chain) in self.assemblies.auto_open_descendants(handle) {
+                    let mut path = base.to_vec();
+                    path.extend(chain);
+                    push(&mut out, path);
+                }
+            }
+        }
+        // Latest-folded wins, so the last entry is the most proximate.
+        out.reverse();
         out
     }
 
@@ -878,7 +985,7 @@ impl<'a> Resolver<'a> {
             // source-ordered list, latest open first so the most recent shadowing
             // prefix wins across open kinds.
             for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.clone();
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if self.is_project_module_path(&full) {
                     return Some(full);
@@ -1032,7 +1139,7 @@ impl<'a> Resolver<'a> {
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.clone();
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if let Some(id) = hit(&full) {
                     return Some((CaseTier::Namespace, id));

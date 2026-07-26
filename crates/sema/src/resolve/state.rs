@@ -403,6 +403,35 @@ pub(super) struct OpenGroup {
     pub(super) readings: Vec<Vec<String>>,
 }
 
+/// One entry in [`Resolver::open_shortening_prefixes`]: a container some `open`
+/// (explicit or implicit) brought into scope, under which a later `open`'s path
+/// may be shortened.
+///
+/// `namespace_reading` carries forward the `namespaces_reachable` flag
+/// `Resolver::open_tier_candidates` already computes per candidate: whether the
+/// `open` that pushed this prefix could read the path as a **namespace** at all.
+/// The assembly-side index of "auto-open modules folded by opening this
+/// namespace" is keyed by path alone, so without the flag a module-only open of
+/// a path that is *also* an assembly namespace would pick up that namespace's
+/// auto-opens although FCS never opened it. The module-only tiers are the alias
+/// tier and the module-segment relative bases, so the shape needs a module
+/// abbreviation (or a nested-module base) whose target path is an assembly
+/// namespace holding an `[<AutoOpen>]` module — not reachable in the fixture
+/// grid, hence carried rather than tested: the flag only ever *removes*
+/// prefixes, which is the sound direction.
+///
+/// `module_reading` is its twin for the module half: an assembly-level
+/// `[<AutoOpen>]` names a *namespace*, so a prefix seeded from it must not fold
+/// the auto-open descendants of a same-FQN **module** in some other reference —
+/// FCS opened the namespace, not that module. An open that really did read a
+/// module pushes its own entry with this set.
+#[derive(Debug, Clone)]
+pub(super) struct ShorteningPrefix {
+    pub(super) path: Vec<String>,
+    pub(super) namespace_reading: bool,
+    pub(super) module_reading: bool,
+}
+
 /// One interpretation of an `open <path>` clause at one base of the open's
 /// walk ([`Resolver::open_interpretations`]), in the **one** proximity-ranked
 /// list: the relativeness/nesting of the *path* sets precedence, not the
@@ -892,7 +921,7 @@ pub(super) struct Resolver<'a> {
     /// assembly/qualified-path resolution) so adding module prefixes here does not
     /// pollute that. Block-scoped (reset per top-level block, saved/restored
     /// across nested modules).
-    pub(super) open_shortening_prefixes: Vec<Vec<String>>,
+    pub(super) open_shortening_prefixes: Vec<ShorteningPrefix>,
     /// Opened **assembly module** paths whose bare-name surface is *not provably
     /// complete* ([`AssemblyEnv::module_open_is_fully_enumerable`] — projection dropped
     /// a nested type, the pickle is unknowable, a member is undecodable, …).
@@ -1372,6 +1401,20 @@ pub(super) fn implicit_open_namespaces(assemblies: &AssemblyEnv) -> Vec<Vec<Stri
 /// single-reading `open` group (no relative/root split; they are fully qualified),
 /// in source order *before* any explicit `open`, so an explicit open shadows them
 /// under the latest-open-wins walk.
+/// The implicit auto-opens as [`Resolver::open_shortening_prefixes`] entries.
+/// Every one is a namespace reading, so each lends the `[<AutoOpen>]` modules it
+/// folds as further prefixes ([`Resolver::auto_open_shortening_prefixes`]).
+pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<ShorteningPrefix> {
+    implicit_open_namespaces(assemblies)
+        .into_iter()
+        .map(|path| ShorteningPrefix {
+            path,
+            namespace_reading: true,
+            module_reading: false,
+        })
+        .collect()
+}
+
 pub(super) fn implicit_open_groups(assemblies: &AssemblyEnv) -> Vec<OpenGroup> {
     implicit_open_namespaces(assemblies)
         .into_iter()
