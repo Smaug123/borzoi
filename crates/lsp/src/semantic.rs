@@ -1503,7 +1503,13 @@ enum ReferenceOutcome {
     /// Unlike [`Self::NotBuilt`] there is nothing the user can obviously do,
     /// and no reason to expect the state to clear on its own — declining is
     /// both sound and the only honest answer.
-    Unread(&'static str),
+    ///
+    /// `transient` marks the ones that *may* clear without any edit: an I/O
+    /// error while scanning the output tree, as against a verdict we will keep
+    /// declining to trust. The resulting env must not be cached, or the
+    /// filesystem recovers and every assembly reading goes on deferring until
+    /// some unrelated watched file happens to invalidate the entry.
+    Unread { why: &'static str, transient: bool },
 }
 
 /// One declared project-reference edge and what it contributed. See
@@ -1547,8 +1553,22 @@ impl ReferenceSet {
     /// grade that makes the env's identity set incomplete.
     fn unread(&self) -> impl Iterator<Item = (&Path, &'static str)> {
         self.edges.iter().filter_map(|e| match e.outcome {
-            ReferenceOutcome::Unread(why) => Some((e.project.as_path(), why)),
+            ReferenceOutcome::Unread { why, .. } => Some((e.project.as_path(), why)),
             ReferenceOutcome::Resolved(_) | ReferenceOutcome::NotBuilt => None,
+        })
+    }
+
+    /// Whether any edge failed for a reason that may clear on its own, so the
+    /// env built from this set must not be cached.
+    fn has_transient_failure(&self) -> bool {
+        self.edges.iter().any(|e| {
+            matches!(
+                e.outcome,
+                ReferenceOutcome::Unread {
+                    transient: true,
+                    ..
+                }
+            )
         })
     }
 
@@ -1558,7 +1578,7 @@ impl ReferenceSet {
     fn not_built(&self) -> impl Iterator<Item = &Path> {
         self.edges.iter().filter_map(|e| match e.outcome {
             ReferenceOutcome::NotBuilt => Some(e.project.as_path()),
-            ReferenceOutcome::Resolved(_) | ReferenceOutcome::Unread(_) => None,
+            ReferenceOutcome::Resolved(_) | ReferenceOutcome::Unread { .. } => None,
         })
     }
 }
@@ -1570,7 +1590,7 @@ fn edge_dlls(edges: &[ReferenceEdge]) -> Vec<PathBuf> {
         .iter()
         .filter_map(|e| match &e.outcome {
             ReferenceOutcome::Resolved(paths) => Some(paths.iter().cloned()),
-            ReferenceOutcome::NotBuilt | ReferenceOutcome::Unread(_) => None,
+            ReferenceOutcome::NotBuilt | ReferenceOutcome::Unread { .. } => None,
         })
         .flatten()
         .collect();
@@ -1843,10 +1863,19 @@ fn resolve_reference_dlls(
         ref_targets.fsharp.len() + ref_targets.csharp.len(),
         "every declared project-reference edge must yield exactly one outcome"
     );
-    ReferenceSet {
+    // A transient F# output-scan failure has no `retryable` channel of its own —
+    // that flag came from the sidecar — but it needs one for the same reason:
+    // the env it produced is incomplete for a cause that may clear, and caching
+    // it would keep every assembly reading deferring long after the filesystem
+    // recovered.
+    let set = ReferenceSet {
         dlls,
         edges,
         retryable,
+    };
+    ReferenceSet {
+        retryable: set.retryable || set.has_transient_failure(),
+        ..set
     }
 }
 
@@ -1894,7 +1923,10 @@ fn csharp_project_ref_edges(
                 .iter()
                 .map(|csproj| ReferenceEdge {
                     project: csproj.clone(),
-                    outcome: ReferenceOutcome::Unread(why),
+                    outcome: ReferenceOutcome::Unread {
+                        why,
+                        transient: false,
+                    },
                 })
                 .collect(),
             false,
@@ -1917,7 +1949,10 @@ fn csharp_project_ref_edges(
             );
             edges.push(ReferenceEdge {
                 project: csproj.clone(),
-                outcome: ReferenceOutcome::Unread("no producer TFM known"),
+                outcome: ReferenceOutcome::Unread {
+                    why: "no producer TFM known",
+                    transient: false,
+                },
             });
             continue;
         };
@@ -1944,7 +1979,10 @@ fn csharp_project_ref_edges(
         edges.push(ReferenceEdge {
             project: csproj.clone(),
             outcome: if meta.dlls.is_empty() {
-                ReferenceOutcome::Unread("the sidecar produced no metadata assembly")
+                ReferenceOutcome::Unread {
+                    why: "the sidecar produced no metadata assembly",
+                    transient: false,
+                }
             } else {
                 ReferenceOutcome::Resolved(meta.dlls)
             },
@@ -2083,7 +2121,10 @@ fn fsharp_project_ref_outcome(
     // is belt-and-braces — but a builder change that broke it must not silently
     // drop an edge, which is exactly what conservation is for.
     if !is_fsharp_project(&t.path) {
-        return ReferenceOutcome::Unread("not an F# project");
+        return ReferenceOutcome::Unread {
+            why: "not an F# project",
+            transient: false,
+        };
     }
     let Some(output_name) = t
         .output_name
@@ -2094,7 +2135,10 @@ fn fsharp_project_ref_outcome(
             fsproj = %t.path.display(),
             "project reference without a trustworthy output-assembly name; skipping its output"
         );
-        return ReferenceOutcome::Unread("no trustworthy output-assembly name");
+        return ReferenceOutcome::Unread {
+            why: "no trustworthy output-assembly name",
+            transient: false,
+        };
     };
     let located = match &t.tfm {
         NodeTfm::Known(tfm) => locate_fsharp_output_dll(&t.path, Some(tfm), output_name),
@@ -2105,7 +2149,10 @@ fn fsharp_project_ref_outcome(
                 verdict = ?t.tfm,
                 "project reference without a trustworthy TFM verdict; skipping its output"
             );
-            return ReferenceOutcome::Unread("no trustworthy TFM verdict");
+            return ReferenceOutcome::Unread {
+                why: "no trustworthy TFM verdict",
+                transient: false,
+            };
         }
     };
     // A trustworthy name and TFM, and a `bin` tree we read and found nothing
@@ -2115,7 +2162,9 @@ fn fsharp_project_ref_outcome(
     match located {
         OutputLocation::Found(dll) => ReferenceOutcome::Resolved(vec![dll]),
         OutputLocation::Absent => ReferenceOutcome::NotBuilt,
-        OutputLocation::Undecidable(why) => ReferenceOutcome::Unread(why),
+        OutputLocation::Undecidable { why, transient } => {
+            ReferenceOutcome::Unread { why, transient }
+        }
     }
 }
 
@@ -2152,7 +2201,10 @@ fn locate_fsharp_output_dll(
     let mut dll_name = std::ffi::OsString::from(output_name);
     dll_name.push(".dll");
     let Some(project_dir) = fsproj.parent() else {
-        return OutputLocation::Undecidable("the project path has no parent directory");
+        return OutputLocation::Undecidable {
+            why: "the project path has no parent directory",
+            transient: false,
+        };
     };
     let bin = project_dir.join("bin");
 
@@ -2162,11 +2214,17 @@ fn locate_fsharp_output_dll(
     let mut candidates: Vec<PathBuf> = Vec::new();
     let mut tfm_dirs: Vec<String> = Vec::new();
     let Some(configs) = child_dirs(&bin) else {
-        return OutputLocation::Undecidable("the bin directory could not be read");
+        return OutputLocation::Undecidable {
+            why: "the bin directory could not be read",
+            transient: true,
+        };
     };
     for config in configs {
         let Some(tfm_dirs_on_disk) = child_dirs(&config) else {
-            return OutputLocation::Undecidable("a bin subdirectory could not be read");
+            return OutputLocation::Undecidable {
+                why: "a bin subdirectory could not be read",
+                transient: true,
+            };
         };
         for tfm_dir in tfm_dirs_on_disk {
             let Some(dir_name) = tfm_dir.file_name().and_then(|n| n.to_str()) else {
@@ -2191,7 +2249,10 @@ fn locate_fsharp_output_dll(
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => {
                     tracing::info!(dll = %dll.display(), error = %err, "cannot stat a candidate output");
-                    return OutputLocation::Undecidable("a candidate output could not be examined");
+                    return OutputLocation::Undecidable {
+                        why: "a candidate output could not be examined",
+                        transient: true,
+                    };
                 }
             }
         }
@@ -2204,7 +2265,10 @@ fn locate_fsharp_output_dll(
             tfms = ?tfm_dirs,
             "several TFM variants built and no producer TFM known; skipping the ref rather than guessing"
         );
-        return OutputLocation::Undecidable("several TFM variants built and none selected");
+        return OutputLocation::Undecidable {
+            why: "several TFM variants built and none selected",
+            transient: false,
+        };
     }
     candidates.sort();
     match candidates
@@ -2244,10 +2308,12 @@ enum OutputLocation {
     Found(PathBuf),
     /// Searched the standard layout without error and found no matching output.
     Absent,
-    /// Could not decide: an error while enumerating the tree, or several TFM
-    /// variants built with nothing to select between them. Grades as
+    /// Could not decide. `transient` separates an I/O error while enumerating
+    /// the tree — which may clear on its own, so the env must not be cached —
+    /// from a stable undecidability like several TFM variants built with
+    /// nothing to select between them. Grades as
     /// [`ReferenceOutcome::Unread`].
-    Undecidable(&'static str),
+    Undecidable { why: &'static str, transient: bool },
 }
 
 /// The immediate subdirectories of `dir`, sorted for determinism.
@@ -2284,6 +2350,12 @@ fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
         match path.metadata() {
             Ok(meta) if meta.is_dir() => dirs.push(path),
             Ok(_) => {}
+            // A dangling symlink, or an entry unlinked between the `read_dir`
+            // and the `stat`. Nothing is there to have been missed, so skip it
+            // — aborting would turn one stale link into a whole reference we
+            // claim not to have read, and from there into a globally
+            // incomplete env.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
                 tracing::info!(path = %path.display(), error = %err, "cannot stat a directory entry");
                 return None;
@@ -4648,6 +4720,47 @@ mod tests {
         );
     }
 
+    /// An unread reference whose cause may clear on its own must also make the
+    /// env non-cacheable, or the filesystem recovers and every assembly reading
+    /// goes on deferring until something unrelated invalidates the entry.
+    #[test]
+    fn a_transient_scan_failure_makes_the_env_non_cacheable() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Lib").join("Lib.fsproj");
+        write(&proj, "<Project />");
+        write(&tmp.path().join("Lib").join("bin"), "");
+
+        let edges = fsharp_project_ref_edges(
+            &[ref_target(proj, NodeTfm::Known("net10.0".into()))],
+            &BTreeMap::new(),
+        );
+        let set = ReferenceSet {
+            dlls: Vec::new(),
+            edges,
+            retryable: false,
+        };
+        assert_eq!(set.unread().count(), 1);
+        assert!(
+            set.has_transient_failure(),
+            "an I/O error while scanning is the kind that may clear"
+        );
+
+        // A verdict we decline to trust is *stable*: retrying changes nothing,
+        // so it must not force a re-resolve on every request.
+        let stable = tmp.path().join("Stable").join("Stable.fsproj");
+        write(&stable, "<Project />");
+        let set = ReferenceSet {
+            dlls: Vec::new(),
+            edges: fsharp_project_ref_edges(
+                &[ref_target(stable, NodeTfm::Unresolved)],
+                &BTreeMap::new(),
+            ),
+            retryable: false,
+        };
+        assert_eq!(set.unread().count(), 1);
+        assert!(!set.has_transient_failure());
+    }
+
     /// A `bin` tree we cannot enumerate is **unread**, not unbuilt.
     ///
     /// The locator answers `None` for several unrelated reasons, and reading
@@ -4665,7 +4778,7 @@ mod tests {
         assert!(
             matches!(
                 locate_fsharp_output_dll(&proj, Some("net10.0"), "Lib"),
-                OutputLocation::Undecidable(_)
+                OutputLocation::Undecidable { .. }
             ),
             "an unreadable bin tree is undecidable, not a proven absence"
         );
@@ -4674,7 +4787,7 @@ mod tests {
                 &[ref_target(proj, NodeTfm::Known("net10.0".into()))],
                 &BTreeMap::new()
             ),
-            ReferenceOutcome::Unread(_)
+            ReferenceOutcome::Unread { .. }
         ));
     }
 
@@ -4692,13 +4805,13 @@ mod tests {
         assert!(
             matches!(
                 locate_fsharp_output_dll(&proj, None, "Lib"),
-                OutputLocation::Undecidable(_)
+                OutputLocation::Undecidable { .. }
             ),
             "two built TFMs and no producer TFM cannot be resolved"
         );
         assert!(matches!(
             fsharp_ref_outcome(&[ref_target(proj, NodeTfm::NoneDeclared)], &BTreeMap::new()),
-            ReferenceOutcome::Unread(_)
+            ReferenceOutcome::Unread { .. }
         ));
     }
 
@@ -4779,7 +4892,7 @@ mod tests {
                 &[ref_target(unbuilt.clone(), NodeTfm::Unresolved)],
                 &BTreeMap::new()
             ),
-            ReferenceOutcome::Unread(_)
+            ReferenceOutcome::Unread { .. }
         ));
         assert!(matches!(
             fsharp_ref_outcome(
@@ -4790,7 +4903,7 @@ mod tests {
                 }],
                 &BTreeMap::new()
             ),
-            ReferenceOutcome::Unread(_)
+            ReferenceOutcome::Unread { .. }
         ));
     }
 
@@ -4824,7 +4937,10 @@ mod tests {
             edge("A.fsproj", ReferenceOutcome::NotBuilt),
             edge(
                 "B.csproj",
-                ReferenceOutcome::Unread("no producer TFM known"),
+                ReferenceOutcome::Unread {
+                    why: "no producer TFM known",
+                    transient: false,
+                },
             ),
         ]);
         assert_eq!(
