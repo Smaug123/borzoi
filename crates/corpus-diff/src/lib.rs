@@ -2978,31 +2978,28 @@ fn chain_position(
     if position >= chain.len() || env.entity(*chain.first()?).namespace != declaring.namespace {
         return None;
     }
+    let mut enclosing_parameters = 0usize;
     for (index, (name, arity)) in declaring.path.iter().enumerate() {
         let entity = env.entity(chain[index]);
-        if strip_ecma_arity(name) != entity.name || entity.generic_parameters.len() != *arity {
+        if entity.generic_parameters.len() != *arity {
+            return None;
+        }
+        // The projection strips ECMA-335's arity mangling; strip it here only
+        // when the suffix *is* this segment's arity delta, so that a compiled
+        // name which merely looks mangled — `[<CompiledName "C`1">] type A`
+        // beside `[<CompiledName "C">] type B`, both non-generic — is compared
+        // whole and cannot certify against the other.
+        let delta = arity.checked_sub(enclosing_parameters)?;
+        enclosing_parameters = *arity;
+        let spelling = match name.rsplit_once('`') {
+            Some((head, suffix)) if suffix == delta.to_string() => head,
+            Some(_) | None => name.as_str(),
+        };
+        if spelling != entity.name {
             return None;
         }
     }
     (!env.is_module(chain[position])).then_some(position)
-}
-
-/// A compiled name with ECMA-335's arity mangling dropped: ``Holder`1`` →
-/// `Holder`, `Clr.Holder` → `Clr.Holder` (a compiled name may contain a dot,
-/// and carries no arity of its own). The suffix is a backtick followed by
-/// decimal digits at the very end, which is how the assembly projection strips
-/// it too, so the two names live in one domain.
-fn strip_ecma_arity(name: &str) -> &str {
-    match name.rsplit_once('`') {
-        // Canonical mangling only — no leading zero. ``C`01`` and ``C`1`` are
-        // distinct metadata names that both mean arity 1, and the projection
-        // strips both to `C`; leaving the non-canonical one un-stripped keeps
-        // them apart here rather than certifying one against the other.
-        Some((spelling, arity)) if arity.parse::<usize>().is_ok() && !arity.starts_with('0') => {
-            spelling
-        }
-        Some(_) | None => name,
-    }
 }
 
 fn assembly_resolution_confirms_decl(
@@ -4402,7 +4399,9 @@ mod tests {
             res,
             &oracle_decl(
                 "Demo.Outer<_>.Inner",
-                &[("Outer`1", 1), ("Inner`1", 1)],
+                // ECMA mangles the *delta*: `Inner` declares none of its own,
+                // so it carries no suffix while its arity is the encloser's.
+                &[("Outer`1", 1), ("Inner", 1)],
                 "Inner",
                 true
             )
@@ -4639,6 +4638,47 @@ mod tests {
             Some("Demo.Outer.Inner")
         );
         assert_eq!(certified_expected(&env, res, &nested(3)), None);
+    }
+
+    /// A compiled name that merely *looks* mangled is compared whole. With
+    /// `[<CompiledName "C`1">] type A` beside `[<CompiledName "C">] type B`,
+    /// both non-generic, the projection stores `C` for both; stripping the
+    /// suffix unconditionally would let a resolution to one certify against the
+    /// other. The suffix is only dropped when it is that segment's arity delta.
+    #[test]
+    fn a_suffix_that_is_not_the_arity_delta_is_part_of_the_name() {
+        let env =
+            AssemblyEnv::from_entities(vec![fixture_entity("C", EntityKind::Class, 0, &["X"])]);
+        let parent = fixture_handle(&env, "C", 0, false);
+        let idx = env.member(parent, "X").expect("C.X");
+        let res = Resolution::Member { parent, idx };
+        let ours = assembly_resolution_decl(&env, res).full_name;
+        assert_eq!(ours, "Demo.C.X");
+        // The oracle names a *different* declaration whose compiled name happens
+        // to end in a backtick and a digit.
+        assert_eq!(
+            certified_expected(
+                &env,
+                res,
+                &oracle_decl("Demo.C.X", &[("C`1", 0)], "X", false)
+            ),
+            None
+        );
+        // The same suffix on a generic entity is the mangling, and does strip.
+        let generic =
+            AssemblyEnv::from_entities(vec![fixture_entity("C", EntityKind::Class, 1, &["X"])]);
+        let parent = fixture_handle(&generic, "C", 1, false);
+        let idx = generic.member(parent, "X").expect("C.X");
+        let res = Resolution::Member { parent, idx };
+        assert_eq!(
+            certified_expected(
+                &generic,
+                res,
+                &oracle_decl("Demo.C<_>.X", &[("C`1", 1)], "X", false)
+            )
+            .as_deref(),
+            Some("Demo.C.X")
+        );
     }
 
     /// A use with no declaring entity — a bare type, or an oracle that reported
@@ -5293,6 +5333,7 @@ mod tests {
                     expected: AssemblyDecl {
                         assembly: "Lib".to_string(),
                         full_name: "Lib.T".to_string(),
+                        structural: None,
                     },
                     actual: "Other.T".to_string(),
                 })
