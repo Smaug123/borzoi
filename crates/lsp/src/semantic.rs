@@ -16,7 +16,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, Version};
+use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, ImportError, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
@@ -89,6 +89,28 @@ struct ReferencedAssemblyProjection {
     /// (`netstandard`). `#[serde(default)]` for old cache entries.
     #[serde(default)]
     type_forwarders: Vec<borzoi_assembly::TypeForwarder>,
+}
+
+/// Why one referenced DLL contributed nothing to the [`AssemblyEnv`]. The two
+/// grades cost *different* things, which is the whole reason to distinguish
+/// them: only one of them makes the rest of the env unsafe to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SkipCause {
+    /// The file provably holds no ECMA-335 metadata — its PE header declares no
+    /// CLI data directory ([`ImportError::NotAManagedAssembly`]). Native DLLs
+    /// (`msdia140.dll`, `git2-*.dll`) ride along in NuGet packages and land in
+    /// reference position; `fsc` refuses them too. Nothing is lost and nothing
+    /// becomes uncertain: a file with no manifest has no assembly name to
+    /// collide with a referenced CCU, declares no type that could shadow one,
+    /// and carries no assembly-level `[<AutoOpen>]`.
+    NotAManagedAssembly,
+    /// Every other skip: unreadable bytes, a layout the reader does not support,
+    /// an enumeration error, a reader panic. Metadata is *there* and we could
+    /// not read it, so this DLL's manifest name and types are **unknown** — it
+    /// could be the assembly a referenced CCU names, could declare a type that
+    /// shadows one we did read, and could carry an assembly-level
+    /// `[<AutoOpen>]`. Marks the env's identity set incomplete.
+    UnknownIdentity,
 }
 
 impl ReferencedAssemblyProjection {
@@ -2083,14 +2105,14 @@ pub fn build_env_from_dll_paths<'a>(
         .min(paths.len().max(1));
 
     // Single DLL (or a platform reporting one core): no threading overhead.
-    let mut indexed: Vec<(usize, PathBuf, ReferencedAssemblyProjection)> = if workers <= 1 {
+    let probed: Vec<(usize, Result<ReferencedAssemblyProjection, SkipCause>)> = if workers <= 1 {
         paths
             .iter()
             .enumerate()
-            .filter_map(|(i, p)| {
+            .map(|(i, p)| {
                 let _span =
                     tracing::info_span!("enumerate_dll_type_defs", dll = %p.display()).entered();
-                enumerate_dll_type_defs_cached(cache, p).map(|t| (i, p.to_path_buf(), t))
+                (i, enumerate_dll_type_defs_cached(cache, p))
             })
             .collect()
     } else {
@@ -2119,9 +2141,7 @@ pub fn build_env_from_dll_paths<'a>(
                                 dll = %path.display()
                             )
                             .entered();
-                            if let Some(types) = enumerate_dll_type_defs_cached(cache, path) {
-                                local.push((i, path.to_path_buf(), types));
-                            }
+                            local.push((i, enumerate_dll_type_defs_cached(cache, path)));
                         }
                         local
                     })
@@ -2138,26 +2158,54 @@ pub fn build_env_from_dll_paths<'a>(
         })
     };
 
-    // Restore input order so `from_assemblies` assigns the same `AssemblyId`s the
-    // serial build would (skipped DLLs simply leave gaps, exactly as before).
-    indexed.sort_by_key(|(i, ..)| *i);
-    // The OV-6 gate's extension surface is **globally** unknowable when a DLL's
-    // AutoOpen list could not be read (an unknown auto-open could bring an extension
-    // into any namespace) OR a DLL was **skipped entirely** (`indexed` shorter than
-    // the input `paths`): either forces the gate to defer wholesale. A **dropped
-    // type**, by contrast, is namespace-scoped uncertainty (below).
-    // A DLL FCS can load but our projector skipped entirely leaves no registry
-    // entry, so its manifest name is unknown to referenced-CCU uniqueness — which
-    // must then decline wholesale, as a same-named sibling could be the intended
-    // CCU (issue #150 / codex P2). Distinct from the extension-surface gate below,
-    // which a bad AutoOpen list also trips.
+    // One outcome per input path, in input order. A path missing from `probed`
+    // means its worker's results were dropped (only reachable if a worker
+    // unwound past `catch_reader_panic`, i.e. never in practice) — we learned
+    // nothing about that DLL, which is exactly [`SkipCause::UnknownIdentity`].
+    // Reading the outcome per *path* rather than inferring it from a length
+    // difference is what lets the two skip grades below be told apart at all.
+    let mut outcomes: Vec<Option<Result<ReferencedAssemblyProjection, SkipCause>>> =
+        (0..paths.len()).map(|_| None).collect();
+    for (i, outcome) in probed {
+        outcomes[i] = Some(outcome);
+    }
+
+    // A skip whose cause leaves the DLL's identity and types **unknown** poisons
+    // every later reading: its manifest name is missing from the registry, so
+    // referenced-CCU uniqueness cannot be decided (a same-named sibling could be
+    // the intended CCU — issue #150 / codex P2), and it could declare a type or
+    // an assembly-level `[<AutoOpen>]` that shadows one we did read. A file that
+    // is provably *not a managed assembly* costs none of that
+    // ([`SkipCause::NotAManagedAssembly`]) and so does not count here.
     //
     // Computed *before* the version-unification drop below: that drop is a
     // deliberate exclusion of a DLL whose identity we *do* know, not a projection
     // failure, so it must not read as an incomplete registry (which would make
     // referenced-CCU uniqueness decline wholesale and defeat the very chase the
     // drop enables).
-    let some_dll_skipped = indexed.len() < paths.len();
+    let identity_unknown: Vec<&Path> = outcomes
+        .iter()
+        .zip(&paths)
+        .filter(|(o, _)| matches!(o, None | Some(Err(SkipCause::UnknownIdentity))))
+        .map(|(_, p)| *p)
+        .collect();
+    // One project-level line naming the whole set: each DLL's own cause is
+    // already logged where it was decided, and what matters here is the fact
+    // about the *env* those causes add up to.
+    if !identity_unknown.is_empty() {
+        tracing::warn!(
+            dlls = ?identity_unknown,
+            "referenced assemblies whose identity and types are unknown; \
+             the env's identity set is incomplete"
+        );
+    }
+    let identities_incomplete = !identity_unknown.is_empty();
+    let mut indexed: Vec<(usize, PathBuf, ReferencedAssemblyProjection)> = outcomes
+        .into_iter()
+        .zip(&paths)
+        .enumerate()
+        .filter_map(|(i, (outcome, path))| Some((i, path.to_path_buf(), outcome?.ok()?)))
+        .collect();
     // MSBuild's conflict resolution / the CLR binder unify same-named assemblies
     // to the highest version before the compiler sees them; borzoi builds its
     // closure without that pass, so apply it now (see
@@ -2181,8 +2229,13 @@ pub fn build_env_from_dll_paths<'a>(
             keep
         });
     }
+    // The OV-6 gate's extension surface is **globally** unknowable when a DLL's
+    // AutoOpen list could not be read (an unknown auto-open could bring an
+    // extension into any namespace) OR a DLL's contents are unknown entirely:
+    // either forces the gate to defer wholesale. A **dropped type**, by
+    // contrast, is namespace-scoped uncertainty (below).
     let extension_surface_unknowable =
-        some_dll_skipped || indexed.iter().any(|(_, _, p)| p.auto_opens_unreadable);
+        identities_incomplete || indexed.iter().any(|(_, _, p)| p.auto_opens_unreadable);
     // Collect the namespaces of every dropped type across all DLLs.
     let dropped_type_namespaces: Vec<Vec<String>> = indexed
         .iter()
@@ -2208,7 +2261,7 @@ pub fn build_env_from_dll_paths<'a>(
     if extension_surface_unknowable {
         env.mark_extension_surface_unknowable();
     }
-    if some_dll_skipped {
+    if identities_incomplete {
         env.mark_referenced_assemblies_incomplete();
     }
     for namespace in dropped_type_namespaces {
@@ -2225,24 +2278,44 @@ pub fn build_env_from_dll_paths<'a>(
 /// is identical to a fresh computation, so the env is byte-identical either way.
 /// [`AssemblyCache::get_or_populate`] brackets the read+parse with a `stat` so a
 /// DLL overwritten mid-compute is never persisted with mismatched metadata.
+///
+/// Only a *projection* is cached, so a cache hit is always a success and the
+/// [`SkipCause`] is only ever produced by a live computation.
 fn enumerate_dll_type_defs_cached(
     cache: &AssemblyCache,
     path: &Path,
-) -> Option<ReferencedAssemblyProjection> {
-    cache.get_or_populate(path, || enumerate_dll_type_defs(path))
+) -> Result<ReferencedAssemblyProjection, SkipCause> {
+    let mut cause = None;
+    let hit = cache.get_or_populate(path, || match enumerate_dll_type_defs(path) {
+        Ok(projection) => Some(projection),
+        Err(why) => {
+            cause = Some(why);
+            None
+        }
+    });
+    match hit {
+        Some(projection) => Ok(projection),
+        // A miss runs the closure, which sets `cause` on every failing path; a
+        // hit returns `Some`. So `None` here implies the closure ran and failed.
+        None => Err(cause.expect("a cache miss runs the computation")),
+    }
 }
 
 /// Read, parse, and enumerate the type definitions of one referenced DLL.
-/// Returns `None` — with a logged warning — on *any* failure (unreadable file,
+/// Errs — with a logged warning — on *any* failure (unreadable file,
 /// unparseable PE, an `enumerate_type_defs` error, or a reader panic at either
 /// stage) so the caller skips just this DLL and keeps the others. Never
 /// propagates an error or a panic into the env build.
-fn enumerate_dll_type_defs(path: &Path) -> Option<ReferencedAssemblyProjection> {
+///
+/// The [`SkipCause`] separates the one refusal that is a fact about the *input*
+/// — the file is not a managed assembly — from every refusal that is a fact
+/// about *this reader*. Only the latter leaves anything unknown.
+fn enumerate_dll_type_defs(path: &Path) -> Result<ReferencedAssemblyProjection, SkipCause> {
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
         Err(err) => {
             tracing::warn!(dll = %path.display(), error = %err, "failed to read DLL; skipping");
-            return None;
+            return Err(SkipCause::UnknownIdentity);
         }
     };
     // `parse` drives the owned ECMA-335 reader over arbitrary
@@ -2250,11 +2323,19 @@ fn enumerate_dll_type_defs(path: &Path) -> Option<ReferencedAssemblyProjection> 
     // image, truncated download) can make it panic on an out-of-range table
     // index rather than return `Err`, so it runs panic-safely — the same
     // policy the CST parser path uses (see [`crate::cst_panic_safe`]).
-    match catch_reader_panic(path, "parse", || Ecma335Assembly::parse(&bytes))? {
-        Ok(view) => enumerate_view_catching(path, &view),
+    let parsed = catch_reader_panic(path, "parse", || Ecma335Assembly::parse(&bytes))
+        .ok_or(SkipCause::UnknownIdentity)?;
+    match parsed {
+        Ok(view) => enumerate_view_catching(path, &view).ok_or(SkipCause::UnknownIdentity),
+        // Not an assembly at all: logged at `debug`, not `warn`, because native
+        // files ride along in NuGet packages routinely and nothing is lost.
+        Err(ImportError::NotAManagedAssembly) => {
+            tracing::debug!(dll = %path.display(), "not a managed assembly; skipping");
+            Err(SkipCause::NotAManagedAssembly)
+        }
         Err(err) => {
             tracing::warn!(dll = %path.display(), error = %err, "failed to parse DLL; skipping");
-            None
+            Err(SkipCause::UnknownIdentity)
         }
     }
 }
@@ -4787,16 +4868,98 @@ mod tests {
 
     #[test]
     fn enumerate_dll_type_defs_skips_unreadable_and_garbage() {
-        // A path that doesn't exist: the read fails and the DLL is skipped.
+        // A path that doesn't exist: the read fails and the DLL is skipped. We
+        // learned nothing about it, so it is an unknown identity — the grade
+        // that poisons the env, never the "not managed" exemption.
         let missing = Path::new("/definitely/not/a/real/path/nope.dll");
-        assert!(enumerate_dll_type_defs(missing).is_none());
+        assert_eq!(
+            enumerate_dll_type_defs(missing).err(),
+            Some(SkipCause::UnknownIdentity)
+        );
 
         // A file full of garbage bytes: the parser rejects it and the DLL is
-        // skipped — no panic escapes.
+        // skipped — no panic escapes. Garbage is refused before the PE headers
+        // can declare anything, so it too is an unknown identity.
         let tmp = TempDir::new().unwrap();
         let junk = tmp.path().join("junk.dll");
         write(&junk, "this is not a PE file at all");
-        assert!(enumerate_dll_type_defs(&junk).is_none());
+        assert_eq!(
+            enumerate_dll_type_defs(&junk).err(),
+            Some(SkipCause::UnknownIdentity)
+        );
+    }
+
+    /// A PE32 image whose optional header declares all 16 data directories and
+    /// leaves every one of them zero — the shape of a native DLL. `Machine` and
+    /// `Characteristics` are left zero: nothing before the CLI data directory
+    /// reads them, which is the point (the classification is a fact about the
+    /// *declared directory table*, not about the rest of the image).
+    fn native_pe_image() -> Vec<u8> {
+        const E_LFANEW: usize = 0x40;
+        const SIZE_OPTIONAL: u16 = 224; // 96 standard/NT fields + 16 × 8 directories
+        let mut image = vec![0u8; E_LFANEW + 4 + 20 + SIZE_OPTIONAL as usize];
+        image[0..2].copy_from_slice(b"MZ");
+        image[0x3C..0x40].copy_from_slice(&(E_LFANEW as u32).to_le_bytes());
+        image[E_LFANEW..E_LFANEW + 4].copy_from_slice(b"PE\0\0");
+        let coff = E_LFANEW + 4;
+        // NumberOfSections stays 0, so the section walk after the directory read
+        // has nothing to do.
+        image[coff + 16..coff + 18].copy_from_slice(&SIZE_OPTIONAL.to_le_bytes());
+        let optional = coff + 20;
+        image[optional..optional + 2].copy_from_slice(&0x10Bu16.to_le_bytes()); // PE32
+        // NumberOfRvaAndSizes: the last field before the directory array, at
+        // offset 92 of a PE32 optional header.
+        image[optional + 92..optional + 96].copy_from_slice(&16u32.to_le_bytes());
+        image
+    }
+
+    /// A file that declares no CLI data directory is not an assembly we failed
+    /// to read — it is not an assembly. Nothing about the env becomes uncertain,
+    /// so it must not mark the identity set incomplete; a DLL we genuinely could
+    /// not read must.
+    ///
+    /// This is what makes the wholesale "defer every assembly reading under an
+    /// incomplete projection" policy affordable: native files ride along in
+    /// NuGet packages and land in reference position routinely, and counting
+    /// them as losses would take a project's whole referenced-assembly surface
+    /// dark for a `git2-*.dll`.
+    #[test]
+    fn a_native_pe_in_reference_position_leaves_the_identity_set_complete() {
+        let tmp = TempDir::new().unwrap();
+
+        let native = tmp.path().join("native.dll");
+        std::fs::write(&native, native_pe_image()).unwrap();
+        // Pin the premise: these bytes reach the classification under test via
+        // the projector's positive determination, not via some earlier refusal
+        // that would make the assertions below pass for the wrong reason.
+        assert_eq!(
+            Ecma335Assembly::parse(&std::fs::read(&native).unwrap()).err(),
+            Some(ImportError::NotAManagedAssembly)
+        );
+        assert_eq!(
+            enumerate_dll_type_defs(&native).err(),
+            Some(SkipCause::NotAManagedAssembly)
+        );
+
+        let env =
+            build_env_from_dll_paths([native.as_path()].into_iter(), &AssemblyCache::disabled());
+        assert!(
+            !env.identities_incomplete(),
+            "a file with no CLI directory has no manifest name to hide"
+        );
+
+        // The contrast case: a *managed* image we could not read leaves its
+        // identity unknown, and the env says so.
+        let unreadable = tmp.path().join("unreadable.dll");
+        std::fs::write(&unreadable, b"MZ but nothing else").unwrap();
+        let env = build_env_from_dll_paths(
+            [native.as_path(), unreadable.as_path()].into_iter(),
+            &AssemblyCache::disabled(),
+        );
+        assert!(
+            env.identities_incomplete(),
+            "a DLL we could not read could be any assembly, including a referenced CCU"
+        );
     }
 
     // ---- resolved_project_for ----

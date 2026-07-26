@@ -100,13 +100,15 @@ const EXEMPT: &[Exemption] = &[
     //
     // Unscoped, and this is the one entry where that is right: any package may
     // ship a native file, and the error *is* the justification. That only holds
-    // because `Error::NoCliHeader` now means exactly "no directory declared" —
-    // it used to also cover a *declared* header this reader could not follow,
-    // which is a managed assembly and a reader gap, and would have been hidden
-    // here. That case is `UnreadableCliHeader` and is not exempt.
+    // because `Error::NoCliHeader` means exactly "no directory declared" — a
+    // *declared* header this reader cannot follow is a managed assembly and a
+    // reader gap, and would be hidden here. That case is `UnreadableCliHeader`
+    // and is not exempt. The projector gives the determination its own
+    // `ImportError::NotAManagedAssembly`, so this matches a variant's rendering
+    // rather than a `detail` string another refusal could grow into.
     Exemption {
         stage: Stage::Parse,
-        error: "unsupported ECMA-335 layout: assembly reader: no CLI header",
+        error: "not a managed assembly: no CLI data directory",
         digests: &[],
         why: "not a managed assembly (native PE); fsc refuses it too",
     },

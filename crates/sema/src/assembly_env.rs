@@ -3432,6 +3432,16 @@ impl AssemblyEnv {
         self.invalidate_bare_value_index();
     }
 
+    /// Whether the env's loaded-DLL **identity set is incomplete**: some DLL is
+    /// present that the env cannot name, so nothing read out of the assemblies
+    /// is provably unshadowed by it (see
+    /// [`Self::mark_referenced_assemblies_incomplete`]). `false` for every env
+    /// whose host supplied an identity for each DLL it read and skipped none it
+    /// could not name, which is the runtime case.
+    pub fn identities_incomplete(&self) -> bool {
+        self.assembly_identities_incomplete
+    }
+
     /// Mark the env's loaded-DLL **identity set incomplete** — the host skipped a
     /// DLL it could not project at all, so its manifest name is unregistered.
     /// That name could collide with a referenced CCU, so the abbreviation-target

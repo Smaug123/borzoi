@@ -665,7 +665,23 @@ fn no_cli_header_means_the_image_declares_none() {
         }
 
         for input in inputs {
-            if MetadataFile::read(&input).err() != Some(Error::NoCliHeader) {
+            let reader_says_none = MetadataFile::read(&input).err() == Some(Error::NoCliHeader);
+            // The determination is what hosts key on, and they see it through
+            // the projector, not the reader — so the projected variant must
+            // fire on exactly the same bytes. An inequality either way is a
+            // hole: `NotAManagedAssembly` on a managed image would let a host
+            // wave a real assembly through as native, and losing it on a
+            // native one puts the file back among the unknown-identity skips.
+            assert_eq!(
+                crate::Ecma335Assembly::parse(&input).err()
+                    == Some(crate::ImportError::NotAManagedAssembly),
+                reader_says_none,
+                "the projector's NotAManagedAssembly must track Error::NoCliHeader \
+                 exactly (len {}): {}",
+                input.len(),
+                p.display(),
+            );
+            if !reader_says_none {
                 continue;
             }
             assert_eq!(
