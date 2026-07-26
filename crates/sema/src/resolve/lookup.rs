@@ -3517,7 +3517,7 @@ impl<'a> Resolver<'a> {
     ///   a project reading that reached the head there.
     ///
     /// The coarse, name-*blind* shadow sources the tiered walk carries
-    /// ([`Resolver::unmodelled_type_shadow_at`]) — an unknowable abbreviation
+    /// ([`Resolver::unknowable_abbreviation_shadow_at`]) — an unknowable abbreviation
     /// somewhere in an opened namespace — are excluded for the same reason,
     /// magnified: they carry
     /// no evidence about *this* name at all. All of these stay documented

@@ -155,6 +155,29 @@ pub fn resolve_file(
                 .insert(id_text(name.text()).to_string());
         }
     }
+    // Every *nested* module's simple name in the file, for the dotted half of
+    // the project `[<AutoOpen>]` shadow (`Resolver::project_module_named`):
+    // what owns a dotted head is a module. Definitions and abbreviations both —
+    // an abbreviation's LHS binds a name that owns whatever its target owns.
+    // A file's own top-level `module M` header is a `MODULE_OR_NAMESPACE` and
+    // so is not collected, which is exactly right: the risk this bounds is a
+    // declaration nested inside an `[<AutoOpen>]` module, and a top-level
+    // header can never be one. Whole-file and order-independent like the type
+    // pre-scan above, and over-approximate for the same reason.
+    for decl in file.syntax().descendants().filter_map(ModuleDecl::cast) {
+        let name = match decl {
+            // A nested header is written `module X`; `long_id` is dotted only
+            // on a malformed one, where the last segment is still the module
+            // the body hangs off.
+            ModuleDecl::NestedModule(nm) => nm.long_id().and_then(|li| li.idents().last()),
+            ModuleDecl::ModuleAbbrev(ab) => ab.ident().and_then(|li| li.idents().last()),
+            _ => None,
+        };
+        if let Some(name) = name {
+            r.own_module_simple_names
+                .insert(id_text(name.text()).to_string());
+        }
+    }
     // The type/exception names declared **directly inside an `[<AutoOpen>]`
     // module** (AO-2): an in-file attribute hit for one of these must defer —
     // the auto-open import contests it positionally in FCS, across blocks the
@@ -1773,6 +1796,7 @@ impl<'a> Resolver<'a> {
             open_extension_unknowable: false,
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            own_module_simple_names: HashSet::new(),
             own_binder_simple_names: HashSet::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_exception_simple_names: HashSet::new(),
@@ -1870,12 +1894,12 @@ impl<'a> Resolver<'a> {
 
     /// Whether a **project** `[<AutoOpen>]` module that is *visible from the
     /// current site* sits directly in `namespace` — checked per-namespace at each
-    /// type-position lookup ([`Self::unmodelled_type_shadow_at`]), not
-    /// pre-aggregated: sema does not model such a module's nested types, so it may
-    /// provide a type name the tiered walk cannot reach at this reading. *Which*
-    /// names those could be is bounded by the file-global type pre-scan behind
-    /// [`Self::project_type_named`], which is how the shadow that rides on this
-    /// predicate stays name-keyed.
+    /// type-position lookup ([`Self::project_shadow_at`]), not
+    /// pre-aggregated: sema does not model such a module's contents, so it may
+    /// provide a name the tiered walk cannot reach at this reading. *Which*
+    /// names those could be is bounded by the file-global pre-scans behind
+    /// [`Self::project_type_named`] and [`Self::project_module_named`], which is
+    /// how the shadow that rides on this predicate stays name-keyed.
     ///
     /// A same-file `module private` is filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`] filters it — visible only from
@@ -1907,6 +1931,7 @@ impl<'a> Resolver<'a> {
             or_pattern_aliases: self.or_pattern_aliases,
             attribute_resolutions: self.attribute_resolutions,
             own_type_simple_names: self.own_type_simple_names,
+            own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
             attribute_shape_unknowable: self.attribute_shape_unknowable,
             augmentation_instance_names: self.augmentation_instance_names,

@@ -238,7 +238,7 @@ pub enum Risk {
     /// Which *mechanism* declines a bare cell is not pinned here and cannot be:
     /// a probe is one file, so the file-global auto-open name set reaches these
     /// uses as readily as the namespace-keyed
-    /// `unmodelled_type_shadow_at` does. The cross-file case that separates
+    /// `project_shadow_at` does. The cross-file case that separates
     /// them lives in `resolve_fsharp_abbrev`.
     ProjectAutoOpenHiding,
 }

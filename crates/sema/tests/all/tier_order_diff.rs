@@ -141,12 +141,16 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     //     assembly-import time, *below* the enclosing namespace, so consulting
     //     it there is the rank/keying conflation in its purest form.
     //
-    // A fourth was the same conflation in `unmodelled_type_shadow_at`'s
-    // project-`[<AutoOpen>]` half, `Preemptive` and blind to which name it was
+    // A fourth was the same conflation in the project-`[<AutoOpen>]` channel
+    // (`project_shadow_at`), `Preemptive` and blind to which name it was
     // guarding, which deferred *every* bare annotation in a file whose
     // namespace held an auto-open module. Keying it on `project_type_named` is
     // what took Domain's cost from 618 to the 32 above, and it is the shape the
     // rest should follow: bound what a risk can be hiding before ranking it.
+    // Its dotted twin (`project_module_named`) is keyed the same way, and what
+    // is left over there is a *rank* error with the operands swapped — the
+    // `VExQ`/`VNsQ` rows below, where the risk is asked per prefix and so is
+    // under-ranked rather than over-ranked.
     //
     // So the fix is to give each remaining shadow risk an explicit rank instead
     // of inheriting the prefix's position, and only then move the tier. Until
@@ -286,68 +290,49 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
         "Hidden@Root",
         "as SNsYRo, reached as a dotted head",
     ),
-    // The project `[<AutoOpen>]` channel reached as a *dotted head*. Arm 2 of
-    // `type_position_shadow_at` is single-segment-only: a `Preemptive` verdict
-    // ends the whole walk, so a name-blind veto extended to dotted heads would
-    // stop every fully-qualified path resolving in a file whose namespace holds
-    // an auto-open module. The price of that restriction is these eight — the
-    // module declares a *module* of the head's name, FCS reads the whole path
-    // through it, and we commit the assembly plant instead.
+    // The project `[<AutoOpen>]` channel reached as a *dotted head*, at the two
+    // tiers our walk visits **before** the namespace the risk lives in.
     //
-    // The bare twins (`S…Q`) decline correctly, so this is a hole in one form
-    // only. Closing it needs the veto keyed on a name the project actually
-    // declares — a *module* name here, where `project_type_named` answers for
-    // types — at which point the length restriction is no longer paying for
-    // anything and can go.
-    (
-        "VEnQ/contributor-first",
-        "Enclosing",
-        "Hidden@Project",
-        "a project [<AutoOpen>] module owns this dotted head; the project veto is single-segment \
-         only, so the walk never consults it and commits the assembly plant",
-    ),
-    (
-        "VEnQ/decoy-first",
-        "Enclosing",
-        "Hidden@Project",
-        "a project [<AutoOpen>] module owns this dotted head; the project veto is single-segment \
-         only, so the walk never consults it and commits the assembly plant",
-    ),
+    // `project_shadow_at` answers per walk prefix, and a project auto-open
+    // module in the probe's own namespace is found only at the
+    // enclosing-namespace prefix. So a plant at the explicit or implicit open
+    // tier is committed before the channel is ever consulted, while the same
+    // plant at the enclosing or root tier declines correctly (the `VEnQ`/`VRoQ`
+    // rows of `KNOWN_DEFERRALS`).
+    //
+    // That is the rank/keying conflation with the operands swapped: here it is
+    // the *risk* that is under-ranked, not over-ranked. Whether a project
+    // `[<AutoOpen>]` module is in scope is a fact about the **file**, not about
+    // any assembly prefix — the walk's prefix loop is simply the wrong place to
+    // ask it. Hoisting the question out of the loop is not a reorder either: a
+    // preemptive veto asked once, before any tier, fires for every file holding
+    // such a module, which is the cost the rank work exists to bound. So these
+    // four wait on it.
     (
         "VExQ/contributor-first",
         "Explicit",
         "Hidden@Project",
-        "as VEnQ, with the plant at the explicit open",
+        "a project [<AutoOpen>] module owns this dotted head, but it lives in the enclosing \
+         namespace and the plant sits at the explicit open, which our walk commits first",
     ),
     (
         "VExQ/decoy-first",
         "Explicit",
         "Hidden@Project",
-        "as VEnQ, with the plant at the explicit open",
+        "a project [<AutoOpen>] module owns this dotted head, but it lives in the enclosing \
+         namespace and the plant sits at the explicit open, which our walk commits first",
     ),
     (
         "VNsQ/contributor-first",
         "NsAuto",
         "Hidden@Project",
-        "as VEnQ, with the plant at the implicit open",
+        "as VExQ, with the plant at the implicit open",
     ),
     (
         "VNsQ/decoy-first",
         "NsAuto",
         "Hidden@Project",
-        "as VEnQ, with the plant at the implicit open",
-    ),
-    (
-        "VRoQ/contributor-first",
-        "Root",
-        "Hidden@Project",
-        "as VEnQ, with the plant at the root tier",
-    ),
-    (
-        "VRoQ/decoy-first",
-        "Root",
-        "Hidden@Project",
-        "as VEnQ, with the plant at the root tier",
+        "as VExQ, with the plant at the implicit open",
     ),
 ];
 
@@ -730,8 +715,29 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     ),
     // The hazard cell of the project channel: the project module holds the name,
     // FCS binds it, and no assembly tier gets a look in — so the plant's own
-    // tier does not appear here at all. Bare only; the dotted twins are the
-    // wrong targets recorded in `KNOWN_DIVERGENCES`. 12 cases.
+    // tier does not appear here at all. 16 cases: every bare one, and the two
+    // dotted tiers our walk reaches the risk's namespace before committing
+    // (the other two dotted tiers are the `V…Q` rows of `KNOWN_DIVERGENCES`).
+    (
+        "VEnQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "VEnQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "VRoQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "VRoQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
     (
         "SCoQ/contributor-first",
         "Hidden@Project",
@@ -1984,6 +1990,13 @@ fn tier_ladder_is_sound_against_fcs() {
     // here rather than merely re-appear in `KNOWN_DEFERRALS`. (`SCoP`/`SMoP`
     // and `VCoP`/`VMoP` are absent: the contested and manifest channels decline
     // those regardless, so they cannot floor anything.)
+    //
+    // What these cells cannot floor is the channel's keying *by form*. A `…P`
+    // probe declares nothing of the plant's name on the project side at all, so
+    // it commits whichever index a dotted head consults — widening that head to
+    // the type index would leave every cell here green. The guard for it is
+    // `a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`,
+    // whose auto-open module declares a *type* of the written head's name.
     for control in [
         "TEx", "TEn", "TNs", "TRo", //
         "DEx", "DEn", "DNs", "DRo", //
