@@ -21,13 +21,17 @@
 //! producing nothing. That is exactly how the unchecked `Operators.int64` used
 //! to win over `Operators.Checked.int64` in four `WoofWare.PawPrint` files.
 //!
-//! Channels: an explicit namespace prefix, a project-code namespace prefix, a
-//! module prefix, and a transitive two-level chain. Three contests pin the
-//! *ranking*, which is where a flattened prefix list goes wrong quietly: an
-//! auto-open-derived prefix versus the opened container's own direct submodule,
-//! two sibling project auto-open roots, and two assemblies' auto-open modules
-//! in one namespace. Negative controls pin that the recursion runs through
+//! Channels: an explicit namespace prefix, a module prefix, and a transitive
+//! two-level chain. Two contests pin the *ranking*, which is where a flattened
+//! prefix list goes wrong quietly: an auto-open-derived prefix versus the opened
+//! container's own direct submodule, and two assemblies' auto-open modules in
+//! one namespace. Negative controls pin that the recursion runs through
 //! `[<AutoOpen>]` and public accessibility only.
+//!
+//! **Project** auto-open modules lend no shortening prefix, so there are no
+//! project cells: FCS auto-opens one *fragment*, not the merged module, and
+//! deciding which nested modules belong to the attributed fragment needs the
+//! declaring file of each — see `Resolver::auto_open_shortening_prefixes`.
 //!
 //! The **implicit** prefix — the `open Checked` shape itself — cannot be cast
 //! as a cell here: FCS applies an assembly-level `[<AutoOpen>]` inside the
@@ -38,14 +42,6 @@
 //! `resolve_fsharp_core::open_checked_binds_the_checked_conversions`.
 
 use crate::common::fold_matrix::{Cell, Position, run_matrix};
-
-/// Two sibling project `[<AutoOpen>]` modules, each nesting a `PjPick` with a
-/// colliding value — the declaration-order contest between auto-open roots.
-const PJ_TWO_ROOTS: &str = "namespace Demo.PjTwo\n\n[<AutoOpen>]\nmodule PjFirst =\n    module PjPick =\n        let pjPickValue () = 1\n\n[<AutoOpen>]\nmodule PjSecond =\n    module PjPick =\n        let pjPickValue () = 2\n";
-
-/// A project decl file whose `[<AutoOpen>]` module nests a plain module — the
-/// project-code twin of the `Operators.Checked` shape.
-const PJ_SHORTEN: &str = "namespace Demo.PjShorten\n\n[<AutoOpen>]\nmodule PjAuto =\n    let pjShortenTarget () = 1\n    module PjInner =\n        let pjShortenTarget () = 2\n";
 
 const CELLS: &[Cell] = &[
     // ---- explicit namespace prefix ----
@@ -127,28 +123,6 @@ const CELLS: &[Cell] = &[
         label: "cross-assembly / two assemblies' auto-open modules nest the same short name",
         body: &["open Demo.TwoAsm", "open AsmPick"],
         probe: "asmPickValue",
-        position: Position::Expr,
-    },
-    Cell {
-        decls: &[PJ_TWO_ROOTS],
-        label: "project / the later auto-open root wins the short name",
-        body: &["open Demo.PjTwo", "open PjPick"],
-        probe: "pjPickValue",
-        position: Position::Expr,
-    },
-    // ---- the project half of the same shape ----
-    Cell {
-        decls: &[PJ_SHORTEN],
-        label: "project / control: the enclosing auto-open value",
-        body: &["open Demo.PjShorten"],
-        probe: "pjShortenTarget",
-        position: Position::Expr,
-    },
-    Cell {
-        decls: &[PJ_SHORTEN],
-        label: "project / plain submodule of a project auto-open module",
-        body: &["open Demo.PjShorten", "open PjInner"],
-        probe: "pjShortenTarget",
         position: Position::Expr,
     },
 ];

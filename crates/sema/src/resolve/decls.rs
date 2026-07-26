@@ -10,7 +10,9 @@ use crate::def::DefId;
 use super::model::{
     CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
 };
-use super::state::{AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver};
+use super::state::{
+    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
+};
 use super::{
     attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
     is_type_augmentation, single_ident, type_long_ident_path,
@@ -1460,7 +1462,10 @@ impl<'a> Resolver<'a> {
                         if has_reading {
                             self.assembly_open_prefixes.push((pos, gp.clone()));
                             if !(project_readings_only && !project_ns) {
-                                self.open_shortening_prefixes.push(gp.clone());
+                                self.open_shortening_prefixes.push(ShorteningPrefix {
+                                    path: gp.clone(),
+                                    namespace_reading: true,
+                                });
                                 self.explicit_open_prefixes.push((pos, gp.clone()));
                             }
                         }
@@ -1515,7 +1520,10 @@ impl<'a> Resolver<'a> {
                         // -- The assembly *module* half's dotted-head bookkeeping —
                         // keyed on the module handles, not the namespace surface.
                         if !handles.is_empty() {
-                            self.open_shortening_prefixes.push(gp.clone());
+                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                                path: gp.clone(),
+                                namespace_reading: false,
+                            });
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
                             // later `open Sub` name something we cannot see
@@ -1645,7 +1653,10 @@ impl<'a> Resolver<'a> {
                             // reached implicitly by opening its enclosing namespace.
                             self.open_module_values(gp, pos, None);
                             self.module_open_prefixes.push((pos, gp.clone()));
-                            self.open_shortening_prefixes.push(gp.clone());
+                            self.open_shortening_prefixes.push(ShorteningPrefix {
+                                path: gp.clone(),
+                                namespace_reading: false,
+                            });
                             self.opaque_dotted_open = true;
                         }
                     }

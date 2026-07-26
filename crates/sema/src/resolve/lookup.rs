@@ -14,7 +14,7 @@ use super::id_text;
 use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
-    ScopeEntry, ShadowVeto, TieredResolution,
+    ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
 };
 
 /// How FCS's unqualified-name slot reads for a compound head that `lookup`
@@ -432,7 +432,7 @@ impl<'a> Resolver<'a> {
                     full.extend_from_slice(written);
                     out.push((full, false));
                 }
-                let mut full = prefix.clone();
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 out.push((full, true));
             }
@@ -450,8 +450,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// The extra shortening prefixes an **opened container** lends: the
-    /// `[<AutoOpen>]` modules that opening `base` folds, transitively, from the
-    /// assembly and project halves alike.
+    /// **referenced-assembly** `[<AutoOpen>]` modules that opening `prefix`
+    /// folds, transitively.
     ///
     /// FCS enters every nested module of an opened container into
     /// `eModulesAndNamespaces` under its short name and *then* recurses into
@@ -462,12 +462,28 @@ impl<'a> Resolver<'a> {
     /// bare `open Checked` name `Operators.Checked` and bind the
     /// overflow-checking conversions.
     ///
-    /// Ordered **highest priority first**, and every entry out-ranks `base`
+    /// Ordered **highest priority first**, and every entry out-ranks `prefix`
     /// itself: the recursion's additions are layered on top of the container's
     /// own submodules, so where a container holds both a direct `M` and an
     /// auto-open module holding its own `M`, `open M` names the latter
     /// (`open_shortening_matrix`'s `precedence / …` cell, FCS-diffed).
-    fn auto_open_shortening_prefixes(&self, base: &[String]) -> Vec<Vec<String>> {
+    ///
+    /// Two limits, both deliberate:
+    ///
+    /// - **project** auto-open modules lend no prefix. FCS auto-opens one
+    ///   *fragment*, not the merged module, so `[<AutoOpen>] module A` in one
+    ///   file does not make a `Pick` declared by a plain `module A` augmentation
+    ///   in another file answer to its short name (fcs-dump-verified: FS0039).
+    ///   Deciding that needs the declaring file of a nested module, which
+    ///   `ProjectItems` does not carry — its own slice.
+    /// - where `prefix` is a namespace in one assembly and a module in another,
+    ///   the two halves' prefixes are not interleaved by reference order, so a
+    ///   short name both halves' auto-open roots expose takes the module half's.
+    ///   FCS orders by CCU; the same-FQN *value* merge defers instead of
+    ///   guessing (`Demo.ModuleOpen.Merged`), and this contest needs the
+    ///   contributor plumbing that defer has.
+    fn auto_open_shortening_prefixes(&self, prefix: &ShorteningPrefix) -> Vec<Vec<String>> {
+        let base = prefix.path.as_slice();
         let mut out: Vec<Vec<String>> = Vec::new();
         // Two assemblies may expose the same auto-open module FQN, and a
         // container can be both a namespace and a module path; one prefix is
@@ -478,8 +494,12 @@ impl<'a> Resolver<'a> {
                 out.push(path);
             }
         }
-        // The assembly **namespace** half — precomputed at index time, since a
-        // namespace's auto-open closure does not depend on the open site.
+        // The **namespace** half — precomputed at index time, since a
+        // namespace's auto-open closure does not depend on the open site. Gated
+        // on the open having actually read `base` as a namespace: the index is
+        // keyed by path alone, so a module-only open of a path that is also an
+        // assembly namespace would otherwise fold that namespace's auto-opens
+        // (see [`ShorteningPrefix::namespace_reading`]).
         //
         // For an *implicitly* opened namespace this inherits a scoping the whole
         // implicit-open path already has: FCS applies an assembly-level
@@ -489,39 +509,20 @@ impl<'a> Resolver<'a> {
         // in `Microsoft.FSharp.Core` is folded here as it already is by
         // `open_auto_open_modules_in`. Scoping that to the contributor is one
         // change to both, not a special case of this walk.
-        for path in self.assemblies.auto_open_module_paths_in_namespace(base) {
-            push(&mut out, path.clone());
+        if prefix.namespace_reading {
+            for path in self.assemblies.auto_open_module_paths_in_namespace(base) {
+                push(&mut out, path.clone());
+            }
         }
-        // The assembly **module** half: `base` may itself be a module (a
-        // chained `open`), whose auto-open submodules are folded just the same.
-        // Their paths extend `base`, which is how they were found.
+        // The **module** half: `base` may itself be a module (a chained `open`),
+        // whose auto-open submodules are folded just the same. Their paths
+        // extend `base`, which is how they were found.
         for handle in self.opened_assembly_modules(base) {
             for (_, chain) in self.assemblies.auto_open_descendants(handle) {
                 let mut path = base.to_vec();
                 path.extend(chain);
                 push(&mut out, path);
             }
-        }
-        // The **project** half: a project auto-open module may hold another, so
-        // the walk recurses like the other project auto-open consumers'
-        // (`namespace_exports_value_named`) — but in the same DFS pre-order the
-        // assembly halves use, because these are *ranked*. Two sibling
-        // `[<AutoOpen>]` roots each nesting a same-named module is a real
-        // contest, and FCS binds the later-declared one
-        // (`open_shortening_matrix`'s `project / the later auto-open root …`
-        // cell, which fails outright under a bare pop-from-the-end walk).
-        let mut stack: Vec<Vec<String>> = self
-            .project_auto_open_submodules_in(base)
-            .into_iter()
-            .rev()
-            .collect();
-        while let Some(module) = stack.pop() {
-            stack.extend(
-                self.project_auto_open_submodules_in(&module)
-                    .into_iter()
-                    .rev(),
-            );
-            push(&mut out, module);
         }
         // Latest-folded wins, so the last entry is the most proximate.
         out.reverse();
@@ -966,7 +967,7 @@ impl<'a> Resolver<'a> {
             // source-ordered list, latest open first so the most recent shadowing
             // prefix wins across open kinds.
             for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.clone();
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if self.is_project_module_path(&full) {
                     return Some(full);
@@ -1120,7 +1121,7 @@ impl<'a> Resolver<'a> {
             }
             // Tier 1 — explicit opens, latest first.
             for prefix in self.open_shortening_prefixes.iter().rev() {
-                let mut full = prefix.clone();
+                let mut full = prefix.path.clone();
                 full.extend_from_slice(written);
                 if let Some(id) = hit(&full) {
                     return Some((CaseTier::Namespace, id));
