@@ -3226,19 +3226,24 @@ impl<'a> Gen<'a> {
         // finished map for the same reason the resolver sweeps — see
         // `Resolver::seal_assembly_readings`.
         //
-        // The **types** are not sealed, and the line is what each surface
-        // claims. A `Resolution` names one entity by handle: follow it and you
-        // land somewhere, so an ambiguity we cannot resolve makes it a
-        // wrong-target claim. A `Ty` is `Named(["System", "String"])` — a *name*.
-        // Two same-named types across a read and an unread DLL do not make the
-        // name wrong; disambiguating them is exactly what a name does not
-        // purport to do. So the seal follows the handles and stops there.
+        // The **types** are not sealed, and that is a stated limit rather than a
+        // claim of safety. A type read *through* a sealed resolution goes with
+        // it (`annotation_ty` finds no entity to read); one unified in during
+        // the walk survives, so `let n = "hi".Length` still publishes `int`
+        // while declining to say which `Length` that was. If the unread DLL
+        // supplies a colliding `String` whose `Length` returns something else,
+        // that `int` is wrong.
         //
-        // Types are not thereby unaffected: one read *through* a sealed
-        // resolution goes with it (`annotation_ty` finds no entity to read), and
-        // one unified in during the walk survives. That asymmetry is a
-        // consequence of where each type came from, not a policy — both
-        // directions are pinned in `resolve_incomplete_projection`.
+        // Closing it needs two things this phase does not have: taint through
+        // the unification table (a member's return type is unified into its
+        // variable during the walk, so by here it is indistinguishable from a
+        // type owing an assembly nothing), and a decision about the LSP's
+        // single-file hover fallback, which re-infers against an empty env and
+        // would republish what this dropped. Both are tracked; sealing the
+        // resolutions is what this change delivers, and the resolutions are what
+        // go-to-definition navigates by. Both directions of the current
+        // behaviour are pinned in `resolve_incomplete_projection` so the gap is
+        // visible rather than folklore.
         if self.env.identities_incomplete() {
             for res in member_resolutions.values_mut() {
                 *res = res.sealed_under_incomplete_projection();

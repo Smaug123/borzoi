@@ -1824,10 +1824,9 @@ pub enum DeferredReason {
     ///
     /// The contract in that state, so a consumer can rely on it: **sema commits
     /// to no assembly-rooted resolution**, on any of the three surfaces that
-    /// record one. Inference's *types* are outside it, because they claim
-    /// something weaker — a [`Ty`](crate::Ty) is a type's *name*, which two
-    /// same-named types across a read and an unread DLL do not falsify, whereas
-    /// a resolution names one entity by handle and following it lands somewhere.
+    /// record one. Inference's *types* are a stated gap, not part of the
+    /// guarantee — see `Gen::finish` for what still leaks and what closing it
+    /// would take.
     ///
     /// Distinct from the other reasons because its cause is *environmental*: the
     /// user's code is fine and a name that would otherwise resolve is being

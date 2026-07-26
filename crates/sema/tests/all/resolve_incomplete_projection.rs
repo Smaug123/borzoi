@@ -10,10 +10,9 @@
 //!
 //! The contract, in one sentence: under an incomplete projection sema commits to
 //! **no assembly-rooted resolution**, on any of the three surfaces that record
-//! one. Inference's *types* are outside it, and the line is what each surface
-//! claims — a resolution names one entity by handle, so following it lands
-//! somewhere; a `Ty` is a type's *name*, which two same-named types across a
-//! read and an unread DLL do not falsify.
+//! one. Inference's *types* are a stated gap rather than part of the guarantee,
+//! and the two tests at the end pin exactly where the current line falls so it
+//! is visible rather than folklore.
 //!
 //! The tests come in two shapes. The targeted ones pin *which* deferral a
 //! specific use gets, so the LSP can explain it. The sweep pins the invariant
@@ -239,16 +238,17 @@ fn an_inferred_member_access_defers() {
     );
 }
 
-/// The seal follows entity *handles*, and stops there. A type states a
-/// [`Ty::Named`] path, which an ambiguity between two same-named types does not
-/// falsify — so a type unified in during the walk keeps its answer, including
-/// one that came from a member's return.
+/// A type unified in during the walk keeps its answer, including one that came
+/// from a member's return — the **stated gap**, pinned so a change to it is
+/// deliberate.
 ///
-/// This is also what makes the boundary maintainable end to end. The LSP's
-/// single-file hover fallback deliberately re-infers against an empty env and
-/// answers `1 : int` for a file with no project at all; a promise that no type
-/// is published under an incomplete projection would have to disable that
-/// fallback — degrading a correct feature to buy no identity safety.
+/// `let n = "hi".Length` still publishes `int` while declining to say which
+/// `Length` that was, and if the unread DLL supplies a colliding `String` whose
+/// `Length` returns something else, that `int` is wrong. Closing it needs taint
+/// through the unification table (by read-off a member's return type is
+/// indistinguishable from a type owing an assembly nothing) plus a decision
+/// about the LSP's single-file hover fallback, which re-infers against an empty
+/// env and would republish whatever this dropped.
 #[test]
 fn a_type_unified_in_during_the_walk_keeps_its_answer() {
     let (complete, incomplete) = complete_and_incomplete();

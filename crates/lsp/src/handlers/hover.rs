@@ -153,8 +153,12 @@ fn project_unavailable(
     };
     // The explanation must be about the verdict the LSP would *act* on, and
     // go-to-definition acts on inference's member resolution where the resolver
-    // deferred. Only this path (a hover that found nothing to say) pays for the
-    // inference; the resolved-name path above never reaches here.
+    // deferred. This runs only for a cursor both `project_hover` and
+    // `single_file_hover` already declined, so it is the cold path — but those
+    // two inferred as well, and nothing carries a solved file between them.
+    // Threading one `InferredFile` through the three would need `project_hover`
+    // to classify from its own pass, which changes when `single_file_hover` gets
+    // a look at a project cursor; tracked rather than done here.
     let inferred = {
         let _span = tracing::info_span!("infer_file").entered();
         infer_file(impl_file, file, &env)
