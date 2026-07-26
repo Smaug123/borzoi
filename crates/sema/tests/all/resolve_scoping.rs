@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 
-use crate::common::generator::{RefKind, generate, seed_tape};
+use crate::common::generator::{Form, RefKind, generate, seed_tape};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file};
@@ -648,14 +648,21 @@ proptest! {
 
 /// The property above is only worth what the generator actually emits: if a
 /// refactor stopped producing or-patterns, it would keep passing and prove
-/// nothing about them. This pins the *coverage* of a fixed set of tapes, so
-/// every construct the property claims to sweep is known to occur — and to
-/// occur often enough that the sweep is not resting on a single program.
+/// nothing about them. This pins the *coverage* of a fixed set of tapes.
+///
+/// It sweeps [`Form::ALL`] rather than a hand-written list, so the guard cannot
+/// fall behind the grammar: `Form` and `ALL` come from one macro invocation, so
+/// a new variant is swept the moment it exists — and fails here until the
+/// interpreter actually reaches it.
 #[test]
-fn the_generator_emits_every_pattern_construct() {
+fn the_generator_emits_every_form() {
     const TAPES: u32 = 64;
-    let mut matches = 0usize;
-    let mut counts: HashMap<RefKind, usize> = HashMap::new();
+    /// Not `> 0`: one occurrence in 64 programs is a construct the sweep is
+    /// barely touching, which is the failure this test exists to name.
+    const FLOOR: usize = 10;
+
+    let mut forms: HashMap<Form, usize> = HashMap::new();
+    let mut kinds: HashMap<RefKind, usize> = HashMap::new();
     let mut binders = 0usize;
     for seed in 0..TAPES {
         let g = generate(seed_tape(seed, 512));
@@ -668,17 +675,30 @@ fn the_generator_emits_every_pattern_construct() {
             g.src,
             parsed.errors
         );
-        matches += g.match_count;
         binders += g.binder_ranges.len();
+        for (form, n) in &g.forms {
+            *forms.entry(*form).or_default() += n;
+        }
         for r in &g.refs {
-            *counts.entry(r.kind).or_default() += 1;
+            *kinds.entry(r.kind).or_default() += 1;
         }
     }
-    assert!(
-        matches >= TAPES as usize,
-        "only {matches} `match` expressions"
-    );
+
     assert!(binders >= TAPES as usize, "only {binders} binders");
+    let starved: Vec<(Form, usize)> = Form::ALL
+        .iter()
+        .map(|f| (*f, forms.get(f).copied().unwrap_or(0)))
+        .filter(|(_, n)| *n < FLOOR)
+        .collect();
+    assert!(
+        starved.is_empty(),
+        "these forms occurred fewer than {FLOOR} times over {TAPES} tapes, so \
+         the property is not sweeping them: {starved:?}"
+    );
+
+    // The reference kinds are a second, coarser axis: a form can be emitted
+    // while contributing no *resolvable* occurrence (a head the tape always
+    // renders nullary, say), and it is the occurrences the property grades.
     for kind in [
         RefKind::Value,
         RefKind::UnionCase,
@@ -686,11 +706,10 @@ fn the_generator_emits_every_pattern_construct() {
         RefKind::ActivePatternArgument,
         RefKind::OrAlias,
     ] {
-        let n = counts.get(&kind).copied().unwrap_or(0);
+        let n = kinds.get(&kind).copied().unwrap_or(0);
         assert!(
-            n >= 10,
-            "{kind:?} occurred {n} times over {TAPES} tapes — the property is \
-             not sweeping it; counts: {counts:?}"
+            n >= FLOOR,
+            "{kind:?} occurred {n} times over {TAPES} tapes; counts: {kinds:?}"
         );
     }
 }
