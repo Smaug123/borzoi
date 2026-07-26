@@ -337,9 +337,11 @@ pub(super) enum ShadowVeto {
     None,
     /// Something at this prefix could shadow the name: an exact, name-keyed
     /// match (an in-scope assembly `[<AutoOpen>]` module with an accessible
-    /// member of exactly this name) or a coarse, name-blind one (a project
-    /// `[<AutoOpen>]` module whose types sema does not enumerate; a namespace
-    /// whose assembly's abbreviations are unknowable). Either way it vetoes
+    /// member of exactly this name), an unmodelled position that the project
+    /// declares this name somewhere to fill (a project `[<AutoOpen>]` module,
+    /// whose types sema does not enumerate), or a coarse, name-blind one (a
+    /// namespace whose assembly's abbreviations are unknowable). Either way it
+    /// vetoes
     /// the reading pre-emptively — including a same-tier real match, since
     /// FCS-probed, an auto-open module's contents outrank the same
     /// namespace's own direct members, and a visible entity is no evidence

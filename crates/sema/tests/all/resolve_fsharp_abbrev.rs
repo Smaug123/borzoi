@@ -161,6 +161,19 @@ fn at(hay: &str, needle: &str) -> TextRange {
     )
 }
 
+/// [`at`]'s last-occurrence twin, for a source that also **declares** the name
+/// it probes: `find` would hand back the declaration's range instead of the
+/// use's.
+fn at_last(hay: &str, needle: &str) -> TextRange {
+    let start = hay
+        .rfind(needle)
+        .unwrap_or_else(|| panic!("{needle:?} not in {hay:?}"));
+    TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + needle.len()).unwrap().into(),
+    )
+}
+
 fn assert_shadowable(src: &str) {
     let env = fixture_env();
     let rf = resolve(src, &env);
@@ -1772,8 +1785,9 @@ fn a_dropped_type_at_a_qualified_paths_split_defers_the_annotation() {
 /// supply a type of the name being resolved, and FCS binds *it* over the same
 /// namespace's direct members — the project-side twin of the assembly-side rule
 /// [`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`] already
-/// encodes. Sema does not enumerate such a module's types, so the risk is
-/// name-blind; committing the assembly type is a wrong target, not a missed one.
+/// encodes. Sema does not enumerate such a module's types, so *which* of them it
+/// holds is unmodelled; committing the assembly type over one is a wrong target,
+/// not a missed one.
 ///
 /// fsc-verified (two projects, `net10.0`): `Lib` declares
 /// `namespace N` + `type Foo = { FromLib : int }`; the referencing project
@@ -1783,23 +1797,47 @@ fn a_dropped_type_at_a_qualified_paths_split_defers_the_annotation() {
 /// 'FromProjectAutoOpen' of type 'N.Auto.Foo'"* — FCS named the auto-open type.
 /// Dropping the `[<AutoOpen>]` module makes `{ FromLib = 1 }` compile, so the
 /// probe discriminates.
+///
+/// Both halves of that probe are asserted here. Which *channel* declines the
+/// first is not pinned by a single-file case — the same-file auto-open name set
+/// would reach it too — and is the subject of
+/// [`a_cross_file_project_auto_open_module_defers_only_a_name_the_project_declares`].
 #[test]
 fn a_project_auto_open_module_defers_a_same_namespace_assembly_type() {
     let env = fixture_env();
     let shadowed = "namespace Demo.CasePat\n\
                     [<AutoOpen>]\n\
                     module Auto =\n\
-                    \x20   let v = 1\n\
+                    \x20   type Shape = { FromProjectAutoOpen : string }\n\
                     module M =\n\
                     \x20   let f (y: Shape) = y\n";
     assert!(
         !matches!(
-            resolve(shadowed, &env).resolution_at(at(shadowed, "Shape")),
+            resolve(shadowed, &env).resolution_at(at_last(shadowed, "Shape")),
             Some(Resolution::Entity(_))
         ),
-        "the project `[<AutoOpen>] module Auto` may declare its own `Shape`, which \
-         FCS would bind over the assembly's — got {:?}",
-        resolve(shadowed, &env).resolution_at(at(shadowed, "Shape"))
+        "the project `[<AutoOpen>] module Auto` declares its own `Shape`, which \
+         FCS binds over the assembly's — got {:?}",
+        resolve(shadowed, &env).resolution_at(at_last(shadowed, "Shape"))
+    );
+
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+
+    // Control: the same module holding no type of the name commits. The veto is
+    // keyed on a name the project declares somewhere, not on the module's mere
+    // presence — fsc-verified by the second half of the probe above.
+    let unrelated = "namespace Demo.CasePat\n\
+                     [<AutoOpen>]\n\
+                     module Auto =\n\
+                     \x20   let v = 1\n\
+                     module M =\n\
+                     \x20   let f (y: Shape) = y\n";
+    assert_eq!(
+        resolve(unrelated, &env).resolution_at(at(unrelated, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: an auto-open module that declares no `Shape` hides none"
     );
 
     // Control: the identical file without the auto-open module commits, so the
@@ -1807,13 +1845,76 @@ fn a_project_auto_open_module_defers_a_same_namespace_assembly_type() {
     let clean = "namespace Demo.CasePat\n\
                  module M =\n\
                  \x20   let f (y: Shape) = y\n";
-    let shape = env
-        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
-        .expect("Demo.CasePat.Shape in env");
     assert_eq!(
         resolve(clean, &env).resolution_at(at(clean, "Shape")),
         Some(Resolution::Entity(shape)),
         "control: with no project auto-open module the annotation commits"
+    );
+}
+
+/// The channel in isolation: a project `[<AutoOpen>]` module in a **preceding
+/// Compile-order file**, where no same-file signal can reach the use and the
+/// only thing that can decline is the namespace-keyed
+/// `unmodelled_type_shadow_at`.
+///
+/// That veto is keyed on two facts about *different* files — the module's
+/// namespace, and whether any project file declares a type of the name — and
+/// its soundness is that the second is complete: a type inside the module is a
+/// project type declaration like any other, so the whole-file pre-scan sees it
+/// whether or not the walk indexes it. The two cases below are that claim's
+/// only two outcomes.
+///
+/// It is the channel's **only** guard, measured rather than assumed: stubbing
+/// the project half of `unmodelled_type_shadow_at` to `false` leaves the
+/// single-file cases above green — the same-file auto-open name set reaches
+/// those uses too — and leaves `tier_order_diff` green, whose probes are all
+/// one file. Only this case fails.
+#[test]
+fn a_cross_file_project_auto_open_module_defers_only_a_name_the_project_declares() {
+    let env = fixture_env();
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    let user = "namespace Demo.CasePat\n\
+                module M =\n\
+                \x20   let f (y: Shape) = y\n";
+
+    let resolve_pair = |first: &str| {
+        let files: Vec<_> = [first, user]
+            .iter()
+            .map(|src| {
+                let parsed = parse(src);
+                assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+                ImplFile::cast(parsed.root).expect("impl file")
+            })
+            .collect();
+        let project = borzoi_sema::resolve_project(&files, &env);
+        project.files()[1].resolution_at(at(user, "Shape"))
+    };
+
+    // The earlier file's auto-open module declares the name: unreachable from
+    // here through anything sema models, and FCS binds it.
+    let declaring = "namespace Demo.CasePat\n\
+                     [<AutoOpen>]\n\
+                     module Auto =\n\
+                     \x20   type Shape = { FromProjectAutoOpen : string }\n";
+    assert!(
+        !matches!(resolve_pair(declaring), Some(Resolution::Entity(_))),
+        "an earlier file's auto-open module declares `Shape`; committing the assembly \
+         type would be a wrong target — got {:?}",
+        resolve_pair(declaring)
+    );
+
+    // It declares something else: no project file declares `Shape` at all, so
+    // nothing can be hiding in there and the assembly type commits.
+    let not_declaring = "namespace Demo.CasePat\n\
+                         [<AutoOpen>]\n\
+                         module Auto =\n\
+                         \x20   type Other = { FromProjectAutoOpen : string }\n";
+    assert_eq!(
+        resolve_pair(not_declaring),
+        Some(Resolution::Entity(shape)),
+        "no project file declares `Shape`, so the auto-open module cannot hold one"
     );
 }
 
@@ -1920,17 +2021,19 @@ fn a_private_project_auto_open_module_shadows_only_within_its_scope() {
         .expect("Demo.CasePat.Shape in env");
 
     // Out of scope: a different namespace group in the same file. The private
-    // module cannot supply `Shape` there, so the assembly type must commit.
+    // module cannot supply `Shape` there, so the assembly type must commit —
+    // and it declares one, so only the visibility filter can be what lets this
+    // through.
     let outside = "namespace Demo.CasePat\n\
                    [<AutoOpen>]\n\
                    module private Auto =\n\
-                   \x20   let v = 1\n\
+                   \x20   type Shape = { FromProjectAutoOpen : string }\n\
                    namespace Other\n\
                    open Demo.CasePat\n\
                    module M =\n\
                    \x20   let f (y: Shape) = y\n";
     assert_eq!(
-        resolve(outside, &env).resolution_at(at(outside, "Shape")),
+        resolve(outside, &env).resolution_at(at_last(outside, "Shape")),
         Some(Resolution::Entity(shape)),
         "a private auto-open module is invisible from another namespace group — \
          vetoing there would defer a name FCS resolves"
@@ -1940,17 +2043,17 @@ fn a_private_project_auto_open_module_shadows_only_within_its_scope() {
     let inside = "namespace Demo.CasePat\n\
                   [<AutoOpen>]\n\
                   module private Auto =\n\
-                  \x20   let v = 1\n\
+                  \x20   type Shape = { FromProjectAutoOpen : string }\n\
                   module M =\n\
                   \x20   let f (y: Shape) = y\n";
     assert!(
         !matches!(
-            resolve(inside, &env).resolution_at(at(inside, "Shape")),
+            resolve(inside, &env).resolution_at(at_last(inside, "Shape")),
             Some(Resolution::Entity(_))
         ),
-        "within its own namespace the private module is in scope and may declare \
+        "within its own namespace the private module is in scope and declares \
          `Shape` — got {:?}",
-        resolve(inside, &env).resolution_at(at(inside, "Shape"))
+        resolve(inside, &env).resolution_at(at_last(inside, "Shape"))
     );
 }
 
@@ -1968,45 +2071,60 @@ fn a_private_project_auto_open_module_shadows_only_within_its_scope() {
 /// the referenced assembly's `N.Foo` inside the body. Excluding the module here
 /// would therefore commit a **wrong target**, not recover a missed one.
 ///
-/// The accepted cost of keeping it: when the module declares no such type
-/// (fsc-verified — `{ FromLib = 1 }` compiles then), this defers a name FCS
-/// resolves. That is the price of the signal being name-blind, and it is the
-/// same price paid everywhere else in the namespace.
+/// When the module declares no such type the annotation commits, which
+/// fsc agrees with (`{ FromLib = 1 }` compiles then) — the second case below.
 #[test]
 fn a_project_auto_open_module_vetoes_its_own_body_too() {
     let env = fixture_env();
     let src = "namespace Demo.CasePat\n\
                [<AutoOpen>]\n\
                module Auto =\n\
+               \x20   type Shape = { FromProjectAutoOpen : string }\n\
                \x20   let f (y: Shape) = y\n";
     assert!(
         !matches!(
-            resolve(src, &env).resolution_at(at(src, "Shape")),
+            resolve(src, &env).resolution_at(at_last(src, "Shape")),
             Some(Resolution::Entity(_))
         ),
-        "`Auto`'s own types are in scope in its body, so it may declare `Shape` \
-         and shadow the assembly union exactly as it would for a sibling — got {:?}",
-        resolve(src, &env).resolution_at(at(src, "Shape"))
+        "`Auto`'s own types are in scope in its body, so its `Shape` shadows the \
+         assembly union exactly as it would for a sibling — got {:?}",
+        resolve(src, &env).resolution_at(at_last(src, "Shape"))
+    );
+
+    let unrelated = "namespace Demo.CasePat\n\
+                     [<AutoOpen>]\n\
+                     module Auto =\n\
+                     \x20   let f (y: Shape) = y\n";
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    assert_eq!(
+        resolve(unrelated, &env).resolution_at(at(unrelated, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: `Auto` declares no `Shape`, so its own body sees the assembly's"
     );
 }
 
-/// The cost side of keeping the name-blind shadow arm single-segment.
+/// The cost side of keeping the unmodelled shadow arm single-segment.
 ///
 /// A [`ShadowVeto::Preemptive`] verdict ends the whole walk, root tier and all.
-/// So if the coarse `unmodelled_type_shadow_at` risks were keyed on a dotted
-/// path's head, a *fully-qualified* annotation would stop resolving in every
-/// file whose namespace holds a project `[<AutoOpen>]` module — the walk would
-/// abort at the enclosing-namespace tier before ever reaching the root reading
-/// that matches. That is the commonest shape in F# (`System.Text.Json.X`), so
-/// the arm stays single-segment and this pins it: the exact, metadata-keyed arm
+/// So if `unmodelled_type_shadow_at` were consulted for a dotted path's head, a
+/// *fully-qualified* annotation would stop resolving in every file whose
+/// namespace holds a project `[<AutoOpen>]` module — the walk would abort at
+/// the enclosing-namespace tier before ever reaching the root reading that
+/// matches. That is the commonest shape in F# (`System.Text.Json.X`), so the
+/// arm stays single-segment and this pins it: the exact, metadata-keyed arm
 /// still covers every collision the assembly actually records.
+///
+/// The module here declares the head's name, so the restriction is the *only*
+/// thing standing between this file and a preempted walk.
 #[test]
 fn a_fully_qualified_path_still_commits_beside_a_project_auto_open_module() {
     let env = fixture_env();
     let src = "namespace Demo.CasePat\n\
                [<AutoOpen>]\n\
                module Auto =\n\
-               \x20   let v = 1\n\
+               \x20   type Demo = { FromProjectAutoOpen : string }\n\
                module M =\n\
                \x20   let f (y: Demo.CasePat.Shape) = y\n";
     let shape = env

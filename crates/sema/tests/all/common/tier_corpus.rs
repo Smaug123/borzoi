@@ -200,6 +200,12 @@ impl Arity {
 /// metadata records the name, FCS falls through to the visible plant, and
 /// nothing but this sweep says so.
 ///
+/// The two project variants are a square of their own, over what the module
+/// *holds* rather than what shape it holds it in: a name no plant wears against
+/// the plant's own. There the claim is not about form but about keying — a veto
+/// that reads the module's presence answers the same for both cells, and a veto
+/// that reads its names cannot.
+///
 /// [`HiddenType`]: Risk::HiddenType
 /// [`HiddenModule`]: Risk::HiddenModule
 /// [`Bare`]: Form::Bare
@@ -218,11 +224,23 @@ pub enum Risk {
     /// predicate counts public children by name and does not distinguish the
     /// two shapes.
     HiddenModule(Tier),
-    /// An **empty** project `[<AutoOpen>]` module in the probe's own enclosing
-    /// namespace. `unmodelled_type_shadow_at`'s project half is *name-blind*,
-    /// so what it costs is exactly a decline with nothing behind it; and being
-    /// single-segment-only, it should leave a [`Form::DottedHead`] plant alone.
+    /// A project `[<AutoOpen>]` module in the probe's own enclosing namespace
+    /// holding **nothing of the plant's name** — the cost cell of the project
+    /// channel: whatever declines here is a binding lost for no hazard at all,
+    /// so every one of these must commit.
     ProjectAutoOpen,
+    /// The same module, **holding the plant's name** — a type for a
+    /// [`Form::Bare`] plant, a module holding a [`MARKER`] for a
+    /// [`Form::DottedHead`] one. The hazard cell: FCS binds the project entity
+    /// over every assembly tier, so a bare plant must decline and a dotted one
+    /// (which today does not) is a wrong target.
+    ///
+    /// Which *mechanism* declines a bare cell is not pinned here and cannot be:
+    /// a probe is one file, so the file-global auto-open name set reaches these
+    /// uses as readily as the namespace-keyed
+    /// `unmodelled_type_shadow_at` does. The cross-file case that separates
+    /// them lives in `resolve_fsharp_abbrev`.
+    ProjectAutoOpenHiding,
 }
 
 impl Risk {
@@ -233,7 +251,7 @@ impl Risk {
         match self {
             Risk::None => None,
             Risk::HiddenType(t) | Risk::HiddenModule(t) => Some(t),
-            Risk::ProjectAutoOpen => Some(Tier::Enclosing),
+            Risk::ProjectAutoOpen | Risk::ProjectAutoOpenHiding => Some(Tier::Enclosing),
         }
     }
 
@@ -244,6 +262,7 @@ impl Risk {
             Risk::HiddenType(t) => format!("Y{}", t.tag()),
             Risk::HiddenModule(t) => format!("M{}", t.tag()),
             Risk::ProjectAutoOpen => "P".to_string(),
+            Risk::ProjectAutoOpenHiding => "Q".to_string(),
         }
     }
 }
@@ -380,6 +399,27 @@ impl Plant {
         Some((asm, full))
     }
 
+    /// The **full name** FCS reports when a [`Risk::ProjectAutoOpenHiding`]
+    /// plant's project-side declaration wins — the probe file's own
+    /// `[<AutoOpen>] module Hidden`.
+    ///
+    /// A full name and not an `(assembly, full name)` pair like
+    /// [`Plant::declaration`]: this entity is compiled as part of the probe, so
+    /// its assembly is whatever FCS names the throwaway compilation, which is
+    /// not a fixture constant. Nothing collides — a plant has an assembly-side
+    /// hidden declaration or a project-side one, never both.
+    pub fn project_hidden_full_name(&self) -> Option<String> {
+        if self.risk != Risk::ProjectAutoOpenHiding {
+            return None;
+        }
+        let mut full = format!("{}.{HIDDEN}.{}", Tier::Enclosing.namespace(), self.name);
+        if self.form == Form::DottedHead {
+            full.push('.');
+            full.push_str(MARKER);
+        }
+        Some(full)
+    }
+
     /// The type expression the probe writes.
     pub fn probe_expr(&self) -> String {
         let head = match self.form {
@@ -441,7 +481,7 @@ pub fn corpus() -> Vec<Plant> {
             for risk in RISK_TIERS
                 .iter()
                 .flat_map(|&t| [Risk::HiddenType(t), Risk::HiddenModule(t)])
-                .chain(Some(Risk::ProjectAutoOpen))
+                .chain([Risk::ProjectAutoOpen, Risk::ProjectAutoOpenHiding])
             {
                 out.push(Plant {
                     name: format!("{prefix}{}{}", tier.tag(), risk.tag()),
@@ -613,19 +653,33 @@ pub fn decoy_source(plants: &[Plant]) -> String {
 /// per-case probe shape would let a template difference masquerade as a tier
 /// difference.
 ///
-/// [`Risk::ProjectAutoOpen`] is the one risk that has to live here rather than
-/// in a fixture assembly, because it is a *project* declaration. It holds a
-/// type of no plant's name: the channel it exercises
-/// (`unmodelled_type_shadow_at`) is name-blind, so what it must measure is the
-/// cost of declining with nothing hidden.
+/// The two project risks are the ones that have to live here rather than in a
+/// fixture assembly, because they are *project* declarations. They differ only
+/// in what the module holds — a name no plant wears
+/// ([`Risk::ProjectAutoOpen`]) versus this plant's own
+/// ([`Risk::ProjectAutoOpenHiding`]) — which is the pair that separates a veto
+/// keyed on the names a project actually declares from one keyed on a module's
+/// mere presence: the first must commit, the second must not.
 pub fn probe_source(plant: &Plant) -> String {
-    let project_risk = if plant.risk == Risk::ProjectAutoOpen {
-        format!(
-            "[<AutoOpen>]\nmodule {HIDDEN} =\n    type ProjectHidden() =\n        member _.Tier = \"project\"\n\n"
-        )
-    } else {
-        String::new()
+    let hidden_body = match plant.risk {
+        Risk::ProjectAutoOpen => {
+            Some("    type ProjectHidden() =\n        member _.Tier = \"project\"\n".to_string())
+        }
+        Risk::ProjectAutoOpenHiding => Some(match plant.form {
+            Form::Bare => format!(
+                "    type {}() =\n        member _.Tier = \"project\"\n",
+                plant.name
+            ),
+            Form::DottedHead => format!(
+                "    module {} =\n        type {MARKER}() =\n            member _.Tier = \"project\"\n",
+                plant.name
+            ),
+        }),
+        Risk::None | Risk::HiddenType(_) | Risk::HiddenModule(_) => None,
     };
+    let project_risk = hidden_body
+        .map(|body| format!("[<AutoOpen>]\nmodule {HIDDEN} =\n{body}\n"))
+        .unwrap_or_default();
     format!(
         "namespace Tier.Enclosing\n\nopen Tier.Explicit\n\n{project_risk}module Probe =\n    type X = {}\n",
         plant.probe_expr()

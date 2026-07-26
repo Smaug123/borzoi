@@ -1872,7 +1872,10 @@ impl<'a> Resolver<'a> {
     /// current site* sits directly in `namespace` — checked per-namespace at each
     /// type-position lookup ([`Self::unmodelled_type_shadow_at`]), not
     /// pre-aggregated: sema does not model such a module's nested types, so it may
-    /// provide a type name not in the normal project type index.
+    /// provide a type name the tiered walk cannot reach at this reading. *Which*
+    /// names those could be is bounded by the file-global type pre-scan behind
+    /// [`Self::project_type_named`], which is how the shadow that rides on this
+    /// predicate stays name-keyed.
     ///
     /// A same-file `module private` is filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`] filters it — visible only from

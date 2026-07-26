@@ -284,6 +284,69 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
         "Hidden@Root",
         "as SNsYRo, reached as a dotted head",
     ),
+    // The project `[<AutoOpen>]` channel reached as a *dotted head*. Arm 2 of
+    // `type_position_shadow_at` is single-segment-only: a `Preemptive` verdict
+    // ends the whole walk, so a name-blind veto extended to dotted heads would
+    // stop every fully-qualified path resolving in a file whose namespace holds
+    // an auto-open module. The price of that restriction is these eight — the
+    // module declares a *module* of the head's name, FCS reads the whole path
+    // through it, and we commit the assembly plant instead.
+    //
+    // The bare twins (`S…Q`) decline correctly, so this is a hole in one form
+    // only. Closing it needs the veto keyed on a name the project actually
+    // declares — a *module* name here, where `project_type_named` answers for
+    // types — at which point the length restriction is no longer paying for
+    // anything and can go.
+    (
+        "VEnQ/contributor-first",
+        "Enclosing",
+        "Hidden@Project",
+        "a project [<AutoOpen>] module owns this dotted head; the project veto is single-segment \
+         only, so the walk never consults it and commits the assembly plant",
+    ),
+    (
+        "VEnQ/decoy-first",
+        "Enclosing",
+        "Hidden@Project",
+        "a project [<AutoOpen>] module owns this dotted head; the project veto is single-segment \
+         only, so the walk never consults it and commits the assembly plant",
+    ),
+    (
+        "VExQ/contributor-first",
+        "Explicit",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the explicit open",
+    ),
+    (
+        "VExQ/decoy-first",
+        "Explicit",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the explicit open",
+    ),
+    (
+        "VNsQ/contributor-first",
+        "NsAuto",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the implicit open",
+    ),
+    (
+        "VNsQ/decoy-first",
+        "NsAuto",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the implicit open",
+    ),
+    (
+        "VRoQ/contributor-first",
+        "Root",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the root tier",
+    ),
+    (
+        "VRoQ/decoy-first",
+        "Root",
+        "Hidden@Project",
+        "as VEnQ, with the plant at the root tier",
+    ),
 ];
 
 /// The shared reason for [`WRONG_ARITY_DENIALS`], stated once because every
@@ -359,11 +422,12 @@ mod decline {
     pub const NAME_KEYED_SHAPE_BLIND: &str = "an assembly [<AutoOpen>] module declares this name, so the exact channel vetoes — but \
          what it declares cannot bind the probe's form, and FCS falls through to the visible tier";
 
-    /// `unmodelled_type_shadow_at`'s project half is name-blind: a project
-    /// `[<AutoOpen>]` module in the reading vetoes every single-segment name
-    /// whatever it holds — here, a name it does not hold at all.
-    pub const NAME_BLIND_PROJECT: &str = "a project [<AutoOpen>] module sits in the enclosing namespace and the veto reading it is \
-         name-blind, so it declines a name the module does not hold";
+    /// The project channel's twin of [`HIDDEN_WINS`], and the cell that tells a
+    /// *narrowed* project veto from a switched-off one: the project
+    /// `[<AutoOpen>]` module really does declare this name, and FCS binds it
+    /// over every assembly tier.
+    pub const PROJECT_HIDDEN_WINS: &str = "the project [<AutoOpen>] module declares this very name and FCS binds it — the deferral \
+         is the right answer, and a veto narrowed by name must keep making it";
 
     /// A **correct** decline: FCS really does bind the hidden entity. Sema does
     /// not model an assembly `[<AutoOpen>]` module's nested types, so deferring
@@ -662,21 +726,93 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
-    // Only the bare cells, and only where the enclosing namespace is walked
-    // before the plant's tier: the dotted cells' absence is the documented
-    // single-segment limit holding. 4 cases.
+    // The hazard cell of the project channel: the project module holds the name,
+    // FCS binds it, and no assembly tier gets a look in — so the plant's own
+    // tier does not appear here at all. Bare only; the dotted twins are the
+    // wrong targets recorded in `KNOWN_DIVERGENCES`. 12 cases.
     (
-        "SEnP/contributor-first",
-        "Enclosing",
-        decline::NAME_BLIND_PROJECT,
+        "SCoQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
     ),
-    ("SEnP/decoy-first", "Enclosing", decline::NAME_BLIND_PROJECT),
     (
-        "SRoP/contributor-first",
-        "Root",
-        decline::NAME_BLIND_PROJECT,
+        "SCoQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
     ),
-    ("SRoP/decoy-first", "Root", decline::NAME_BLIND_PROJECT),
+    (
+        "SEnQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SEnQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SExQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SExQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SMoQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SMoQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SNsQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SNsQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SRoQ/contributor-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "SRoQ/decoy-first",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    // The two dotted `Q` cells that do *not* wrong-target: their own channel
+    // declines before the project one would have been consulted, so they say
+    // nothing about it either way.
+    (
+        "VCoQ/contributor-first",
+        "Hidden@Project",
+        decline::CONTESTED_DROPPED,
+    ),
+    (
+        "VCoQ/decoy-first",
+        "Hidden@Project",
+        decline::CONTESTED_DROPPED,
+    ),
+    (
+        "VMoQ/contributor-first",
+        "Hidden@Project",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "VMoQ/decoy-first",
+        "Hidden@Project",
+        decline::MANIFEST_SURFACE,
+    ),
     // Correct declines: FCS really does bind the hidden entity. Recorded so
     // that a change which starts committing here has to say so. 32 cases.
     (
@@ -1646,6 +1782,15 @@ fn describe(plant: &Plant, target: &Target) -> String {
         let tier = plant.risk.tier().expect("a hidden declaration has a tier");
         return format!("Hidden@{tier:?}");
     }
+    // Its project-side twin, matched on the full name alone: the entity is
+    // compiled with the probe, so its assembly is whatever FCS names the
+    // throwaway compilation rather than a fixture constant.
+    if plant
+        .project_hidden_full_name()
+        .is_some_and(|full| full == target.1)
+    {
+        return "Hidden@Project".to_string();
+    }
     format!("<not a plant declaration: {}/{}>", target.0, target.1)
 }
 
@@ -1830,16 +1975,19 @@ fn tier_ladder_is_sound_against_fcs() {
     // families `F`/`R`/`K`/`L` have no singletons at all.)
     //
     // The `S`/`V` entries are the risk families' floor, and they carry a second
-    // job: a shadow risk must not veto a tier it does not outrank. `SExP`/`SNsP`
-    // pin the project channel against a tier walked before the enclosing
-    // namespace, and every `V…P` pins the documented single-segment limit — the
-    // dotted form is left alone where the bare one (`SEnP`, `SRoP`) declines.
+    // job: a project `[<AutoOpen>]` module that holds nothing of the name must
+    // veto nothing. Every `…P` cell the walk can reach is here — the four tiers
+    // the project channel could preempt, in both forms — so a veto that went
+    // back to reading the module's *presence* rather than its names would fail
+    // here rather than merely re-appear in `KNOWN_DEFERRALS`. (`SCoP`/`SMoP`
+    // and `VCoP`/`VMoP` are absent: the contested and manifest channels decline
+    // those regardless, so they cannot floor anything.)
     for control in [
         "TEx", "TEn", "TNs", "TRo", //
         "DEx", "DEn", "DNs", "DRo", //
         "GEx", "GEn", "GNs", "GRo", //
         "HEx", "HEn", "HNs", "HRo", //
-        "SExP", "SNsP", //
+        "SExP", "SEnP", "SNsP", "SRoP", //
         "VExP", "VEnP", "VNsP", "VRoP",
     ] {
         for order in Order::ALL {
