@@ -1537,10 +1537,38 @@ impl<'a> Resolver<'a> {
             // unmodelled type shadow won the walk at a higher-or-equal
             // priority than any real match.
             TieredResolution::ShadowDeferred => TypePathResolution::Deferred,
+            // No exact-arity match anywhere. That is only a *genuine* no-match
+            // if the name has no occupant at another arity either: FCS's arity
+            // preference is a fallback, not a filter, so with nothing at the
+            // written arity it binds a wrong-arity occupant and reports the use
+            // (with an arity error). Recording nothing there would be the
+            // resolver's "no shadow is possible" claim about a name FCS does
+            // bind. The manifest-surface half of this is handled above; this is
+            // the same question asked of the ordinary walk prefixes.
+            TieredResolution::NoMatch if self.name_occupies_another_arity(names) => {
+                TypePathResolution::Deferred
+            }
             // Genuine no-match: nothing in our model resolves *or shadows* this
             // name at any priority.
             TieredResolution::NoMatch => TypePathResolution::NoMatch,
         }
+    }
+
+    /// Whether the single-segment name `names` has a public occupant at a
+    /// *different* generic arity under some prefix the walk visits — the
+    /// condition under which a no-match at the written arity is FCS binding
+    /// something rather than nothing (see [`Self::decide_type_path`]).
+    ///
+    /// Single-segment only, and deliberately: on a dotted path, recording
+    /// nothing already makes no claim, so there is nothing to correct. (The
+    /// dotted cells are `tier_order_diff`'s `J` family, which decline for that
+    /// reason and not this one.)
+    fn name_occupies_another_arity(&self, names: &[String]) -> bool {
+        let [only] = names else {
+            return false;
+        };
+        self.assembly_prefixes_by_priority()
+            .any(|prefix| self.assemblies.declares_type_at_any_arity(prefix, only))
     }
 
     /// EX-3 §2(d) (`docs/extension-scope-enumeration-plan.md`): resolve the

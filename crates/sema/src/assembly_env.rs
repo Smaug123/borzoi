@@ -1986,6 +1986,25 @@ impl AssemblyEnv {
             .copied()
     }
 
+    /// Whether some referenced assembly declares a **public** top-level type
+    /// named `name` in `namespace` at *any* generic arity.
+    ///
+    /// [`Self::lookup_type`]'s arity-blind counterpart, for the one question
+    /// FCS answers by arity *preference* rather than by filtering: with no
+    /// exact-arity occupant anywhere, it binds a wrong-arity one and reports
+    /// the use (with an arity error). So a walk that found no exact-arity match
+    /// cannot conclude the name resolves to nothing until this also says no.
+    pub fn declares_type_at_any_arity(&self, namespace: &[String], name: &str) -> bool {
+        self.types_by_namespace
+            .get(namespace)
+            .and_then(|ns| ns.by_source_name.get(name))
+            .is_some_and(|slot| {
+                slot.first_by_arity
+                    .values()
+                    .any(|&handle| self.is_public(handle))
+            })
+    }
+
     /// Whether `namespace` is a namespace any referenced assembly declares with a
     /// **cross-assembly-accessible** (public) type — a public top-level type lives
     /// in it (`["Demo", "Sub"]`) **or** in a nested namespace below it (`["Demo"]`,

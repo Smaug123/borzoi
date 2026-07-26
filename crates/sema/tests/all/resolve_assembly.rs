@@ -2201,6 +2201,38 @@ fn env_shadow_color(kind: EntityKind, is_struct: bool, arity: usize) -> Assembly
     AssemblyEnv::from_entities(vec![e])
 }
 
+/// A bare name whose only occupant is at *another* generic arity must record a
+/// deferral, not silence.
+///
+/// FCS's arity preference is a fallback rather than a filter: with no
+/// exact-arity occupant anywhere it binds a wrong-arity one and reports the use
+/// (with an arity error). Our walk is arity-keyed, so it finds nothing — and on
+/// a single-segment name, recording nothing is the resolver's claim that no
+/// shadow is possible, which a consumer reads as licence to act. The claim
+/// would be false here.
+#[test]
+fn a_name_whose_only_occupant_is_at_another_arity_defers_rather_than_denying() {
+    // `Ns.Color<'a>` alone; the probe writes bare `Color`, i.e. arity 0.
+    let env = env_shadow_color(EntityKind::Class, false, 1);
+    let src = "module M\nopen Ns\nlet f (x: Color) = x\n";
+    let got = resolve(src, &env).resolution_at(at(src, "Color"));
+    assert!(
+        matches!(got, Some(Resolution::Deferred(_))),
+        "the arity-1 `Ns.Color` is what FCS binds for a bare `Color`, so silence \
+         would wrongly claim no shadow is possible — got {got:?}"
+    );
+
+    // Control: a name with no occupant at any arity is a genuine no-match, and
+    // recording nothing there is the true answer. Without this the fix above
+    // could be "defer everything unresolved".
+    let absent = "module M\nopen Ns\nlet f (x: Absent) = x\n";
+    assert_eq!(
+        resolve(absent, &env).resolution_at(at(absent, "Absent")),
+        None,
+        "control: nothing declares `Absent` at any arity, so the no-match stands"
+    );
+}
+
 /// `let Color = {| Red = 3 |}` then `open Ns` (after the value) then a
 /// `Color.Red` use. The head use and whole span are the sole `Color.Red`.
 const ASM_EVICT_SRC: &str = "module M\nlet Color = {| Red = 3 |}\nopen Ns\nlet u = Color.Red\n";
