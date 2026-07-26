@@ -8,6 +8,11 @@
 //! [`DeferredReason::IncompleteAssemblies`] — correctness over availability, the
 //! same trade the abbreviation-target resolver already made for the same reason.
 //!
+//! The contract, in one sentence: under an incomplete projection sema publishes
+//! **no assembly-rooted resolution and no inferred type**. The type half is not
+//! a separate policy — a type is only as good as the readings that fed it, and
+//! once unification has run there is no identifying which those were.
+//!
 //! The tests come in two shapes. The targeted ones pin *which* deferral a
 //! specific use gets, so the LSP can explain it. The sweep pins the invariant
 //! itself over every source here at once: under an incomplete env, no
@@ -232,62 +237,50 @@ fn an_inferred_member_access_defers() {
     );
 }
 
-/// The seal does not touch the *type* map, so a type inference derived without
-/// reading an assembly is unchanged by it. A missing DLL does not make the
-/// program's structure unknown.
-#[test]
-fn a_type_owing_nothing_to_an_assembly_survives() {
-    let (complete, incomplete) = complete_and_incomplete();
-    let src = "module M\nlet n = 1\n";
-
-    let (_, under_complete) = resolve_and_infer(src, &complete);
-    let (_, under_incomplete) = resolve_and_infer(src, &incomplete);
-    assert!(
-        !under_complete.types().is_empty(),
-        "the complete env must type something, else this pins nothing"
-    );
-    assert_eq!(under_complete.types(), under_incomplete.types());
-}
-
-/// A type that came *from* an assembly reading, by contrast, goes quiet — and
-/// that is the seal working, not leaking.
+/// Inference publishes **no type at all** under an incomplete projection.
 ///
-/// `annotation_ty` types an annotated binder by reading the resolution its
-/// annotation recorded; sealed, there is no entity there to read. Publishing the
-/// type anyway would be the same wrong-target claim the seal exists to prevent,
-/// one surface along: if the missing DLL declares a colliding `System.String`,
-/// then `x : System.String` names the wrong type, and a hover saying so is
-/// exactly as wrong as a go-to-definition landing there. Silence is the D5
-/// answer.
+/// A type is only ever as good as the readings that fed it, and which types
+/// those are is not decidable at the end of the walk: a member call's return
+/// type was unified into its variable while the walk ran, so it is by then
+/// indistinguishable from one that owes an assembly nothing. Sealing only the
+/// identifiable ones is what left `let n = "hi".Length` publishing `int` while
+/// declining to say which `Length` it was — a claim derived from an identity we
+/// had withdrawn.
 ///
-/// Pinned in both directions so neither the demote nor a future "keep an
-/// unsealed view for inference" can change it unnoticed.
+/// Sources spanning the ways a type is reached — a bare literal, an annotation
+/// naming an assembly type, a member call — so the contract is pinned as the
+/// uniform thing it is rather than for one derivation path.
 #[test]
-fn a_type_derived_from_an_assembly_reading_goes_quiet() {
+fn an_incomplete_projection_publishes_no_inferred_type() {
     let (complete, incomplete) = complete_and_incomplete();
-    let src = "module M\nlet x : System.String = \"hi\"\n";
-    let binder = at(src, "x");
+    for src in [
+        // Owes an assembly nothing on the face of it (the literal's type still
+        // names one, which is the point: there is no clean subset).
+        "module M\nlet n = 1\n",
+        // Read from an annotation, through the resolution the resolver sealed.
+        "module M\nlet x : System.String = \"hi\"\n",
+        // Unified in from a member's return type during the walk — the case a
+        // finish-time sweep of the resolutions alone cannot reach.
+        "module M\nlet n = \"hi\".Length\n",
+    ] {
+        let (_, under_complete) = resolve_and_infer(src, &complete);
+        assert!(
+            !under_complete.types().is_empty() || !under_complete.def_types().is_empty(),
+            "the complete env must type something in {src:?}, else this pins nothing"
+        );
 
-    let (resolved, inferred) = resolve_and_infer(src, &complete);
-    let def = resolved
-        .resolution_at(binder)
-        .and_then(|res| resolved.resolved_def_id(res))
-        .expect("the annotated binder is recorded");
-    assert!(
-        inferred.def_type(def).is_some(),
-        "the complete env must type the annotated binder, else this pins nothing"
-    );
-
-    let (resolved, inferred) = resolve_and_infer(src, &incomplete);
-    let def = resolved
-        .resolution_at(binder)
-        .and_then(|res| resolved.resolved_def_id(res))
-        .expect("the binder still binds — only its annotation was sealed");
-    assert_eq!(
-        inferred.def_type(def),
-        None,
-        "a type read out of an assembly we cannot vouch for must not be published"
-    );
+        let (_, under_incomplete) = resolve_and_infer(src, &incomplete);
+        assert!(
+            under_incomplete.types().is_empty(),
+            "expression types survived an incomplete projection in {src:?}: {:?}",
+            under_incomplete.types()
+        );
+        assert!(
+            under_incomplete.def_types().is_empty(),
+            "binder types survived an incomplete projection in {src:?}: {:?}",
+            under_incomplete.def_types()
+        );
+    }
 }
 
 /// The demote is scoped to *assembly* readings: a name bound in the file's own

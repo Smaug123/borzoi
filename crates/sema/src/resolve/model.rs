@@ -1822,6 +1822,13 @@ pub enum DeferredReason {
     /// so no per-name test can rule it out — the uncertainty is wholesale, and
     /// so is the decline.
     ///
+    /// The whole contract in that state, so a consumer can rely on it: **sema
+    /// publishes no assembly-rooted resolution and no inferred type**. The two
+    /// go together — a type is only ever as good as the readings that fed it,
+    /// and which types those are is not decidable once unification has run
+    /// (`Gen::finish`), so inference declines wholesale for the same reason
+    /// resolution does.
+    ///
     /// Distinct from the other reasons because its cause is *environmental*: the
     /// user's code is fine and a name that would otherwise resolve is being
     /// declined, which is worth saying out loud rather than reporting as an

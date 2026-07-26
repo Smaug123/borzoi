@@ -3179,7 +3179,37 @@ impl<'a> Gen<'a> {
     /// solved) variable, emitting only fully-[`ground`](Ty::is_ground) types — an
     /// unsolved variable becomes silence (D5), never a wrong or meaningless
     /// answer.
+    ///
+    /// Under an **incomplete projection** this phase publishes nothing at all:
+    /// see [`Self::sealed_under_incomplete_projection`].
     fn finish(mut self) -> InferredFile {
+        // An incomplete projection makes every referenced-assembly reading
+        // unprovable, and a type is only ever as good as the readings that fed
+        // it. Which types those are is not decidable here: a member call's
+        // return type was unified into its variable during the walk, so by now
+        // it is indistinguishable from one that owes an assembly nothing —
+        // sealing "the assembly-derived ones" would need taint through the
+        // unification table. The seal's own logic answers that: when the
+        // affected subset cannot be identified, decline the lot. So inference
+        // goes silent wholesale, which is also the only *statable* contract —
+        // under an incomplete projection sema publishes no assembly-rooted
+        // resolution and no inferred type.
+        //
+        // Member *resolutions* are still swept rather than dropped, because a
+        // consumer must be able to tell "we decline" from "no such name": that
+        // distinction is what `DeferredReason::IncompleteAssemblies` carries to
+        // the user, and an empty map would say nothing.
+        if self.env.identities_incomplete() {
+            let member_resolutions = std::mem::take(&mut self.member_resolutions)
+                .into_iter()
+                .map(|(range, res)| (range, res.sealed_under_incomplete_projection()))
+                .collect();
+            return InferredFile {
+                types: HashMap::new(),
+                def_types: HashMap::new(),
+                member_resolutions,
+            };
+        }
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
         let mut types = HashMap::new();
@@ -3214,29 +3244,7 @@ impl<'a> Gen<'a> {
                 def_types.insert(def, ty);
             }
         }
-        let mut member_resolutions = std::mem::take(&mut self.member_resolutions);
-        // Inference's half of the incomplete-projection seal (the resolver seals
-        // its own two maps): a member identified on a referenced-assembly type is
-        // an assembly reading like any other, and a DLL the env could not read
-        // could declare a type that shadows the receiver's. Swept once over the
-        // finished map for the same reason the resolver sweeps — see
-        // `Resolver::seal_assembly_readings`.
-        //
-        // The *type* maps are not swept, but that is not the same as types being
-        // exempt. A type is derived from whatever resolutions fed it, so one
-        // that came from an assembly reading is already gone by the time this
-        // runs — `annotation_ty` reads the resolution its annotation recorded,
-        // and the resolver sealed it. That is the seal working: if the missing
-        // DLL declares a colliding `System.String`, then `x : System.String`
-        // names the wrong type, and publishing it is the same wrong-target claim
-        // one surface along. A type owing nothing to an assembly is untouched,
-        // because nothing about it was ever in doubt. Both directions are pinned
-        // in `resolve_incomplete_projection`.
-        if self.env.identities_incomplete() {
-            for res in member_resolutions.values_mut() {
-                *res = res.sealed_under_incomplete_projection();
-            }
-        }
+        let member_resolutions = std::mem::take(&mut self.member_resolutions);
         InferredFile {
             types,
             def_types,
