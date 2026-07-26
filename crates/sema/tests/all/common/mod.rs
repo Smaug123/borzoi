@@ -14,6 +14,7 @@
 pub mod fold_matrix;
 pub mod generator;
 pub mod overload_corpus;
+pub mod tier_corpus;
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -1060,6 +1061,53 @@ pub fn ensure_overload_corpus_built(csharp: &str) -> &'static Path {
                 .join("OverloadCorpus.dll")
         })
         .as_path()
+}
+
+/// Build the **tier-order** corpus (`tests/fixtures/tier_env` and
+/// `tests/fixtures/tier_decoy_env`) once per test binary and return both
+/// `.dll` paths, contributor first.
+///
+/// Two assemblies because the sweep varies which is referenced first: an
+/// assembly's root-namespace contents and its `[<assembly: AutoOpen>]` targets
+/// both enter the name environment when that assembly is imported, so the
+/// manifest-surface/root contest is a question about reference order and
+/// cannot be posed within one DLL. Neither `Generated.fs` is checked in — both
+/// are emitted from `tier_corpus::Tier` here, under the shared [`BUILD_LOCK`]
+/// like every other fixture, so the F# universe cannot drift from the Rust
+/// matrix that probes it.
+pub fn ensure_tier_corpus_built() -> (&'static Path, &'static Path) {
+    static BUILT: OnceLock<(PathBuf, PathBuf)> = OnceLock::new();
+    let (contributor, decoy) = BUILT.get_or_init(|| {
+        let plants = tier_corpus::corpus();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let contributor = root.join("tests/fixtures/tier_env");
+        let decoy = root.join("tests/fixtures/tier_decoy_env");
+        let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+        std::fs::write(
+            contributor.join("Generated.fs"),
+            tier_corpus::contributor_source(&plants),
+        )
+        .expect("write tier contributor Generated.fs");
+        std::fs::write(
+            decoy.join("Generated.fs"),
+            tier_corpus::decoy_source(&plants),
+        )
+        .expect("write tier decoy Generated.fs");
+        dotnet_build(&contributor, "dotnet build tier contributor fixture");
+        dotnet_build(&decoy, "dotnet build tier decoy fixture");
+        let dll = |project: &Path, name: &str| {
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{name}.dll"))
+        };
+        (
+            dll(&contributor, tier_corpus::CONTRIBUTOR_ASM),
+            dll(&decoy, tier_corpus::DECOY_ASM),
+        )
+    });
+    (contributor.as_path(), decoy.as_path())
 }
 
 /// Build `tools/fcs-dump` once (thread-safe) and return the path to the
