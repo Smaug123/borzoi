@@ -2922,6 +2922,28 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Module
     }
 
+    /// Whether `handle` is a union we may rely on declaring a case named `name`.
+    ///
+    /// The same authority rule as [`Self::is_authoritative_module`], for the same
+    /// reason: on a **non-authoritative** assembly both the `Union` kind and the
+    /// case list are IL heuristics FCS does not share — it imports the type
+    /// through IL, where a union is a plain class with no cases — so a walk that
+    /// *acts* on a case (owning a path FCS would re-root elsewhere, say) must ask
+    /// this rather than read [`Entity::union_case_names`] directly. A case list of
+    /// `None` is likewise no evidence: it means no pickle described the union, so
+    /// it proves neither presence nor absence.
+    ///
+    /// [`Entity::union_case_names`]: borzoi_assembly::Entity::union_case_names
+    pub fn authoritative_union_case(&self, handle: EntityHandle, name: &str) -> bool {
+        let entity = self.entity(handle);
+        entity.kind == EntityKind::Union
+            && !self.fsharp_signature_unreliable(handle)
+            && entity
+                .union_case_names
+                .as_ref()
+                .is_some_and(|cases| cases.iter().any(|c| c == name))
+    }
+
     /// Whether the entity is `[<RequireQualifiedAccess>]`. Opening such a module is
     /// an **error** in FCS (FS0892 — "This declaration opens the module …, which is
     /// marked as 'RequireQualifiedAccess'") and imports nothing, so an `open` of it

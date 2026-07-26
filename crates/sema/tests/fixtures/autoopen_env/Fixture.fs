@@ -963,3 +963,15 @@ module DottedHead =
 module DottedAuto =
     module DottedHead =
         type Leaf = { FromAuto : int }
+
+// The MODULE half of the rooting-position contest (the abbrev fixture declares
+// `namespace Demo.RootShorten` holding a *generic* `Inner` with no `Tail`). A
+// path `Demo.RootShorten.Inner.Tail` can root at either — at `RootShorten` the
+// module here, or one segment longer at the other assembly's `Inner<'T>` — and
+// only this one supplies the tail, so the rooting walk must not stop at the
+// longer position it found first.
+namespace Demo
+
+module RootShorten =
+    module Inner =
+        let Tail () = 71

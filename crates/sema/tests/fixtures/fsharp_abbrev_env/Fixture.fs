@@ -501,3 +501,13 @@ namespace Demo.TwoAsm
 module AsmAutoB =
     module AsmPick =
         let asmPickValue () = 31
+
+namespace Demo.RootShorten
+
+// The NAMESPACE half of the rooting-position contest: a *generic* `Inner`
+// declared directly in `Demo.RootShorten`, holding nothing the probe asks for.
+// It occupies the longer rooting position for `Demo.RootShorten.Inner.Tail`
+// while the autoopen fixture's `module Demo.RootShorten` supplies the tail one
+// position shorter.
+type Inner<'T> =
+    { Payload : 'T }

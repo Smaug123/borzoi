@@ -29,8 +29,8 @@
 //!   the name bare, so a generic plant is reached at an arity nothing declares;
 //!   FCS infers it (`FS1125`) rather than failing, and an arity-keyed lookup
 //!   that filters instead of preferring never finds the type at all.
-//! - [`Tail`] — which of the two candidates declares the probed leaf. `OnBoth`
-//!   is the tie-break cell (fsi-measured: the **module** wins), `OnNeither` the
+//! - [`Tail`] — which of the two candidates declares the probed leaf. `Both`
+//!   is the tie-break cell (fsi-measured: the **module** wins), `Neither` the
 //!   cell that must not commit anything.
 //! - [`TypeShape`] — what the *type* contributes the leaf as: a static member, a
 //!   union case with a field, or a nullary union case. The three compile to
@@ -116,34 +116,34 @@ impl Arity {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Tail {
     /// The type only.
-    OnType,
+    Type,
     /// The companion module only.
-    OnModule,
+    Module,
     /// Both — the tie-break.
-    OnBoth,
+    Both,
     /// Neither: the name is occupied but the leaf is genuinely absent, so no
     /// reading here owns the path.
-    OnNeither,
+    Neither,
 }
 
 impl Tail {
-    pub const ALL: [Tail; 4] = [Tail::OnType, Tail::OnModule, Tail::OnBoth, Tail::OnNeither];
+    pub const ALL: [Tail; 4] = [Tail::Type, Tail::Module, Tail::Both, Tail::Neither];
 
     fn tag(self) -> &'static str {
         match self {
-            Tail::OnType => "T",
-            Tail::OnModule => "M",
-            Tail::OnBoth => "B",
-            Tail::OnNeither => "N",
+            Tail::Type => "T",
+            Tail::Module => "M",
+            Tail::Both => "B",
+            Tail::Neither => "N",
         }
     }
 
     fn on_type(self) -> bool {
-        matches!(self, Tail::OnType | Tail::OnBoth)
+        matches!(self, Tail::Type | Tail::Both)
     }
 
     fn on_module(self) -> bool {
-        matches!(self, Tail::OnModule | Tail::OnBoth)
+        matches!(self, Tail::Module | Tail::Both)
     }
 }
 
@@ -271,14 +271,14 @@ impl Plant {
         &self.name
     }
 
-    /// Whether the probe's path type-checks. A [`Tail::OnNeither`] cell exists to
+    /// Whether the probe's path type-checks. A [`Tail::Neither`] cell exists to
     /// pin that *nothing* owns the path, and F# rejects it — FCS then reports no
     /// symbol at the head either, so such a cell can hold no expectation about
     /// which candidate the head names. Deriving that from the corpus, rather than
     /// listing the cells, keeps the sweep from silencing a genuine
     /// "we commit where FCS binds nothing".
     pub fn path_type_checks(&self) -> bool {
-        self.tail != Tail::OnNeither
+        self.tail != Tail::Neither
     }
 
     /// The type declaration for this plant, empty when it has no type.
