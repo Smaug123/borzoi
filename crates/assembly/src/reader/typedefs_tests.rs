@@ -70,12 +70,17 @@ fn resolved_handles_are_in_range() {
         let asm_ref_count = md.rows[tables::table::ASSEMBLY_REF];
         let member_ref_count = md.rows[tables::table::MEMBER_REF];
 
-        // Every TypeRef scope handle indexes a live slot.
+        // Every TypeRef scope handle indexes a live slot. A scope the reader
+        // does not model carries no handle to check — and the fixtures are
+        // compiler-produced, so none should appear.
         for tr in &types.type_refs {
             match tr.scope {
-                RefScope::AssemblyRef(id) => assert!(id.0 < asm_ref_count, "asm ref handle"),
-                RefScope::Nested(id) => assert!(id.0 < ref_count, "nested typeref handle"),
-                RefScope::Module => {}
+                Ok(RefScope::AssemblyRef(id)) => assert!(id.0 < asm_ref_count, "asm ref handle"),
+                Ok(RefScope::Nested(id)) => assert!(id.0 < ref_count, "nested typeref handle"),
+                Ok(RefScope::Module) => {}
+                Err(unsupported) => {
+                    panic!("compiler-produced fixture {dll:?} has a {unsupported} TypeRef scope")
+                }
             }
         }
 
