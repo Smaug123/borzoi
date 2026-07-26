@@ -252,6 +252,17 @@ pub struct ProjectItems {
     /// so a headerless file's types count too; over-approximate by design (a
     /// spurious name match only defers).
     pub(super) project_type_simple_names: HashSet<String>,
+    /// Every earlier-file project **module**'s simple name, from each file's
+    /// syntactic whole-file pre-scan
+    /// ([`ResolvedFile::own_module_simple_names`]). The dotted half of the
+    /// project `[<AutoOpen>]` shadow
+    /// ([`Resolver::project_module_named`](super::state::Resolver)): a module
+    /// nested inside such a module is not indexed for the tiered walk, so
+    /// without this set a cross-file one would be invisible and a qualified
+    /// path whose head it owns would wrongly commit an assembly type.
+    /// Syntactic rather than export-derived for the same reason as
+    /// [`Self::project_type_simple_names`], and over-approximate by design.
+    pub(super) project_module_simple_names: HashSet<String>,
     /// Qualified paths of earlier-file **real** nested `module X = …` definitions
     /// — the module-only subset of [`Self::nested_module_paths`], which conflates
     /// every project-introduced name (types, exceptions, module abbreviations,
@@ -1102,6 +1113,12 @@ impl ProjectItems {
         // stage).
         self.project_type_simple_names
             .extend(file.own_type_simple_names.iter().cloned());
+        // The dotted half of the same shadow, fed from the same file in the
+        // same call: the veto's soundness is that a name the project declares
+        // nowhere cannot be hiding inside an auto-open module, and that holds
+        // only while every file contributes both indices together.
+        self.project_module_simple_names
+            .extend(file.own_module_simple_names.iter().cloned());
         for ns in idx.namespace_paths {
             self.namespace_paths.insert(ns);
         }
@@ -2248,6 +2265,11 @@ pub struct ResolvedFile {
     /// fold — header-independent, so a headerless file's types guard later
     /// files' attribute candidates too.
     pub(super) own_type_simple_names: HashSet<String>,
+    /// The file's syntactic whole-file module-simple-name pre-scan (see
+    /// [`Resolver::own_module_simple_names`](super::state::Resolver)), carried
+    /// into [`ProjectItems::project_module_simple_names`] by the Compile-order
+    /// fold beside [`Self::own_type_simple_names`].
+    pub(super) own_module_simple_names: HashSet<String>,
     /// The abbreviation-declared subset of [`Self::own_type_simple_names`] —
     /// a committed [`Resolution::Local`] attribute resolution of such a name
     /// may alias `ExtensionAttribute`, so
@@ -2428,9 +2450,11 @@ impl ResolvedFile {
     ///   value `extend_with` folds, so equality of the two is definitionally
     ///   "folds identically" (`pos` cannot enter, because `from_decls` never reads
     ///   it; a body edit that only shifts positions leaves the indices identical);
-    /// - `own_type_simple_names`, folded into the cross-file attribute-guard set
-    ///   (`project_type_simple_names`) and *not* derivable from the decls (a
-    ///   headerless file's types export nothing yet still count).
+    /// - `own_type_simple_names` and `own_module_simple_names`, folded into the
+    ///   cross-file guard sets (`project_type_simple_names` /
+    ///   `project_module_simple_names`) and *not* derivable from the decls (a
+    ///   headerless file's types export nothing yet still count, and a module
+    ///   nested inside an `[<AutoOpen>]` module is not an exported decl at all).
     ///
     /// A field newly read by the fold is picked up here automatically as long as
     /// it flows through one of those three — no second edit site to forget. The
@@ -2447,6 +2471,7 @@ impl ResolvedFile {
         self.exports.items.len() == other.exports.items.len()
             && FileExportIndices::from_decls(self) == FileExportIndices::from_decls(other)
             && self.own_type_simple_names == other.own_type_simple_names
+            && self.own_module_simple_names == other.own_module_simple_names
             // A signature file's whole contribution is its screen
             // (`extend_with` pushes it into `ProjectItems::sig_screens`), so
             // a `.fsi` edit that changes the screen must invalidate the
@@ -2483,6 +2508,7 @@ impl ResolvedFile {
             or_pattern_aliases: HashSet::new(),
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),

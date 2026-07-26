@@ -1861,7 +1861,7 @@ fn a_project_auto_open_module_defers_a_same_namespace_assembly_type() {
 /// The channel in isolation: a project `[<AutoOpen>]` module in a **preceding
 /// Compile-order file**, where no same-file signal can reach the use and the
 /// only thing that can decline is the namespace-keyed
-/// `unmodelled_type_shadow_at`.
+/// `project_shadow_at`.
 ///
 /// That veto is keyed on two facts about *different* files — the module's
 /// namespace, and whether any project file declares a type of the name — and
@@ -1871,7 +1871,7 @@ fn a_project_auto_open_module_defers_a_same_namespace_assembly_type() {
 /// only two outcomes.
 ///
 /// It is the channel's **only** guard, measured rather than assumed: stubbing
-/// the project half of `unmodelled_type_shadow_at` to `false` leaves the
+/// `project_shadow_at`'s type index to `false` leaves the
 /// single-file cases above green — the same-file auto-open name set reaches
 /// those uses too — and leaves `tier_order_diff` green, whose probes are all
 /// one file. Only this case fails.
@@ -2111,19 +2111,18 @@ fn a_project_auto_open_module_vetoes_its_own_body_too() {
     );
 }
 
-/// The cost side of keeping the unmodelled shadow arm single-segment.
+/// The evidence that the project channel is keyed by the path's **form** and
+/// not merely by its head's name.
 ///
-/// A [`ShadowVeto::Preemptive`] verdict ends the whole walk, root tier and all.
-/// So if `unmodelled_type_shadow_at` were consulted for a dotted path's head, a
-/// *fully-qualified* annotation would stop resolving in every file whose
-/// namespace holds a project `[<AutoOpen>]` module — the walk would abort at
-/// the enclosing-namespace tier before ever reaching the root reading that
-/// matches. That is the commonest shape in F# (`System.Text.Json.X`), so the
-/// arm stays single-segment and this pins it: the exact, metadata-keyed arm
-/// still covers every collision the assembly actually records.
-///
-/// The module here declares the head's name, so the restriction is the *only*
-/// thing standing between this file and a preempted walk.
+/// A [`ShadowVeto::Preemptive`] verdict ends the whole walk, root tier and all,
+/// so a channel that answered "some project declaration has this name" would
+/// stop *fully-qualified* annotations resolving in every file whose namespace
+/// holds a project `[<AutoOpen>]` module — the commonest shape in F#
+/// (`System.Text.Json.X`). The auto-open module here declares a **type** of the
+/// head's name, which fsc-verifiably cannot own the tail (FCS falls through to
+/// the referenced namespace), so the dotted head asks the module index and this
+/// path commits. `a_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for`
+/// is the same file with a module in that slot, and it declines.
 #[test]
 fn a_fully_qualified_path_still_commits_beside_a_project_auto_open_module() {
     let env = fixture_env();
@@ -2140,5 +2139,150 @@ fn a_fully_qualified_path_still_commits_beside_a_project_auto_open_module() {
         resolve(src, &env).resolution_at(at(src, "Shape")),
         Some(Resolution::Entity(shape)),
         "the fully-qualified reading must survive the project auto-open module"
+    );
+}
+
+/// The dotted twin of the bare project channel: what owns a *dotted* head is a
+/// **module**, so the head is asked of the project's module names rather than
+/// its type names.
+///
+/// fsc-verified, all three shapes, with the assembly's `Demo.CasePat.Shape`
+/// present as a referenced project:
+///
+/// - `[<AutoOpen>] module Auto = module Demo = module CasePat = type Shape`
+///   compiles, and a record literal built at the annotated type typechecks
+///   against the *project*'s field — so FCS reads the whole path through the
+///   project module and the assembly type is a wrong target;
+/// - the same module holding nothing the path needs (`module Demo = let
+///   unrelated = 1`) still compiles: FCS falls through to the referenced
+///   namespace. Sema cannot tell the two apart — it does not enumerate an
+///   auto-open module's contents — so it defers for both, and this case is the
+///   veto's cost;
+/// - `type Demo = { … }` in that position also falls through, which is why the
+///   bare channel's type index is *not* consulted for a dotted head.
+#[test]
+fn a_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for() {
+    let env = fixture_env();
+    let shadowed = "namespace Demo.CasePat\n\
+                    [<AutoOpen>]\n\
+                    module Auto =\n\
+                    \x20   module Demo =\n\
+                    \x20       module CasePat =\n\
+                    \x20           type Shape = { FromProjectAutoOpen : string }\n\
+                    module M =\n\
+                    \x20   let f (y: Demo.CasePat.Shape) = y\n";
+    assert!(
+        !matches!(
+            resolve(shadowed, &env).resolution_at(at_last(shadowed, "Shape")),
+            Some(Resolution::Entity(_))
+        ),
+        "the project `[<AutoOpen>] module Auto` declares a `Demo` the whole path \
+         reads through; committing the assembly type is a wrong target — got {:?}",
+        resolve(shadowed, &env).resolution_at(at_last(shadowed, "Shape"))
+    );
+
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+
+    // Control: an auto-open module declaring some *other* module leaves the head
+    // unclaimed, so the fully-qualified reading commits. The veto is keyed on
+    // the head's name, not on the module's presence.
+    let unrelated = "namespace Demo.CasePat\n\
+                     [<AutoOpen>]\n\
+                     module Auto =\n\
+                     \x20   module Other =\n\
+                     \x20       let v = 1\n\
+                     module M =\n\
+                     \x20   let f (y: Demo.CasePat.Shape) = y\n";
+    assert_eq!(
+        resolve(unrelated, &env).resolution_at(at(unrelated, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "control: no project module named `Demo`, so nothing can own this head"
+    );
+}
+
+/// A **module abbreviation** in the auto-open module is not a shadow risk, and
+/// the module index must not treat it as one.
+///
+/// fsc-verified: `[<AutoOpen>] module Auto = module Lst =
+/// Microsoft.FSharp.Collections.List` leaves a *sibling* module's `Lst.length`
+/// failing with FS0039. An abbreviation binds a name inside its own container
+/// and is published nowhere — so it cannot be the unmodelled declaration this
+/// channel guards against.
+///
+/// Inside that container it *is* in scope, but there it is not unmodelled
+/// either: `Resolver::module_aliases` resolves same-file abbreviations
+/// directly. Everything this index carries is a declaration nothing else
+/// models, which is what makes a name in it evidence of a real hazard.
+#[test]
+fn a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow() {
+    let env = fixture_env();
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    let src = "namespace Demo.CasePat\n\
+               [<AutoOpen>]\n\
+               module Auto =\n\
+               \x20   module Demo = Microsoft.FSharp.Collections.List\n\
+               module M =\n\
+               \x20   let f (y: Demo.CasePat.Shape) = y\n";
+    assert_eq!(
+        resolve(src, &env).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "an abbreviation publishes nothing, so it hides no `Demo` from this path"
+    );
+}
+
+/// The dotted channel in isolation, across files — the module-index twin of
+/// [`a_cross_file_project_auto_open_module_defers_only_a_name_the_project_declares`],
+/// and for the same reason: `tier_order_diff`'s probes are all one file, so the
+/// same-file case above would still pass with the cross-file fold stubbed out.
+/// Only this one fails.
+#[test]
+fn a_cross_file_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for() {
+    let env = fixture_env();
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    let user = "namespace Demo.CasePat\n\
+                module M =\n\
+                \x20   let f (y: Demo.CasePat.Shape) = y\n";
+
+    let resolve_pair = |first: &str| {
+        let files: Vec<_> = [first, user]
+            .iter()
+            .map(|src| {
+                let parsed = parse(src);
+                assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+                ImplFile::cast(parsed.root).expect("impl file")
+            })
+            .collect();
+        let project = borzoi_sema::resolve_project(&files, &env);
+        project.files()[1].resolution_at(at(user, "Shape"))
+    };
+
+    let declaring = "namespace Demo.CasePat\n\
+                     [<AutoOpen>]\n\
+                     module Auto =\n\
+                     \x20   module Demo =\n\
+                     \x20       module CasePat =\n\
+                     \x20           type Shape = { FromProjectAutoOpen : string }\n";
+    assert!(
+        !matches!(resolve_pair(declaring), Some(Resolution::Entity(_))),
+        "an earlier file's auto-open module declares the `Demo` this path reads \
+         through — got {:?}",
+        resolve_pair(declaring)
+    );
+
+    let not_declaring = "namespace Demo.CasePat\n\
+                         [<AutoOpen>]\n\
+                         module Auto =\n\
+                         \x20   module Other =\n\
+                         \x20       let v = 1\n";
+    assert_eq!(
+        resolve_pair(not_declaring),
+        Some(Resolution::Entity(shape)),
+        "no project file declares a module `Demo`, so the head is unclaimed"
     );
 }

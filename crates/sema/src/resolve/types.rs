@@ -1312,7 +1312,7 @@ impl<'a> Resolver<'a> {
 
         // Inside a `rec` block a forward-declared project type may not be in
         // `type_defs` yet, but it still outranks any same-named assembly
-        // type — unlike [`Self::unmodelled_type_shadow_at`] below, a tiered
+        // type — unlike [`Self::project_shadow_at`] below, a tiered
         // match here could be the *wrong* target, not just a missed one, so
         // this must defer unconditionally rather than participate in the
         // tiered walk's priority ordering.
@@ -1865,6 +1865,18 @@ impl<'a> Resolver<'a> {
             || self.preceding.project_type_simple_names.contains(name)
     }
 
+    /// [`Self::project_type_named`]'s module twin: whether any project
+    /// **module** — declared or abbreviated anywhere in this file
+    /// ([`Resolver::own_module_simple_names`]) or in a preceding Compile-order
+    /// file
+    /// ([`ProjectItems::project_module_simple_names`](super::model::ProjectItems))
+    /// — has the simple name `name`. The dotted head's owner; see
+    /// [`Self::project_shadow_at`].
+    fn project_module_named(&self, name: &str) -> bool {
+        self.own_module_simple_names.contains(name)
+            || self.preceding.project_module_simple_names.contains(name)
+    }
+
     /// Record that a *single-segment* type-position name is deferred because a
     /// shadow is **possible** but unpinnable — an opaque/unmodelled `open`, a
     /// project shadow, or an ambiguous multi-open match. This distinguishes
@@ -1884,49 +1896,90 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether `prefix` — an opened, enclosing-namespace, or root reading, in
-    /// [`Self::assembly_prefixes_by_priority`] order — carries an unmodelled
-    /// type shadow risk for the single-segment name `head`. Two channels, and
-    /// they are keyed differently:
+    /// [`Self::assembly_prefixes_by_priority`] order — holds a **project**
+    /// `[<AutoOpen>]` module that could own the written path `names`.
     ///
-    /// - a **project** `[<AutoOpen>]` module in the reading. Sema does not
-    ///   enumerate such a module's nested types, so *which* of them it holds is
-    ///   unmodelled — but every one of them is a project type declaration, and
-    ///   the file-global `TypeDefn`/`exception` pre-scan behind
-    ///   [`Self::project_type_named`] sees every project type's simple name
-    ///   whether the walk indexes it or not. So a name no project file declares
-    ///   at all cannot be hiding in there, and the channel is name-keyed rather
-    ///   than name-blind: the veto costs a deferral only where a real collision
-    ///   is possible. That completeness is the whole soundness argument, and it
-    ///   rests on the pre-scan being whole-file and the fold recording each
-    ///   file's names alongside its auto-open module paths — the same
-    ///   `record_file` call, so no file can contribute one without the other.
+    /// Sema does not enumerate such a module's contents, so *what* it holds is
+    /// unmodelled — but everything it can hold is a project declaration, and
+    /// the file-global pre-scans see every project type's and module's simple
+    /// name whether the walk indexes them or not. So a name no project file
+    /// declares at all cannot be hiding in there, and the channel is name-keyed
+    /// rather than name-blind: the veto costs a deferral only where a real
+    /// collision is possible. That completeness is the whole soundness
+    /// argument, and it rests on the pre-scans being whole-file and the fold
+    /// recording each file's names alongside its auto-open module paths — the
+    /// same `record_file` call, so no file can contribute one without the
+    /// others.
     ///
-    ///   Both sides of that pairing are derived from the **implementation**:
-    ///   `FileExportIndices::derive` walks the `.fs`'s export decls and lets a
-    ///   paired signature screen them, and `own_type_simple_names` is the
-    ///   `.fs`'s own unscreened pre-scan. A signature can attribute a module
-    ///   `[<AutoOpen>]` that the implementation left bare, but it cannot
-    ///   conjure a type into it: a signature slot with no implementation is a
-    ///   compile error. So the only shape this misses is a `.fsi`/`.fs` pair
-    ///   that disagrees about whether a type exists, where the project does not
-    ///   build at all.
-    /// - a namespace declared into by an assembly whose abbreviations are
-    ///   [unknowable](borzoi_sema::AbbreviationVisibility) — its signature
-    ///   pickle failed to decode, so its metadata-invisible abbreviations (V3)
-    ///   could hold *any* name. This one is genuinely **name-blind**: there is
-    ///   no index of what a failed pickle contained.
+    /// Every side of that pairing is derived from the **implementation**:
+    /// `FileExportIndices::derive` walks the `.fs`'s export decls and lets a
+    /// paired signature screen them, and the pre-scans are the `.fs`'s own
+    /// unscreened walks. A signature can attribute a module `[<AutoOpen>]`
+    /// that the implementation left bare, but it cannot conjure a declaration
+    /// into it: a signature slot with no implementation is a compile error. So
+    /// the only shape this misses is a `.fsi`/`.fs` pair that disagrees about
+    /// what exists, where the project does not build at all.
     ///
-    /// Neither can be checked pre-emptively without
-    /// over-deferring every other real type under the same reading; only
-    /// consulted once the tier's own lookup is a genuine
-    /// [`TieredResolution::NoMatch`]. Two channels are deliberately excluded
-    /// here because they have exact, name-keyed representations instead: the
-    /// **assembly**-side auto-open channel (exact metadata, checked
-    /// *precisely and pre-emptively* — the [`ShadowVeto::Preemptive`] verdict
-    /// of [`Self::resolve_assembly_path_tiered`]'s caller here), and a
-    /// *decodable* assembly's abbreviations (synthesised
-    /// `EntityKind::Abbreviation` markers in the entity tree, matched by the
-    /// tier's own lookup like any type and shadow-deferred there).
+    /// The index the head is asked of follows the path's **form**, because the
+    /// two forms have different owners — all three shapes fsc-verified against
+    /// a referenced `Demo.CasePat.Shape` (see
+    /// `a_project_auto_open_module_defers_a_dotted_head_it_declares_a_module_for`):
+    ///
+    /// - a **bare** name is owned by a type: an auto-open `type Shape` binds it
+    ///   over the namespace's own. A *module* of that name cannot bind a type
+    ///   annotation, so the module index is not consulted here.
+    /// - a **dotted** head is owned by a module: an auto-open `module Demo`
+    ///   holding `CasePat.Shape` makes FCS read the whole path through the
+    ///   project, and the assembly's type is a wrong target. A `type Demo`
+    ///   there does *not* shadow the path — FCS falls through to the
+    ///   referenced namespace — so the type index is not consulted for a dotted
+    ///   head either.
+    ///
+    /// Both directions over-defer where the auto-open declaration exists but
+    /// does not supply the tail (`module Demo = let unrelated = 1` still lets
+    /// `Demo.CasePat.Shape` compile). Sema cannot tell those apart without
+    /// enumerating the module, so it declines for both; that is the veto's
+    /// whole cost.
+    ///
+    /// The residual under-approximation is a project *type* that owns a dotted
+    /// tail after all. F# has no nested type declarations, so the only way in
+    /// is an abbreviation to a CLI type that has them — `type Demo =
+    /// System.Environment` makes `Demo.SpecialFolder` resolve (fsc-verified).
+    /// Widening the dotted head to the type index to catch it would defer every
+    /// fully-qualified path whose head shares a name with any project type,
+    /// which the shapes above show FCS resolves; the trade is recorded rather
+    /// than taken.
+    fn project_shadow_at(&self, prefix: &[String], names: &[String]) -> bool {
+        let Some(head) = names.first() else {
+            return false;
+        };
+        self.project_auto_open_module_in_namespace(prefix)
+            && if names.len() == 1 {
+                self.project_type_named(head)
+            } else {
+                self.project_module_named(head)
+            }
+    }
+
+    /// Whether `prefix` is a namespace declared into by an assembly whose
+    /// abbreviations are [unknowable](borzoi_sema::AbbreviationVisibility) —
+    /// its signature pickle failed to decode, so its metadata-invisible
+    /// abbreviations (V3) could hold *any* name. Genuinely **name-blind**:
+    /// there is no index of what a failed pickle contained, which is why its
+    /// caller restricts it to single-segment names where
+    /// [`Self::project_shadow_at`] needs no such restriction.
+    ///
+    /// Not checkable pre-emptively without over-deferring every other real type
+    /// under the same reading; only consulted once the tier's own lookup is a
+    /// genuine [`TieredResolution::NoMatch`]. Two channels are deliberately
+    /// excluded from this pair because they have exact, name-keyed
+    /// representations instead: the **assembly**-side auto-open channel (exact
+    /// metadata, checked *precisely and pre-emptively* — the
+    /// [`ShadowVeto::Preemptive`] verdict of
+    /// [`Self::resolve_assembly_path_tiered`]'s caller here), and a *decodable*
+    /// assembly's abbreviations (synthesised `EntityKind::Abbreviation` markers
+    /// in the entity tree, matched by the tier's own lookup like any type and
+    /// shadow-deferred there).
     ///
     /// A pure per-namespace query — no resolver state to keep in sync with
     /// `imports` — so [`Self::resolve_assembly_path_tiered`] can call it at
@@ -1944,11 +1997,9 @@ impl<'a> Resolver<'a> {
     /// property of a *path*, not of a reading, so it cannot be answered per
     /// prefix. [`Self::dropped_type_could_root_this_path`] is the gate that
     /// owns it, ahead of the walk.
-    pub(super) fn unmodelled_type_shadow_at(&self, prefix: &[String], head: &str) -> bool {
-        (self.project_auto_open_module_in_namespace(prefix) && self.project_type_named(head))
-            || self
-                .assemblies
-                .unknowable_abbreviations_in_namespace(prefix)
+    fn unknowable_abbreviation_shadow_at(&self, prefix: &[String]) -> bool {
+        self.assemblies
+            .unknowable_abbreviations_in_namespace(prefix)
     }
 
     /// The per-tier [`ShadowVeto`] for a **type-position** lookup: the single
@@ -2001,10 +2052,12 @@ impl<'a> Resolver<'a> {
     ///    `resolve_real_project_diff` is byte-identical across three real
     ///    projects, and on WoofWare.Myriad.Plugins this arm fires 33 times for
     ///    dotted paths without changing a single count.
-    /// 2. The **unmodelled** risks ([`Self::unmodelled_type_shadow_at`]): a
-    ///    project `[<AutoOpen>]` module in the reading declaring a name the
-    ///    project also declares as a type somewhere, or a namespace an
-    ///    assembly with unknowable abbreviations declares into. Also
+    /// 2. The **unmodelled** risks, two channels keyed differently enough that
+    ///    they are separate predicates: a project `[<AutoOpen>]` module in the
+    ///    reading that could own the written path
+    ///    ([`Self::project_shadow_at`]), and a namespace an assembly with
+    ///    unknowable abbreviations declares into
+    ///    ([`Self::unknowable_abbreviation_shadow_at`]). Also
     ///    [`ShadowVeto::Preemptive`], for the same reason as (1) even though the
     ///    evidence is weaker: what these hide is a type at *some* unmodelled
     ///    position in this reading, and a tier that binds `Foo` visibly is no
@@ -2016,22 +2069,17 @@ impl<'a> Resolver<'a> {
     ///    references. Asking only on a no-match answers a question whose answer
     ///    does not bear on the risk.
     ///
-    ///    This arm is **single-segment only**. A `Preemptive` verdict ends the
-    ///    whole walk, root tier included, so the *name-blind* half — the
-    ///    unknowable pickle, where nothing bounds what the hidden name could be
-    ///    — would stop a *fully-qualified* path resolving in any file that
-    ///    references such an assembly, and `System.Text.Json.JsonException` and
-    ///    friends are the commonest shape in F# there.
+    ///    The unknowable-abbreviation channel is **single-segment only**. A
+    ///    `Preemptive` verdict ends the whole walk, root tier included, and
+    ///    nothing bounds what a failed pickle could have held — so consulting it
+    ///    for a dotted head would stop *fully-qualified* paths resolving in any
+    ///    file that references such an assembly, and
+    ///    `System.Text.Json.JsonException` and friends are the commonest shape
+    ///    in F# there.
     ///
-    ///    That argument does not reach the project half, which is keyed on a
-    ///    name the project actually declares; it carries the restriction for a
-    ///    different reason — what owns a *dotted* head is a module and
-    ///    [`Self::project_type_named`] answers for types. Until a module-name
-    ///    index joins it, a project auto-open module owning a qualified path's
-    ///    head is a wrong target, recorded as the `V…Q` rows of
-    ///    `tier_order_diff`'s `KNOWN_DIVERGENCES`;
-    ///    `a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`
-    ///    pins the cost side of the same trade.
+    ///    That argument does not reach the project channel, whose every form is
+    ///    keyed on a name the project actually declares, so it answers for
+    ///    dotted heads too — asking the module index rather than the type one.
     pub(super) fn type_position_shadow_at(
         &self,
         prefix: &[String],
@@ -2046,7 +2094,10 @@ impl<'a> Resolver<'a> {
         {
             return ShadowVeto::Preemptive;
         }
-        if names.len() == 1 && self.unmodelled_type_shadow_at(prefix, head) {
+        if self.project_shadow_at(prefix, names) {
+            return ShadowVeto::Preemptive;
+        }
+        if names.len() == 1 && self.unknowable_abbreviation_shadow_at(prefix) {
             return ShadowVeto::Preemptive;
         }
         ShadowVeto::None

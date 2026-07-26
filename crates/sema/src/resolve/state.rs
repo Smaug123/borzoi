@@ -1062,6 +1062,19 @@ pub(super) struct Resolver<'a> {
     /// Over-approximate (an augmentation target counts too) — sound, since a
     /// spurious match only defers.
     pub(super) own_type_simple_names: HashSet<String>,
+    /// Every nested project **module definition**'s simple name declared
+    /// *anywhere in this file*, pre-scanned beside
+    /// [`Self::own_type_simple_names`] and order-independent for the same
+    /// reason. The dotted half of the project `[<AutoOpen>]` shadow
+    /// (`Resolver::project_module_named`): what owns a *dotted* head is a
+    /// module, so that is the index the head is asked of.
+    ///
+    /// `module X = A.B` **abbreviations** are excluded — they publish nothing
+    /// past their own container, and inside it are modelled by
+    /// [`Self::module_aliases`] rather than hidden. Over-approximate in the
+    /// remaining direction (a module in an unrelated container counts too) —
+    /// sound, since a spurious match only defers.
+    pub(super) own_module_simple_names: HashSet<String>,
     /// Every **value binder** simple name introduced anywhere in the file —
     /// pre-scanned file-globally (like [`Self::own_type_simple_names`]) from the
     /// resolution-independent [`binders`](crate::binders) walk over every pattern,

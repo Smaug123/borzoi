@@ -155,6 +155,47 @@ pub fn resolve_file(
                 .insert(id_text(name.text()).to_string());
         }
     }
+    // Every *nested module definition*'s simple name in the file, for the
+    // dotted half of the project `[<AutoOpen>]` shadow
+    // (`Resolver::project_module_named`): what owns a dotted head is a module.
+    //
+    // Definitions only. A `module X = A.B` **abbreviation** binds a name inside
+    // its own container and publishes it nowhere — fsc-verified, an abbreviation
+    // in an `[<AutoOpen>] module Auto` leaves a *sibling* module's use of the
+    // name at FS0039 — so it can never be the hidden declaration this index
+    // stands for. Within its container it is in scope, but there it is not
+    // unmodelled either: `Resolver::module_aliases` resolves same-file
+    // abbreviations directly. Everything collected here is a declaration
+    // nothing else models, which is what makes a name in it evidence of a real
+    // hazard rather than of a name merely occurring.
+    //
+    // A file's own top-level `module M` header is a `MODULE_OR_NAMESPACE` and
+    // so is not collected, which is exactly right for the same reason: the risk
+    // this bounds is a declaration nested inside an `[<AutoOpen>]` module, and a
+    // top-level header can never be one.
+    //
+    // A `module private X` **is** collected, though F# does not publish it past
+    // its parent either (fsc-verified: a private child of an auto-open module
+    // loses `Demo.CasePat.Shape` to the referenced assembly). Inside that parent
+    // it is both visible and unmodelled — sema does not model a nested module's
+    // members — and this pre-scan is position-blind, so it cannot tell the two
+    // sites apart. Keeping it over-defers uses outside the parent; dropping it
+    // would wrong-target uses inside.
+    //
+    // Whole-file and order-independent like the type pre-scan above.
+    for nm in file
+        .syntax()
+        .descendants()
+        .filter_map(NestedModuleDecl::cast)
+    {
+        // A nested header is written `module X`; `long_id` is dotted only on a
+        // malformed one, where the last segment is still the module the body
+        // hangs off.
+        if let Some(name) = nm.long_id().and_then(|li| li.idents().last()) {
+            r.own_module_simple_names
+                .insert(id_text(name.text()).to_string());
+        }
+    }
     // The type/exception names declared **directly inside an `[<AutoOpen>]`
     // module** (AO-2): an in-file attribute hit for one of these must defer —
     // the auto-open import contests it positionally in FCS, across blocks the
@@ -1773,6 +1814,7 @@ impl<'a> Resolver<'a> {
             open_extension_unknowable: false,
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            own_module_simple_names: HashSet::new(),
             own_binder_simple_names: HashSet::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_exception_simple_names: HashSet::new(),
@@ -1870,12 +1912,12 @@ impl<'a> Resolver<'a> {
 
     /// Whether a **project** `[<AutoOpen>]` module that is *visible from the
     /// current site* sits directly in `namespace` — checked per-namespace at each
-    /// type-position lookup ([`Self::unmodelled_type_shadow_at`]), not
-    /// pre-aggregated: sema does not model such a module's nested types, so it may
-    /// provide a type name the tiered walk cannot reach at this reading. *Which*
-    /// names those could be is bounded by the file-global type pre-scan behind
-    /// [`Self::project_type_named`], which is how the shadow that rides on this
-    /// predicate stays name-keyed.
+    /// type-position lookup ([`Self::project_shadow_at`]), not
+    /// pre-aggregated: sema does not model such a module's contents, so it may
+    /// provide a name the tiered walk cannot reach at this reading. *Which*
+    /// names those could be is bounded by the file-global pre-scans behind
+    /// [`Self::project_type_named`] and [`Self::project_module_named`], which is
+    /// how the shadow that rides on this predicate stays name-keyed.
     ///
     /// A same-file `module private` is filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`] filters it — visible only from
@@ -1931,6 +1973,7 @@ impl<'a> Resolver<'a> {
             or_pattern_aliases: self.or_pattern_aliases,
             attribute_resolutions: self.attribute_resolutions,
             own_type_simple_names: self.own_type_simple_names,
+            own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
             attribute_shape_unknowable: self.attribute_shape_unknowable,
             augmentation_instance_names: self.augmentation_instance_names,
