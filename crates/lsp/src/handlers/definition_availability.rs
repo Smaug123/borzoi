@@ -44,6 +44,13 @@ pub enum UnavailableReason {
     /// opaque `open` could supply a type of this name
     /// ([`DeferredReason::ShadowableType`]) — so we decline rather than guess.
     ShadowableType,
+    /// The name *did* resolve into a referenced assembly, but one of the
+    /// project's referenced DLLs could not be read at all
+    /// ([`DeferredReason::IncompleteAssemblies`]), so nothing read out of the
+    /// others is provably the right target. The user's code is fine; the
+    /// analyzer's view of the project is not — which is why this is worth
+    /// distinguishing from an ordinary unresolved access.
+    IncompleteAssemblies,
     /// The name resolves to nothing in any scope or import we model
     /// ([`Resolution::Unresolved`]). Sema reserves this for Phase 4 and does
     /// not produce it yet; carried so the mapping is total the day it does.
@@ -100,6 +107,12 @@ impl UnavailableReason {
                 "This type name could be shadowed by an `open` the analyzer can't see through, so \
                  it declines to guess which type it refers to."
             }
+            UnavailableReason::IncompleteAssemblies => {
+                "One of this project's referenced assemblies couldn't be read, so any name that \
+                 resolves into a referenced assembly could be shadowed by something in the one \
+                 that's missing — the analyzer declines all of them rather than guess. The \
+                 server log names the DLL."
+            }
             UnavailableReason::Unresolved => {
                 "This name resolves to nothing in any scope or import the analyzer models."
             }
@@ -144,6 +157,9 @@ pub fn classify(
         }
         Some(Resolution::Deferred(DeferredReason::ShadowableType)) => {
             UnavailableReason::ShadowableType
+        }
+        Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
+            UnavailableReason::IncompleteAssemblies
         }
         Some(Resolution::Unresolved) => UnavailableReason::Unresolved,
         // No recorded occurrence: only an *identifier* under the cursor is worth
@@ -259,6 +275,9 @@ mod tests {
                 }
                 Some(Resolution::Deferred(DeferredReason::ShadowableType)) => {
                     Some(UnavailableReason::ShadowableType)
+                }
+                Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
+                    Some(UnavailableReason::IncompleteAssemblies)
                 }
                 Some(Resolution::Unresolved) => Some(UnavailableReason::Unresolved),
                 None => identifier_token_range(&root, byte)

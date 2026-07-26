@@ -3214,7 +3214,22 @@ impl<'a> Gen<'a> {
                 def_types.insert(def, ty);
             }
         }
-        let member_resolutions = std::mem::take(&mut self.member_resolutions);
+        let mut member_resolutions = std::mem::take(&mut self.member_resolutions);
+        // Inference's half of the incomplete-projection seal (the resolver seals
+        // its own two maps): a member identified on a referenced-assembly type is
+        // an assembly reading like any other, and a DLL the env could not read
+        // could declare a type that shadows the receiver's. Swept once over the
+        // finished map for the same reason the resolver sweeps — see
+        // `Resolver::seal_assembly_readings`.
+        //
+        // The *types* this phase publishes are deliberately left alone: they are
+        // structural facts about the program, not claims about which assembly
+        // entity a name denotes, and the LSP navigates by resolution.
+        if self.env.identities_incomplete() {
+            for res in member_resolutions.values_mut() {
+                *res = res.sealed_under_incomplete_projection();
+            }
+        }
         InferredFile {
             types,
             def_types,
