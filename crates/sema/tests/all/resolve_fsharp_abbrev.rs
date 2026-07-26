@@ -128,6 +128,18 @@ fn root_fixture_env() -> AssemblyEnv {
     AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv")
 }
 
+/// The main fixture plus the retained-manifest-auto-open one — the env in
+/// which `Cases.Union.Target` (enclosing namespace) contends with
+/// `Cases.Retained.Auto.Target` (manifest surface).
+fn case_pattern_autoopen_env() -> AssemblyEnv {
+    let main = std::fs::read(ensure_fixture_built()).expect("read main fixture dll");
+    let auto = std::fs::read(crate::common::ensure_case_pattern_autoopen_fixture_built())
+        .expect("read auto-open fixture dll");
+    let main = Ecma335Assembly::parse(&main).expect("parse main fixture dll");
+    let auto = Ecma335Assembly::parse(&auto).expect("parse auto-open fixture dll");
+    AssemblyEnv::from_views(&[main, auto]).expect("build AssemblyEnv")
+}
+
 fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
     let parsed = parse(src);
     assert!(
@@ -1388,6 +1400,48 @@ fn qualified_case_pattern_declines_on_same_identity_dll_collision() {
         "a union contested by a same-identity DLL's module must decline"
     );
     assert_eq!(rf.resolution_at(whole), None);
+}
+
+/// The case-pattern twin of `resolve_autoopen`'s dropped-type tests. The
+/// retained-surface branch walks the tiers above the manifest surface, so the
+/// same two incompleteness arms must stop it committing: a **dropped type in
+/// the winning prefix** (namespace-scoped), and an **unknowable extension
+/// surface** (global — no prefix is safe at all). Both deferral-only.
+#[test]
+fn a_retained_surface_walk_declines_on_projection_uncertainty() {
+    let src = "namespace Cases.Union\n\
+               module M =\n\
+               \x20   let f (x: Cases.Union.Target) =\n\
+               \x20       match x with\n\
+               \x20       | Target.Carrier r -> r\n\
+               \x20       | _ -> 0\n";
+    let whole = at(src, "Target.Carrier");
+    let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
+
+    // Control: with the surface fully modelled the enclosing namespace commits.
+    // Pinned to the entity, since a `Deferred` is a resolution too and would
+    // make the three declines below vacuous.
+    let env = case_pattern_autoopen_env();
+    let target = env
+        .lookup_type(&["Cases".into(), "Union".into()], "Target", 0)
+        .expect("Cases.Union.Target in the fixture env");
+    assert_eq!(
+        resolve(src, &env).resolution_at(head),
+        Some(Resolution::Entity(target)),
+        "control: the enclosing namespace outranks the manifest surface"
+    );
+
+    // A dropped type in the winning prefix (`Cases.Union`) — the surviving
+    // `Target` may have a same-named dropped sibling FCS binds instead.
+    let mut env = case_pattern_autoopen_env();
+    env.mark_namespace_dropped_type(vec!["Cases".into(), "Retained".into()]);
+    env.mark_namespace_dropped_type(vec!["Cases".into(), "Union".into()]);
+    assert_eq!(resolve(src, &env).resolution_at(head), None);
+
+    // The global arm: nowhere is safe, so decline outright.
+    let mut env = case_pattern_autoopen_env();
+    env.mark_extension_surface_unknowable();
+    assert_eq!(resolve(src, &env).resolution_at(head), None);
 }
 
 /// A union imported through an `open` of an assembly **module** (not a

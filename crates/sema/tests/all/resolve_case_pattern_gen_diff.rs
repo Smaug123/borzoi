@@ -487,7 +487,49 @@ fn sweep_retained_auto_open() -> usize {
         ensure_abbrev_fixture_built(),
         ensure_case_pattern_autoopen_fixture_built(),
     ];
-    run_probes("retained auto-open", None, src, &probes, &refs, &refs)
+    let compared = run_probes(
+        "retained auto-open",
+        None,
+        src.clone(),
+        &probes,
+        &refs,
+        &refs,
+    );
+
+    // Availability for the **enclosing-namespace** probes specifically. The
+    // manifest surface out-ranks the root tier (so `RetainedRoot_*` must keep
+    // declining — nothing models that surface) but *not* the enclosing
+    // namespace, so these must actually bind. The guard used to defer them
+    // wholesale; the soundness property above tolerates that, which is why it
+    // needs saying out loud.
+    let views: Vec<Ecma335Assembly> = refs
+        .iter()
+        .map(|dll| {
+            Ecma335Assembly::parse(&std::fs::read(dll).expect("read fixture"))
+                .expect("parse fixture")
+        })
+        .collect();
+    let env = AssemblyEnv::from_views(&views).expect("env");
+    let proj = resolve_project(
+        &[ImplFile::cast(parse(&src).root).expect("impl file")],
+        &env,
+    );
+    // The *exact* entity, not merely `is_some`: a `Deferred` is a resolution
+    // too, so an availability check that accepts one cannot fail when the
+    // guard goes back to deferring — the regression it exists to catch.
+    let target = env
+        .lookup_type(&["Cases".into(), "Union".into()], "Target", 0)
+        .expect("Cases.Union.Target in the fixture env");
+    for probe in probes.iter().filter(|p| p.namespace == "Cases.Union") {
+        assert_eq!(
+            proj.file(0).resolution_at(probe.head),
+            Some(Resolution::Entity(target)),
+            "{}: the enclosing namespace out-ranks the manifest auto-open surface, \
+             so the head must bind Cases.Union.Target",
+            probe.label,
+        );
+    }
+    compared
 }
 
 /// The **implicit-open** arm. F# auto-opens `Microsoft.FSharp.Core` into every
