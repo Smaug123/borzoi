@@ -11,6 +11,7 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+pub mod companion_corpus;
 pub mod fold_matrix;
 pub mod generator;
 pub mod overload_corpus;
@@ -1063,6 +1064,37 @@ pub fn ensure_overload_corpus_built(csharp: &str) -> &'static Path {
         .as_path()
 }
 
+/// Build the **companion-head** corpus (`tests/fixtures/companion_env`) once per
+/// test binary and return its `.dll` path.
+///
+/// One assembly, because the question is what a *single* `(namespace, name)`
+/// holds — a type, its companion module, or both — rather than how two
+/// assemblies contest a name (that is [`ensure_tier_corpus_built`]'s). Its
+/// `Generated.fs` is not checked in: it is emitted from
+/// [`companion_corpus`]'s dimension enums here, under the shared [`BUILD_LOCK`]
+/// like every other fixture.
+pub fn ensure_companion_corpus_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/companion_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(
+                project.join("Generated.fs"),
+                companion_corpus::fixture_source(&companion_corpus::corpus()),
+            )
+            .expect("write companion Generated.fs");
+            dotnet_build(&project, "dotnet build companion fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{}.dll", companion_corpus::FIXTURE_ASM))
+        })
+        .as_path()
+}
+
 /// Build the **tier-order** corpus (`tests/fixtures/tier_env` and
 /// `tests/fixtures/tier_decoy_env`) once per test binary and return both
 /// `.dll` paths, contributor first.
@@ -1327,6 +1359,15 @@ pub struct NormalisedUse {
     /// The symbol's full name (`FSharpSymbol.FullName`, e.g. `Demo.Calc.Zero`),
     /// or `None` when FCS cannot produce it.
     pub full_name: Option<String>,
+    /// What kind of symbol FCS bound — `"module"` / `"type"` / `"namespace"` for
+    /// an entity, else `"member"`, `"unioncase"`, … . A type and its **companion
+    /// module** share one `(namespace, name)` and render the same
+    /// [`full_name`](Self::full_name), so this is the only field that witnesses
+    /// which of them a use bound.
+    pub kind: Option<String>,
+    /// The entity's declared generic arity — the second half of that witness,
+    /// since two types at one name differ only by it. `None` for a non-entity.
+    pub generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1351,6 +1392,10 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "SymbolKind", default)]
+    kind: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1398,6 +1443,8 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                 decl,
                 assembly: u.assembly,
                 full_name: u.full_name,
+                kind: u.kind,
+                generic_arity: u.generic_arity,
             }
         })
         .collect()

@@ -4730,12 +4730,38 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
                  with _ -> fullName)
             | _ -> fullName
         | _ -> fullName
+    // One `(namespace, name)` can hold a type AND its companion module, and
+    // both render the same `FullName` — so a consumer diffing name resolution
+    // cannot tell from the name alone *which* of them a use bound. Emit the
+    // entity's kind and generic arity beside it: they are the only fields that
+    // witness that choice, and without them a wrong pick reads as agreement
+    // (codex review of the companion-head sweep).
+    let symbolKind : objnull =
+        match u.Symbol with
+        | :? FSharpEntity as e ->
+            (try
+                if e.IsNamespace then box "namespace"
+                elif e.IsFSharpModule then box "module"
+                else box "type"
+             with _ -> null)
+        | :? FSharpMemberOrFunctionOrValue -> box "member"
+        | :? FSharpUnionCase -> box "unioncase"
+        | :? FSharpField -> box "field"
+        | :? FSharpActivePatternCase -> box "activepatterncase"
+        | :? FSharpGenericParameter -> box "genericparameter"
+        | _ -> null
+    let genericArity : objnull =
+        match u.Symbol with
+        | :? FSharpEntity as e -> (try box e.GenericParameters.Count with _ -> null)
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
        DeclRange = declRange
        Assembly = assemblyName
-       FullName = qualifiedFullName |}
+       FullName = qualifiedFullName
+       SymbolKind = symbolKind
+       GenericArity = genericArity |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

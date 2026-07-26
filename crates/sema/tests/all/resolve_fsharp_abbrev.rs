@@ -337,25 +337,31 @@ fn cross_dll_merged_parent_defers_nested_resolve_through() {
 }
 
 #[test]
-fn member_access_through_an_alias_with_a_companion_module_defers() {
+fn member_access_through_an_alias_with_a_companion_module_binds_the_module() {
     // `type WidgetC = Widget` with a `[<ModuleSuffix>] module WidgetC` that also
     // defines `Make` (codex round 6): FCS routes `WidgetC.Make` to the *companion
-    // module's* `Make`, not the target `Widget`'s static — a module-over-target
-    // member precedence we do not model. The resolve-through must DEFER, never
-    // commit `Widget.Make` (verified against fcs-dump: `WidgetC.Make` resolves to
-    // `WidgetCModule.Make`).
+    // module's* `Make`, not the target `Widget`'s static (verified against
+    // fcs-dump: `WidgetC.Make` resolves to `WidgetCModule.Make`).
+    //
+    // That is the module-over-target precedence, and the rooting walk now models
+    // it directly: one `(namespace, name)` names a candidate *set*, tried
+    // module-first, and the module owns the path here — so the alias's own
+    // reading is never reached and there is nothing to resolve *through*.
     let env = fixture_env();
     let src = "module M\nopen Lib\nlet _ = WidgetC.Make()\n";
     let rf = resolve(src, &env);
+    let resolution = rf.resolution_at(at(src, "WidgetC.Make"));
+    let Some(Resolution::Member { parent, idx }) = resolution else {
+        panic!("`WidgetC.Make` must bind the companion module's `Make`; got {resolution:?}");
+    };
     assert!(
-        !matches!(
-            rf.resolution_at(at(src, "WidgetC.Make")),
-            Some(Resolution::Member { .. })
-        ),
-        "a member access through an alias with a companion module must defer, not \
-         commit the target's member; got {:?}",
-        rf.resolution_at(at(src, "WidgetC.Make")),
+        env.is_module(parent),
+        "`WidgetC.Make` must bind the companion MODULE's member, not the alias target's; \
+         got {} (module={})",
+        env.entity_full_name(parent),
+        env.is_module(parent),
     );
+    assert_eq!(env.member_display_name(parent, idx), "Make");
 }
 
 #[test]

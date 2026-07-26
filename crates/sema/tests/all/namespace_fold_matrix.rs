@@ -425,6 +425,31 @@ const CELLS: &[Cell] = &[
         probe: "NsDup.DupStat",
         position: Position::Expr,
     },
+    // ---- rooting position: a longer rooting that cannot supply the tail must
+    // not swallow the path. `Demo.RootShorten.Inner` is a *generic* type in the
+    // abbrev fixture's namespace half (no `Tail`), one segment longer than the
+    // autoopen fixture's `module Demo.RootShorten`, whose nested `Inner.Tail`
+    // is what FCS binds. Fully qualified, so this is the rooting walk alone with
+    // no `open` tier in play (codex review). ----
+    Cell {
+        decls: &[],
+        label: "root-shorten / tail below the shorter rooting, expression",
+        body: &[],
+        probe: "Demo.RootShorten.Inner.Tail",
+        position: Position::Expr,
+    },
+    // …and the same contest with **no tail at all**: the longer rooting is a
+    // generic record, which in expression position is `FS0800` with no symbol,
+    // so the value one position shorter is what FCS binds. A rooting walk that
+    // treats any entity it reaches as an owner records the record instead
+    // (codex review).
+    Cell {
+        decls: &[],
+        label: "root-shorten / terminal head with the value below it, expression",
+        body: &[],
+        probe: "Demo.RootShortenValue.Leaf",
+        position: Position::Expr,
+    },
 ];
 
 /// Cells where FCS resolves the probe but we deliberately defer — the conservative
