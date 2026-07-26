@@ -192,75 +192,56 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
 
 /// Whether our resolution names the same symbol as FCS and differs only because
 /// FCS renders a **generic instantiation**, which our entity model cannot: it
-/// carries generic *parameters*, not the arguments a use instantiated them
-/// with, so `entity_full_name` has nothing to print where FCS writes
-/// `ImmutableArray<byte>.Empty`.
+/// carries generic *parameters*, not the arguments a use instantiated them with.
 ///
-/// Two independent facts must line up, and neither is read out of the
-/// rendering's shape: the arity comes from the *oracle*, and the name must
-/// match once the argument lists are gone. Mirrors `borzoi_corpus_diff`'s
-/// allowance — see there for why a CLR arity marker or a quoted segment makes
-/// the rendering undecidable and is declined rather than approximated.
+/// Nothing here parses the instantiated rendering. The oracle supplies the
+/// declaring entity structurally (FCS renders an *entity*'s name without
+/// arguments, keeping the CLR arity marker), and we build that spelling forward
+/// from our own answer and compare — a construction cannot mis-parse.
+/// Restricted to a top-level entity, the only shape where the comparison is
+/// unambiguous. Mirrors `borzoi_corpus_diff`'s allowance; see there for why a
+/// nested generic cannot be told apart by name or by total arity.
 fn generic_instantiation_matches(
     env: &AssemblyEnv,
     res: Resolution,
-    fcs: &str,
+    fcs_full: &str,
     oracle_arity: Option<usize>,
+    oracle_declaring: Option<&str>,
 ) -> bool {
     let Some(arity) = oracle_arity.filter(|&a| a > 0) else {
         return false;
     };
-    let entity = match res {
-        Resolution::Entity(h) => h,
-        Resolution::Member { parent, .. } => parent,
+    let Some(fcs_declaring) = oracle_declaring else {
+        return false;
+    };
+    let (entity, member) = match res {
+        Resolution::Entity(h) => (h, None),
+        Resolution::Member { parent, idx } => (parent, Some(env.member_display_name(parent, idx))),
         _ => return false,
     };
-    if env.entity(entity).generic_parameters.len() != arity {
+    let e = env.entity(entity);
+    if e.generic_parameters.len() != arity {
         return false;
     }
-    let Some(stripped) = strip_type_arguments(fcs) else {
-        return false;
+    let source_name = e.source_name.as_deref().unwrap_or(&e.name);
+    let top_level = if e.namespace.is_empty() {
+        source_name.to_string()
+    } else {
+        format!("{}.{source_name}", e.namespace.join("."))
     };
-    let ours = our_assembly_full(env, res);
-    let unquote = |s: &str| s.replace("``", "");
-    let stripped = unquote(&stripped);
-    unquote(&ours.qualified) == stripped || unquote(&ours.unqualified) == stripped
-}
-
-/// `fcs` with its type-argument lists removed, or `None` when the rendering is
-/// one this cannot normalise exactly. The twin of `borzoi_corpus_diff`'s
-/// function of the same name; kept in step with it.
-fn strip_type_arguments(fcs: &str) -> Option<String> {
-    let mut out = String::with_capacity(fcs.len());
-    let mut depth = 0usize;
-    let mut prev = '\0';
-    let mut chars = fcs.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '`' if chars.peek() == Some(&'`') && depth == 0 => {
-                chars.next();
-                out.push_str("``");
-                loop {
-                    match chars.next() {
-                        None => return None,
-                        Some('`') if chars.peek() == Some(&'`') => {
-                            chars.next();
-                            out.push_str("``");
-                            break;
-                        }
-                        Some(c) => out.push(c),
-                    }
-                }
-            }
-            '`' if depth == 0 && chars.peek().is_some_and(char::is_ascii_digit) => return None,
-            '<' => depth += 1,
-            '>' if prev != '-' => depth = depth.saturating_sub(1),
-            _ if depth == 0 => out.push(ch),
-            _ => {}
-        }
-        prev = ch;
+    if env.entity_full_name(entity) != top_level {
+        return false;
     }
-    (depth == 0).then_some(out)
+    let unquote = |s: &str| s.replace("``", "");
+    if unquote(fcs_declaring) != unquote(&format!("{top_level}`{arity}")) {
+        return false;
+    }
+    match member {
+        None => true,
+        Some(name) => fcs_full
+            .rsplit_once('.')
+            .is_some_and(|(_, tail)| unquote(tail) == unquote(&name)),
+    }
 }
 
 /// Our resolution's full name with a **nested** entity's enclosing chain
@@ -534,6 +515,7 @@ fn project_resolution_matches_fcs() {
                                     r,
                                     full,
                                     u.declaring_entity_arity,
+                                    u.declaring_entity_full_name.as_deref(),
                                 ))
                         {
                             tally.asm_match += 1;

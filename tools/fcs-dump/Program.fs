@@ -4783,6 +4783,30 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
              with _ -> null)
         | :? FSharpUnionCase as c -> (try box c.DeclaringEntity.GenericParameters.Count with _ -> null)
         | _ -> null
+    // The declaring entity's **own** `FullName`, which FCS renders *without* a
+    // type-argument list — unlike the member's `FullName`, which carries the
+    // instantiation (`ImmutableArray<byte>.Empty`). A consumer reconstructing
+    // names from metadata cannot render an instantiation, so comparing against
+    // the member rendering means normalising it, and that rendering is
+    // ambiguous in ways no normaliser can undo: a quoted identifier may contain
+    // angle brackets or commas, and a nested generic spreads its arity over the
+    // path. Emitting the declaring name structurally removes the guesswork
+    // rather than bounding it.
+    let declaringEntityFullName : objnull =
+        let ofEntity (e: FSharpEntity) : objnull =
+            try
+                match e.TryFullName with
+                | Some n -> box n
+                | None -> null
+            with _ -> null
+        match u.Symbol with
+        | :? FSharpEntity as e -> ofEntity e
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            (try (match m.DeclaringEntity with Some e -> ofEntity e | None -> null) with _ -> null)
+        | :? FSharpField as f ->
+            (try (match f.DeclaringEntity with Some e -> ofEntity e | None -> null) with _ -> null)
+        | :? FSharpUnionCase as c -> (try ofEntity c.DeclaringEntity with _ -> null)
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4791,7 +4815,8 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        FullName = qualifiedFullName
        SymbolKind = symbolKind
        GenericArity = genericArity
-       DeclaringEntityArity = declaringEntityArity |}
+       DeclaringEntityArity = declaringEntityArity
+       DeclaringEntityFullName = declaringEntityFullName |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

@@ -407,6 +407,8 @@ struct RawUse {
     full_name: Option<String>,
     #[serde(rename = "DeclaringEntityArity", default)]
     declaring_entity_arity: Option<usize>,
+    #[serde(rename = "DeclaringEntityFullName", default)]
+    declaring_entity_full_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -514,6 +516,10 @@ pub struct NormalisedProjectUse {
     /// (`ImmutableArray<byte>.Empty`) where a name reconstructed from metadata
     /// cannot.
     pub declaring_entity_arity: Option<usize>,
+    /// The declaring entity's own `FullName` as FCS reports it — without type
+    /// arguments, with the CLR arity marker. The structured identity, so a
+    /// comparator never parses the instantiated rendering.
+    pub declaring_entity_full_name: Option<String>,
 }
 
 /// All symbol uses FCS reported for one project file.
@@ -592,6 +598,7 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         assembly: u.assembly,
                         full_name: u.full_name,
                         declaring_entity_arity: u.declaring_entity_arity,
+                        declaring_entity_full_name: u.declaring_entity_full_name,
                     }
                 })
                 .collect();
