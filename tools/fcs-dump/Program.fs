@@ -4776,27 +4776,55 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
             | _ -> None
         with _ ->
             None
-    // Qualified exactly as `qualifiedFullName` is: FCS reports an F# module's
-    // `FullName` bare (`Seq`), and an unqualified name cannot witness which
-    // entity was named.
-    let declaringFullName : objnull =
+    // Emitted as a **path of segments**, not a dotted string. A compiled name
+    // may itself contain a dot — `[<CompiledName "Clr.Holder">] type H<'T>`
+    // declares its cases in `Renamed.Clr.Holder`, one metadata identifier —
+    // so a consumer that split on dots would read one entity as two. Each
+    // segment carries the entity's *compiled* name and its own generic-parameter
+    // count (cumulative through nesting, as ECMA-335 declares them), which is
+    // the domain a metadata reader is already in; the enclosing namespace rides
+    // alongside, since it is what pins the path to a place rather than to a
+    // shape.
+    let rec declaringSegments (e: FSharpEntity) : FSharpEntity list =
+        match (try e.DeclaringEntity with _ -> None) with
+        | Some parent when not (try parent.IsNamespace with _ -> true) ->
+            declaringSegments parent @ [ e ]
+        | Some _
+        | None -> [ e ]
+    let declaringPath : objnull =
         match declaringEntity with
         | None -> null
         | Some e ->
             try
-                let name = e.FullName
-                if name.Contains "." then
-                    box name
-                else
-                    match e.AccessPath with
-                    | "" | "global" -> box name
-                    | path -> box (path + "." + name)
+                declaringSegments e
+                |> List.map (fun segment ->
+                    {| Name = segment.CompiledName
+                       Arity = segment.GenericParameters.Count |})
+                |> List.toArray
+                |> box
             with _ ->
                 null
-    let declaringGenericArity : objnull =
+    /// The namespace the path's outermost segment sits in, `null` for the
+    /// global one — `AccessPath` minus the enclosing entities' own names.
+    let declaringNamespace : objnull =
         match declaringEntity with
         | None -> null
-        | Some e -> (try box e.GenericParameters.Count with _ -> null)
+        | Some e ->
+            try
+                let outermost = List.head (declaringSegments e)
+                match outermost.AccessPath with
+                | "" | "global" -> box ""
+                | path -> box path
+            with _ ->
+                null
+    // A constructor use names its *type*: FCS reports the display name of the
+    // type for it, so composing "declaring entity plus symbol name" would name
+    // `Dictionary.Enumerator.Enumerator` for `Dictionary<_,_>.Enumerator()`.
+    // Reported rather than guessed at from the spelling.
+    let isConstructor : objnull =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try box m.IsConstructor with _ -> null)
+        | _ -> box false
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4805,8 +4833,9 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        FullName = qualifiedFullName
        SymbolKind = symbolKind
        GenericArity = genericArity
-       DeclaringFullName = declaringFullName
-       DeclaringGenericArity = declaringGenericArity |}
+       DeclaringPath = declaringPath
+       DeclaringNamespace = declaringNamespace
+       IsConstructor = isConstructor |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

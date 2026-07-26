@@ -834,15 +834,24 @@ pub struct ProjectUse {
 /// `Holder<_>.Value`, `ImmutableArray<(int -> string)>.Empty`,
 /// `ImmutableArray<Probe.A,B>.Empty` (one argument, whose type is named
 /// ``A,B``). Those arguments carry commas that are not separators and `>`s that
-/// do not close the list, so neither the enclosing type's identity nor its
-/// arity can be recovered from the string. Both are read from here instead.
+/// do not close the list, so nothing about the enclosing type can be recovered
+/// from the string. It is read from here instead.
+///
+/// A **path of segments**, not a dotted name: a compiled name may itself contain
+/// a dot (`[<CompiledName "Clr.Holder">]`), so splitting one would read a single
+/// entity as two. Each segment is the entity's *compiled* name — the domain
+/// the assembly projection's `Entity::name` is already in — with the generic-parameter
+/// count ECMA-335 declares for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaringEntity {
-    /// The declaring entity's own full name, ECMA-335 arity mangling included
-    /// (``Probe.Holder`1``).
-    pub full_name: String,
-    /// How many type parameters it declares.
-    pub arity: usize,
+    /// The namespace the outermost segment sits in; empty for the global one.
+    pub namespace: Vec<String>,
+    /// Compiled name and generic-parameter count per segment, outermost first.
+    pub path: Vec<(String, usize)>,
+    /// Whether the use is a **constructor**, which names its own type: FCS
+    /// reports the type's display name for it, so `Dictionary<_,_>.Enumerator()`
+    /// must not compose to `Dictionary.Enumerator.Enumerator`.
+    pub is_constructor: bool,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1027,10 +1036,20 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
-    #[serde(rename = "DeclaringFullName", default)]
-    declaring_full_name: Option<String>,
-    #[serde(rename = "DeclaringGenericArity", default)]
-    declaring_generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringPath", default)]
+    declaring_path: Option<Vec<RawDeclaringSegment>>,
+    #[serde(rename = "DeclaringNamespace", default)]
+    declaring_namespace: Option<String>,
+    #[serde(rename = "IsConstructor", default)]
+    is_constructor: bool,
+}
+
+#[derive(Deserialize)]
+struct RawDeclaringSegment {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Arity")]
+    arity: usize,
 }
 
 /// Parse `fcs-dump uses-project` output using full path identity, not basenames.
@@ -1096,15 +1115,25 @@ pub fn parse_project_uses(
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
-                        declaring: match (u.declaring_full_name, u.declaring_generic_arity) {
-                            (Some(full_name), Some(arity)) => {
-                                Some(DeclaringEntity { full_name, arity })
+                        declaring: match (u.declaring_path, u.declaring_namespace) {
+                            // A path without the namespace it sits in names a
+                            // shape rather than a place, and neither half alone
+                            // certifies anything.
+                            (Some(path), Some(namespace)) if !path.is_empty() => {
+                                Some(DeclaringEntity {
+                                    namespace: if namespace.is_empty() {
+                                        Vec::new()
+                                    } else {
+                                        namespace.split('.').map(str::to_string).collect()
+                                    },
+                                    path: path
+                                        .into_iter()
+                                        .map(|segment| (segment.name, segment.arity))
+                                        .collect(),
+                                    is_constructor: u.is_constructor,
+                                })
                             }
-                            // Either field alone says nothing certifiable: the
-                            // identity without the arity cannot tell two
-                            // same-named types apart, and the arity without the
-                            // identity names nothing.
-                            (Some(_), None) | (None, Some(_)) | (None, None) => None,
+                            (Some(_), _) | (None, _) => None,
                         },
                     })
                 })
@@ -2419,16 +2448,12 @@ pub struct AssemblyDecl {
 }
 
 /// An oracle declaration named by its declaring entity plus the used symbol's
-/// own name, with no rendering in it: `(Probe.Holder, arity 1, Value)` for what
-/// FCS renders `Probe.Holder<_>.Value`.
+/// own name, with no rendering in it: the path `[(Holder`1, 1)]` in namespace
+/// `Probe` and the leaf `Value`, for what FCS renders `Probe.Holder<_>.Value`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuralName {
-    /// The declaring entity's full name exactly as the oracle gave it, ECMA
-    /// arity mangling included (``Probe.Holder`1``) — the mangling is evidence,
-    /// so it is kept rather than stripped on the way in.
-    pub declaring: String,
-    /// How many type parameters that entity declares.
-    pub arity: usize,
+    /// The declaring entity, segment by segment. See [`DeclaringEntity`].
+    pub declaring: DeclaringEntity,
     /// The used symbol's own display name.
     pub leaf: String,
 }
@@ -2641,9 +2666,8 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
             assembly: assembly.clone(),
             full_name: full_name.clone(),
-            structural: use_.declaring.as_ref().map(|d| StructuralName {
-                declaring: d.full_name.clone(),
-                arity: d.arity,
+            structural: use_.declaring.as_ref().map(|declaring| StructuralName {
+                declaring: declaring.clone(),
                 leaf: use_.name.clone(),
             }),
         }),
@@ -2860,141 +2884,93 @@ fn assembly_full_name_agrees_for(
 ) -> bool {
     assembly_full_name_agrees(actual, &expected.full_name)
         || certified_expected(env, res, expected)
-            .iter()
-            .any(|certified| assembly_full_name_agrees(actual, certified))
+            .is_some_and(|certified| assembly_full_name_agrees(actual, &certified))
 }
 
-/// The oracle declaration named the way **we** name it, for every spelling our
-/// own resolution certifies — empty when it certifies none, leaving the oracle's
-/// name to be compared exactly as it arrived.
+/// The oracle declaration named the way **we** name it, or `None` when our own
+/// resolution does not certify it — leaving the oracle's rendered name to be
+/// compared exactly as it arrived.
 ///
-/// FCS names a declaration in two domains at once, neither of them ours. Its
-/// full name is a **rendering**: the enclosing type is printed through
-/// `NicePrint`, so it arrives decorated — `MethodReturnType<_>.Returns`,
-/// `ImmutableArray<(int -> string)>.Empty`, `ImmutableArray<Probe.A,B>.Empty`
-/// (one argument, of the type ``A,B``, quoting dropped). The decoration is not
-/// parsed back off: its arguments carry commas that are not separators and `>`s
-/// that close nothing. Beside it FCS reports the declaring entity
-/// *structurally* ([`DeclaringEntity`]), which is what gets read — but that name
-/// is in the **compiled** domain (``ImmutableArray`1``, and `ClrHolder` for a
-/// `[<CompiledName>]` type) while ours is the source one.
+/// FCS's full name for a member is a **rendering**: the enclosing type is
+/// printed through `NicePrint`, so it arrives decorated —
+/// `MethodReturnType<_>.Returns`, `ImmutableArray<(int -> string)>.Empty`,
+/// `ImmutableArray<Probe.A,B>.Empty` (one argument, of the type ``A,B``). Our
+/// own full names carry no arity at all, so a *correct* resolution scored as a
+/// divergence in both directions — 518 of the 530 measured on
+/// `WoofWare.PawPrint`'s main library.
 ///
-/// So both spellings are aligned against the enclosing chain we resolved, by
-/// [`chain_position`], and what comes back is *our* name for the entity that
-/// certified. Two candidates result:
+/// Nothing about that decoration is parsed. The enclosing entity arrives
+/// structurally instead ([`DeclaringEntity`]), and is matched against the
+/// enclosing chain we resolved by [`chain_position`]; what comes back is *our*
+/// name for the entity that certified, so the two sides' spelling domains never
+/// have to be reconciled at the comparison.
 ///
-/// - the rendering, when it aligns end to end — this is how a **constructor** of
-///   a nested type agrees, since FCS renders it ``Dictionary`2.Enumerator`` (its
-///   declaring entity is the type itself, so composing would give
-///   `Dictionary.Enumerator.Enumerator`);
-/// - the declaring entity plus the used symbol's own name, which is the shape
-///   every decorated member takes.
-fn certified_expected(env: &AssemblyEnv, res: Resolution, expected: &AssemblyDecl) -> Vec<String> {
+/// A constructor names its own type, so it certifies the entity alone; every
+/// other symbol certifies the entity plus its own name.
+fn certified_expected(
+    env: &AssemblyEnv,
+    res: Resolution,
+    expected: &AssemblyDecl,
+) -> Option<String> {
+    let structural = expected.structural.as_ref()?;
     let chain = match res {
         Resolution::Entity(handle) => env.enclosing_chain(handle),
         Resolution::Member { parent, .. } => env.enclosing_chain(parent),
         Resolution::Local(_)
         | Resolution::Item(_)
         | Resolution::Deferred(_)
-        | Resolution::Unresolved => return Vec::new(),
+        | Resolution::Unresolved => return None,
     };
-    let mut candidates = Vec::new();
-    if chain_position(env, &chain, &expected.full_name, None) == Some(chain.len() - 1) {
-        candidates.push(env.entity_full_name(chain[chain.len() - 1]));
-    }
-    if let Some(structural) = &expected.structural
-        && let Some(position) =
-            chain_position(env, &chain, &structural.declaring, Some(structural.arity))
-    {
-        candidates.push(format!(
-            "{}.{}",
-            env.entity_full_name(chain[position]),
-            structural.leaf
-        ));
-    }
-    candidates
+    let position = chain_position(env, &chain, &structural.declaring)?;
+    let named = env.entity_full_name(chain[position]);
+    Some(if structural.declaring.is_constructor {
+        named
+    } else {
+        format!("{named}.{}", structural.leaf)
+    })
 }
 
-/// How far along `chain` a dotted oracle name reaches, or `None` when it names
-/// something our resolution did not.
+/// How far along `chain` the oracle's declaring path reaches, or `None` when it
+/// names something our resolution did not.
 ///
-/// The name must be the outermost entity's namespace followed by one segment per
-/// chain entry, up to the entry it names. Each segment must spell that entity —
-/// in *either* domain, since the oracle's structural names are compiled
-/// (`ClrHolder` for a `[<CompiledName>] type SourceHolder`) and its renderings
-/// are not — and each ECMA arity suffix it carries must agree with that entity's
-/// generic parameter count, accumulated: ``Outer`1.Inner`1`` and
-/// ``Outer`2.Inner`` are different declarations that a name alone cannot
-/// separate. `final_arity`, when the oracle reported one, must equal the named
-/// entity's own count; that is the check that keeps `Holder<'T>` apart from
-/// `Holder<'T, 'U>`, and a companion module — never generic — out of a generic
-/// entity's place.
+/// Matched in **one** domain: each segment's compiled name against
+/// the assembly projection's `Entity::name`, which is the same name with ECMA-335's
+/// arity mangling stripped — so the suffix is dropped here too, and the arity it
+/// encoded is compared as the count the oracle reports beside it. Matching
+/// either that or our *source* spelling would not be injective: with
+/// `[<CompiledName "C">] type A<'T>` beside `[<CompiledName "A">] type B<'T>`,
+/// the oracle's `A` for a member of `B` would also match `A`'s source name.
 ///
-/// A name still carrying a *rendering* (`<…>`) names nothing here: only the
-/// spellings above are read.
+/// The arity comparison is what keeps `Holder<'T>` apart from `Holder<'T,'U>`,
+/// and a companion module — never generic — out of a generic entity's place.
+/// The namespace pins the path to a place rather than to a shape.
 fn chain_position(
     env: &AssemblyEnv,
     chain: &[EntityHandle],
-    name: &str,
-    final_arity: Option<usize>,
+    declaring: &DeclaringEntity,
 ) -> Option<usize> {
-    if name.contains('<') {
+    let position = declaring.path.len().checked_sub(1)?;
+    if position >= chain.len() || env.entity(*chain.first()?).namespace != declaring.namespace {
         return None;
     }
-    let segments: Vec<&str> = name.split('.').collect();
-    let namespace = &env.entity(*chain.first()?).namespace;
-    if segments.len() <= namespace.len()
-        || !namespace
-            .iter()
-            .zip(&segments)
-            .all(|(ours, theirs)| ours == theirs)
-    {
-        return None;
-    }
-    let named = &segments[namespace.len()..];
-    let position = named.len() - 1;
-    if position >= chain.len() {
-        return None;
-    }
-    let mut generic_parameters = 0usize;
-    for (index, segment) in named.iter().enumerate() {
-        let (spelling, delta) = split_ecma_arity(segment);
+    for (index, (name, arity)) in declaring.path.iter().enumerate() {
         let entity = env.entity(chain[index]);
-        if spelling != entity.source_name.as_deref().unwrap_or(&entity.name)
-            && spelling != entity.name
-        {
+        if strip_ecma_arity(name) != entity.name || entity.generic_parameters.len() != *arity {
             return None;
         }
-        if let Some(delta) = delta {
-            generic_parameters += delta;
-            if generic_parameters != entity.generic_parameters.len() {
-                return None;
-            }
-        }
     }
-    let named_entity = chain[position];
-    if env.is_module(named_entity) {
-        return None;
-    }
-    match final_arity {
-        Some(arity) if env.entity(named_entity).generic_parameters.len() != arity => None,
-        Some(_) | None => Some(position),
-    }
+    (!env.is_module(chain[position])).then_some(position)
 }
 
-/// A name segment split into its spelling and the type parameters ECMA-335
-/// mangled onto it: ``Holder`1`` → `("Holder", Some(1))`, `Holder` →
-/// `("Holder", None)`. The suffix is a backtick followed by decimal digits to
-/// the end of the segment, so an identifier's own interior backtick is left
-/// alone. `None` is "the oracle did not say" — an F# entity's own full name
-/// carries no mangling — not "zero".
-fn split_ecma_arity(segment: &str) -> (&str, Option<usize>) {
-    match segment.rsplit_once('`') {
-        Some((spelling, arity)) => match arity.parse::<usize>() {
-            Ok(arity) => (spelling, Some(arity)),
-            Err(_) => (segment, None),
-        },
-        None => (segment, None),
+/// A compiled name with ECMA-335's arity mangling dropped: ``Holder`1`` →
+/// `Holder`, `Clr.Holder` → `Clr.Holder` (a compiled name may contain a dot,
+/// and carries no arity of its own). The suffix is a backtick followed by
+/// decimal digits at the very end, which is how the assembly projection strips
+/// it too, so the two names live in one domain.
+fn strip_ecma_arity(name: &str) -> &str {
+    match name.rsplit_once('`') {
+        Some((spelling, arity)) if arity.parse::<usize>().is_ok() => spelling,
+        Some(_) | None => name,
     }
 }
 
@@ -4229,14 +4205,26 @@ mod tests {
     }
 
     /// An oracle declaration in assembly `Demo`: the name FCS *rendered*, plus
-    /// the structural facts it reported beside it.
-    fn oracle_decl(rendered: &str, declaring: &str, arity: usize, leaf: &str) -> AssemblyDecl {
+    /// the structural path it reported beside it. `path` is
+    /// `(compiled name, arity)` per segment, outermost first.
+    fn oracle_decl(
+        rendered: &str,
+        path: &[(&str, usize)],
+        leaf: &str,
+        is_constructor: bool,
+    ) -> AssemblyDecl {
         AssemblyDecl {
             assembly: "Demo".to_string(),
             full_name: rendered.to_string(),
             structural: Some(StructuralName {
-                declaring: declaring.to_string(),
-                arity,
+                declaring: DeclaringEntity {
+                    namespace: vec!["Demo".to_string()],
+                    path: path
+                        .iter()
+                        .map(|(name, arity)| ((*name).to_string(), *arity))
+                        .collect(),
+                    is_constructor,
+                },
                 leaf: leaf.to_string(),
             }),
         }
@@ -4275,10 +4263,10 @@ mod tests {
             "Demo.Holder<(Microsoft.FSharp.Core.int -> Microsoft.FSharp.Core.string)>.Empty",
             "Demo.Holder<Probe.A,B>.Empty",
         ] {
-            let expected = oracle_decl(rendered, "Demo.Holder`1", 1, "Empty");
+            let expected = oracle_decl(rendered, &[("Holder`1", 1)], "Empty", false);
             assert_eq!(
-                certified_expected(&env, res, &expected),
-                vec!["Demo.Holder.Empty".to_string()],
+                certified_expected(&env, res, &expected).as_deref(),
+                Some("Demo.Holder.Empty"),
                 "{rendered}"
             );
             assert!(assembly_full_name_agrees_for(&env, res, &ours, &expected));
@@ -4296,31 +4284,37 @@ mod tests {
         let (pair_res, _) = fixture_member(&env, "Pair", 2, false, "Empty");
         // The comma-bearing rendering *looks* like two arguments, and `Pair`
         // does take two — but the oracle says the declaring entity has one.
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 pair_res,
-                &oracle_decl("Demo.Pair<Probe.A,B>.Empty", "Demo.Holder`1", 1, "Empty")
-            )
-            .is_empty()
+                &oracle_decl(
+                    "Demo.Pair<Probe.A,B>.Empty",
+                    &[("Holder`1", 1)],
+                    "Empty",
+                    false
+                )
+            ),
+            None
         );
         // And the right arity on the right entity does certify.
         assert_eq!(
             certified_expected(
                 &env,
                 pair_res,
-                &oracle_decl("Demo.Pair<_,_>.Empty", "Demo.Pair`2", 2, "Empty")
-            ),
-            vec!["Demo.Pair.Empty".to_string()]
+                &oracle_decl("Demo.Pair<_,_>.Empty", &[("Pair`2", 2)], "Empty", false)
+            )
+            .as_deref(),
+            Some("Demo.Pair.Empty")
         );
         // A same-named entity of a different arity is a different declaration.
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 pair_res,
-                &oracle_decl("Demo.Pair<_>.Empty", "Demo.Pair`1", 1, "Empty")
-            )
-            .is_empty()
+                &oracle_decl("Demo.Pair<_>.Empty", &[("Pair`1", 1)], "Empty", false)
+            ),
+            None
         );
     }
 
@@ -4333,25 +4327,25 @@ mod tests {
         let env = marker_fixture_env();
         let (module_res, module_ours) = fixture_member(&env, "Holder", 0, true, "Empty");
         assert_eq!(module_ours, "Demo.Holder.Empty");
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 module_res,
-                &oracle_decl("Demo.Holder<_>.Empty", "Demo.Holder`1", 1, "Empty")
-            )
-            .is_empty()
+                &oracle_decl("Demo.Holder<_>.Empty", &[("Holder`1", 1)], "Empty", false)
+            ),
+            None
         );
         // Nor does a same-named *type* of the wrong arity — `ImmutableArray`
         // and `ImmutableArray<'T>` are both real, and only one has `Empty`.
         let (plain_res, plain_ours) = fixture_member(&env, "Holder", 0, false, "Empty");
         assert_eq!(plain_ours, "Demo.Holder.Empty");
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 plain_res,
-                &oracle_decl("Demo.Holder<_>.Empty", "Demo.Holder`1", 1, "Empty")
-            )
-            .is_empty()
+                &oracle_decl("Demo.Holder<_>.Empty", &[("Holder`1", 1)], "Empty", false)
+            ),
+            None
         );
     }
 
@@ -4374,14 +4368,24 @@ mod tests {
         assert!(assembly_resolution_confirms_decl(
             &env,
             res,
-            &oracle_decl("Demo.Outer<_>.Inner", "Demo.Outer`1", 1, "Inner")
+            &oracle_decl(
+                "Demo.Outer<_>.Inner",
+                &[("Outer`1", 1), ("Inner`1", 1)],
+                "Inner",
+                true
+            )
         ));
         // The encloser's arity is its own, and a contradicting one certifies
         // nothing.
         assert!(!assembly_resolution_confirms_decl(
             &env,
             res,
-            &oracle_decl("Demo.Outer<_,_>.Inner", "Demo.Outer`2", 2, "Inner")
+            &oracle_decl(
+                "Demo.Outer<_,_>.Inner",
+                &[("Outer`2", 2), ("Inner", 2)],
+                "Inner",
+                true
+            )
         ));
     }
 
@@ -4391,22 +4395,27 @@ mod tests {
     fn a_declaring_entity_outside_the_resolved_chain_is_refused() {
         let env = marker_fixture_env();
         let (res, _) = fixture_member(&env, "Holder", 1, false, "Empty");
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 res,
-                &oracle_decl("Demo.Other<_>.Empty", "Demo.Other`1", 1, "Empty")
-            )
-            .is_empty()
+                &oracle_decl("Demo.Other<_>.Empty", &[("Other`1", 1)], "Empty", false)
+            ),
+            None
         );
         // A namespace is not an entity we resolved either.
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 res,
-                &oracle_decl("Demo<_>.Holder.Empty", "Demo`1", 1, "Holder")
-            )
-            .is_empty()
+                &oracle_decl(
+                    "Demo<_>.Holder.Empty",
+                    &[("Holder", 1), ("Extra", 1)],
+                    "Empty",
+                    false
+                )
+            ),
+            None
         );
     }
 
@@ -4422,11 +4431,11 @@ mod tests {
         let res = Resolution::Entity(handle);
         let ours = assembly_resolution_decl(&env, res).full_name;
         assert_eq!(ours, "Demo.Holder");
-        let ctor = oracle_decl("Demo.Holder", "Demo.Holder`1", 1, "Holder");
+        let ctor = oracle_decl("Demo.Holder", &[("Holder`1", 1)], "Holder", true);
         // The composed name is not the one FCS gave, and would not match.
         assert_eq!(
-            certified_expected(&env, res, &ctor),
-            vec!["Demo.Holder".to_string(), "Demo.Holder.Holder".to_string()]
+            certified_expected(&env, res, &ctor).as_deref(),
+            Some("Demo.Holder")
         );
         assert!(assembly_full_name_agrees_for(&env, res, &ours, &ctor));
         assert!(assembly_resolution_confirms_decl(&env, res, &ctor));
@@ -4458,12 +4467,18 @@ mod tests {
             assembly: "Demo".to_string(),
             full_name: "Demo.Outer`2.Inner".to_string(),
             structural: Some(StructuralName {
-                declaring: "Demo.Outer`2.Inner".to_string(),
-                arity: 2,
+                declaring: DeclaringEntity {
+                    namespace: vec!["Demo".to_string()],
+                    path: vec![("Outer`2".to_string(), 2), ("Inner".to_string(), 2)],
+                    is_constructor: true,
+                },
                 leaf: "Inner".to_string(),
             }),
         };
-        assert!(certified_expected(&env, res, &ctor).contains(&"Demo.Outer.Inner".to_string()));
+        assert_eq!(
+            certified_expected(&env, res, &ctor).as_deref(),
+            Some("Demo.Outer.Inner")
+        );
         assert!(assembly_full_name_agrees_for(&env, res, &ours, &ctor));
     }
 
@@ -4488,14 +4503,17 @@ mod tests {
             assembly: "Demo".to_string(),
             full_name: "Demo.SourceHolder<_>.Case".to_string(),
             structural: Some(StructuralName {
-                declaring: "Demo.ClrHolder".to_string(),
-                arity: 1,
+                declaring: DeclaringEntity {
+                    namespace: vec!["Demo".to_string()],
+                    path: vec![("ClrHolder".to_string(), 1)],
+                    is_constructor: false,
+                },
                 leaf: "Case".to_string(),
             }),
         };
         assert_eq!(
-            certified_expected(&env, res, &case),
-            vec!["Demo.SourceHolder.Case".to_string()]
+            certified_expected(&env, res, &case).as_deref(),
+            Some("Demo.SourceHolder.Case")
         );
         assert!(assembly_full_name_agrees_for(&env, res, &ours, &case));
     }
@@ -4526,27 +4544,28 @@ mod tests {
                 res,
                 &oracle_decl(
                     "Demo.Outer<_>.Inner<_>.Empty",
-                    "Demo.Outer`1.Inner`1",
-                    2,
-                    "Empty"
+                    &[("Outer`1", 1), ("Inner`1", 2)],
+                    "Empty",
+                    false
                 )
-            ),
-            vec!["Demo.Outer.Inner.Empty".to_string()]
+            )
+            .as_deref(),
+            Some("Demo.Outer.Inner.Empty")
         );
         // `Outer`2.Inner` has the same total and the same segments, and is a
         // different declaration.
-        assert!(
+        assert_eq!(
             certified_expected(
                 &env,
                 res,
                 &oracle_decl(
                     "Demo.Outer<_,_>.Inner.Empty",
-                    "Demo.Outer`2.Inner",
-                    2,
-                    "Empty"
+                    &[("Outer`2", 2), ("Inner", 2)],
+                    "Empty",
+                    false
                 )
-            )
-            .is_empty()
+            ),
+            None
         );
     }
 
@@ -4561,7 +4580,7 @@ mod tests {
             full_name: "Demo.Holder.Empty".to_string(),
             structural: None,
         };
-        assert!(certified_expected(&env, res, &bare).is_empty());
+        assert_eq!(certified_expected(&env, res, &bare), None);
         assert!(assembly_full_name_agrees_for(&env, res, &ours, &bare));
     }
 
@@ -4640,8 +4659,11 @@ mod tests {
                 assembly: "Demo".to_string(),
                 full_name: fcs_rendering(&theirs, instantiate),
                 structural: Some(StructuralName {
-                    declaring: format!("Demo.{}", theirs.name),
-                    arity: theirs.arity,
+                    declaring: DeclaringEntity {
+                        namespace: vec!["Demo".to_string()],
+                        path: vec![(theirs.name.to_string(), theirs.arity)],
+                        is_constructor: false,
+                    },
                     leaf: theirs.member.to_string(),
                 }),
             };

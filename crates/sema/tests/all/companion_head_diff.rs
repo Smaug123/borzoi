@@ -514,63 +514,71 @@ fn companion_head_choice_is_sound_against_fcs() {
 }
 
 /// The structural facts corpus-diff certifies an oracle declaration against:
-/// FCS names the entity a member is declared in, and how many type parameters
-/// that entity has, *without* rendering it.
+/// FCS names the entity a member is declared in as a *path* of compiled names
+/// with their generic-parameter counts, rather than rendering it.
 ///
-/// The rendered `FullName` cannot stand in for either — it prints the enclosing
-/// type through `NicePrint`, so its arguments carry commas that are not
-/// separators (`ImmutableArray<Probe.A,B>` is one argument, of the type
-/// ``A,B``) and `>`s that close nothing (`Holder<(int -> string)>`). Both were
-/// measured; the pin here is that the *structural* fields agree with what the
-/// corpus planted, which is the premise the other harness relies on.
+/// The rendered `FullName` cannot stand in for it — it prints the enclosing type
+/// through `NicePrint`, so its arguments carry commas that are not separators
+/// (`ImmutableArray<Probe.A,B>` is one argument, of the type ``A,B``) and `>`s
+/// that close nothing (`Holder<(int -> string)>`), all measured. Nor could a
+/// dotted structural *string*: `[<CompiledName "Clr.Holder">]` puts a dot inside
+/// one identifier.
+///
+/// What is asserted here is what the corpus **planted**, never what the oracle
+/// happened to report: the leaf of a cell whose tail sits on the type is
+/// declared in that type, at that type's arity. A regression that reported the
+/// wrong entity, or arity 0 for everything, has to fail this.
 #[test]
 fn the_oracle_names_a_declaring_entity_structurally() {
     let mut checked = 0usize;
     for plant in companion_corpus::corpus() {
+        // Only the cells whose leaf is on the *type* have a planted expectation
+        // that does not depend on the oracle: the module half's compiled name
+        // depends on whether fsc needed the `Module` suffix, which is the
+        // fixture's business rather than this assertion's.
+        if plant.tail != companion_corpus::Tail::Type || !plant.path_type_checks() {
+            continue;
+        }
         let src = plant.probe_source();
         let path = temp_fs_file("companion_declaring", &src);
         let json = invoke_fcs_dump_with_refs("uses", &path, &[ensure_companion_corpus_built()]);
         let _ = std::fs::remove_file(&path);
-        let uses = parse_fcs_uses(&json, &src);
         let (ps, pe) = plant.path_span(&src);
-        for u in uses {
-            if u.start != ps || u.end != pe || u.is_from_definition {
+        for u in parse_fcs_uses(&json, &src) {
+            if u.is_from_definition
+                || u.name != companion_corpus::TAIL
+                || u.start > ps
+                || pe > u.end
+            {
                 continue;
             }
-            let Some(declaring) = u.declaring_full_name.as_deref() else {
+            let Some(declaring) = u.declaring_path.as_deref() else {
                 continue;
             };
-            // The declaring entity is named, not drawn: no type arguments in it.
-            assert!(
-                !declaring.contains('<'),
-                "{}: structural declaring name is rendered: {declaring}",
-                plant.key()
-            );
-            // Its arity is the plant's when the leaf sits on the type; a leaf on
-            // the companion module is declared in a module, which is never
-            // generic.
-            let arity = u
-                .declaring_generic_arity
-                .unwrap_or_else(|| panic!("{}: declaring name without arity", plant.key()));
-            let expected = if declaring.ends_with("Module") || arity == 0 {
-                arity
-            } else {
-                plant.arity.count()
-            };
+            let (name, arity) = declaring.last().expect("a path has a last segment");
+            // ECMA-335 mangles the arity into the name; the projection strips it
+            // and keeps the count, which is the domain corpus-diff compares in.
+            let spelling = name.rsplit_once('`').map_or(name.as_str(), |(head, tail)| {
+                if tail.parse::<usize>().is_ok() {
+                    head
+                } else {
+                    name
+                }
+            });
             assert_eq!(
-                arity,
-                expected,
-                "{}: declaring {declaring} reports arity {arity}",
+                (spelling, *arity),
+                (plant.name.as_str(), plant.arity.count()),
+                "{}: the leaf is declared in {declaring:?}",
                 plant.key()
             );
             checked += 1;
         }
     }
-    // Non-vacuity: a corpus that stopped planting leaves, or an oracle that
-    // stopped reporting declaring entities, would satisfy the loop trivially.
+    // Non-vacuity: a corpus that stopped planting type-side leaves, or an oracle
+    // that stopped reporting declaring entities, would satisfy the loop.
     assert!(
         checked > 0,
-        "no use reported a declaring entity — corpus or oracle changed?"
+        "no type-side leaf reported a declaring entity — corpus or oracle changed?"
     );
 }
 
