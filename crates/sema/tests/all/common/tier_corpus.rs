@@ -9,15 +9,16 @@
 //! winner with no third party to confound it.
 //!
 //! **Pairs, and not larger subsets, because that was measured.** Extending
-//! [`corpus`] to unordered triples is a three-line change, and it was run:
-//! across the four families whose per-tier arity does not itself depend on the
-//! subset planted (every one but the two split families, where a triple is a
-//! different experiment from its pairs rather than a composition of them), FCS
-//! picked the pairwise champion in 160 of 160 three-way contests, in both
-//! reference orders. Its ladder is a total order on these scopes, so a triple
-//! is determined by its pairs and buys only cases. Should a scope ever be
-//! added whose ranking is *contextual*, that measurement is what stops being
-//! true, and the loop to re-run is the one right below.
+//! [`corpus`] to unordered triples is a three-line change, and it was run over
+//! the six families whose per-tier arity does not itself depend on the subset
+//! planted — `T`/`D`/`G`/`W`/`H`/`J`, i.e. every one but the four split
+//! families, where a triple is a different experiment from its pairs rather
+//! than a composition of them. FCS picked the pairwise champion in **240 of
+//! 240** three-way contests, in both reference orders. Its ladder is a total
+//! order on these scopes, so a triple is determined by its pairs and buys only
+//! cases. Should a scope ever be added whose ranking is *contextual*, that
+//! measurement is what stops being true; re-run it by extending the loop right
+//! below, and re-derive the count whenever [`FAMILIES`] changes.
 //!
 //! [`Form`] is the second, orthogonal dimension: a bare name and a *dotted
 //! head* reach a scope through different channels. An opened namespace
@@ -32,6 +33,17 @@
 //! about either half of that — whether the arity comparison happens at all,
 //! or which tier the fallback reaches — so each arity shape re-runs the whole
 //! tier matrix.
+//!
+//! [`Risk`] is the fourth. The tiers above are what the resolver can *see*; a
+//! shadow risk is what it cannot. `resolve_assembly_path_over` vetoes a reading
+//! when something at that namespace prefix might hide a same-named entity, and
+//! the veto ends the whole walk — so a risk's cost is decided by where the
+//! prefix carrying it sits, not by where the hidden entity actually enters
+//! scope. Nothing measures that without a risk planted at a namespace the walk
+//! visits as a *prefix*: [`Tier::ModAuto`] plants an assembly `[<AutoOpen>]`
+//! module, but at `Tier.ModAuto.Ops`, which is never a prefix. So each risk
+//! plant hides an entity behind one of those channels at a chosen tier and asks
+//! FCS which wins.
 //!
 //! Two assemblies, not one, because [`Tier::Root`] must be able to move: an
 //! assembly's root-namespace contents and its `[<assembly: AutoOpen>]` targets
@@ -125,8 +137,13 @@ pub enum Form {
 /// The generic-arity shape of a plant: what arity each declaring tier declares
 /// it at, and what arity the probe writes. The sweep's third dimension.
 ///
-/// Only meaningful for [`Form::Bare`] — a [`Form::DottedHead`] container is a
-/// namespace or a module, neither of which can be generic.
+/// Orthogonal to [`Form`], because the arity belongs to the **leaf**, not to
+/// the head: a [`Form::DottedHead`] container is a namespace or a module and so
+/// cannot be generic, but the [`MARKER`] type it holds can, and
+/// `assembly_type_path_core` keys the *final* segment on the written arity
+/// while every segment above it is looked up at arity 0. Probing the dotted
+/// channel only at arity 0 would leave that split — head-tier precedence versus
+/// final-segment arity — unmeasured (codex review).
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 pub enum Arity {
     /// Non-generic at every declaring tier, probed bare. Every tier holds the
@@ -167,6 +184,81 @@ impl Arity {
     }
 }
 
+/// A same-named entity hidden behind one of the coarse channels the tier walk
+/// vetoes on. The sweep's fourth dimension.
+///
+/// Crossed with [`Form`] this is a 2×2 of *distinct claims*, not a repetition:
+/// each channel is keyed on a name, and whether the thing wearing that name can
+/// actually bind the probe depends on the form.
+///
+/// |                | [`HiddenType`]                       | [`HiddenModule`]                      |
+/// |----------------|--------------------------------------|---------------------------------------|
+/// | [`Bare`]       | a real shadow                        | a module cannot bind a bare type      |
+/// | [`DottedHead`] | a type cannot own the dotted tail    | a real shadow                         |
+///
+/// The two "cannot bind" cells are where a name-keyed veto over-defers: the
+/// metadata records the name, FCS falls through to the visible plant, and
+/// nothing but this sweep says so.
+///
+/// [`HiddenType`]: Risk::HiddenType
+/// [`HiddenModule`]: Risk::HiddenModule
+/// [`Bare`]: Form::Bare
+/// [`DottedHead`]: Form::DottedHead
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+pub enum Risk {
+    /// Nothing hidden: the plant's own tiers are its only occupants.
+    None,
+    /// An assembly `[<AutoOpen>] module Hidden` declared *inside* the tier's
+    /// namespace, holding a **type** of the plant's name — the exact,
+    /// name-keyed channel `auto_open_modules_in_namespace_shadow_type_named`
+    /// reads.
+    HiddenType(Tier),
+    /// The same module, holding a **module** of the plant's name (which in turn
+    /// holds a [`MARKER`]), so it can own a dotted tail. The same channel: the
+    /// predicate counts public children by name and does not distinguish the
+    /// two shapes.
+    HiddenModule(Tier),
+    /// An **empty** project `[<AutoOpen>]` module in the probe's own enclosing
+    /// namespace. `unmodelled_type_shadow_at`'s project half is *name-blind*,
+    /// so what it costs is exactly a decline with nothing behind it; and being
+    /// single-segment-only, it should leave a [`Form::DottedHead`] plant alone.
+    ProjectAutoOpen,
+}
+
+impl Risk {
+    /// The tier whose namespace carries the risk. `None` when nothing is
+    /// hidden; [`Tier::Enclosing`] for the project channel, which can only sit
+    /// in the probe's own namespace.
+    pub fn tier(self) -> Option<Tier> {
+        match self {
+            Risk::None => None,
+            Risk::HiddenType(t) | Risk::HiddenModule(t) => Some(t),
+            Risk::ProjectAutoOpen => Some(Tier::Enclosing),
+        }
+    }
+
+    /// The suffix that names this risk inside a planted name.
+    fn tag(self) -> String {
+        match self {
+            Risk::None => String::new(),
+            Risk::HiddenType(t) => format!("Y{}", t.tag()),
+            Risk::HiddenModule(t) => format!("M{}", t.tag()),
+            Risk::ProjectAutoOpen => "P".to_string(),
+        }
+    }
+}
+
+/// The tiers a risk may be planted at: those whose namespace the walk visits as
+/// a *prefix*, which is the only place the channel under test can fire.
+/// [`Tier::ModAuto`]'s target is a module, so its namespace is never a prefix;
+/// and every [`Tier::Contested`] case already declines for a reason of its own,
+/// so hiding something there would buy 24 rows that say nothing about the veto.
+const RISK_TIERS: [Tier; 4] = [Tier::Explicit, Tier::Enclosing, Tier::NsAuto, Tier::Root];
+
+/// The `[<AutoOpen>]` module a risk hides its entity in — one per namespace,
+/// holding every hidden entity planted there.
+const HIDDEN: &str = "Hidden";
+
 /// The type every [`Form::DottedHead`] container holds — the probe's leaf, and
 /// the use both oracles are asked about.
 pub const MARKER: &str = "Marker";
@@ -174,14 +266,29 @@ pub const MARKER: &str = "Marker";
 /// Every `(form, arity)` family and the letter its plant names start with.
 /// Each plants the whole tier matrix independently, so a name never carries
 /// two shapes.
-const FAMILIES: [(Form, Arity, char); 6] = [
+const FAMILIES: [(Form, Arity, char); 10] = [
     (Form::Bare, Arity::Mono, 'T'),
     (Form::DottedHead, Arity::Mono, 'D'),
     (Form::Bare, Arity::Generic, 'G'),
     (Form::Bare, Arity::Fallback, 'W'),
     (Form::Bare, Arity::GenericFirst, 'F'),
     (Form::Bare, Arity::GenericRest, 'R'),
+    // The dotted channel at every arity shape the bare one runs: the arity is
+    // the leaf's, so the head's tier contest and the leaf's arity keying are
+    // exercised together.
+    (Form::DottedHead, Arity::Generic, 'H'),
+    (Form::DottedHead, Arity::Fallback, 'J'),
+    (Form::DottedHead, Arity::GenericFirst, 'K'),
+    (Form::DottedHead, Arity::GenericRest, 'L'),
 ];
+
+/// The two families the [`Risk`] dimension runs, and the letter their plant
+/// names start with. Both are [`Arity::Mono`] and their contenders are
+/// singletons: the tier-versus-tier contest is what [`FAMILIES`] measures, and
+/// `D`/`G`/`H` already established that a tier error is neither form- nor
+/// arity-specific — so a risk plant puts exactly one *visible* tier against one
+/// *hidden* entity, with nothing else in play.
+const RISK_FAMILIES: [(Form, char); 2] = [(Form::Bare, 'S'), (Form::DottedHead, 'V')];
 
 /// The `<AssemblyName>` of the contributor fixture.
 pub const CONTRIBUTOR_ASM: &str = "SemaTierFixture";
@@ -195,6 +302,7 @@ pub struct Plant {
     pub tiers: Vec<Tier>,
     pub form: Form,
     pub arity: Arity,
+    pub risk: Risk,
 }
 
 impl Plant {
@@ -242,6 +350,36 @@ impl Plant {
         (asm, full)
     }
 
+    /// The `(assembly, full name)` FCS reports when the plant's [`Risk`] wins —
+    /// `None` when nothing hidden *can* win, which is the claim the two
+    /// "cannot bind" cells of the [`Risk`] × [`Form`] square make: a module
+    /// cannot bind a bare type reference, a type cannot own a dotted tail, and
+    /// the project channel hides nothing of this name at all. So a `None` here
+    /// says the visible plant is the only thing FCS can bind, and any decline
+    /// against it is pure cost.
+    pub fn hidden_declaration(&self) -> Option<(&'static str, String)> {
+        let tier = match (self.risk, self.form) {
+            (Risk::HiddenType(t), Form::Bare) | (Risk::HiddenModule(t), Form::DottedHead) => t,
+            _ => return None,
+        };
+        let asm = if tier.in_decoy() {
+            DECOY_ASM
+        } else {
+            CONTRIBUTOR_ASM
+        };
+        let ns = tier.namespace();
+        let mut full = if ns.is_empty() {
+            format!("{HIDDEN}.{}", self.name)
+        } else {
+            format!("{ns}.{HIDDEN}.{}", self.name)
+        };
+        if self.form == Form::DottedHead {
+            full.push('.');
+            full.push_str(MARKER);
+        }
+        Some((asm, full))
+    }
+
     /// The type expression the probe writes.
     pub fn probe_expr(&self) -> String {
         let head = match self.form {
@@ -271,7 +409,9 @@ impl Plant {
 
 /// Every plant: for each [`FAMILIES`] entry, one per tier (a control — nothing
 /// contends, so both sides must simply find it) and one per unordered pair (the
-/// contest the sweep exists for). The split-arity families are pairs only.
+/// contest the sweep exists for); then, for each [`RISK_FAMILIES`] entry, one
+/// per (tier, [`Risk`]) — the visible-versus-hidden contest. The split-arity
+/// families are pairs only.
 pub fn corpus() -> Vec<Plant> {
     let mut out = Vec::new();
     for (form, arity, prefix) in FAMILIES {
@@ -282,6 +422,7 @@ pub fn corpus() -> Vec<Plant> {
                     tiers: vec![a],
                     form,
                     arity,
+                    risk: Risk::None,
                 });
             }
             for &b in &Tier::ALL[i + 1..] {
@@ -290,6 +431,24 @@ pub fn corpus() -> Vec<Plant> {
                     tiers: vec![a, b],
                     form,
                     arity,
+                    risk: Risk::None,
+                });
+            }
+        }
+    }
+    for (form, prefix) in RISK_FAMILIES {
+        for &tier in &Tier::ALL {
+            for risk in RISK_TIERS
+                .iter()
+                .flat_map(|&t| [Risk::HiddenType(t), Risk::HiddenModule(t)])
+                .chain(Some(Risk::ProjectAutoOpen))
+            {
+                out.push(Plant {
+                    name: format!("{prefix}{}{}", tier.tag(), risk.tag()),
+                    tiers: vec![tier],
+                    form,
+                    arity: Arity::Mono,
+                    risk,
                 });
             }
         }
@@ -329,6 +488,36 @@ fn bare_decls(plants: &[Plant], tier: Tier, indent: &str) -> String {
     out
 }
 
+/// The `[<AutoOpen>]` module holding every entity hidden at `tier`, to be
+/// emitted inside that tier's `namespace` block. Empty when no plant hides
+/// anything there — F# has no empty module.
+///
+/// The hidden entity's *shape* follows the [`Risk`] and not the plant's
+/// [`Form`], which is what makes the square's two "cannot bind" cells: a
+/// [`Risk::HiddenType`] plant reached as a dotted head finds a type where it
+/// needs a container, and a [`Risk::HiddenModule`] plant reached bare finds a
+/// module where it needs a type.
+fn hidden_auto_open_module(plants: &[Plant], tier: Tier) -> String {
+    let mut body = String::new();
+    for p in plants {
+        match p.risk {
+            Risk::HiddenType(t) if t == tier => body.push_str(&format!(
+                "    type {}() =\n        member _.Tier = \"hidden\"\n",
+                p.name
+            )),
+            Risk::HiddenModule(t) if t == tier => body.push_str(&format!(
+                "    module {} =\n        type {MARKER}() =\n            member _.Tier = \"hidden\"\n",
+                p.name
+            )),
+            _ => {}
+        }
+    }
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("\n[<AutoOpen>]\nmodule {HIDDEN} =\n{body}")
+}
+
 /// The [`Form::DottedHead`] containers for one tier, as **child namespaces**
 /// of `parent`. Written as sibling `namespace` declarations because that is
 /// the channel under test: a child namespace is reachable as a dotted head
@@ -342,7 +531,8 @@ fn child_namespace_containers(plants: &[Plant], tier: Tier, parent: &str) -> Str
             format!("{parent}.{}", p.name)
         };
         out.push_str(&format!(
-            "\nnamespace {ns}\n\ntype {MARKER}() =\n    member _.Tier = \"{tier:?}\"\n"
+            "\nnamespace {ns}\n\ntype {MARKER}{}() =\n    member _.Tier = \"{tier:?}\"\n",
+            generic_params(p.declared_arity(tier)),
         ));
     }
     out
@@ -360,6 +550,9 @@ pub fn contributor_source(plants: &[Plant]) -> String {
     for tier in [Tier::Explicit, Tier::Enclosing, Tier::NsAuto] {
         out.push_str(&format!("\nnamespace {}\n\n", tier.namespace()));
         out.push_str(&bare_decls(plants, tier, ""));
+        // Before the child namespaces: each of those opens a `namespace` block
+        // of its own, which ends this one.
+        out.push_str(&hidden_auto_open_module(plants, tier));
         out.push_str(&child_namespace_containers(plants, tier, tier.namespace()));
     }
     // The module-shaped target: a namespace holding the auto-opened module.
@@ -370,8 +563,9 @@ pub fn contributor_source(plants: &[Plant]) -> String {
     out.push_str(&bare_decls(plants, Tier::ModAuto, "    "));
     for p in plants_at(plants, Tier::ModAuto, Form::DottedHead) {
         out.push_str(&format!(
-            "\n    module {} =\n        type {MARKER}() =\n            member _.Tier = \"ModAuto\"\n",
-            p.name
+            "\n    module {} =\n        type {MARKER}{}() =\n            member _.Tier = \"ModAuto\"\n",
+            p.name,
+            generic_params(p.declared_arity(Tier::ModAuto)),
         ));
     }
     out.push_str("\nnamespace Tier.Contested\n\n");
@@ -400,6 +594,7 @@ pub fn decoy_source(plants: &[Plant]) -> String {
          \nnamespace global\n\n",
     );
     out.push_str(&bare_decls(plants, Tier::Root, ""));
+    out.push_str(&hidden_auto_open_module(plants, Tier::Root));
     out.push_str(&child_namespace_containers(plants, Tier::Root, ""));
     // Declares the contested namespace and nothing the contributor plants:
     // only the contributor's content enters scope through the auto-open, so a
@@ -412,13 +607,27 @@ pub fn decoy_source(plants: &[Plant]) -> String {
 }
 
 /// The probe for one plant. Deliberately **uniform** across the corpus — the
-/// enclosing namespace and the explicit `open` are always present — so the
-/// only things that vary between cases are which tiers declare the name, which
-/// form reaches it, and which assembly is referenced first. A per-case probe
-/// shape would let a template difference masquerade as a tier difference.
+/// enclosing namespace and the explicit `open` are always present — so the only
+/// things that vary between cases are which tiers declare the name, which form
+/// reaches it, which assembly is referenced first, and the plant's [`Risk`]. A
+/// per-case probe shape would let a template difference masquerade as a tier
+/// difference.
+///
+/// [`Risk::ProjectAutoOpen`] is the one risk that has to live here rather than
+/// in a fixture assembly, because it is a *project* declaration. It holds a
+/// type of no plant's name: the channel it exercises
+/// (`unmodelled_type_shadow_at`) is name-blind, so what it must measure is the
+/// cost of declining with nothing hidden.
 pub fn probe_source(plant: &Plant) -> String {
+    let project_risk = if plant.risk == Risk::ProjectAutoOpen {
+        format!(
+            "[<AutoOpen>]\nmodule {HIDDEN} =\n    type ProjectHidden() =\n        member _.Tier = \"project\"\n\n"
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "namespace Tier.Enclosing\n\nopen Tier.Explicit\n\nmodule Probe =\n    type X = {}\n",
+        "namespace Tier.Enclosing\n\nopen Tier.Explicit\n\n{project_risk}module Probe =\n    type X = {}\n",
         plant.probe_expr()
     )
 }

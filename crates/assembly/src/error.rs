@@ -22,6 +22,21 @@ pub enum ImportError {
     /// updated for (new stream name, unfamiliar table-id, etc).
     UnsupportedEcmaLayout { detail: String },
 
+    /// The file **is not a managed assembly**: its PE optional header declares
+    /// no CLI data directory, so there is no ECMA-335 metadata to read (the
+    /// reader's `NoCliHeader`, whose one meaning is pinned by an independent
+    /// oracle — see `reader::tests::no_cli_header_means_the_image_declares_none`).
+    ///
+    /// Separate from [`Self::UnsupportedEcmaLayout`] because the two carry
+    /// *opposite* information about the input, and a caller reasoning about
+    /// what a refusal costs must be able to tell them apart. An unsupported
+    /// layout says an assembly is there and its identity and types are now
+    /// **unknown**; this says there is no assembly, hence no identity to
+    /// collide with a referenced CCU and no type to shadow one. Every ECMA-335
+    /// reader refuses such a file, `fsc` included, so declining it loses
+    /// nothing.
+    NotAManagedAssembly,
+
     /// The `nested`/`enclosing` type linkage formed a cycle, or nested
     /// pathologically deep (past the recursion bound). Unlike an unsupported
     /// *feature* — which is dropped and recorded per-type so the rest of the
@@ -180,6 +195,9 @@ impl fmt::Display for ImportError {
             }
             ImportError::UnsupportedEcmaLayout { detail } => {
                 write!(f, "unsupported ECMA-335 layout: {detail}")
+            }
+            ImportError::NotAManagedAssembly => {
+                write!(f, "not a managed assembly: no CLI data directory")
             }
             ImportError::CyclicTypeNesting { detail } => {
                 write!(f, "cyclic or pathologically deep type nesting: {detail}")

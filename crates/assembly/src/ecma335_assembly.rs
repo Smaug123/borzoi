@@ -22,8 +22,8 @@ use crate::model::{
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
     AssemblyRefId, CallConv, Constant, CustomMod, DeclSemantics, DecodedAttribute, EnumWidths,
-    Event as RawEvent, Field as RawField, FixedArg, GenericParam, Image, IntegralParam,
-    IntegralWidth, MemberAccess, Method, MethodSig, ModifiedType, NamedKind, Param,
+    Error as ReaderError, Event as RawEvent, Field as RawField, FixedArg, GenericParam, Image,
+    IntegralParam, IntegralWidth, MemberAccess, Method, MethodSig, ModifiedType, NamedKind, Param,
     Primitive as SigPrimitive, Property as RawProperty, RawAttribute, RefScope, RetType, SigError,
     TypeDef, TypeDefId, TypeName, TypeRefId, TypeScope, TypeSig, Variance as RawVariance, parse,
 };
@@ -69,8 +69,16 @@ pub struct Ecma335Assembly {
 impl Ecma335Assembly {
     /// Parse a .NET assembly from raw bytes and project its manifest identity.
     pub fn parse(bytes: &[u8]) -> Result<Self, ImportError> {
-        let image = parse(bytes).map_err(|e| ImportError::UnsupportedEcmaLayout {
-            detail: format!("assembly reader: {e}"),
+        // `NoCliHeader` is the reader's one *positive determination* about the
+        // input — the PE header declares no CLI directory, so these bytes are
+        // not a managed assembly at all — and it is projected as such. Every
+        // other refusal means "there is metadata here we could not read", which
+        // is the opposite claim; see [`ImportError::NotAManagedAssembly`].
+        let image = parse(bytes).map_err(|e| match e {
+            ReaderError::NoCliHeader => ImportError::NotAManagedAssembly,
+            e => ImportError::UnsupportedEcmaLayout {
+                detail: format!("assembly reader: {e}"),
+            },
         })?;
         let identity = match &image.assembly {
             Some(asm) => project_identity(asm),
