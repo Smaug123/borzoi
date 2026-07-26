@@ -329,6 +329,16 @@ module AutoSub =
     module Inner =
         let mAutoInner () = 304
 
+        // The open-SHORTENING channel with a *module* prefix. `open
+        // Demo.MOpen.AutoSub` auto-opens `Inner`, which enters `InnerShorten`
+        // in FCS's module environment under its short name, so the next
+        // `open InnerShorten` reaches `…AutoSub.Inner.InnerShorten`
+        // (`AddModuleOrNamespaceRefsToNameEnv`). The colliding value makes
+        // losing that second open a WRONG target rather than a miss.
+        let mShortenTarget () = 340
+        module InnerShorten =
+            let mShortenTarget () = 341
+
 module AutoTypeMod =
     // The `[<AutoOpen>]` TYPE's statics are unenumerable, but SAME-surface:
     // the module's vals fold AFTER the tycon tier, so `mPoisoned` still

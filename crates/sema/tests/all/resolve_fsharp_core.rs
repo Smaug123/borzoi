@@ -735,6 +735,37 @@ fn plain_auto_open_module_statics_still_resolve() {
         "bare `id` is a plain auto-open module val and must still resolve"
     );
 }
+#[test]
+fn open_checked_binds_the_checked_conversions() {
+    // `Checked` is a plain nested module of the `[<AutoOpen>]` module
+    // `Microsoft.FSharp.Core.Operators`, so the implicit `open` of that
+    // namespace puts the bare name `Checked` in FCS's module environment and
+    // `open Checked` reaches `Operators.Checked` — after which the conversions
+    // are the OVERFLOW-CHECKING ones. `fcs-dump uses` on this exact source:
+    // `int64` → `Microsoft.FSharp.Core.Operators.Checked.int64`.
+    //
+    // The failure mode this pins is a *wrong target*, not a missed one: an
+    // `open` that silently resolves to nothing leaves the auto-open surface's
+    // unchecked `Operators.int64` standing, which is a different function.
+    // (Four files in `WoofWare.PawPrint` open it exactly like this.)
+    let env = crate::common::full_bcl_env();
+    let src = "module M\nopen Checked\nlet f (x : float) = int64 x\nlet g (x : float) = byte x\n";
+    let rf = resolve(src, env);
+    for (name, want) in [("int64", "ToInt64"), ("byte", "ToByte")] {
+        match rf.resolution_at(at(src, name)) {
+            Some(Resolution::Member { parent, idx }) => {
+                assert_eq!(
+                    env.entity_full_name(parent),
+                    "Microsoft.FSharp.Core.Operators.Checked",
+                    "`open Checked` must bind {name} in the checked module"
+                );
+                assert_eq!(il_name(env.member_at(parent, idx)), want);
+            }
+            other => panic!("expected the checked {name} member, got {other:?}"),
+        }
+    }
+}
+
 /// The morally-load-bearing sweep: the F# primitive aliases' semantics come
 /// from FSharp.Core's own signature pickle — a marker per abbreviation, its
 /// decoded target chased through the abbreviation chain and, for BCL

@@ -23,6 +23,7 @@ mod infer_static_call_diff;
 mod manifest_autoopen_surface_diff;
 mod module_open_matrix;
 mod namespace_fold_matrix;
+mod open_shortening_matrix;
 mod overload_corpus_diff;
 mod overloads_oracle;
 mod project_half_matrix;

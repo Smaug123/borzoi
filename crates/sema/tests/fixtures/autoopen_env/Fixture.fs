@@ -132,6 +132,12 @@ module Extra =
         module Deepest =
             let orderMarker () = 1
 
+            // The open-shortening chain is transitive too: `open Demo.Auto`
+            // auto-opens Extra → DeepFirst → Deepest, so `open DeepShorten`
+            // reaches this two-levels-down plain module.
+            module DeepShorten =
+                let deepShortenValue () = 23
+
     [<AutoOpen>]
     module DeepSecond =
         let orderMarker () = 2
@@ -141,11 +147,43 @@ module Extra =
     module ChainedClosed =
         let chainedClosedValue () = 6
 
+        // Negative control for the SHORTENING closure: the recursion runs
+        // through `[<AutoOpen>]` modules only, so a plain module nested in a
+        // plain module is not reachable by its short name — `open Demo.Auto;
+        // open ClosedDeeper` is FS0039.
+        module ClosedDeeper =
+            let closedDeeperValue () = 24
+
     // Negative control: an *internal* nested auto-open module is not
     // accessible cross-assembly, so it must not contribute either.
     [<AutoOpen>]
     module internal ChainedInternal =
         let chainedInternalValue () = 7
+
+        // …and neither is its nested module reachable as a shortening prefix.
+        module InternalDeeper =
+            let internalDeeperValue () = 25
+
+    // The open-shortening channel with an EXPLICIT namespace prefix: after
+    // `open Demo.Auto`, `open ExtraShorten` reaches
+    // `Demo.Auto.Extra.ExtraShorten`. The value collides with `Extra`'s own,
+    // so a missed shortening is a wrong target.
+    let extraShortenTarget () = 26
+    module ExtraShorten =
+        let extraShortenTarget () = 27
+
+    // PRECEDENCE control. `Demo.Auto` declares a direct `ShortenContest`
+    // module too (below). FCS adds the opened namespace's own submodules
+    // first and *then* recurses into its `[<AutoOpen>]` modules, and the
+    // recursion's additions are layered on top — so `open Demo.Auto; open
+    // ShortenContest` binds THIS one, not the direct sibling.
+    module ShortenContest =
+        let contestValue () = 28
+
+// The direct half of the shortening-precedence contest: a `Demo.Auto`
+// submodule sharing its name with `Extra.ShortenContest` above.
+module ShortenContest =
+    let contestValue () = 29
 
 // A direct type colliding with `Extra.SameTierName` above, at the exact same
 // `Demo.Auto` tier — the same-tier collision codex round 6 flagged.
