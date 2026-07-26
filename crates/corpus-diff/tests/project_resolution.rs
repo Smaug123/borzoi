@@ -5,18 +5,20 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use borzoi::position::position_to_offset;
-use borzoi::semantic::ProjectParses;
+use borzoi::semantic::{ProjectParses, SemanticState};
+use borzoi::workspace::Workspace;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
     Version,
 };
 use borzoi_corpus_diff::{
-    CorpusSummary, DeclSite, FileUses, LoadLimits, LoadOptions, LoadSkip, LoadedProject,
-    ProjectAssetsStatus, ProjectUse, SkippedUses, UseDecl, check_project_corpus_run,
-    compare_project_uses, corpus_runner_config_from_env, explain_token, invoke_fcs_uses_project,
-    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
-    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
-    render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
+    CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses, LoadLimits,
+    LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses, UseDecl,
+    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
+    fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project, load_lsp_project_with_limits,
+    load_lsp_project_with_options, parse_project_uses, project_candidates_from_env,
+    project_corpus_run_options_from_env, render_project_corpus_run_report,
+    run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
@@ -331,6 +333,111 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
         (comparison.uses_considered, comparison.matches),
         (1, 1),
         "the sig-exposed val must match the `.fsi` declaration, not defer"
+    );
+}
+
+/// A project whose sources use a referenced **project**'s types can only be
+/// type-checked by an oracle that was handed that project's output assembly.
+/// Our own side gets it — the LSP's env fold locates each F#
+/// `<ProjectReference>`'s built DLL — so the oracle must get the *same* set, or
+/// every use of a referenced type is an FS0039 for FCS and the whole project is
+/// discarded as "N files had FCS error diagnostics" (which is how
+/// `WoofWare.PawPrint`'s main library, 113 files behind one project reference,
+/// stayed unmeasured).
+///
+/// The invariant is equality, not "contains the ref DLL": the oracle and the env
+/// must resolve against one reference set. The loader takes the refs from the
+/// env's own cache entry (`env_reference_dlls_for_project`), so this compares
+/// that stored list against an *independently* re-resolved one
+/// ([`SemanticState::reference_dlls_for_project`]) — which also pins that the two
+/// accessors agree where nothing has degraded. The containment assertion is there
+/// so the equality cannot pass vacuously on two empty lists.
+#[test]
+fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lib = tmp.path().join("Lib").join("Lib.fsproj");
+    write(
+        &lib,
+        "<Project>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  \
+         </PropertyGroup>\n</Project>\n",
+    );
+    // The producer's *built* output — the only thing that makes the reference
+    // resolvable for either side. Content is irrelevant here: this test observes
+    // the composed path list, not a parsed assembly.
+    write(
+        &tmp.path()
+            .join("Lib")
+            .join("bin")
+            .join("Debug")
+            .join("net8.0")
+            .join("Lib.dll"),
+        "",
+    );
+    let app = tmp.path().join("App").join("App.fsproj");
+    write(
+        &app,
+        r#"<Project>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lib\Lib.fsproj" />
+  </ItemGroup>
+</Project>
+"#,
+    );
+    write(
+        &tmp.path().join("App").join("A.fs"),
+        "module A\nlet x = 1\n",
+    );
+    // A restored project: the env fold declines outright without an assets file,
+    // so the reference set would be empty for reasons unrelated to the claim.
+    write(
+        &tmp.path()
+            .join("App")
+            .join("obj")
+            .join("project.assets.json"),
+        &serde_json::to_string_pretty(&serde_json::json!({
+            "version": 3,
+            "targets": {
+                "net8.0": { "Lib/1.0.0": { "type": "project", "framework": "net8.0" } }
+            },
+            "libraries": {
+                "Lib/1.0.0": {
+                    "type": "project",
+                    "msbuildProject": "../../Lib/Lib.fsproj",
+                    "path": "../../Lib/Lib.fsproj"
+                }
+            },
+            "packageFolders": { tmp.path().join("packages").to_str().expect("utf-8 tmp"): {} },
+            "project": { "frameworks": { "net8.0": {} } },
+        }))
+        .expect("assets json"),
+    );
+
+    let loaded = load_lsp_project(&app).expect("project should load");
+    assert!(
+        loaded
+            .fcs_extra_refs
+            .iter()
+            .any(|p| p.ends_with("Lib/bin/Debug/net8.0/Lib.dll")),
+        "the oracle must see the project reference's built output; got {:?} (assets {:?})",
+        loaded.fcs_extra_refs,
+        loaded.project_assets
+    );
+
+    let mut workspace = Workspace::new();
+    let mut semantic = SemanticState::new();
+    let dotnet_root = workspace.dotnet_root_for_project(&app);
+    let tfm = workspace.served_tfm_for_project(&app);
+    let env_refs =
+        semantic.reference_dlls_for_project(&app, dotnet_root.as_deref(), &tfm, &workspace);
+    assert_eq!(
+        loaded.fcs_extra_refs, env_refs,
+        "the oracle's reference set must be the env's, not a second composition"
     );
 }
 
@@ -840,6 +947,86 @@ fn comparison_reports_reverse_only_project_resolution() {
     );
 }
 
+/// An oracle-side failure must say what the oracle *said*. A bare count ("88
+/// files had FCS error diagnostics") names neither a cause nor a next step —
+/// diagnosing the one that hid `WoofWare.PawPrint`'s main library took a
+/// bespoke probe, when the very first error ("The type 'DumpedAssembly' is not
+/// defined") named the missing project reference outright.
+#[test]
+fn an_oracle_error_skip_quotes_the_diagnostics() {
+    let reason = fcs_error_skip_reason(&[
+        FcsErrorFile {
+            path: PathBuf::from("/proj/Corelib.fs"),
+            errors: vec![
+                fcs_error(39, "The type 'DumpedAssembly' is not defined.", 10, 19),
+                fcs_error(39, "The type 'TypeInfo' is not defined.", 13, 10),
+            ],
+        },
+        FcsErrorFile {
+            path: PathBuf::from("/proj/CliType.fs"),
+            errors: vec![fcs_error(
+                72,
+                "Lookup on object of indeterminate type",
+                4,
+                2,
+            )],
+        },
+    ]);
+    assert!(
+        reason.starts_with("2 files had FCS error diagnostics (3 errors): "),
+        "the counts lead: {reason}"
+    );
+    assert!(
+        reason.contains("Corelib.fs:10:19 FS0039 The type 'DumpedAssembly' is not defined."),
+        "the first error is quoted with its site: {reason}"
+    );
+    assert!(
+        reason.contains("CliType.fs:4:2 FS0072"),
+        "a later file's error is quoted too, so one noisy file cannot crowd out \
+         the rest: {reason}"
+    );
+}
+
+/// Only the leading diagnostics are quoted — an 8473-error project must not
+/// paste 8473 messages into a one-line skip reason — and the tail is *counted*
+/// rather than dropped silently.
+#[test]
+fn an_oracle_error_skip_bounds_what_it_quotes() {
+    let files: Vec<FcsErrorFile> = (0..20)
+        .map(|i| FcsErrorFile {
+            path: PathBuf::from(format!("/proj/F{i}.fs")),
+            errors: vec![fcs_error(39, &format!("undefined thing {i}"), 1, 1)],
+        })
+        .collect();
+    let reason = fcs_error_skip_reason(&files);
+    assert!(
+        reason.starts_with("20 files had FCS error diagnostics (20 errors): "),
+        "{reason}"
+    );
+    let quoted = reason.matches(" FS0039 ").count();
+    assert!(
+        (1..=5).contains(&quoted),
+        "expected a bounded quote, got {quoted} in {reason}"
+    );
+    assert!(
+        reason.ends_with(&format!("(+{} more)", 20 - quoted)),
+        "the unquoted tail must be counted: {reason}"
+    );
+}
+
+fn fcs_error(number: i32, message: &str, line: u32, col: u32) -> FcsDiagnostic {
+    FcsDiagnostic {
+        severity: "Error".to_string(),
+        message: message.to_string(),
+        error_number: number,
+        range: FcsRange {
+            file: String::new(),
+            start: FcsPos { line, col },
+            end: FcsPos { line, col },
+        },
+    }
+}
+
 #[test]
 #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
 fn tiny_project_matches_fcs() {
@@ -855,7 +1042,7 @@ fn tiny_project_matches_fcs() {
         .collect();
     let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
     let comparison = compare_project_uses(&loaded, &fcs);
-    assert_eq!(comparison.fcs_error_files, Vec::<PathBuf>::new());
+    assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
     assert_eq!(comparison.reverse_divergences, Vec::new());

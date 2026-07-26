@@ -111,8 +111,20 @@ Optional reporting and oracle settings:
   runner builds `tools/fcs-dump` and invokes the generated DLL.
 
 Restore real corpora before running when package or framework references matter.
-The runner reads `obj/project.assets.json` to supply FCS with reference DLLs and
-records whether assets were missing or resolved.
+The runner records whether `obj/project.assets.json` was missing or resolved.
+
+**Build the corpus, not just restore it, when a project has
+`<ProjectReference>`s.** The oracle is handed exactly the reference set our own
+`AssemblyEnv` is built from — `SemanticState::reference_dlls_for_project`: the
+assets file's package and framework DLLs, each F# project reference's *built*
+output DLL (`bin/<config>/<tfm>/<TargetName>.dll`), and the C# sidecar's
+metadata DLLs. An unbuilt project reference is therefore absent from *both*
+sides: we under-resolve every use of the referenced project's types, and FCS
+answers FS0039 to each, so the project is skipped rather than compared.
+A `dotnet restore` alone cannot produce those outputs, which is why the CI
+measurement job (`.github/workflows/stats.yml`, restore-only) can only run
+pinned projects that have no project references — admitting one that does needs
+a build step there first.
 
 ## What The Runner Compares
 
@@ -120,7 +132,9 @@ For each visited project, the runner:
 
 1. Evaluates the `.fsproj` through the LSP-facing MSBuild path.
 2. Parses and resolves the compile files through `SemanticState`.
-3. Reads project assets to provide FCS with extra references where possible.
+3. Hands FCS the same reference DLLs the semantic layer's `AssemblyEnv` was
+   built from (see the reference-set note above), so neither side can resolve
+   against an assembly the other cannot see.
 4. Invokes `fcs-dump uses-project`.
 5. Parses FCS ranges back to byte offsets using full path identity.
 6. Compares every comparable FCS project declaration and assembly declaration
@@ -217,8 +231,17 @@ include:
   captured import/SDK/item/condition diagnostics that made them untrustworthy;
 - projects over `BORZOI_PROJECT_MAX_FILES`;
 - missing semantic project data;
+- an **uncacheable reference set** — a transient C# sidecar transport failure
+  means the LSP caches nothing, so the oracle's references and the env the fold
+  resolves against would come from two separate resolutions that may differ;
+  comparing across them is evidence of nothing either way;
 - FCS invocation or JSON parse failures;
-- FCS error diagnostics in one or more files.
+- FCS error diagnostics in one or more files. The reason quotes the leading
+  errors with their sites — one per file before any file's second, so the
+  diagnostic that names the cause is not crowded out by a noisier file — and
+  counts the rest. A bare count of erroring files names no cause: the missing
+  project reference above presented as 8473 errors across 113 files, whose
+  *first* line said "The type 'DumpedAssembly' is not defined".
 
 Corpus discovery skips symlinks and descends around `.git`, `target`,
 `artifacts`, `bin`, and `obj` directories. In non-exhaustive mode, discovery
