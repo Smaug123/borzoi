@@ -7,17 +7,20 @@
 //! list — the type slice of the eventual `Image`.
 //!
 //! It is total over structurally-valid metadata: it fails only on a structural
-//! defect (a table index or heap offset out of range, an unsupported `TypeRef`
-//! scope, a `CompilerControlled` member). Per-item signature failures in
-//! `extends`/`implements`/constraints/members are stored as
-//! `Result<_, SigError>`, so one unreadable base type or member never aborts the
-//! whole assembly.
+//! defect (a table index or heap offset out of range, a `CompilerControlled`
+//! member). Per-item failures are stored on the item instead — signature
+//! failures in `extends`/`implements`/constraints/members as
+//! `Result<_, SigError>`, an unmodellable `TypeRef` resolution scope as
+//! `Result<_, UnsupportedScope>` — so one unreadable base type, member, or
+//! reference row never aborts the whole assembly.
 
 use super::Error;
 use super::ids::{AssemblyRefId, MethodId, TypeDefId, TypeRefId};
 use super::members;
 use super::metadata::MetadataFile;
-use super::model::{Accessibility, MemberRef, RawAttribute, RefScope, TypeDef, TypeName, TypeRef};
+use super::model::{
+    Accessibility, MemberRef, RawAttribute, RefScope, TypeDef, TypeName, TypeRef, UnsupportedScope,
+};
 use super::signature::{
     ImageTables, ModifiedType, SigError, TypeScope, TypeSig, decode_type, resolve_token,
 };
@@ -159,8 +162,9 @@ pub(crate) fn read_types(md: &MetadataFile) -> Result<Types, Error> {
     })
 }
 
-/// Build the `TypeRef` arena, refusing any `TypeRef` whose resolution scope is
-/// outside the supported subset (§ refuse-loudly summary).
+/// Build the `TypeRef` arena, recording on each row whether its resolution
+/// scope is one this reader models (§ refuse-loudly summary). A scope outside
+/// the subset is stored, not propagated — see [`UnsupportedScope`].
 fn read_type_refs(md: &MetadataFile, tables: &Tables) -> Result<Vec<TypeRef>, Error> {
     let n = tables.row_count(table::TYPE_REF);
     let mut refs = Vec::with_capacity(n as usize);
@@ -177,28 +181,41 @@ fn read_type_refs(md: &MetadataFile, tables: &Tables) -> Result<Vec<TypeRef>, Er
     Ok(refs)
 }
 
-fn resolve_ref_scope(tables: &Tables, coded: u32) -> Result<RefScope, Error> {
-    match tables.decode_coded(Coded::ResolutionScope, coded)? {
-        Some(tok) if tok.table == table::ASSEMBLY_REF => {
-            let id = checked_index(tok.rid, tables.row_count(table::ASSEMBLY_REF))?;
-            Ok(RefScope::AssemblyRef(AssemblyRefId(id)))
-        }
-        Some(tok) if tok.table == table::TYPE_REF => {
-            let id = checked_index(tok.rid, tables.row_count(table::TYPE_REF))?;
-            Ok(RefScope::Nested(TypeRefId(id)))
-        }
+/// Decode one row's `ResolutionScope`. The two nested results are two different
+/// failures: the outer [`Error`] is structural corruption (a coded index naming
+/// a row outside its table) and aborts the parse; the inner
+/// [`UnsupportedScope`] is well-formed metadata this reader declines to model,
+/// and rides along on the row so only the types that walk out through it are
+/// lost.
+pub(super) fn resolve_ref_scope(
+    tables: &Tables,
+    coded: u32,
+) -> Result<Result<RefScope, UnsupportedScope>, Error> {
+    let Some(tok) = tables.decode_coded(Coded::ResolutionScope, coded)? else {
+        return Ok(Err(UnsupportedScope::Nil));
+    };
+    // One bounds check, before the tag is looked at, so no arm can record a
+    // structurally corrupt row as merely unmodelled — including an arm added
+    // later for a scope this reader still does not represent. `decode_coded`
+    // rejects only RID 0; the row-count bound is the caller's, and which tag a
+    // row carries has no bearing on whether its RID names a row.
+    let idx = checked_index(tok.rid, tables.row_count(tok.table))?;
+    Ok(match tok.table {
+        table::ASSEMBLY_REF => Ok(RefScope::AssemblyRef(AssemblyRefId(idx))),
+        table::TYPE_REF => Ok(RefScope::Nested(TypeRefId(idx))),
         // A module-self scope aliases a type defined in this image; F# emits
         // these for a record/union's own `IComparable<T>`/`IEquatable<T>` args.
-        // The RID must still name a real `Module` row (the table holds exactly
-        // one), validated like the sibling arms rather than silently discarded.
-        Some(tok) if tok.table == table::MODULE => {
-            checked_index(tok.rid, tables.row_count(table::MODULE))?;
-            Ok(RefScope::Module)
+        // It carries no handle — the table holds exactly one row — but its RID
+        // is validated above all the same.
+        table::MODULE => Ok(RefScope::Module),
+        _ => {
+            // `Coded::ResolutionScope`'s tag list is exactly the four tables —
+            // `Module`, `ModuleRef`, `AssemblyRef`, `TypeRef` — and the three
+            // above are handled, so this row is a `ModuleRef`.
+            debug_assert_eq!(tok.table, table::MODULE_REF, "ResolutionScope tag list");
+            Err(UnsupportedScope::ModuleRef)
         }
-        // ModuleRef (multi-module assemblies) and a null scope (ExportedType
-        // lookup) are outside the supported subset.
-        _ => Err(Error::UnsupportedTypeRefScope),
-    }
+    })
 }
 
 /// The `MethodList` RID (1-based) starting each `TypeDef`'s run of methods, in

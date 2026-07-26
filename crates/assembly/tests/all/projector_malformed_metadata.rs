@@ -280,11 +280,80 @@ fn compiler_controlled_method_is_dropped_and_recorded() {
 fn external_module_typeref_scope_fails_loud() {
     // A base TypeRef scoped to a sibling ModuleRef (multi-module assembly) —
     // the `ResolutionScope::ExternalModule` arm no single-file compiler emits.
-    // A `ModuleRef`-scoped `TypeRef` is a resolution scope the reader refuses
-    // at parse (it can't name the owning assembly for one).
+    // A `ModuleRef`-scoped `TypeRef` is a resolution scope the reader cannot
+    // name an owning assembly for, so the type that extends it is refused.
     expect_unsupported_layout(
         "external_module_typeref",
         &["unsupported TypeRef resolution scope"],
+    );
+    // The refusal is *localized*: only `User`, whose base names the row, is
+    // lost. A whole-image refusal here is what costs a real assembly every one
+    // of its types over a single unrepresentable row.
+    assert_bystander_survives_the_dropped_user("external_module_typeref");
+}
+
+#[test]
+fn unreferenced_nil_scope_typeref_costs_nothing() {
+    // A nil-scope `TypeRef` (ECMA-335 II.22.38: resolve through `ExportedType`)
+    // that no projected type dereferences, as Roslyn's reference-assembly
+    // generator leaves behind for a type it stripped — the shipped
+    // `Microsoft.Build*` ref assemblies each carry exactly one, over an *empty*
+    // `ExportedType` table, so there is nothing to resolve it to. Since no type
+    // names the row, refusing it costs nothing and the assembly projects whole.
+    assert_projects_cleanly("nil_scope_typeref_unreferenced");
+
+    let bytes = common::emit_metadata_fixture("nil_scope_typeref_unreferenced");
+    let view = Ecma335Assembly::parse(&bytes).expect("an unreferenced nil-scope row parses");
+    let (entities, skips) = view
+        .enumerate_type_defs_with_skips()
+        .expect("enumeration succeeds");
+    assert!(
+        skips.dropped_types.is_empty(),
+        "no type dereferences the row, so nothing drops: {:?}",
+        skips.dropped_types
+    );
+    assert!(
+        entities.iter().any(|e| e.name == "User"),
+        "the ordinary public class projects: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn nil_scope_typeref_base_drops_only_its_own_type() {
+    // The same nil scope, but now a class's `extends` names it. That class
+    // cannot be projected; the loss must stop at it.
+    expect_unsupported_layout(
+        "nil_scope_typeref_base",
+        &["unsupported TypeRef resolution scope"],
+    );
+    assert_bystander_survives_the_dropped_user("nil_scope_typeref_base");
+}
+
+/// Assert `shape` — whose `User` extends an unrepresentable `TypeRef` — loses
+/// exactly `User`, recorded by name, while the clean sibling `Bystander`
+/// projects. The whole point of storing the scope failure per row: an
+/// unrepresentable scope costs the types that name it, not the assembly.
+fn assert_bystander_survives_the_dropped_user(shape: &str) {
+    let bytes = common::emit_metadata_fixture(shape);
+    let view = Ecma335Assembly::parse(&bytes)
+        .expect("one unrepresentable TypeRef scope must not sink the parse");
+    let (entities, skips) = view
+        .enumerate_type_defs_with_skips()
+        .expect("enumeration succeeds with the referencing type dropped");
+    assert!(
+        entities.iter().any(|e| e.name == "Bystander"),
+        "the clean sibling projects: {:?}",
+        entities.iter().map(|e| &e.name).collect::<Vec<_>>()
+    );
+    assert!(
+        !entities.iter().any(|e| e.name == "User"),
+        "the type whose base is unrepresentable is not surfaced"
+    );
+    assert!(
+        skips.dropped_types.iter().any(|d| d.name.contains("User")),
+        "the drop is recorded against the type's name: {:?}",
+        skips.dropped_types
     );
 }
 
