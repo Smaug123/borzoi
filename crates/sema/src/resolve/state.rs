@@ -419,10 +419,17 @@ pub(super) struct OpenGroup {
 /// namespace holding an `[<AutoOpen>]` module — not reachable in the fixture
 /// grid, hence carried rather than tested: the flag only ever *removes*
 /// prefixes, which is the sound direction.
+///
+/// `module_reading` is its twin for the module half: an assembly-level
+/// `[<AutoOpen>]` names a *namespace*, so a prefix seeded from it must not fold
+/// the auto-open descendants of a same-FQN **module** in some other reference —
+/// FCS opened the namespace, not that module. An open that really did read a
+/// module pushes its own entry with this set.
 #[derive(Debug, Clone)]
 pub(super) struct ShorteningPrefix {
     pub(super) path: Vec<String>,
     pub(super) namespace_reading: bool,
+    pub(super) module_reading: bool,
 }
 
 /// One interpretation of an `open <path>` clause at one base of the open's
@@ -1403,6 +1410,7 @@ pub(super) fn implicit_shortening_prefixes(assemblies: &AssemblyEnv) -> Vec<Shor
         .map(|path| ShorteningPrefix {
             path,
             namespace_reading: true,
+            module_reading: false,
         })
         .collect()
 }

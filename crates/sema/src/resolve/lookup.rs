@@ -482,6 +482,18 @@ impl<'a> Resolver<'a> {
     ///   FCS orders by CCU; the same-FQN *value* merge defers instead of
     ///   guessing (`Demo.ModuleOpen.Merged`), and this contest needs the
     ///   contributor plumbing that defer has.
+    ///
+    /// Both limits, and the implicit-open scoping noted below, are one axis: a
+    /// prefix is a **path**, and the candidate it yields is later resolved
+    /// against every assembly exposing that path
+    /// ([`Self::opened_assembly_modules`], which merges deliberately — for a
+    /// path the source *wrote*, merging is what FCS does). An auto-open-derived
+    /// prefix is not written, so it should carry its contributor and restrict
+    /// the resolution to it; where assembly A's `[<AutoOpen>] module N.Auto`
+    /// makes `Auto` answer to a short name, a plain `module N.Auto` in assembly
+    /// B contributes its submodules to `open <short>` too, though FCS recurses
+    /// only through A's entity. Threading an assembly restriction through the
+    /// candidate tuple is the fix, and it is its own slice.
     fn auto_open_shortening_prefixes(&self, prefix: &ShorteningPrefix) -> Vec<Vec<String>> {
         let base = prefix.path.as_slice();
         let mut out: Vec<Vec<String>> = Vec::new();
@@ -516,12 +528,16 @@ impl<'a> Resolver<'a> {
         }
         // The **module** half: `base` may itself be a module (a chained `open`),
         // whose auto-open submodules are folded just the same. Their paths
-        // extend `base`, which is how they were found.
-        for handle in self.opened_assembly_modules(base) {
-            for (_, chain) in self.assemblies.auto_open_descendants(handle) {
-                let mut path = base.to_vec();
-                path.extend(chain);
-                push(&mut out, path);
+        // extend `base`, which is how they were found. Gated on the open having
+        // read a module: an assembly-level `[<AutoOpen>]` names a namespace, and
+        // a same-FQN module in an unrelated reference was not opened by it.
+        if prefix.module_reading {
+            for handle in self.opened_assembly_modules(base) {
+                for (_, chain) in self.assemblies.auto_open_descendants(handle) {
+                    let mut path = base.to_vec();
+                    path.extend(chain);
+                    push(&mut out, path);
+                }
             }
         }
         // Latest-folded wins, so the last entry is the most proximate.

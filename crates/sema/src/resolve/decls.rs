@@ -1465,6 +1465,7 @@ impl<'a> Resolver<'a> {
                                 self.open_shortening_prefixes.push(ShorteningPrefix {
                                     path: gp.clone(),
                                     namespace_reading: true,
+                                    module_reading: false,
                                 });
                                 self.explicit_open_prefixes.push((pos, gp.clone()));
                             }
@@ -1523,6 +1524,7 @@ impl<'a> Resolver<'a> {
                             self.open_shortening_prefixes.push(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
+                                module_reading: true,
                             });
                             // Only a prefix that could hide a whole nested *module*
                             // (a dropped type, an unknowable pickle) can make a
@@ -1653,9 +1655,14 @@ impl<'a> Resolver<'a> {
                             // reached implicitly by opening its enclosing namespace.
                             self.open_module_values(gp, pos, None);
                             self.module_open_prefixes.push((pos, gp.clone()));
+                            // A PROJECT module: neither assembly half applies, and
+                            // the project half lends no prefix (task #30). Where an
+                            // assembly module shares the FQN, the module-half push
+                            // above covers it.
                             self.open_shortening_prefixes.push(ShorteningPrefix {
                                 path: gp.clone(),
                                 namespace_reading: false,
+                                module_reading: false,
                             });
                             self.opaque_dotted_open = true;
                         }
