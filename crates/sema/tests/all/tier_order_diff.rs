@@ -42,7 +42,10 @@
 //! [`WRONG_ARITY_DENIALS`], one per property): a case in the table must still
 //! diverge, and a case outside it must not. So fixing one of the modelling
 //! errors it records fails this test until the entry is removed, and a
-//! regression that reintroduces one fails it too.
+//! regression that reintroduces one fails it too. The ratchet keys on
+//! `(case, `[`Category`]`)` rather than the case alone, so the two tables
+//! cannot satisfy each other: a recorded denial that decays into a wrong-target
+//! commit keeps its case key, and only the category tells them apart.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -215,12 +218,38 @@ const WRONG_ARITY_DENIALS: &[&str] = &[
     "WRo/decoy-first",
 ];
 
-/// Every recorded divergence, from both tables, as `(key, reason)`.
-fn known_divergences() -> BTreeMap<&'static str, &'static str> {
+/// Which of the two properties a divergence belongs to. Carried alongside the
+/// case key because the key alone cannot tell them apart: a `W` row that stops
+/// denying and starts committing the *wrong tier* keeps its key, so a
+/// key-only ratchet would let a recorded no-claim decay into a wrong target
+/// (and the converse) without failing (codex review).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Category {
+    /// Property 1: we committed an entity, and FCS says otherwise.
+    WrongTarget,
+    /// Property 2: we denied that anything can bind, and FCS bound something.
+    Denial,
+}
+
+impl Category {
+    fn label(self) -> &'static str {
+        match self {
+            Category::WrongTarget => "wrong target",
+            Category::Denial => "denial",
+        }
+    }
+}
+
+/// Every recorded divergence, from both tables, as `(key, (category, reason))`.
+fn known_divergences() -> BTreeMap<&'static str, (Category, &'static str)> {
     KNOWN_DIVERGENCES
         .iter()
-        .copied()
-        .chain(WRONG_ARITY_DENIALS.iter().map(|k| (*k, WRONG_ARITY_DENIAL)))
+        .map(|&(k, why)| (k, (Category::WrongTarget, why)))
+        .chain(
+            WRONG_ARITY_DENIALS
+                .iter()
+                .map(|k| (*k, (Category::Denial, WRONG_ARITY_DENIAL))),
+        )
         .collect()
 }
 
@@ -364,7 +393,7 @@ fn tier_ladder_is_sound_against_fcs() {
         .collect();
     let observations = observe();
 
-    let mut diverged: BTreeMap<String, String> = BTreeMap::new();
+    let mut diverged: BTreeMap<String, (Category, String)> = BTreeMap::new();
     let mut agreed = 0usize;
     let mut deferred = 0usize;
     for (key, (ours, fcs)) in &observations {
@@ -380,10 +409,13 @@ fn tier_ladder_is_sound_against_fcs() {
             (Ours::Denied, Some(f)) => {
                 diverged.insert(
                     key.clone(),
-                    format!(
-                        "we deny that anything can bind — the \"no shadow is possible\" signal — \
-                         but FCS binds {}",
-                        describe(plant, f)
+                    (
+                        Category::Denial,
+                        format!(
+                            "we deny that anything can bind — the \"no shadow is possible\" \
+                             signal — but FCS binds {}",
+                            describe(plant, f)
+                        ),
                     ),
                 );
             }
@@ -391,19 +423,25 @@ fn tier_ladder_is_sound_against_fcs() {
             (Ours::Entity(o), Some(f)) => {
                 diverged.insert(
                     key.clone(),
-                    format!(
-                        "we bound {} but FCS binds {}",
-                        describe(plant, o),
-                        describe(plant, f)
+                    (
+                        Category::WrongTarget,
+                        format!(
+                            "we bound {} but FCS binds {}",
+                            describe(plant, o),
+                            describe(plant, f)
+                        ),
                     ),
                 );
             }
             (Ours::Entity(o), None) => {
                 diverged.insert(
                     key.clone(),
-                    format!(
-                        "we bound {} but FCS resolves the span to nothing at all",
-                        describe(plant, o)
+                    (
+                        Category::WrongTarget,
+                        format!(
+                            "we bound {} but FCS resolves the span to nothing at all",
+                            describe(plant, o)
+                        ),
                     ),
                 );
             }
@@ -438,20 +476,29 @@ fn tier_ladder_is_sound_against_fcs() {
         }
     }
 
+    // Keyed by `(case, category)`, not by case alone: the two tables record
+    // different *kinds* of claim about the same case, so a case that swapped
+    // kinds must fail both sides of the ratchet rather than satisfy each.
     let known = known_divergences();
-    let expected: BTreeSet<&str> = known.keys().copied().collect();
-    let observed: BTreeSet<&str> = diverged.keys().map(String::as_str).collect();
+    let expected: BTreeSet<(&str, Category)> =
+        known.iter().map(|(&k, &(cat, _))| (k, cat)).collect();
+    let observed: BTreeSet<(&str, Category)> = diverged
+        .iter()
+        .map(|(k, (cat, _))| (k.as_str(), *cat))
+        .collect();
 
     let unexpected: Vec<String> = observed
         .difference(&expected)
-        .map(|k| format!("  {k}: {}", diverged[*k]))
+        .map(|(k, cat)| format!("  {k} [{}]: {}", cat.label(), diverged[*k].1))
         .collect();
     let stale: Vec<String> = expected
         .difference(&observed)
-        .map(|k| {
+        .map(|(k, cat)| {
             format!(
-                "  {k}: recorded as diverging ({}), but it now agrees or defers",
-                known[k]
+                "  {k} [{}]: recorded as diverging ({}), but it now agrees, defers, \
+                 or diverges a different way",
+                cat.label(),
+                known[k].1
             )
         })
         .collect();
