@@ -16,14 +16,33 @@
 //! `[<assembly: AutoOpen>]` targets both enter the name environment when that
 //! assembly is imported, so reference order decides.
 //!
-//! The property is the crate's usual **certain-implies-exact**: whenever we
-//! commit an entity for the probed name, FCS's `(assembly, full name)` must
-//! agree exactly. A deferral makes no claim.
+//! The whole matrix repeats per generic-arity shape
+//! ([`crate::common::tier_corpus::Arity`]), because the resolver's type-position
+//! lookup is arity-keyed and FCS's arity preference is a *fallback rather than
+//! a filter*: the tier that wins a name is not necessarily the tier that wins
+//! it when nothing holds the written arity.
 //!
-//! Known divergences are a **two-sided ratchet** ([`KNOWN_DIVERGENCES`]): a
-//! case in the table must still diverge, and a case outside it must not. So
-//! fixing one of the modelling errors it records fails this test until the
-//! entry is removed, and a regression that reintroduces one fails it too.
+//! Two properties ride on the same matrix. The first is the crate's usual
+//! **certain-implies-exact**: whenever we commit an entity for the probed name,
+//! FCS's `(assembly, full name)` must agree exactly.
+//!
+//! The second separates a deferral from a **denial**, which a
+//! certain-implies-exact oracle alone cannot do: `resolve_type_path` records
+//! nothing at all on a genuine no-match, and for a single segment that silence
+//! is not an absence of opinion but the resolver's positive claim that *no
+//! shadow is possible* — a signal downstream consumers read. So a bare
+//! (one-segment) plant denied while FCS binds something is a divergence in its
+//! own right. Without that property a whole class of branch is invisible here:
+//! the resolver's arity-fallback arm exists precisely to turn such a no-match
+//! into a deferral when a manifest surface holds the written name at another
+//! arity, and deleting the arm outright moves not one case of the first
+//! property.
+//!
+//! Known divergences are a **two-sided ratchet** ([`KNOWN_DIVERGENCES`] and
+//! [`WRONG_ARITY_DENIALS`], one per property): a case in the table must still
+//! diverge, and a case outside it must not. So fixing one of the modelling
+//! errors it records fails this test until the entry is removed, and a
+//! regression that reintroduces one fails it too.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -100,7 +119,73 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
         "DNsRo/contributor-first",
         "as TNsRo, reached as a dotted head: the tier error is not form-specific",
     ),
+    // The arity-1 twins of the two errors above. Both reproduce unchanged one
+    // arity up, which is the evidence that they are tier errors rather than
+    // anything the arity-keyed lookup introduces.
+    (
+        "GEnNs/contributor-first",
+        "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
+    ),
+    (
+        "GEnNs/decoy-first",
+        "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
+    ),
+    (
+        "GNsRo/contributor-first",
+        "as TNsRo at arity 1: the reference-order error is not arity-specific",
+    ),
 ];
+
+/// The shared reason for [`WRONG_ARITY_DENIALS`], stated once because every
+/// row is the same error at a different tier.
+const WRONG_ARITY_DENIAL: &str = "with the name's only occupants at another arity and no manifest surface among them, the \
+     arity-keyed walk reports a genuine no-match and we record nothing — but FCS's arity \
+     preference is a fallback, not a filter, so it binds the wrong-arity type (with an arity \
+     error) and our silence wrongly says no shadow is possible";
+
+/// Divergences of the **second** property: cases where we deny that anything
+/// could bind and FCS binds something.
+///
+/// One error, enumerated per case rather than derived from a predicate — a
+/// generated table would quietly re-fit itself around a partial fix, and the
+/// ratchet's job is to make each case an individual commitment.
+///
+/// `decide_type_path` turns a no-match into a deferral when a *manifest
+/// surface* holds the written name at another arity; the `W` cases whose
+/// contenders include `ModAuto` or `Contested` are absent from this list for
+/// exactly that reason. The same fallback happens with no manifest surface in
+/// sight, and there the walk still denies.
+const WRONG_ARITY_DENIALS: &[&str] = &[
+    "WEn/contributor-first",
+    "WEn/decoy-first",
+    "WEnNs/contributor-first",
+    "WEnNs/decoy-first",
+    "WEnRo/contributor-first",
+    "WEnRo/decoy-first",
+    "WEx/contributor-first",
+    "WEx/decoy-first",
+    "WExEn/contributor-first",
+    "WExEn/decoy-first",
+    "WExNs/contributor-first",
+    "WExNs/decoy-first",
+    "WExRo/contributor-first",
+    "WExRo/decoy-first",
+    "WNs/contributor-first",
+    "WNs/decoy-first",
+    "WNsRo/contributor-first",
+    "WNsRo/decoy-first",
+    "WRo/contributor-first",
+    "WRo/decoy-first",
+];
+
+/// Every recorded divergence, from both tables, as `(key, reason)`.
+fn known_divergences() -> BTreeMap<&'static str, &'static str> {
+    KNOWN_DIVERGENCES
+        .iter()
+        .copied()
+        .chain(WRONG_ARITY_DENIALS.iter().map(|k| (*k, WRONG_ARITY_DENIAL)))
+        .collect()
+}
 
 /// The `(assembly, full name)` currency both oracles report in.
 type Target = (String, String);
@@ -130,9 +215,25 @@ fn describe(plant: &Plant, target: &Target) -> String {
     }
 }
 
-/// Our verdict for one probe: the entity we commit at the plant's span, or
-/// `None` for any deferral / no-record (which makes no claim).
-fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Option<Target> {
+/// Our verdict for one probe. The three cases are genuinely different claims,
+/// and collapsing the last two — as "an `Option<Target>`" does — is what hides
+/// the arity-fallback branch from this sweep.
+#[derive(Clone, PartialEq, Eq, Debug)]
+enum Ours {
+    /// We committed this entity. Bound by certain-implies-exact.
+    Entity(Target),
+    /// We recorded a deferral: something may bind here, but we cannot say
+    /// what. Makes no claim, and is always sound.
+    Deferred,
+    /// We denied that anything can bind. For a single-segment name, recording
+    /// nothing is not an absence of opinion but an opinion — the resolver's
+    /// "no shadow is possible" signal — and [`Resolution::Unresolved`] is the
+    /// same claim made explicitly. Either is a claim FCS can contradict.
+    Denied,
+}
+
+/// Our verdict for one probe, at the plant's span.
+fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
     let parsed = parse(src);
     assert!(
         parsed.errors.is_empty(),
@@ -144,24 +245,29 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Option<Target> {
     let rf = resolve_file(&file, &ProjectItems::default(), env);
     let (start, end) = tier_corpus::probe_use_span(src, plant);
     match rf.resolution_at(span(start, end)) {
+        // `entity_full_name` is the currency `fcs-dump` was taught to report
+        // in: nesting-aware, and named from `source_name` so a generic's
+        // compiled backtick arity never reaches the comparison.
         Some(Resolution::Entity(h)) => {
-            let e = env.entity(h);
-            let full = if e.namespace.is_empty() {
-                e.name.clone()
-            } else {
-                format!("{}.{}", e.namespace.join("."), e.name)
-            };
-            Some((e.assembly.name.clone(), full))
+            Ours::Entity((env.entity(h).assembly.name.clone(), env.entity_full_name(h)))
         }
-        // A `Member` here would mean we bound a *value* for a type-position
-        // name; loud rather than silently "no claim".
-        Some(res @ Resolution::Member { .. }) => {
+        Some(Resolution::Deferred(_)) => Ours::Deferred,
+        Some(Resolution::Unresolved) => Ours::Denied,
+        None => Ours::Denied,
+        // Nothing else is reachable from this corpus, and each would be a
+        // distinct bug rather than a deferral: the probe declares no type of
+        // the plant's name, is resolved against an empty `ProjectItems`, and
+        // binds no local — so a `Local`/`Item` verdict means the walk
+        // wrong-targeted an in-file or project binder, and a `Member` one
+        // means it bound a *value* for a type-position name. A catch-all arm
+        // would launder all three into "no claim", which is exactly the
+        // collapse this sweep exists to prevent.
+        Some(res @ (Resolution::Local(_) | Resolution::Item(_) | Resolution::Member { .. })) => {
             panic!(
                 "tier probe {}: type position resolved to {res:?}",
                 plant.name
             )
         }
-        _ => None,
     }
 }
 
@@ -184,7 +290,7 @@ fn fcs_target(refs: &[&std::path::Path], src: &str, plant: &Plant) -> Option<Tar
 
 /// Every case's `(key, ours, fcs)`, one reference order at a time so the two
 /// `AssemblyEnv`s and the two `-r` orders stay in lock step.
-fn observe() -> BTreeMap<String, (Option<Target>, Option<Target>)> {
+fn observe() -> BTreeMap<String, (Ours, Option<Target>)> {
     let (contributor, decoy) = ensure_tier_corpus_built();
     let contributor_bytes = std::fs::read(contributor).expect("read tier contributor dll");
     let decoy_bytes = std::fs::read(decoy).expect("read tier decoy dll");
@@ -227,9 +333,25 @@ fn tier_ladder_is_sound_against_fcs() {
     for (key, (ours, fcs)) in &observations {
         let plant = &plants[key.split('/').next().expect("keyed <plant>/<order>")];
         match (ours, fcs) {
-            (None, _) => deferred += 1,
-            (Some(o), Some(f)) if o == f => agreed += 1,
-            (Some(o), Some(f)) => {
+            (Ours::Deferred, _) => deferred += 1,
+            // Recording nothing is a claim only where the resolver makes one:
+            // a single-segment deferral records the shadowable marker, but a
+            // dotted one records nothing either, so a `DottedHead` plant's
+            // silence is indistinguishable from a deferral and asserts nothing.
+            (Ours::Denied, _) if plant.form == tier_corpus::Form::DottedHead => deferred += 1,
+            (Ours::Denied, None) => deferred += 1,
+            (Ours::Denied, Some(f)) => {
+                diverged.insert(
+                    key.clone(),
+                    format!(
+                        "we deny that anything can bind — the \"no shadow is possible\" signal — \
+                         but FCS binds {}",
+                        describe(plant, f)
+                    ),
+                );
+            }
+            (Ours::Entity(o), Some(f)) if o == f => agreed += 1,
+            (Ours::Entity(o), Some(f)) => {
                 diverged.insert(
                     key.clone(),
                     format!(
@@ -239,7 +361,7 @@ fn tier_ladder_is_sound_against_fcs() {
                     ),
                 );
             }
-            (Some(o), None) => {
+            (Ours::Entity(o), None) => {
                 diverged.insert(
                     key.clone(),
                     format!(
@@ -257,24 +379,30 @@ fn tier_ladder_is_sound_against_fcs() {
     // **uncontested** plants at the tiers the resolver is supposed to commit —
     // nothing contends for those names in either order, so anything but exact
     // agreement is a bug. (`TCo` and `TMo` are deliberately absent: a manifest
-    // surface is never committed, only deferred to, which is the design.)
-    for control in ["TEx", "TEn", "TNs", "TRo", "DEx", "DEn", "DNs", "DRo"] {
+    // surface is never committed, only deferred to, which is the design. So is
+    // every `W`: with no exact-arity occupant anywhere, a *deferral* is the
+    // right answer even uncontested, so it cannot serve as a floor.)
+    for control in [
+        "TEx", "TEn", "TNs", "TRo", //
+        "DEx", "DEn", "DNs", "DRo", //
+        "GEx", "GEn", "GNs", "GRo",
+    ] {
         for order in Order::ALL {
             let key = format!("{control}/{}", order.label());
             let (ours, fcs) = &observations[&key];
+            let fcs = fcs.as_ref().unwrap_or_else(|| {
+                panic!("{key}: FCS resolved nothing — corpus broken?");
+            });
             assert_eq!(
-                ours.as_ref(),
-                fcs.as_ref(),
+                ours,
+                &Ours::Entity(fcs.clone()),
                 "{key}: an uncontested name must resolve, and to what FCS says",
-            );
-            assert!(
-                fcs.is_some(),
-                "{key}: FCS resolved nothing — corpus broken?"
             );
         }
     }
 
-    let expected: BTreeSet<&str> = KNOWN_DIVERGENCES.iter().map(|(k, _)| *k).collect();
+    let known = known_divergences();
+    let expected: BTreeSet<&str> = known.keys().copied().collect();
     let observed: BTreeSet<&str> = diverged.keys().map(String::as_str).collect();
 
     let unexpected: Vec<String> = observed
@@ -284,12 +412,10 @@ fn tier_ladder_is_sound_against_fcs() {
     let stale: Vec<String> = expected
         .difference(&observed)
         .map(|k| {
-            let why = KNOWN_DIVERGENCES
-                .iter()
-                .find(|(e, _)| e == k)
-                .map(|(_, w)| *w)
-                .unwrap_or("");
-            format!("  {k}: recorded as diverging ({why}), but it now agrees or defers")
+            format!(
+                "  {k}: recorded as diverging ({}), but it now agrees or defers",
+                known[k]
+            )
         })
         .collect();
 
@@ -329,15 +455,20 @@ fn report_tier_ladder() {
         .collect();
     for (key, (ours, fcs)) in observe() {
         let plant = &plants[key.split('/').next().expect("keyed <plant>/<order>")];
-        let show = |t: &Option<Target>| match t {
+        let show_fcs = match &fcs {
             Some(t) => describe(plant, t),
             None => "-".to_string(),
         };
+        let show_ours = match &ours {
+            Ours::Entity(t) => describe(plant, t),
+            Ours::Deferred => "(defer)".to_string(),
+            Ours::Denied => "(denied)".to_string(),
+        };
         println!(
-            "{key:<40} contenders={:?}  fcs={:<12} ours={}",
-            plant.tiers,
-            show(&fcs),
-            show(&ours)
+            "{key:<40} {:<13} contenders={:<30} fcs={:<12} ours={show_ours}",
+            format!("{:?}", plant.arity),
+            format!("{:?}", plant.tiers),
+            show_fcs,
         );
     }
 }
