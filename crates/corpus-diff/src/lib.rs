@@ -820,6 +820,12 @@ pub struct ProjectUse {
     pub decl: UseDecl,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
+    /// The generic arity of the entity this use is *on* — its own for an
+    /// entity, its declaring entity's for a member. `full_name` renders a
+    /// generic instantiation with its type arguments; this is the structural
+    /// fact that lets a comparator allow for that without having to count them
+    /// in the rendering (see `generic_instantiation_agrees`).
+    pub declaring_entity_arity: Option<usize>,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1004,6 +1010,8 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "DeclaringEntityArity", default)]
+    declaring_entity_arity: Option<usize>,
 }
 
 /// Parse `fcs-dump uses-project` output using full path identity, not basenames.
@@ -1069,6 +1077,7 @@ pub fn parse_project_uses(
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        declaring_entity_arity: u.declaring_entity_arity,
                     })
                 })
                 .collect::<Result<Vec<_>, ParseProjectUsesError>>()?;
@@ -2375,6 +2384,10 @@ impl ProjectDiscoveryOperation {
 pub struct AssemblyDecl {
     pub assembly: String,
     pub full_name: String,
+    /// See [`ProjectUse::declaring_entity_arity`] — carried so the reverse pass
+    /// can adjudicate a generic instantiation on the same structural fact the
+    /// forward one uses.
+    pub declaring_entity_arity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2482,6 +2495,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                                         res,
                                         &actual.full_name,
                                         &expected.full_name,
+                                        u.declaring_entity_arity,
                                     ))
                                 {
                                     comparison.assembly_matches += 1;
@@ -2586,6 +2600,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
 fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
     match (&use_.assembly, &use_.full_name) {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
+            declaring_entity_arity: use_.declaring_entity_arity,
             assembly: assembly.clone(),
             full_name: full_name.clone(),
         }),
@@ -2600,6 +2615,8 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
             AssemblyDecl {
                 assembly: entity.assembly.name.clone(),
                 full_name: env.entity_full_name(handle),
+                // Our side; the field records what the *oracle* said.
+                declaring_entity_arity: None,
             }
         }
         Resolution::Member { parent, idx } => {
@@ -2611,6 +2628,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
                     env.entity_full_name(parent),
                     env.member_display_name(parent, idx)
                 ),
+                declaring_entity_arity: None,
             }
         }
         Resolution::Local(_)
@@ -2783,33 +2801,48 @@ fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     unquote(actual) == unquote(expected)
 }
 
-/// `expected` with its type-argument lists removed, and how many arguments that
-/// removed — `ImmutableArray<byte>.Empty` → `("…ImmutableArray.Empty", 1)`.
+/// `expected` with its type-argument lists and CLR arity markers removed —
+/// `` ImmutableArray`1<byte>.Empty `` → `ImmutableArray.Empty`.
 ///
-/// Arguments are counted at the *top level of each group*, summed over groups,
-/// so a nested generic type agrees with the arity ECMA-335 gives it:
-/// `Outer<int>.Inner<string>.M` counts 2, and `Inner`'s `GenericParam` list
-/// includes its enclosing type's parameter, so it has 2 as well. A nested
-/// argument (`Foo<Bar<int>>`) is part of one argument, not another.
-fn strip_type_arguments(expected: &str) -> (String, usize) {
+/// This is a *display* normalisation only. It cannot certify anything on its
+/// own, and deliberately does not try to: the arity that guards the allowance
+/// comes from the oracle ([`ProjectUse::declaring_entity_arity`]), so the worst
+/// a mis-strip here can do is fail to recognise a match. Counting arguments in
+/// the rendering was tried and is unsound — a quoted F# identifier containing a
+/// comma reads as two.
+///
+/// A `>` closing an `->` does not close a group: FCS writes a function type
+/// literally, so `Foo<(int -> string)>.M` has one group, not one that ends at
+/// the arrow.
+fn strip_type_arguments(expected: &str) -> String {
     let mut out = String::with_capacity(expected.len());
     let mut depth = 0usize;
-    let mut args = 0usize;
+    let mut prev = '\0';
     for ch in expected.chars() {
         match ch {
-            '<' => {
-                depth += 1;
-                if depth == 1 {
-                    args += 1;
-                }
-            }
-            '>' => depth = depth.saturating_sub(1),
-            ',' if depth == 1 => args += 1,
+            '<' => depth += 1,
+            '>' if prev != '-' => depth = depth.saturating_sub(1),
             _ if depth == 0 => out.push(ch),
             _ => {}
         }
+        prev = ch;
     }
-    (out, args)
+    strip_arity_markers(&out)
+}
+
+/// Each segment's trailing `` `<digits> `` removed. FCS keeps the CLR arity
+/// marker on an *enclosing* segment of a nested generic
+/// (`` Outer`1.Inner<int>.M ``), while `entity_full_name` carries none.
+fn strip_arity_markers(name: &str) -> String {
+    name.split('.')
+        .map(|seg| match seg.rsplit_once('`') {
+            Some((head, tail)) if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) => {
+                head
+            }
+            _ => seg,
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 /// Whether our resolution names the same symbol as FCS, differing only because
@@ -2822,35 +2855,38 @@ fn strip_type_arguments(expected: &str) -> (String, usize) {
 /// `ImmutableArray.Empty`, so a string comparison scores a correct resolution
 /// as a wrong one.
 ///
-/// That is not hypothetical: #204 made generic types reachable from a value-path
-/// head for the first time (a head writes no arity, and FCS infers the
-/// arguments), and every one of the correct new commits it produced was counted
-/// as a divergence. On `WoofWare.PawPrint` that was 126 of 137 — measured by
-/// printing our entity at each one: all were a `Struct` or `Class` of arity 1
-/// or 2, never a module, and in every case the arity equalled FCS's argument
-/// count.
+/// That is not hypothetical: #204 made generic types reachable from a
+/// value-path head for the first time (a head writes no arity, and FCS infers
+/// the arguments), and every one of the correct new commits it produced was
+/// counted as a divergence. On `WoofWare.PawPrint` that was 126 of 137 —
+/// measured by printing our entity at each one: all were a `Struct` or `Class`
+/// of arity 1 or 2, never a module, and in every case the arity equalled FCS's.
 ///
 /// The **arity equality** is what makes this an adjudicated match rather than a
-/// loosening. The shape it must not admit is our binding a same-named companion
-/// *module* whose members happen to line up; a module has no generic parameters
-/// while FCS's rendering here has at least one argument, so it still diverges.
+/// loosening, and it is taken from the oracle rather than read out of the
+/// rendering: the shape it must not admit is our binding a same-named companion
+/// *module*, or the wrong member of a generic family, and only a structural
+/// arity rules those out. An oracle that reports none (`None`) declines.
 fn generic_instantiation_agrees(
     env: &AssemblyEnv,
     res: Resolution,
     actual: &str,
     expected: &str,
+    oracle_arity: Option<usize>,
 ) -> bool {
-    let unquote = |s: &str| s.replace("``", "");
-    let (stripped, args) = strip_type_arguments(&unquote(expected));
-    if args == 0 || stripped != unquote(actual) {
+    let Some(arity) = oracle_arity.filter(|&a| a > 0) else {
         return false;
-    }
+    };
     let entity = match res {
         Resolution::Entity(h) => h,
         Resolution::Member { parent, .. } => parent,
         _ => return false,
     };
-    env.entity(entity).generic_parameters.len() == args
+    if env.entity(entity).generic_parameters.len() != arity {
+        return false;
+    }
+    let unquote = |s: &str| s.replace("``", "");
+    strip_type_arguments(&unquote(expected)) == strip_arity_markers(&unquote(actual))
 }
 
 fn assembly_resolution_confirms_decl(
@@ -2858,6 +2894,7 @@ fn assembly_resolution_confirms_decl(
     res: Resolution,
     expected: &AssemblyDecl,
 ) -> bool {
+    let oracle_arity = expected.declaring_entity_arity;
     let actual = assembly_resolution_decl(env, res);
     if canonical_assembly(&actual.assembly) != canonical_assembly(&expected.assembly) {
         return false;
@@ -2865,7 +2902,13 @@ fn assembly_resolution_confirms_decl(
     match res {
         Resolution::Entity(_) => {
             assembly_full_name_agrees(&actual.full_name, &expected.full_name)
-                || generic_instantiation_agrees(env, res, &actual.full_name, &expected.full_name)
+                || generic_instantiation_agrees(
+                    env,
+                    res,
+                    &actual.full_name,
+                    &expected.full_name,
+                    oracle_arity,
+                )
                 || expected
                     .full_name
                     .strip_prefix(&actual.full_name)
@@ -2873,7 +2916,13 @@ fn assembly_resolution_confirms_decl(
         }
         Resolution::Member { .. } => {
             assembly_full_name_agrees(&actual.full_name, &expected.full_name)
-                || generic_instantiation_agrees(env, res, &actual.full_name, &expected.full_name)
+                || generic_instantiation_agrees(
+                    env,
+                    res,
+                    &actual.full_name,
+                    &expected.full_name,
+                    oracle_arity,
+                )
         }
         Resolution::Local(_)
         | Resolution::Item(_)
@@ -4321,6 +4370,7 @@ mod tests {
                 expected: AssemblyDecl {
                     assembly: "Synthetic.Assembly".to_string(),
                     full_name: "Demo.Widget.Value".to_string(),
+                    declaring_entity_arity: None,
                 },
                 actual: "assembly Synthetic.Assembly full_name Demo.Widget.Other".to_string(),
             }],
@@ -4467,31 +4517,30 @@ mod tests {
         assert!(summary.passes_soundness_gate(1));
     }
 
-    /// The stripping and counting the generic-instantiation allowance rests on.
-    /// Its arity count is the guard against a companion module matching by
-    /// accident, so an off-by-one here would quietly widen the allowance into
-    /// the one shape it exists to exclude.
+    /// The display normalisation the generic-instantiation allowance rests on.
+    /// It certifies nothing by itself — the arity guard comes from the oracle —
+    /// so the risk here is a *missed* match, and these are the renderings FCS
+    /// actually produces.
     #[test]
-    fn type_arguments_are_stripped_and_counted() {
+    fn type_arguments_and_arity_markers_are_stripped() {
         let cases = [
-            ("System.String", ("System.String".to_string(), 0)),
+            ("System.String", "System.String"),
             (
                 "System.Collections.Immutable.ImmutableArray<Microsoft.FSharp.Core.byte>.Empty",
-                (
-                    "System.Collections.Immutable.ImmutableArray.Empty".to_string(),
-                    1,
-                ),
+                "System.Collections.Immutable.ImmutableArray.Empty",
             ),
-            // Two parameters in one group.
-            ("A.Map<K,V>.Item", ("A.Map.Item".to_string(), 2)),
-            // A nested *argument* is part of one argument, not another.
-            ("A.Holder<A.Box<int>>.M", ("A.Holder.M".to_string(), 1)),
-            // Groups at two levels sum, matching the arity ECMA-335 gives the
-            // nested type (whose parameter list includes its enclosing type's).
-            (
-                "A.Outer<int>.Inner<string>.M",
-                ("A.Outer.Inner.M".to_string(), 2),
-            ),
+            ("A.Map<K,V>.Item", "A.Map.Item"),
+            // A nested group closes with its own `>`.
+            ("A.Holder<A.Box<int>>.M", "A.Holder.M"),
+            // FCS keeps the CLR arity marker on an enclosing segment of a
+            // nested generic; `entity_full_name` carries none.
+            ("A.Outer`1.Inner<int,string>.M", "A.Outer.Inner.M"),
+            // A function type is written literally, and its arrow's `>` must
+            // not close the argument list.
+            ("A.Holder<(int -> string)>.Empty", "A.Holder.Empty"),
+            // A backtick that is not an arity marker survives — a quoted
+            // identifier may contain one.
+            ("A.We`ird.M", "A.We`ird.M"),
         ];
         for (input, want) in cases {
             assert_eq!(strip_type_arguments(input), want, "for {input}");
@@ -4525,6 +4574,7 @@ mod tests {
                     expected: AssemblyDecl {
                         assembly: "Lib".to_string(),
                         full_name: "Lib.T".to_string(),
+                        declaring_entity_arity: None,
                     },
                     actual: "Other.T".to_string(),
                 })

@@ -405,6 +405,8 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "DeclaringEntityArity", default)]
+    declaring_entity_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -506,6 +508,12 @@ pub struct NormalisedProjectUse {
     pub decl: Option<DeclSite>,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
+    /// The generic arity of the entity this use is *on* — its own for an
+    /// entity, its declaring entity's for a member. The structural fact a
+    /// comparator needs to allow for FCS rendering a generic instantiation
+    /// (`ImmutableArray<byte>.Empty`) where a name reconstructed from metadata
+    /// cannot.
+    pub declaring_entity_arity: Option<usize>,
 }
 
 /// All symbol uses FCS reported for one project file.
@@ -583,6 +591,7 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        declaring_entity_arity: u.declaring_entity_arity,
                     }
                 })
                 .collect();

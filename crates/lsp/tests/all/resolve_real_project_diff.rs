@@ -196,46 +196,65 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
 /// with, so `entity_full_name` has nothing to print where FCS writes
 /// `ImmutableArray<byte>.Empty`.
 ///
-/// The **arity equality** is the adjudication, not the string match: the shape
-/// this must not admit is our binding a same-named companion *module*, which
-/// has no generic parameters where FCS's rendering has at least one argument.
-/// Mirrors `borzoi_corpus_diff`'s allowance, which is what CI gates on — see
-/// there for the measurement that motivated it.
-fn generic_instantiation_matches(env: &AssemblyEnv, res: Resolution, fcs: &str) -> bool {
-    let (stripped, args) = {
-        let f = fcs.replace("``", "");
-        let mut out = String::with_capacity(f.len());
-        let (mut depth, mut args) = (0usize, 0usize);
-        for ch in f.chars() {
-            match ch {
-                '<' => {
-                    depth += 1;
-                    if depth == 1 {
-                        args += 1;
-                    }
-                }
-                '>' => depth = depth.saturating_sub(1),
-                ',' if depth == 1 => args += 1,
-                _ if depth == 0 => out.push(ch),
-                _ => {}
-            }
-        }
-        (out, args)
-    };
-    if args == 0 {
+/// The **arity equality** is the adjudication, and it comes from the *oracle*
+/// rather than from counting arguments in the rendering — a quoted identifier
+/// containing a comma would read as two. The shape it must not admit is our
+/// binding a same-named companion *module*, which has no generic parameters
+/// where this rendering has at least one argument. Mirrors
+/// `borzoi_corpus_diff`'s allowance, which is what CI gates on.
+fn generic_instantiation_matches(
+    env: &AssemblyEnv,
+    res: Resolution,
+    fcs: &str,
+    oracle_arity: Option<usize>,
+) -> bool {
+    let Some(arity) = oracle_arity.filter(|&a| a > 0) else {
         return false;
-    }
+    };
     let entity = match res {
         Resolution::Entity(h) => h,
         Resolution::Member { parent, .. } => parent,
         _ => return false,
     };
-    if env.entity(entity).generic_parameters.len() != args {
+    if env.entity(entity).generic_parameters.len() != arity {
         return false;
     }
+    // Display normalisation only: strip the argument groups (an arrow's `>`
+    // does not close one) and each segment's CLR arity marker, which FCS keeps
+    // on an enclosing segment of a nested generic.
+    let strip_markers = |name: &str| {
+        name.split('.')
+            .map(|seg| match seg.rsplit_once('`') {
+                Some((head, tail))
+                    if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit()) =>
+                {
+                    head
+                }
+                _ => seg,
+            })
+            .collect::<Vec<_>>()
+            .join(".")
+    };
+    let stripped = {
+        let f = fcs.replace("``", "");
+        let mut out = String::with_capacity(f.len());
+        let mut depth = 0usize;
+        let mut prev = '\0';
+        for ch in f.chars() {
+            match ch {
+                '<' => depth += 1,
+                '>' if prev != '-' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => out.push(ch),
+                _ => {}
+            }
+            prev = ch;
+        }
+        strip_markers(&out)
+    };
     let ours = our_assembly_full(env, res);
     let unquote = |s: &str| s.replace("``", "");
-    unquote(&ours.qualified) == stripped || unquote(&ours.unqualified) == stripped
+    strip_markers(&unquote(&ours.qualified)) == stripped
+        || strip_markers(&unquote(&ours.unqualified)) == stripped
 }
 
 /// Our resolution's full name with a **nested** entity's enclosing chain
@@ -504,7 +523,12 @@ fn project_resolution_matches_fcs() {
                         let ours = our_assembly_full(&env, r);
                         if &ours.assembly == asm
                             && (full_matches(&ours, full)
-                                || generic_instantiation_matches(&env, r, full))
+                                || generic_instantiation_matches(
+                                    &env,
+                                    r,
+                                    full,
+                                    u.declaring_entity_arity,
+                                ))
                         {
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm

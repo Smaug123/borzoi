@@ -4754,6 +4754,35 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
         match u.Symbol with
         | :? FSharpEntity as e -> (try box e.GenericParameters.Count with _ -> null)
         | _ -> null
+    // The arity of the entity this use is *on* — its own for an entity, its
+    // declaring entity's for a member. `FullName` renders a generic
+    // instantiation with its type arguments (`ImmutableArray<byte>.Empty`)
+    // while a consumer reconstructing a name from metadata cannot, so a
+    // comparison has to allow for the difference; this is the structural datum
+    // that keeps the allowance honest, instead of counting arguments in the
+    // rendered string (where a quoted identifier containing a comma reads as
+    // two). Separate from `GenericArity`, which stays entity-only so its
+    // existing consumers are unaffected.
+    let declaringEntityArity : objnull =
+        match u.Symbol with
+        | :? FSharpEntity as e -> (try box e.GenericParameters.Count with _ -> null)
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            (try
+                match m.DeclaringEntity with
+                | Some e -> box e.GenericParameters.Count
+                | None -> null
+             with _ -> null)
+        // A static field is how `ImmutableArray<T>.Empty` reaches a use, so
+        // omitting it would leave the commonest instantiated rendering with no
+        // arity at all.
+        | :? FSharpField as f ->
+            (try
+                match f.DeclaringEntity with
+                | Some e -> box e.GenericParameters.Count
+                | None -> null
+             with _ -> null)
+        | :? FSharpUnionCase as c -> (try box c.DeclaringEntity.GenericParameters.Count with _ -> null)
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4761,7 +4790,8 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        Assembly = assemblyName
        FullName = qualifiedFullName
        SymbolKind = symbolKind
-       GenericArity = genericArity |}
+       GenericArity = genericArity
+       DeclaringEntityArity = declaringEntityArity |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()
