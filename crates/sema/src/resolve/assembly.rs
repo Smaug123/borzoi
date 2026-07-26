@@ -10,6 +10,23 @@ use super::id_text;
 use super::model::{DeferredReason, Resolution};
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
 
+/// One candidate that **owns** a path at one rooting position — the unit
+/// [`Resolver::unopposed_owner`] decides between.
+struct PositionOwner {
+    /// The rooting position (the index of the segment the reading rooted at);
+    /// longer is higher priority.
+    position: usize,
+    handle: EntityHandle,
+    payload: Vec<(TextRange, Resolution)>,
+}
+
+/// What one rooting position yielded: the candidates that owned the path, in
+/// candidate order, and the highest-priority partial for when none did.
+struct PositionReading {
+    owners: Vec<PositionOwner>,
+    partial: Option<Vec<(TextRange, Resolution)>>,
+}
+
 impl<'a> Resolver<'a> {
     /// Compute — *without recording* — how a dotted path resolves into the
     /// referenced assemblies, under an opened-namespace `prefix` (empty for a
@@ -59,26 +76,28 @@ impl<'a> Resolver<'a> {
             };
         }
 
-        // Walk the rooting *positions* longest-first — every prefix whose
+        // Walk **every** rooting position — each prefix whose
         // `(namespace, name)` names a public top-level entity and whose name is
-        // a source segment (`k >= base`) — and take the first reading that
-        // **owns the whole path**, keeping the longest position's partial as
-        // the fall-back.
+        // a source segment (`k >= base`) — collect every reading that owns the
+        // whole path, and commit only if the owner is **unique**.
         //
-        // Two nestings, and both are "prefer the reading that resolves the
-        // whole path", the rule the tier walk above already applies to
-        // *prefixes*:
+        // Uniqueness is the invariant, not an optimisation. The head names a
+        // candidate *set* at each of several positions, so "the first owner I
+        // found" is decided by walk order, and every review round found a shape
+        // where that order was not FCS's: a companion module beside its type, a
+        // generic type family (`C<'T>` and `C<'T,'U>` both carrying the tail,
+        // where the source's written type arguments — which do not reach this
+        // walk — pick between them), and one DLL's type at a longer position
+        // against another's module at a shorter one, which FCS decides by
+        // reference order. Committing only an unopposed owner makes all of them
+        // deferrals instead of guesses (codex review rounds 1-4).
         //
-        // - across positions, because a longer rooting that cannot supply the
-        //   tail must not swallow the path: one assembly's `namespace N.Outer`
-        //   holding `Inner<'T>` would otherwise hide another's `module N.Outer`
-        //   whose nested `Inner` does supply it (codex review);
-        // - within one position, because the name is a candidate **set**, not a
-        //   candidate: `TypeInfo.NominallyEqual` (fsi, and `WoofWare.PawPrint`)
-        //   binds the record's static member though the companion *module* is
-        //   the other candidate, while with the name on both the module's wins.
-        //   [`Self::rooting_candidates`]'s order therefore only breaks ties.
+        // The one contested shape that still commits is the fsi-measured
+        // tie-break it was measured for: a module and its **own companion
+        // types** — same position, same DLL — where F# binds the module
+        // (`Holder.Tail` with the name on both).
         let mut partial: Option<Vec<(TextRange, Resolution)>> = None;
+        let mut owners: Vec<PositionOwner> = Vec::new();
         let mut any_rooting = false;
         for k in (base..n).rev() {
             let candidates = self.rooting_candidates(&names[..k], &names[k]);
@@ -87,31 +106,37 @@ impl<'a> Resolver<'a> {
             }
             any_rooting = true;
             match self.rooting_at(&names, segments, base, k, &candidates) {
-                AssemblyPath::Resolved {
-                    payload,
-                    owns_path: true,
-                } => {
-                    return AssemblyPath::Resolved {
-                        payload,
-                        owns_path: true,
-                    };
-                }
-                AssemblyPath::Resolved {
-                    payload,
-                    owns_path: false,
-                } => {
-                    partial.get_or_insert(payload);
-                }
-                AssemblyPath::NoMatch => {}
                 // A position that cannot be *named* — a merged rooting, an
                 // opaque abbreviation, a project shadow — decides the reading
-                // where it sits: rooting *shorter* over it would commit exactly
-                // where FCS's own lookup is undecidable for us.
-                verdict => return verdict,
+                // where it sits, because rooting *shorter* over it would commit
+                // exactly where FCS's own lookup is undecidable for us. Unless
+                // a **longer** position already owned the path: that one is
+                // higher priority, and an undecidable candidate below it never
+                // gets a say.
+                Err(verdict) => {
+                    if owners.is_empty() {
+                        return verdict;
+                    }
+                }
+                Ok(reading) => {
+                    owners.extend(reading.owners);
+                    if let Some(p) = reading.partial {
+                        partial.get_or_insert(p);
+                    }
+                }
             }
         }
         if !any_rooting {
             return AssemblyPath::NoMatch;
+        }
+        if let Some(owner) = self.unopposed_owner(&owners) {
+            return AssemblyPath::Resolved {
+                payload: owner,
+                owns_path: true,
+            };
+        }
+        if !owners.is_empty() {
+            return AssemblyPath::ContestedRooting;
         }
         // A rooting exists and nothing owned the path, so the reading matches
         // only partially — the fall-through the tier walk holds and a
@@ -132,18 +157,38 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// The reading at one rooting **position**: try its candidates in
-    /// [`Self::rooting_candidates`] order and return the first that owns the
-    /// path, else the highest-priority partial.
+    /// The one owner a reading may commit, or `None` when the owners are
+    /// contested.
     ///
-    /// When the candidates span **more than one loaded DLL** every one of them
-    /// is walked first, because two DLLs' entries can *both* own the path at one
-    /// name — `N.C` in one and `N.C<'T>` in the other, say — and FCS picks
-    /// between them by reference order, which sema does not model. The
-    /// per-arity contest inside [`Self::rooting_reading`] cannot see that pair
-    /// (their keys differ), so this is where it is caught: two owners from two
-    /// DLLs defer (codex review). Within one DLL the first owner wins outright
-    /// and no extra walking is done.
+    /// `owners` is in walk order — longest position first, and within a position
+    /// [`Self::rooting_candidates`]'s order — so its head is the
+    /// highest-priority one. A single owner commits. Several commit only in the
+    /// measured tie-break: an **authoritative module** ahead of owners that are
+    /// all its own same-position, same-DLL companions, which is `Holder.Tail`
+    /// binding the module's `let` over the type's `static member` (fsi).
+    /// Anything else — two arities of one type family, two DLLs, two positions —
+    /// is a choice we cannot make the way FCS makes it, so it defers.
+    fn unopposed_owner(&self, owners: &[PositionOwner]) -> Option<Vec<(TextRange, Resolution)>> {
+        let (first, rest) = owners.split_first()?;
+        if rest.is_empty() {
+            return Some(first.payload.clone());
+        }
+        let companions = self.assemblies.is_authoritative_module(first.handle)
+            && rest.iter().all(|o| {
+                o.position == first.position
+                    && self.assemblies.distinct_dlls(&[first.handle, o.handle]) == 1
+            });
+        companions.then(|| first.payload.clone())
+    }
+
+    /// The reading at one rooting **position**: every candidate that owns the
+    /// path, plus the highest-priority partial for when none does.
+    ///
+    /// Every candidate is walked — there is no early return on the first owner —
+    /// because the caller's commit rule is *uniqueness*, and it cannot see a
+    /// second owner this function never looked for. `Err` carries a verdict that
+    /// decides the whole reading where it sits (a merged rooting, an opaque
+    /// abbreviation, a project shadow).
     fn rooting_at(
         &self,
         names: &[String],
@@ -151,11 +196,11 @@ impl<'a> Resolver<'a> {
         base: usize,
         k: usize,
         candidates: &[EntityHandle],
-    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
-        let cross_dll = self.assemblies.distinct_dlls(candidates) > 1;
-        let mut partial: Option<Vec<(TextRange, Resolution)>> = None;
-        let mut owners: Vec<EntityHandle> = Vec::new();
-        let mut owned: Option<Vec<(TextRange, Resolution)>> = None;
+    ) -> Result<PositionReading, AssemblyPath<Vec<(TextRange, Resolution)>>> {
+        let mut reading = PositionReading {
+            owners: Vec::new(),
+            partial: None,
+        };
         for &candidate in candidates {
             match self.rooting_reading(names, segments, base, k, candidate) {
                 // A reading that stops on a non-value owns nothing: FCS's
@@ -167,47 +212,41 @@ impl<'a> Resolver<'a> {
                 AssemblyPath::Resolved { payload, .. }
                     if self.reading_stops_on_a_non_value(segments, &payload) =>
                 {
-                    partial.get_or_insert(payload);
+                    if reading.partial.is_none() {
+                        reading.partial = Some(payload);
+                    }
                 }
                 AssemblyPath::Resolved {
                     payload,
                     owns_path: true,
-                } => {
-                    if !cross_dll {
-                        return AssemblyPath::Resolved {
-                            payload,
-                            owns_path: true,
-                        };
-                    }
-                    owners.push(candidate);
-                    owned.get_or_insert(payload);
-                }
+                } => reading.owners.push(PositionOwner {
+                    position: k,
+                    handle: candidate,
+                    payload,
+                }),
                 AssemblyPath::Resolved {
                     payload,
                     owns_path: false,
                 } => {
-                    partial.get_or_insert(payload);
+                    if reading.partial.is_none() {
+                        reading.partial = Some(payload);
+                    }
                 }
                 AssemblyPath::NoMatch => {}
-                verdict => return verdict,
+                // An undecidable candidate — an opaque abbreviation, a merged
+                // rooting — decides the position only while nothing has owned
+                // the path yet. `WidgetC.Make`, a `ModuleSuffix` module beside
+                // an abbreviation of the same name, is the case: FCS binds the
+                // module's `Make` (fcs-dump), and the alias below it — which we
+                // cannot resolve through — must not veto that.
+                verdict => {
+                    if reading.owners.is_empty() {
+                        return Err(verdict);
+                    }
+                }
             }
         }
-        if self.assemblies.distinct_dlls(&owners) > 1 {
-            return AssemblyPath::ContestedRooting;
-        }
-        match owned {
-            Some(payload) => AssemblyPath::Resolved {
-                payload,
-                owns_path: true,
-            },
-            None => match partial {
-                Some(payload) => AssemblyPath::Resolved {
-                    payload,
-                    owns_path: false,
-                },
-                None => AssemblyPath::NoMatch,
-            },
-        }
+        Ok(reading)
     }
 
     /// The public top-level entities one reading may root at, in the order F#
