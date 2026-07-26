@@ -1,0 +1,83 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-346d176c0dd6-fc2529bf34cc",
+  "repository": "Smaug123/borzoi",
+  "commit": "2b401ee55799a5488293121716998717dbc67e18",
+  "measured_at": "2026-07-26T15:18:08Z",
+  "workflow": {
+    "run_id": 30207516707,
+    "run_number": 28,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/30207516707"
+  },
+  "corpus": {
+    "source": "Smaug123/borzoi-project-corpus",
+    "revision": "346d176c0dd66cafec34a907d1501b1154ea43a3"
+  },
+  "flake_lock_hash": "f27a8220b9ba57001e2e9025876c45078da8fe6f5d81d34471f569582813a136",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "project-corpus-diff",
+    "configuration": {
+      "build_properties": {},
+      "selection": {
+        "max_files": null,
+        "source": "list"
+      }
+    },
+    "statistics": {
+      "coverage": {
+        "basis_points": 4930
+      },
+      "deferrals": {
+        "assembly": 8577,
+        "project": 11824,
+        "total": 20401
+      },
+      "divergences": {
+        "assembly": 1,
+        "project": 1,
+        "reverse": 1,
+        "total": 3
+      },
+      "files_compared": 140,
+      "matches": {
+        "assembly": 4421,
+        "project": 15415,
+        "total": 19836
+      },
+      "project_assets_by_status": {
+        "dotnet_root_unavailable": 0,
+        "missing": 0,
+        "not_checked": 0,
+        "project_directory_unavailable": 0,
+        "resolution_failed": 0,
+        "resolved": 6
+      },
+      "projects": {
+        "comparable": 6,
+        "discovered": 6,
+        "discovery_errors": 0,
+        "skipped": 0,
+        "skipped_basis_points": 0,
+        "visited": 6
+      },
+      "skipped_uses": {
+        "definitions": 8200,
+        "no_oracle_declaration": 0,
+        "non_project_declarations": 0,
+        "out_of_project_declarations": 0,
+        "total": 8212,
+        "zero_width": 12
+      },
+      "unoracled_definitions": 0,
+      "unoracled_or_pattern_aliases": 5,
+      "uses": {
+        "assembly_considered": 12999,
+        "fcs_reported": 48451,
+        "project_considered": 27240,
+        "total_considered": 40239
+      }
+    }
+  }
+}
