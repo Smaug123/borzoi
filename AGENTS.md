@@ -61,14 +61,20 @@ This is a Cargo workspace with nine members:
   TypeSig::ByRef(_))`) silently stops firing when a modifier sits in front of
   it, and the compiler cannot catch that; the probe can, so read it before
   writing such a guard.
-  A *whole-DLL* skip is a different grade of failure and is gated at **zero**
-  by `projection_skip_sweep` (`#[ignore]`d, `BORZOI_DLL_SWEEP_ROOT`): with an
+  A *whole-assembly* skip is a different grade of failure, gated by
+  `projection_skip_sweep` (`#[ignore]`d, `BORZOI_DLL_SWEEP_ROOT`): with an
   assembly's types missing, no reading into any *other* assembly is provably
-  unshadowed, since the missing DLL could declare a colliding type or an
+  unshadowed, since the missing one could declare a colliding type or an
   assembly-level `[<AutoOpen>]`. So the reader localizes wherever it can — a
   `TypeRef` whose resolution scope is outside the modelled subset rides on the
   row (`Result<RefScope, UnsupportedScope>`) and costs only the types that walk
-  out through it. Run it before widening any parse-time refusal:
+  out through it. The sweep classifies each loss **by cause, not by path**:
+  every `.dll`/`.exe`/`.winmd` under the roots is probed, and any loss whose
+  cause is not on the sweep's short `EXEMPT` list fails the gate. Filtering to
+  "what NuGet could select as a compile asset" instead would mean rebuilding
+  `borzoi_nuget::assets` here, and an approximation that wrongly *excludes* a
+  file hides exactly the regression the gate exists to catch. Run it before
+  widening any parse-time refusal:
 
   ```sh
   BORZOI_DLL_SWEEP_ROOT=~/.nuget/packages \
