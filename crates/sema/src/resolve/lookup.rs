@@ -2520,7 +2520,7 @@ impl<'a> Resolver<'a> {
     /// (`container_path[..=j]`, the nearest enclosing module of the name) so the
     /// cross-file index — keyed by full paths — can be probed in the right frame
     /// regardless of nesting depth ([`Self::self_module_shadow_only`]).
-    fn self_qualified_member_path(&self, names: &[String]) -> Option<Vec<String>> {
+    pub(super) fn self_qualified_member_path(&self, names: &[String]) -> Option<Vec<String>> {
         let head = names.first()?;
         let depth = self.namespace_depth.min(self.container_path.len());
         let j = (depth..self.container_path.len())
