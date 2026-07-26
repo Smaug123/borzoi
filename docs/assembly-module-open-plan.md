@@ -64,8 +64,17 @@ what remains conservative is named (`residue`, `residue_below_vals`, `cross_kind
   the `cross_kind` demote deleted, replaced by per-name collision inside the fold writer
   plus the `cross_kind_ns_type` barrier (`decls.rs`).
 - **§7 matrices** — `namespace_fold_matrix.rs`, `module_open_matrix.rs`,
-  `project_half_matrix.rs` (harness `common/fold_matrix.rs`): the open-shapes product as
+  `project_half_matrix.rs`, `open_shortening_matrix.rs` (harness
+  `common/fold_matrix.rs`): the open-shapes product as
   FCS-diffed cells with a `KNOWN_GAPS` ratchet, the fold's executable specification.
+- **Shortening through an auto-open module** — an `open` path is itself shortened by the
+  `[<AutoOpen>]` modules an earlier (or implicit) open folded, transitively, each
+  out-ranking the container it came from (`Resolver::auto_open_shortening_prefixes`;
+  `open_shortening_matrix.rs`). This is what makes a bare `open Checked` name
+  `Operators.Checked`. `ShorteningPrefix` carries the *kind* of reading that produced each
+  prefix, so a namespace-only prefix folds no same-FQN module's auto-opens and vice versa;
+  the *contributor* it does not carry is the axis of the remaining declines, documented at
+  the function.
 - **Project-half machinery slice** — the `is_project_namespace_path` arm of the
   `cross_kind` blanket demote deleted; a project name outranks a same-named assembly one
   by push position (Q14); `open_project_namespace_values` recurses into `[<AutoOpen>]`
@@ -299,7 +308,8 @@ space: (child shape) × (placement: opened module / auto-open child / namespace 
 project half) × (contest). The matrix in the extension-visibility mould
 (`extension_visibility_matrix.rs`, PR #916, which found Slice A's gap on its first run) now
 covers all placements: `namespace_fold_matrix.rs`, `module_open_matrix.rs`,
-`project_half_matrix.rs`, sharing `common/fold_matrix.rs`. Each generates a fixture assembly
+`project_half_matrix.rs`, `open_shortening_matrix.rs`, sharing `common/fold_matrix.rs`.
+Each generates a fixture assembly
 (or a pair for cross-assembly cells) carrying every child shape, enumerates the open-shapes
 product as cells, and diffs each against the fsi-verified expectation with the extension
 matrix's `KNOWN_GAPS` bijection (**we commit `X` ⟹ FCS agrees** for soundness; **FCS
