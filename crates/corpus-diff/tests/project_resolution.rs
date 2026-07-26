@@ -345,11 +345,13 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
 /// `WoofWare.PawPrint`'s main library, 113 files behind one project reference,
 /// stayed unmeasured).
 ///
-/// The invariant is equality with [`SemanticState::reference_dlls_for_project`],
-/// not "contains the ref DLL": the oracle and the env must resolve against one
-/// reference set, and only the same *composition* guarantees that. The
-/// containment assertion is there so the equality cannot pass vacuously on two
-/// empty lists.
+/// The invariant is equality, not "contains the ref DLL": the oracle and the env
+/// must resolve against one reference set. The loader takes the refs from the
+/// env's own cache entry (`env_reference_dlls_for_project`), so this compares
+/// that stored list against an *independently* re-resolved one
+/// ([`SemanticState::reference_dlls_for_project`]) — which also pins that the two
+/// accessors agree where nothing has degraded. The containment assertion is there
+/// so the equality cannot pass vacuously on two empty lists.
 #[test]
 fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
     let tmp = tempfile::tempdir().expect("tempdir");

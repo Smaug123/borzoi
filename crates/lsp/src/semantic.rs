@@ -254,7 +254,7 @@ pub struct SemanticState {
     /// (first-declared — [`Workspace::served_tfm_for_project`]), so the
     /// extra key component is structural preparation for a TFM-override
     /// policy and makes "different TFM ⇒ different env" machine-checkable.
-    assembly_envs: HashMap<(PathBuf, Option<PathBuf>, ServedTfm), Arc<AssemblyEnv>>,
+    assembly_envs: HashMap<(PathBuf, Option<PathBuf>, ServedTfm), CachedAssemblyEnv>,
     /// Per-project resolved sema output: the Compile-order fold of
     /// [`borzoi_sema::resolve_project`] over the project's [`ProjectParses`] against its
     /// [`AssemblyEnv`]. Wrapped in [`Arc`] so handlers can return it without
@@ -641,6 +641,60 @@ impl SemanticState {
         workspace: &Workspace,
         restore_env: Option<&SdkDiscoveryEnv>,
     ) -> (Arc<AssemblyEnv>, bool) {
+        let (cached, retryable) = self.cached_assembly_env(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            restore_env,
+        );
+        (cached.env, retryable)
+    }
+
+    /// The reference DLLs the env this state *serves* for `project` was built
+    /// from, and a *retryable* flag: `true` when a transient C# sidecar failure
+    /// left the env incomplete, so nothing was cached and the next call may
+    /// resolve differently.
+    ///
+    /// Distinct from [`Self::reference_dlls_for_project`], which re-resolves from
+    /// scratch every call: this one comes out of the cache entry **alongside the
+    /// env**, so a consumer that needs both — an oracle fed the reference set
+    /// while its subject resolves against the env, as `borzoi-corpus-diff` does —
+    /// cannot get them from two resolutions that disagree. Two resolutions can
+    /// genuinely differ: a transient C# sidecar failure degrades one and a retry
+    /// recovers the other, and that is exactly what `retryable` reports. Nothing
+    /// is cached in that case, so a caller demanding one reference set must
+    /// **refuse** the project rather than pair a set with an env built from
+    /// another.
+    pub fn env_reference_dlls_for_project(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+    ) -> (Vec<PathBuf>, bool) {
+        let restore_env = self.restore_env(workspace);
+        let (cached, retryable) = self.cached_assembly_env(
+            project,
+            dotnet_root,
+            target_framework,
+            workspace,
+            restore_env,
+        );
+        (cached.dlls.to_vec(), retryable)
+    }
+
+    /// The cache entry for `project`'s env: the env and the reference-DLL list
+    /// it was built from, which are one resolution's two outputs and are cached
+    /// as one value so they cannot drift apart.
+    fn cached_assembly_env(
+        &mut self,
+        project: &Path,
+        dotnet_root: Option<&Path>,
+        target_framework: &ServedTfm,
+        workspace: &Workspace,
+        restore_env: Option<&SdkDiscoveryEnv>,
+    ) -> (CachedAssemblyEnv, bool) {
         // Key on the three *value* inputs `build_assembly_env` reads. Without
         // the root in the key, a lookup made before the SDK root is known
         // (`None`, or a wrong root) would cache an empty env under the project
@@ -659,8 +713,8 @@ impl SemanticState {
             dotnet_root.map(canonicalise),
             target_framework.clone(),
         );
-        if let Some(env) = self.assembly_envs.get(&key) {
-            return (Arc::clone(env), false);
+        if let Some(cached) = self.assembly_envs.get(&key) {
+            return (cached.clone(), false);
         }
         // The reference EDGES come from the parsed `<ProjectReference>` graph
         // (plan E1), evaluated fresh off-cache so they reflect current disk —
@@ -678,7 +732,7 @@ impl SemanticState {
         // Borrow `assembly_cache` (shared) and `sidecar` (mut) as disjoint
         // fields — the sidecar drives any C# `.csproj` references this project
         // has, lazily spawning on first need.
-        let (env, retryable) = build_assembly_env(
+        let (env, dlls, retryable) = build_assembly_env(
             project,
             dotnet_root,
             target_framework,
@@ -688,7 +742,10 @@ impl SemanticState {
             &recovered_ref_tfms,
             restore_env,
         );
-        let env = Arc::new(env);
+        let cached = CachedAssemblyEnv {
+            env: Arc::new(env),
+            dlls: dlls.into(),
+        };
         // A *transient* C# sidecar transport failure (`retryable`) is the only
         // reason not to cache: the handle was dropped for respawn, so the next
         // request should re-attempt the C# metadata rather than be served this
@@ -705,9 +762,9 @@ impl SemanticState {
                 "not caching assembly env after a transient C# sidecar failure; will retry on next request"
             );
         } else {
-            self.assembly_envs.insert(key, Arc::clone(&env));
+            self.assembly_envs.insert(key, cached.clone());
         }
-        (env, retryable)
+        (cached, retryable)
     }
 
     /// The [`ResolvedProject`] for `project` **paired with the exact
@@ -1311,8 +1368,19 @@ fn build_parses(
     })
 }
 
+/// An [`AssemblyEnv`] and the reference-DLL list it was built from: one
+/// resolution's two outputs, cached as one value so nothing can pair a
+/// reference set with an env built from a *different* resolution (see
+/// [`SemanticState::env_reference_dlls_for_project`]).
+#[derive(Debug, Clone)]
+struct CachedAssemblyEnv {
+    env: Arc<AssemblyEnv>,
+    dlls: Arc<[PathBuf]>,
+}
+
 /// Build the assembly env for a fresh cache miss. Always returns *some*
-/// env — empty if anything went wrong (D5 degrades to under-resolution).
+/// env — empty if anything went wrong (D5 degrades to under-resolution) — and
+/// the reference-DLL list it was built from.
 ///
 /// The `bool` is *retryable*: `true` when a C# sidecar **transport** failure
 /// left the env incomplete but a retry (after respawn) might succeed, so the
@@ -1329,7 +1397,7 @@ fn build_assembly_env(
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
-) -> (AssemblyEnv, bool) {
+) -> (AssemblyEnv, Vec<PathBuf>, bool) {
     let _span = tracing::info_span!("build_assembly_env", project = %project.display()).entered();
     let (dlls, retryable) = resolve_reference_dlls(
         project,
@@ -1340,10 +1408,8 @@ fn build_assembly_env(
         recovered_ref_tfms,
         restore_env,
     );
-    (
-        build_env_from_dll_paths(dlls.iter().map(PathBuf::as_path), cache),
-        retryable,
-    )
+    let env = build_env_from_dll_paths(dlls.iter().map(PathBuf::as_path), cache);
+    (env, dlls, retryable)
 }
 
 /// The project-reference targets the env fold consumes, derived from the

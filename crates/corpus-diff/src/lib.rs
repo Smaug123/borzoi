@@ -17,7 +17,7 @@ use std::time::Duration;
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
 use borzoi::handlers::smallest_resolution_with_range;
-use borzoi::project_assets::resolve_assemblies_root_only;
+use borzoi::project_assets::{resolve_assemblies_for_tfm, resolve_assemblies_root_only};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::{ProjectParses, SemanticState};
 use borzoi::workspace::Workspace;
@@ -139,6 +139,10 @@ pub enum LoadSkip {
         max_files: NonZeroUsize,
     },
     SemanticUnavailable,
+    /// The LSP declined to cache this project's reference set (a transient C#
+    /// sidecar transport failure), so the oracle's references and the env the
+    /// fold resolves against would come from two different resolutions.
+    ReferenceSetUnstable,
 }
 
 impl fmt::Display for LoadSkip {
@@ -155,6 +159,10 @@ impl fmt::Display for LoadSkip {
                 write!(f, "too many Compile items ({files} > {max_files})")
             }
             Self::SemanticUnavailable => f.write_str("LSP semantic project load returned None"),
+            Self::ReferenceSetUnstable => f.write_str(
+                "the reference set was not cacheable (transient C# sidecar failure), so the \
+                 oracle and the fold would see different assemblies",
+            ),
         }
     }
 }
@@ -272,7 +280,7 @@ pub fn load_lsp_project_with_options(
 
     let define_constants = parsed.define_constants.clone();
     let lang_version = parsed.lang_version.clone();
-    let (fcs_extra_refs, project_assets) = fcs_extra_refs(project, &mut workspace, &mut semantic);
+    let (fcs_extra_refs, project_assets) = fcs_extra_refs(project, &mut workspace, &mut semantic)?;
     let parses = semantic
         .parses_for_project(project, &mut workspace, &docs)
         .cloned()
@@ -304,9 +312,10 @@ pub fn load_lsp_project_with_options(
 /// The reference set to hand the oracle, and what the project's assets file
 /// said.
 ///
-/// The refs are [`SemanticState::reference_dlls_for_project`] — the *same*
-/// composition [`SemanticState::assembly_env_for_project`] folds into the
-/// `AssemblyEnv` this run compares against: the assets file's package and
+/// The refs are [`SemanticState::env_reference_dlls_for_project`] — not merely
+/// the same *composition* the `AssemblyEnv` this run compares against is built
+/// from, but the very list *that* env was built from, out of the same cache
+/// entry: the assets file's package and
 /// framework DLLs, each F# `<ProjectReference>`'s built output DLL, and the C#
 /// sidecar's metadata DLLs. Composing a second set here from the assets file
 /// alone is what kept every project with a `<ProjectReference>` out of the
@@ -322,35 +331,50 @@ pub fn load_lsp_project_with_options(
 /// cannot change a verdict), and dropping either would recreate the asymmetry
 /// this exists to remove.
 ///
-/// [`ProjectAssetsStatus`] still describes the **assets file**, so its counts
-/// cover only the assets-derived part of the set; a reference the composition
-/// adds (an F# project ref) or omits (an unbuilt one) is not visible in them.
+/// A project whose reference set the LSP declined to *cache* — a transient C#
+/// sidecar transport failure — is refused ([`LoadSkip::ReferenceSetUnstable`]):
+/// nothing then guarantees the fold below resolves against the env these refs
+/// built, and a comparison across two reference sets is not evidence either way.
+///
+/// [`ProjectAssetsStatus`] describes the **assets file**, so its counts cover
+/// only the assets-derived part of the set; a reference the composition adds (an
+/// F# project ref) or omits (an unbuilt one) is not visible in them. It reads
+/// that file the way the env fold does — by the served TFM where one is known,
+/// which is the only way a multi-target restore resolves at all — so a status of
+/// `ResolutionFailed` still means the refs above are empty for the same reason.
 fn fcs_extra_refs(
     project: &Path,
     workspace: &mut Workspace,
     semantic: &mut SemanticState,
-) -> (Vec<PathBuf>, ProjectAssetsStatus) {
+) -> Result<(Vec<PathBuf>, ProjectAssetsStatus), LoadSkip> {
     let Some(dir) = project.parent() else {
-        return (Vec::new(), ProjectAssetsStatus::ProjectDirectoryUnavailable);
+        return Ok((Vec::new(), ProjectAssetsStatus::ProjectDirectoryUnavailable));
     };
     let assets = dir.join("obj").join("project.assets.json");
     if !assets.is_file() {
-        return (Vec::new(), ProjectAssetsStatus::Missing { path: assets });
+        return Ok((Vec::new(), ProjectAssetsStatus::Missing { path: assets }));
     }
     let Some(dotnet_root) = workspace.dotnet_root_for_project(project) else {
-        return (
+        return Ok((
             Vec::new(),
             ProjectAssetsStatus::DotnetRootUnavailable { path: assets },
-        );
+        ));
     };
     let target_framework = workspace.served_tfm_for_project(project);
-    let refs = semantic.reference_dlls_for_project(
+    let (refs, retryable) = semantic.env_reference_dlls_for_project(
         project,
         Some(dotnet_root.as_path()),
         &target_framework,
         workspace,
     );
-    let status = match resolve_assemblies_root_only(&assets, &dotnet_root) {
+    if retryable {
+        return Err(LoadSkip::ReferenceSetUnstable);
+    }
+    let assets_resolve = match target_framework.as_deref() {
+        Some(tfm) => resolve_assemblies_for_tfm(&assets, &dotnet_root, tfm),
+        None => resolve_assemblies_root_only(&assets, &dotnet_root),
+    };
+    let status = match assets_resolve {
         Ok(resolved) => ProjectAssetsStatus::Resolved {
             path: assets,
             package_dlls: resolved.package_dlls.len(),
@@ -362,7 +386,7 @@ fn fcs_extra_refs(
             message: err.to_string(),
         },
     };
-    (refs, status)
+    Ok((refs, status))
 }
 
 fn items_uncertainty_details(parsed: &ParsedProject) -> LoadUncertaintyDetails {
