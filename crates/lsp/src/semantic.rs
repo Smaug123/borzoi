@@ -646,7 +646,7 @@ impl SemanticState {
             &recovered_ref_tfms,
             None,
         )
-        .0
+        .dlls
     }
 
     /// [`Self::assembly_env_for_project`] plus a *retryable* flag: `true` when a
@@ -1421,7 +1421,7 @@ fn build_assembly_env(
     restore_env: Option<&SdkDiscoveryEnv>,
 ) -> (AssemblyEnv, Vec<PathBuf>, bool) {
     let _span = tracing::info_span!("build_assembly_env", project = %project.display()).entered();
-    let (dlls, retryable) = resolve_reference_dlls(
+    let refs = resolve_reference_dlls(
         project,
         dotnet_root,
         target_framework,
@@ -1430,8 +1430,144 @@ fn build_assembly_env(
         recovered_ref_tfms,
         restore_env,
     );
-    let (env, kept) = build_env_from_dll_paths(dlls.iter().map(PathBuf::as_path), cache);
-    (env, kept, retryable)
+    let (mut env, kept) = build_env_from_dll_paths(refs.dlls.iter().map(PathBuf::as_path), cache);
+    // A declared reference we **tried and failed to read** leaves its identity
+    // and types unknown, which is the same hazard a skipped DLL poses and the
+    // one `identities_incomplete` models — but it never reaches
+    // `build_env_from_dll_paths`, because the failure happened before there was
+    // a path to hand it. So the mark is applied here, where the reference-side
+    // outcomes live, rather than inside the projector.
+    let unread: Vec<(&Path, &str)> = refs.unread().collect();
+    if !unread.is_empty() {
+        tracing::warn!(
+            project = %project.display(),
+            references = ?unread,
+            "project references could not be read; the env's identity set is incomplete"
+        );
+        env.mark_referenced_assemblies_incomplete();
+    }
+    // Unbuilt references are logged but deliberately not an incompleteness —
+    // see `ReferenceOutcome::NotBuilt` for the trade.
+    let not_built: Vec<&Path> = refs.not_built().collect();
+    if !not_built.is_empty() {
+        tracing::info!(
+            project = %project.display(),
+            references = ?not_built,
+            "project references have no built output; their types are unavailable until built"
+        );
+    }
+    (env, kept, refs.retryable)
+}
+
+/// What one declared `<ProjectReference>` edge contributed to the env.
+///
+/// Every edge in [`GraphRefTargets`] yields exactly one of these. That
+/// conservation is the point of the type: an omission used to be *inferred*
+/// from a shortfall — a reference that resolved to no DLL simply left nothing
+/// behind, indistinguishable from one that was never declared — so nothing
+/// downstream could tell that a reference was missing at all. It is the same
+/// shape the per-path `SkipCause` replaced in [`build_env_from_dll_paths`],
+/// and for the same reason: a count cannot say *which* thing is absent, or why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ReferenceOutcome {
+    /// The edge contributed these DLLs. A C# edge contributes its whole
+    /// transitive closure, so this is not always a single path; an F# one is.
+    Resolved(Vec<PathBuf>),
+    /// The referenced project's output does not exist: nobody has built it.
+    ///
+    /// Its types are unknown, exactly as an unread DLL's are — and this
+    /// deliberately **does not** mark the env incomplete, which is unsound and
+    /// is a decision rather than an oversight. Every project reference is
+    /// unbuilt in a freshly cloned, restored-but-unbuilt workspace, so grading
+    /// this with the rest would take the whole project's referenced-assembly
+    /// surface — the BCL included — dark until someone runs a build, to guard
+    /// against a sibling project shadowing a framework type. The durable fix is
+    /// to resolve project references from *source* (what FCS does), which
+    /// removes the choice; until then the trade is stated, not hidden.
+    NotBuilt,
+    /// We tried to read the reference and could not: a sidecar build or
+    /// transport failure, no producer TFM, no trustworthy TFM or output-name
+    /// verdict. Its identity and types are unknown, which is the hazard
+    /// [`AssemblyEnv::identities_incomplete`] models, so this marks the env
+    /// incomplete and every assembly reading defers.
+    ///
+    /// Unlike [`Self::NotBuilt`] there is nothing the user can obviously do,
+    /// and no reason to expect the state to clear on its own — declining is
+    /// both sound and the only honest answer.
+    Unread(&'static str),
+}
+
+/// One declared project-reference edge and what it contributed. See
+/// [`ReferenceOutcome`] for why every edge gets an entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReferenceEdge {
+    /// The referenced project file, canonicalised as the graph walk saw it.
+    project: PathBuf,
+    outcome: ReferenceOutcome,
+}
+
+/// Everything [`resolve_reference_dlls`] found: the DLL list the env folds, and
+/// one [`ReferenceEdge`] per declared project-reference edge saying what became
+/// of it.
+struct ReferenceSet {
+    /// The composed reference DLLs, in fold order (package, framework, F# refs,
+    /// C# refs) — the order matters, because [`build_env_from_dll_paths`]
+    /// assigns each assembly an id by position.
+    dlls: Vec<PathBuf>,
+    /// One entry per declared edge, in `fsharp` then `csharp` order.
+    edges: Vec<ReferenceEdge>,
+    /// See [`build_assembly_env`]'s *retryable*.
+    retryable: bool,
+}
+
+impl ReferenceSet {
+    /// The resolution declined before it reached the project-reference edges —
+    /// an untrusted TFM verdict, no dotnet root, no assets file, a failed
+    /// resolve. The env is empty, so it makes no assembly reading at all and
+    /// there is nothing for a missing reference to be wrong about; claiming
+    /// edges here would only invent a degradation nobody can observe.
+    fn declined(retryable: bool) -> Self {
+        ReferenceSet {
+            dlls: Vec::new(),
+            edges: Vec::new(),
+            retryable,
+        }
+    }
+
+    /// The references we tried to read and could not, with the cause — the
+    /// grade that makes the env's identity set incomplete.
+    fn unread(&self) -> impl Iterator<Item = (&Path, &'static str)> {
+        self.edges.iter().filter_map(|e| match e.outcome {
+            ReferenceOutcome::Unread(why) => Some((e.project.as_path(), why)),
+            ReferenceOutcome::Resolved(_) | ReferenceOutcome::NotBuilt => None,
+        })
+    }
+
+    /// The referenced projects nobody has built yet. Deliberately *not* an
+    /// incompleteness (see [`ReferenceOutcome::NotBuilt`]); surfaced so the user
+    /// can be told which project to build.
+    fn not_built(&self) -> impl Iterator<Item = &Path> {
+        self.edges.iter().filter_map(|e| match e.outcome {
+            ReferenceOutcome::NotBuilt => Some(e.project.as_path()),
+            ReferenceOutcome::Resolved(_) | ReferenceOutcome::Unread(_) => None,
+        })
+    }
+}
+
+/// The DLLs `edges` contributed, sorted and deduped — two edges can reach the
+/// same file (a diamond in the C# closure), and the env must fold it once.
+fn edge_dlls(edges: &[ReferenceEdge]) -> Vec<PathBuf> {
+    let mut dlls: Vec<PathBuf> = edges
+        .iter()
+        .filter_map(|e| match &e.outcome {
+            ReferenceOutcome::Resolved(paths) => Some(paths.iter().cloned()),
+            ReferenceOutcome::NotBuilt | ReferenceOutcome::Unread(_) => None,
+        })
+        .flatten()
+        .collect();
+    dlls.sort();
+    dlls.dedup();
+    dlls
 }
 
 /// The project-reference targets the env fold consumes, derived from the
@@ -1526,7 +1662,7 @@ fn resolve_reference_dlls(
     ref_targets: &GraphRefTargets,
     recovered_ref_tfms: &BTreeMap<PathBuf, String>,
     restore_env: Option<&SdkDiscoveryEnv>,
-) -> (Vec<PathBuf>, bool) {
+) -> ReferenceSet {
     // An untrusted TFM verdict serves nothing (3.3d round 19). This is NOT
     // the `NoneDeclared` fallback below: with no declared TFM the restore is
     // the only evidence and its sole target is sound, but here the evidence
@@ -1542,14 +1678,14 @@ fn resolve_reference_dlls(
             project = %project.display(),
             "entry TFM provenance is untrusted; assembly env defaults to empty"
         );
-        return (Vec::new(), false);
+        return ReferenceSet::declined(false);
     }
     let Some(dotnet_root) = dotnet_root else {
         tracing::info!(
             project = %project.display(),
             "no dotnet_root; assembly env defaults to empty"
         );
-        return (Vec::new(), false);
+        return ReferenceSet::declined(false);
     };
     let assets_path = match project.parent() {
         Some(dir) => dir.join("obj").join("project.assets.json"),
@@ -1558,7 +1694,7 @@ fn resolve_reference_dlls(
                 project = %project.display(),
                 "project path has no parent; assembly env defaults to empty"
             );
-            return (Vec::new(), false);
+            return ReferenceSet::declined(false);
         }
     };
     // Assets file present → read restore output (the authoritative path).
@@ -1599,7 +1735,7 @@ fn resolve_reference_dlls(
                     error = %err,
                     "resolve_assemblies_root_only failed; assembly env defaults to empty"
                 );
-                return (Vec::new(), false);
+                return ReferenceSet::declined(false);
             }
         }
     } else {
@@ -1619,7 +1755,7 @@ fn resolve_reference_dlls(
                     "no project.assets.json and the on-demand restore declined; \
                      assembly env defaults to empty"
                 );
-                return (Vec::new(), false);
+                return ReferenceSet::declined(false);
             }
             RestoreOutcome::TransientFailure => {
                 // Don't cache: a spawn error / timeout / wedge may clear, and the
@@ -1629,7 +1765,7 @@ fn resolve_reference_dlls(
                     project = %project.display(),
                     "on-demand restore failed transiently; not caching, will retry"
                 );
-                return (Vec::new(), true);
+                return ReferenceSet::declined(true);
             }
         }
     };
@@ -1639,8 +1775,9 @@ fn resolve_reference_dlls(
     // sibling F# project's types. A reference whose output isn't built is
     // silently skipped (D5: under-resolve, never wrong) — the same graceful
     // degradation the un-restored and unparseable-DLL paths already use.
-    let ref_dlls =
-        fsharp_project_ref_dlls(&ref_targets.fsharp, &resolved.project_ref_assembly_names);
+    let fsharp_edges =
+        fsharp_project_ref_edges(&ref_targets.fsharp, &resolved.project_ref_assembly_names);
+    let ref_dlls = edge_dlls(&fsharp_edges);
     if !ref_dlls.is_empty() {
         tracing::info!(
             project = %project.display(),
@@ -1654,7 +1791,7 @@ fn resolve_reference_dlls(
     // fails (D5); a transport failure additionally marks the env non-cacheable
     // so the next request retries against a respawned sidecar rather than
     // serving this incomplete one.
-    let (csharp_ref_dlls, retryable) = csharp_project_ref_dlls(
+    let (csharp_edges, retryable) = csharp_project_ref_edges(
         sidecar,
         project,
         dotnet_root,
@@ -1662,6 +1799,7 @@ fn resolve_reference_dlls(
         &ref_targets.csharp,
         &resolved.project_ref_tfms,
     );
+    let csharp_ref_dlls = edge_dlls(&csharp_edges);
     if !csharp_ref_dlls.is_empty() {
         tracing::info!(
             project = %project.display(),
@@ -1676,7 +1814,23 @@ fn resolve_reference_dlls(
         .chain(ref_dlls)
         .chain(csharp_ref_dlls)
         .collect();
-    (dlls, retryable)
+    let edges: Vec<ReferenceEdge> = fsharp_edges.into_iter().chain(csharp_edges).collect();
+    // Conservation: every declared edge is accounted for, so a reference that
+    // contributed nothing is *recorded* as missing rather than inferred from a
+    // shortfall — the distinction the whole grade rests on. A `debug_assert`
+    // rather than a hard error: a miscount would mean a reference silently
+    // stopped being tracked, which the suite must catch, but in release the
+    // right degradation is to serve what we have.
+    debug_assert_eq!(
+        edges.len(),
+        ref_targets.fsharp.len() + ref_targets.csharp.len(),
+        "every declared project-reference edge must yield exactly one outcome"
+    );
+    ReferenceSet {
+        dlls,
+        edges,
+        retryable,
+    }
 }
 
 /// The C# metadata DLLs for the graph's `.csproj` boundary targets
@@ -1702,23 +1856,41 @@ fn resolve_reference_dlls(
 /// is [`entry_ref_tfms`]'s per-producer map (Phase 2b rooted at the entry);
 /// a ref it doesn't cover falls back to `base_tfms` — the entry assets'
 /// base-form record (exact in the common no-suffix case).
-fn csharp_project_ref_dlls(
+/// One [`ReferenceEdge`] per `csproj_refs` entry, in input order, plus the
+/// *retryable* flag. A C# reference is built on demand by the sidecar, so
+/// [`ReferenceOutcome::NotBuilt`] never arises here — every failure is a
+/// failure to *read*, and grades as [`ReferenceOutcome::Unread`].
+fn csharp_project_ref_edges(
     sidecar: &mut SidecarManager,
     project: &Path,
     dotnet_root: &Path,
     recovered: &BTreeMap<PathBuf, String>,
     csproj_refs: &[PathBuf],
     base_tfms: &BTreeMap<PathBuf, String>,
-) -> (Vec<PathBuf>, bool) {
+) -> (Vec<ReferenceEdge>, bool) {
     if csproj_refs.is_empty() {
         return (Vec::new(), false);
     }
+    let unread = |why| {
+        (
+            csproj_refs
+                .iter()
+                .map(|csproj| ReferenceEdge {
+                    project: csproj.clone(),
+                    outcome: ReferenceOutcome::Unread(why),
+                })
+                .collect(),
+            false,
+        )
+    };
     let Some(workspace_root) = project.parent() else {
-        return (Vec::new(), false);
+        // Nowhere to publish the sidecar's output, so *no* C# reference can be
+        // read — every edge is unread, not silently absent.
+        return unread("the entry project path has no parent directory");
     };
     let dotnet_exe = dotnet_exe_for(dotnet_root);
 
-    let mut dlls: Vec<PathBuf> = Vec::new();
+    let mut edges: Vec<ReferenceEdge> = Vec::with_capacity(csproj_refs.len());
     let mut retryable = false;
     for csproj in csproj_refs {
         let Some(tfm) = recovered.get(csproj).or_else(|| base_tfms.get(csproj)) else {
@@ -1726,6 +1898,10 @@ fn csharp_project_ref_dlls(
                 csproj = %csproj.display(),
                 "no producer TFM known for C# project reference (not yet restored?); skipping"
             );
+            edges.push(ReferenceEdge {
+                project: csproj.clone(),
+                outcome: ReferenceOutcome::Unread("no producer TFM known"),
+            });
             continue;
         };
         let tfm = tfm.as_str();
@@ -1743,11 +1919,21 @@ fn csharp_project_ref_dlls(
             &project_tfms,
         );
         retryable |= meta.retryable;
-        dlls.extend(meta.dlls);
+        // `CsharpMetadata::dlls` is empty on *any* failure and a successful
+        // build always emits at least the entry's own metadata DLL, so an empty
+        // list is the sidecar reporting that it could not deliver this
+        // reference — a transport failure, a build error, or an unavailable
+        // sidecar.
+        edges.push(ReferenceEdge {
+            project: csproj.clone(),
+            outcome: if meta.dlls.is_empty() {
+                ReferenceOutcome::Unread("the sidecar produced no metadata assembly")
+            } else {
+                ReferenceOutcome::Resolved(meta.dlls)
+            },
+        });
     }
-    dlls.sort();
-    dlls.dedup();
-    (dlls, retryable)
+    (edges, retryable)
 }
 
 /// Phase 2b rooted at the **entry** project (fsproj 3.3c, plan E3): the
@@ -1856,44 +2042,61 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
 /// right. A ref with neither is skipped outright rather than guessed by
 /// project-file stem: a renamed producer may leave a stale stem-named DLL
 /// on disk, and folding it would fabricate (D5: under-resolve, never wrong).
-fn fsharp_project_ref_dlls(
+/// One [`ReferenceEdge`] per input target, in input order — see
+/// [`ReferenceOutcome`] for why an edge that contributes nothing still gets an
+/// entry, and which grade each refusal earns.
+fn fsharp_project_ref_edges(
     project_refs: &[FsharpRefTarget],
     assembly_names: &BTreeMap<PathBuf, String>,
-) -> Vec<PathBuf> {
-    let mut dlls: Vec<PathBuf> = project_refs
+) -> Vec<ReferenceEdge> {
+    project_refs
         .iter()
-        .filter(|t| is_fsharp_project(&t.path))
-        .filter_map(|t| {
-            let Some(output_name) = t
-                .output_name
-                .as_deref()
-                .or_else(|| assembly_names.get(t.path.as_path()).map(String::as_str))
-            else {
-                tracing::info!(
-                    fsproj = %t.path.display(),
-                    "project reference without a trustworthy output-assembly name; skipping its output"
-                );
-                return None;
-            };
-            match &t.tfm {
-                NodeTfm::Known(tfm) => {
-                    locate_fsharp_output_dll(&t.path, Some(tfm), output_name)
-                }
-                NodeTfm::NoneDeclared => locate_fsharp_output_dll(&t.path, None, output_name),
-                NodeTfm::Unresolved | NodeTfm::NotEvaluated => {
-                    tracing::info!(
-                        fsproj = %t.path.display(),
-                        verdict = ?t.tfm,
-                        "project reference without a trustworthy TFM verdict; skipping its output"
-                    );
-                    None
-                }
-            }
+        .map(|t| ReferenceEdge {
+            project: t.path.clone(),
+            outcome: fsharp_project_ref_outcome(t, assembly_names),
         })
-        .collect();
-    dlls.sort();
-    dlls.dedup();
-    dlls
+        .collect()
+}
+
+fn fsharp_project_ref_outcome(
+    t: &FsharpRefTarget,
+    assembly_names: &BTreeMap<PathBuf, String>,
+) -> ReferenceOutcome {
+    // `graph_ref_targets` only files `ProjectKind::FSharp` nodes here, so this
+    // is belt-and-braces — but a builder change that broke it must not silently
+    // drop an edge, which is exactly what conservation is for.
+    if !is_fsharp_project(&t.path) {
+        return ReferenceOutcome::Unread("not an F# project");
+    }
+    let Some(output_name) = t
+        .output_name
+        .as_deref()
+        .or_else(|| assembly_names.get(t.path.as_path()).map(String::as_str))
+    else {
+        tracing::info!(
+            fsproj = %t.path.display(),
+            "project reference without a trustworthy output-assembly name; skipping its output"
+        );
+        return ReferenceOutcome::Unread("no trustworthy output-assembly name");
+    };
+    let located = match &t.tfm {
+        NodeTfm::Known(tfm) => locate_fsharp_output_dll(&t.path, Some(tfm), output_name),
+        NodeTfm::NoneDeclared => locate_fsharp_output_dll(&t.path, None, output_name),
+        NodeTfm::Unresolved | NodeTfm::NotEvaluated => {
+            tracing::info!(
+                fsproj = %t.path.display(),
+                verdict = ?t.tfm,
+                "project reference without a trustworthy TFM verdict; skipping its output"
+            );
+            return ReferenceOutcome::Unread("no trustworthy TFM verdict");
+        }
+    };
+    // A trustworthy name and TFM but no file: the project simply has not been
+    // built. The one grade that does *not* mark the env incomplete.
+    match located {
+        Some(dll) => ReferenceOutcome::Resolved(vec![dll]),
+        None => ReferenceOutcome::NotBuilt,
+    }
 }
 
 /// Given a referenced F# project file, find its built output DLL under
@@ -4065,6 +4268,26 @@ mod tests {
         }
     }
 
+    /// The DLLs the F# reference edges contributed — what the pre-conservation
+    /// `fsharp_project_ref_dlls` returned, for the tests that are about *which
+    /// output* a ref resolves to rather than about the grade it earns.
+    fn fsharp_ref_paths(
+        project_refs: &[FsharpRefTarget],
+        assembly_names: &BTreeMap<PathBuf, String>,
+    ) -> Vec<PathBuf> {
+        edge_dlls(&fsharp_project_ref_edges(project_refs, assembly_names))
+    }
+
+    /// The single outcome of a one-edge resolution.
+    fn fsharp_ref_outcome(
+        project_refs: &[FsharpRefTarget],
+        assembly_names: &BTreeMap<PathBuf, String>,
+    ) -> ReferenceOutcome {
+        let edges = fsharp_project_ref_edges(project_refs, assembly_names);
+        assert_eq!(edges.len(), 1, "helper is for a single edge");
+        edges.into_iter().next().expect("one edge").outcome
+    }
+
     #[test]
     fn fsharp_project_ref_dlls_uses_the_node_tfm() {
         let tmp = TempDir::new().unwrap();
@@ -4073,7 +4296,7 @@ mod tests {
         write(&eight, "");
         std::fs::write(&eight, b"eight").unwrap();
 
-        let dlls = fsharp_project_ref_dlls(
+        let dlls = fsharp_ref_paths(
             &[ref_target(proj, NodeTfm::Known("net8.0".to_string()))],
             &BTreeMap::new(),
         );
@@ -4092,8 +4315,7 @@ mod tests {
     fn fsharp_project_ref_dlls_skips_unresolved_tfm() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(&tmp.path().join("Fs"), "Fs", "Debug", "net10.0", b"ten");
-        let dlls =
-            fsharp_project_ref_dlls(&[ref_target(proj, NodeTfm::Unresolved)], &BTreeMap::new());
+        let dlls = fsharp_ref_paths(&[ref_target(proj, NodeTfm::Unresolved)], &BTreeMap::new());
         assert!(dlls.is_empty(), "{dlls:?}");
     }
 
@@ -4108,8 +4330,7 @@ mod tests {
     fn fsharp_project_ref_dlls_skips_not_evaluated() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(&tmp.path().join("Fs"), "Fs", "Debug", "net10.0", b"ten");
-        let dlls =
-            fsharp_project_ref_dlls(&[ref_target(proj, NodeTfm::NotEvaluated)], &BTreeMap::new());
+        let dlls = fsharp_ref_paths(&[ref_target(proj, NodeTfm::NotEvaluated)], &BTreeMap::new());
         assert!(dlls.is_empty(), "{dlls:?}");
     }
 
@@ -4128,7 +4349,7 @@ mod tests {
             ref_target(cs_proj.clone(), NodeTfm::NotEvaluated),
             ref_target(fs_proj.clone(), NodeTfm::NoneDeclared),
         ];
-        let dlls = fsharp_project_ref_dlls(&refs, &BTreeMap::new());
+        let dlls = fsharp_ref_paths(&refs, &BTreeMap::new());
         assert_eq!(dlls.len(), 1, "{dlls:?}");
         assert!(
             dlls[0].ends_with("Fs/bin/Debug/net10.0/Fs.dll"),
@@ -4142,7 +4363,7 @@ mod tests {
         // The same F# project listed twice contributes its output DLL once.
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(&tmp.path().join("Fs"), "Fs", "Debug", "net10.0", b"fs");
-        let dlls = fsharp_project_ref_dlls(
+        let dlls = fsharp_ref_paths(
             &[
                 ref_target(proj.clone(), NodeTfm::NoneDeclared),
                 ref_target(proj, NodeTfm::NoneDeclared),
@@ -4175,7 +4396,7 @@ mod tests {
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: Some("Renamed".to_string()),
         }];
-        let dlls = fsharp_project_ref_dlls(&refs, &BTreeMap::new());
+        let dlls = fsharp_ref_paths(&refs, &BTreeMap::new());
         assert_eq!(dlls.len(), 1, "{dlls:?}");
         assert!(
             dlls[0].ends_with("Fs/bin/Debug/net10.0/Renamed.dll"),
@@ -4203,7 +4424,7 @@ mod tests {
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: None,
         }];
-        let dlls = fsharp_project_ref_dlls(&refs, &BTreeMap::new());
+        let dlls = fsharp_ref_paths(&refs, &BTreeMap::new());
         assert!(dlls.is_empty(), "{dlls:?}");
     }
 
@@ -4232,7 +4453,7 @@ mod tests {
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: Some("FsFileName".to_string()),
         }];
-        let dlls = fsharp_project_ref_dlls(&refs, &names);
+        let dlls = fsharp_ref_paths(&refs, &names);
         assert_eq!(dlls.len(), 1, "{dlls:?}");
         assert!(
             dlls[0].ends_with("Fs/bin/Debug/net10.0/FsFileName.dll"),
@@ -4257,13 +4478,153 @@ mod tests {
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: None,
         }];
-        let dlls = fsharp_project_ref_dlls(&refs, &names);
+        let dlls = fsharp_ref_paths(&refs, &names);
         assert_eq!(dlls.len(), 1, "{dlls:?}");
         assert!(
             dlls[0].ends_with("Fs/bin/Debug/net10.0/FromAssets.dll"),
             "{:?}",
             dlls[0]
         );
+    }
+
+    // ---- reference-edge conservation and grading --------------------------
+
+    /// Every declared edge yields exactly one outcome, whatever became of it.
+    ///
+    /// This is the property the whole grade rests on: before it, a reference
+    /// that resolved to no DLL left nothing behind and was indistinguishable
+    /// from one that was never declared, so nothing downstream could tell a
+    /// reference was missing. A count of paths cannot say *which* is absent —
+    /// a C# edge contributes a whole closure, an F# one contributes one path or
+    /// none — which is exactly why the omission went unnoticed.
+    #[test]
+    fn every_declared_edge_yields_exactly_one_outcome() {
+        let tmp = TempDir::new().unwrap();
+        // A spread over every F# grade at once: built, unbuilt, untrustworthy
+        // verdict, no output name, and a non-F# path the filing should never
+        // produce.
+        let built = built_fsproj(&tmp.path().join("Built"), "Built", "Debug", "net10.0", b"x");
+        let unbuilt = tmp.path().join("Unbuilt").join("Unbuilt.fsproj");
+        write(&unbuilt, "<Project />");
+        let stray = tmp.path().join("Stray").join("Stray.csproj");
+        write(&stray, "<Project />");
+        let refs = vec![
+            ref_target(built, NodeTfm::Known("net10.0".into())),
+            ref_target(unbuilt.clone(), NodeTfm::Known("net10.0".into())),
+            ref_target(unbuilt.clone(), NodeTfm::Unresolved),
+            FsharpRefTarget {
+                path: unbuilt,
+                tfm: NodeTfm::Known("net10.0".into()),
+                output_name: None,
+            },
+            ref_target(stray, NodeTfm::Known("net10.0".into())),
+        ];
+
+        let edges = fsharp_project_ref_edges(&refs, &BTreeMap::new());
+        assert_eq!(
+            edges.len(),
+            refs.len(),
+            "one outcome per declared edge, got {edges:?}"
+        );
+        for (edge, target) in edges.iter().zip(&refs) {
+            assert_eq!(edge.project, target.path, "outcomes stay in edge order");
+        }
+    }
+
+    /// The grades themselves, since only [`ReferenceOutcome::Unread`] makes the
+    /// env incomplete and confusing two of them is a soundness change.
+    #[test]
+    fn an_unbuilt_reference_grades_apart_from_an_unreadable_one() {
+        let tmp = TempDir::new().unwrap();
+        let built = built_fsproj(&tmp.path().join("Built"), "Built", "Debug", "net10.0", b"x");
+        let unbuilt = tmp.path().join("Unbuilt").join("Unbuilt.fsproj");
+        write(&unbuilt, "<Project />");
+
+        assert!(matches!(
+            fsharp_ref_outcome(
+                &[ref_target(built, NodeTfm::Known("net10.0".into()))],
+                &BTreeMap::new()
+            ),
+            ReferenceOutcome::Resolved(_)
+        ));
+        // A trustworthy name and TFM, but nobody has built it: the one grade
+        // that leaves the env complete.
+        assert_eq!(
+            fsharp_ref_outcome(
+                &[ref_target(
+                    unbuilt.clone(),
+                    NodeTfm::Known("net10.0".into())
+                )],
+                &BTreeMap::new()
+            ),
+            ReferenceOutcome::NotBuilt
+        );
+        // An untrustworthy verdict is a different thing entirely — we cannot
+        // say what this reference even is.
+        assert!(matches!(
+            fsharp_ref_outcome(
+                &[ref_target(unbuilt.clone(), NodeTfm::Unresolved)],
+                &BTreeMap::new()
+            ),
+            ReferenceOutcome::Unread(_)
+        ));
+        assert!(matches!(
+            fsharp_ref_outcome(
+                &[FsharpRefTarget {
+                    path: unbuilt,
+                    tfm: NodeTfm::Known("net10.0".into()),
+                    output_name: None,
+                }],
+                &BTreeMap::new()
+            ),
+            ReferenceOutcome::Unread(_)
+        ));
+    }
+
+    /// The behavioural claim: an `Unread` reference marks the env's identity set
+    /// incomplete — so the seal fires and every assembly reading defers — while
+    /// an unbuilt one leaves it complete.
+    ///
+    /// Driven through `ReferenceSet` rather than `build_assembly_env`, which
+    /// would need a restored project and a live sidecar; the mark is a pure
+    /// function of the outcomes, and this pins that function.
+    #[test]
+    fn only_an_unread_reference_makes_the_identity_set_incomplete() {
+        let edge = |project: &str, outcome| ReferenceEdge {
+            project: PathBuf::from(project),
+            outcome,
+        };
+        let set = |edges| ReferenceSet {
+            dlls: Vec::new(),
+            edges,
+            retryable: false,
+        };
+
+        let unbuilt = set(vec![edge("A.fsproj", ReferenceOutcome::NotBuilt)]);
+        assert_eq!(unbuilt.unread().count(), 0);
+        assert_eq!(
+            unbuilt.not_built().collect::<Vec<_>>(),
+            [Path::new("A.fsproj")]
+        );
+
+        let unread = set(vec![
+            edge("A.fsproj", ReferenceOutcome::NotBuilt),
+            edge(
+                "B.csproj",
+                ReferenceOutcome::Unread("no producer TFM known"),
+            ),
+        ]);
+        assert_eq!(
+            unread.unread().collect::<Vec<_>>(),
+            [(Path::new("B.csproj"), "no producer TFM known")],
+            "an unread reference must be reported even alongside an unbuilt one"
+        );
+
+        // A declined resolution claims neither: the env is empty, so it makes no
+        // assembly reading for a missing reference to be wrong about.
+        let declined = ReferenceSet::declined(false);
+        assert_eq!(declined.unread().count(), 0);
+        assert_eq!(declined.not_built().count(), 0);
     }
 
     /// Write `<root>/obj/project.assets.json` for a single-target `net10.0`
