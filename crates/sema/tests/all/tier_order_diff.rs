@@ -122,20 +122,15 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // deferral where FCS binds. The reason is that the walk's *shadow risks*
     // are keyed by the namespace prefix they live in but take their **rank**
     // from wherever that prefix happens to sit in the walk, so moving a tier
-    // moves every veto attached to it. Three models are still entangled with
+    // moves every veto attached to it. Two models are still entangled with
     // the ladder, each isolated by disabling one arm and re-running rrpd:
     //
-    //  1. `self_module_shadow_only` recognises a self-qualifier only in its
-    //     *as-written* spelling, so the same reference reached under the
-    //     enclosing-namespace prefix (`N.List.rev` for a written `List.rev`)
-    //     is classified `ProjectShadowed` and preempts the opens the
-    //     `module List` augmentation idiom relies on.
-    //  2. The **value** path cannot model FCS's per-member merge of a project
+    //  1. The **value** path cannot model FCS's per-member merge of a project
     //     module with an assembly namespace, so a project `module List` in the
     //     enclosing namespace preempts `Microsoft.FSharp.Collections`. That is
     //     the bulk of PawPrint's 627; restricting the reorder to type position
     //     left 37 when it was measured against a 617-loss tree.
-    //  3. Those last 37 are all a bare `Result` vetoed by
+    //  2. Those last 37 are all a bare `Result` vetoed by
     //     `auto_open_modules_in_namespace_shadow_type_named` at the enclosing
     //     prefix — but an assembly `[<AutoOpen>]` module enters scope at
     //     assembly-import time, *below* the enclosing namespace, so consulting
@@ -155,7 +150,16 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // So the fix is to give each remaining shadow risk an explicit rank instead
     // of inheriting the prefix's position, and only then move the tier. Until
     // that lands these rows stay, and a reorder that clears them without
-    // addressing (1)–(3) trades a rare wrong target for hundreds of lost ones.
+    // addressing (1) and (2) trades a rare wrong target for hundreds of lost
+    // ones.
+    //
+    // A third — a self-qualifier recognised only in its *as-written* spelling,
+    // so `N.List.rev` for a written `List.rev` had head `N` and preempted the
+    // opens the `module List` augmentation idiom falls through to — is settled:
+    // `assembly_path_records` asks about the source path, and
+    // `resolve_assembly_path_over` *holds* a `SelfModuleShadowed` reading
+    // instead of returning at it. `resolve_self_qualifier_gen_diff`'s module
+    // docs name the two-line experiment that exercises both rules.
     (
         "TEnNs/contributor-first",
         "NsAuto",

@@ -40,6 +40,26 @@
 //!
 //! Declining is always the fail-safe (an availability loss, not a soundness bug);
 //! a wrong or divergent target fails.
+//!
+//! ## This sweep is the guard for two rules the current tier order hides
+//!
+//! Both concern a self-qualifier reached under a **prefix**, which today's
+//! ladder never gets to: the opens are walked first and supply the name before
+//! the enclosing namespace is tried. Move the enclosing namespace above the
+//! opens in `assembly_prefixes_by_priority` and this sweep goes red — vacuously,
+//! with no self-qualified head reaching FSharp.Core at all — unless:
+//!
+//! - `assembly_path_records` asks `self_module_shadow_only` about the **source**
+//!   path rather than the prefix-expanded one. `N.List.rev` for a written
+//!   `List.rev` has head `N`, a namespace segment in no module chain, so the
+//!   reading is classified `ProjectShadowed` and preempts the opens.
+//! - `resolve_assembly_path_over` **holds** an `AssemblyPath::SelfModuleShadowed`
+//!   instead of returning `ShadowDeferred` at it. The module whose name it is,
+//!   is the one the walk is standing in, so there is nothing invisible behind it
+//!   that a lower reading must not be applied over.
+//!
+//! That two-line experiment is the whole test for those rules until the tier
+//! moves, so run it before touching either.
 
 use std::path::{Path, PathBuf};
 
