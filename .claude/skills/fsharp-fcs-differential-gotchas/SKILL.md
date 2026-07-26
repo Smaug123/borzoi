@@ -12,9 +12,9 @@ description: >-
 
 # FCS/fsc differential gotchas
 
-Two empirically-discovered facts about the *real* F# compiler. Both are
-properties of FCS/fsc, not of this repo, so they stay true as the code around
-them evolves. The concrete file/symbol pointers below are given as **searches**,
+Empirically-discovered facts about the *real* F# compiler. Each is a property
+of FCS/fsc, not of this repo, so they stay true as the code around them
+evolves. The concrete file/symbol pointers below are given as **searches**,
 not fixed paths — run the search to find the current location before relying on
 one.
 
@@ -50,8 +50,7 @@ matching is too strict over a wild corpus. Split the outcomes:
   assembly entity where FCS found an in-file binder, or a **wrong-*named***
   binder.
 - Treat **same-named binder at a different range** as a separate, loosely-capped
-  class. (This also absorbs OR-pattern canonicalisation, where FCS attributes a
-  use to the *first* alternative's binder.)
+  class, for the residue recovery leaves behind.
 - Keep strict shadowing correctness covered **FCS-free** in the curated scoping
   tests, and exactly in the curated single-file resolution diff.
 
@@ -95,3 +94,45 @@ grep -rln "apply_declaration_order" crates/assembly/src --include='*.rs'
 ```
 
 It lives in the F# pickle-merge module; the ECMA assembly projector calls it.
+
+## 3. FCS is silent at a `_`-prefixed or-pattern alternative
+
+An or-pattern binds each name **once**: `| A v | B v -> v` has a single `v`.
+FCS makes the *first* alternative's occurrence the declaration and reports every
+later alternative's spelling as an ordinary **use** of it — matched by name, not
+by position within the alternative, so `| A b, B v | B v, A b` still pairs each
+name with its namesake. That holds in every pattern position (`match`,
+`function`, a lambda parameter, a `let` head), and whether or not the body uses
+the name.
+
+The exception, and it is the one real code hits constantly:
+
+> If the bound name **starts with `_`**, FCS reports the first alternative's
+> declaration and any *body* use, and reports **nothing at all** at the later
+> alternatives.
+
+```fsharp
+// FCS: one `_n` decl at `A`, one use in the body — nothing at `| B _n`.
+match op with
+| A _n
+| B _n -> _n
+```
+
+Verify it in one shot rather than trusting the summary:
+
+```sh
+tools/fcs-dump/bin/Release/net10.0/fcs-dump uses /path/to/Probe.fs \
+  | jq -r '.Uses[] | "\(.SymbolName) \(.Range.Start.Line):\(.Range.Start.Col) fromDef=\(.IsFromDefinition) decl=\(.DeclRange.Start.Line):\(.DeclRange.Start.Col)"'
+```
+
+**Implication for differential oracles.** A later alternative is in *binding*
+position, so the oracle is entitled to say nothing there. A reverse-direction
+check ("we resolved concretely, did FCS?") must therefore treat an unoracled
+or-pattern alias as **silence, not contradiction** — the same way it already
+treats an unoracled definition — or a correct answer scores as a divergence on
+every `_`-prefixed or-pattern in the corpus. Ask the resolver whether the
+occurrence is an alias rather than re-deriving it from the syntax:
+
+```sh
+grep -rn "is_or_pattern_alias" crates --include='*.rs'
+```

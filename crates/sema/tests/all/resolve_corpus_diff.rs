@@ -72,14 +72,14 @@ use rowan::TextRange;
 /// goes up — bump it after a phase lands. A drop is a regression. Tied to the
 /// default stride; re-measure with `--ignored` if you change `*_STRIDE`.
 ///
-/// Conservative: 22058 was measured 2026-07-18 (355 files compared, stride 13)
-/// after the type-parameter-binding slice
-/// (`docs/type-parameter-binding-plan.md`) moved ~380 `'T` gaps into matches
-/// (was 21678 after the member-body slice, itself up from ~12258); the floor
-/// sits a little under it to absorb the rare FCS isolation-check flake, and
-/// parser improvements (which move files out of `our_errors` into the compared
-/// set) only raise the true count, so re-tighten after they land.
-const MIN_RESOLUTION_MATCHES: usize = 21_800;
+/// Conservative: 22249 was measured 2026-07-25 (355 files compared, stride 13)
+/// after or-pattern canonicalisation turned 158 alt-binders into matches (was
+/// 22058 after the type-parameter-binding slice, itself up from 21678 and
+/// ~12258); the floor sits a little under it to absorb the rare FCS
+/// isolation-check flake, and parser improvements (which move files out of
+/// `our_errors` into the compared set) only raise the true count, so re-tighten
+/// after they land.
+const MIN_RESOLUTION_MATCHES: usize = 21_950;
 
 /// Upper bound on unambiguous resolution faults (`Unresolved` / assembly entity
 /// / wrong-named binder where FCS found an in-file binder). Gated to zero — each
@@ -87,13 +87,12 @@ const MIN_RESOLUTION_MATCHES: usize = 21_800;
 const MAX_RESOLUTION_DIVERGENCES: usize = 0;
 
 /// Upper bound on alt-binder disagreements (same-named in-file binder, different
-/// range — OR-pattern canonicalisation / isolation-bias recovery, not bugs).
-/// Loosely ceilinged to catch an explosion, not to drive to zero: 230 measured
-/// 2026-07-17. The member-body slice surfaced ~83 more (member-body OR-patterns
-/// like `member c.StartPos`'s `| CtxtA p | CtxtB p …`, and nested-shadow uses in
-/// walker methods) — same-named, all against a `0` divergence count, so benign
-/// coverage growth, not a fault. Headroom left for parser work surfacing more.
-const MAX_ALT_BINDERS: usize = 260;
+/// range — isolation-bias recovery, not bugs). Loosely ceilinged to catch an
+/// explosion, not to drive to zero: 72 measured 2026-07-25, down from 230, after
+/// or-pattern canonicalisation ([`pattern_names`](borzoi_sema::pattern_names))
+/// made an or-pattern's alternatives one binding and moved all 158 of them into
+/// matches. Headroom left for parser work surfacing more.
+const MAX_ALT_BINDERS: usize = 90;
 
 /// Floor on **in-file B1 coverage**, in permille — the fraction of pure-lexical
 /// uses FCS resolves to an in-file binder that we *also* bind

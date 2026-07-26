@@ -517,6 +517,49 @@ fn nullary_constructor_pattern_head_does_not_bind() {
     assert_resolves_to(&rf, nth(src, "opt", 1), nth(src, "opt", 0));
 }
 
+// An or-pattern's alternatives are one binding per name, so every later
+// alternative's spelling *and* every body use point at the first alternative's
+// binder. `resolve_diff.rs` pins that identity against FCS for the `match`,
+// `function` and `let`-head positions; the lambda form cannot enter that strict
+// corpus (FCS synthesises an `_arg1` parameter over the whole pattern, which we
+// do not model), so it is pinned here instead.
+
+#[test]
+fn or_pattern_alternatives_resolve_to_the_first_binder() {
+    let src =
+        "type T = A of int | B of int | C of int\nlet f t = match t with A v | B v | C v -> v\n";
+    let rf = resolve(src);
+    let first = nth(src, "v", 0);
+    assert_resolves_to(&rf, first, first);
+    for occurrence in 1..=3 {
+        assert_resolves_to(&rf, nth(src, "v", occurrence), first);
+    }
+}
+
+#[test]
+fn or_pattern_in_a_lambda_parameter_resolves_to_the_first_binder() {
+    let src = "type T = A of int | B of int\nlet f = fun (A v | B v) -> v\n";
+    let rf = resolve(src);
+    let first = nth(src, "v", 0);
+    assert_resolves_to(&rf, first, first);
+    assert_resolves_to(&rf, nth(src, "v", 1), first);
+    assert_resolves_to(&rf, nth(src, "v", 2), first);
+}
+
+#[test]
+fn or_pattern_alternatives_do_not_shadow_an_outer_binder_twice() {
+    // The alternatives are one binding, so the clause frame gains exactly one
+    // `v` — the outer `let v` stays reachable *after* the match, and the alias
+    // never installs a second entry that could outlive the first.
+    let src = "type T = A of int | B of int\nlet v = 0\nlet f t = match t with A v | B v -> v\nlet w = v\n";
+    let rf = resolve(src);
+    let outer = nth(src, "v", 0);
+    let clause = nth(src, "v", 1);
+    assert_resolves_to(&rf, nth(src, "v", 2), clause);
+    assert_resolves_to(&rf, nth(src, "v", 3), clause);
+    assert_resolves_to(&rf, nth(src, "v", 4), outer);
+}
+
 #[test]
 fn unbound_name_is_deferred_not_unresolved() {
     // A name we cannot find locally is Deferred (it may be an import / assembly
@@ -589,4 +632,56 @@ proptest! {
             );
         }
     }
+}
+
+#[test]
+fn an_active_pattern_argument_never_becomes_an_or_pattern_binder() {
+    // `DivBy x x` puts two *different* roles on one name inside one
+    // alternative: the first `x` is the recognizer's argument — an expression,
+    // evaluated in the enclosing scope — and the second binds the payload. They
+    // are not one binding, so or-pattern canonicalisation must not conflate
+    // them; it pairs each alternative's k-th binding of a name with the other's.
+    //
+    // FCS-verified (`fcs-dump uses`): the two argument `x`s are uses of the
+    // enclosing parameter, the first alternative's payload `x` is the
+    // declaration, and the second alternative's payload and the body are uses
+    // of it.
+    let src = "let (|DivBy|_|) divisor n = if n % divisor = 0 then Some n else None\nlet outer x n =\n    match n with\n    | DivBy x x\n    | DivBy x x -> x\n";
+    let rf = resolve(src);
+    let param = nth(src, "x", 0);
+    let first_arg = nth(src, "x", 1);
+    let payload = nth(src, "x", 2);
+    let second_arg = nth(src, "x", 3);
+
+    // The recognizer arguments are expressions against the enclosing scope.
+    assert_resolves_to(&rf, first_arg, param);
+    assert_resolves_to(&rf, second_arg, param);
+    // The payload binds, the second alternative's payload aliases it, and the
+    // body sees that one binding — not the enclosing parameter.
+    assert_resolves_to(&rf, payload, payload);
+    assert_resolves_to(&rf, nth(src, "x", 4), payload);
+    assert_resolves_to(&rf, nth(src, "x", 5), payload);
+}
+
+#[test]
+fn asymmetric_active_pattern_alternatives_still_alias_the_payload() {
+    // The alternatives bind the same name but spell a *different number* of
+    // occurrences of it: the left has an argument `x` and a payload `x`, the
+    // right only a payload. Pairing has to line the payloads up, which means
+    // knowing which occurrences are argument expressions — a fact the pattern's
+    // shape alone does not carry.
+    //
+    // FCS-verified: the argument is a use of the enclosing parameter, the left
+    // payload is the declaration, and the right payload and the body are uses
+    // of it.
+    let src = "let (|DivBy|_|) divisor n = if n % divisor = 0 then Some n else None\nlet (|Any|) n = n\nlet outer x n =\n    match n with\n    | DivBy x x\n    | Any x -> x\n";
+    let rf = resolve(src);
+    let param = nth(src, "x", 0);
+    let argument = nth(src, "x", 1);
+    let payload = nth(src, "x", 2);
+
+    assert_resolves_to(&rf, argument, param);
+    assert_resolves_to(&rf, payload, payload);
+    assert_resolves_to(&rf, nth(src, "x", 3), payload);
+    assert_resolves_to(&rf, nth(src, "x", 4), payload);
 }

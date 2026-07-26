@@ -10,7 +10,9 @@ use super::state::Frame;
 use rowan::TextRange;
 
 use crate::assembly_env::{EntityHandle, ManifestSurfacePosition};
-use crate::binders::{BinderRole, binders};
+use std::collections::HashSet;
+
+use crate::binders::{BinderRole, pattern_names};
 use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
@@ -494,7 +496,7 @@ impl<'a> Resolver<'a> {
     /// *parameterized* active pattern's arguments in a use (`match n with DivBy
     /// divisor`) are a mix of expression *parameters* (FCS resolves `divisor` to an
     /// outer value) and a result *sub-pattern* (`Parse v`, where `v` binds). The
-    /// resolution-independent [`binders`](crate::binders) walk cannot tell them
+    /// resolution-independent [`pattern_names`](crate::pattern_names) walk cannot tell them
     /// apart — it has no recognizer shape — so it fabricates a binder for every
     /// applied-head *name* argument (a literal like `DivBy 3` binds nothing and is
     /// already correct). For a **same-file** recognizer this is now resolved: this
@@ -2310,7 +2312,7 @@ impl<'a> Resolver<'a> {
     /// name. So the head must not be resolved as a case reference, and its
     /// arguments must not be split as active-pattern parameters (which would
     /// wrongly exclude the genuine parameter `x`, dropping its binder). This
-    /// mirrors [`binders`](crate::binders)' `Ctx::LetHead`: the head binds, and
+    /// mirrors [`pattern_names`](crate::pattern_names)' `Ctx::LetHead`: the head binds, and
     /// each argument is an ordinary param pattern, so it recurses through
     /// [`Self::resolve_applied_arg_patterns`] — where a *nested* applied AP use in
     /// a parameter (`let f (Scale x) = …`) still splits correctly, having
@@ -2352,7 +2354,7 @@ impl<'a> Resolver<'a> {
     /// `TcPatLongIdentActivePatternCase`
     /// (`../fsharp/src/Compiler/Checking/Expressions/CheckExpressions.fs`). Each
     /// parameter argument has its would-be binder ranges excluded (so the
-    /// [`binders`](crate::binders) walk does not fabricate a local for it) and is
+    /// [`pattern_names`](crate::pattern_names) walk does not fabricate a local for it) and is
     /// resolved as an expression ([`Self::resolve_pattern_arg_as_expr`]); the
     /// result sub-pattern is recursed through [`Self::resolve_pat_types`] as usual,
     /// so it binds and a nested applied head re-enters this same logic.
@@ -2452,14 +2454,19 @@ impl<'a> Resolver<'a> {
     }
 
     /// Exclude the would-be binders of a *parameter* argument of an applied
-    /// active-pattern head: run the [`binders`](crate::binders) walk and insert
-    /// each returned def's **ident-token** range into
+    /// active-pattern head: run the [`pattern_names`](crate::pattern_names) walk and
+    /// insert each returned occurrence's **ident-token** range into
     /// [`Self::excluded_param_ranges`], so the three binder-interning loops drop
-    /// them (see that field). The [`BinderRole`] only affects `DefKind`s, never
-    /// ranges, so any role serves.
+    /// them (see that field). Or-pattern aliases are excluded alongside the
+    /// binders they name: the whole argument is an expression here, so no part of
+    /// it may fabricate a resolution. The [`BinderRole`] only affects `DefKind`s,
+    /// never ranges, so any role serves.
     fn exclude_param_binders(&mut self, arg: &Pat) {
-        for def in binders(arg, BinderRole::Pattern) {
-            self.excluded_param_ranges.insert(def.range);
+        // No argument-expression set to give: this *is* the walk that computes
+        // one, and it reads only the occurrence ranges, which or-pattern pairing
+        // never changes.
+        for name in pattern_names(arg, BinderRole::Pattern, &HashSet::new()) {
+            self.excluded_param_ranges.insert(name.range());
         }
     }
 

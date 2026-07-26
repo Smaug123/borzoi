@@ -126,12 +126,25 @@ For each visited project, the runner:
 6. Compares every comparable FCS project declaration and assembly declaration
    against sema resolution.
 7. Checks the reverse direction: every concrete sema resolution in a comparable
-   file must be covered by an FCS use — except our own *defining* occurrences at
-   ranges FCS reports nothing about, which are counted rather than reported.
-   (FCS emits a binder once even where the source binds it several times: an
-   or-pattern `| Ldarg _n | Ldarga _n | …` reports `_n` at the first alternative
-   only, while sema resolves each occurrence to itself. Silence from the oracle
-   is not a contradiction.)
+   file must be covered by an FCS use — except where the occurrence sits in
+   *binding* position, which is the one place the oracle is free to say nothing.
+   Those are counted rather than reported, in two separate buckets so neither
+   count's meaning shifts under the other:
+   - `unoracled_definitions` — our own defining occurrences at ranges FCS
+     reports nothing about; the forward direction does not grade FCS's
+     definitions either.
+   - `unoracled_or_pattern_aliases` — a later or-pattern alternative's spelling
+     of a name the first alternative binds. An or-pattern binds one name once,
+     so `| Ldarg _n | Ldarga _n | …` makes the second `_n` a use of the first;
+     FCS reports that for an ordinary name but **not** for one starting with
+     `_`. Silence from the oracle is not a contradiction.
+
+   "The oracle spoke here" is an **exact** span match, not enclosure: FCS
+   synthesises an `_arg1` symbol spanning the whole of a non-simple lambda
+   parameter, so in `fun (A _n | B _n) -> _n` every occurrence inside the
+   pattern is enclosed by a use of an unrelated symbol. A reported divergence
+   still lists every *overlapping* oracle use, which is what makes it
+   diagnosable.
 
 ### Signature files
 

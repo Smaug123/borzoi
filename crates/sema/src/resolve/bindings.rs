@@ -4,12 +4,12 @@ use std::collections::HashSet;
 
 use borzoi_cst::syntax::{AstNode, Binding, Expr, LetDecl, LetOrUseExpr, SyntaxKind};
 
-use crate::binders::{BinderRole, binders};
+use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{DefId, DefKind};
 use crate::diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 
 use super::model::{ExportedItem, ItemId, Resolution};
-use super::state::{Frame, Resolver, ScopeEntry};
+use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::head_typar_decls;
 use super::{active_pat_name_of, active_pattern_param_arity, id_text};
 
@@ -159,15 +159,34 @@ impl<'a> Resolver<'a> {
                 let is_private = super::decls::header_is_private(binding.syntax());
                 eager_entries = self.define_active_pattern(&apn, true, arity, is_private);
             }
-            for def in binders(&head, BinderRole::Let) {
+            // `resolve_let_head_pat_types` has run the active-pattern split, so
+            // `excluded_param_ranges` names this head's argument *expressions*
+            // (see `pattern_locals`). Bound before the loop so the borrow ends.
+            let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
+            let mut aliases = AliasTargets::default();
+            for pat_name in names {
+                // An or-pattern's later alternative re-spelling a name the first
+                // already bound (`let (A v | B v) = …`): one binding, so this
+                // occurrence is a *use* of it — no interning, no export, no second
+                // scope entry.
                 // An active-pattern *parameter* argument (`let (Scale divisor) =
                 // …`): the shape-keyed split (run by `resolve_pat_types` above) has
-                // resolved it as an expression and excluded its fabricated binder
-                // range. Skip it — before the `provisional` branch — leaving no
-                // recorded self-resolution and no scope entry.
-                if self.excluded_param_ranges.contains(&def.range) {
+                // resolved it as an expression and excluded its range. Skip it
+                // whichever kind it is — before the alias and `provisional`
+                // branches — leaving that expression resolution intact and no
+                // scope entry.
+                if self.excluded_param_ranges.contains(&pat_name.range()) {
                     continue;
                 }
+                let def = match pat_name {
+                    PatternName::Alias { range, binder } => {
+                        if let Some(res) = aliases.resolution_of(binder) {
+                            self.record_or_pattern_alias(range, res);
+                        }
+                        continue;
+                    }
+                    PatternName::Binder(def) => def,
+                };
                 // Provisional maybe-var head (`None` in `let (x, None) = …`,
                 // `let f None = …`): a constructor-shaped head naming a known
                 // union case in scope is a case *reference*, so resolve it;
@@ -221,6 +240,7 @@ impl<'a> Resolver<'a> {
                     );
                     let res = Resolution::Item(item_id);
                     self.record(range, res);
+                    aliases.interned(range, res);
                     let mut entry = ScopeEntry::binding(name, res, self.open_generation);
                     // A maybe-literal module-level value contests the pattern
                     // namespace as a constant pattern (see
@@ -231,6 +251,7 @@ impl<'a> Resolver<'a> {
                     // A curried argument of a function binding — a parameter.
                     let res = Resolution::Local(id);
                     self.record(range, res);
+                    aliases.interned(range, res);
                     param_entries.push(ScopeEntry::binding(name, res, self.open_generation));
                 }
             }
@@ -368,14 +389,25 @@ impl<'a> Resolver<'a> {
                     ap_cases = self.define_active_pattern(&apn, false, arity, false);
                     value_entries.extend(ap_cases.iter().cloned());
                 }
-                for def in binders(&head, BinderRole::Let) {
-                    // An active-pattern *parameter* argument: the shape-keyed split
-                    // (run by `resolve_pat_types` above) has resolved it as an
-                    // expression and excluded its fabricated binder range. Skip it —
-                    // before the `provisional` branch — as in `prepare_binding`.
-                    if self.excluded_param_ranges.contains(&def.range) {
+                let names = pattern_names(&head, BinderRole::Let, &self.excluded_param_ranges);
+                let mut aliases = AliasTargets::default();
+                for pat_name in names {
+                    // An or-pattern alias (`let (A v | B v) = …`) is a use of the
+                    // first alternative's binder, as in `prepare_binding`.
+                    // An active-pattern *parameter* argument: excluded whichever
+                    // kind it is, as in `prepare_binding`.
+                    if self.excluded_param_ranges.contains(&pat_name.range()) {
                         continue;
                     }
+                    let def = match pat_name {
+                        PatternName::Alias { range, binder } => {
+                            if let Some(res) = aliases.resolution_of(binder) {
+                                self.record_or_pattern_alias(range, res);
+                            }
+                            continue;
+                        }
+                        PatternName::Binder(def) => def,
+                    };
                     // Provisional maybe-var head (`None` in `let f None = …`):
                     // resolve a known union-case reference, else decline (drop),
                     // as in `prepare_binding`.
@@ -391,6 +423,7 @@ impl<'a> Resolver<'a> {
                     let id = self.intern(def);
                     let res = Resolution::Local(id);
                     self.record(range, res);
+                    aliases.interned(range, res);
                     let entry = ScopeEntry::binding(name, res, self.open_generation);
                     if is_value {
                         value_entries.push(entry);

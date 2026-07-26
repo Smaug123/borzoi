@@ -999,13 +999,21 @@ pub struct Comparison {
     pub deferrals: usize,
     pub assembly_deferrals: usize,
     pub skipped_uses: SkippedUses,
-    /// Our *defining* occurrences at ranges FCS reports nothing about. FCS
-    /// emits a binder once even where the source binds it several times — an
-    /// or-pattern (`| Ldarg _n | Ldarga _n | …`) reports `_n` at the first
-    /// alternative only — while our model resolves each occurrence to itself.
-    /// The oracle is silent there, and silence is not a contradiction, so
-    /// these are counted rather than reported as reverse divergences.
+    /// Our *defining* occurrences at ranges FCS reports nothing about. The
+    /// forward direction does not grade FCS's definitions either, and silence
+    /// is not a contradiction, so these are counted rather than reported as
+    /// reverse divergences.
     pub unoracled_definitions: usize,
+    /// Our **or-pattern alias** occurrences at ranges FCS reports nothing
+    /// about ([`borzoi_sema::ResolvedFile::is_or_pattern_alias`]). An or-pattern binds one
+    /// name once, so `| Ldarg _n | Ldarga _n | …` makes the second `_n` a use
+    /// of the first — which FCS reports for an ordinary name but **not** for
+    /// one starting with `_`. The occurrence is in binding position, where the
+    /// oracle is free to say nothing, so like an unoracled definition it is
+    /// counted rather than reported. Kept apart from
+    /// [`unoracled_definitions`](Self::unoracled_definitions) so neither
+    /// count's meaning shifts under the other.
+    pub unoracled_or_pattern_aliases: usize,
     pub divergences: Vec<Divergence>,
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
@@ -1077,6 +1085,8 @@ pub struct CorpusSummary {
     pub skipped_uses: SkippedUses,
     /// Aggregate of [`Comparison::unoracled_definitions`].
     pub unoracled_definitions: usize,
+    /// Aggregate of [`Comparison::unoracled_or_pattern_aliases`].
+    pub unoracled_or_pattern_aliases: usize,
     pub project_divergences: usize,
     pub assembly_divergences: usize,
     pub reverse_divergences: usize,
@@ -1160,6 +1170,7 @@ impl CorpusSummary {
         self.assembly_divergences += comparison.assembly_divergences.len();
         self.reverse_divergences += comparison.reverse_divergences.len();
         self.unoracled_definitions += comparison.unoracled_definitions;
+        self.unoracled_or_pattern_aliases += comparison.unoracled_or_pattern_aliases;
     }
 
     pub fn total_uses_considered(&self) -> usize {
@@ -1268,14 +1279,15 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences unoracled)",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
             self.skipped_uses.non_project_declarations,
             self.skipped_uses.out_of_project_declarations,
             self.skipped_uses.no_oracle_declaration,
             self.skipped_uses.total(),
-            self.unoracled_definitions
+            self.unoracled_definitions,
+            self.unoracled_or_pattern_aliases
         )
         .expect("write String");
         if !self.build_properties.is_empty() {
@@ -1365,6 +1377,7 @@ impl CorpusSummary {
             },
             skipped_uses: &self.skipped_uses,
             unoracled_definitions: self.unoracled_definitions,
+            unoracled_or_pattern_aliases: self.unoracled_or_pattern_aliases,
             skipped_projects: &self.skipped_projects,
             skipped_by_reason: &self.skipped_by_reason,
             discovery_errors: &self.project_discovery_errors,
@@ -1739,6 +1752,10 @@ struct CorpusJsonReport<'a> {
     /// checks that were skipped rather than graded, so a consumer can see how
     /// much of that direction went unexercised.
     unoracled_definitions: usize,
+    /// Our or-pattern aliases the oracle said nothing about — the same
+    /// ungraded-reverse-check accounting, kept separate so neither count's
+    /// meaning shifts under the other.
+    unoracled_or_pattern_aliases: usize,
     skipped_projects: &'a [CorpusSkip],
     skipped_by_reason: &'a BTreeMap<String, usize>,
     discovery_errors: &'a [ProjectDiscoveryError],
@@ -2386,17 +2403,38 @@ fn add_reverse_divergences(
                 .filter(|u| fcs_use_covers_range(u, start, end))
                 .map(fcs_oracle_summary)
                 .collect();
-            // No covering use at all: the oracle did not speak here, so it
-            // cannot be contradicting us. That is routine for a *defining*
-            // occurrence — FCS emits a binder once even where the source binds
-            // it several times (an or-pattern's alternatives), and the forward
-            // direction does not grade FCS's definitions either. Count it so
-            // the silence stays visible.
-            if covering_oracles.is_empty()
-                && is_defining_occurrence(loaded, *file_idx, res, start, end)
-            {
-                comparison.unoracled_definitions += 1;
-                continue;
+            // The oracle did not speak *about this range*, so it cannot be
+            // contradicting us. That is routine wherever the occurrence sits in
+            // *binding* position, which is the one place FCS is free to say
+            // nothing:
+            //
+            // - a *defining* occurrence — the forward direction does not grade
+            //   FCS's definitions either;
+            // - an *or-pattern alias* — `| Ldarg _n | Ldarga _n | …` binds one
+            //   `_n`, and FCS reports the later alternatives for an ordinary
+            //   name but not for one starting with `_`.
+            //
+            // "Spoke about this range" is an *exact* span match, not the
+            // enclosure `covering_oracles` reports: FCS synthesises an `_arg1`
+            // over the whole of a non-simple lambda parameter, so in
+            // `fun (A _n | B _n) -> _n` every occurrence inside the pattern is
+            // enclosed by a use of an unrelated symbol. Treating that as speech
+            // would report a correct answer as a divergence.
+            //
+            // Count each so the silence stays visible.
+            let spoke_here = file_uses
+                .uses
+                .iter()
+                .any(|u| u.start == start && u.end == end);
+            if !spoke_here {
+                if is_defining_occurrence(loaded, *file_idx, res, start, end) {
+                    comparison.unoracled_definitions += 1;
+                    continue;
+                }
+                if rf.is_or_pattern_alias(*range) {
+                    comparison.unoracled_or_pattern_aliases += 1;
+                    continue;
+                }
             }
             comparison.reverse_divergences.push(ReverseDivergence {
                 file: loaded.parses.paths[*file_idx].clone(),
@@ -3871,6 +3909,7 @@ mod tests {
                 no_oracle_declaration: 4,
             },
             unoracled_definitions: 0,
+            unoracled_or_pattern_aliases: 0,
             divergences: vec![Divergence {
                 file: PathBuf::from("/tmp/B.fs"),
                 range: (20, 21),
@@ -4290,13 +4329,14 @@ mod tests {
     /// consumers ratchet on it, and a silently-absent field reads as "this
     /// never happens" (codex review).
     #[test]
-    fn the_json_report_carries_the_unoracled_definition_count() {
+    fn the_json_report_carries_the_unoracled_occurrence_counts() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let report_path = tmp.path().join("summary.jsonl");
         let mut summary = CorpusSummary::new(1);
         summary.record_project_visited();
         summary.record_comparison(&Comparison {
             unoracled_definitions: 7,
+            unoracled_or_pattern_aliases: 3,
             ..Comparison::default()
         });
 
@@ -4305,6 +4345,7 @@ mod tests {
         let text = std::fs::read_to_string(report_path).expect("read report");
         let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(report["unoracled_definitions"], 7);
+        assert_eq!(report["unoracled_or_pattern_aliases"], 3);
     }
 
     fn generator_settings() -> ProjectCandidateSettings {
