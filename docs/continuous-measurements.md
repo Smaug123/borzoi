@@ -196,11 +196,22 @@ the series carries the finding.
 
 The split matters, and it is not belt-and-braces. Between #200 and #204 the
 series alone carried the divergence counts: they went from 3 to 33 at a single
-commit while *coverage rose*, because turning deferrals into commits improves
-every quantity anything asserted on, whatever fraction of the new commits are
-wrong. The number was recorded and nothing was ever asked to act on it. Both
-jobs materialise the corpus through `tools/ci/project-corpus.sh`, so they cannot
-come to measure different things.
+commit while *coverage rose*. Nothing was ever asked to act on that, and for
+eight commits nobody did.
+
+What the 30 turned out to be is the better argument for the gate rather than a
+weaker one. They were **not** wrong targets: `corpus-diff` adjudicates by
+comparing rendered full names, FCS writes a member's enclosing generic type with
+its type *arguments* and our entity model carries only its *parameters*, so a
+correct resolution scored as a divergence. #204 made generic types reachable
+from a value-path head for the first time and walked straight into that blind
+spot. A gate would not have known which of those it was — it would have stopped
+the run and made someone find out, eight commits earlier, which is the entire
+job. A number that only ever gets recorded is a number whose meaning nobody has
+a reason to establish.
+
+Both jobs materialise the corpus through `tools/ci/project-corpus.sh`, so they
+cannot come to measure different things.
 
 What must still fail loudly is a run that did not *measure* — an unrestorable
 project, a wedged oracle. The generator summary is written before the ratchets
