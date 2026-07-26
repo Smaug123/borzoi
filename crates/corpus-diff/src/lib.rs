@@ -1123,25 +1123,25 @@ pub fn parse_project_uses(
                         assembly: u.assembly,
                         full_name: u.full_name,
                         generic_arity: u.generic_arity,
-                        declaring: match (u.declaring_path, u.declaring_namespace) {
-                            // A path without the namespace it sits in names a
-                            // shape rather than a place, and neither half alone
-                            // certifies anything.
-                            (Some(path), Some(namespace)) if !path.is_empty() => {
-                                Some(DeclaringEntity {
-                                    namespace: if namespace.is_empty() {
-                                        Vec::new()
-                                    } else {
-                                        namespace.split('.').map(str::to_string).collect()
-                                    },
-                                    path: path
-                                        .into_iter()
-                                        .map(|segment| (segment.name, segment.arity))
-                                        .collect(),
-                                    is_constructor: u.is_constructor.unwrap_or(false),
-                                })
-                            }
-                            (Some(_), _) | (None, _) => None,
+                        declaring: match u.declaring_path {
+                            Some(path) if !path.is_empty() => Some(DeclaringEntity {
+                                // Absent is the **root** namespace, which the
+                                // oracle reports as such rather than as the
+                                // string `global` — a namespace can be called
+                                // that, and the two are different places.
+                                namespace: u
+                                    .declaring_namespace
+                                    .iter()
+                                    .flat_map(|namespace| namespace.split('.'))
+                                    .map(str::to_string)
+                                    .collect(),
+                                path: path
+                                    .into_iter()
+                                    .map(|segment| (segment.name, segment.arity))
+                                    .collect(),
+                                is_constructor: u.is_constructor.unwrap_or(false),
+                            }),
+                            Some(_) | None => None,
                         },
                     })
                 })
@@ -2968,7 +2968,18 @@ fn certified_expected(
 ///
 /// The arity comparison is what keeps `Holder<'T>` apart from `Holder<'T,'U>`,
 /// and a companion module — never generic — out of a generic entity's place.
-/// The namespace pins the path to a place rather than to a shape.
+/// The namespace pins the path to a place rather than to a shape, and is the
+/// *root sentinel* rather than the string `global`, since a namespace can be
+/// called that.
+///
+/// **Known limit.** Two entities whose compiled names differ only by an arity
+/// suffix that one of them spells explicitly — `[<CompiledName "C">] type A<'T>`
+/// beside `[<CompiledName "C`1">] type B<'T>` — are indistinguishable here,
+/// because the assembly projection stores `C` for both: `Entity::name` has the
+/// suffix stripped and the arity moved to `generic_parameters`, so the
+/// distinction is gone before this comparison sees it. Closing it means giving
+/// the projection a name that remembers its mangling, not tightening this
+/// function; it is filed rather than worked around.
 fn chain_position(
     env: &AssemblyEnv,
     chain: &[EntityHandle],

@@ -4805,16 +4805,23 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
             with _ ->
                 null
     /// The namespace the path's outermost segment sits in, `null` for the
-    /// global one — `AccessPath` minus the enclosing entities' own names.
+    /// **root** one.
+    ///
+    /// `FSharpEntity.Namespace` rather than `AccessPath`: the latter renders the
+    /// root as the string `global`, which a namespace *called* ``global`` also
+    /// renders as, so a root declaration and a `global.…` one would arrive
+    /// indistinguishable. `Namespace` is `None` only for the root (and only ever
+    /// `Some` when every access-path component is a namespace, which the
+    /// outermost segment's are by construction).
     let declaringNamespace : objnull =
         match declaringEntity with
         | None -> null
         | Some e ->
             try
                 let outermost = List.head (declaringSegments e)
-                match outermost.AccessPath with
-                | "" | "global" -> box ""
-                | path -> box path
+                match outermost.Namespace with
+                | None -> null
+                | Some path -> box path
             with _ ->
                 null
     // A constructor use names its *type*: FCS reports the display name of the
