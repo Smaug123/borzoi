@@ -1908,6 +1908,21 @@ impl<'a> Resolver<'a> {
     ///    `an_auto_open_module_shadows_a_dotted_paths_head_at_the_enclosing_namespace`).
     ///    Being keyed on a name the metadata actually declares, it costs a
     ///    deferral only where a real collision exists.
+    ///
+    ///    It is a **name** match, not a reading: for a dotted path it asks only
+    ///    whether the head is declared, not whether that child could own the
+    ///    tail. FCS falls through to the lower candidate when it could not —
+    ///    fsc-verified, an auto-open `type Head<'T>` beside a direct
+    ///    `module Head = type Leaf` leaves `Head.Leaf` compiling against the
+    ///    direct module — so a name-only match over-defers on that shape. The
+    ///    narrowing (walk the tail through the child, at the head's arity 0)
+    ///    is well-defined, since an auto-open module's contents are exactly the
+    ///    modelled metadata this arm already reads. It is deliberately not done
+    ///    here: narrowing a veto is the direction that manufactures wrong
+    ///    targets, and the over-deferral is worth nothing to fix today —
+    ///    `resolve_real_project_diff` is byte-identical across three real
+    ///    projects, and on WoofWare.Myriad.Plugins this arm fires 33 times for
+    ///    dotted paths without changing a single count.
     /// 2. The coarse, **name-blind** risks ([`Self::unmodelled_type_shadow_at`]):
     ///    a project `[<AutoOpen>]` module in the reading, or a namespace an
     ///    assembly with unknowable abbreviations declares into. Also
