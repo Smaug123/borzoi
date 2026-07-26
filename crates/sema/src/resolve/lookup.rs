@@ -3457,7 +3457,7 @@ impl<'a> Resolver<'a> {
     /// [`Self::dropped_type_could_root_this_path`] (over the bare head: a drop
     /// at any of its readings may be another same-named union owning this very
     /// case), and the per-tier verdict is
-    /// [`Self::type_position_shadow_at`], passed the head as its `bare_name` —
+    /// [`Self::type_position_shadow_at`], passed the head as its whole path —
     /// `Type` is a single segment under the tier's prefix, the `Case` being the
     /// constructor tail.
     ///
@@ -3485,7 +3485,12 @@ impl<'a> Resolver<'a> {
         // A **dropped TypeDef** at any split of any reading of the head may be
         // another same-named union owning this very case — path-scoped and
         // pre-walk, see [`Self::dropped_type_could_root_this_path`].
-        if self.dropped_type_could_root_this_path(&[type_name.to_owned()]) {
+        // The head is the whole source path this walk looks up — the `Case` is a
+        // constructor tail under whatever `Type` binds, not a further segment of
+        // it — so both the gate and the per-tier verdict take it as a
+        // single-segment path.
+        let head_path = [type_name.to_owned()];
+        if self.dropped_type_could_root_this_path(&head_path) {
             return None;
         }
         match self.resolve_assembly_path_tiered(
@@ -3493,7 +3498,7 @@ impl<'a> Resolver<'a> {
                 self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
             },
             false,
-            |prefix| self.type_position_shadow_at(prefix, Some(type_name)),
+            |prefix| self.type_position_shadow_at(prefix, &head_path),
         ) {
             TieredResolution::Resolved(reading) => Some(reading),
             TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,

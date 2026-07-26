@@ -2097,3 +2097,64 @@ fn a_compiled_name_value_does_not_let_the_fallback_commit_a_class() {
         "a CompiledName-renamed module value must not let the fallback commit the class"
     );
 }
+
+/// The direct `DottedShadow.DottedHead.Leaf` — the entity a walk that skips the
+/// dotted head's shadow check commits, and the wrong target fsc rules out.
+fn dotted_shadow_direct_leaf(env: &AssemblyEnv) -> borzoi_sema::EntityHandle {
+    let head = env
+        .lookup_type(&["DottedShadow".to_string()], "DottedHead", 0)
+        .expect("fixture declares DottedShadow.DottedHead");
+    env.nested(head, "Leaf", 0)
+        .expect("fixture declares DottedShadow.DottedHead.Leaf")
+}
+
+/// A dotted path whose head an `[<AutoOpen>]` module shadows must record
+/// nothing at either segment.
+///
+/// `DottedShadow` holds a direct `module DottedHead` and an `[<AutoOpen>]
+/// module DottedAuto` whose own nested `DottedHead` declares the same `Leaf`.
+/// fsc binds the AUTO-OPEN one (two-project probe: `x.FromAuto` compiles,
+/// `x.Direct` is FS0039), so committing the direct
+/// `DottedShadow.DottedHead.Leaf` is a wrong target, not a missed one.
+///
+/// The head of a dotted path is a bare name and is where the path roots, so
+/// exactly the surfaces that contest a single-segment annotation contest it —
+/// an auto-open module supplies a nested *module* as readily as a nested type.
+/// A multi-segment deferral records nothing (the shadowable marker is a
+/// single-segment affordance), so `None` is the deferral's signature here;
+/// [`dotted_shadow_direct_leaf`] keeps the assertion honest by pinning that
+/// the wrong target really is in the env to be committed.
+fn assert_dotted_head_shadow_defers(src: &str) {
+    let env = fixture_env();
+    let direct_leaf = dotted_shadow_direct_leaf(&env);
+    let rf = resolve(src, &env);
+    assert_eq!(
+        rf.resolution_at(at(src, "DottedHead")),
+        None,
+        "DottedAuto.DottedHead must shadow the direct DottedShadow.DottedHead"
+    );
+    let leaf = rf.resolution_at(at(src, "Leaf"));
+    assert_ne!(
+        leaf,
+        Some(Resolution::Entity(direct_leaf)),
+        "fsc binds DottedAuto.DottedHead.Leaf, so the direct Leaf is a wrong target"
+    );
+    assert_eq!(leaf, None, "the shadowed head leaves the tail unresolvable");
+}
+
+#[test]
+fn an_auto_open_module_shadows_a_dotted_paths_head_at_the_enclosing_namespace() {
+    assert_dotted_head_shadow_defers(
+        "namespace DottedShadow\nmodule M =\n    let f (x : DottedHead.Leaf) = x\n",
+    );
+}
+
+#[test]
+fn an_auto_open_module_shadows_a_dotted_paths_head_at_an_explicit_open() {
+    // The same contest one tier up: nothing about it is specific to the
+    // enclosing-namespace reading, so the veto belongs to the shared per-tier
+    // verdict rather than to any one tier's own logic.
+    assert_dotted_head_shadow_defers(
+        "module M\nopen DottedShadow\nlet f (x : DottedHead.Leaf) = x\n",
+    );
+}
