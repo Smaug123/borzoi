@@ -88,10 +88,17 @@ pub enum RefKind {
 /// actually be emitted or that test fails.
 macro_rules! forms {
     ($($(#[$m:meta])* $v:ident,)*) => {
-        /// A syntactic form the interpreter can emit. Counted per generation so
+        /// A syntactic form the interpreter can emit, counted per generation so
         /// a test can assert the tape *reached* each one — a construct that
         /// silently stopped being generated would otherwise leave every
         /// property green and proving nothing about it.
+        ///
+        /// The shape forms are counted by walking the finished program
+        /// ([`count_forms`]), so a count means the form is *in the output*
+        /// rather than that some branch which might have produced it was
+        /// taken. The three shadowing forms are the exception — reusing a name
+        /// is a choice, not a shape — and each is recorded at the single
+        /// branch that makes it.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Form {
             $($(#[$m])* $v,)*
@@ -228,6 +235,13 @@ pub fn generate(nums: Vec<u32>) -> Generated {
         forms: HashMap::new(),
     };
     let program = g.program();
+    // Every *shape* form is counted by walking the finished program, not by
+    // instrumenting the decision that produced it: "counted" then means
+    // "present in the output" by construction, and a counter cannot sit on a
+    // branch that did not fire. Only the shadowing choices — which the tree
+    // cannot show, since they are about a name being *reused* — are recorded
+    // during generation, each at the single branch that makes the choice.
+    count_forms(&program, &mut g.forms);
     let mut render = Render::default();
     render.program(&program);
     Generated {
@@ -235,6 +249,154 @@ pub fn generate(nums: Vec<u32>) -> Generated {
         binder_ranges: render.binder_ranges,
         refs: render.refs,
         forms: g.forms,
+    }
+}
+
+fn tally(f: Form, out: &mut HashMap<Form, usize>) {
+    *out.entry(f).or_default() += 1;
+}
+
+/// Tally the forms present in `prog`.
+fn count_forms(prog: &GProgram, out: &mut HashMap<Form, usize>) {
+    for u in &prog.unions {
+        tally(Form::UnionDecl, out);
+        for c in &u.cases {
+            if c.payload {
+                tally(Form::UnionCasePayload, out);
+            }
+        }
+    }
+    for ap in &prog.aps {
+        tally(Form::ActivePatternDecl, out);
+        if ap.param.is_some() {
+            tally(Form::ActivePatternDeclWithParam, out);
+        }
+    }
+    for b in &prog.bindings {
+        match &b.head {
+            GHead::Value(_) => tally(Form::LetValue, out),
+            GHead::Func(..) => tally(Form::LetFunction, out),
+            GHead::Deconstruct(pat) => {
+                tally(Form::LetDeconstruction, out);
+                count_pat_forms(pat, false, out);
+            }
+        }
+        if b.rec {
+            tally(Form::LetRec, out);
+        }
+        count_expr_forms(&b.rhs, out);
+    }
+}
+
+fn count_expr_forms(e: &GExpr, out: &mut HashMap<Form, usize>) {
+    match e {
+        GExpr::Lit(_) => tally(Form::ExprLiteral, out),
+        GExpr::Ref { .. } => tally(Form::ExprRef, out),
+        GExpr::Case { arg, .. } => {
+            tally(Form::ExprCaseConstruction, out);
+            if let Some(a) = arg {
+                count_expr_forms(a, out);
+            }
+        }
+        GExpr::Paren(inner) => {
+            tally(Form::ExprParen, out);
+            count_expr_forms(inner, out);
+        }
+        GExpr::Tuple(els) => {
+            tally(Form::ExprTuple, out);
+            for el in els {
+                count_expr_forms(el, out);
+            }
+        }
+        GExpr::App(f, a) => {
+            tally(Form::ExprApp, out);
+            count_expr_forms(f, out);
+            count_expr_forms(a, out);
+        }
+        GExpr::If(c, t, e2) => {
+            tally(Form::ExprIf, out);
+            count_expr_forms(c, out);
+            count_expr_forms(t, out);
+            count_expr_forms(e2, out);
+        }
+        GExpr::Fun { body, .. } => {
+            tally(Form::ExprLambda, out);
+            count_expr_forms(body, out);
+        }
+        GExpr::Match { scrutinee, clauses } => {
+            tally(Form::ExprMatch, out);
+            count_expr_forms(scrutinee, out);
+            count_clause_forms(clauses, out);
+        }
+        GExpr::Function { clauses } => {
+            tally(Form::ExprFunction, out);
+            count_clause_forms(clauses, out);
+        }
+    }
+}
+
+fn count_clause_forms(clauses: &[GClause], out: &mut HashMap<Form, usize>) {
+    for c in clauses {
+        count_pat_forms(&c.pat, false, out);
+        if let Some(g) = &c.guard {
+            tally(Form::ClauseGuard, out);
+            count_expr_forms(g, out);
+        }
+        count_expr_forms(&c.body, out);
+    }
+}
+
+/// `under_head` is true inside the arguments of a union-case or active-pattern
+/// head, so a head reached there is a *nested* one — the shape whose
+/// canonicalisation has to re-point an inner alias. Alternation does not set
+/// it: `A (x | y)` nests no head.
+fn count_pat_forms(p: &GPat, under_head: bool, out: &mut HashMap<Form, usize>) {
+    match p {
+        GPat::Wild => tally(Form::PatWildcard, out),
+        GPat::Lit(_) => tally(Form::PatLiteral, out),
+        GPat::Bind(_) => tally(Form::PatBinder, out),
+        GPat::Alias { .. } => tally(Form::PatOrAlias, out),
+        GPat::Tuple(els) => {
+            tally(Form::PatTuple, out);
+            for el in els {
+                count_pat_forms(el, under_head, out);
+            }
+        }
+        GPat::Case { arg, .. } => match arg {
+            None => tally(Form::PatNullaryCase, out),
+            Some(a) => {
+                tally(Form::PatCaseHead, out);
+                if under_head {
+                    tally(Form::PatNestedHead, out);
+                }
+                count_pat_forms(a, true, out);
+            }
+        },
+        GPat::Ap { arg, payload, .. } => {
+            tally(Form::PatActivePatternHead, out);
+            if under_head {
+                tally(Form::PatNestedHead, out);
+            }
+            // A *literal* argument makes no resolution claim; only a named one
+            // is the interesting shape.
+            if let Some(a) = arg {
+                if matches!(a, GExpr::Ref { .. }) {
+                    tally(Form::PatActivePatternArgument, out);
+                }
+                count_expr_forms(a, out);
+            }
+            count_pat_forms(payload, true, out);
+        }
+        GPat::As { inner, .. } => {
+            tally(Form::PatAs, out);
+            count_pat_forms(inner, under_head, out);
+        }
+        GPat::Or(alts) => {
+            tally(Form::PatOr, out);
+            for a in alts {
+                count_pat_forms(a, under_head, out);
+            }
+        }
     }
 }
 
@@ -455,26 +617,20 @@ impl Gen {
 
     fn program(&mut self) -> GProgram {
         for _ in 0..self.tape.between(0, 2) {
-            self.form(Form::UnionDecl);
             let name = self.fresh_type();
             let n_cases = self.tape.between(1, 3);
             let cases = (0..n_cases)
                 .map(|_| {
                     let binder = self.fresh_case();
                     let payload = self.tape.flip();
-                    if payload {
-                        self.form(Form::UnionCasePayload);
-                    }
                     GCase { binder, payload }
                 })
                 .collect();
             self.unions.push(GUnion { name, cases });
         }
         for _ in 0..self.tape.between(0, 2) {
-            self.form(Form::ActivePatternDecl);
             let binder = self.fresh_ap();
             let param = if self.tape.flip() {
-                self.form(Form::ActivePatternDeclWithParam);
                 Some(self.fresh_param())
             } else {
                 None
@@ -495,7 +651,6 @@ impl Gen {
             // form, and reaches the pattern walk in the `let` role rather than
             // the parameter/match one.
             if self.tape.choice(4) == 0 {
-                self.form(Form::LetDeconstruction);
                 let (pat, binders) = self.let_deconstruction(&top);
                 let rhs = self.expr(&top, 0);
                 bindings.push(GBinding {
@@ -508,14 +663,6 @@ impl Gen {
             }
             let rec = self.tape.flip();
             let is_func = self.tape.flip();
-            self.form(if is_func {
-                Form::LetFunction
-            } else {
-                Form::LetValue
-            });
-            if rec {
-                self.form(Form::LetRec);
-            }
             // Sometimes reuse an existing top-level name to exercise shadowing.
             let head = if !top.is_empty() && self.tape.flip() {
                 self.form(Form::ShadowingTopLevelBinding);
@@ -560,42 +707,28 @@ impl Gen {
     fn expr(&mut self, scope: &[Binder], depth: usize) -> GExpr {
         let forms = if depth >= MAX_DEPTH { 2 } else { 10 };
         match self.tape.choice(forms) {
-            0 => {
-                self.form(Form::ExprLiteral);
-                GExpr::Lit(self.tape.choice(10) as u32)
-            }
+            0 => GExpr::Lit(self.tape.choice(10) as u32),
             1 => self.reference(scope),
-            2 => {
-                self.form(Form::ExprParen);
-                GExpr::Paren(Box::new(self.expr(scope, depth + 1)))
-            }
+            2 => GExpr::Paren(Box::new(self.expr(scope, depth + 1))),
             3 => {
-                self.form(Form::ExprTuple);
                 let k = self.tape.between(2, 3);
                 GExpr::Tuple((0..k).map(|_| self.expr(scope, depth + 1)).collect())
             }
-            4 => {
-                self.form(Form::ExprApp);
-                GExpr::App(
-                    Box::new(self.expr(scope, depth + 1)),
-                    Box::new(self.expr(scope, depth + 1)),
-                )
-            }
-            5 => {
-                self.form(Form::ExprIf);
-                GExpr::If(
-                    Box::new(self.expr(scope, depth + 1)),
-                    Box::new(self.expr(scope, depth + 1)),
-                    Box::new(self.expr(scope, depth + 1)),
-                )
-            }
+            4 => GExpr::App(
+                Box::new(self.expr(scope, depth + 1)),
+                Box::new(self.expr(scope, depth + 1)),
+            ),
+            5 => GExpr::If(
+                Box::new(self.expr(scope, depth + 1)),
+                Box::new(self.expr(scope, depth + 1)),
+                Box::new(self.expr(scope, depth + 1)),
+            ),
             6 => {
                 // A lambda whose parameter may shadow an in-scope name. The
                 // parameter is always a bare identifier: FCS synthesises an
                 // `_arg1` symbol over a *non-simple* lambda pattern, which sema
                 // does not model, so patterned lambdas would inject an
                 // unmodelled FCS use into the differential.
-                self.form(Form::ExprLambda);
                 let param = if !scope.is_empty() && self.tape.flip() {
                     self.form(Form::ShadowingLambdaParam);
                     let name = scope[self.tape.choice(scope.len())].name.clone();
@@ -610,12 +743,9 @@ impl Gen {
             }
             7 => self.match_expr(scope, depth),
             8 => self.case_ctor(scope, depth),
-            9 => {
-                self.form(Form::ExprFunction);
-                GExpr::Function {
-                    clauses: self.clauses(scope, depth),
-                }
-            }
+            9 => GExpr::Function {
+                clauses: self.clauses(scope, depth),
+            },
             _ => unreachable!(),
         }
     }
@@ -626,7 +756,6 @@ impl Gen {
         if scope.is_empty() {
             return GExpr::Lit(0);
         }
-        self.form(Form::ExprRef);
         let name = scope[self.tape.choice(scope.len())].name.clone();
         let target = scope.iter().rev().find(|b| b.name == name).unwrap().uid;
         GExpr::Ref { name, target }
@@ -638,7 +767,6 @@ impl Gen {
         let Some((name, target, payload)) = self.pick_case(|_| true) else {
             return GExpr::Lit(0);
         };
-        self.form(Form::ExprCaseConstruction);
         let arg = payload.then(|| Box::new(self.expr(scope, depth + 1)));
         GExpr::Case { name, target, arg }
     }
@@ -671,7 +799,6 @@ impl Gen {
     }
 
     fn match_expr(&mut self, scope: &[Binder], depth: usize) -> GExpr {
-        self.form(Form::ExprMatch);
         let scrutinee = Box::new(self.expr(scope, depth + 1));
         let clauses = self.clauses(scope, depth);
         GExpr::Match { scrutinee, clauses }
@@ -686,10 +813,7 @@ impl Gen {
         let (pat, binders) = self.clause_pat(scope);
         let mut inner = scope.to_vec();
         inner.extend(binders);
-        let guard = self.tape.flip().then(|| {
-            self.form(Form::ClauseGuard);
-            self.expr(&inner, depth + 1)
-        });
+        let guard = self.tape.flip().then(|| self.expr(&inner, depth + 1));
         let body = self.expr(&inner, depth + 1);
         GClause { pat, guard, body }
     }
@@ -697,32 +821,20 @@ impl Gen {
     /// A clause pattern and the binders it introduces, in scope order.
     fn clause_pat(&mut self, scope: &[Binder]) -> (GPat, Vec<Binder>) {
         let (pat, binders) = match self.tape.choice(5) {
-            0 => {
-                self.form(Form::PatWildcard);
-                (GPat::Wild, Vec::new())
-            }
-            1 => {
-                self.form(Form::PatLiteral);
-                (GPat::Lit(self.tape.choice(10) as u32), Vec::new())
-            }
+            0 => (GPat::Wild, Vec::new()),
+            1 => (GPat::Lit(self.tape.choice(10) as u32), Vec::new()),
             // A nullary case head binds nothing, so the whole clause body sees
             // only the enclosing scope.
             2 => match self.pick_case(|payload| !payload) {
-                Some((name, target, _)) => {
-                    self.form(Form::PatNullaryCase);
-                    (
-                        GPat::Case {
-                            name,
-                            target,
-                            arg: None,
-                        },
-                        Vec::new(),
-                    )
-                }
-                None => {
-                    self.form(Form::PatWildcard);
-                    (GPat::Wild, Vec::new())
-                }
+                Some((name, target, _)) => (
+                    GPat::Case {
+                        name,
+                        target,
+                        arg: None,
+                    },
+                    Vec::new(),
+                ),
+                None => (GPat::Wild, Vec::new()),
             },
             3 => {
                 let b = self.pattern_binder(scope, &[]);
@@ -737,7 +849,6 @@ impl Gen {
         };
         // `<pat> as w` names the whole match, adding one more binder.
         if self.tape.flip() {
-            self.form(Form::PatAs);
             let mut taken: Vec<String> = binders.iter().map(|b| b.name.clone()).collect();
             let w = self.pattern_binder(scope, &taken);
             taken.push(w.name.clone());
@@ -784,11 +895,9 @@ impl Gen {
             alts.push(if parts.len() == 1 {
                 parts.pop().unwrap()
             } else {
-                self.form(Form::PatTuple);
                 GPat::Tuple(parts)
             });
         }
-        self.form(Form::PatOr);
         (GPat::Or(alts), binders)
     }
 
@@ -814,25 +923,18 @@ impl Gen {
         if depth >= MAX_PATTERN_DEPTH {
             return self.leaf(b, first);
         }
-        if depth > 0 {
-            self.form(Form::PatNestedHead);
-        }
         match self.tape.choice(4) {
             0 => self.leaf(b, first),
             1 => match self.pick_case(|payload| payload) {
-                Some((name, target, _)) => {
-                    self.form(Form::PatCaseHead);
-                    GPat::Case {
-                        name,
-                        target,
-                        arg: Some(Box::new(self.carrier(scope, b, first, depth + 1, pos))),
-                    }
-                }
+                Some((name, target, _)) => GPat::Case {
+                    name,
+                    target,
+                    arg: Some(Box::new(self.carrier(scope, b, first, depth + 1, pos))),
+                },
                 None => self.leaf(b, first),
             },
             2 => match self.pick_ap() {
                 Some((name, target, parameterised)) => {
-                    self.form(Form::PatActivePatternHead);
                     // The recognizer's argument is an expression evaluated in
                     // the *enclosing* scope — the clause's own binders are not
                     // visible to it. Kept to an atom so it needs no parens in
@@ -841,7 +943,6 @@ impl Gen {
                         if pos == PatPos::BindingHead || self.tape.flip() {
                             GExpr::Lit(self.tape.choice(10) as u32)
                         } else {
-                            self.form(Form::PatActivePatternArgument);
                             self.reference(scope)
                         }
                     });
@@ -856,7 +957,6 @@ impl Gen {
                 None => self.leaf(b, first),
             },
             3 => {
-                self.form(Form::PatOr);
                 let n_alts = self.tape.between(2, 3);
                 let alts = (0..n_alts)
                     .map(|_| self.carrier(scope, b, first, depth + 1, pos))
@@ -872,10 +972,8 @@ impl Gen {
     fn leaf(&mut self, b: &Binder, first: &mut bool) -> GPat {
         if *first {
             *first = false;
-            self.form(Form::PatBinder);
             GPat::Bind(b.clone())
         } else {
-            self.form(Form::PatOrAlias);
             GPat::Alias {
                 name: b.name.clone(),
                 target: b.uid,
@@ -889,7 +987,6 @@ impl Gen {
     /// binds `C`, not a constructor pattern).
     fn let_deconstruction(&mut self, scope: &[Binder]) -> (GPat, Vec<Binder>) {
         let k = self.tape.between(2, 3);
-        self.form(Form::PatTuple);
         let mut binders = Vec::new();
         let mut parts = Vec::new();
         for _ in 0..k {
