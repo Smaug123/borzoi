@@ -28,3 +28,4 @@ references-diff/
 crates/sema/tests/fixtures/overload_corpus/Generated.cs
 crates/sema/tests/fixtures/tier_env/Generated.fs
 crates/sema/tests/fixtures/tier_decoy_env/Generated.fs
+crates/sema/tests/fixtures/companion_env/Generated.fs

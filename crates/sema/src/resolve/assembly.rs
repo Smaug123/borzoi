@@ -26,7 +26,14 @@ impl<'a> Resolver<'a> {
     /// `prefix` segments are implicit (no source token); a full-path index `i`
     /// maps to source token `segments[i - prefix.len()]` for `i >= prefix.len()`.
     /// The rooting type's name must be a source segment, so an opened path that
-    /// is *itself* a type (`open type`) yields `NoMatch`. Generic arity is `0`.
+    /// is *itself* a type (`open type`) yields `NoMatch`.
+    ///
+    /// A value-path head writes **no** generic arity — a type application cannot
+    /// appear in expression position — but that does not restrict the rooting to
+    /// arity 0: FCS infers the arguments (`FS1125`) and binds the generic type,
+    /// so the rooting is chosen from the whole candidate set at the name and by
+    /// which member of it owns the path
+    /// ([`Self::rooting_candidates`], [`Self::rooting_reading`]).
     pub(super) fn assembly_path_records(
         &self,
         prefix: &[String],
@@ -52,44 +59,131 @@ impl<'a> Resolver<'a> {
             };
         }
 
-        // Longest prefix whose `(namespace, name)` is a public top-level type
-        // *and* whose type name is a source segment (`k >= base`).
-        let Some((k, type_handle)) = (base..n).rev().find_map(|k| {
-            self.assemblies
-                .lookup_type(&names[..k], &names[k], 0)
-                .filter(|&handle| self.assemblies.is_public(handle))
-                .map(|handle| (k, handle))
+        // Longest prefix whose `(namespace, name)` names a public top-level
+        // entity *and* whose name is a source segment (`k >= base`). What it
+        // names is a candidate **set**, not a candidate: one
+        // `(namespace, name)` can hold a type and its companion module, and
+        // types at several generic arities.
+        let Some((k, rooting_candidates)) = (base..n).rev().find_map(|k| {
+            let candidates = self.rooting_candidates(&names[..k], &names[k]);
+            (!candidates.is_empty()).then_some((k, candidates))
         }) else {
             return AssemblyPath::NoMatch;
         };
 
-        // The rooting's top-level FQN exported by more than one loaded DLL, at
-        // the **arity `lookup_type` selected** (0): FCS merges same-FQN roots
-        // across references, which sema does not model — `lookup_type` is
-        // first-wins — so a commit at a merged rooting could name the wrong
-        // DLL's type, and a descent below it walks the first-indexed subtree,
-        // missing the other DLL's contribution (only a **top-level** FQN merges
-        // across DLLs; nested entities are interned within one parent's
-        // subtree).
+        // Try each candidate in priority order and take the first that **owns
+        // the path**, which is how F# chooses: the head names a set and the
+        // tail decides. `TypeInfo.NominallyEqual` (fsi, and `WoofWare.PawPrint`)
+        // binds the record's static member even though the companion *module*
+        // is the other candidate, and `BothSupply.Tail` with the name on both
+        // binds the module's — so ownership decides first and
+        // [`Self::rooting_candidates`]'s order only breaks ties.
         //
-        // But a merge does not make the reading *own* the path. FCS's merged
-        // lookup is tail-sensitive — it considers every candidate and keeps
-        // those that satisfy the path — so the collision is resolved by
-        // *counting suppliers*, not by the collision itself
-        // ([`Self::contested_suppliers`]). Only a genuine plurality is
-        // undecidable for us.
-        //
-        // Counting *distinct DLLs at arity 0* (not all same-named entities)
-        // keeps a same-DLL companion module — and a `type Alias = Widget`
-        // beside a generic `type Alias<'T>` in one DLL — resolving (codex
-        // review).
-        let candidates = self
-            .assemblies
-            .public_types_named_at_arity(&names[..k], &names[k], 0);
-        if self.assemblies.distinct_dlls(&candidates) > 1 {
+        // A non-owning candidate is kept as the reading's **partial** result
+        // (highest-priority one wins), exactly as before: a lower-priority
+        // *prefix* may still resolve the whole path, and that is the tier
+        // walk's business, not ours.
+        let mut partial: Option<Vec<(TextRange, Resolution)>> = None;
+        for &candidate in &rooting_candidates {
+            match self.rooting_reading(&names, segments, base, k, candidate) {
+                AssemblyPath::Resolved {
+                    payload,
+                    owns_path: true,
+                } => {
+                    return AssemblyPath::Resolved {
+                        payload,
+                        owns_path: true,
+                    };
+                }
+                AssemblyPath::Resolved {
+                    payload,
+                    owns_path: false,
+                } => {
+                    partial.get_or_insert(payload);
+                }
+                AssemblyPath::NoMatch => {}
+                // A candidate that cannot be *named* — a merged rooting, an
+                // opaque abbreviation, a project shadow — decides the reading
+                // where it sits: naming a *later* candidate over it would
+                // commit exactly where FCS's own lookup is undecidable for us.
+                verdict => return verdict,
+            }
+        }
+        // The rooting exists (the candidate set is non-empty) and nothing owned
+        // the path, so the reading matches only partially — the fall-through
+        // case the tier walk holds and may supersede.
+        AssemblyPath::Resolved {
+            payload: partial.unwrap_or_else(|| {
+                segments
+                    .iter()
+                    .map(|seg| {
+                        (
+                            seg.text_range(),
+                            Resolution::Deferred(DeferredReason::QualifiedAccess),
+                        )
+                    })
+                    .collect()
+            }),
+            owns_path: false,
+        }
+    }
+
+    /// The public top-level entities one reading may root at, in the order F#
+    /// prefers them when more than one **owns** the path.
+    ///
+    /// One `(namespace, name)` holds a whole set: a type and its companion
+    /// module (`type TypeInfo<'a,'b>` beside `module TypeInfo`, which fsc emits
+    /// as `TypeInfoModule` while F# source spells it bare), and types at
+    /// several generic arities. The order is **module first, then types by
+    /// ascending arity**:
+    ///
+    /// - module over type is fsi-measured — with `let Tail` in the module and a
+    ///   `static member Tail` on the type, `Holder.Tail` returns the module's;
+    /// - the *written* arity of a value-path head is always 0 (a type
+    ///   application cannot appear there), and FCS infers the type arguments
+    ///   rather than requiring them (`FS1125`), so a generic type is reachable
+    ///   here at all — which is why the arity-keyed first-wins slot this
+    ///   replaced could not see `MethodBody<'a>` under a bare `MethodBody`.
+    fn rooting_candidates(&self, namespace: &[String], name: &str) -> Vec<EntityHandle> {
+        let mut candidates = self.assemblies.public_entities_named(namespace, name);
+        candidates.sort_by_key(|&h| {
+            (
+                !self.assemblies.is_module(h),
+                self.assemblies.entity(h).generic_parameters.len(),
+            )
+        });
+        candidates
+    }
+
+    /// One rooting candidate's reading: the cross-DLL merge check at *its* key,
+    /// then the descent below it.
+    ///
+    /// FCS merges same-FQN roots across references and binds the latest
+    /// accessible one, which sema does not model, so at a merged rooting we can
+    /// never name a target. The merge is nonetheless *tail-sensitive*: when no
+    /// contestant supplies the tail FCS skips the rooting entirely, so the
+    /// collision is decided by counting **suppliers**
+    /// ([`Self::contest_has_a_supplier`]), not by the collision itself.
+    ///
+    /// The count is per `(namespace, name, arity)` — the key a merge actually
+    /// happens at — so a same-DLL companion module, and a `type Alias = Widget`
+    /// beside a generic `type Alias<'T>`, are not collisions (codex review).
+    fn rooting_reading(
+        &self,
+        names: &[String],
+        segments: &[SyntaxToken],
+        base: usize,
+        k: usize,
+        candidate: EntityHandle,
+    ) -> AssemblyPath<Vec<(TextRange, Resolution)>> {
+        let arity = self.assemblies.entity(candidate).generic_parameters.len();
+        let contestants =
+            self.assemblies
+                .public_types_named_at_arity(&names[..k], &names[k], arity);
+        if self.assemblies.distinct_dlls(&contestants) > 1 {
             let supplied = self.contest_has_a_supplier(
-                candidates,
-                |handle| self.assembly_path_records_from_root(&names, segments, base, k, handle),
+                contestants,
+                |handle| self.assembly_path_records_from_root(names, segments, base, k, handle),
                 // A reading whose **terminal segment** landed on an
                 // authoritative module supplies no *value*: FCS's
                 // expression-position lookup wants a value or member, and a
@@ -141,7 +235,7 @@ impl<'a> Resolver<'a> {
             };
         }
 
-        self.assembly_path_records_from_root(&names, segments, base, k, type_handle)
+        self.assembly_path_records_from_root(names, segments, base, k, candidate)
     }
 
     /// Whether **any** candidate at a contested rooting FQN could satisfy the
@@ -278,6 +372,21 @@ impl<'a> Resolver<'a> {
         let mut owns_path = true;
         while i < n {
             let src = &segments[i - base];
+            // A union **case** ending the path is a case reference, not a
+            // nested-type descent: FCS reports it over the whole long
+            // identifier, and a field-carrying case's nested carrier — which the
+            // descent below would otherwise take, recording at the segment — is
+            // that same case's compiled form. Terminal-only, so a deeper path
+            // through the carrier (`U.Case.Item`) still descends.
+            if i + 1 == n
+                && let Some(case) = self.union_case_tail(parent, &names[i])
+            {
+                let whole =
+                    TextRange::new(segments[0].text_range().start(), src.text_range().end());
+                recs.push((whole, case));
+                i += 1;
+                break;
+            }
             if let Some(child) = self
                 .assemblies
                 .nested(parent, &names[i], 0)
@@ -397,6 +506,41 @@ impl<'a> Resolver<'a> {
             payload: recs,
             owns_path,
         }
+    }
+
+    /// How a path segment that names a **union case** of `parent` resolves, or
+    /// `None` when `parent` is not a union that declares it.
+    ///
+    /// The case list must be *known*: `union_case_names` of `None` means no
+    /// pickle described the union, so it proves neither presence nor absence.
+    ///
+    /// A field-carrying case compiles to a nested type — nameable, and keyed on
+    /// the union's own arity, whose generic parameters the carrier inherits. A
+    /// **nullary** case has no carrier at all (fsc emits a static property the
+    /// F#-entity projection drops), so it defers: the reading owns the path (the
+    /// case is certainly there) while naming no target.
+    fn union_case_tail(&self, parent: EntityHandle, name: &str) -> Option<Resolution> {
+        let entity = self.assemblies.entity(parent);
+        if entity.kind != EntityKind::Union
+            || !entity
+                .union_case_names
+                .as_ref()
+                .is_some_and(|cases| cases.iter().any(|c| c == name))
+        {
+            return None;
+        }
+        let arity = entity.generic_parameters.len();
+        Some(
+            match self
+                .assemblies
+                .nested(parent, name, arity)
+                .or_else(|| self.assemblies.nested(parent, name, 0))
+                .filter(|&h| self.assemblies.is_public(h))
+            {
+                Some(case) => Resolution::Entity(case),
+                None => Resolution::Deferred(DeferredReason::QualifiedAccess),
+            },
+        )
     }
 
     /// The **union-case pattern** sibling of [`Self::assembly_type_path_core`]:
