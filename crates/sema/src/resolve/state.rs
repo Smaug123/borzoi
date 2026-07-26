@@ -615,6 +615,9 @@ pub(super) struct Resolver<'a> {
     pub(super) defs: Vec<Def>,
     pub(super) items: Vec<ExportedItem>,
     pub(super) resolutions: HashMap<TextRange, Resolution>,
+    /// The subset of [`Self::resolutions`] recorded for an **or-pattern
+    /// alias** — see [`ResolvedFile::is_or_pattern_alias`](super::ResolvedFile).
+    pub(super) or_pattern_aliases: HashSet<TextRange>,
     pub(super) scopes: Vec<Frame>,
     /// The **type-parameter** scope: a stack of frames, one per generic
     /// definition currently open (a `type` header, a generic `let`/function, a
@@ -1251,7 +1254,7 @@ pub(super) struct Resolver<'a> {
     /// shape-keyed split has resolved as expressions (Stage 2 of
     /// `docs/parameterized-active-pattern-args-plan.md`): in `match n with DivBy
     /// divisor -> …`, `divisor` is a parameter (an outer-value reference), not a
-    /// binder, so the resolution-independent [`binders`](crate::binders) walk's
+    /// binder, so the resolution-independent [`pattern_names`](crate::pattern_names) walk's
     /// fabricated binder for it must be suppressed. The three binder-interning
     /// loops ([`pattern_locals`](Resolver::pattern_locals),
     /// [`prepare_binding`](Resolver::prepare_binding),
@@ -1281,7 +1284,7 @@ pub(super) struct Resolver<'a> {
     /// scope, which is exactly FCS's rule there. Set/restored around the let-head
     /// ([`resolve_let_head_pat_types`](Resolver::resolve_let_head_pat_types)) and the
     /// lambda-parameter walk ([`pattern_locals`](Resolver::pattern_locals) with
-    /// [`BinderRole::Param`](crate::binders::BinderRole)).
+    /// [`BinderRole::Param`](crate::BinderRole)).
     pub(super) decline_binding_head_param_exprs: bool,
     /// Always-sound semantic diagnostics accumulated during the walk (today
     /// only `use rec`; see [`SemaDiagnostic`]). Source-ordered because the
@@ -1300,6 +1303,43 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
+}
+
+/// What the binders interned so far in **one** pattern walk resolved to, so an
+/// or-pattern alias can be recorded against the alternative it names.
+///
+/// [`PatternName::Alias`](crate::PatternName::Alias) carries its canonical
+/// binder's *range*; the interning loop that walks the same list has already
+/// turned that binder into a [`Resolution`] — a [`Resolution::Local`] in a
+/// pattern position, a [`Resolution::Item`] at a module-level `let` head — and
+/// parks it here for the alias to pick up.
+///
+/// Scoped to a single pattern because an alias never names a binder outside its
+/// own or-pattern, and the ranges are unique only within one file's walk.
+#[derive(Default)]
+pub(super) struct AliasTargets(Vec<(TextRange, Resolution)>);
+
+impl AliasTargets {
+    /// Note that the binder whose ident token spans `range` was interned as
+    /// `res`.
+    pub(super) fn interned(&mut self, range: TextRange, res: Resolution) {
+        self.0.push((range, res));
+    }
+
+    /// What to record at an alias of the binder at `binder`, or `None` when that
+    /// binder was never interned — it was excluded as an active-pattern argument,
+    /// or dropped as an unresolved provisional head. The alias then records
+    /// nothing too, which is exactly what its binder did: a coverage gap, never a
+    /// wrong target.
+    ///
+    /// Linear: an or-pattern binds a handful of names, so a map would cost more
+    /// than it saves.
+    pub(super) fn resolution_of(&self, binder: TextRange) -> Option<Resolution> {
+        self.0
+            .iter()
+            .find(|(range, _)| *range == binder)
+            .map(|(_, res)| *res)
+    }
 }
 
 /// F#'s implicit auto-opened *namespaces* — opened in every file so their

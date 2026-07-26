@@ -2,12 +2,12 @@
 
 use borzoi_cst::syntax::{AstNode, Expr, InterpStringPart, MatchClause, Pat, SyntaxToken};
 
-use crate::binders::{BinderRole, binders};
+use crate::binders::{BinderRole, PatternName, pattern_names};
 use crate::def::{Def, DefKind};
 
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
-use super::state::{Frame, Resolver, ScopeEntry};
+use super::state::{AliasTargets, Frame, Resolver, ScopeEntry};
 use super::types::TypePathResolution;
 
 impl<'a> Resolver<'a> {
@@ -750,17 +750,36 @@ impl<'a> Resolver<'a> {
             // (x : T) -> …`, `:? T`) are type uses, resolved alongside the
             // binders the pattern introduces.
             self.resolve_pat_types(&pat);
-            for def in binders(&pat, role) {
+            // `resolve_pat_types` has just run the active-pattern split, so
+            // `excluded_param_ranges` now names this pattern's argument
+            // *expressions* — the occurrences the or-pattern pairing must not
+            // count as bindings. Bound before the loop so the borrow ends here.
+            let names = pattern_names(&pat, role, &self.excluded_param_ranges);
+            let mut aliases = AliasTargets::default();
+            for pat_name in names {
+                // An or-pattern's later alternative re-spelling a name the first
+                // already bound (`match … with A v | B v -> …`): one binding, so
+                // this occurrence is a *use* of it — no interning, no second scope
+                // entry (the canonical binder's entry already carries the name).
                 // An active-pattern *parameter* argument (`divisor` in `match n
-                // with DivBy divisor -> …`): the shape-keyed split
-                // ([`Self::split_active_pattern_args`], run by `resolve_pat_types`
-                // just above) has already resolved it as an expression and excluded
-                // its fabricated binder range. Skip it — before the `provisional`
-                // branch, so a would-be provisional case-reference head is dropped
-                // too — leaving no recorded self-resolution and no scope entry.
-                if self.excluded_param_ranges.contains(&def.range) {
+                // with DivBy divisor -> …`, and either `x` in `DivBy x x`): the
+                // shape-keyed split ([`Self::split_active_pattern_args`], run by
+                // `resolve_pat_types` just above) has already resolved it as an
+                // expression and excluded its range. Skip it whichever kind it
+                // is — before the alias and `provisional` branches — so nothing
+                // overwrites that expression resolution.
+                if self.excluded_param_ranges.contains(&pat_name.range()) {
                     continue;
                 }
+                let def = match pat_name {
+                    PatternName::Alias { range, binder } => {
+                        if let Some(res) = aliases.resolution_of(binder) {
+                            self.record_or_pattern_alias(range, res);
+                        }
+                        continue;
+                    }
+                    PatternName::Binder(def) => def,
+                };
                 // Provisional maybe-var head (`None` in `match … with None -> …`,
                 // `fun None -> …`): resolve a known union-case reference, else
                 // decline (drop). See the module-level "Provisional pattern
@@ -776,6 +795,7 @@ impl<'a> Resolver<'a> {
                 let id = self.intern(def);
                 let res = Resolution::Local(id);
                 self.record(range, res);
+                aliases.interned(range, res);
                 entries.push(ScopeEntry::binding(name, res, self.open_generation));
             }
         }

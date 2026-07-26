@@ -462,14 +462,15 @@ fn lsp_loader_reports_causal_details_for_uncertain_compile_items() {
     }
 }
 
-/// FCS emits a pattern binder **once** even when the source binds it in
-/// several alternatives of an or-pattern (`| Ldarg _n | Ldarga _n | …`
-/// reports `_n` at the first alternative only), while our model resolves each
-/// occurrence to itself. The repeats are ranges the oracle says *nothing*
-/// about, and silence is not evidence: they must be counted, not reported as
-/// resolutions FCS contradicts.
+/// An or-pattern binds one name **once**: `| A _n | B _n -> _n` has a single
+/// `_n`, declared at the first alternative, and the second alternative's
+/// spelling is a *use* of it. FCS agrees — and for an underscore-prefixed name
+/// it reports nothing at all at the later alternatives, so those occurrences
+/// are ranges the oracle is silent about. Silence is not evidence: they must be
+/// counted, not reported as resolutions FCS contradicts — while the body use,
+/// which the oracle *does* report, must match.
 #[test]
-fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
+fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
     let src = "module B\n\ntype T =\n    | A of int\n    | B of int\n\nlet f (t: T) =\n    match t with\n    | A _n\n    | B _n -> _n\n";
     let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
     let file = loaded.parses.paths[0].clone();
@@ -513,6 +514,15 @@ fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
             ],
         }],
     );
+    // The body use is the one occurrence the oracle *does* report, and it names
+    // the first alternative's binder — so it is graded, and it matches.
+    assert_eq!(
+        comparison.divergences,
+        Vec::new(),
+        "the body use points at the alternative FCS declares"
+    );
+    assert_eq!(comparison.matches, 1, "the body use is compared and agrees");
+
     // The fixture's oracle deliberately lists only the binder's two FCS uses,
     // so other names in the file have no covering oracle either; this asserts
     // about the second alternative's `_n` specifically.
@@ -522,14 +532,97 @@ fn an_unoracled_defining_occurrence_is_not_a_reverse_divergence() {
             .reverse_divergences
             .iter()
             .any(|d| d.range == (second, second + 2)),
-        "the second alternative's binder has no covering oracle, so it is not a \
-         divergence: {:?}",
+        "the second alternative's spelling has no covering oracle, so it is not \
+         a divergence: {:?}",
         comparison.reverse_divergences
+    );
+    assert_eq!(
+        comparison.unoracled_or_pattern_aliases, 1,
+        "the silently-skipped alias must still be counted"
     );
     assert!(
         comparison.unoracled_definitions > 0,
-        "the silently-skipped defining occurrences must still be counted"
+        "the file's other binders are unoracled definitions, counted separately"
     );
+}
+
+/// A *merely enclosing* oracle use is not the oracle speaking about our range.
+///
+/// For a non-simple lambda parameter FCS synthesises an `_arg1` symbol spanning
+/// the **whole** pattern, so every occurrence inside it is enclosed by an
+/// unrelated use. That must not defeat the binding-position exemption: the
+/// second alternative's `_n` is still a range FCS says nothing about, and
+/// scoring it as a contradiction would report a correct answer as a divergence.
+#[test]
+fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
+    let src =
+        "module B\n\ntype T =\n    | A of int\n    | B of int\n\nlet f = fun (A _n | B _n) -> _n\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    let pattern_start = src.find("A _n").expect("pattern start");
+    let pattern_end = src.find(") ->").expect("pattern end");
+    let first = src.find("A _n").expect("first alternative") + 2;
+    let body = src.rfind("_n").expect("body use");
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![
+                // FCS's synthetic parameter, spanning the whole pattern.
+                ProjectUse {
+                    name: "_arg1".to_string(),
+                    start: pattern_start,
+                    end: pattern_end,
+                    is_from_definition: false,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: pattern_start,
+                        end: pattern_end,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: first,
+                    end: first + 2,
+                    is_from_definition: true,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+                ProjectUse {
+                    name: "_n".to_string(),
+                    start: body,
+                    end: body + 2,
+                    is_from_definition: false,
+                    decl: UseDecl::InProject(DeclSite {
+                        file: file.clone(),
+                        start: first,
+                        end: first + 2,
+                    }),
+                    assembly: None,
+                    full_name: None,
+                },
+            ],
+        }],
+    );
+
+    let second = src.find("| B _n").expect("second alternative") + 4;
+    assert!(
+        !comparison
+            .reverse_divergences
+            .iter()
+            .any(|d| d.range == (second, second + 2)),
+        "an enclosing synthetic use is not speech about this range: {:?}",
+        comparison.reverse_divergences
+    );
+    assert_eq!(comparison.unoracled_or_pattern_aliases, 1);
 }
 
 #[test]

@@ -20,8 +20,8 @@
 //!   this to zero, so real entries here should be B1-free; sorted bucket-first so
 //!   any B1 fault sorts to the top. `<bucket>/<tag>\t<path>:<range>\t<text>\t<ours>`.
 //! * `alt_binder.txt` — a *same-named* in-file binder at a different range
-//!   (OR-pattern canonicalisation / isolation-bias recovery — see
-//!   `resolve_corpus_diff`). Reported, not a fault.
+//!   (isolation-bias recovery — see `resolve_corpus_diff`). Reported, not a
+//!   fault.
 //! * `gap_b1.txt` — **the primary worklist.** FCS resolves it with *no inference*
 //!   (bucket B1) and its declaration is in this file, yet we return
 //!   `Deferred`/nothing. These are the pure-lexical names we ought to bind and

@@ -24,9 +24,9 @@
 //! * **divergence** — `Unresolved`, wrong-*named* binder, or in-project-vs-
 //!   assembly disagreement where FCS resolved concretely. Gated.
 //! * **alt-binder** — same-named binder at a different range/file. Unlike the
-//!   isolation corpus sweep (where this is OR-pattern noise), a *fully* checked
-//!   project should agree on the exact binder, so this is gated to zero too —
-//!   a same-name mismatch here is a real wrong-shadow go-to-def.
+//!   isolation corpus sweep (where recovery leaves some as noise), a *fully*
+//!   checked project should agree on the exact binder, so this is gated to zero
+//!   too — a same-name mismatch here is a real wrong-shadow go-to-def.
 //! * **gap** — `Deferred`/unrecorded (a construct we don't model, or a B2/B3
 //!   member whose receiver type we don't infer). Expected; counted, not gated.
 //!
@@ -478,11 +478,11 @@ fn project_resolution_matches_fcs() {
     // agree with or honestly defer — never a wrong binder, wrong assembly symbol,
     // or `Unresolved` (D5). Alt-binders (our binder is same-named but at a
     // different range) are *also* gated to zero: unlike the isolation corpus
-    // sweep — where OR-pattern canonicalisation and recovery make them expected
-    // noise — a fully-checked project should agree on the exact binder, so a
-    // same-name mismatch here would be a real wrong-shadow / wrong-file go-to-def
-    // and must not pass silently. If a genuine OR-pattern case ever surfaces,
-    // convert this to a ceiling with the site documented.
+    // sweep — where recovery leaves some as expected noise — a fully-checked
+    // project should agree on the exact binder, so a same-name mismatch here
+    // would be a real wrong-shadow / wrong-file go-to-def and must not pass
+    // silently. If a legitimate case ever surfaces, convert this to a ceiling
+    // with the site documented.
     assert!(
         tally.divergences.is_empty() && tally.alt_binders.is_empty(),
         "{} divergences + {} alt-binders vs FCS (see the printed sites) for {project:?}",

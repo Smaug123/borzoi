@@ -2173,6 +2173,18 @@ pub struct ResolvedFile {
     /// Every resolved occurrence (uses *and* the binders' own self-references),
     /// keyed by the occurrence's source range.
     pub(super) resolutions: HashMap<TextRange, Resolution>,
+    /// The subset of [`Self::resolutions`] whose occurrence is an **or-pattern
+    /// alias**: a later alternative's spelling of a name the first alternative
+    /// binds (`A v | B v` — the second `v`). Its resolution is the canonical
+    /// binder, exactly as an ordinary use of it would be.
+    ///
+    /// The set exists because such an occurrence sits in *binding* position
+    /// while resolving elsewhere, which no other occurrence does — and a
+    /// consumer diffing us against FCS has to know: FCS reports these for an
+    /// ordinary name but is **silent** for one starting with `_`, so a
+    /// comparison that read the occurrence as a plain use would score our
+    /// correct answer as a resolution the oracle contradicts.
+    pub(super) or_pattern_aliases: HashSet<TextRange>,
     /// The *type* each written attribute resolved to (EX-3 §2(d),
     /// `docs/extension-scope-enumeration-plan.md`), keyed by the written
     /// attribute name's range (the full dotted path, matching FCS's
@@ -2422,6 +2434,7 @@ impl ResolvedFile {
         ResolvedFile {
             defs,
             resolutions: HashMap::new(),
+            or_pattern_aliases: HashSet::new(),
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
@@ -2629,6 +2642,22 @@ impl ResolvedFile {
     /// The full range→[`Resolution`] map.
     pub fn resolutions(&self) -> &HashMap<TextRange, Resolution> {
         &self.resolutions
+    }
+
+    /// Whether the occurrence at `range` is an **or-pattern alias**: a later
+    /// alternative's spelling of a name the first alternative binds (the second
+    /// `v` in `A v | B v`).
+    ///
+    /// F# gives an or-pattern one binding per name, so such an occurrence
+    /// resolves to the first alternative's binder — [`Self::resolution_at`]
+    /// returns exactly what it would for any other use of it. What this answers
+    /// is the thing the resolution alone cannot: the occurrence is in *binding*
+    /// position, so an oracle need not report it as a use. FCS does for an
+    /// ordinary name and does not for one starting with `_`, so a differential
+    /// must read the two the same way — as our claim about a binder, which the
+    /// oracle is free to stay silent about.
+    pub fn is_or_pattern_alias(&self, range: TextRange) -> bool {
+        self.or_pattern_aliases.contains(&range)
     }
 
     /// The binder a [`DefId`] names.

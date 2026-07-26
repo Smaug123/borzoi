@@ -82,8 +82,7 @@ sub-tag (`value:module-or-import`, `union-case`, …).
   zero, so real entries here should be B1-free; sorted bucket-first so any B1
   fault sorts to the top.
 - **`alt_binder.txt`** — a *same-named* in-file binder at a different range
-  (OR-pattern canonicalisation / isolation-bias recovery). Reported, **not a
-  fault**.
+  (isolation-bias recovery). Reported, **not a fault**.
 - **`gap_b2.txt` / `gap_b3.txt` / `gap_other.txt`** — declined uses that need
   shallow inference (a receiver type / B2), the hard pile (overload / extension
   search / B3), or fall outside the taxonomy. **Expected** until inference
