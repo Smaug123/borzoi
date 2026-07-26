@@ -1480,7 +1480,9 @@ enum ReferenceOutcome {
     /// The edge contributed these DLLs. A C# edge contributes its whole
     /// transitive closure, so this is not always a single path; an F# one is.
     Resolved(Vec<PathBuf>),
-    /// The referenced project's output does not exist: nobody has built it.
+    /// We looked where this project's output should be and found nothing —
+    /// usually because nobody has built it. See [`OutputLocation::Absent`] for
+    /// what "should be" can miss.
     ///
     /// Its types are unknown, exactly as an unread DLL's are — and this
     /// deliberately **does not** mark the env incomplete, which is unsound and
@@ -2198,20 +2200,32 @@ fn locate_fsharp_output_dll(
 
 /// Where a referenced F# project's built output is, or why we cannot say.
 ///
-/// The distinction [`OutputLocation::Absent`] draws is load-bearing: it is the
-/// only outcome that grades as [`ReferenceOutcome::NotBuilt`], which leaves the
-/// env *complete*. So it must be a **proven** absence — a `bin` tree we read
-/// and found nothing matching in — and never a stand-in for "we could not
-/// look". Collapsing the two is how the reference-omission hole this whole
-/// module now guards against was written in the first place, one layer up.
+/// [`Self::Absent`] is the load-bearing one: it is the only outcome that grades
+/// as [`ReferenceOutcome::NotBuilt`], which leaves the env *complete*. It means
+/// **the standard layout held no matching output** — not that no output exists.
+/// A project whose `OutDir` / `OutputPath` / `AppendTargetFrameworkToOutputPath`
+/// puts its assembly elsewhere is built and still lands here, because deciding
+/// otherwise needs that project's evaluated output path, which the graph node
+/// does not carry.
+///
+/// That is deliberately inside the trade `NotBuilt` already makes: the grade is
+/// "we did not fold this reference and are choosing to carry on", never "we
+/// proved there is nothing to fold". A custom layout is one more way into that
+/// same accepted bucket, not a new kind of hole — the shadow it risks is the
+/// one the grade was created to accept.
+///
+/// What must *not* land in it is a reference we hit an **error** looking for.
+/// That is a different claim — we could not look, rather than looked and found
+/// nothing — and it is the collapse the reference-edge conservation exists to
+/// prevent, one layer up. Hence [`Self::Undecidable`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OutputLocation {
     /// The DLL to fold.
     Found(PathBuf),
-    /// Read the tree, found no matching output: the project is not built.
+    /// Searched the standard layout without error and found no matching output.
     Absent,
-    /// Could not decide — the tree exists but would not be read, or several TFM
-    /// variants are built and nothing selects between them. Grades as
+    /// Could not decide: an error while enumerating the tree, or several TFM
+    /// variants built with nothing to select between them. Grades as
     /// [`ReferenceOutcome::Unread`].
     Undecidable(&'static str),
 }
@@ -2219,10 +2233,15 @@ enum OutputLocation {
 /// The immediate subdirectories of `dir`, sorted for determinism.
 ///
 /// `Some(vec![])` when `dir` simply does not exist — the ordinary shape of an
-/// unbuilt project, and a *proven* absence. `None` when it exists but could not
-/// be read (permissions, an I/O fault): the caller must not read that as
-/// "nothing was built", because it is the opposite — something may be there and
-/// we cannot see it.
+/// unbuilt project. `None` when *anything* went wrong while enumerating it: the
+/// caller must not read that as "nothing is there", because it is the opposite —
+/// something may be and we could not see it.
+///
+/// Every step can fail, not just the open: a `ReadDir` item is itself a
+/// `Result` (a directory mutated mid-walk, an unreadable entry), and
+/// `Path::is_dir` folds a failed `stat` into `false`. Discarding either would
+/// hide the matching directory and make an unread tree look empty, so both
+/// propagate.
 fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -2232,11 +2251,25 @@ fn child_dirs(dir: &Path) -> Option<Vec<PathBuf>> {
             return None;
         }
     };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.is_dir())
-        .collect();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(err) => {
+                tracing::info!(dir = %dir.display(), error = %err, "cannot read a directory entry");
+                return None;
+            }
+        };
+        let path = entry.path();
+        match path.metadata() {
+            Ok(meta) if meta.is_dir() => dirs.push(path),
+            Ok(_) => {}
+            Err(err) => {
+                tracing::info!(path = %path.display(), error = %err, "cannot stat a directory entry");
+                return None;
+            }
+        }
+    }
     dirs.sort();
     Some(dirs)
 }
