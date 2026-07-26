@@ -29,7 +29,7 @@
 //! fixture, so it is a local ratchet in the mould of `resolve_real_project_diff`
 //! rather than a CI job.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
@@ -54,8 +54,13 @@ const ASSEMBLY_EXTENSIONS: &[&str] = &["dll", "exe", "winmd"];
 /// pass, so a wrong predicate there is silent. That asymmetry is why path
 /// matching is right in this position and wrong in that one.
 struct Exemption {
-    /// Substring of the refusal this excuses.
-    reason: &'static str,
+    /// The step that must have refused the file.
+    stage: Stage,
+    /// The refusal's `Display`, matched in **full**. Not a substring: an error
+    /// can carry input-controlled text (a resource name echoed back), and a
+    /// substring match would let a package choose which exemption its failure
+    /// lands in.
+    error: &'static str,
     /// Lowercased path substring the excused files must sit under. `None` only
     /// when the justification is a property of the *bytes*, independent of
     /// which package shipped them.
@@ -74,7 +79,8 @@ const EXEMPT: &[Exemption] = &[
     // Cross-checking it would mean a second PE reader, which is not worth
     // building to re-derive "the COM descriptor directory is empty".
     Exemption {
-        reason: "no CLI header",
+        stage: Stage::Parse,
+        error: "unsupported ECMA-335 layout: assembly reader: no CLI header",
         scope: None,
         why: "not a managed assembly (native PE); fsc refuses it too",
     },
@@ -88,12 +94,15 @@ const EXEMPT: &[Exemption] = &[
     // claims. A *non*-net4x assembly refused for either cause — say one with a
     // linked `ManifestResource` — is a new loss and must fail the gate.
     Exemption {
-        reason: "assembly has no Assembly manifest record",
+        stage: Stage::Parse,
+        error: "unsupported ECMA-335 layout: assembly has no Assembly manifest record",
         scope: Some("microsoft.netframework.referenceassemblies"),
         why: "netmodule in the net4x targeting pack; pending the net4x-support decision",
     },
     Exemption {
-        reason: "manifest resource is not embedded in this file",
+        stage: Stage::Parse,
+        error: "unsupported ECMA-335 layout: assembly reader: manifest resource is not embedded \
+                in this file",
         scope: Some("microsoft.netframework.referenceassemblies"),
         why: "net4x targeting-pack mscorlib; pending the net4x-support decision",
     },
@@ -103,6 +112,14 @@ const EXEMPT: &[Exemption] = &[
 /// root, or one whose subtrees are unreadable. The gate says nothing useful
 /// about such a population, so it fails rather than passing vacuously.
 const MIN_PROJECTED: usize = 1_000;
+
+/// Which step of the pipeline refused the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    Read,
+    Parse,
+    Enumerate,
+}
 
 /// What the LSP's per-DLL pipeline made of one file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,42 +133,58 @@ enum Outcome {
         /// Global uncertainty, but it does not cost the assembly's types.
         auto_opens_unreadable: bool,
     },
-    /// Skipped whole, carrying the stage and the refusal's `Display` so a gate
-    /// failure names the cause rather than only the path.
-    Skipped(String),
+    /// Skipped whole. `error` is the refusal's `Display` *alone* — not a
+    /// message the sweep composed around it — because [`Outcome::exemption`]
+    /// compares it for equality. A `format!("{stage}: {e}")` blob matched by
+    /// substring lets input-controlled text inside the error (a resource name
+    /// the reader echoes back, say) select an exemption written for something
+    /// else.
+    Skipped { stage: Stage, error: String },
 }
 
 impl Outcome {
     /// The exemption justifying this loss of the assembly at `path`, if any.
-    /// Both halves must hold: the refusal must be one the entry names, *and*
-    /// the file must sit where the entry's justification says it does.
+    /// All three halves must hold: same stage, *exactly* the same error, and a
+    /// path where the entry's justification says it applies.
     fn exemption(&self, path: &Path) -> Option<&'static str> {
-        let Outcome::Skipped(reason) = self else {
+        let Outcome::Skipped { stage, error } = self else {
             return None;
         };
         let lowered = path.to_string_lossy().to_lowercase();
         EXEMPT
             .iter()
             .find(|e| {
-                reason.contains(e.reason) && e.scope.is_none_or(|scope| lowered.contains(scope))
+                e.stage == *stage
+                    && e.error == error
+                    && e.scope.is_none_or(|scope| lowered.contains(scope))
             })
             .map(|e| e.why)
+    }
+
+    /// How a gate failure renders this loss.
+    fn describe(&self) -> String {
+        match self {
+            Outcome::Projected { .. } => "projected".to_owned(),
+            Outcome::Skipped { stage, error } => format!("{stage:?}: {error}"),
+        }
     }
 }
 
 /// Run the LSP's pipeline over one assembly file.
 fn probe_assembly(path: &Path) -> Outcome {
-    let Ok(bytes) = std::fs::read(path) else {
-        return Outcome::Skipped("read: failed".to_owned());
+    let skipped = |stage, error: String| Outcome::Skipped { stage, error };
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) => return skipped(Stage::Read, e.to_string()),
     };
     let parsed = match catch_unwind_silent(|| Ecma335Assembly::parse(&bytes)) {
-        Err(_) => return Outcome::Skipped("parse: panicked".to_owned()),
-        Ok(Err(e)) => return Outcome::Skipped(format!("parse: {e}")),
+        Err(_) => return skipped(Stage::Parse, "reader panicked".to_owned()),
+        Ok(Err(e)) => return skipped(Stage::Parse, e.to_string()),
         Ok(Ok(view)) => view,
     };
     match catch_unwind_silent(|| parsed.enumerate_type_defs_with_skips()) {
-        Err(_) => Outcome::Skipped("enumerate: panicked".to_owned()),
-        Ok(Err(e)) => Outcome::Skipped(format!("enumerate: {e}")),
+        Err(_) => skipped(Stage::Enumerate, "reader panicked".to_owned()),
+        Ok(Err(e)) => skipped(Stage::Enumerate, e.to_string()),
         Ok(Ok((_, skips))) => Outcome::Projected {
             dropped_types: skips.dropped_types.len(),
             auto_opens_unreadable: !matches!(
@@ -172,19 +205,43 @@ fn is_assembly_file(path: &Path) -> bool {
         })
 }
 
-/// Collect every assembly file under `root`. A directory that cannot be read is
-/// pushed to `unreadable` rather than silently treated as empty: an unreadable
-/// subtree is *unexamined*, and a gate that cannot tell "nothing wrong here"
-/// from "did not look here" is not a gate.
-fn collect_assemblies(
-    root: &Path,
-    out: &mut Vec<PathBuf>,
-    unreadable: &mut Vec<(PathBuf, String)>,
-) {
+/// What a traversal found: the assemblies to probe, and every place it could
+/// *not* look. The second list is the point — a gate that cannot tell "nothing
+/// wrong here" from "did not look here" is not a gate, so anything unexamined
+/// is carried out and fails the sweep rather than being absorbed as an empty
+/// subtree.
+#[derive(Default)]
+struct Found {
+    /// Canonicalised, so a package reached twice — through overlapping roots,
+    /// or through a symlink — is probed and counted once. Duplicates would
+    /// otherwise inflate the population against `MIN_PROJECTED`.
+    assemblies: BTreeSet<PathBuf>,
+    unexamined: Vec<(PathBuf, String)>,
+}
+
+/// Collect every assembly file under `root`.
+///
+/// Classification goes through [`std::fs::metadata`], which **follows**
+/// symlinks: `DirEntry::file_type` reports the link itself, so a cache built
+/// from linked package versions or shared storage would have every linked entry
+/// silently match neither the file nor the directory arm. Cycles are bounded by
+/// `visited`, which holds canonical directory paths.
+fn collect_assemblies(root: &Path, found: &mut Found, visited: &mut BTreeSet<PathBuf>) {
+    match root.canonicalize() {
+        Ok(canonical) => {
+            if !visited.insert(canonical) {
+                return;
+            }
+        }
+        Err(e) => {
+            found.unexamined.push((root.to_path_buf(), e.to_string()));
+            return;
+        }
+    }
     let entries = match std::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(e) => {
-            unreadable.push((root.to_path_buf(), e.to_string()));
+            found.unexamined.push((root.to_path_buf(), e.to_string()));
             return;
         }
     };
@@ -192,16 +249,28 @@ fn collect_assemblies(
         let entry = match entry {
             Ok(entry) => entry,
             Err(e) => {
-                unreadable.push((root.to_path_buf(), e.to_string()));
+                found.unexamined.push((root.to_path_buf(), e.to_string()));
                 continue;
             }
         };
         let path = entry.path();
-        match entry.file_type() {
-            Ok(t) if t.is_dir() => collect_assemblies(&path, out, unreadable),
-            Ok(t) if t.is_file() && is_assembly_file(&path) => out.push(path),
-            Ok(_) => {}
-            Err(e) => unreadable.push((path, e.to_string())),
+        // A broken symlink resolves to nothing; that is unexamined, not absent.
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) => {
+                found.unexamined.push((path, e.to_string()));
+                continue;
+            }
+        };
+        if meta.is_dir() {
+            collect_assemblies(&path, found, visited);
+        } else if meta.is_file() && is_assembly_file(&path) {
+            match path.canonicalize() {
+                Ok(canonical) => {
+                    found.assemblies.insert(canonical);
+                }
+                Err(e) => found.unexamined.push((path, e.to_string())),
+            }
         }
     }
 }
@@ -225,26 +294,37 @@ fn no_assembly_is_skipped_whole_without_a_named_reason() {
         );
         return;
     };
-    let mut files = Vec::new();
-    let mut unreadable = Vec::new();
+    let mut found = Found::default();
+    let mut visited = BTreeSet::new();
     for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
-        collect_assemblies(&root, &mut files, &mut unreadable);
+        collect_assemblies(&root, &mut found, &mut visited);
     }
-    files.sort();
     assert!(
-        unreadable.is_empty(),
-        "{} subtree(s) under {roots:?} could not be enumerated, so the sweep did not examine \
-         them and cannot claim anything about their assemblies:\n{}",
-        unreadable.len(),
-        unreadable
+        found.unexamined.is_empty(),
+        "{} path(s) under {roots:?} could not be examined, so the sweep cannot claim anything \
+         about the assemblies there:\n{}",
+        found.unexamined.len(),
+        found
+            .unexamined
             .iter()
             .map(|(p, e)| format!("  {}: {e}", p.display()))
             .collect::<Vec<_>>()
             .join("\n"),
     );
+    let files: Vec<PathBuf> = found.assemblies.into_iter().collect();
     eprintln!("[skip-sweep] {} assemblies under {roots:?}", files.len());
 
     let results = probe_all(&files);
+    // Conservation: every assembly discovered has exactly one outcome. Without
+    // this, a lost worker chunk is indistinguishable from a clean sweep of
+    // fewer files, and the gate below would pass over assemblies it never saw.
+    assert_eq!(
+        results.len(),
+        files.len(),
+        "{} assemblies were discovered but {} outcomes came back — some were never probed",
+        files.len(),
+        results.len(),
+    );
     let projected = results
         .iter()
         .filter(|(_, o)| matches!(o, Outcome::Projected { .. }))
@@ -256,25 +336,28 @@ fn no_assembly_is_skipped_whole_without_a_named_reason() {
     );
     report(&results, projected);
 
-    // The gate. Grouped by reason so one reader gap reads as one line rather
+    // The gate. Grouped by cause so one reader gap reads as one line rather
     // than as its hundred affected package versions — which is how #199's
     // single root cause presented, as 77 separately skipped files.
-    let mut by_reason: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
+    let mut by_cause: BTreeMap<String, Vec<&Path>> = BTreeMap::new();
     for (path, outcome) in &results {
-        if let (Outcome::Skipped(reason), None) = (outcome, outcome.exemption(path)) {
-            by_reason.entry(reason).or_default().push(path);
+        if matches!(outcome, Outcome::Skipped { .. }) && outcome.exemption(path).is_none() {
+            by_cause
+                .entry(outcome.describe())
+                .or_default()
+                .push(path.as_path());
         }
     }
     assert!(
-        by_reason.is_empty(),
+        by_cause.is_empty(),
         "{} assembly file(s) were skipped whole for a cause with no named exemption — a project \
          referencing one loses every type in it. Either fix the reader, or add the cause to \
          `EXEMPT` with a justification:\n{}",
-        by_reason.values().map(Vec::len).sum::<usize>(),
-        by_reason
+        by_cause.values().map(Vec::len).sum::<usize>(),
+        by_cause
             .iter()
-            .map(|(reason, paths)| format!(
-                "  {} × {reason}\n    e.g. {}",
+            .map(|(cause, paths)| format!(
+                "  {} × {cause}\n    e.g. {}",
                 paths.len(),
                 paths[0].display()
             ))
@@ -302,10 +385,13 @@ fn probe_all(files: &[PathBuf]) -> Vec<(PathBuf, Outcome)> {
                 })
             })
             .collect();
+        // A worker that panics outside the reader's own three catches would
+        // otherwise take its whole chunk's files with it, silently. Resume the
+        // panic instead: the caller's conservation check would catch the
+        // shortfall anyway, but the panic says which worker died.
         handles
             .into_iter()
-            .filter_map(|h| h.join().ok())
-            .flatten()
+            .flat_map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
             .collect()
     })
 }
@@ -319,7 +405,7 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
         .iter()
         .filter_map(|(_, o)| match o {
             Outcome::Projected { dropped_types, .. } => Some(*dropped_types),
-            Outcome::Skipped(_) => None,
+            Outcome::Skipped { .. } => None,
         })
         .sum();
     let unreadable_auto_opens = results
@@ -361,12 +447,12 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
     let not_an_assembly = dir.path().join("NotAnAssembly.dll");
     std::fs::write(&not_an_assembly, b"MZ but nothing else").expect("write scratch file");
     let outcome = probe_assembly(&not_an_assembly);
-    let Outcome::Skipped(reason) = &outcome else {
+    let Outcome::Skipped { error, .. } = &outcome else {
         panic!("garbage bytes must be refused, got {outcome:?}");
     };
     // Garbage that is not even a PE is refused before the CLI-header check, so
     // it is *not* exempt — the exemption is narrow, as intended.
-    assert!(!reason.is_empty(), "the refusal names a cause");
+    assert!(!error.is_empty(), "the refusal names a cause");
     assert_eq!(
         outcome.exemption(&not_an_assembly),
         None,
@@ -374,14 +460,17 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
     );
 
     // A **scoped** exemption excuses the loss only where its justification says
-    // it does. The same refusal from anywhere else is a new loss: the reason
-    // string is the reader's output, and matching on it alone would wave
-    // through, say, a non-net4x assembly carrying a linked `ManifestResource`.
+    // it does. The same refusal from anywhere else is a new loss: the error is
+    // the reader's output, and matching on it alone would wave through, say, a
+    // non-net4x assembly carrying a linked `ManifestResource`.
     let scoped = EXEMPT
         .iter()
         .find(|e| e.scope.is_some())
         .expect("a scoped exemption to exercise");
-    let skipped = Outcome::Skipped(format!("parse: {}", scoped.reason));
+    let skipped = Outcome::Skipped {
+        stage: scoped.stage,
+        error: scoped.error.to_owned(),
+    };
     let inside = PathBuf::from(format!("/c/packages/{}/1.0.3/x.dll", scoped.scope.unwrap()));
     assert_eq!(
         skipped.exemption(&inside),
@@ -396,6 +485,41 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
         "the same refusal outside the justified scope must reach the gate"
     );
 
+    // An exemption is matched in FULL, so an error that merely *contains* one
+    // is not excused. Otherwise a package could pick its exemption by naming a
+    // resource after it — the reader echoes such names back into the message.
+    let unscoped = EXEMPT
+        .iter()
+        .find(|e| e.scope.is_none())
+        .expect("an unscoped exemption to exercise");
+    assert_eq!(
+        Outcome::Skipped {
+            stage: unscoped.stage,
+            error: format!(
+                "unknown FSharp* resource name: FSharpSignature-{}",
+                unscoped.error
+            ),
+        }
+        .exemption(Path::new("/c/packages/some.pkg/1.0.0/lib/net8.0/x.dll")),
+        None,
+        "an error that merely embeds an exempt one must reach the gate",
+    );
+    // …and the stage is part of the match, so the same words from a different
+    // step are a different failure.
+    let elsewhere = match unscoped.stage {
+        Stage::Parse => Stage::Enumerate,
+        Stage::Read | Stage::Enumerate => Stage::Parse,
+    };
+    assert_eq!(
+        Outcome::Skipped {
+            stage: elsewhere,
+            error: unscoped.error.to_owned(),
+        }
+        .exemption(Path::new("/c/packages/some.pkg/1.0.0/lib/net8.0/x.dll")),
+        None,
+        "the same words from another stage are a different failure",
+    );
+
     // Every extension NuGet accepts is swept, case-insensitively; a `.pdb`
     // beside them is not.
     for name in ["A.dll", "B.EXE", "C.WinMD"] {
@@ -408,31 +532,92 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
         );
     }
 
-    // An unreadable root is recorded rather than read as an empty subtree.
-    let mut files = Vec::new();
-    let mut unreadable = Vec::new();
-    collect_assemblies(&dir.path().join("no-such-dir"), &mut files, &mut unreadable);
-    assert!(files.is_empty());
-    assert_eq!(unreadable.len(), 1, "the missing subtree is reported");
+    // A root that cannot be examined is recorded, not read as an empty subtree.
+    let mut found = Found::default();
+    collect_assemblies(
+        &dir.path().join("no-such-dir"),
+        &mut found,
+        &mut BTreeSet::new(),
+    );
+    assert!(found.assemblies.is_empty());
+    assert_eq!(found.unexamined.len(), 1, "the missing subtree is reported");
 }
 
-/// Each exemption must be a *narrow* substring of a real refusal, not a phrase
-/// broad enough to wave through causes it was never justified for.
+/// Traversal conserves: an assembly reachable twice is probed once, and one
+/// reachable only through a symlink is still reached. Both are ways a real
+/// package cache can make the population differ from what the gate assumes.
 #[test]
-fn every_exemption_is_justified_and_narrow() {
+fn traversal_follows_links_and_counts_each_assembly_once() {
+    let dir = tempfile::tempdir().expect("scratch dir");
+    let pkg = dir.path().join("pkg/lib/net8.0");
+    std::fs::create_dir_all(&pkg).expect("package dir");
+    std::fs::write(pkg.join("Real.dll"), b"not a PE").expect("write");
+
+    // Overlapping roots: the same tree twice, and a descendant of it. Every
+    // duplicate would otherwise count towards `MIN_PROJECTED`, so a small
+    // population could defeat the small-population guard by repetition.
+    let mut found = Found::default();
+    let mut visited = BTreeSet::new();
+    for root in [dir.path(), dir.path(), pkg.as_path()] {
+        collect_assemblies(root, &mut found, &mut visited);
+    }
+    assert!(found.unexamined.is_empty(), "{:?}", found.unexamined);
+    assert_eq!(
+        found.assemblies.len(),
+        1,
+        "one assembly reached three ways is one assembly: {:?}",
+        found.assemblies
+    );
+
+    #[cfg(unix)]
+    {
+        // A symlinked package directory is followed. `DirEntry::file_type`
+        // reports the *link*, so classifying on it would match neither the file
+        // nor the directory arm and drop the subtree without a word.
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&pkg, &linked).expect("symlink");
+        let mut found = Found::default();
+        collect_assemblies(&linked, &mut found, &mut BTreeSet::new());
+        assert!(found.unexamined.is_empty(), "{:?}", found.unexamined);
+        assert_eq!(
+            found.assemblies.len(),
+            1,
+            "the assembly behind the link is found: {:?}",
+            found.assemblies
+        );
+
+        // A broken link is unexamined, not absent.
+        let broken = dir.path().join("pkg/lib/net8.0/Dangling.dll");
+        std::os::unix::fs::symlink(dir.path().join("nowhere"), &broken).expect("symlink");
+        let mut found = Found::default();
+        collect_assemblies(&pkg, &mut found, &mut BTreeSet::new());
+        assert_eq!(
+            found.unexamined.len(),
+            1,
+            "the dangling link is reported: {:?}",
+            found.unexamined
+        );
+    }
+}
+
+/// Each exemption must be able to fire, and must name a whole refusal rather
+/// than a phrase broad enough to wave through causes nobody vetted.
+#[test]
+fn every_exemption_is_justified_and_can_fire() {
     for e in EXEMPT {
         assert!(
-            !e.reason.is_empty() && !e.why.is_empty(),
+            !e.error.is_empty() && !e.why.is_empty(),
             "{:?}: {:?}",
-            e.reason,
+            e.error,
             e.why
         );
-        // A one- or two-word needle ("assembly", "not embedded") would match
-        // refusals nobody vetted. The real ones are full clauses.
+        // A one- or two-word error ("assembly", "not embedded") is not a whole
+        // refusal, so it was probably meant as a substring — which this no
+        // longer is.
         assert!(
-            e.reason.split_whitespace().count() >= 3,
-            "exemption {:?} is too broad to have been justified",
-            e.reason,
+            e.error.split_whitespace().count() >= 3,
+            "exemption {:?} does not look like a whole refusal",
+            e.error,
         );
         // A scope is matched against a lowercased path, so an entry with any
         // uppercase in it silently never fires — and an exemption that never
@@ -445,5 +630,23 @@ fn every_exemption_is_justified_and_narrow() {
                 "scope {scope:?} must be lowercase to match"
             );
         }
+        // Round-trip: the entry must actually excuse the loss it describes. An
+        // `error` that does not match the reader's wording verbatim — a typo, a
+        // message reworded upstream — would otherwise sit here doing nothing
+        // until the gate failed on the loss it was supposed to cover.
+        let path = PathBuf::from(format!(
+            "/c/packages/{}/1.0.0/lib/net8.0/x.dll",
+            e.scope.unwrap_or("any.package")
+        ));
+        assert_eq!(
+            Outcome::Skipped {
+                stage: e.stage,
+                error: e.error.to_owned(),
+            }
+            .exemption(&path),
+            Some(e.why),
+            "exemption {:?} does not excuse its own loss",
+            e.error,
+        );
     }
 }
