@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "projects": [
+    {
+      "repository": "G-Research/TypeEquality",
+      "revision": "dbd984a6c981f6d5eb9b006743fd0c6e0c0a1ac8",
+      "project": "TypeEquality/TypeEquality.fsproj"
+    },
+    {
+      "repository": "Smaug123/WoofWare.Expect",
+      "revision": "bd23373fc7b6729b454948989e5fad795734e997",
+      "project": "WoofWare.Expect/WoofWare.Expect.fsproj"
+    },
+    {
+      "repository": "Smaug123/WoofWare.Incremental",
+      "revision": "f6b8fdf7aee339475e6d55f1ae85ab9ce46d3764",
+      "project": "WoofWare.Incremental/WoofWare.Incremental.fsproj"
+    },
+    {
+      "repository": "Smaug123/WoofWare.LiangHyphenation",
+      "revision": "19c8ff123b857b35e016ffa24232c32df693b8e5",
+      "project": "WoofWare.LiangHyphenation/WoofWare.LiangHyphenation.fsproj"
+    },
+    {
+      "repository": "Smaug123/WoofWare.PawPrint",
+      "revision": "4a076c839f1b35363eb644e62c0264a801e009b0",
+      "project": "WoofWare.PawPrint.Domain/WoofWare.PawPrint.Domain.fsproj"
+    },
+    {
+      "repository": "Smaug123/WoofWare.WeakHashTable",
+      "revision": "c2ea813152b3797f0a63642215763ec2e55b967d",
+      "project": "WoofWare.WeakHashTable/WoofWare.WeakHashTable.fsproj"
+    }
+  ]
+}

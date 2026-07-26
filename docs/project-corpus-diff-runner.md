@@ -100,6 +100,13 @@ Optional reporting and oracle settings:
 - `BORZOI_PROJECT_REPORT_JSONL`: writes one newline-terminated JSON summary
   record to this path, replacing previous contents. The record includes the
   effective MSBuild property profile.
+- `BORZOI_PROJECT_SUMMARY_JSON`: writes the continuous-measurements *generator
+  contract* (`docs/continuous-measurements.md`) to this path. This is the
+  compact, durable half of the same run — counts only, keyed so that every key
+  means the same thing in every run of a series — and it is what
+  `borzoi-stats record` publishes. The `REPORT_JSONL` above stays the full
+  picture, worklists included; the two are written from one run and never
+  disagree.
 - `BORZOI_FCS_DUMP`: path to a prebuilt `fcs-dump` binary. If unset, the
   runner builds `tools/fcs-dump` and invokes the generated DLL.
 
@@ -126,6 +133,18 @@ For each visited project, the runner:
    only, while sema resolves each occurrence to itself. Silence from the oracle
    is not a contradiction.)
 
+### Signature files
+
+A `.fsi` Compile item is loaded like any other. Sema folds it into an inert
+slot carrying its screen and exported surface (`resolve_project`), so it records
+no resolutions of its own: every FCS use *inside* a `.fsi` is a deferral, never
+a divergence, and a heavily signatured project therefore reads a lower coverage
+percentage without that indicating a fault. What the signature work is actually
+gated on is the **implementation** side — a cross-file use of a signature-exposed
+`val` resolves to the `.fsi` ident (`docs/fsi-signature-restriction-plan.md`
+conclusion 4: provenance = impl, def = sig), so it is compared against an FCS
+declaration in the `.fsi`.
+
 ### Where FCS says a symbol is declared
 
 A declaration outside the project's Compile set is **normal**, not a load
@@ -150,9 +169,9 @@ Assembly *names* are compared up to corelib facade↔implementation
 equivalence (`System.Private.CoreLib` is the same assembly as
 `System.Runtime`: which one FCS reports depends on whether the `fcs-dump`
 driving the run is framework-dependent or self-contained, while our side always
-reads the ref-pack facade). Assembly full names are compared modulo backticks
-only (FCS escapes
-identifiers that need it — ``Operators.``not```). FCS reports an F# *module*'s
+reads the ref-pack facade). Assembly full names are compared modulo FCS's
+double-backtick *quoting* (``Operators.``not``` — delimiter pairs only, since a
+quoted identifier may itself contain a lone backtick). FCS reports an F# *module*'s
 `FullName` as the bare display name (`Seq`), which cannot witness which symbol
 was bound; `fcs-dump` qualifies such a name from the entity's own `AccessPath`
 (`Microsoft.FSharp.Collections.Seq`) before it reaches any consumer, so the
@@ -181,7 +200,6 @@ skip and coverage ratchets when treating the result as evidence.
 A skipped project contributes no evidence of correctness. Common skip reasons
 include:
 
-- unsupported `.fsi` compile items;
 - uncertain MSBuild compile items or define constants, including the first
   captured import/SDK/item/condition diagnostics that made them untrustworthy;
 - projects over `BORZOI_PROJECT_MAX_FILES`;

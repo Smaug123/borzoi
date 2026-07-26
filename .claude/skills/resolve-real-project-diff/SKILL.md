@@ -45,9 +45,6 @@ on a real project", because it exercises the whole chain, not a unit slice.
 
 The oracle is faithful only for projects that are:
 
-- **signature-free** — any `.fsi` in the Compile set makes the LSP refuse the
-  whole project (no CST signature model yet), so the test panics at the
-  Compile-order step. Pick a project with no `.fsi`.
 - **SDK-default framework** — a non-default `<FrameworkReference>`
   (`Microsoft.AspNetCore.App`, `WindowsDesktop`) is out of scope (FCS isn't
   handed it, so those framework symbols diverge).
@@ -58,15 +55,18 @@ The oracle is faithful only for projects that are:
 
 A non-default `<LangVersion>` *is* supported (threaded to FCS as
 `--langversion`), unless the pin needs an SDK newer than the oracle's.
+A `.fsi`-bearing project is supported too: sema folds a signature file into an
+inert slot, so its own uses read as gaps while the *implementation* side gates
+the signature surface (a cross-file use of a sig-exposed `val` resolves to the
+`.fsi` ident).
 
-Quick candidate scan for a restored, signature-free, multi-file project:
+Quick candidate scan for a restored, multi-file project:
 
 ```sh
-# multi-file (>1 Compile), no .fsi, no FrameworkReference, restored:
+# multi-file (>1 Compile), no FrameworkReference, restored:
 for f in $(find ~ -maxdepth 6 -name '*.fsproj' 2>/dev/null); do
   d=$(dirname "$f")
   [ -f "$d/obj/project.assets.json" ] || continue
-  [ "$(ls "$d"/*.fsi 2>/dev/null | wc -l)" -eq 0 ] || continue
   grep -q FrameworkReference "$f" && continue
   n=$(grep -c 'Compile Include' "$f")
   [ "$n" -gt 1 ] && echo "$n  $f"

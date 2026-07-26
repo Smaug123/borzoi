@@ -18,8 +18,8 @@ use borzoi_corpus_diff::{
     parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
-use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::parser::{parse, parse_sig};
+use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, SourceFile, qualified_names, resolve_project_files,
 };
@@ -122,6 +122,62 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
     }
 }
 
+/// A synthetic project of `(relative path, source)` Compile items, in Compile
+/// order, resolved exactly as the runner resolves a real one. `.fsi` items
+/// parse under the signature grammar, so a signatured pair folds here the same
+/// way it does in the LSP.
+fn synthetic_multi_file_project(items: &[(&str, &str)]) -> LoadedProject {
+    let root = PathBuf::from("/tmp/corpus-diff-synthetic-multi");
+    let paths: Vec<PathBuf> = items.iter().map(|(rel, _)| root.join(rel)).collect();
+    let srcs: Vec<SourceFile> = items
+        .iter()
+        .map(|(rel, src)| {
+            if rel.ends_with(".fsi") {
+                let parsed = parse_sig(src);
+                assert!(
+                    parsed.errors.is_empty(),
+                    "parse errors in {rel}: {:?}",
+                    parsed.errors
+                );
+                SourceFile::Sig(SigFile::cast(parsed.root).expect("signature file"))
+            } else {
+                let parsed = parse(src);
+                assert!(
+                    parsed.errors.is_empty(),
+                    "parse errors in {rel}: {:?}",
+                    parsed.errors
+                );
+                SourceFile::Impl(ImplFile::cast(parsed.root).expect("impl file"))
+            }
+        })
+        .collect();
+    let qnofs = qualified_names(&srcs, &paths);
+    let files: Vec<ProjectFile> = srcs
+        .into_iter()
+        .zip(qnofs)
+        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .collect();
+    let env = Arc::new(AssemblyEnv::default());
+    let resolved = Arc::new(resolve_project_files(&files, env.as_ref()));
+    LoadedProject {
+        project: root.join("Synthetic.fsproj"),
+        parses: ProjectParses {
+            files,
+            paths,
+            texts: items
+                .iter()
+                .map(|(_, src)| Arc::<str>::from(*src))
+                .collect(),
+        },
+        resolved,
+        assembly_env: env,
+        project_assets: ProjectAssetsStatus::NotChecked,
+        fcs_extra_refs: Vec::new(),
+        define_constants: Vec::new(),
+        lang_version: None,
+    }
+}
+
 fn synthetic_assembly_env() -> AssemblyEnv {
     let identity = AssemblyIdentity {
         name: "Synthetic.Assembly".to_string(),
@@ -201,8 +257,13 @@ fn lsp_loader_loads_plain_compile_order_project() {
     }
 }
 
+/// A `.fsi` Compile item is loaded like any other: sema folds a signature
+/// file into an inert slot carrying its screen and exported surface
+/// (`resolve_project`), and Stages 2–3 of
+/// `docs/fsi-signature-restriction-plan.md` export that surface with `.fsi`
+/// identity — which is precisely what this runner exists to check against FCS.
 #[test]
-fn lsp_loader_refuses_signature_projects() {
+fn lsp_loader_loads_signature_projects() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path().join("Sig.fsproj");
     write(
@@ -211,18 +272,66 @@ fn lsp_loader_refuses_signature_projects() {
   <ItemGroup>
     <Compile Include="A.fsi" />
     <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
   </ItemGroup>
 </Project>
 "#,
     );
-    write(&tmp.path().join("A.fsi"), "module A\nval x : int\n");
-    write(&tmp.path().join("A.fs"), "module A\nlet x = 1\n");
-    match load_lsp_project(&project) {
-        Err(LoadSkip::SignatureFilesUnsupported { path }) => {
-            assert!(path.ends_with("A.fsi"));
-        }
-        other => panic!("expected signature-file skip, got {other:?}"),
-    }
+    write(&tmp.path().join("A.fsi"), "module A\n\nval x: int\n");
+    write(&tmp.path().join("A.fs"), "module A\n\nlet x = 1\n");
+    write(&tmp.path().join("B.fs"), "module B\n\nlet y = A.x\n");
+    let loaded = load_lsp_project(&project).expect("a signatured project should load");
+    assert_eq!(
+        loaded.parses.paths.len(),
+        3,
+        "the .fsi keeps its Compile slot"
+    );
+    assert!(loaded.parses.paths[0].ends_with("A.fsi"));
+    assert!(loaded.parses.paths[1].ends_with("A.fs"));
+}
+
+/// The claim the refusal was hiding: when a signature exposes a `val`, a
+/// cross-file use of it resolves to the **`.fsi`** ident, so it matches an FCS
+/// oracle that declares it there (conclusion 4: provenance = impl, def = sig).
+/// A signature file's own slot records no resolutions, so FCS's uses inside the
+/// `.fsi` can only ever be deferrals — never divergences.
+#[test]
+fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
+    let sig = "module A\n\nval x: int\n";
+    let imp = "module A\n\nlet x = 1\n";
+    let use_src = "module B\n\nlet y = A.x\n";
+    let loaded = synthetic_multi_file_project(&[("A.fsi", sig), ("A.fs", imp), ("B.fs", use_src)]);
+    let sig_path = loaded.parses.paths[0].clone();
+    let use_path = loaded.parses.paths[2].clone();
+    let (decl_start, decl_end) = text_range(sig, "x");
+    let (use_start, use_end) = text_range(use_src, "A.x");
+
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: use_path,
+            diagnostics: Vec::new(),
+            uses: vec![ProjectUse {
+                name: "x".to_string(),
+                start: use_start,
+                end: use_end,
+                is_from_definition: false,
+                decl: UseDecl::InProject(DeclSite {
+                    file: sig_path,
+                    start: decl_start,
+                    end: decl_end,
+                }),
+                assembly: None,
+                full_name: None,
+            }],
+        }],
+    );
+    assert_eq!(comparison.divergences, Vec::new());
+    assert_eq!(
+        (comparison.uses_considered, comparison.matches),
+        (1, 1),
+        "the sig-exposed val must match the `.fsi` declaration, not defer"
+    );
 }
 
 #[test]
