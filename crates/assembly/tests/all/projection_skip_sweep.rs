@@ -94,12 +94,16 @@ struct Exemption {
 /// being *justified*, never by being common — an entry is a standing hole in
 /// the gate, so keep it short and keep the justification honest.
 const EXEMPT: &[Exemption] = &[
-    // A PE with no CLI header is not a managed assembly at all — a native DLL
-    // (`msdia140.dll`, `git2-*.dll`) or a native EXE. Unscoped, and this is the
-    // one entry where that is right: the justification is a property of the
-    // bytes, which any package may ship, and the refusal *is* that property.
-    // Cross-checking it would mean a second PE reader, which is not worth
-    // building to re-derive "the COM descriptor directory is empty".
+    // An image that declares no CLI data directory is not a managed assembly at
+    // all — a native DLL (`msdia140.dll`, `git2-*.dll`) or a native EXE. Every
+    // ECMA-335 reader refuses it, so the refusal is a fact about the input.
+    //
+    // Unscoped, and this is the one entry where that is right: any package may
+    // ship a native file, and the error *is* the justification. That only holds
+    // because `Error::NoCliHeader` now means exactly "no directory declared" —
+    // it used to also cover a *declared* header this reader could not follow,
+    // which is a managed assembly and a reader gap, and would have been hidden
+    // here. That case is `UnreadableCliHeader` and is not exempt.
     Exemption {
         stage: Stage::Parse,
         error: "unsupported ECMA-335 layout: assembly reader: no CLI header",

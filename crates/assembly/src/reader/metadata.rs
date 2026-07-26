@@ -169,14 +169,18 @@ impl<'a> MetadataFile<'a> {
         // Reads are bounded to the CLI header's own section raw data, so a
         // header straddling the end of a section is refused rather than read
         // out of the next section.
-        let cli_region = rva_to_slice(image, &sections, cli_rva).ok_or(Error::NoCliHeader)?;
+        // Past this point the image has *declared* a CLI header (`cli_rva != 0`),
+        // so a failure to follow it is this reader's, not a sign the file is
+        // unmanaged — see [`Error::UnreadableCliHeader`].
+        let cli_region =
+            rva_to_slice(image, &sections, cli_rva).ok_or(Error::UnreadableCliHeader)?;
         let mut cli = Cursor::new(cli_region);
-        cli.skip(4 + 2 + 2).ok_or(Error::NoCliHeader)?; // cb, Major/MinorRuntimeVersion
-        let metadata_rva = cli.read_u32().ok_or(Error::NoCliHeader)?;
-        let metadata_size = cli.read_u32().ok_or(Error::NoCliHeader)? as usize;
-        cli.skip(4 + 4).ok_or(Error::NoCliHeader)?; // Flags, EntryPointToken
-        let resources_rva = cli.read_u32().ok_or(Error::NoCliHeader)?;
-        let resources_size = cli.read_u32().ok_or(Error::NoCliHeader)?;
+        cli.skip(4 + 2 + 2).ok_or(Error::UnreadableCliHeader)?; // cb, Major/MinorRuntimeVersion
+        let metadata_rva = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
+        let metadata_size = cli.read_u32().ok_or(Error::UnreadableCliHeader)? as usize;
+        cli.skip(4 + 4).ok_or(Error::UnreadableCliHeader)?; // Flags, EntryPointToken
+        let resources_rva = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
+        let resources_size = cli.read_u32().ok_or(Error::UnreadableCliHeader)?;
 
         // --- Metadata root, II.24.2.1 ---
         let bad = Error::BadMetadataRoot;
