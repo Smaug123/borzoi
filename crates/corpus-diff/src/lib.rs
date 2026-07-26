@@ -831,6 +831,11 @@ pub struct ProjectUse {
     /// structured identity a comparator needs, so it never has to parse the
     /// instantiated rendering.
     pub declaring_entity_full_name: Option<String>,
+    /// Whether that declaring entity is a **nested type**. `FullName` is
+    /// flattened, so it cannot say where a namespace ends and nesting begins —
+    /// a nested `A.Outer.Inner<'T>` and a top-level `Inner<'T>` in namespace
+    /// `A.Outer` render identically at the same arity.
+    pub declaring_entity_is_nested: Option<bool>,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1019,6 +1024,8 @@ struct RawUse {
     declaring_entity_arity: Option<usize>,
     #[serde(rename = "DeclaringEntityFullName", default)]
     declaring_entity_full_name: Option<String>,
+    #[serde(rename = "DeclaringEntityIsNested", default)]
+    declaring_entity_is_nested: Option<bool>,
 }
 
 /// Parse `fcs-dump uses-project` output using full path identity, not basenames.
@@ -1086,6 +1093,7 @@ pub fn parse_project_uses(
                         full_name: u.full_name,
                         declaring_entity_arity: u.declaring_entity_arity,
                         declaring_entity_full_name: u.declaring_entity_full_name,
+                        declaring_entity_is_nested: u.declaring_entity_is_nested,
                     })
                 })
                 .collect::<Result<Vec<_>, ParseProjectUsesError>>()?;
@@ -2398,6 +2406,8 @@ pub struct AssemblyDecl {
     pub declaring_entity_arity: Option<usize>,
     /// See [`ProjectUse::declaring_entity_full_name`].
     pub declaring_entity_full_name: Option<String>,
+    /// See [`ProjectUse::declaring_entity_is_nested`].
+    pub declaring_entity_is_nested: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2610,6 +2620,7 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
             declaring_entity_arity: use_.declaring_entity_arity,
             declaring_entity_full_name: use_.declaring_entity_full_name.clone(),
+            declaring_entity_is_nested: use_.declaring_entity_is_nested,
             assembly: assembly.clone(),
             full_name: full_name.clone(),
         }),
@@ -2627,6 +2638,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
                 // Our side; the field records what the *oracle* said.
                 declaring_entity_arity: None,
                 declaring_entity_full_name: None,
+                declaring_entity_is_nested: None,
             }
         }
         Resolution::Member { parent, idx } => {
@@ -2640,6 +2652,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
                 ),
                 declaring_entity_arity: None,
                 declaring_entity_full_name: None,
+                declaring_entity_is_nested: None,
             }
         }
         Resolution::Local(_)
@@ -2859,8 +2872,15 @@ fn generic_instantiation_agrees(
     if e.generic_parameters.len() != arity {
         return false;
     }
-    // Top-level only: `entity_full_name` walks the nesting chain, so for a
-    // nested entity it says more than namespace + name does.
+    // Top-level on *both* sides. Ours is checked below; the oracle's has to be
+    // asked, because a flattened name cannot say where a namespace ends and
+    // nesting begins — proving only our own answer top-level would accept a
+    // nested `A.Outer.Inner<'T>` against our top-level `A.Outer` + `Inner<'T>`.
+    if expected.declaring_entity_is_nested != Some(false) {
+        return false;
+    }
+    // `entity_full_name` walks the nesting chain, so for a nested entity it
+    // says more than namespace + name does.
     let source_name = e.source_name.as_deref().unwrap_or(&e.name);
     let top_level = if e.namespace.is_empty() {
         source_name.to_string()
@@ -4355,6 +4375,7 @@ mod tests {
                     full_name: "Demo.Widget.Value".to_string(),
                     declaring_entity_arity: None,
                     declaring_entity_full_name: None,
+                    declaring_entity_is_nested: None,
                 },
                 actual: "assembly Synthetic.Assembly full_name Demo.Widget.Other".to_string(),
             }],
@@ -4550,6 +4571,7 @@ mod tests {
                         full_name: "Lib.T".to_string(),
                         declaring_entity_arity: None,
                         declaring_entity_full_name: None,
+                        declaring_entity_is_nested: None,
                     },
                     actual: "Other.T".to_string(),
                 })

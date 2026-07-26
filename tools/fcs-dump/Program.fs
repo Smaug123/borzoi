@@ -4807,6 +4807,26 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
             (try (match f.DeclaringEntity with Some e -> ofEntity e | None -> null) with _ -> null)
         | :? FSharpUnionCase as c -> (try ofEntity c.DeclaringEntity with _ -> null)
         | _ -> null
+    // Whether that declaring entity is a **nested type**. `TryFullName` is
+    // flattened, so it cannot say where a namespace ends and nesting begins:
+    // a nested `A.Outer.Inner<'T>` and a top-level `Inner<'T>` in namespace
+    // `A.Outer` render identically, at the same arity. A consumer that has
+    // proven only *its own* answer top-level would accept the other one.
+    let declaringEntityIsNested : objnull =
+        let ofEntity (e: FSharpEntity) : objnull =
+            try
+                match e.DeclaringEntity with
+                | Some parent -> box (not parent.IsNamespace)
+                | None -> box false
+            with _ -> null
+        match u.Symbol with
+        | :? FSharpEntity as e -> ofEntity e
+        | :? FSharpMemberOrFunctionOrValue as m ->
+            (try (match m.DeclaringEntity with Some e -> ofEntity e | None -> null) with _ -> null)
+        | :? FSharpField as f ->
+            (try (match f.DeclaringEntity with Some e -> ofEntity e | None -> null) with _ -> null)
+        | :? FSharpUnionCase as c -> (try ofEntity c.DeclaringEntity with _ -> null)
+        | _ -> null
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition
@@ -4816,7 +4836,8 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        SymbolKind = symbolKind
        GenericArity = genericArity
        DeclaringEntityArity = declaringEntityArity
-       DeclaringEntityFullName = declaringEntityFullName |}
+       DeclaringEntityFullName = declaringEntityFullName
+       DeclaringEntityIsNested = declaringEntityIsNested |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

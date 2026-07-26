@@ -409,6 +409,8 @@ struct RawUse {
     declaring_entity_arity: Option<usize>,
     #[serde(rename = "DeclaringEntityFullName", default)]
     declaring_entity_full_name: Option<String>,
+    #[serde(rename = "DeclaringEntityIsNested", default)]
+    declaring_entity_is_nested: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -520,6 +522,9 @@ pub struct NormalisedProjectUse {
     /// arguments, with the CLR arity marker. The structured identity, so a
     /// comparator never parses the instantiated rendering.
     pub declaring_entity_full_name: Option<String>,
+    /// Whether that declaring entity is a nested type — a flattened name cannot
+    /// say where a namespace ends and nesting begins.
+    pub declaring_entity_is_nested: Option<bool>,
 }
 
 /// All symbol uses FCS reported for one project file.
@@ -599,6 +604,7 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         full_name: u.full_name,
                         declaring_entity_arity: u.declaring_entity_arity,
                         declaring_entity_full_name: u.declaring_entity_full_name,
+                        declaring_entity_is_nested: u.declaring_entity_is_nested,
                     }
                 })
                 .collect();

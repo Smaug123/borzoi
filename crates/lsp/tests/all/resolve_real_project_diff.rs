@@ -207,7 +207,13 @@ fn generic_instantiation_matches(
     fcs_full: &str,
     oracle_arity: Option<usize>,
     oracle_declaring: Option<&str>,
+    oracle_is_nested: Option<bool>,
 ) -> bool {
+    // Top-level on both sides; a flattened oracle name cannot say where a
+    // namespace ends and nesting begins.
+    if oracle_is_nested != Some(false) {
+        return false;
+    }
     let Some(arity) = oracle_arity.filter(|&a| a > 0) else {
         return false;
     };
@@ -516,6 +522,7 @@ fn project_resolution_matches_fcs() {
                                     full,
                                     u.declaring_entity_arity,
                                     u.declaring_entity_full_name.as_deref(),
+                                    u.declaring_entity_is_nested,
                                 ))
                         {
                             tally.asm_match += 1;
