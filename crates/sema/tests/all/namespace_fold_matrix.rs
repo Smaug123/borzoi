@@ -438,6 +438,18 @@ const CELLS: &[Cell] = &[
         probe: "Demo.RootShorten.Inner.Tail",
         position: Position::Expr,
     },
+    // …and the same contest with **no tail at all**: the longer rooting is a
+    // generic record, which in expression position is `FS0800` with no symbol,
+    // so the value one position shorter is what FCS binds. A rooting walk that
+    // treats any entity it reaches as an owner records the record instead
+    // (codex review).
+    Cell {
+        decls: &[],
+        label: "root-shorten / terminal head with the value below it, expression",
+        body: &[],
+        probe: "Demo.RootShortenValue.Leaf",
+        position: Position::Expr,
+    },
 ];
 
 /// Cells where FCS resolves the probe but we deliberately defer — the conservative

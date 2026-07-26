@@ -158,13 +158,14 @@ impl<'a> Resolver<'a> {
         let mut owned: Option<Vec<(TextRange, Resolution)>> = None;
         for &candidate in candidates {
             match self.rooting_reading(names, segments, base, k, candidate) {
-                // A reading that stops *on* a module owns nothing: FCS's
-                // expression-position lookup wants a value, and a module is not
-                // one. Demoting it to a partial here — rather than letting the
-                // candidate order decide — is what keeps a companion module from
-                // capturing a path with no tail to distinguish the two.
+                // A reading that stops on a non-value owns nothing: FCS's
+                // expression-position lookup wants a value, and a module — or a
+                // record, union, interface, enum — is not one. Demoting it to a
+                // partial here, rather than letting the candidate order decide,
+                // is what keeps such an entity from capturing a path that a
+                // shorter rooting or another candidate really supplies.
                 AssemblyPath::Resolved { payload, .. }
-                    if self.reading_stops_on_a_module(segments, &payload) =>
+                    if self.reading_stops_on_a_non_value(segments, &payload) =>
                 {
                     partial.get_or_insert(payload);
                 }
@@ -241,21 +242,27 @@ impl<'a> Resolver<'a> {
         candidates
     }
 
-    /// Whether a reading's **terminal segment** landed on an authoritative
-    /// module — the shape that supplies no *value*.
+    /// Whether a reading's **terminal segment** landed on an entity that is not
+    /// an expression value — the shape that captures no path.
     ///
-    /// FCS's expression-position lookup wants a value or a member, and a module
-    /// is neither, so a path ending at one is not something it binds: `Lib.C`
-    /// with `type C()` beside a `ModuleSuffix` module `C` is the class's
-    /// constructor (fcs-dump), never the module. That makes the module a
-    /// **non-owner** of such a path rather than merely a lower preference — the
-    /// candidate order must not decide it, since with no tail to walk both
-    /// candidates would otherwise own the path and the order alone would pick
-    /// (codex review). The type walk has the same rule for a module leaf.
+    /// FCS's expression-position lookup wants a value: `Lib.C` binds the class
+    /// `C`'s constructor, and where `C` is a module, a record, a union, an
+    /// interface, an enum or a static class it binds *nothing at all* and the
+    /// lookup goes on elsewhere (fcs-dump-measured per shape). So such a reading
+    /// is a **non-owner** rather than merely a lower preference — the candidate
+    /// order must not decide it, since with no tail to walk every candidate
+    /// would otherwise own the path and the order alone would pick, and a
+    /// *shorter* rooting whose module supplies a `let` of the name must still
+    /// win (codex review rounds 2 and 3). The type walk has the same rule for a
+    /// module leaf.
     ///
-    /// A resolved static member records across the *whole* path rather than the
-    /// terminal segment, so this recognises only a bare module.
-    fn reading_stops_on_a_module(
+    /// A resolved static member or union case records across the *whole* path
+    /// rather than the terminal segment, so this recognises only a bare entity.
+    /// A **non-authoritative** module is deliberately not treated as one: there
+    /// its `Module` kind is an IL heuristic FCS does not share, and it imports
+    /// the type as a plain class, so [`AssemblyEnv::terminal_expression_value`]
+    /// answers for the shape FCS actually sees.
+    fn reading_stops_on_a_non_value(
         &self,
         segments: &[SyntaxToken],
         payload: &[(TextRange, Resolution)],
@@ -264,7 +271,7 @@ impl<'a> Resolver<'a> {
             let terminal = last.text_range();
             payload.iter().any(|&(range, res)| {
                 range == terminal
-                    && matches!(res, Resolution::Entity(h) if self.assemblies.is_authoritative_module(h))
+                    && matches!(res, Resolution::Entity(h) if !self.assemblies.terminal_expression_value(h))
             })
         })
     }
@@ -298,8 +305,8 @@ impl<'a> Resolver<'a> {
             let supplied = self.contest_has_a_supplier(
                 contestants,
                 |handle| self.assembly_path_records_from_root(names, segments, base, k, handle),
-                // A reading that stops *on* a module supplies no value — see
-                // [`Self::reading_stops_on_a_module`]. This is not commit safety
+                // A reading that stops on a non-value supplies nothing — see
+                // [`Self::reading_stops_on_a_non_value`]. This is not commit safety
                 // (nothing is committed at a contest); it decides whether the
                 // contest has *any* supplier, and so whether a lower-priority
                 // reading that does resolve may still win (codex review round
@@ -309,7 +316,7 @@ impl<'a> Resolver<'a> {
                         && !matches!(
                             reading,
                             AssemblyPath::Resolved { payload, .. }
-                                if self.reading_stops_on_a_module(segments, payload)
+                                if self.reading_stops_on_a_non_value(segments, payload)
                         )
                 },
             );

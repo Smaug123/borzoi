@@ -975,3 +975,11 @@ namespace Demo
 module RootShorten =
     module Inner =
         let Tail () = 71
+
+// The VALUE half of the terminal rooting contest (the abbrev fixture declares
+// `namespace Demo.RootShortenValue` holding a generic record `Leaf`). A
+// terminal head binds a *value*, and only this half has one.
+namespace Demo
+
+module RootShortenValue =
+    let Leaf = 42

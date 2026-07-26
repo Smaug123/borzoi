@@ -511,3 +511,12 @@ namespace Demo.RootShorten
 // position shorter.
 type Inner<'T> =
     { Payload : 'T }
+
+namespace Demo.RootShortenValue
+
+// A *generic record* occupying the longer rooting position for
+// `Demo.RootShortenValue.Leaf`, with no value surface of its own: written in
+// expression position it is FS0800 and FCS reports no symbol, so the walk must
+// keep looking and find the autoopen fixture's `let Leaf` one position shorter.
+type Leaf<'T> =
+    { Payload : 'T }

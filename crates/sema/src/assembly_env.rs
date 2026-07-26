@@ -2922,6 +2922,33 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Module
     }
 
+    /// Whether an **expression-position path ending at `handle`** binds
+    /// anything — i.e. whether the entity has a value surface of its own.
+    ///
+    /// Only a class with an accessible public instance constructor does: `Ns.C`
+    /// is that constructor. A record, union, interface, enum, delegate or module
+    /// written there is `FS0800` ("Invalid use of a type name") or simply not a
+    /// value, and FCS reports **no symbol at all** at the occurrence — it goes on
+    /// to look elsewhere, so a reading that ends on one has not captured the path
+    /// (fcs-dump-measured on each shape; codex review).
+    ///
+    /// Distinct from [`Self::bare_expr_constructible`], which answers the same
+    /// question for an *unqualified* name and is additionally restricted to
+    /// non-generic types because its caller's fallback does an arity-0 lookup.
+    /// A qualified path has no such restriction: FCS infers a generic class's
+    /// type arguments at `Ns.C` exactly as it does its constructor's.
+    pub fn terminal_expression_value(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.kind == EntityKind::Class
+            && e.members.iter().any(|m| {
+                matches!(
+                    m,
+                    Member::Method(mm)
+                        if mm.is_constructor && !mm.is_static && mm.access == Access::Public
+                )
+            })
+    }
+
     /// Whether `handle` is a union we may rely on declaring a case named `name`.
     ///
     /// The same authority rule as [`Self::is_authoritative_module`], for the same
