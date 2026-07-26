@@ -18,11 +18,12 @@
 //! (every in-file use must be a matching `Local` / `Item`). `resolve_scoping.rs`
 //! separately stress-tests the scoping model FCS-free.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::common::generator::generate;
+use crate::common::generator::{RefKind, generate, seed_tape};
 use crate::common::{invoke_fcs_dump, parse_fcs_uses};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -325,7 +326,12 @@ fn span(start: usize, end: usize) -> TextRange {
 }
 
 /// Resolve `source`, run FCS over it, and assert the headline property.
-fn assert_matches_fcs(source: &str) {
+///
+/// Returns the ranges FCS *adjudicated*: uses it resolved to an in-file
+/// declaration, which are the ones the loop below actually compared. A caller
+/// generating programs can intersect this with the occurrences it meant to
+/// exercise, and so tell "the oracle agreed" from "the oracle said nothing".
+fn assert_matches_fcs(source: &str) -> HashSet<TextRange> {
     // Our resolution (parse first — a cheap failure before the costly FCS run).
     let parsed = parse(source);
     assert!(
@@ -342,7 +348,7 @@ fn assert_matches_fcs(source: &str) {
     let _ = std::fs::remove_file(&path);
     let uses = parse_fcs_uses(&json, source);
 
-    let mut checked = 0usize;
+    let mut adjudicated: HashSet<TextRange> = HashSet::new();
     for u in &uses {
         // Skip the implicit anonymous-module symbol (zero-width range).
         if u.start == u.end {
@@ -388,12 +394,16 @@ fn assert_matches_fcs(source: &str) {
             "use {text:?} at {use_range:?}: we point at {:?}, FCS declares at {expected:?}; {source:?}",
             def.range
         );
-        checked += 1;
+        adjudicated.insert(use_range);
     }
 
     // Every snippet must exercise at least one in-file resolution, else the
     // loop above is a silent no-op and proves nothing.
-    assert!(checked > 0, "no in-file uses checked for {source:?}");
+    assert!(
+        !adjudicated.is_empty(),
+        "no in-file uses checked for {source:?}"
+    );
+    adjudicated
 }
 
 #[test]
@@ -406,27 +416,46 @@ fn resolution_agrees_with_fcs_over_the_corpus() {
 /// The same headline property, but over a handful of *randomly generated*
 /// well-scoped programs (`common::generator`), checked against FCS. This closes
 /// the gap the curated corpus leaves: the generated programs compose the
-/// scoping primitives (rec, shadowing, parameters, lambdas) in combinations the
+/// scoping primitives (rec, shadowing, parameters, lambdas, `match` clauses,
+/// or-patterns, union-case and active-pattern heads) in combinations the
 /// curated set does not enumerate, and FCS is the independent oracle for each.
+///
+/// The second assertion is what makes the first one mean something for the
+/// *pattern* constructs. FCS is free to say nothing about a range, so a silent
+/// oracle and an agreeing oracle look identical to the loop above; here we
+/// require that FCS actually adjudicated at least one occurrence of every kind
+/// the generator emits — in particular the or-pattern aliases, whose whole
+/// claim is that FCS calls a later alternative a *use* of the first.
 ///
 /// Fixed seeds (not proptest) keep the FCS-call count — and the wall-clock —
 /// bounded and deterministic; the FCS-free `resolve_scoping.rs` property does
 /// the high-volume sweep against the same generator.
 #[test]
 fn resolution_agrees_with_fcs_on_generated_programs() {
-    // Varied multipliers so the seeds exercise different tapes.
-    for seed in 0u32..12 {
-        let nums: Vec<u32> = (0..256)
-            .map(|i| {
-                (seed.wrapping_add(1))
-                    .wrapping_mul(2_654_435_761)
-                    .wrapping_add(i * 40_503)
-            })
-            .collect();
-        let g = generate(nums);
+    let mut adjudicated: HashMap<RefKind, usize> = HashMap::new();
+    for seed in 0u32..24 {
+        let g = generate(seed_tape(seed, 512));
         // Generated programs are always in-subset; a parse failure is a
         // generator bug, surfaced loudly by the shared assertion.
-        assert_matches_fcs(&g.src);
+        let checked = assert_matches_fcs(&g.src);
+        for r in &g.refs {
+            if checked.contains(&r.range) {
+                *adjudicated.entry(r.kind).or_default() += 1;
+            }
+        }
+    }
+    for kind in [
+        RefKind::Value,
+        RefKind::UnionCase,
+        RefKind::ActivePattern,
+        RefKind::ActivePatternArgument,
+        RefKind::OrAlias,
+    ] {
+        assert!(
+            adjudicated.get(&kind).copied().unwrap_or(0) > 0,
+            "FCS adjudicated no {kind:?} occurrence, so the agreement above says \
+             nothing about it; adjudicated: {adjudicated:?}"
+        );
     }
 }
 
