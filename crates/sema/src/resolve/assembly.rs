@@ -1006,10 +1006,6 @@ impl<'a> Resolver<'a> {
         // consulted once a fallback has been seen.
         let mut fallback: Option<R> = None;
 
-        // Whether some reading was shadowed by the *current module's own name*.
-        // Held rather than acted on; see the `SelfModuleShadowed` arm below.
-        let mut self_shadowed = false;
-
         for prefix in prefixes {
             let veto = if fallback.is_none() {
                 shadow_at(prefix)
@@ -1046,22 +1042,8 @@ impl<'a> Resolver<'a> {
                 // preemptive check and defers here — after every open has
                 // declined — so the current module's own name still shadows the
                 // same-named *root* namespace's assembly reading.
-                // A **self**-module shadow is held rather than returned. FCS
-                // does not bind a module's own name from within its body
-                // (FS0039), so this reading supplies nothing — and unlike a
-                // project shadow there is nothing invisible behind it that a
-                // lower tier must not be applied over: the module whose name it
-                // is, is the one the walk is standing in. Deferring here would
-                // withdraw the whole `module List` augmentation idiom, whose
-                // point is that `List.rev` inside `module List` falls through to
-                // `Microsoft.FSharp.Collections`. Holding it keeps the tier's
-                // *claim* — if no later reading resolves, the self name still
-                // shadows and the walk defers — while leaving every lower
-                // reading free to answer.
-                AssemblyPath::SelfModuleShadowed => {
-                    self_shadowed = true;
-                }
                 AssemblyPath::ProjectShadowed
+                | AssemblyPath::SelfModuleShadowed
                 | AssemblyPath::AbbreviationOpaque
                 | AssemblyPath::ContestedRooting => {
                     return TieredResolution::ShadowDeferred;
@@ -1071,9 +1053,6 @@ impl<'a> Resolver<'a> {
         }
         match fallback {
             Some(payload) => TieredResolution::Resolved(payload),
-            // Nothing resolved and a reading was self-module-shadowed: the
-            // shadow is now the highest thing left, so it decides.
-            None if self_shadowed => TieredResolution::ShadowDeferred,
             None => TieredResolution::NoMatch,
         }
     }

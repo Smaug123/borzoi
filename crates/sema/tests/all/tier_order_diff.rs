@@ -153,13 +153,22 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // addressing (1) and (2) trades a rare wrong target for hundreds of lost
     // ones.
     //
-    // A third — a self-qualifier recognised only in its *as-written* spelling,
-    // so `N.List.rev` for a written `List.rev` had head `N` and preempted the
-    // opens the `module List` augmentation idiom falls through to — is settled:
-    // `assembly_path_records` asks about the source path, and
-    // `resolve_assembly_path_over` *holds* a `SelfModuleShadowed` reading
-    // instead of returning at it. `resolve_self_qualifier_gen_diff`'s module
-    // docs name the two-line experiment that exercises both rules.
+    // The self-qualifier model was recorded as a third entry until it turned
+    // out not to be separable. Its *recognition* half is settled:
+    // `assembly_path_records` asks `self_module_shadow_only` about the source
+    // path, so `N.List.rev` for a written `List.rev` is no longer classified
+    // `ProjectShadowed` on account of a head the walk itself supplied.
+    //
+    // Its other half — letting a lower reading answer once a self shadow is
+    // seen, instead of deferring at it — folds into (1). A `SelfModuleShadowed`
+    // reading can still supply the member from the *assembly* side when the
+    // project module shares an FQN with a referenced entity (`Calc.Zero()`
+    // inside `Demo.Calc` binds the assembly's `Demo.Calc.Zero`, not a lower
+    // open's `Demo.Sub.Calc.Zero`), and nothing in the walk can say "the
+    // project half is shadowed, the assembly half still answers". That *is*
+    // the per-member merge, so the two land together and neither is a slice on
+    // its own. `resolve_self_qualifier_gen_diff`'s module docs carry the
+    // reorder experiment that exercises them.
     (
         "TEnNs/contributor-first",
         "NsAuto",

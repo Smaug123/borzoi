@@ -41,25 +41,31 @@
 //! Declining is always the fail-safe (an availability loss, not a soundness bug);
 //! a wrong or divergent target fails.
 //!
-//! ## This sweep is the guard for two rules the current tier order hides
+//! ## What this sweep says about the tier order
 //!
-//! Both concern a self-qualifier reached under a **prefix**, which today's
-//! ladder never gets to: the opens are walked first and supply the name before
-//! the enclosing namespace is tried. Move the enclosing namespace above the
-//! opens in `assembly_prefixes_by_priority` and this sweep goes red — vacuously,
-//! with no self-qualified head reaching FSharp.Core at all — unless:
+//! A self-qualifier reached under a **prefix** is something today's ladder never
+//! gets to: the opens are walked first and supply the name before the enclosing
+//! namespace is tried. Move the enclosing namespace above the opens in
+//! `assembly_prefixes_by_priority` and this sweep goes red *vacuously* — no
+//! self-qualified head reaches FSharp.Core at all.
+//!
+//! Two rules are needed to make it green there, and only the first is in place:
 //!
 //! - `assembly_path_records` asks `self_module_shadow_only` about the **source**
 //!   path rather than the prefix-expanded one. `N.List.rev` for a written
-//!   `List.rev` has head `N`, a namespace segment in no module chain, so the
-//!   reading is classified `ProjectShadowed` and preempts the opens.
-//! - `resolve_assembly_path_over` **holds** an `AssemblyPath::SelfModuleShadowed`
-//!   instead of returning `ShadowDeferred` at it. The module whose name it is,
-//!   is the one the walk is standing in, so there is nothing invisible behind it
-//!   that a lower reading must not be applied over.
+//!   `List.rev` has head `N`, a namespace segment in no module chain, so asking
+//!   there classifies the reading `ProjectShadowed` and preempts the opens.
+//! - `resolve_assembly_path_over` must stop returning `ShadowDeferred` at an
+//!   `AssemblyPath::SelfModuleShadowed` reading, so a lower one can answer.
+//!   **Not done, and not separable** — see the note on
+//!   `tier_order_diff`'s `KNOWN_DIVERGENCES`. That reading can still supply the
+//!   member from the *assembly* side when the project module shares an FQN with
+//!   a referenced entity, and the walk has no way to say "the project half is
+//!   shadowed, the assembly half still answers". Modelling that is the
+//!   per-member merge, so the two land together.
 //!
-//! That two-line experiment is the whole test for those rules until the tier
-//! moves, so run it before touching either.
+//! Run the reorder experiment before touching either rule; it is the only thing
+//! that exercises them.
 
 use std::path::{Path, PathBuf};
 
