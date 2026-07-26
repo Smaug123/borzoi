@@ -172,20 +172,47 @@ pub enum TypeShape {
     /// `MethodBody.Abstract`'s shape.
     NullaryCase,
     /// A class with a primary constructor, carrying nothing the probe asks for.
-    /// [`Position::Terminal`]'s shape and only its: a terminal head must name a
-    /// *value* for FCS to report anything there at all, and a record or union
-    /// written bare is `FS0800` with no symbol — measured, not assumed.
+    /// [`Position::Terminal`]'s shape, together with the four below it: a
+    /// terminal head must name a *value* for FCS to report anything there at
+    /// all, and which kinds do is measured rather than assumed — a struct with a
+    /// public constructor binds **nothing** while an enum and a delegate do.
     Ctor,
+    /// An F# `exception`, terminal-only.
+    Exn,
+    /// A **struct** with a public constructor, terminal-only. The cell that
+    /// keeps "has a constructor" from being mistaken for the rule.
+    StructCtor,
+    /// An enum, terminal-only.
+    Enum,
+    /// A delegate, terminal-only.
+    Delegate,
 }
 
 impl TypeShape {
-    pub const ALL: [TypeShape; 5] = [
+    pub const ALL: [TypeShape; 9] = [
         TypeShape::StaticMethod,
         TypeShape::StaticProp,
         TypeShape::FieldCase,
         TypeShape::NullaryCase,
         TypeShape::Ctor,
+        TypeShape::Exn,
+        TypeShape::StructCtor,
+        TypeShape::Enum,
+        TypeShape::Delegate,
     ];
+
+    /// Whether this shape exists only for [`Position::Terminal`] — the kinds
+    /// whose question is "does a head ending here name a value at all".
+    fn is_terminal_only(self) -> bool {
+        matches!(
+            self,
+            TypeShape::Ctor
+                | TypeShape::Exn
+                | TypeShape::StructCtor
+                | TypeShape::Enum
+                | TypeShape::Delegate
+        )
+    }
 
     fn tag(self) -> &'static str {
         match self {
@@ -194,6 +221,10 @@ impl TypeShape {
             TypeShape::FieldCase => "F",
             TypeShape::NullaryCase => "U",
             TypeShape::Ctor => "C",
+            TypeShape::Exn => "X",
+            TypeShape::StructCtor => "V",
+            TypeShape::Enum => "N",
+            TypeShape::Delegate => "G",
         }
     }
 
@@ -275,9 +306,16 @@ impl Plant {
         if !self.holder.has_type() && self.arity != Arity::Mono {
             return false;
         }
-        // The constructible class exists for the terminal position and only for
-        // it: it offers no leaf, and every other position asks for one.
-        if (self.shape == TypeShape::Ctor) != (self.position == Position::Terminal) {
+        // The terminal-only kinds offer no leaf, and every other position asks
+        // for one. A terminal cell varies the *kind* rather than the arity, so
+        // pin the arity too: an exception, enum or delegate has none to vary.
+        if self.shape.is_terminal_only() != (self.position == Position::Terminal) {
+            return false;
+        }
+        if self.shape.is_terminal_only()
+            && self.shape != TypeShape::Ctor
+            && self.arity != Arity::Mono
+        {
             return false;
         }
         if !self.holder.has_type()
@@ -314,12 +352,14 @@ impl Plant {
     /// "we commit where FCS binds nothing".
     pub fn path_type_checks(&self) -> bool {
         match self.position {
-            // A terminal head is a *value* only when a constructible type
-            // answers it: `Ns.C` on a class is its constructor, while a module
-            // is not a value and a record/union written bare is `FS0800`. FCS
-            // reports no symbol at all in those cases (measured with
-            // `fcs-dump uses`), so the cell can hold no expectation there.
-            Position::Terminal => self.holder.has_type(),
+            // A terminal head is a *value* only for the kinds FCS binds there:
+            // a class's constructor, an exception, an enum, a delegate. A
+            // module is not a value, a record or union written bare is `FS0800`,
+            // and — the one that reasoning gets wrong — neither is a **struct**,
+            // public constructor or not. FCS reports no symbol at all in those
+            // cases (measured with `fcs-dump uses`), so the cell can hold no
+            // expectation there.
+            Position::Terminal => self.holder.has_type() && self.shape != TypeShape::StructCtor,
             _ => self.tail != Tail::Neither,
         }
     }
@@ -356,6 +396,12 @@ impl Plant {
                 format!("type {name}{params} =\n    | {case}\n    | Carrier of {payload}\n")
             }
             TypeShape::Ctor => format!("type {name}{params}() =\n    member _.Which = \"type\"\n"),
+            TypeShape::Exn => format!("exception {name} of int\n"),
+            TypeShape::StructCtor => format!(
+                "[<Struct>]\ntype {name} =\n    val Payload : int\n    new (x : int) = {{ Payload = x }}\n"
+            ),
+            TypeShape::Enum => format!("type {name} =\n    | One = 1\n    | Two = 2\n"),
+            TypeShape::Delegate => format!("type {name} = delegate of int -> int\n"),
         }
     }
 

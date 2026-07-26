@@ -234,13 +234,19 @@ impl<'a> Resolver<'a> {
                 }
                 AssemblyPath::NoMatch => {}
                 // An undecidable candidate — an opaque abbreviation, a merged
-                // rooting — decides the position only while nothing has owned
-                // the path yet. `WidgetC.Make`, a `ModuleSuffix` module beside
-                // an abbreviation of the same name, is the case: FCS binds the
-                // module's `Make` (fcs-dump), and the alias below it — which we
-                // cannot resolve through — must not veto that.
+                // rooting — stays a **contender**: it might be what FCS binds,
+                // so a candidate the walk reached earlier must not commit over
+                // it. The single exception is the proven companion tie, an
+                // authoritative module ahead of same-DLL siblings, which is
+                // `WidgetC.Make`: a `ModuleSuffix` module beside an abbreviation
+                // of the same name, where FCS binds the module's `Make`
+                // (fcs-dump) and the alias must not veto it (codex review).
                 verdict => {
-                    if reading.owners.is_empty() {
+                    let companion_tie = reading.owners.first().is_some_and(|owner| {
+                        self.assemblies.is_authoritative_module(owner.handle)
+                            && self.assemblies.distinct_dlls(&[owner.handle, candidate]) == 1
+                    });
+                    if !companion_tie {
                         return Err(verdict);
                     }
                 }

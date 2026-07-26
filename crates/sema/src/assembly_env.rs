@@ -2925,28 +2925,45 @@ impl AssemblyEnv {
     /// Whether an **expression-position path ending at `handle`** binds
     /// anything — i.e. whether the entity has a value surface of its own.
     ///
-    /// Only a class with an accessible public instance constructor does: `Ns.C`
-    /// is that constructor. A record, union, interface, enum, delegate or module
-    /// written there is `FS0800` ("Invalid use of a type name") or simply not a
-    /// value, and FCS reports **no symbol at all** at the occurrence — it goes on
-    /// to look elsewhere, so a reading that ends on one has not captured the path
-    /// (fcs-dump-measured on each shape; codex review).
+    /// Measured per kind with `fcs-dump uses` on `Ns.<X>` (a probe library
+    /// declaring one of each), because the answer is not the one reasoning
+    /// suggests:
     ///
-    /// Distinct from [`Self::bare_expr_constructible`], which answers the same
-    /// question for an *unqualified* name and is additionally restricted to
-    /// non-generic types because its caller's fallback does an arity-0 lookup.
-    /// A qualified path has no such restriction: FCS infers a generic class's
-    /// type arguments at `Ns.C` exactly as it does its constructor's.
+    /// | kind | `Ns.X` in expression position |
+    /// |---|---|
+    /// | class with a public instance ctor | binds — the constructor |
+    /// | exception | binds |
+    /// | enum | binds |
+    /// | delegate | binds |
+    /// | **struct** with a public ctor | **no symbol** |
+    /// | record, union | no symbol (`FS0800`) |
+    /// | interface, module, abbreviation | no symbol |
+    ///
+    /// So "has a constructor" is *not* the rule — a struct has one and binds
+    /// nothing — and neither is "is a class". Where FCS reports no symbol its
+    /// lookup goes on elsewhere, so a reading that ends on such an entity has
+    /// not captured the path.
+    ///
+    /// Distinct from [`Self::bare_expr_constructible`], which answers for an
+    /// *unqualified* name and is restricted to non-generic types because its
+    /// caller's fallback does an arity-0 lookup. A qualified path has no such
+    /// restriction: FCS infers a generic class's type arguments at `Ns.C`
+    /// exactly as it does its constructor's.
     pub fn terminal_expression_value(&self, handle: EntityHandle) -> bool {
         let e = self.entity(handle);
-        e.kind == EntityKind::Class
-            && e.members.iter().any(|m| {
+        match e.kind {
+            // A static class (only a `.cctor`) resolves to nothing, so the
+            // constructor is what makes a class a value here.
+            EntityKind::Class => e.members.iter().any(|m| {
                 matches!(
                     m,
                     Member::Method(mm)
                         if mm.is_constructor && !mm.is_static && mm.access == Access::Public
                 )
-            })
+            }),
+            EntityKind::Exception | EntityKind::Enum | EntityKind::Delegate => true,
+            _ => false,
+        }
     }
 
     /// Whether `handle` is a union we may rely on declaring a case named `name`.
