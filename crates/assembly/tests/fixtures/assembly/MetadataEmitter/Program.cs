@@ -30,6 +30,8 @@ internal static class Program
             "typed_reference_param" => EmitTypedReferenceParam(),
             "compiler_controlled_method" => EmitCompilerControlledMethod(),
             "external_module_typeref" => EmitExternalModuleTypeRef(),
+            "nil_scope_typeref_unreferenced" => EmitNilScopeTypeRefUnreferenced(),
+            "nil_scope_typeref_base" => EmitNilScopeTypeRefBase(),
             "bounded_array" => EmitArrayShape("BoundedArrayFixture", "boundarr", ArrayKind.Bounded),
             "rank_one_array" => EmitArrayShape("RankOneArrayFixture", "rankarr", ArrayKind.RankOne),
             "array_custom_modifier" => EmitArrayShape("ArrayModifierFixture", "modarr", ArrayKind.Modifier),
@@ -503,7 +505,8 @@ internal static class Program
     // ResolutionScope is an external ModuleRef (ECMA-335 II.22.38). C#/F#
     // never scope a base type to a sibling module, so the projector's
     // `ResolutionScope::ExternalModule` arm has no compiler fixture — this
-    // fabricates one. The projection must fail loud (UnsupportedEcmaLayout).
+    // fabricates one. The projection must fail loud (UnsupportedEcmaLayout) for
+    // `User`; the clean sibling `Bystander` pins that the loss stops there.
     private static BlobBuilder EmitExternalModuleTypeRef()
     {
         var mb = new MetadataBuilder();
@@ -521,6 +524,75 @@ internal static class Program
             default,
             mb.GetOrAddString("User"),
             baseType: baseRef,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            default,
+            mb.GetOrAddString("Bystander"),
+            baseType: default,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+
+        return Finish(mb);
+    }
+
+    // A TypeRef with a *nil* ResolutionScope (ECMA-335 II.22.38 resolves the
+    // name through the ExportedType table) that **nothing references**, beside
+    // an ordinary public class `User`. This is the shape Roslyn's
+    // reference-assembly generator leaves behind when it strips a type a
+    // TypeRef named — observed in the shipped Microsoft.Build ref assemblies,
+    // whose ExportedType table is empty, so the row resolves to nothing at all.
+    // No projected type dereferences it, so the assembly must project intact.
+    private static BlobBuilder EmitNilScopeTypeRefUnreferenced()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "NilScopeUnreferencedFixture", "nilunref");
+
+        mb.AddTypeReference(
+            resolutionScope: default,
+            @namespace: default,
+            name: mb.GetOrAddString("<>f__AnonymousType0`2"));
+
+        AddModuleType(mb);
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            default,
+            mb.GetOrAddString("User"),
+            baseType: default,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+
+        return Finish(mb);
+    }
+
+    // A public class `User` whose `extends` points at a *nil*-scope TypeRef,
+    // beside a clean sibling `Bystander`. The nil scope resolves to nothing, so
+    // `User` cannot be projected — but the loss must stop there: `Bystander`
+    // and the rest of the assembly still project.
+    private static BlobBuilder EmitNilScopeTypeRefBase()
+    {
+        var mb = new MetadataBuilder();
+        Preamble(mb, "NilScopeBaseFixture", "nilbase");
+
+        TypeReferenceHandle baseRef = mb.AddTypeReference(
+            resolutionScope: default,
+            @namespace: mb.GetOrAddString("App"),
+            name: mb.GetOrAddString("Helper"));
+
+        AddModuleType(mb);
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            default,
+            mb.GetOrAddString("User"),
+            baseType: baseRef,
+            fieldList: MetadataTokens.FieldDefinitionHandle(1),
+            methodList: MetadataTokens.MethodDefinitionHandle(1));
+        mb.AddTypeDefinition(
+            TypeAttributes.Public | TypeAttributes.Class,
+            default,
+            mb.GetOrAddString("Bystander"),
+            baseType: default,
             fieldList: MetadataTokens.FieldDefinitionHandle(1),
             methodList: MetadataTokens.MethodDefinitionHandle(1));
 

@@ -10,15 +10,72 @@ use proptest::prelude::*;
 
 use super::ids::{TypeDefId, TypeRefId};
 use super::metadata::MetadataFile;
-use super::model::{MemberHandle, RefScope};
+use super::model::{MemberHandle, RefScope, UnsupportedScope};
 use super::signature::{ModifiedType, TypeScope, TypeSig};
 use super::tables;
 use super::test_fixtures::all_dlls;
-use super::typedefs::read_types;
+use super::typedefs::{read_types, resolve_ref_scope};
 
 // ============================================================================
 // Structural property oracles (no external reference; durable)
 // ============================================================================
+
+#[test]
+fn a_ref_scope_is_hard_error_exactly_when_its_rid_is_out_of_range() {
+    // The classification law for a `ResolutionScope` coded index, swept over
+    // the whole tag space and the RID boundaries, for every fixture.
+    //
+    // The two failure kinds must not be confusable: a RID naming no row is
+    // structural corruption and aborts the parse, while a well-formed row
+    // whose scope this reader does not model rides along on the `TypeRef`
+    // (`UnsupportedScope`) and costs only its referents. Nothing about a tag
+    // decides that — so *every* arm owes its RID a bounds check, and this
+    // sweep is what stops the next arm forgetting: `decode` only rejects RID
+    // 0, leaving the row-count bound to the caller.
+    for dll in all_dlls() {
+        let bytes = std::fs::read(&dll).expect("read fixture dll");
+        let md = MetadataFile::read(&bytes).expect("container parse");
+        let tbls = tables::Tables::new(&md).expect("tables");
+
+        // A nil coded index is the whole value 0; it names no row at all.
+        assert_eq!(
+            resolve_ref_scope(&tbls, 0),
+            Ok(Err(UnsupportedScope::Nil)),
+            "a nil ResolutionScope is unmodelled, not corrupt, in {}",
+            dll.display()
+        );
+
+        let bits = tables::Coded::ResolutionScope.tag_bits();
+        for (tag, &table) in tables::Coded::ResolutionScope.slots().iter().enumerate() {
+            let rows = tbls.row_count(table);
+            for rid in [0, 1, rows, rows + 1, u32::MAX >> bits] {
+                let coded = (rid << bits) | (tag as u32);
+                // Tag 0 with RID 0 *is* the nil value, checked above.
+                if coded == 0 {
+                    continue;
+                }
+                let in_range = rid >= 1 && rid <= rows;
+                let verdict = resolve_ref_scope(&tbls, coded);
+                assert_eq!(
+                    verdict.is_ok(),
+                    in_range,
+                    "tag {tag} (table {table:#x}) rid {rid} of {rows}: a RID outside the \
+                     table is structural corruption and must abort the parse, and one \
+                     inside it must not — got {verdict:?} in {}",
+                    dll.display()
+                );
+                // Whatever handle a modelled scope carries indexes a live slot.
+                if let Ok(Ok(scope)) = verdict {
+                    match scope {
+                        RefScope::AssemblyRef(id) => assert!(id.0 < rows, "asm ref handle"),
+                        RefScope::Nested(id) => assert!(id.0 < rows, "nested typeref handle"),
+                        RefScope::Module => {}
+                    }
+                }
+            }
+        }
+    }
+}
 
 #[test]
 fn nesting_and_top_level_are_consistent() {
@@ -70,12 +127,17 @@ fn resolved_handles_are_in_range() {
         let asm_ref_count = md.rows[tables::table::ASSEMBLY_REF];
         let member_ref_count = md.rows[tables::table::MEMBER_REF];
 
-        // Every TypeRef scope handle indexes a live slot.
+        // Every TypeRef scope handle indexes a live slot. A scope the reader
+        // does not model carries no handle to check — and the fixtures are
+        // compiler-produced, so none should appear.
         for tr in &types.type_refs {
             match tr.scope {
-                RefScope::AssemblyRef(id) => assert!(id.0 < asm_ref_count, "asm ref handle"),
-                RefScope::Nested(id) => assert!(id.0 < ref_count, "nested typeref handle"),
-                RefScope::Module => {}
+                Ok(RefScope::AssemblyRef(id)) => assert!(id.0 < asm_ref_count, "asm ref handle"),
+                Ok(RefScope::Nested(id)) => assert!(id.0 < ref_count, "nested typeref handle"),
+                Ok(RefScope::Module) => {}
+                Err(unsupported) => {
+                    panic!("compiler-produced fixture {dll:?} has a {unsupported} TypeRef scope")
+                }
             }
         }
 

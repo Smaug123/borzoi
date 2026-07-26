@@ -13,6 +13,8 @@
 //! `MemberRefId`/`AssemblyRefId` as table-order indices — index arenas built in
 //! table order.
 
+use std::fmt;
+
 use super::ids::{AssemblyRefId, MemberRefId, MethodId, TypeDefId, TypeRefId};
 use super::signature::{CallConv, DecodedMethodSig, ModifiedType, RetType, SigError};
 
@@ -28,9 +30,9 @@ pub(crate) struct TypeName {
     pub(crate) name: String,
 }
 
-/// Where a [`TypeRef`] resolves. `ModuleRef` (multi-module assemblies) and a
-/// null scope (`ExportedType` lookup) are refused at parse time rather than
-/// represented (see [`super::Error::UnsupportedTypeRefScope`]).
+/// Where a [`TypeRef`] resolves. The scopes outside this set are recorded as
+/// an [`UnsupportedScope`] on the row rather than represented here, so a row
+/// this reader cannot model is never mis-attributed to the wrong assembly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RefScope {
     /// Defined in another assembly (`AssemblyRef` resolution scope).
@@ -48,12 +50,48 @@ pub(crate) enum RefScope {
     Module,
 }
 
+/// A `ResolutionScope` (ECMA-335 §II.22.38) that is well-formed metadata but
+/// outside the subset [`RefScope`] models. Stored on the row rather than
+/// propagated as a parse error: the rest of the `TypeRef` table, and every type
+/// that does not name this row, projects unaffected. Only a consumer that
+/// actually walks out through this scope fails, and it fails there — as a
+/// recorded per-type drop, which is *namespace*-scoped uncertainty downstream
+/// instead of the whole-assembly kind.
+///
+/// Structural corruption is a different thing and still aborts the parse: a
+/// coded index naming a row outside its table is not a scope this reader
+/// declines to model, it is metadata that does not parse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnsupportedScope {
+    /// A **nil** scope. §II.22.38 resolves the name through the `ExportedType`
+    /// table; Roslyn's reference-assembly generator emits one for a type it
+    /// stripped and leaves the `ExportedType` table empty, so there is
+    /// generally nothing to follow. Every shipped `Microsoft.Build*` reference
+    /// assembly carries exactly one such row, and none of their projected types
+    /// name it.
+    Nil,
+    /// A `ModuleRef` scope — a sibling module of a multi-module assembly. The
+    /// reader cannot name an owning assembly for one, and no single-file
+    /// compiler emits them.
+    ModuleRef,
+}
+
+impl fmt::Display for UnsupportedScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UnsupportedScope::Nil => write!(f, "nil (ExportedType lookup)"),
+            UnsupportedScope::ModuleRef => write!(f, "sibling ModuleRef"),
+        }
+    }
+}
+
 /// A reference to a type defined elsewhere (the `TypeRef` table). `scope` walks
-/// out to the assembly or enclosing type that anchors the name.
+/// out to the assembly or enclosing type that anchors the name, or records why
+/// this reader cannot ([`UnsupportedScope`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TypeRef {
     pub(crate) name: TypeName,
-    pub(crate) scope: RefScope,
+    pub(crate) scope: Result<RefScope, UnsupportedScope>,
 }
 
 /// Folded ECMA-335 §II.23.1.15 type/member visibility. The seven-valued raw
