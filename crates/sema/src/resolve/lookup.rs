@@ -480,6 +480,15 @@ impl<'a> Resolver<'a> {
         }
         // The assembly **namespace** half — precomputed at index time, since a
         // namespace's auto-open closure does not depend on the open site.
+        //
+        // For an *implicitly* opened namespace this inherits a scoping the whole
+        // implicit-open path already has: FCS applies an assembly-level
+        // `[<AutoOpen>]` inside the declaring assembly only, while
+        // `effective_implicit_open_namespace_paths` is a set of namespace paths
+        // applied across every assembly, so a second assembly's auto-open module
+        // in `Microsoft.FSharp.Core` is folded here as it already is by
+        // `open_auto_open_modules_in`. Scoping that to the contributor is one
+        // change to both, not a special case of this walk.
         for path in self.assemblies.auto_open_module_paths_in_namespace(base) {
             push(&mut out, path.clone());
         }
@@ -493,12 +502,25 @@ impl<'a> Resolver<'a> {
                 push(&mut out, path);
             }
         }
-        // The **project** half, walked the same way the other project auto-open
-        // consumers walk it (`namespace_exports_value_named`): a project
-        // auto-open module may hold another.
-        let mut frontier = self.project_auto_open_submodules_in(base);
-        while let Some(module) = frontier.pop() {
-            frontier.extend(self.project_auto_open_submodules_in(&module));
+        // The **project** half: a project auto-open module may hold another, so
+        // the walk recurses like the other project auto-open consumers'
+        // (`namespace_exports_value_named`) — but in the same DFS pre-order the
+        // assembly halves use, because these are *ranked*. Two sibling
+        // `[<AutoOpen>]` roots each nesting a same-named module is a real
+        // contest, and FCS binds the later-declared one
+        // (`open_shortening_matrix`'s `project / the later auto-open root …`
+        // cell, which fails outright under a bare pop-from-the-end walk).
+        let mut stack: Vec<Vec<String>> = self
+            .project_auto_open_submodules_in(base)
+            .into_iter()
+            .rev()
+            .collect();
+        while let Some(module) = stack.pop() {
+            stack.extend(
+                self.project_auto_open_submodules_in(&module)
+                    .into_iter()
+                    .rev(),
+            );
             push(&mut out, module);
         }
         // Latest-folded wins, so the last entry is the most proximate.

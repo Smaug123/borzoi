@@ -22,9 +22,11 @@
 //! to win over `Operators.Checked.int64` in four `WoofWare.PawPrint` files.
 //!
 //! Channels: an explicit namespace prefix, a project-code namespace prefix, a
-//! module prefix, a transitive two-level chain, and the precedence contest
-//! between an auto-open-derived prefix and the opened container's own direct
-//! submodule. Negative controls pin that the recursion runs through
+//! module prefix, and a transitive two-level chain. Three contests pin the
+//! *ranking*, which is where a flattened prefix list goes wrong quietly: an
+//! auto-open-derived prefix versus the opened container's own direct submodule,
+//! two sibling project auto-open roots, and two assemblies' auto-open modules
+//! in one namespace. Negative controls pin that the recursion runs through
 //! `[<AutoOpen>]` and public accessibility only.
 //!
 //! The **implicit** prefix — the `open Checked` shape itself — cannot be cast
@@ -36,6 +38,10 @@
 //! `resolve_fsharp_core::open_checked_binds_the_checked_conversions`.
 
 use crate::common::fold_matrix::{Cell, Position, run_matrix};
+
+/// Two sibling project `[<AutoOpen>]` modules, each nesting a `PjPick` with a
+/// colliding value — the declaration-order contest between auto-open roots.
+const PJ_TWO_ROOTS: &str = "namespace Demo.PjTwo\n\n[<AutoOpen>]\nmodule PjFirst =\n    module PjPick =\n        let pjPickValue () = 1\n\n[<AutoOpen>]\nmodule PjSecond =\n    module PjPick =\n        let pjPickValue () = 2\n";
 
 /// A project decl file whose `[<AutoOpen>]` module nests a plain module — the
 /// project-code twin of the `Operators.Checked` shape.
@@ -105,6 +111,29 @@ const CELLS: &[Cell] = &[
         label: "negative / an internal auto-open module is no prefix",
         body: &["open Demo.Auto", "open InternalDeeper"],
         probe: "internalDeeperValue",
+        position: Position::Expr,
+    },
+    // ---- two auto-open roots contesting the short name ----
+    Cell {
+        // Sibling roots in one namespace, contributed by DIFFERENT assemblies:
+        // FCS folds `AsmAutoA` then `AsmAutoB` in reference order and the later
+        // fold wins. Unlike the same-FQN merge (`Demo.ModuleOpen.Shared`, which
+        // defers because two surfaces of one group collide), these are two
+        // distinct paths, so the winner is decided by their order in the
+        // namespace's auto-open index — which is the order the assemblies were
+        // handed to `AssemblyEnv::from_views`, i.e. the same reference order
+        // FCS ranks by. This cell is what holds that correspondence.
+        decls: &[],
+        label: "cross-assembly / two assemblies' auto-open modules nest the same short name",
+        body: &["open Demo.TwoAsm", "open AsmPick"],
+        probe: "asmPickValue",
+        position: Position::Expr,
+    },
+    Cell {
+        decls: &[PJ_TWO_ROOTS],
+        label: "project / the later auto-open root wins the short name",
+        body: &["open Demo.PjTwo", "open PjPick"],
+        probe: "pjPickValue",
         position: Position::Expr,
     },
     // ---- the project half of the same shape ----

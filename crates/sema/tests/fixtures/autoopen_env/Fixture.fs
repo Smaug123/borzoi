@@ -193,6 +193,19 @@ type SameTierName = { DirectField: int }
 // `Extra.ChainedInner.Chained` above — the nested chain's same-tier shadow.
 type Chained = { DirectField: int }
 
+namespace Demo.TwoAsm
+
+// The **cross-assembly** half of the open-shortening contest: the abbrev
+// fixture declares its own `[<AutoOpen>]` module in this same namespace, also
+// nesting an `AsmPick` whose value collides with this one. Opening the
+// namespace folds both modules, so `open AsmPick` names two different modules
+// and the collision is settled by reference order — the dimension
+// `open_shortening_matrix`'s `cross-assembly / …` cell diffs against FCS.
+[<AutoOpen>]
+module AsmAutoA =
+    module AsmPick =
+        let asmPickValue () = 30
+
 namespace Demo.Low
 
 // A real, ordinary type also named `int64` — the priority-ordering

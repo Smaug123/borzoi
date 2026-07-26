@@ -489,3 +489,15 @@ namespace Cases.CaselessUnion
 
 type Target =
     | Other of int
+
+namespace Demo.TwoAsm
+
+// The second assembly's contribution to the cross-assembly open-shortening
+// contest (the autoopen fixture declares `AsmAutoA` in this namespace, nesting
+// its own `AsmPick.asmPickValue`). Opening `Demo.TwoAsm` folds both auto-open
+// modules, so `open AsmPick` names two different modules and the colliding
+// value is settled by reference order.
+[<AutoOpen>]
+module AsmAutoB =
+    module AsmPick =
+        let asmPickValue () = 31
