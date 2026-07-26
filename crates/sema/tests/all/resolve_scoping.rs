@@ -6,14 +6,19 @@
 //!   `match`/`fun` local scoping) on hand-written snippets.
 //! * A generator-as-oracle property generates random *well-scoped* programs
 //!   within the parser subset. The generator records, by construction, the
-//!   exact binder each reference must resolve to (the latest binder of that
-//!   name visible at the reference). The resolver must reproduce those
-//!   resolutions — and every binder must resolve to itself.
+//!   exact binder each reference must resolve to: the latest binder of that
+//!   name visible at the reference for a value use, the declaration for a
+//!   union-case or active-pattern head, and the *first* alternative's
+//!   occurrence for an or-pattern's later spellings of a name. The resolver
+//!   must reproduce those resolutions — and every binder must resolve to
+//!   itself.
 //!
 //! These do not use FCS: the generator is its own oracle for the scoping
 //! *model*. `resolve_diff.rs` separately confirms that model agrees with FCS.
 
-use crate::common::generator::generate;
+use std::collections::HashMap;
+
+use crate::common::generator::{RefKind, generate, seed_tape};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file};
@@ -581,13 +586,16 @@ fn unbound_name_is_deferred_not_unresolved() {
 // always yields a valid program, so shrinking never produces garbage. This is
 // the resolver's own-model oracle; `resolve_diff.rs` confirms the model against
 // FCS, including on a sample of these generated programs.
+//
+// The generated programs are name-correct, not type-correct — which is the
+// right contract for a name resolver, and lets the grammar stay wide.
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: 200, ..ProptestConfig::default() })]
+    #![proptest_config(ProptestConfig { cases: 512, ..ProptestConfig::default() })]
 
     #[test]
     fn generated_programs_resolve_every_reference_to_its_binder(
-        nums in prop::collection::vec(any::<u32>(), 30..400)
+        nums in prop::collection::vec(any::<u32>(), 30..600)
     ) {
         let g = generate(nums);
 
@@ -611,26 +619,79 @@ proptest! {
             prop_assert_eq!(def.range, *range, "binder {} self-range mismatch in {:?}", uid, g.src);
         }
 
-        // Every reference resolves to the latest in-scope binder of its name.
-        for (use_range, target) in &g.refs {
-            let res = rf.resolution_at(*use_range).ok_or_else(|| {
-                TestCaseError::fail(format!("reference at {use_range:?} unrecorded in {:?}", g.src))
+        // Every reference resolves to the binder the generator recorded: the
+        // latest in-scope binder of its name for a value use, the declaration
+        // for a union-case or active-pattern head, and the *first* alternative's
+        // occurrence for an or-pattern alias.
+        for r in &g.refs {
+            let use_range = r.range;
+            let res = rf.resolution_at(use_range).ok_or_else(|| {
+                TestCaseError::fail(format!("{:?} reference at {use_range:?} unrecorded in {:?}", r.kind, g.src))
             })?;
             prop_assert!(
                 !matches!(res, Resolution::Unresolved),
-                "reference at {:?} is Unresolved in {:?}",
-                use_range, g.src
+                "{:?} reference at {:?} is Unresolved in {:?}",
+                r.kind, use_range, g.src
             );
             let def = rf.resolved_def(res).ok_or_else(|| {
-                TestCaseError::fail(format!("reference at {use_range:?} resolved to {res:?} (no in-file def) in {:?}", g.src))
+                TestCaseError::fail(format!("{:?} reference at {use_range:?} resolved to {res:?} (no in-file def) in {:?}", r.kind, g.src))
             })?;
-            let expected = g.binder_ranges[target];
+            let expected = g.binder_ranges[&r.target];
             prop_assert_eq!(
                 def.range, expected,
-                "reference at {:?} resolved to {:?}, expected binder {:?} in {:?}",
-                use_range, def.range, expected, g.src
+                "{:?} reference at {:?} resolved to {:?}, expected binder {:?} in {:?}",
+                r.kind, use_range, def.range, expected, g.src
             );
         }
+    }
+}
+
+/// The property above is only worth what the generator actually emits: if a
+/// refactor stopped producing or-patterns, it would keep passing and prove
+/// nothing about them. This pins the *coverage* of a fixed set of tapes, so
+/// every construct the property claims to sweep is known to occur — and to
+/// occur often enough that the sweep is not resting on a single program.
+#[test]
+fn the_generator_emits_every_pattern_construct() {
+    const TAPES: u32 = 64;
+    let mut matches = 0usize;
+    let mut counts: HashMap<RefKind, usize> = HashMap::new();
+    let mut binders = 0usize;
+    for seed in 0..TAPES {
+        let g = generate(seed_tape(seed, 512));
+        // A rendering bug is a generator bug, not a resolver finding: catch it
+        // on this deterministic set rather than probabilistically.
+        let parsed = parse(&g.src);
+        assert!(
+            parsed.errors.is_empty(),
+            "seed {seed} generated an unparseable program: {:?}\nerrors: {:?}",
+            g.src,
+            parsed.errors
+        );
+        matches += g.match_count;
+        binders += g.binder_ranges.len();
+        for r in &g.refs {
+            *counts.entry(r.kind).or_default() += 1;
+        }
+    }
+    assert!(
+        matches >= TAPES as usize,
+        "only {matches} `match` expressions"
+    );
+    assert!(binders >= TAPES as usize, "only {binders} binders");
+    for kind in [
+        RefKind::Value,
+        RefKind::UnionCase,
+        RefKind::ActivePattern,
+        RefKind::ActivePatternArgument,
+        RefKind::OrAlias,
+    ] {
+        let n = counts.get(&kind).copied().unwrap_or(0);
+        assert!(
+            n >= 10,
+            "{kind:?} occurred {n} times over {TAPES} tapes — the property is \
+             not sweeping it; counts: {counts:?}"
+        );
     }
 }
 
