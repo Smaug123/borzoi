@@ -816,10 +816,79 @@ jobs:
       run: |
         nix build .#default --print-build-logs
 
+  corpus-diff:
+    name: Whole-project resolution
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Deliberately ungated by `changes`: the runtime path this exercises spans
+    # cst, sema, assembly, msbuild, nuget and lsp together, so a filter narrow
+    # enough to be worth having would be one wrong entry away from skipping the
+    # gate silently. The job is ~4 minutes.
+    env:
+      # The divergences this corpus is known to produce, per comparison. A
+      # **two-sided** record: a run that diverges more fails, and so does one
+      # that diverges less, so a fix cannot land without bringing the number
+      # down with it and a one-sided ceiling cannot quietly decay into a rubber
+      # stamp. Per category rather than a total, because a change that trades a
+      # project wrong target for an assembly one moves the total by zero.
+      #
+      # Lowering it is the good direction and needs no ceremony beyond the diff
+      # that earns it. Raising it means this corpus now resolves something to
+      # the wrong declaration and wants a reason in the commit message.
+      #
+      # `assembly=16,reverse=16` arrived together in #204 and are the same
+      # 16 sites seen from both directions; `project=1` predates the series.
+      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=16,project=1,reverse=16"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Move /nix and cargo's target/ to the large /mnt disk
+        run: |
+          df -h / /mnt || true
+          sudo mkdir -p /mnt/nix /nix
+          sudo mount --bind /mnt/nix /nix
+          sudo mkdir -p /mnt/cargo-target
+          sudo chown "$(id -u):$(id -g)" /mnt/cargo-target
+          mkdir -p "$GITHUB_WORKSPACE/target"
+          sudo mount --bind /mnt/cargo-target "$GITHUB_WORKSPACE/target"
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      - name: Cache cargo target/
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cmd-format: nix develop -c {0}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Materialise the pinned project corpus
+        run: bash tools/ci/project-corpus.sh
+
+      - name: Gate on whole-project resolution
+        # The exit code *is* the gate here, which is the whole difference from
+        # `stats.yml`'s job: that one records the same numbers into the series
+        # and deliberately ignores this status, so without this job nothing ever
+        # asserted on them at a decision point.
+        run: |
+          summary="$RUNNER_TEMP/project-corpus-summary.json"
+          nix develop --command env \
+            BORZOI_PROJECT_LIST="$BORZOI_PROJECT_LIST" \
+            BORZOI_PROJECT_SUMMARY_JSON="$summary" \
+            cargo run --locked -p borzoi-corpus-diff
+          # A run that measured less than the whole corpus can satisfy the
+          # expectation by not looking, so assert the coverage separately.
+          comparable="$(jq -er '.statistics.projects.comparable' "$summary")"
+          if [ "$comparable" -ne "$BORZOI_PROJECT_PINNED" ]; then
+            echo "only $comparable of $BORZOI_PROJECT_PINNED pinned projects became comparable" >&2
+            exit 1
+          fi
+
   all-required-checks-complete:
     if: ${{ always() }}
     needs:
       - changes
+      - corpus-diff
       - lint
       - fcs-dump
       - test-cst

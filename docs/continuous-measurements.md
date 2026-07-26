@@ -187,11 +187,20 @@ and it is exactly the kind of thing a stale fork pin walks into.
 
 ### Measurement, not gate
 
-The runner's own ratchets (`BORZOI_PROJECT_MAX_DIVERGENCES` and friends,
-defaulting to zero divergences) are a gate; this job is a measurement. It
-therefore does not fail on the runner's exit code, because doing so would
-withhold the observation in exactly the run that found something. Divergence
-counts ride in `statistics` and the series carries the finding.
+The runner's own ratchets (`BORZOI_PROJECT_EXPECT_DIVERGENCES` and friends) are
+a gate, and they gate in `ci.yml`'s `corpus-diff` job, on the pull request,
+before the commit lands. This job is a measurement. It therefore does not fail
+on the runner's exit code, because doing so would withhold the observation in
+exactly the run that found something. Divergence counts ride in `statistics` and
+the series carries the finding.
+
+The split matters, and it is not belt-and-braces. Between #200 and #204 the
+series alone carried the divergence counts: they went from 3 to 33 at a single
+commit while *coverage rose*, because turning deferrals into commits improves
+every quantity anything asserted on, whatever fraction of the new commits are
+wrong. The number was recorded and nothing was ever asked to act on it. Both
+jobs materialise the corpus through `tools/ci/project-corpus.sh`, so they cannot
+come to measure different things.
 
 What must still fail loudly is a run that did not *measure* — an unrestorable
 project, a wedged oracle. The generator summary is written before the ratchets
