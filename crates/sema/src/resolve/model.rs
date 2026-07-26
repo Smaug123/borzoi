@@ -1822,12 +1822,12 @@ pub enum DeferredReason {
     /// so no per-name test can rule it out — the uncertainty is wholesale, and
     /// so is the decline.
     ///
-    /// The whole contract in that state, so a consumer can rely on it: **sema
-    /// publishes no assembly-rooted resolution and no inferred type**. The two
-    /// go together — a type is only ever as good as the readings that fed it,
-    /// and which types those are is not decidable once unification has run
-    /// (`Gen::finish`), so inference declines wholesale for the same reason
-    /// resolution does.
+    /// The contract in that state, so a consumer can rely on it: **sema commits
+    /// to no assembly-rooted resolution**, on any of the three surfaces that
+    /// record one. Inference's *types* are outside it, because they claim
+    /// something weaker — a [`Ty`](crate::Ty) is a type's *name*, which two
+    /// same-named types across a read and an unread DLL do not falsify, whereas
+    /// a resolution names one entity by handle and following it lands somewhere.
     ///
     /// Distinct from the other reasons because its cause is *environmental*: the
     /// user's code is fine and a name that would otherwise resolve is being

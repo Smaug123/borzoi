@@ -3180,36 +3180,10 @@ impl<'a> Gen<'a> {
     /// unsolved variable becomes silence (D5), never a wrong or meaningless
     /// answer.
     ///
-    /// Under an **incomplete projection** this phase publishes nothing at all:
-    /// see [`Self::sealed_under_incomplete_projection`].
+    /// Under an **incomplete projection** the member resolutions are sealed
+    /// ([`Resolution::sealed_under_incomplete_projection`]); the *types* are not
+    /// — see the seal's comment below for the line between them.
     fn finish(mut self) -> InferredFile {
-        // An incomplete projection makes every referenced-assembly reading
-        // unprovable, and a type is only ever as good as the readings that fed
-        // it. Which types those are is not decidable here: a member call's
-        // return type was unified into its variable during the walk, so by now
-        // it is indistinguishable from one that owes an assembly nothing —
-        // sealing "the assembly-derived ones" would need taint through the
-        // unification table. The seal's own logic answers that: when the
-        // affected subset cannot be identified, decline the lot. So inference
-        // goes silent wholesale, which is also the only *statable* contract —
-        // under an incomplete projection sema publishes no assembly-rooted
-        // resolution and no inferred type.
-        //
-        // Member *resolutions* are still swept rather than dropped, because a
-        // consumer must be able to tell "we decline" from "no such name": that
-        // distinction is what `DeferredReason::IncompleteAssemblies` carries to
-        // the user, and an empty map would say nothing.
-        if self.env.identities_incomplete() {
-            let member_resolutions = std::mem::take(&mut self.member_resolutions)
-                .into_iter()
-                .map(|(range, res)| (range, res.sealed_under_incomplete_projection()))
-                .collect();
-            return InferredFile {
-                types: HashMap::new(),
-                def_types: HashMap::new(),
-                member_resolutions,
-            };
-        }
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
         let mut types = HashMap::new();
@@ -3244,7 +3218,32 @@ impl<'a> Gen<'a> {
                 def_types.insert(def, ty);
             }
         }
-        let member_resolutions = std::mem::take(&mut self.member_resolutions);
+        let mut member_resolutions = std::mem::take(&mut self.member_resolutions);
+        // Inference's half of the incomplete-projection seal (the resolver seals
+        // its own two maps): a member identified on a referenced-assembly type is
+        // an assembly reading like any other, and a DLL the env could not read
+        // could declare a type that shadows the receiver's. Swept once over the
+        // finished map for the same reason the resolver sweeps — see
+        // `Resolver::seal_assembly_readings`.
+        //
+        // The **types** are not sealed, and the line is what each surface
+        // claims. A `Resolution` names one entity by handle: follow it and you
+        // land somewhere, so an ambiguity we cannot resolve makes it a
+        // wrong-target claim. A `Ty` is `Named(["System", "String"])` — a *name*.
+        // Two same-named types across a read and an unread DLL do not make the
+        // name wrong; disambiguating them is exactly what a name does not
+        // purport to do. So the seal follows the handles and stops there.
+        //
+        // Types are not thereby unaffected: one read *through* a sealed
+        // resolution goes with it (`annotation_ty` finds no entity to read), and
+        // one unified in during the walk survives. That asymmetry is a
+        // consequence of where each type came from, not a policy — both
+        // directions are pinned in `resolve_incomplete_projection`.
+        if self.env.identities_incomplete() {
+            for res in member_resolutions.values_mut() {
+                *res = res.sealed_under_incomplete_projection();
+            }
+        }
         InferredFile {
             types,
             def_types,
