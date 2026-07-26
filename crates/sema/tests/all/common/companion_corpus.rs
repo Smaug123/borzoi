@@ -32,12 +32,17 @@
 //! - [`Tail`] — which of the two candidates declares the probed leaf. `Both`
 //!   is the tie-break cell (fsi-measured: the **module** wins), `Neither` the
 //!   cell that must not commit anything.
-//! - [`TypeShape`] — what the *type* contributes the leaf as: a static member, a
-//!   union case with a field, or a nullary union case. The three compile to
-//!   different metadata (a method; a `New…` factory plus a nested type; a static
-//!   property), and a lookup keyed on one surface is blind to the others.
-//! - [`Position`] — expression or pattern. A pattern head is a lookup in F#'s
-//!   *constructor* namespace, where a module value cannot compete at all.
+//! - [`TypeShape`] — what the *type* contributes the leaf as: a static method, a
+//!   static property, a union case with a field, or a nullary union case. Each
+//!   compiles to different metadata (a method; a property; a `New…` factory plus
+//!   a nested carrier; a static property), and a lookup keyed on one surface is
+//!   blind to the others. A fifth shape, a constructible class, exists for the
+//!   terminal position, which has no leaf to contribute.
+//! - [`Position`] — expression, pattern, or **terminal**. A pattern head is a
+//!   lookup in F#'s *constructor* namespace, where a module value cannot compete
+//!   at all; a terminal head asks for no leaf, so every candidate trivially
+//!   supplies the path and only the candidate order decides — which is why a
+//!   module must not own one (FCS wants a value there, and a module is not one).
 //! - `decoy` — whether an explicitly `open`ed namespace declares a same-named
 //!   type that does **not** hold the leaf. This is the tier interaction the
 //!   PawPrint sites hit: the decoy outranks the plant, so only a tail-sensitive
@@ -166,14 +171,20 @@ pub enum TypeShape {
     /// A nullary union case, compiled as a static property —
     /// `MethodBody.Abstract`'s shape.
     NullaryCase,
+    /// A class with a primary constructor, carrying nothing the probe asks for.
+    /// [`Position::Terminal`]'s shape and only its: a terminal head must name a
+    /// *value* for FCS to report anything there at all, and a record or union
+    /// written bare is `FS0800` with no symbol — measured, not assumed.
+    Ctor,
 }
 
 impl TypeShape {
-    pub const ALL: [TypeShape; 4] = [
+    pub const ALL: [TypeShape; 5] = [
         TypeShape::StaticMethod,
         TypeShape::StaticProp,
         TypeShape::FieldCase,
         TypeShape::NullaryCase,
+        TypeShape::Ctor,
     ];
 
     fn tag(self) -> &'static str {
@@ -182,6 +193,7 @@ impl TypeShape {
             TypeShape::StaticProp => "R",
             TypeShape::FieldCase => "F",
             TypeShape::NullaryCase => "U",
+            TypeShape::Ctor => "C",
         }
     }
 
@@ -199,15 +211,23 @@ pub enum Position {
     Expr,
     /// `match x with | <head>.Tail … -> 1 | _ -> 0`.
     Pattern,
+    /// `let probeResult = Companion.Enclosing.<head>` — the head **terminates**
+    /// the path, fully qualified so it is still the assembly walk and not a bare
+    /// name. No tail is walked, so every candidate at the name trivially
+    /// "supplies" it and the choice falls entirely to the candidate order: the
+    /// shape where preferring a module is wrong, since FCS's expression-position
+    /// lookup wants a value and a module is not one (codex review).
+    Terminal,
 }
 
 impl Position {
-    pub const ALL: [Position; 2] = [Position::Expr, Position::Pattern];
+    pub const ALL: [Position; 3] = [Position::Expr, Position::Pattern, Position::Terminal];
 
     fn tag(self) -> &'static str {
         match self {
             Position::Expr => "E",
             Position::Pattern => "P",
+            Position::Terminal => "T",
         }
     }
 }
@@ -249,10 +269,19 @@ impl Plant {
         if self.tail.on_module() && !self.holder.has_module() {
             return false;
         }
-        // With no type there is no generic arity to vary, and the type's shape
-        // is not observable; pin both so the cell is not generated twice.
+        // With no type there is no generic arity to vary; pin it so the cell is
+        // not generated twice. The shape is likewise unobservable, and is pinned
+        // per position below.
+        if !self.holder.has_type() && self.arity != Arity::Mono {
+            return false;
+        }
+        // The constructible class exists for the terminal position and only for
+        // it: it offers no leaf, and every other position asks for one.
+        if (self.shape == TypeShape::Ctor) != (self.position == Position::Terminal) {
+            return false;
+        }
         if !self.holder.has_type()
-            && (self.arity != Arity::Mono || self.shape != TypeShape::StaticMethod)
+            && !matches!(self.shape, TypeShape::StaticMethod | TypeShape::Ctor)
         {
             return false;
         }
@@ -261,6 +290,12 @@ impl Plant {
         // one. (A module value in pattern position is not a pattern at all —
         // that is an F# error, not a resolution question.)
         if self.position == Position::Pattern && !(self.shape.is_case() && self.tail.on_type()) {
+            return false;
+        }
+        // A terminal head asks for no leaf, so where the leaf lives cannot vary
+        // it; pin one value rather than generate the same cell four times. The
+        // decoy, the holder and the arity still vary, which is the question.
+        if self.position == Position::Terminal && self.tail != Tail::Neither {
             return false;
         }
         true
@@ -278,7 +313,15 @@ impl Plant {
     /// listing the cells, keeps the sweep from silencing a genuine
     /// "we commit where FCS binds nothing".
     pub fn path_type_checks(&self) -> bool {
-        self.tail != Tail::Neither
+        match self.position {
+            // A terminal head is a *value* only when a constructible type
+            // answers it: `Ns.C` on a class is its constructor, while a module
+            // is not a value and a record/union written bare is `FS0800`. FCS
+            // reports no symbol at all in those cases (measured with
+            // `fcs-dump uses`), so the cell can hold no expectation there.
+            Position::Terminal => self.holder.has_type(),
+            _ => self.tail != Tail::Neither,
+        }
     }
 
     /// The type declaration for this plant, empty when it has no type.
@@ -312,6 +355,7 @@ impl Plant {
                 let case = if self.tail.on_type() { TAIL } else { "Other" };
                 format!("type {name}{params} =\n    | {case}\n    | Carrier of {payload}\n")
             }
+            TypeShape::Ctor => format!("type {name}{params}() =\n    member _.Which = \"type\"\n"),
         }
     }
 
@@ -346,9 +390,15 @@ impl Plant {
         format!("type {}() =\n    member _.Decoy = 0\n", self.name)
     }
 
-    /// The path the probe writes.
+    /// The path the probe writes. A terminal cell writes the plant
+    /// **fully qualified** and stops there: it must stay a dotted path (the
+    /// assembly walk's subject) rather than become a bare name, which a
+    /// different resolver answers.
     pub fn probe_path(&self) -> String {
-        format!("{}.{TAIL}", self.name)
+        match self.position {
+            Position::Terminal => format!("{PLANT_NS}.{}", self.name),
+            _ => format!("{}.{TAIL}", self.name),
+        }
     }
 
     /// The probe source for this cell.
@@ -360,7 +410,9 @@ impl Plant {
         };
         let path = self.probe_path();
         let body = match self.position {
-            Position::Expr => format!("module Probe =\n    let probeResult = {path}\n"),
+            Position::Expr | Position::Terminal => {
+                format!("module Probe =\n    let probeResult = {path}\n")
+            }
             Position::Pattern => {
                 // The case's arity decides whether the pattern takes an
                 // argument; a mismatch is an F# error rather than a lookup.
@@ -383,7 +435,12 @@ impl Plant {
     pub fn head_span(&self, src: &str) -> (usize, usize) {
         let path = self.probe_path();
         let at = src.rfind(&path).expect("probe writes the path");
-        (at, at + self.name.len())
+        // The head is the plant's own segment, which a terminal path puts
+        // *last* rather than first.
+        match self.position {
+            Position::Terminal => (at + path.len() - self.name.len(), at + path.len()),
+            _ => (at, at + self.name.len()),
+        }
     }
 
     /// The byte range of the **whole path**, where a resolved leaf is recorded.

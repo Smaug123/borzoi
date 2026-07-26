@@ -13,14 +13,21 @@
 //!
 //! [`crate::common::companion_corpus`] plants one name per cell — holder shape ×
 //! type arity × where the tail lives × what the type contributes it as ×
-//! expression/pattern × with and without an outranking decoy — so a cell varies
-//! exactly one thing and the fixture cannot drift from the matrix.
+//! expression/pattern/**terminal** × with and without an outranking decoy — so a
+//! cell varies exactly one thing and the fixture cannot drift from the matrix.
+//! The terminal position (a head with no tail at all) is the shape where every
+//! candidate trivially "supplies" the path and the choice falls entirely to the
+//! candidate order.
 //!
 //! Two properties ride on the matrix, both **certain-implies-exact**:
 //!
 //! - the **head**: whenever we commit an entity for the head segment, FCS's
-//!   `(assembly, full name)` must agree exactly. This is where the candidate-set
-//!   choice is observable, and where the PawPrint divergences were reported.
+//!   `(assembly, full name)` must agree exactly — *and* so must which entity it
+//!   is. A type and its companion module render the same full name, so on the
+//!   name alone picking the wrong member of the candidate set reads as agreement
+//!   and the matrix cannot see its own subject (codex review); `fcs-dump` emits
+//!   `SymbolKind`/`GenericArity` per use so the comparison can carry it. This is
+//!   where the PawPrint divergences were reported.
 //! - the **leaf**: whenever we commit for the whole path, FCS must agree — with
 //!   generic-arity markers stripped from both sides, since FCS renders a member's
 //!   enclosing generic type as `Foo<_>.Tail` and our full names carry no marker
@@ -155,20 +162,53 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
 /// separate table: a wrong answer is a different kind of debt from a deferral,
 /// and it must be impossible to add one by relaxing a gap row.
 ///
-/// All four are the same cause — [`DROPPED_STATIC_PROPERTY`] — seen with a decoy
-/// present: the plant's own reading cannot see its static property, so the tail
-/// reads absent, the reading becomes partial, and the outranking decoy's equally
-/// partial reading wins on tier. The projection is where it must be fixed; no
-/// candidate ordering in the resolver can see a member that is not there.
+/// All six are the same cause — [`DROPPED_STATIC_PROPERTY`]. The property is
+/// invisible, so *nothing* at the name owns the path and the reading falls back
+/// to a partial; which entity that partial names is then decided by whatever
+/// stands first, and it is the wrong one. With a decoy in scope the wrong one is
+/// the decoy (`…D`); with the companion module present it is the module (`…X`).
+/// The projection is where this must be fixed; no candidate ordering in the
+/// resolver can see a member that is not there.
+///
+/// The two `…X` rows are the ones the *old* `(assembly, full name)` currency
+/// could not see at all: a type and its companion module render the same full
+/// name, so binding the module read as agreement (codex review). They are
+/// evidence for carrying the entity kind, not new breakage.
 const KNOWN_WRONG_TARGETS: &[(&str, &str)] = &[
     ("CB0TRED/head", DROPPED_STATIC_PROPERTY),
+    ("CB0TREX/head", DROPPED_STATIC_PROPERTY),
     ("CB1TRED/head", DROPPED_STATIC_PROPERTY),
+    ("CB1TREX/head", DROPPED_STATIC_PROPERTY),
     ("CT0TRED/head", DROPPED_STATIC_PROPERTY),
     ("CT1TRED/head", DROPPED_STATIC_PROPERTY),
 ];
 
-/// The `(assembly, full name)` currency both oracles report in.
-type Target = (String, String);
+/// The currency both oracles report in: the declaring assembly, the symbol's
+/// full name, and — at the **head** — *which* same-named entity it is.
+///
+/// The last field is what makes the matrix able to see its own subject. A type
+/// and its companion module share one `(namespace, name)` and render the *same*
+/// full name, so on `(assembly, full name)` alone picking the wrong member of
+/// the candidate set reads as agreement (codex review). `fcs-dump` therefore
+/// emits `SymbolKind`/`GenericArity` per use, and the head comparison carries
+/// them: `Some(("module", 0))` versus `Some(("type", 1))` is exactly the choice
+/// under test. The **leaf** is a member either way, so it stays `None` there.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Target {
+    assembly: String,
+    full_name: String,
+    entity: Option<(String, usize)>,
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.assembly, self.full_name)?;
+        if let Some((kind, arity)) = &self.entity {
+            write!(f, " [{kind}`{arity}]")?;
+        }
+        Ok(())
+    }
+}
 
 fn span(start: usize, end: usize) -> TextRange {
     TextRange::new(
@@ -218,17 +258,23 @@ fn our_targets(env: &AssemblyEnv, src: &str, plant: &Plant) -> BTreeMap<Site, Ou
     let file = ImplFile::cast(parsed.root).expect("probe is an impl file");
     let rf = resolve_file(&file, &ProjectItems::default(), env);
     let render = |res: Option<Resolution>| match res {
-        Some(Resolution::Entity(h)) => {
-            Ours::Committed((env.entity(h).assembly.name.clone(), env.entity_full_name(h)))
-        }
-        Some(Resolution::Member { parent, idx }) => Ours::Committed((
-            env.entity(parent).assembly.name.clone(),
-            format!(
+        Some(Resolution::Entity(h)) => Ours::Committed(Target {
+            assembly: env.entity(h).assembly.name.clone(),
+            full_name: env.entity_full_name(h),
+            entity: Some((
+                if env.is_module(h) { "module" } else { "type" }.to_string(),
+                env.entity(h).generic_parameters.len(),
+            )),
+        }),
+        Some(Resolution::Member { parent, idx }) => Ours::Committed(Target {
+            assembly: env.entity(parent).assembly.name.clone(),
+            full_name: format!(
                 "{}.{}",
                 env.entity_full_name(parent),
                 env.member_display_name(parent, idx)
             ),
-        )),
+            entity: None,
+        }),
         None | Some(Resolution::Deferred(_)) | Some(Resolution::Unresolved) => Ours::NoClaim,
         // The probe declares nothing of the plant's name, folds no preceding
         // file and binds no local, so an in-file verdict here means the walk
@@ -261,15 +307,30 @@ fn fcs_targets(
     let _ = std::fs::remove_file(&path);
     let uses = parse_fcs_uses(&json, src);
     let (hs, he) = plant.head_span(src);
-    let pick = |want: &str, start: usize, end: usize| -> Option<Target> {
+    let pick = |want: &str, start: usize, end: usize, site: Site| -> Option<Target> {
         uses.iter()
             .find(|u| !u.is_from_definition && u.name == want && u.start <= start && end <= u.end)
-            .and_then(|u| Some((u.assembly.clone()?, u.full_name.clone()?)))
+            .and_then(|u| {
+                Some(Target {
+                    assembly: u.assembly.clone()?,
+                    full_name: u.full_name.clone()?,
+                    // Only at the head, and only when FCS classified the symbol
+                    // — an unclassified use would otherwise read as a kind
+                    // mismatch against our always-known one.
+                    entity: match site {
+                        // A constructor use carries no generic arity of its own;
+                        // 0 stands in and [`entity_agrees`] never compares an
+                        // arity it did not get from an entity.
+                        Site::Head => Some((u.kind.clone()?, u.generic_arity.unwrap_or(0))),
+                        Site::Leaf => None,
+                    },
+                })
+            })
     };
     let (ps, pe) = plant.path_span(src);
     BTreeMap::from([
-        (Site::Head, pick(&plant.name, hs, he)),
-        (Site::Leaf, pick(companion_corpus::TAIL, ps, pe)),
+        (Site::Head, pick(&plant.name, hs, he, Site::Head)),
+        (Site::Leaf, pick(companion_corpus::TAIL, ps, pe, Site::Leaf)),
     ])
 }
 
@@ -313,11 +374,37 @@ fn observe() -> BTreeMap<String, Observation> {
     out
 }
 
+/// Whether the two sides picked the same **entity** at a head, given that they
+/// do not always name it the same way: a *terminal* head that binds a class is
+/// reported by FCS as that class's **constructor** (`member`), while we record
+/// the type entity. That correspondence is exact — a constructor names its type
+/// and nothing else — and it is precisely what must not be laundered into
+/// "module is fine too": the whole point of carrying the kind is that binding
+/// the companion module there is the wrong answer.
+fn entity_agrees(ours: &(String, usize), fcs: &(String, usize)) -> bool {
+    match (ours.0.as_str(), fcs.0.as_str()) {
+        // A constructor carries no arity of its own, so there is nothing to
+        // compare beyond "it is the type, not the module".
+        ("type", "member") => true,
+        (a, b) => a == b && ours.1 == fcs.1,
+    }
+}
+
 /// Whether the two sides name the same symbol at `site`.
 fn agrees(site: Site, ours: &Target, fcs: &Target) -> bool {
     match site {
-        Site::Head => ours == fcs,
-        Site::Leaf => ours.0 == fcs.0 && strip_arity(&ours.1) == strip_arity(&fcs.1),
+        Site::Head => {
+            ours.assembly == fcs.assembly
+                && ours.full_name == fcs.full_name
+                && match (&ours.entity, &fcs.entity) {
+                    (Some(o), Some(f)) => entity_agrees(o, f),
+                    (o, f) => o == f,
+                }
+        }
+        Site::Leaf => {
+            ours.assembly == fcs.assembly
+                && strip_arity(&ours.full_name) == strip_arity(&fcs.full_name)
+        }
     }
 }
 
@@ -339,10 +426,7 @@ fn companion_head_choice_is_sound_against_fcs() {
             }
             (Ours::Committed(o), Some(f)) if agrees(obs.site, o, f) => agreed += 1,
             (Ours::Committed(o), Some(f)) => {
-                diverged.insert(
-                    key.clone(),
-                    format!("we bound {}/{} but FCS binds {}/{}", o.0, o.1, f.0, f.1),
-                );
+                diverged.insert(key.clone(), format!("we bound {o} but FCS binds {f}"));
             }
             // FCS reports no symbol for a path that does not type-check, so a
             // commit there contradicts nothing.
@@ -350,10 +434,7 @@ fn companion_head_choice_is_sound_against_fcs() {
             (Ours::Committed(o), None) => {
                 diverged.insert(
                     key.clone(),
-                    format!(
-                        "we bound {}/{} but FCS resolves the span to nothing at all",
-                        o.0, o.1
-                    ),
+                    format!("we bound {o} but FCS resolves the span to nothing at all"),
                 );
             }
         }
@@ -435,13 +516,13 @@ fn companion_head_choice_is_sound_against_fcs() {
 fn report_companion_head_choice() {
     for (key, obs) in observe() {
         let show = |t: &Option<Target>| match t {
-            Some((asm, full)) => format!("{asm}/{full}"),
+            Some(target) => target.to_string(),
             None => "-".to_string(),
         };
         let show_ours = match &obs.ours {
-            Ours::Committed(t) => show(&Some(t.clone())),
+            Ours::Committed(t) => t.to_string(),
             Ours::NoClaim => "(no claim)".to_string(),
         };
-        println!("{key:<24} fcs={:<58} ours={show_ours}", show(&obs.fcs));
+        println!("{key:<24} fcs={:<70} ours={show_ours}", show(&obs.fcs));
     }
 }

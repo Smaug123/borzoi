@@ -1359,6 +1359,15 @@ pub struct NormalisedUse {
     /// The symbol's full name (`FSharpSymbol.FullName`, e.g. `Demo.Calc.Zero`),
     /// or `None` when FCS cannot produce it.
     pub full_name: Option<String>,
+    /// What kind of symbol FCS bound — `"module"` / `"type"` / `"namespace"` for
+    /// an entity, else `"member"`, `"unioncase"`, … . A type and its **companion
+    /// module** share one `(namespace, name)` and render the same
+    /// [`full_name`](Self::full_name), so this is the only field that witnesses
+    /// which of them a use bound.
+    pub kind: Option<String>,
+    /// The entity's declared generic arity — the second half of that witness,
+    /// since two types at one name differ only by it. `None` for a non-entity.
+    pub generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1383,6 +1392,10 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "SymbolKind", default)]
+    kind: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -1430,6 +1443,8 @@ pub fn parse_fcs_uses(json: &str, source: &str) -> Vec<NormalisedUse> {
                 decl,
                 assembly: u.assembly,
                 full_name: u.full_name,
+                kind: u.kind,
+                generic_arity: u.generic_arity,
             }
         })
         .collect()
