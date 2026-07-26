@@ -499,12 +499,14 @@ impl<'a> Resolver<'a> {
         let mut out: Vec<Vec<String>> = Vec::new();
         // Two assemblies may expose the same auto-open module FQN, and a
         // container can be both a namespace and a module path; one prefix is
-        // enough either way (the candidate it yields resolves against every
-        // assembly at that path).
+        // enough either way, since the candidate it yields resolves against
+        // every assembly at that path. The **last** occurrence keeps the rank:
+        // the list is position-ranked and later folds win, so collapsing
+        // `Auto, Other, Auto` onto the first `Auto` would rank `Other` above a
+        // later reference's `Auto`.
         fn push(out: &mut Vec<Vec<String>>, path: Vec<String>) {
-            if !out.contains(&path) {
-                out.push(path);
-            }
+            out.retain(|p| *p != path);
+            out.push(path);
         }
         // The **namespace** half — precomputed at index time, since a
         // namespace's auto-open closure does not depend on the open site. Gated
