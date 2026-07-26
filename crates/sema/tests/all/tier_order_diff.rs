@@ -336,47 +336,20 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     ),
 ];
 
-/// The shared reason for [`WRONG_ARITY_DENIALS`], stated once because every
-/// row is the same error at a different tier.
-const WRONG_ARITY_DENIAL: &str = "with the name's only occupants at another arity and no manifest surface among them, the \
-     arity-keyed walk reports a genuine no-match and we record nothing — but FCS's arity \
-     preference is a fallback, not a filter, so it binds the wrong-arity type (with an arity \
-     error) and our silence wrongly says no shadow is possible";
-
 /// Divergences of the **second** property: cases where we deny that anything
 /// could bind and FCS binds something.
 ///
-/// One error, enumerated per case rather than derived from a predicate — a
-/// generated table would quietly re-fit itself around a partial fix, and the
-/// ratchet's job is to make each case an individual commitment.
+/// Empty, and kept so that the property stays checked rather than becoming a
+/// branch nothing reaches. A denial is the resolver's *claim* that no shadow is
+/// possible, which a consumer reads as licence to act; the whole point of
+/// separating it from a deferral is that this table can be required to stay
+/// empty. Any row appearing here is a wrong claim, not a lost binding, and
+/// wants a fix rather than an entry.
 ///
-/// `decide_type_path` turns a no-match into a deferral when a *manifest
-/// surface* holds the written name at another arity; the `W` cases whose
-/// contenders include `ModAuto` or `Contested` are absent from this list for
-/// exactly that reason. The same fallback happens with no manifest surface in
-/// sight, and there the walk still denies.
-const WRONG_ARITY_DENIALS: &[(&str, &str)] = &[
-    ("WEn/contributor-first", "Enclosing"),
-    ("WEn/decoy-first", "Enclosing"),
-    ("WEnNs/contributor-first", "Enclosing"),
-    ("WEnNs/decoy-first", "Enclosing"),
-    ("WEnRo/contributor-first", "Enclosing"),
-    ("WEnRo/decoy-first", "Enclosing"),
-    ("WEx/contributor-first", "Explicit"),
-    ("WEx/decoy-first", "Explicit"),
-    ("WExEn/contributor-first", "Explicit"),
-    ("WExEn/decoy-first", "Explicit"),
-    ("WExNs/contributor-first", "Explicit"),
-    ("WExNs/decoy-first", "Explicit"),
-    ("WExRo/contributor-first", "Explicit"),
-    ("WExRo/decoy-first", "Explicit"),
-    ("WNs/contributor-first", "NsAuto"),
-    ("WNs/decoy-first", "NsAuto"),
-    ("WNsRo/contributor-first", "Root"),
-    ("WNsRo/decoy-first", "NsAuto"),
-    ("WRo/contributor-first", "Root"),
-    ("WRo/decoy-first", "Root"),
-];
+/// One error per row when there are any, enumerated rather than derived from a
+/// predicate — a generated table would quietly re-fit itself around a partial
+/// fix, and the ratchet's job is to make each case an individual commitment.
+const WRONG_ARITY_DENIALS: &[(&str, &str)] = &[];
 
 /// The shared reasons for [`KNOWN_DEFERRALS`], one per channel that produces
 /// them. Each is stated once because every row it labels is the same modelling
@@ -993,9 +966,59 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
         decline::HIDDEN_WINS,
     ),
     ("VRoMRo/decoy-first", "Hidden@Root", decline::HIDDEN_WINS),
-    // The dotted twin of WRONG_ARITY_DENIALS: same error, but a dotted
-    // path records nothing on a no-match and its silence makes no claim, so
-    // it lands here as a decline rather than there as a denial. 20 cases.
+    // The arity fallback, in both forms — the `W` (bare) and `J` (dotted)
+    // families. No tier holds the written arity, so the arity-keyed walk finds
+    // nothing, and FCS binds a wrong-arity occupant instead. Both decline, and
+    // for the same reason: FCS's arity preference is a fallback, not a filter.
+    // 40 cases.
+    //
+    // A decline and not a denial even in the bare form, where silence would be
+    // the resolver's "no shadow is possible" claim: FCS does bind here, so that
+    // claim would be false.
+    (
+        "WEn/contributor-first",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WEn/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "WEnNs/contributor-first",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WEnNs/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "WEnRo/contributor-first",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WEnRo/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    ("WEx/contributor-first", "Explicit", decline::ARITY_FALLBACK),
+    ("WEx/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WExEn/contributor-first",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WExEn/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WExNs/contributor-first",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WExNs/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WExRo/contributor-first",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    ("WExRo/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    ("WNs/contributor-first", "NsAuto", decline::ARITY_FALLBACK),
+    ("WNs/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
+    ("WNsRo/contributor-first", "Root", decline::ARITY_FALLBACK),
+    ("WNsRo/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
+    ("WRo/contributor-first", "Root", decline::ARITY_FALLBACK),
+    ("WRo/decoy-first", "Root", decline::ARITY_FALLBACK),
     (
         "JEn/contributor-first",
         "Enclosing",
@@ -1771,11 +1794,12 @@ fn known_records() -> BTreeMap<(String, String, String), &'static str> {
     KNOWN_DIVERGENCES
         .iter()
         .map(|&(case, ours, fcs, why)| ((case.into(), ours.into(), fcs.into()), why))
-        .chain(
-            WRONG_ARITY_DENIALS
-                .iter()
-                .map(|&(case, fcs)| ((case.into(), DENIED.into(), fcs.into()), WRONG_ARITY_DENIAL)),
-        )
+        .chain(WRONG_ARITY_DENIALS.iter().map(|&(case, fcs)| {
+            (
+                (case.into(), DENIED.into(), fcs.into()),
+                "a recorded wrong denial",
+            )
+        }))
         .chain(
             KNOWN_DEFERRALS
                 .iter()

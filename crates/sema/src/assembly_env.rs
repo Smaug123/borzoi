@@ -1986,6 +1986,32 @@ impl AssemblyEnv {
             .copied()
     }
 
+    /// Whether some referenced assembly declares a **public** top-level type
+    /// named `name` in `namespace` at *any* generic arity.
+    ///
+    /// [`Self::lookup_type`]'s arity-blind counterpart, for the one question
+    /// FCS answers by arity *preference* rather than by filtering: with no
+    /// exact-arity occupant anywhere, it binds a wrong-arity one and reports
+    /// the use (with an arity error). So a walk that found no exact-arity match
+    /// cannot conclude the name resolves to nothing until this also says no.
+    /// Reads the **collision-preserving** population (`Self::types_named`)
+    /// rather than the first-wins per-arity slots: a
+    /// non-public type interned before a public same-`(namespace, name, arity)`
+    /// one from another DLL owns the slot, and answering from it would deny a
+    /// fallback FCS does make.
+    ///
+    /// An **authoritative** F# module is excluded. A module cannot occupy
+    /// terminal type position, so its arity-0 slot is not an occupant a written
+    /// `Ops<int>` could fall back to — FCS reports no type-symbol use there at
+    /// all. A *non*-authoritative `Module` kind stays in: that classification is
+    /// an IL heuristic FCS does not share, so excluding on it would be a guess
+    /// in the direction that manufactures denials.
+    pub fn declares_type_at_any_arity(&self, namespace: &[String], name: &str) -> bool {
+        self.types_named(namespace, name).iter().any(|&handle| {
+            self.is_public(handle) && self.entity_class(handle) != Some(SemanticClass::Module)
+        })
+    }
+
     /// Whether `namespace` is a namespace any referenced assembly declares with a
     /// **cross-assembly-accessible** (public) type — a public top-level type lives
     /// in it (`["Demo", "Sub"]`) **or** in a nested namespace below it (`["Demo"]`,
