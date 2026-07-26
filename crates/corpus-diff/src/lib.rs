@@ -2408,6 +2408,11 @@ pub struct AssemblyDecl {
     pub declaring_entity_full_name: Option<String>,
     /// See [`ProjectUse::declaring_entity_is_nested`].
     pub declaring_entity_is_nested: Option<bool>,
+    /// The symbol's own display name as FCS reports it (`Empty`). Taken
+    /// whole, because a member name may itself contain a dot when quoted —
+    /// splitting it back out of `full_name` would reduce `` G.``A.B`` `` to
+    /// `B` and confuse it with a sibling `B`.
+    pub symbol_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2621,6 +2626,7 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
             declaring_entity_arity: use_.declaring_entity_arity,
             declaring_entity_full_name: use_.declaring_entity_full_name.clone(),
             declaring_entity_is_nested: use_.declaring_entity_is_nested,
+            symbol_name: use_.name.clone(),
             assembly: assembly.clone(),
             full_name: full_name.clone(),
         }),
@@ -2639,6 +2645,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
                 declaring_entity_arity: None,
                 declaring_entity_full_name: None,
                 declaring_entity_is_nested: None,
+                symbol_name: String::new(),
             }
         }
         Resolution::Member { parent, idx } => {
@@ -2653,6 +2660,7 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
                 declaring_entity_arity: None,
                 declaring_entity_full_name: None,
                 declaring_entity_is_nested: None,
+                symbol_name: String::new(),
             }
         }
         Resolution::Local(_)
@@ -2895,13 +2903,13 @@ fn generic_instantiation_agrees(
     if unquote(fcs_declaring) != unquote(&format!("{top_level}`{arity}")) {
         return false;
     }
-    // A member use must also agree on the member; an entity use has none.
+    // A member use must also agree on the member; an entity use has none. The
+    // oracle's own `SymbolName`, never a tail split off `full_name`: a quoted
+    // member name may contain a dot, and splitting would reduce
+    // `` G.``A.B`` `` to `B` and accept a sibling `B` for it.
     match member {
         None => true,
-        Some(name) => expected
-            .full_name
-            .rsplit_once('.')
-            .is_some_and(|(_, tail)| unquote(tail) == unquote(&name)),
+        Some(name) => unquote(&expected.symbol_name) == unquote(&name),
     }
 }
 
@@ -4376,6 +4384,7 @@ mod tests {
                     declaring_entity_arity: None,
                     declaring_entity_full_name: None,
                     declaring_entity_is_nested: None,
+                    symbol_name: String::new(),
                 },
                 actual: "assembly Synthetic.Assembly full_name Demo.Widget.Other".to_string(),
             }],
@@ -4572,6 +4581,7 @@ mod tests {
                         declaring_entity_arity: None,
                         declaring_entity_full_name: None,
                         declaring_entity_is_nested: None,
+                        symbol_name: String::new(),
                     },
                     actual: "Other.T".to_string(),
                 })

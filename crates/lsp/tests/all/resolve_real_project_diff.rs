@@ -204,7 +204,7 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
 fn generic_instantiation_matches(
     env: &AssemblyEnv,
     res: Resolution,
-    fcs_full: &str,
+    fcs_symbol_name: &str,
     oracle_arity: Option<usize>,
     oracle_declaring: Option<&str>,
     oracle_is_nested: Option<bool>,
@@ -242,11 +242,11 @@ fn generic_instantiation_matches(
     if unquote(fcs_declaring) != unquote(&format!("{top_level}`{arity}")) {
         return false;
     }
+    // The oracle's own symbol name, never a tail split off the rendering: a
+    // quoted member name may contain a dot.
     match member {
         None => true,
-        Some(name) => fcs_full
-            .rsplit_once('.')
-            .is_some_and(|(_, tail)| unquote(tail) == unquote(&name)),
+        Some(name) => unquote(fcs_symbol_name) == unquote(&name),
     }
 }
 
@@ -519,7 +519,7 @@ fn project_resolution_matches_fcs() {
                                 || generic_instantiation_matches(
                                     &env,
                                     r,
-                                    full,
+                                    &u.name,
                                     u.declaring_entity_arity,
                                     u.declaring_entity_full_name.as_deref(),
                                     u.declaring_entity_is_nested,
