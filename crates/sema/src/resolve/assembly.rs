@@ -612,9 +612,7 @@ impl<'a> Resolver<'a> {
     /// same-tier real match — FCS-probed: `namespace Ns; type Foo = …;
     /// [<AutoOpen>] module Auto = type Foo = …` then `open Ns; (x : Foo)`
     /// binds `Ns.Auto.Foo`, not the direct `Ns.Foo` (found by review, round
-    /// 6, on `docs/completed/r2-annotation-typing-plan.md`). A
-    /// [`ShadowVeto::OnNoMatch`] verdict (coarse, name-blind) applies only
-    /// once the tier's own lookup comes up empty. The value path passes
+    /// 6, on `docs/completed/r2-annotation-typing-plan.md`). The value path passes
     /// `|_| ShadowVeto::None`: sema already enumerates an auto-open module's
     /// *values* (only its nested *types* are unmodelled), and it has no
     /// coarse unmodelled-shadow source once past the
@@ -713,11 +711,7 @@ impl<'a> Resolver<'a> {
                 | AssemblyPath::ContestedRooting => {
                     return TieredResolution::ShadowDeferred;
                 }
-                AssemblyPath::NoMatch => {
-                    if veto == ShadowVeto::OnNoMatch {
-                        return TieredResolution::ShadowDeferred;
-                    }
-                }
+                AssemblyPath::NoMatch => {}
             }
         }
         match fallback {
