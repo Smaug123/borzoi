@@ -1851,16 +1851,25 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether a **project** `[<AutoOpen>]` module sits directly in `namespace`
-    /// — checked per-namespace at each type-position lookup
-    /// ([`Self::unmodelled_type_shadow_at`]), not pre-aggregated: sema does not
-    /// model such a module's nested types, so it may provide a type name not
-    /// in the normal project type index.
+    /// Whether a **project** `[<AutoOpen>]` module that is *visible from the
+    /// current site* sits directly in `namespace` — checked per-namespace at each
+    /// type-position lookup ([`Self::unmodelled_type_shadow_at`]), not
+    /// pre-aggregated: sema does not model such a module's nested types, so it may
+    /// provide a type name not in the normal project type index.
+    ///
+    /// A same-file `module private` is filtered against the site exactly as
+    /// [`Self::project_auto_open_submodules_in`] filters it — visible only from
+    /// within its own container. Skipping that filter would veto readings FCS
+    /// resolves: fsc-verified that `namespace N` + `[<AutoOpen>] module private
+    /// Auto` leaves a later `namespace Other` + `open N` binding the *referenced
+    /// assembly*'s `N.Foo`, while the same use inside `namespace N` binds
+    /// `N.Auto.Foo`. The earlier-file half arrives already privacy-filtered by
+    /// `finish()`.
     fn project_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
-        self.auto_open_module_paths
-            .iter()
-            .any(|(p, _)| model::is_directly_in(p, namespace))
-            || self.preceding.has_auto_open_module_in_namespace(namespace)
+        self.auto_open_module_paths.iter().any(|(p, private)| {
+            model::is_directly_in(p, namespace)
+                && (!private || self.container_path.starts_with(namespace))
+        }) || self.preceding.has_auto_open_module_in_namespace(namespace)
     }
 
     /// Record one `[<AutoOpen>]` module declaration — the single writer for

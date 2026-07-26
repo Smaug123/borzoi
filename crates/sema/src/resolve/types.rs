@@ -1738,9 +1738,9 @@ impl<'a> Resolver<'a> {
     /// prefix, over the full path `prefix ++ names`:
     ///
     /// - an **unknowable-abbreviation namespace at any split** could alias
-    ///   the segment looked up there (the walk's `OnNoMatch` veto covers
-    ///   exactly the single-segment shape; a qualified candidate's splits are
-    ///   not consulted there);
+    ///   the segment looked up there (the walk's own veto covers exactly the
+    ///   single-segment shape; a qualified candidate's splits are not
+    ///   consulted there);
     /// - an **assembly `[<AutoOpen>]` module at a split** could shadow the
     ///   segment supplied *at that split* into its namespace — the leaf, or a
     ///   head that re-roots the whole path (again, the walk's `Preemptive`
@@ -1902,11 +1902,18 @@ impl<'a> Resolver<'a> {
     ///    exact metadata, so [`ShadowVeto::Preemptive`] — it outranks even a
     ///    same-tier real match (FCS-probe-confirmed, review round 6 on
     ///    `docs/completed/r2-annotation-typing-plan.md`).
-    /// 2. The coarse, name-blind risks — a project `[<AutoOpen>]` module, an
-    ///    unknowable-abbreviation namespace ([`Self::unmodelled_type_shadow_at`])
-    ///    — at [`ShadowVeto::OnNoMatch`] only: checking them pre-emptively would
-    ///    defer every other real type under the same reading (rounds 2/3 of the
-    ///    same review).
+    /// 2. The coarse, **name-blind** risks ([`Self::unmodelled_type_shadow_at`]):
+    ///    a project `[<AutoOpen>]` module in the reading, or a namespace an
+    ///    assembly with unknowable abbreviations declares into. Also
+    ///    [`ShadowVeto::Preemptive`], for the same reason as (1) even though the
+    ///    evidence is weaker: what these hide is a type of *unknown name* at
+    ///    this reading, and a tier that binds `Foo` visibly is no evidence that
+    ///    an invisible `Foo` is not also there — the project module's own type
+    ///    out-ranks the namespace's direct members (fsc-verified, see
+    ///    `a_project_auto_open_module_defers_a_same_namespace_assembly_type`),
+    ///    and an invisible abbreviation merges with the visible entity across
+    ///    references. Asking only on a no-match answers a question whose answer
+    ///    does not bear on the risk.
     pub(super) fn type_position_shadow_at(
         &self,
         prefix: &[String],
@@ -1920,7 +1927,7 @@ impl<'a> Resolver<'a> {
             {
                 ShadowVeto::Preemptive
             }
-            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::OnNoMatch,
+            Some(_) if self.unmodelled_type_shadow_at(prefix) => ShadowVeto::Preemptive,
             _ => ShadowVeto::None,
         }
     }
