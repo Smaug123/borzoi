@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the companion-head sweep
+       (tests/all/companion_head_diff.rs). One assembly whose
+       `Companion.Enclosing` namespace holds, under one simple name at a time,
+       every shape a dotted path's *head* can name: a type alone, a companion
+       module alone, and the pair together — at both generic arities, with the
+       probed leaf on the type, on the module, on both, or on neither. Its
+       `Companion.Decoy` namespace re-declares the same names without the leaf,
+       so a cell can put an explicitly `open`ed decoy above the plant's own
+       namespace.
+
+       `Generated.fs` is NOT checked in: it is emitted from the dimension enums
+       by crates/sema/tests/all/common/companion_corpus.rs before this project
+       is built, so the F# universe and the Rust side's matrix cannot drift
+       apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaCompanionFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>

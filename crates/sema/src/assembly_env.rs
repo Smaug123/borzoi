@@ -2922,6 +2922,72 @@ impl AssemblyEnv {
         self.entity(handle).kind == EntityKind::Module
     }
 
+    /// Whether an **expression-position path ending at `handle`** binds
+    /// anything — i.e. whether the entity has a value surface of its own.
+    ///
+    /// Measured per kind with `fcs-dump uses` on `Ns.<X>` (a probe library
+    /// declaring one of each), because the answer is not the one reasoning
+    /// suggests:
+    ///
+    /// | kind | `Ns.X` in expression position |
+    /// |---|---|
+    /// | class with a public instance ctor | binds — the constructor |
+    /// | exception | binds |
+    /// | enum | binds |
+    /// | delegate | binds |
+    /// | **struct** with a public ctor | **no symbol** |
+    /// | record, union | no symbol (`FS0800`) |
+    /// | interface, module, abbreviation | no symbol |
+    ///
+    /// So "has a constructor" is *not* the rule — a struct has one and binds
+    /// nothing — and neither is "is a class". Where FCS reports no symbol its
+    /// lookup goes on elsewhere, so a reading that ends on such an entity has
+    /// not captured the path.
+    ///
+    /// Distinct from [`Self::bare_expr_constructible`], which answers for an
+    /// *unqualified* name and is restricted to non-generic types because its
+    /// caller's fallback does an arity-0 lookup. A qualified path has no such
+    /// restriction: FCS infers a generic class's type arguments at `Ns.C`
+    /// exactly as it does its constructor's.
+    pub fn terminal_expression_value(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        match e.kind {
+            // A static class (only a `.cctor`) resolves to nothing, so the
+            // constructor is what makes a class a value here.
+            EntityKind::Class => e.members.iter().any(|m| {
+                matches!(
+                    m,
+                    Member::Method(mm)
+                        if mm.is_constructor && !mm.is_static && mm.access == Access::Public
+                )
+            }),
+            EntityKind::Exception | EntityKind::Enum | EntityKind::Delegate => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `handle` is a union we may rely on declaring a case named `name`.
+    ///
+    /// The same authority rule as [`Self::is_authoritative_module`], for the same
+    /// reason: on a **non-authoritative** assembly both the `Union` kind and the
+    /// case list are IL heuristics FCS does not share — it imports the type
+    /// through IL, where a union is a plain class with no cases — so a walk that
+    /// *acts* on a case (owning a path FCS would re-root elsewhere, say) must ask
+    /// this rather than read [`Entity::union_case_names`] directly. A case list of
+    /// `None` is likewise no evidence: it means no pickle described the union, so
+    /// it proves neither presence nor absence.
+    ///
+    /// [`Entity::union_case_names`]: borzoi_assembly::Entity::union_case_names
+    pub fn authoritative_union_case(&self, handle: EntityHandle, name: &str) -> bool {
+        let entity = self.entity(handle);
+        entity.kind == EntityKind::Union
+            && !self.fsharp_signature_unreliable(handle)
+            && entity
+                .union_case_names
+                .as_ref()
+                .is_some_and(|cases| cases.iter().any(|c| c == name))
+    }
+
     /// Whether the entity is `[<RequireQualifiedAccess>]`. Opening such a module is
     /// an **error** in FCS (FS0892 — "This declaration opens the module …, which is
     /// marked as 'RequireQualifiedAccess'") and imports nothing, so an `open` of it

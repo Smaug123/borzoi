@@ -501,3 +501,22 @@ namespace Demo.TwoAsm
 module AsmAutoB =
     module AsmPick =
         let asmPickValue () = 31
+
+namespace Demo.RootShorten
+
+// The NAMESPACE half of the rooting-position contest: a *generic* `Inner`
+// declared directly in `Demo.RootShorten`, holding nothing the probe asks for.
+// It occupies the longer rooting position for `Demo.RootShorten.Inner.Tail`
+// while the autoopen fixture's `module Demo.RootShorten` supplies the tail one
+// position shorter.
+type Inner<'T> =
+    { Payload : 'T }
+
+namespace Demo.RootShortenValue
+
+// A *generic record* occupying the longer rooting position for
+// `Demo.RootShortenValue.Leaf`, with no value surface of its own: written in
+// expression position it is FS0800 and FCS reports no symbol, so the walk must
+// keep looking and find the autoopen fixture's `let Leaf` one position shorter.
+type Leaf<'T> =
+    { Payload : 'T }
