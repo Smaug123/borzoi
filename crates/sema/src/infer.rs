@@ -3179,6 +3179,10 @@ impl<'a> Gen<'a> {
     /// solved) variable, emitting only fully-[`ground`](Ty::is_ground) types — an
     /// unsolved variable becomes silence (D5), never a wrong or meaningless
     /// answer.
+    ///
+    /// Under an **incomplete projection** the member resolutions are sealed
+    /// ([`Resolution::sealed_under_incomplete_projection`]); the *types* are not
+    /// — see the seal's comment below for the line between them.
     fn finish(mut self) -> InferredFile {
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
@@ -3214,7 +3218,37 @@ impl<'a> Gen<'a> {
                 def_types.insert(def, ty);
             }
         }
-        let member_resolutions = std::mem::take(&mut self.member_resolutions);
+        let mut member_resolutions = std::mem::take(&mut self.member_resolutions);
+        // Inference's half of the incomplete-projection seal (the resolver seals
+        // its own two maps): a member identified on a referenced-assembly type is
+        // an assembly reading like any other, and a DLL the env could not read
+        // could declare a type that shadows the receiver's. Swept once over the
+        // finished map for the same reason the resolver sweeps — see
+        // `Resolver::seal_assembly_readings`.
+        //
+        // The **types** are not sealed, and that is a stated limit rather than a
+        // claim of safety. A type read *through* a sealed resolution goes with
+        // it (`annotation_ty` finds no entity to read); one unified in during
+        // the walk survives, so `let n = "hi".Length` still publishes `int`
+        // while declining to say which `Length` that was. If the unread DLL
+        // supplies a colliding `String` whose `Length` returns something else,
+        // that `int` is wrong.
+        //
+        // Closing it needs two things this phase does not have: taint through
+        // the unification table (a member's return type is unified into its
+        // variable during the walk, so by here it is indistinguishable from a
+        // type owing an assembly nothing), and a decision about the LSP's
+        // single-file hover fallback, which re-infers against an empty env and
+        // would republish what this dropped. Both are tracked; sealing the
+        // resolutions is what this change delivers, and the resolutions are what
+        // go-to-definition navigates by. Both directions of the current
+        // behaviour are pinned in `resolve_incomplete_projection` so the gap is
+        // visible rather than folklore.
+        if self.env.identities_incomplete() {
+            for res in member_resolutions.values_mut() {
+                *res = res.sealed_under_incomplete_projection();
+            }
+        }
         InferredFile {
             types,
             def_types,

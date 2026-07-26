@@ -29,8 +29,8 @@ use borzoi_assembly::{
 };
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
-    AssemblyEnv, DefKind, EntityHandle, MemberIndex, ProjectItems, Resolution, ResolvedFile,
-    ResolvedProject, Ty, infer_file, resolve_file,
+    AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
+    ResolvedFile, ResolvedProject, Ty, infer_file, resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use rowan::TextRange;
@@ -136,8 +136,12 @@ fn project_unavailable(
         return ProjectClassify::NotInProject;
     };
     // Only this file's own resolution is inspected (`resolved.file(idx)`), so fold
-    // just the prefix up to it — the same slice as `project_hover`.
-    let Some(resolved) = semantic.resolved_prefix_for(&project, idx, workspace, docs) else {
+    // just the prefix up to it — the same slice as `project_hover`. The env comes
+    // from the same paired call for the same reason it does there: inference must
+    // run against the exact env the fold resolved against.
+    let Some((resolved, env)) =
+        semantic.resolved_prefix_and_env_for(&project, idx, workspace, docs)
+    else {
         return ProjectClassify::NotInProject;
     };
     let file = resolved.file(idx);
@@ -147,8 +151,27 @@ fn project_unavailable(
     let Some(impl_file) = parses.files[idx].file.as_impl() else {
         return ProjectClassify::NotInProject;
     };
+    // The explanation must be about the verdict the LSP would *act* on, and
+    // go-to-definition acts on inference's member resolution where the resolver
+    // deferred. This runs only for a cursor both `project_hover` and
+    // `single_file_hover` already declined, so it is the cold path — but those
+    // two inferred as well, and nothing carries a solved file between them.
+    // Threading one `InferredFile` through the three would need `project_hover`
+    // to classify from its own pass, which changes when `single_file_hover` gets
+    // a look at a project cursor; tracked rather than done here.
+    let inferred = {
+        let _span = tracing::info_span!("infer_file").entered();
+        infer_file(impl_file, file, &env)
+    };
     let root = impl_file.syntax();
-    ProjectClassify::InProject(unavailable_hover(file, root, text, byte, false))
+    ProjectClassify::InProject(unavailable_hover(
+        file,
+        Some(&inferred),
+        root,
+        text,
+        byte,
+        false,
+    ))
 }
 
 /// Single-file fallback classification for an orphan / unevaluated-project
@@ -165,20 +188,23 @@ fn single_file_unavailable(
     let parse = parse_with_symbols(text, &symbols, lang)?;
     let file = ImplFile::cast(parse.root)?;
     let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
-    unavailable_hover(&resolved, file.syntax(), text, byte, true)
+    // No project, so no assembly env worth inferring against: the member
+    // side-table would be empty anyway.
+    unavailable_hover(&resolved, None, file.syntax(), text, byte, true)
 }
 
 /// Turn a [`classify`] verdict into an explanatory hover, anchored to the
 /// symbol / identifier it concerns. `None` when there's nothing to explain.
 fn unavailable_hover(
     file: &ResolvedFile,
+    inferred: Option<&InferredFile>,
     root: &SyntaxNode,
     text: &str,
     byte: usize,
     degraded_single_file: bool,
 ) -> Option<Hover> {
-    let explanation = classify(file, root, byte, degraded_single_file)?;
-    let range = explanation_range(file, root, byte)?;
+    let explanation = classify(file, inferred, root, byte, degraded_single_file)?;
+    let range = explanation_range(file, inferred, root, byte)?;
     Some(make_hover(explanation.explain(), text, range))
 }
 

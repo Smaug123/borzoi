@@ -1942,7 +1942,31 @@ impl<'a> Resolver<'a> {
         self.auto_open_module_paths.push((path, is_private));
     }
 
-    fn finish(self) -> ResolvedFile {
+    /// Demote every **assembly-rooted** resolution this file recorded to
+    /// [`DeferredReason::IncompleteAssemblies`] when the env's projection is
+    /// incomplete — see that variant for why the uncertainty is wholesale.
+    ///
+    /// Applied once over the *finished* maps rather than at each recording site.
+    /// The maps are write-only during the walk (nothing reads back what it
+    /// recorded), so sweeping at the end is equivalent to demoting at every
+    /// insert — and it is equivalent by construction, which the per-site version
+    /// is not: that one holds only while somebody keeps finding all the sites,
+    /// and `Resolution` is recorded into two maps here and a third in inference.
+    fn seal_assembly_readings(&mut self) {
+        if !self.assemblies.identities_incomplete() {
+            return;
+        }
+        for res in self
+            .resolutions
+            .values_mut()
+            .chain(self.attribute_resolutions.values_mut())
+        {
+            *res = res.sealed_under_incomplete_projection();
+        }
+    }
+
+    fn finish(mut self) -> ResolvedFile {
+        self.seal_assembly_readings();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,

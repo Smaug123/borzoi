@@ -73,8 +73,16 @@ This is a Cargo workspace with nine members:
   cause is not on the sweep's short `EXEMPT` list fails the gate. Filtering to
   "what NuGet could select as a compile asset" instead would mean rebuilding
   `borzoi_nuget::assets` here, and an approximation that wrongly *excludes* a
-  file hides exactly the regression the gate exists to catch. Run it before
-  widening any parse-time refusal:
+  file hides exactly the regression the gate exists to catch.
+  **net4x is an unsupported target**, so the two targeting-pack shapes the
+  reader refuses whole (a netmodule, and an `mscorlib` whose manifest resource
+  is linked rather than embedded) are exempt rather than tracked work.
+  Unsupported means "will not be invested in", not "refused" — nothing declines
+  a `net472` project today, so a user who opens one gets less of it. Nothing
+  follows for the TFM vocabulary: parsing `net472` and modelling NuGet's
+  acceptance of `.NETFramework` are requirements of the MSBuild/NuGet
+  differentials, which reproduce those tools regardless of what borzoi serves
+  well. Run the sweep before widening any parse-time refusal:
 
   ```sh
   BORZOI_DLL_SWEEP_ROOT=~/.nuget/packages \
