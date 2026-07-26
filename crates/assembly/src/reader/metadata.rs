@@ -152,14 +152,20 @@ impl<'a> MetadataFile<'a> {
         // own headers promise says nothing about whether it is managed, and its
         // consumers (the projection-skip gate's native-PE exemption above all)
         // read `NoCliHeader` as proof that it is not.
-        let num_rva_and_sizes = Cursor::at(image, optional_start + data_dirs_at - 4)
-            .read_u32()
-            .ok_or(pe)? as usize;
+        let optional_end = optional_start.checked_add(size_optional).ok_or(pe)?;
+        let count_at = optional_start + data_dirs_at - 4;
+        // The count itself must lie inside the declared header. Reading it from
+        // beyond `SizeOfOptionalHeader` would take whatever follows — section
+        // headers, padding — as a directory count, and a zero there reads as a
+        // declaration this image never made.
+        if count_at.checked_add(4).ok_or(pe)? > optional_end {
+            return Err(pe);
+        }
+        let num_rva_and_sizes = Cursor::at(image, count_at).read_u32().ok_or(pe)? as usize;
         if num_rva_and_sizes <= CLI_HEADER_DIRECTORY {
             return Err(Error::NoCliHeader);
         }
         let cli_dir = optional_start + data_dirs_at + CLI_HEADER_DIRECTORY * 8;
-        let optional_end = optional_start.checked_add(size_optional).ok_or(pe)?;
         // The count claims the slot exists but `SizeOfOptionalHeader` cannot
         // hold it: the two declarations contradict each other.
         if cli_dir.checked_add(8).ok_or(pe)? > optional_end {

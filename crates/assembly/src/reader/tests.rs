@@ -538,36 +538,75 @@ fn rejects_extra_data_table_stream() {
     }
 }
 
+/// Independently decide, from `bytes` alone, whether the image **declares** no
+/// CLI data directory — the fact [`Error::NoCliHeader`] is supposed to report.
+///
+/// A second, deliberately naive walk of the PE headers, sharing no code with
+/// [`MetadataFile::read`]. That is the point: the claim under test is that one
+/// error means one specific thing about the input, and an oracle that reuses
+/// the implementation cannot test it.
+///
+/// `None` when the headers cannot be walked far enough to tell — which is not
+/// a declaration of absence, and is the interesting case.
+fn declares_no_cli_directory(bytes: &[u8]) -> Option<bool> {
+    fn u16_at(b: &[u8], at: usize) -> Option<usize> {
+        Some(u16::from_le_bytes(b.get(at..at + 2)?.try_into().ok()?) as usize)
+    }
+    fn u32_at(b: &[u8], at: usize) -> Option<usize> {
+        Some(u32::from_le_bytes(b.get(at..at + 4)?.try_into().ok()?) as usize)
+    }
+
+    if bytes.get(0..2)? != b"MZ" {
+        return None;
+    }
+    let e_lfanew = u32_at(bytes, 0x3C)?;
+    if bytes.get(e_lfanew..e_lfanew + 4)? != b"PE\0\0" {
+        return None;
+    }
+    let size_optional = u16_at(bytes, e_lfanew + 4 + 16)?;
+    let optional_start = e_lfanew + 4 + 20;
+    let optional_end = optional_start.checked_add(size_optional)?;
+    let data_dirs_at = match u16_at(bytes, optional_start)? {
+        0x10B => 96,
+        0x20B => 112,
+        _ => return None,
+    };
+
+    // The count must sit inside the header the image declares, and inside the
+    // file. Otherwise nothing was declared either way.
+    let count_at = optional_start + data_dirs_at - 4;
+    if count_at + 4 > optional_end || count_at + 4 > bytes.len() {
+        return None;
+    }
+    if u32_at(bytes, count_at)? <= 14 {
+        return Some(true);
+    }
+    // Likewise the slot itself.
+    let cli_dir = optional_start + data_dirs_at + 14 * 8;
+    if cli_dir + 8 > optional_end || cli_dir + 8 > bytes.len() {
+        return None;
+    }
+    Some(u32_at(bytes, cli_dir)? == 0)
+}
+
 /// `NoCliHeader` must mean the image *declares* no CLI data directory, and
 /// nothing else.
 ///
 /// The projection-skip gate exempts that error unscoped, on the grounds that a
 /// file declaring no CLI directory is not a managed assembly and every
 /// ECMA-335 reader refuses it. That reasoning is only sound while the error has
-/// no other producer: a truncated or self-inconsistent *managed* image
-/// reported as `NoCliHeader` would be waved through as native, hiding exactly
-/// the whole-assembly loss the gate exists to catch.
+/// no other producer: a truncated or self-inconsistent *managed* image reported
+/// as `NoCliHeader` would be waved through as native, hiding exactly the
+/// whole-assembly loss the gate exists to catch.
 ///
-/// So the two positive determinations must produce it, and the corruptions
-/// around them must not.
+/// Four separate reviews found holes here, each a read running past a bound the
+/// image declared, and each time the repair was checked against the cases
+/// somebody had thought of — so the next unthought-of case landed. This asserts
+/// the implication itself against an independent oracle
+/// ([`declares_no_cli_directory`]) over a generated corpus, so the property no
+/// longer depends on anyone enumerating the ways to break it.
 #[test]
 fn no_cli_header_means_the_image_declares_none() {
-    /// Offsets within the optional header, which begins right after the COFF
-    /// header's 20 bytes. `NumberOfRvaAndSizes` is its last field before the
-    /// data-directory array (96 for PE32, 112 for PE32+).
-    fn optional_start(bytes: &[u8]) -> usize {
-        let e_lfanew = u32::from_le_bytes(bytes[0x3C..0x40].try_into().expect("4 bytes")) as usize;
-        e_lfanew + 4 + 20
-    }
-    fn data_dirs_at(bytes: &[u8]) -> usize {
-        let start = optional_start(bytes);
-        match u16::from_le_bytes(bytes[start..start + 2].try_into().expect("2 bytes")) {
-            0x10B => 96,
-            0x20B => 112,
-            magic => panic!("unexpected optional-header magic {magic:#x}"),
-        }
-    }
-
     for p in fixtures() {
         let good = std::fs::read(&p).expect("fixture");
         assert!(
@@ -575,51 +614,68 @@ fn no_cli_header_means_the_image_declares_none() {
             "the unmodified fixture parses: {}",
             p.display()
         );
-        let dirs = optional_start(&good) + data_dirs_at(&good);
-
-        // (1) A directory count that does not reach index 14: the image says it
-        // has no CLI directory.
-        let mut short_count = good.clone();
-        short_count[dirs - 4..dirs].copy_from_slice(&5u32.to_le_bytes());
         assert_eq!(
-            MetadataFile::read(&short_count).err(),
-            Some(Error::NoCliHeader),
-            "a count below the CLI index declares no CLI directory: {}",
+            declares_no_cli_directory(&good),
+            Some(false),
+            "the oracle agrees the fixture declares a CLI directory: {}",
             p.display()
         );
 
-        // (2) A CLI directory whose RVA reads zero: the slot exists and is empty.
-        let cli_dir = dirs + 14 * 8;
-        let mut zero_rva = good.clone();
-        zero_rva[cli_dir..cli_dir + 4].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(
-            MetadataFile::read(&zero_rva).err(),
-            Some(Error::NoCliHeader),
-            "a zero CLI RVA declares no CLI header: {}",
-            p.display()
-        );
+        // Three generators, because the holes have come from three places: the
+        // file being shorter than the headers promise, a single field being
+        // wrong, and — the case a byte-at-a-time sweep cannot reach — two
+        // *bounds* fields disagreeing at once.
+        let header_region = good.len().min(512);
+        let mut inputs: Vec<Vec<u8>> = (0..header_region).map(|n| good[..n].to_vec()).collect();
+        for at in 0..header_region {
+            for byte in [0x00, 0xFF] {
+                let mut m = good.clone();
+                m[at] = byte;
+                inputs.push(m);
+            }
+        }
 
-        // …and the corruptions that must NOT read as absence. Truncating inside
-        // the optional header leaves a managed image whose bytes are missing —
-        // a fact about its length, not about whether it is managed.
-        for cut in [dirs - 2, cli_dir + 2] {
-            assert_ne!(
-                MetadataFile::read(&good[..cut]).err(),
-                Some(Error::NoCliHeader),
-                "a truncation at {cut} is not a declaration of absence: {}",
-                p.display()
+        // The cross-product over the three fields the invariant is *about*:
+        // how long the header claims to be, how many directories it claims,
+        // and what the CLI slot holds. A short header with a zeroed count is
+        // reachable only here, and it is precisely the shape where an unbounded
+        // count read invents a declaration the image never made.
+        let e_lfanew = u32::from_le_bytes(good[0x3C..0x40].try_into().expect("4 bytes")) as usize;
+        let size_optional_at = e_lfanew + 4 + 16;
+        let opt_start = e_lfanew + 4 + 20;
+        let dirs_at =
+            match u16::from_le_bytes(good[opt_start..opt_start + 2].try_into().expect("2 bytes")) {
+                0x10B => 96,
+                0x20B => 112,
+                magic => panic!("unexpected optional-header magic {magic:#x}"),
+            };
+        let count_at = opt_start + dirs_at - 4;
+        let cli_at = opt_start + dirs_at + 14 * 8;
+        for size_optional in [0u16, 16, 92, 96, 112, 224, 240, u16::MAX] {
+            for count in [0u32, 1, 14, 15, 16, u32::MAX] {
+                for rva in [0u32, 1, 0x2050, u32::MAX] {
+                    let mut m = good.clone();
+                    m[size_optional_at..size_optional_at + 2]
+                        .copy_from_slice(&size_optional.to_le_bytes());
+                    m[count_at..count_at + 4].copy_from_slice(&count.to_le_bytes());
+                    m[cli_at..cli_at + 4].copy_from_slice(&rva.to_le_bytes());
+                    inputs.push(m);
+                }
+            }
+        }
+
+        for input in inputs {
+            if MetadataFile::read(&input).err() != Some(Error::NoCliHeader) {
+                continue;
+            }
+            assert_eq!(
+                declares_no_cli_directory(&input),
+                Some(true),
+                "NoCliHeader was returned for bytes that declare no such thing \
+                 (len {}): {}",
+                input.len(),
+                p.display(),
             );
         }
-        // A count claiming the slot exists while `SizeOfOptionalHeader` cannot
-        // hold it: two declarations contradicting each other.
-        let mut inconsistent = good.clone();
-        let size_optional_at = optional_start(&good) - 4;
-        inconsistent[size_optional_at..size_optional_at + 2].copy_from_slice(&16u16.to_le_bytes());
-        assert_ne!(
-            MetadataFile::read(&inconsistent).err(),
-            Some(Error::NoCliHeader),
-            "contradictory header declarations are not a declaration of absence: {}",
-            p.display()
-        );
     }
 }
