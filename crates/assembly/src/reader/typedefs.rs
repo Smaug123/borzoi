@@ -187,36 +187,35 @@ fn read_type_refs(md: &MetadataFile, tables: &Tables) -> Result<Vec<TypeRef>, Er
 /// [`UnsupportedScope`] is well-formed metadata this reader declines to model,
 /// and rides along on the row so only the types that walk out through it are
 /// lost.
-fn resolve_ref_scope(
+pub(super) fn resolve_ref_scope(
     tables: &Tables,
     coded: u32,
 ) -> Result<Result<RefScope, UnsupportedScope>, Error> {
-    match tables.decode_coded(Coded::ResolutionScope, coded)? {
-        Some(tok) if tok.table == table::ASSEMBLY_REF => {
-            let id = checked_index(tok.rid, tables.row_count(table::ASSEMBLY_REF))?;
-            Ok(Ok(RefScope::AssemblyRef(AssemblyRefId(id))))
-        }
-        Some(tok) if tok.table == table::TYPE_REF => {
-            let id = checked_index(tok.rid, tables.row_count(table::TYPE_REF))?;
-            Ok(Ok(RefScope::Nested(TypeRefId(id))))
-        }
+    let Some(tok) = tables.decode_coded(Coded::ResolutionScope, coded)? else {
+        return Ok(Err(UnsupportedScope::Nil));
+    };
+    // One bounds check, before the tag is looked at, so no arm can record a
+    // structurally corrupt row as merely unmodelled — including an arm added
+    // later for a scope this reader still does not represent. `decode_coded`
+    // rejects only RID 0; the row-count bound is the caller's, and which tag a
+    // row carries has no bearing on whether its RID names a row.
+    let idx = checked_index(tok.rid, tables.row_count(tok.table))?;
+    Ok(match tok.table {
+        table::ASSEMBLY_REF => Ok(RefScope::AssemblyRef(AssemblyRefId(idx))),
+        table::TYPE_REF => Ok(RefScope::Nested(TypeRefId(idx))),
         // A module-self scope aliases a type defined in this image; F# emits
         // these for a record/union's own `IComparable<T>`/`IEquatable<T>` args.
-        // The RID must still name a real `Module` row (the table holds exactly
-        // one), validated like the sibling arms rather than silently discarded.
-        Some(tok) if tok.table == table::MODULE => {
-            checked_index(tok.rid, tables.row_count(table::MODULE))?;
-            Ok(Ok(RefScope::Module))
-        }
-        Some(tok) => {
+        // It carries no handle — the table holds exactly one row — but its RID
+        // is validated above all the same.
+        table::MODULE => Ok(RefScope::Module),
+        _ => {
             // `Coded::ResolutionScope`'s tag list is exactly the four tables —
             // `Module`, `ModuleRef`, `AssemblyRef`, `TypeRef` — and the three
             // above are handled, so this row is a `ModuleRef`.
             debug_assert_eq!(tok.table, table::MODULE_REF, "ResolutionScope tag list");
-            Ok(Err(UnsupportedScope::ModuleRef))
+            Err(UnsupportedScope::ModuleRef)
         }
-        None => Ok(Err(UnsupportedScope::Nil)),
-    }
+    })
 }
 
 /// The `MethodList` RID (1-based) starting each `TypeDef`'s run of methods, in
