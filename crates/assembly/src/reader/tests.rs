@@ -537,3 +537,89 @@ fn rejects_extra_data_table_stream() {
         );
     }
 }
+
+/// `NoCliHeader` must mean the image *declares* no CLI data directory, and
+/// nothing else.
+///
+/// The projection-skip gate exempts that error unscoped, on the grounds that a
+/// file declaring no CLI directory is not a managed assembly and every
+/// ECMA-335 reader refuses it. That reasoning is only sound while the error has
+/// no other producer: a truncated or self-inconsistent *managed* image
+/// reported as `NoCliHeader` would be waved through as native, hiding exactly
+/// the whole-assembly loss the gate exists to catch.
+///
+/// So the two positive determinations must produce it, and the corruptions
+/// around them must not.
+#[test]
+fn no_cli_header_means_the_image_declares_none() {
+    /// Offsets within the optional header, which begins right after the COFF
+    /// header's 20 bytes. `NumberOfRvaAndSizes` is its last field before the
+    /// data-directory array (96 for PE32, 112 for PE32+).
+    fn optional_start(bytes: &[u8]) -> usize {
+        let e_lfanew = u32::from_le_bytes(bytes[0x3C..0x40].try_into().expect("4 bytes")) as usize;
+        e_lfanew + 4 + 20
+    }
+    fn data_dirs_at(bytes: &[u8]) -> usize {
+        let start = optional_start(bytes);
+        match u16::from_le_bytes(bytes[start..start + 2].try_into().expect("2 bytes")) {
+            0x10B => 96,
+            0x20B => 112,
+            magic => panic!("unexpected optional-header magic {magic:#x}"),
+        }
+    }
+
+    for p in fixtures() {
+        let good = std::fs::read(&p).expect("fixture");
+        assert!(
+            MetadataFile::read(&good).is_ok(),
+            "the unmodified fixture parses: {}",
+            p.display()
+        );
+        let dirs = optional_start(&good) + data_dirs_at(&good);
+
+        // (1) A directory count that does not reach index 14: the image says it
+        // has no CLI directory.
+        let mut short_count = good.clone();
+        short_count[dirs - 4..dirs].copy_from_slice(&5u32.to_le_bytes());
+        assert_eq!(
+            MetadataFile::read(&short_count).err(),
+            Some(Error::NoCliHeader),
+            "a count below the CLI index declares no CLI directory: {}",
+            p.display()
+        );
+
+        // (2) A CLI directory whose RVA reads zero: the slot exists and is empty.
+        let cli_dir = dirs + 14 * 8;
+        let mut zero_rva = good.clone();
+        zero_rva[cli_dir..cli_dir + 4].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            MetadataFile::read(&zero_rva).err(),
+            Some(Error::NoCliHeader),
+            "a zero CLI RVA declares no CLI header: {}",
+            p.display()
+        );
+
+        // …and the corruptions that must NOT read as absence. Truncating inside
+        // the optional header leaves a managed image whose bytes are missing —
+        // a fact about its length, not about whether it is managed.
+        for cut in [dirs - 2, cli_dir + 2] {
+            assert_ne!(
+                MetadataFile::read(&good[..cut]).err(),
+                Some(Error::NoCliHeader),
+                "a truncation at {cut} is not a declaration of absence: {}",
+                p.display()
+            );
+        }
+        // A count claiming the slot exists while `SizeOfOptionalHeader` cannot
+        // hold it: two declarations contradicting each other.
+        let mut inconsistent = good.clone();
+        let size_optional_at = optional_start(&good) - 4;
+        inconsistent[size_optional_at..size_optional_at + 2].copy_from_slice(&16u16.to_le_bytes());
+        assert_ne!(
+            MetadataFile::read(&inconsistent).err(),
+            Some(Error::NoCliHeader),
+            "contradictory header declarations are not a declaration of absence: {}",
+            p.display()
+        );
+    }
+}

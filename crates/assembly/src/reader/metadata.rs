@@ -142,28 +142,31 @@ impl<'a> MetadataFile<'a> {
         //
         // Whether the slot *exists* is declared, not inferred from the file
         // length: `NumberOfRvaAndSizes` is the last optional-header field
-        // before the array, and `SizeOfOptionalHeader` bounds the header. An
-        // image declaring fewer directories than the CLI index simply has no
-        // CLI directory — reading the bytes at the nominal offset anyway would
-        // interpret the *section table* as a data directory, inventing an RVA
-        // or a zero at random. Both are checked before the read so that
-        // `NoCliHeader` means "the image declares none", which is what its
-        // consumers take it to mean.
+        // before the array, and `SizeOfOptionalHeader` bounds the header.
+        //
+        // [`Error::NoCliHeader`] is returned from exactly the two places below
+        // that establish absence *positively* — a directory count that does not
+        // reach the CLI index, and an RVA read as zero. Everything else here is
+        // a truncated or self-inconsistent image, which is
+        // [`Error::NotPortableExecutable`]: a file too short to hold what its
+        // own headers promise says nothing about whether it is managed, and its
+        // consumers (the projection-skip gate's native-PE exemption above all)
+        // read `NoCliHeader` as proof that it is not.
         let num_rva_and_sizes = Cursor::at(image, optional_start + data_dirs_at - 4)
             .read_u32()
-            .ok_or(Error::NoCliHeader)? as usize;
+            .ok_or(pe)? as usize;
         if num_rva_and_sizes <= CLI_HEADER_DIRECTORY {
             return Err(Error::NoCliHeader);
         }
         let cli_dir = optional_start + data_dirs_at + CLI_HEADER_DIRECTORY * 8;
-        let optional_end = optional_start
-            .checked_add(size_optional)
-            .ok_or(Error::NoCliHeader)?;
-        if cli_dir.checked_add(8).ok_or(Error::NoCliHeader)? > optional_end {
-            return Err(Error::NoCliHeader);
+        let optional_end = optional_start.checked_add(size_optional).ok_or(pe)?;
+        // The count claims the slot exists but `SizeOfOptionalHeader` cannot
+        // hold it: the two declarations contradict each other.
+        if cli_dir.checked_add(8).ok_or(pe)? > optional_end {
+            return Err(pe);
         }
         let mut dc = Cursor::at(image, cli_dir);
-        let cli_rva = dc.read_u32().ok_or(Error::NoCliHeader)?;
+        let cli_rva = dc.read_u32().ok_or(pe)?;
         if cli_rva == 0 {
             return Err(Error::NoCliHeader);
         }
