@@ -190,6 +190,54 @@ fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
     unquote(&ours.qualified) == f || unquote(&ours.unqualified) == f
 }
 
+/// Whether our resolution names the same symbol as FCS and differs only because
+/// FCS renders a **generic instantiation**, which our entity model cannot: it
+/// carries generic *parameters*, not the arguments a use instantiated them
+/// with, so `entity_full_name` has nothing to print where FCS writes
+/// `ImmutableArray<byte>.Empty`.
+///
+/// The **arity equality** is the adjudication, not the string match: the shape
+/// this must not admit is our binding a same-named companion *module*, which
+/// has no generic parameters where FCS's rendering has at least one argument.
+/// Mirrors `borzoi_corpus_diff`'s allowance, which is what CI gates on — see
+/// there for the measurement that motivated it.
+fn generic_instantiation_matches(env: &AssemblyEnv, res: Resolution, fcs: &str) -> bool {
+    let (stripped, args) = {
+        let f = fcs.replace("``", "");
+        let mut out = String::with_capacity(f.len());
+        let (mut depth, mut args) = (0usize, 0usize);
+        for ch in f.chars() {
+            match ch {
+                '<' => {
+                    depth += 1;
+                    if depth == 1 {
+                        args += 1;
+                    }
+                }
+                '>' => depth = depth.saturating_sub(1),
+                ',' if depth == 1 => args += 1,
+                _ if depth == 0 => out.push(ch),
+                _ => {}
+            }
+        }
+        (out, args)
+    };
+    if args == 0 {
+        return false;
+    }
+    let entity = match res {
+        Resolution::Entity(h) => h,
+        Resolution::Member { parent, .. } => parent,
+        _ => return false,
+    };
+    if env.entity(entity).generic_parameters.len() != args {
+        return false;
+    }
+    let ours = our_assembly_full(env, res);
+    let unquote = |s: &str| s.replace("``", "");
+    unquote(&ours.qualified) == stripped || unquote(&ours.unqualified) == stripped
+}
+
 /// Our resolution's full name with a **nested** entity's enclosing chain
 /// restored: `Entity::namespace` is empty for one, so [`our_assembly_full`]'s
 /// cheap rendering drops everything above the leaf
@@ -454,7 +502,10 @@ fn project_resolution_matches_fcs() {
                     None | Some(Resolution::Deferred(_)) => tally.gaps += 1,
                     Some(r @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                         let ours = our_assembly_full(&env, r);
-                        if &ours.assembly == asm && full_matches(&ours, full) {
+                        if &ours.assembly == asm
+                            && (full_matches(&ours, full)
+                                || generic_instantiation_matches(&env, r, full))
+                        {
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm
                             && our_assembly_full_nested(&env, r)

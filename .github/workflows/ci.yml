@@ -836,9 +836,19 @@ jobs:
       # that earns it. Raising it means this corpus now resolves something to
       # the wrong declaration and wants a reason in the commit message.
       #
-      # `assembly=16,reverse=16` arrived together in #204 and are the same
-      # 16 sites seen from both directions; `project=1` predates the series.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=16,project=1,reverse=16"
+      # The `assembly=16,reverse=16` this started at were **15 sites plus one**,
+      # not sixteen of a kind. The 15 (PawPrint.Domain) were never wrong
+      # resolutions: #204 made generic types reachable from a value-path head,
+      # and the comparator rendered our correct answers without the type
+      # arguments FCS prints. They are adjudicated as matches once the arity can
+      # be checked.
+      #
+      # The remaining one is real and **predates #204** — measured at `a249a15`:
+      # `WoofWare.Incremental`'s `System.IO.File` attributes to the facade
+      # `System.IO.FileSystem` rather than the `System.Runtime` it forwards to,
+      # which is the same site seen from both directions. `project=1` predates
+      # the series too.
+      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=1,project=1,reverse=1"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

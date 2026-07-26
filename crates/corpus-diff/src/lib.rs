@@ -2474,10 +2474,15 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
                                 if canonical_assembly(&actual.assembly)
                                     == canonical_assembly(&expected.assembly)
-                                    && assembly_full_name_agrees(
+                                    && (assembly_full_name_agrees(
                                         &actual.full_name,
                                         &expected.full_name,
-                                    )
+                                    ) || generic_instantiation_agrees(
+                                        &loaded.assembly_env,
+                                        res,
+                                        &actual.full_name,
+                                        &expected.full_name,
+                                    ))
                                 {
                                     comparison.assembly_matches += 1;
                                 } else {
@@ -2778,6 +2783,76 @@ fn assembly_full_name_agrees(actual: &str, expected: &str) -> bool {
     unquote(actual) == unquote(expected)
 }
 
+/// `expected` with its type-argument lists removed, and how many arguments that
+/// removed — `ImmutableArray<byte>.Empty` → `("…ImmutableArray.Empty", 1)`.
+///
+/// Arguments are counted at the *top level of each group*, summed over groups,
+/// so a nested generic type agrees with the arity ECMA-335 gives it:
+/// `Outer<int>.Inner<string>.M` counts 2, and `Inner`'s `GenericParam` list
+/// includes its enclosing type's parameter, so it has 2 as well. A nested
+/// argument (`Foo<Bar<int>>`) is part of one argument, not another.
+fn strip_type_arguments(expected: &str) -> (String, usize) {
+    let mut out = String::with_capacity(expected.len());
+    let mut depth = 0usize;
+    let mut args = 0usize;
+    for ch in expected.chars() {
+        match ch {
+            '<' => {
+                depth += 1;
+                if depth == 1 {
+                    args += 1;
+                }
+            }
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 1 => args += 1,
+            _ if depth == 0 => out.push(ch),
+            _ => {}
+        }
+    }
+    (out, args)
+}
+
+/// Whether our resolution names the same symbol as FCS, differing only because
+/// FCS renders a **generic instantiation** and we cannot.
+///
+/// [`AssemblyEnv::entity_full_name`] reconstructs an entity's path from the
+/// entity model, which carries generic *parameters*, not the arguments a use
+/// instantiated them with — there is nothing for it to print. FCS writes
+/// `ImmutableArray<byte>.Empty` where we can only write
+/// `ImmutableArray.Empty`, so a string comparison scores a correct resolution
+/// as a wrong one.
+///
+/// That is not hypothetical: #204 made generic types reachable from a value-path
+/// head for the first time (a head writes no arity, and FCS infers the
+/// arguments), and every one of the correct new commits it produced was counted
+/// as a divergence. On `WoofWare.PawPrint` that was 126 of 137 — measured by
+/// printing our entity at each one: all were a `Struct` or `Class` of arity 1
+/// or 2, never a module, and in every case the arity equalled FCS's argument
+/// count.
+///
+/// The **arity equality** is what makes this an adjudicated match rather than a
+/// loosening. The shape it must not admit is our binding a same-named companion
+/// *module* whose members happen to line up; a module has no generic parameters
+/// while FCS's rendering here has at least one argument, so it still diverges.
+fn generic_instantiation_agrees(
+    env: &AssemblyEnv,
+    res: Resolution,
+    actual: &str,
+    expected: &str,
+) -> bool {
+    let unquote = |s: &str| s.replace("``", "");
+    let (stripped, args) = strip_type_arguments(&unquote(expected));
+    if args == 0 || stripped != unquote(actual) {
+        return false;
+    }
+    let entity = match res {
+        Resolution::Entity(h) => h,
+        Resolution::Member { parent, .. } => parent,
+        _ => return false,
+    };
+    env.entity(entity).generic_parameters.len() == args
+}
+
 fn assembly_resolution_confirms_decl(
     env: &AssemblyEnv,
     res: Resolution,
@@ -2790,6 +2865,7 @@ fn assembly_resolution_confirms_decl(
     match res {
         Resolution::Entity(_) => {
             assembly_full_name_agrees(&actual.full_name, &expected.full_name)
+                || generic_instantiation_agrees(env, res, &actual.full_name, &expected.full_name)
                 || expected
                     .full_name
                     .strip_prefix(&actual.full_name)
@@ -2797,6 +2873,7 @@ fn assembly_resolution_confirms_decl(
         }
         Resolution::Member { .. } => {
             assembly_full_name_agrees(&actual.full_name, &expected.full_name)
+                || generic_instantiation_agrees(env, res, &actual.full_name, &expected.full_name)
         }
         Resolution::Local(_)
         | Resolution::Item(_)
@@ -4388,6 +4465,37 @@ mod tests {
 
         assert!(!summary.passes_soundness_gate(0));
         assert!(summary.passes_soundness_gate(1));
+    }
+
+    /// The stripping and counting the generic-instantiation allowance rests on.
+    /// Its arity count is the guard against a companion module matching by
+    /// accident, so an off-by-one here would quietly widen the allowance into
+    /// the one shape it exists to exclude.
+    #[test]
+    fn type_arguments_are_stripped_and_counted() {
+        let cases = [
+            ("System.String", ("System.String".to_string(), 0)),
+            (
+                "System.Collections.Immutable.ImmutableArray<Microsoft.FSharp.Core.byte>.Empty",
+                (
+                    "System.Collections.Immutable.ImmutableArray.Empty".to_string(),
+                    1,
+                ),
+            ),
+            // Two parameters in one group.
+            ("A.Map<K,V>.Item", ("A.Map.Item".to_string(), 2)),
+            // A nested *argument* is part of one argument, not another.
+            ("A.Holder<A.Box<int>>.M", ("A.Holder.M".to_string(), 1)),
+            // Groups at two levels sum, matching the arity ECMA-335 gives the
+            // nested type (whose parameter list includes its enclosing type's).
+            (
+                "A.Outer<int>.Inner<string>.M",
+                ("A.Outer.Inner.M".to_string(), 2),
+            ),
+        ];
+        for (input, want) in cases {
+            assert_eq!(strip_type_arguments(input), want, "for {input}");
+        }
     }
 
     /// A summary carrying `project`/`assembly`/`reverse` divergences, for the
