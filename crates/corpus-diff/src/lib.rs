@@ -1878,6 +1878,12 @@ struct GeneratorStatistics {
     coverage: CorpusCoverageBasisPoints,
     skipped_uses: CorpusSkippedUsesCounts,
     unoracled_definitions: usize,
+    /// The sibling of [`unoracled_definitions`](Self::unoracled_definitions),
+    /// plotted beside it for the same reason: both count checks the oracle
+    /// declined to grade, so a change that silently moves occurrences from
+    /// *graded* to *ungraded* would otherwise show up as an improvement in
+    /// coverage rather than as the loss of signal it is.
+    unoracled_or_pattern_aliases: usize,
     project_assets_by_status: BTreeMap<&'static str, usize>,
 }
 
@@ -1994,6 +2000,7 @@ pub fn render_generator_summary(
                 total: summary.skipped_uses.total(),
             },
             unoracled_definitions: summary.unoracled_definitions,
+            unoracled_or_pattern_aliases: summary.unoracled_or_pattern_aliases,
             // Every variant, including the ones that did not occur. A metric
             // that vanishes when its count reaches zero is worse than useless
             // here: the dashboard skips observations whose value is absent, so
@@ -4346,6 +4353,27 @@ mod tests {
         let report: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
         assert_eq!(report["unoracled_definitions"], 7);
         assert_eq!(report["unoracled_or_pattern_aliases"], 3);
+    }
+
+    /// The generator summary is what `borzoi-stats record` publishes, so a
+    /// counter that reaches the JSONL but not `statistics` is invisible in the
+    /// continuous measurements — the series simply never exists, which reads as
+    /// "this never happens" rather than "nobody plotted it" (codex review).
+    #[test]
+    fn the_generator_statistics_carry_the_unoracled_occurrence_counts() {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison {
+            unoracled_definitions: 7,
+            unoracled_or_pattern_aliases: 3,
+            ..Comparison::default()
+        });
+
+        let rendered = render_generator_summary(&summary, &generator_settings()).expect("render");
+        let json: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+
+        assert_eq!(json["statistics"]["unoracled_definitions"], 7);
+        assert_eq!(json["statistics"]["unoracled_or_pattern_aliases"], 3);
     }
 
     fn generator_settings() -> ProjectCandidateSettings {

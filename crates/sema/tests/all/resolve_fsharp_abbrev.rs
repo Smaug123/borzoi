@@ -1935,3 +1935,32 @@ fn a_project_auto_open_module_vetoes_its_own_body_too() {
         resolve(src, &env).resolution_at(at(src, "Shape"))
     );
 }
+
+/// The cost side of keeping the name-blind shadow arm single-segment.
+///
+/// A [`ShadowVeto::Preemptive`] verdict ends the whole walk, root tier and all.
+/// So if the coarse `unmodelled_type_shadow_at` risks were keyed on a dotted
+/// path's head, a *fully-qualified* annotation would stop resolving in every
+/// file whose namespace holds a project `[<AutoOpen>]` module — the walk would
+/// abort at the enclosing-namespace tier before ever reaching the root reading
+/// that matches. That is the commonest shape in F# (`System.Text.Json.X`), so
+/// the arm stays single-segment and this pins it: the exact, metadata-keyed arm
+/// still covers every collision the assembly actually records.
+#[test]
+fn a_fully_qualified_path_still_commits_beside_a_project_auto_open_module() {
+    let env = fixture_env();
+    let src = "namespace Demo.CasePat\n\
+               [<AutoOpen>]\n\
+               module Auto =\n\
+               \x20   let v = 1\n\
+               module M =\n\
+               \x20   let f (y: Demo.CasePat.Shape) = y\n";
+    let shape = env
+        .lookup_type(&["Demo".into(), "CasePat".into()], "Shape", 0)
+        .expect("Demo.CasePat.Shape in env");
+    assert_eq!(
+        resolve(src, &env).resolution_at(at(src, "Shape")),
+        Some(Resolution::Entity(shape)),
+        "the fully-qualified reading must survive the project auto-open module"
+    );
+}
