@@ -42,10 +42,12 @@
 //! [`WRONG_ARITY_DENIALS`], one per property): a case in the table must still
 //! diverge, and a case outside it must not. So fixing one of the modelling
 //! errors it records fails this test until the entry is removed, and a
-//! regression that reintroduces one fails it too. The ratchet keys on
-//! `(case, `[`Category`]`)` rather than the case alone, so the two tables
-//! cannot satisfy each other: a recorded denial that decays into a wrong-target
-//! commit keeps its case key, and only the category tells them apart.
+//! regression that reintroduces one fails it too. Every row states the
+//! **verdict** it expects — which tier we said against which tier FCS said —
+//! and that triple, not the case key, is the ratchet's identity: a recorded
+//! denial that decays into a wrong-target commit keeps its case key, as does a
+//! wrong target that starts naming a different tier, so a key-only ratchet
+//! would let the two tables satisfy each other.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -85,7 +87,7 @@ impl Order {
 /// Every row is independently FCS-verified with hand-built DLLs before being
 /// recorded, so it states something about the compiler rather than rubber-stamps
 /// whatever the suite happened to print.
-const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
+const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // `assembly_prefixes_by_priority` ranks ALL opens — the implicit ones
     // (FSharp.Core's, and namespace-shaped `[<assembly: AutoOpen>]`s) included —
     // above the enclosing namespace. FCS enters the enclosing namespace *after*
@@ -132,18 +134,26 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // addressing (1)–(4) trades a rare wrong target for hundreds of lost ones.
     (
         "TEnNs/contributor-first",
+        "NsAuto",
+        "Enclosing",
         "implicit opens outrank the enclosing namespace in our ladder; FCS puts them below it",
     ),
     (
         "TEnNs/decoy-first",
+        "NsAuto",
+        "Enclosing",
         "implicit opens outrank the enclosing namespace in our ladder; FCS puts them below it",
     ),
     (
         "DEnNs/contributor-first",
+        "NsAuto",
+        "Enclosing",
         "as TEnNs, reached as a dotted head: the tier error is not form-specific",
     ),
     (
         "DEnNs/decoy-first",
+        "NsAuto",
+        "Enclosing",
         "as TEnNs, reached as a dotted head: the tier error is not form-specific",
     ),
     // We rank the implicit-open tier above root unconditionally. FCS has no
@@ -153,10 +163,14 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // fixed answer happens to be FCS's in that order.
     (
         "TNsRo/contributor-first",
+        "NsAuto",
+        "Root",
         "implicit-open vs root is decided by reference order in FCS; our ladder fixes it",
     ),
     (
         "DNsRo/contributor-first",
+        "NsAuto",
+        "Root",
         "as TNsRo, reached as a dotted head: the tier error is not form-specific",
     ),
     // The arity-1 twins of the two errors above. Both reproduce unchanged one
@@ -164,15 +178,45 @@ const KNOWN_DIVERGENCES: &[(&str, &str)] = &[
     // anything the arity-keyed lookup introduces.
     (
         "GEnNs/contributor-first",
+        "NsAuto",
+        "Enclosing",
         "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
     ),
     (
         "GEnNs/decoy-first",
+        "NsAuto",
+        "Enclosing",
         "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
+    ),
+    // The dotted-head twins of the same two errors at arity 1. With `D` (dotted
+    // at arity 0) and `G` (bare at arity 1) already recorded, these complete the
+    // form × arity square: both errors reproduce on all four combinations, so
+    // neither is an artefact of the form the name is reached through nor of the
+    // arity-keyed leaf lookup, and the final-segment arity keying does not
+    // interact with head-tier precedence at all.
+    (
+        "HEnNs/contributor-first",
+        "NsAuto",
+        "Enclosing",
+        "as TEnNs, dotted head at arity 1: the error is neither form- nor arity-specific",
+    ),
+    (
+        "HEnNs/decoy-first",
+        "NsAuto",
+        "Enclosing",
+        "as TEnNs, dotted head at arity 1: the error is neither form- nor arity-specific",
     ),
     (
         "GNsRo/contributor-first",
+        "NsAuto",
+        "Root",
         "as TNsRo at arity 1: the reference-order error is not arity-specific",
+    ),
+    (
+        "HNsRo/contributor-first",
+        "NsAuto",
+        "Root",
+        "as TNsRo, dotted head at arity 1: the error is neither form- nor arity-specific",
     ),
 ];
 
@@ -195,60 +239,55 @@ const WRONG_ARITY_DENIAL: &str = "with the name's only occupants at another arit
 /// contenders include `ModAuto` or `Contested` are absent from this list for
 /// exactly that reason. The same fallback happens with no manifest surface in
 /// sight, and there the walk still denies.
-const WRONG_ARITY_DENIALS: &[&str] = &[
-    "WEn/contributor-first",
-    "WEn/decoy-first",
-    "WEnNs/contributor-first",
-    "WEnNs/decoy-first",
-    "WEnRo/contributor-first",
-    "WEnRo/decoy-first",
-    "WEx/contributor-first",
-    "WEx/decoy-first",
-    "WExEn/contributor-first",
-    "WExEn/decoy-first",
-    "WExNs/contributor-first",
-    "WExNs/decoy-first",
-    "WExRo/contributor-first",
-    "WExRo/decoy-first",
-    "WNs/contributor-first",
-    "WNs/decoy-first",
-    "WNsRo/contributor-first",
-    "WNsRo/decoy-first",
-    "WRo/contributor-first",
-    "WRo/decoy-first",
+const WRONG_ARITY_DENIALS: &[(&str, &str)] = &[
+    ("WEn/contributor-first", "Enclosing"),
+    ("WEn/decoy-first", "Enclosing"),
+    ("WEnNs/contributor-first", "Enclosing"),
+    ("WEnNs/decoy-first", "Enclosing"),
+    ("WEnRo/contributor-first", "Enclosing"),
+    ("WEnRo/decoy-first", "Enclosing"),
+    ("WEx/contributor-first", "Explicit"),
+    ("WEx/decoy-first", "Explicit"),
+    ("WExEn/contributor-first", "Explicit"),
+    ("WExEn/decoy-first", "Explicit"),
+    ("WExNs/contributor-first", "Explicit"),
+    ("WExNs/decoy-first", "Explicit"),
+    ("WExRo/contributor-first", "Explicit"),
+    ("WExRo/decoy-first", "Explicit"),
+    ("WNs/contributor-first", "NsAuto"),
+    ("WNs/decoy-first", "NsAuto"),
+    ("WNsRo/contributor-first", "Root"),
+    ("WNsRo/decoy-first", "NsAuto"),
+    ("WRo/contributor-first", "Root"),
+    ("WRo/decoy-first", "Root"),
 ];
 
-/// Which of the two properties a divergence belongs to. Carried alongside the
-/// case key because the key alone cannot tell them apart: a `W` row that stops
-/// denying and starts committing the *wrong tier* keeps its key, so a
-/// key-only ratchet would let a recorded no-claim decay into a wrong target
-/// (and the converse) without failing (codex review).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-enum Category {
-    /// Property 1: we committed an entity, and FCS says otherwise.
-    WrongTarget,
-    /// Property 2: we denied that anything can bind, and FCS bound something.
-    Denial,
-}
+/// The sentinel `ours` of a divergence where we committed nothing at all: for a
+/// single-segment name, silence is the resolver's "no shadow is possible"
+/// claim, so it names a verdict just as a tier does.
+const DENIED: &str = "denied";
+/// The sentinel `fcs` of a divergence where FCS resolved the span to nothing.
+const NOTHING: &str = "nothing";
 
-impl Category {
-    fn label(self) -> &'static str {
-        match self {
-            Category::WrongTarget => "wrong target",
-            Category::Denial => "denial",
-        }
-    }
-}
-
-/// Every recorded divergence, from both tables, as `(key, (category, reason))`.
-fn known_divergences() -> BTreeMap<&'static str, (Category, &'static str)> {
+/// Every recorded divergence from both tables, keyed by its **whole
+/// identity** — `(case, what we said, what FCS said)` — rather than by the case
+/// alone.
+///
+/// The case key is not an identity: a recorded denial that decays into a
+/// wrong-target commit keeps it, and so does a wrong target that starts naming
+/// a different tier or that FCS stops resolving at all. Both are regressions
+/// the two tables would otherwise satisfy for each other (codex review). Every
+/// row therefore states the verdict it expects, and a case that diverges a
+/// different way is reported as *both* an unexpected divergence and a stale
+/// entry.
+fn known_divergences() -> BTreeMap<(String, String, String), &'static str> {
     KNOWN_DIVERGENCES
         .iter()
-        .map(|&(k, why)| (k, (Category::WrongTarget, why)))
+        .map(|&(case, ours, fcs, why)| ((case.into(), ours.into(), fcs.into()), why))
         .chain(
             WRONG_ARITY_DENIALS
                 .iter()
-                .map(|k| (*k, (Category::Denial, WRONG_ARITY_DENIAL))),
+                .map(|&(case, fcs)| ((case.into(), DENIED.into(), fcs.into()), WRONG_ARITY_DENIAL)),
         )
         .collect()
 }
@@ -393,7 +432,7 @@ fn tier_ladder_is_sound_against_fcs() {
         .collect();
     let observations = observe();
 
-    let mut diverged: BTreeMap<String, (Category, String)> = BTreeMap::new();
+    let mut diverged: BTreeMap<(String, String, String), String> = BTreeMap::new();
     let mut agreed = 0usize;
     let mut deferred = 0usize;
     for (key, (ours, fcs)) in &observations {
@@ -408,41 +447,23 @@ fn tier_ladder_is_sound_against_fcs() {
             (Ours::Denied, None) => deferred += 1,
             (Ours::Denied, Some(f)) => {
                 diverged.insert(
-                    key.clone(),
-                    (
-                        Category::Denial,
-                        format!(
-                            "we deny that anything can bind — the \"no shadow is possible\" \
-                             signal — but FCS binds {}",
-                            describe(plant, f)
-                        ),
-                    ),
+                    (key.clone(), DENIED.into(), describe(plant, f)),
+                    "we deny that anything can bind — the \"no shadow is possible\" signal — \
+                     but FCS binds something"
+                        .to_string(),
                 );
             }
             (Ours::Entity(o), Some(f)) if o == f => agreed += 1,
             (Ours::Entity(o), Some(f)) => {
                 diverged.insert(
-                    key.clone(),
-                    (
-                        Category::WrongTarget,
-                        format!(
-                            "we bound {} but FCS binds {}",
-                            describe(plant, o),
-                            describe(plant, f)
-                        ),
-                    ),
+                    (key.clone(), describe(plant, o), describe(plant, f)),
+                    "we bound a different tier from the one FCS binds".to_string(),
                 );
             }
             (Ours::Entity(o), None) => {
                 diverged.insert(
-                    key.clone(),
-                    (
-                        Category::WrongTarget,
-                        format!(
-                            "we bound {} but FCS resolves the span to nothing at all",
-                            describe(plant, o)
-                        ),
-                    ),
+                    (key.clone(), describe(plant, o), NOTHING.into()),
+                    "we bound a tier where FCS resolves the span to nothing at all".to_string(),
                 );
             }
         }
@@ -455,12 +476,14 @@ fn tier_ladder_is_sound_against_fcs() {
     // nothing contends for those names in either order, so anything but exact
     // agreement is a bug. (`TCo` and `TMo` are deliberately absent: a manifest
     // surface is never committed, only deferred to, which is the design. So is
-    // every `W`: with no exact-arity occupant anywhere, a *deferral* is the
-    // right answer even uncontested, so it cannot serve as a floor.)
+    // every `W`/`J`: with no exact-arity occupant anywhere, a *deferral* is the
+    // right answer even uncontested, so it cannot serve as a floor. The split
+    // families `F`/`R`/`K`/`L` have no singletons at all.)
     for control in [
         "TEx", "TEn", "TNs", "TRo", //
         "DEx", "DEn", "DNs", "DRo", //
-        "GEx", "GEn", "GNs", "GRo",
+        "GEx", "GEn", "GNs", "GRo", //
+        "HEx", "HEn", "HNs", "HRo",
     ] {
         for order in Order::ALL {
             let key = format!("{control}/{}", order.label());
@@ -476,29 +499,24 @@ fn tier_ladder_is_sound_against_fcs() {
         }
     }
 
-    // Keyed by `(case, category)`, not by case alone: the two tables record
-    // different *kinds* of claim about the same case, so a case that swapped
-    // kinds must fail both sides of the ratchet rather than satisfy each.
     let known = known_divergences();
-    let expected: BTreeSet<(&str, Category)> =
-        known.iter().map(|(&k, &(cat, _))| (k, cat)).collect();
-    let observed: BTreeSet<(&str, Category)> = diverged
-        .iter()
-        .map(|(k, (cat, _))| (k.as_str(), *cat))
-        .collect();
+    let expected: BTreeSet<&(String, String, String)> = known.keys().collect();
+    let observed: BTreeSet<&(String, String, String)> = diverged.keys().collect();
 
+    let show =
+        |(case, ours, fcs): &(String, String, String)| format!("{case}: ours={ours} fcs={fcs}");
     let unexpected: Vec<String> = observed
         .difference(&expected)
-        .map(|(k, cat)| format!("  {k} [{}]: {}", cat.label(), diverged[*k].1))
+        .map(|id| format!("  {} — {}", show(id), diverged[*id]))
         .collect();
     let stale: Vec<String> = expected
         .difference(&observed)
-        .map(|(k, cat)| {
+        .map(|id| {
             format!(
-                "  {k} [{}]: recorded as diverging ({}), but it now agrees, defers, \
-                 or diverges a different way",
-                cat.label(),
-                known[k].1
+                "  {} — recorded as diverging ({}), but it now agrees, defers, or diverges a \
+                 different way",
+                show(id),
+                known[*id]
             )
         })
         .collect();
