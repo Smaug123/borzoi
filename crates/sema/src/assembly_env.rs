@@ -587,6 +587,12 @@ pub struct AssemblyEnv {
     /// open-type set so a bare `printfn` resolves to the module's static
     /// member — see `Resolver::open_auto_open_modules_in`.
     auto_open_modules: HashMap<Vec<String>, Vec<EntityHandle>>,
+    /// The same closure as [`Self::auto_open_modules`], as **paths** — what an
+    /// `open` of the namespace makes answerable by a short name, which is a
+    /// question about paths rather than entities. Built in the same walk, so
+    /// the two indexes cannot drift; see
+    /// [`Self::auto_open_module_paths_in_namespace`].
+    auto_open_module_paths: HashMap<Vec<String>, Vec<Vec<String>>>,
     /// The nested types that are *union-case carriers* — see
     /// [`Self::index_union_case_carriers`], which fills it.
     union_case_carriers: HashSet<EntityHandle>,
@@ -1200,32 +1206,30 @@ impl AssemblyEnv {
                 // because of 'AutoOpen'"): a nested public `[<AutoOpen>]`
                 // module of an auto-open module is opened by the same
                 // namespace open. Register the whole transitive closure in
-                // FCS's **depth-first pre-order** — FCS recurses into each
-                // nested auto-open module before its next sibling, and
-                // later-added contents win, so a later SIBLING outranks an
-                // earlier sibling's descendant (codex on this change);
-                // latest-wins lookup reproduces that when the statics are
-                // pushed in the same order.
-                let mut closure = Vec::new();
-                let mut stack = vec![handle];
-                while let Some(h) = stack.pop() {
+                // FCS's **depth-first pre-order** — see
+                // [`Self::auto_open_descendants`] for why the order matters.
+                let root_name = self.display_name(handle);
+                let root_path = {
+                    let mut p = namespace.clone();
+                    p.push(root_name);
+                    p
+                };
+                let mut closure = vec![handle];
+                let mut paths = vec![root_path.clone()];
+                for (h, chain) in self.auto_open_descendants(handle) {
                     closure.push(h);
-                    // Reversed so the first qualifying child is processed
-                    // (and pushed) before its later siblings.
-                    for &child in self.children(h).iter().rev() {
-                        let e = self.entity(child);
-                        if e.is_auto_open
-                            && e.kind == EntityKind::Module
-                            && e.access == Access::Public
-                        {
-                            stack.push(child);
-                        }
-                    }
+                    let mut p = root_path.clone();
+                    p.extend(chain);
+                    paths.push(p);
                 }
                 self.auto_open_modules
-                    .entry(namespace)
+                    .entry(namespace.clone())
                     .or_default()
                     .extend(closure);
+                self.auto_open_module_paths
+                    .entry(namespace)
+                    .or_default()
+                    .extend(paths);
             }
         }
         for (key, handle) in source_named_type_keys
@@ -3557,6 +3561,79 @@ impl AssemblyEnv {
         self.auto_open_modules
             .get(namespace)
             .map_or(&[], Vec::as_slice)
+    }
+
+    /// [`Self::auto_open_modules_in_namespace`]'s paths — the modules opening
+    /// `namespace` folds, in the same depth-first pre-order.
+    ///
+    /// These are the extra **shortening prefixes** such an open contributes:
+    /// FCS enters each of them in `eModulesAndNamespaces` under its short name,
+    /// so their own submodules become openable unqualified. That is why
+    /// `open Checked` names `Microsoft.FSharp.Core.Operators.Checked` in a file
+    /// that opens nothing (`Resolver::auto_open_shortening_prefixes`).
+    pub(crate) fn auto_open_module_paths_in_namespace(
+        &self,
+        namespace: &[String],
+    ) -> &[Vec<String>] {
+        self.auto_open_module_paths
+            .get(namespace)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The transitive public `[<AutoOpen>]` module descendants of `handle`
+    /// (excluding `handle` itself), each paired with its **name chain relative
+    /// to `handle`** — so a caller that already knows `handle`'s path can build
+    /// each descendant's without a search.
+    ///
+    /// Depth-first **pre-order**: FCS recurses into a nested auto-open module
+    /// before moving to its next sibling
+    /// (`AddModuleOrNamespaceRefsToNameEnv`, "Recursive because of 'AutoOpen'")
+    /// and later additions win, so a later SIBLING outranks an earlier
+    /// sibling's descendant. Every consumer that ranks by recency depends on
+    /// this order.
+    pub(crate) fn auto_open_descendants(
+        &self,
+        handle: EntityHandle,
+    ) -> Vec<(EntityHandle, Vec<String>)> {
+        let mut out: Vec<(EntityHandle, Vec<String>)> = Vec::new();
+        // Reversed on every push so the first qualifying child is popped
+        // (and recorded) before its later siblings.
+        let mut stack: Vec<(EntityHandle, Vec<String>)> = self
+            .auto_open_children(handle)
+            .into_iter()
+            .rev()
+            .map(|c| (c, vec![self.display_name(c)]))
+            .collect();
+        while let Some((h, chain)) = stack.pop() {
+            for c in self.auto_open_children(h).into_iter().rev() {
+                let mut next = chain.clone();
+                next.push(self.display_name(c));
+                stack.push((c, next));
+            }
+            out.push((h, chain));
+        }
+        out
+    }
+
+    /// The public `[<AutoOpen>]` module children of `handle`, in declaration
+    /// order. An internal/private one is inaccessible cross-assembly, so it
+    /// contributes neither contents nor a shortening prefix.
+    fn auto_open_children(&self, handle: EntityHandle) -> Vec<EntityHandle> {
+        self.children(handle)
+            .iter()
+            .copied()
+            .filter(|&child| {
+                let e = self.entity(child);
+                e.is_auto_open && e.kind == EntityKind::Module && e.access == Access::Public
+            })
+            .collect()
+    }
+
+    /// The entity's F# source name — the `[<CompiledName>]`/pickle-recovered
+    /// one where metadata records it, else the IL name.
+    fn display_name(&self, handle: EntityHandle) -> String {
+        let e = self.entity(handle);
+        e.source_name.as_deref().unwrap_or(&e.name).to_string()
     }
 
     /// Whether an `[<AutoOpen>]` module directly in `namespace` declares an

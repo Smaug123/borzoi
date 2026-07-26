@@ -422,7 +422,16 @@ impl<'a> Resolver<'a> {
                 out.push((full, false));
             }
             // Tier 1 — explicit opens (namespace + chained module), latest first.
+            // Each opened container also lends the `[<AutoOpen>]` modules it
+            // folds as prefixes, ahead of the container itself
+            // ([`Self::auto_open_shortening_prefixes`]); a module cannot hold a
+            // namespace, so no namespace is reachable at one of those.
             for prefix in self.open_shortening_prefixes.iter().rev() {
+                for auto in self.auto_open_shortening_prefixes(prefix) {
+                    let mut full = auto;
+                    full.extend_from_slice(written);
+                    out.push((full, false));
+                }
                 let mut full = prefix.clone();
                 full.extend_from_slice(written);
                 out.push((full, true));
@@ -437,6 +446,63 @@ impl<'a> Resolver<'a> {
         }
         // Tier 3 — the as-written root, kept *in addition* to any relative match.
         out.push((written.to_vec(), true));
+        out
+    }
+
+    /// The extra shortening prefixes an **opened container** lends: the
+    /// `[<AutoOpen>]` modules that opening `base` folds, transitively, from the
+    /// assembly and project halves alike.
+    ///
+    /// FCS enters every nested module of an opened container into
+    /// `eModulesAndNamespaces` under its short name and *then* recurses into
+    /// the auto-open ones, whose own submodules are entered the same way
+    /// (`AddModuleOrNamespaceRefsToNameEnv`). So `open Demo.Auto` makes
+    /// `Demo.Auto.Extra`'s submodules openable unqualified, and the implicit
+    /// `open Microsoft.FSharp.Core` makes `Operators`' — which is what lets a
+    /// bare `open Checked` name `Operators.Checked` and bind the
+    /// overflow-checking conversions.
+    ///
+    /// Ordered **highest priority first**, and every entry out-ranks `base`
+    /// itself: the recursion's additions are layered on top of the container's
+    /// own submodules, so where a container holds both a direct `M` and an
+    /// auto-open module holding its own `M`, `open M` names the latter
+    /// (`open_shortening_matrix`'s `precedence / …` cell, FCS-diffed).
+    fn auto_open_shortening_prefixes(&self, base: &[String]) -> Vec<Vec<String>> {
+        let mut out: Vec<Vec<String>> = Vec::new();
+        // Two assemblies may expose the same auto-open module FQN, and a
+        // container can be both a namespace and a module path; one prefix is
+        // enough either way (the candidate it yields resolves against every
+        // assembly at that path).
+        fn push(out: &mut Vec<Vec<String>>, path: Vec<String>) {
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+        // The assembly **namespace** half — precomputed at index time, since a
+        // namespace's auto-open closure does not depend on the open site.
+        for path in self.assemblies.auto_open_module_paths_in_namespace(base) {
+            push(&mut out, path.clone());
+        }
+        // The assembly **module** half: `base` may itself be a module (a
+        // chained `open`), whose auto-open submodules are folded just the same.
+        // Their paths extend `base`, which is how they were found.
+        for handle in self.opened_assembly_modules(base) {
+            for (_, chain) in self.assemblies.auto_open_descendants(handle) {
+                let mut path = base.to_vec();
+                path.extend(chain);
+                push(&mut out, path);
+            }
+        }
+        // The **project** half, walked the same way the other project auto-open
+        // consumers walk it (`namespace_exports_value_named`): a project
+        // auto-open module may hold another.
+        let mut frontier = self.project_auto_open_submodules_in(base);
+        while let Some(module) = frontier.pop() {
+            frontier.extend(self.project_auto_open_submodules_in(&module));
+            push(&mut out, module);
+        }
+        // Latest-folded wins, so the last entry is the most proximate.
+        out.reverse();
         out
     }
 
