@@ -61,6 +61,20 @@ This is a Cargo workspace with nine members:
   TypeSig::ByRef(_))`) silently stops firing when a modifier sits in front of
   it, and the compiler cannot catch that; the probe can, so read it before
   writing such a guard.
+  A *whole-DLL* skip is a different grade of failure and is gated at **zero**
+  by `projection_skip_sweep` (`#[ignore]`d, `BORZOI_DLL_SWEEP_ROOT`): with an
+  assembly's types missing, no reading into any *other* assembly is provably
+  unshadowed, since the missing DLL could declare a colliding type or an
+  assembly-level `[<AutoOpen>]`. So the reader localizes wherever it can — a
+  `TypeRef` whose resolution scope is outside the modelled subset rides on the
+  row (`Result<RefScope, UnsupportedScope>`) and costs only the types that walk
+  out through it. Run it before widening any parse-time refusal:
+
+  ```sh
+  BORZOI_DLL_SWEEP_ROOT=~/.nuget/packages \
+  nix develop -c cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
+    -- --ignored --nocapture
+  ```
 - `crates/nuget/` — `borzoi-nuget`. NuGet primitives for the in-house
   warm-cache restore (`docs/nuget-restore-plan.md`): the `NuGetVersion` /
   `VersionRange` / `NuGetFramework` models, global-packages-folder and

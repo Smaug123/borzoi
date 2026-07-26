@@ -26,6 +26,7 @@ mod methodimpl_classification;
 mod modifier_metamorphic;
 mod pdb_fsharp_core;
 mod pickled_ranges;
+mod projection_skip_sweep;
 mod projector_custom_modifiers;
 mod projector_default_member;
 mod projector_events;
