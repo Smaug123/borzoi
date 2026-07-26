@@ -15,14 +15,15 @@
 //! population and fail on any whole-assembly loss whose cause is not on the
 //! short, named [`EXEMPT`] list.
 //!
-//! **It classifies by cause, not by path.** The tempting filter — "only gate the
-//! files NuGet could select as compile assets" — means reimplementing the
+//! **The population is not filtered by path.** The tempting filter — "only gate
+//! the files NuGet could select as compile assets" — means reimplementing the
 //! content model (`borzoi_nuget::assets`) here, and a hand-rolled approximation
 //! is wrong in *both* directions: it admits `tools/…/lib/win32/Foo.dll` and
 //! rejects the valid pre-TFM flat `lib/Foo.dll`. Since a misclassification in
 //! the rejecting direction silently hides exactly the regression this exists to
 //! catch, the sweep looks at every assembly it can find and justifies each loss
-//! individually instead.
+//! individually instead. Paths do appear in the [`Exemption`] scopes — but see
+//! there for why that position is the safe one.
 //!
 //! `#[ignore]`d and env-driven: it needs a populated package cache, not a
 //! fixture, so it is a local ratchet in the mould of `resolve_real_project_diff`
@@ -39,32 +40,63 @@ use borzoi_oracle_harness::panic_silence::catch_unwind_silent;
 /// `microsoft.build.runtime/…/ref/net472/MSBuild.exe` is a real compile asset.
 const ASSEMBLY_EXTENSIONS: &[&str] = &["dll", "exe", "winmd"];
 
-/// Whole-assembly losses this gate tolerates, each with the reason it is not a
-/// projector gap. A cause reaches this list only by being *justified*, never by
-/// being common — an entry is a standing hole in the gate, so keep it short and
-/// keep the justification honest.
-const EXEMPT: &[(&str, &str)] = &[
+/// One tolerated whole-assembly loss.
+///
+/// A refusal message is the reader's *output*, so matching on it alone excuses
+/// every future input that happens to produce the same words — which is how a
+/// genuinely new loss slips through a gate like this. So an exemption whose
+/// justification is a claim about *which files* must also say which files, and
+/// only excuses losses there.
+///
+/// Note the direction. Narrowing an *exemption* can only turn a pass into a
+/// failure, so a wrong path predicate here is loud; narrowing the *population*
+/// (the compile-asset filter this sweep used to have) turns a failure into a
+/// pass, so a wrong predicate there is silent. That asymmetry is why path
+/// matching is right in this position and wrong in that one.
+struct Exemption {
+    /// Substring of the refusal this excuses.
+    reason: &'static str,
+    /// Lowercased path substring the excused files must sit under. `None` only
+    /// when the justification is a property of the *bytes*, independent of
+    /// which package shipped them.
+    scope: Option<&'static str>,
+    why: &'static str,
+}
+
+/// Whole-assembly losses this gate tolerates. A cause reaches this list only by
+/// being *justified*, never by being common — an entry is a standing hole in
+/// the gate, so keep it short and keep the justification honest.
+const EXEMPT: &[Exemption] = &[
     // A PE with no CLI header is not a managed assembly at all — a native DLL
-    // (`msdia140.dll`, `git2-*.dll`) or a native EXE. There is nothing for an
-    // ECMA-335 reader to read, and fsc would refuse it identically, so the
-    // refusal is correct behaviour rather than a gap.
-    (
-        "no CLI header",
-        "not a managed assembly (native PE); fsc refuses it too",
-    ),
+    // (`msdia140.dll`, `git2-*.dll`) or a native EXE. Unscoped, and this is the
+    // one entry where that is right: the justification is a property of the
+    // bytes, which any package may ship, and the refusal *is* that property.
+    // Cross-checking it would mean a second PE reader, which is not worth
+    // building to re-derive "the COM descriptor directory is empty".
+    Exemption {
+        reason: "no CLI header",
+        scope: None,
+        why: "not a managed assembly (native PE); fsc refuses it too",
+    },
     // The .NET Framework targeting packs ship two shapes the reader refuses
     // whole. Both are real gaps of the same kind #199 fixed — a per-item
     // degradation propagated as a whole-image error — but they are reachable
     // only from a net4x target, so whether to close them waits on whether
     // borzoi supports net4x at all. Tracked separately; exempt, not forgotten.
-    (
-        "assembly has no Assembly manifest record",
-        "netmodule in the net4x targeting pack; pending the net4x-support decision",
-    ),
-    (
-        "manifest resource is not embedded in this file",
-        "net4x targeting-pack mscorlib; pending the net4x-support decision",
-    ),
+    //
+    // Scoped to the targeting packs, because that is what the justification
+    // claims. A *non*-net4x assembly refused for either cause — say one with a
+    // linked `ManifestResource` — is a new loss and must fail the gate.
+    Exemption {
+        reason: "assembly has no Assembly manifest record",
+        scope: Some("microsoft.netframework.referenceassemblies"),
+        why: "netmodule in the net4x targeting pack; pending the net4x-support decision",
+    },
+    Exemption {
+        reason: "manifest resource is not embedded in this file",
+        scope: Some("microsoft.netframework.referenceassemblies"),
+        why: "net4x targeting-pack mscorlib; pending the net4x-support decision",
+    },
 ];
 
 /// A population smaller than this is not a package cache — it is a mistyped
@@ -90,15 +122,20 @@ enum Outcome {
 }
 
 impl Outcome {
-    /// The exemption justifying this loss, if any.
-    fn exemption(&self) -> Option<&'static str> {
+    /// The exemption justifying this loss of the assembly at `path`, if any.
+    /// Both halves must hold: the refusal must be one the entry names, *and*
+    /// the file must sit where the entry's justification says it does.
+    fn exemption(&self, path: &Path) -> Option<&'static str> {
         let Outcome::Skipped(reason) = self else {
             return None;
         };
+        let lowered = path.to_string_lossy().to_lowercase();
         EXEMPT
             .iter()
-            .find(|(needle, _)| reason.contains(needle))
-            .map(|(_, why)| *why)
+            .find(|e| {
+                reason.contains(e.reason) && e.scope.is_none_or(|scope| lowered.contains(scope))
+            })
+            .map(|e| e.why)
     }
 }
 
@@ -169,22 +206,29 @@ fn collect_assemblies(
     }
 }
 
-/// Sweep `BORZOI_DLL_SWEEP_ROOT` (colon-separated roots) and **fail on any
-/// whole-assembly loss without a named exemption**. Prints usage and returns
-/// green when unset.
+/// Sweep `BORZOI_DLL_SWEEP_ROOT` (a `PATH`-style list, so `:`-separated on
+/// Unix and `;`-separated on Windows — a bare `:` split would cut a Windows
+/// root at its drive colon) and **fail on any whole-assembly loss without a
+/// named exemption**. Prints usage and returns green when unset.
 #[test]
 #[ignore = "needs a populated local package cache; run explicitly"]
 fn no_assembly_is_skipped_whole_without_a_named_reason() {
     let Some(roots) = std::env::var_os("BORZOI_DLL_SWEEP_ROOT") else {
         eprintln!(
-            "set BORZOI_DLL_SWEEP_ROOT=/path/to/.nuget/packages[:/more/roots] to run this sweep"
+            "set BORZOI_DLL_SWEEP_ROOT to a {} list of package-cache roots \
+             (e.g. ~/.nuget/packages) to run this sweep",
+            if cfg!(windows) {
+                "`;`-separated"
+            } else {
+                "`:`-separated"
+            },
         );
         return;
     };
     let mut files = Vec::new();
     let mut unreadable = Vec::new();
-    for root in roots.to_string_lossy().split(':').filter(|s| !s.is_empty()) {
-        collect_assemblies(Path::new(root), &mut files, &mut unreadable);
+    for root in std::env::split_paths(&roots).filter(|p| p.as_os_str() != "") {
+        collect_assemblies(&root, &mut files, &mut unreadable);
     }
     files.sort();
     assert!(
@@ -217,7 +261,7 @@ fn no_assembly_is_skipped_whole_without_a_named_reason() {
     // single root cause presented, as 77 separately skipped files.
     let mut by_reason: BTreeMap<&str, Vec<&Path>> = BTreeMap::new();
     for (path, outcome) in &results {
-        if let (Outcome::Skipped(reason), None) = (outcome, outcome.exemption()) {
+        if let (Outcome::Skipped(reason), None) = (outcome, outcome.exemption(path)) {
             by_reason.entry(reason).or_default().push(path);
         }
     }
@@ -295,8 +339,8 @@ fn report(results: &[(PathBuf, Outcome)], projected: usize) {
          | unreadable AutoOpen lists: {unreadable_auto_opens}"
     );
     let mut exempted: BTreeMap<&str, usize> = BTreeMap::new();
-    for (_, outcome) in results {
-        if let Some(why) = outcome.exemption() {
+    for (path, outcome) in results {
+        if let Some(why) = outcome.exemption(path) {
             *exempted.entry(why).or_default() += 1;
         }
     }
@@ -324,9 +368,32 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
     // it is *not* exempt — the exemption is narrow, as intended.
     assert!(!reason.is_empty(), "the refusal names a cause");
     assert_eq!(
-        outcome.exemption(),
+        outcome.exemption(&not_an_assembly),
         None,
         "an unrecognised refusal must reach the gate, not be waved through"
+    );
+
+    // A **scoped** exemption excuses the loss only where its justification says
+    // it does. The same refusal from anywhere else is a new loss: the reason
+    // string is the reader's output, and matching on it alone would wave
+    // through, say, a non-net4x assembly carrying a linked `ManifestResource`.
+    let scoped = EXEMPT
+        .iter()
+        .find(|e| e.scope.is_some())
+        .expect("a scoped exemption to exercise");
+    let skipped = Outcome::Skipped(format!("parse: {}", scoped.reason));
+    let inside = PathBuf::from(format!("/c/packages/{}/1.0.3/x.dll", scoped.scope.unwrap()));
+    assert_eq!(
+        skipped.exemption(&inside),
+        Some(scoped.why),
+        "the loss its justification covers is excused"
+    );
+    assert_eq!(
+        skipped.exemption(Path::new(
+            "/c/packages/unrelated.package/1.0.0/lib/net8.0/x.dll"
+        )),
+        None,
+        "the same refusal outside the justified scope must reach the gate"
     );
 
     // Every extension NuGet accepts is swept, case-insensitively; a `.pdb`
@@ -353,13 +420,30 @@ fn the_gate_recognises_a_refusal_and_its_exemptions() {
 /// broad enough to wave through causes it was never justified for.
 #[test]
 fn every_exemption_is_justified_and_narrow() {
-    for (needle, why) in EXEMPT {
-        assert!(!needle.is_empty() && !why.is_empty(), "{needle:?}: {why:?}");
+    for e in EXEMPT {
+        assert!(
+            !e.reason.is_empty() && !e.why.is_empty(),
+            "{:?}: {:?}",
+            e.reason,
+            e.why
+        );
         // A one- or two-word needle ("assembly", "not embedded") would match
         // refusals nobody vetted. The real ones are full clauses.
         assert!(
-            needle.split_whitespace().count() >= 3,
-            "exemption {needle:?} is too broad to have been justified",
+            e.reason.split_whitespace().count() >= 3,
+            "exemption {:?} is too broad to have been justified",
+            e.reason,
         );
+        // A scope is matched against a lowercased path, so an entry with any
+        // uppercase in it silently never fires — and an exemption that never
+        // fires is not the hole it was written to be; the loss it was meant to
+        // cover would fail the gate instead. Loud is fine, silent is not.
+        if let Some(scope) = e.scope {
+            assert_eq!(
+                scope,
+                scope.to_lowercase(),
+                "scope {scope:?} must be lowercase to match"
+            );
+        }
     }
 }
