@@ -12,6 +12,7 @@ mod assembly_cache_roundtrip;
 mod csharp_ref_assembly_env_e2e;
 mod csharp_sidecar;
 mod csharp_sidecar_bundled_e2e;
+mod definition_availability_incomplete;
 mod fcs_bridge;
 mod glob_msbuild_diff;
 mod goto_source_fsharp_core;

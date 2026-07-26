@@ -232,12 +232,11 @@ fn an_inferred_member_access_defers() {
     );
 }
 
-/// Inference still *types* what it typed. A missing DLL makes us unsure which
-/// entity a name denotes; it does not make the program's structure unknown, and
-/// the LSP navigates by resolution, not by type. Pinned so the seal is not
-/// widened into the type surface by accident.
+/// The seal does not touch the *type* map, so a type inference derived without
+/// reading an assembly is unchanged by it. A missing DLL does not make the
+/// program's structure unknown.
 #[test]
-fn inferred_types_survive_an_incomplete_projection() {
+fn a_type_owing_nothing_to_an_assembly_survives() {
     let (complete, incomplete) = complete_and_incomplete();
     let src = "module M\nlet n = 1\n";
 
@@ -248,6 +247,47 @@ fn inferred_types_survive_an_incomplete_projection() {
         "the complete env must type something, else this pins nothing"
     );
     assert_eq!(under_complete.types(), under_incomplete.types());
+}
+
+/// A type that came *from* an assembly reading, by contrast, goes quiet — and
+/// that is the seal working, not leaking.
+///
+/// `annotation_ty` types an annotated binder by reading the resolution its
+/// annotation recorded; sealed, there is no entity there to read. Publishing the
+/// type anyway would be the same wrong-target claim the seal exists to prevent,
+/// one surface along: if the missing DLL declares a colliding `System.String`,
+/// then `x : System.String` names the wrong type, and a hover saying so is
+/// exactly as wrong as a go-to-definition landing there. Silence is the D5
+/// answer.
+///
+/// Pinned in both directions so neither the demote nor a future "keep an
+/// unsealed view for inference" can change it unnoticed.
+#[test]
+fn a_type_derived_from_an_assembly_reading_goes_quiet() {
+    let (complete, incomplete) = complete_and_incomplete();
+    let src = "module M\nlet x : System.String = \"hi\"\n";
+    let binder = at(src, "x");
+
+    let (resolved, inferred) = resolve_and_infer(src, &complete);
+    let def = resolved
+        .resolution_at(binder)
+        .and_then(|res| resolved.resolved_def_id(res))
+        .expect("the annotated binder is recorded");
+    assert!(
+        inferred.def_type(def).is_some(),
+        "the complete env must type the annotated binder, else this pins nothing"
+    );
+
+    let (resolved, inferred) = resolve_and_infer(src, &incomplete);
+    let def = resolved
+        .resolution_at(binder)
+        .and_then(|res| resolved.resolved_def_id(res))
+        .expect("the binder still binds — only its annotation was sealed");
+    assert_eq!(
+        inferred.def_type(def),
+        None,
+        "a type read out of an assembly we cannot vouch for must not be published"
+    );
 }
 
 /// The demote is scoped to *assembly* readings: a name bound in the file's own

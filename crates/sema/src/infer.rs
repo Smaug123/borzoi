@@ -3222,9 +3222,16 @@ impl<'a> Gen<'a> {
         // finished map for the same reason the resolver sweeps — see
         // `Resolver::seal_assembly_readings`.
         //
-        // The *types* this phase publishes are deliberately left alone: they are
-        // structural facts about the program, not claims about which assembly
-        // entity a name denotes, and the LSP navigates by resolution.
+        // The *type* maps are not swept, but that is not the same as types being
+        // exempt. A type is derived from whatever resolutions fed it, so one
+        // that came from an assembly reading is already gone by the time this
+        // runs — `annotation_ty` reads the resolution its annotation recorded,
+        // and the resolver sealed it. That is the seal working: if the missing
+        // DLL declares a colliding `System.String`, then `x : System.String`
+        // names the wrong type, and publishing it is the same wrong-target claim
+        // one surface along. A type owing nothing to an assembly is untouched,
+        // because nothing about it was ever in doubt. Both directions are pinned
+        // in `resolve_incomplete_projection`.
         if self.env.identities_incomplete() {
             for res in member_resolutions.values_mut() {
                 *res = res.sealed_under_incomplete_projection();
