@@ -334,6 +334,13 @@ enum Ours {
     /// nothing is not an absence of opinion but an opinion — the resolver's
     /// "no shadow is possible" signal — and [`Resolution::Unresolved`] is the
     /// same claim made explicitly. Either is a claim FCS can contradict.
+    ///
+    /// Reachable only for [`tier_corpus::Form::Bare`]: `defer_shadowable_type`
+    /// marks single-segment paths only, so a *dotted* deferral records nothing
+    /// either and its silence says nothing at all. That distinction belongs
+    /// here, at the one place a verdict is decided, so
+    /// [`report_tier_ladder`] cannot print `(denied)` for a sound dotted
+    /// deferral (codex review).
     Denied,
 }
 
@@ -357,8 +364,11 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
             Ours::Entity((env.entity(h).assembly.name.clone(), env.entity_full_name(h)))
         }
         Some(Resolution::Deferred(_)) => Ours::Deferred,
-        Some(Resolution::Unresolved) => Ours::Denied,
-        None => Ours::Denied,
+        // A recorded no-match is a claim only where the resolver makes one.
+        Some(Resolution::Unresolved) | None if plant.form == tier_corpus::Form::Bare => {
+            Ours::Denied
+        }
+        Some(Resolution::Unresolved) | None => Ours::Deferred,
         // Nothing else is reachable from this corpus, and each would be a
         // distinct bug rather than a deferral: the probe declares no type of
         // the plant's name, is resolved against an empty `ProjectItems`, and
@@ -439,11 +449,6 @@ fn tier_ladder_is_sound_against_fcs() {
         let plant = &plants[key.split('/').next().expect("keyed <plant>/<order>")];
         match (ours, fcs) {
             (Ours::Deferred, _) => deferred += 1,
-            // Recording nothing is a claim only where the resolver makes one:
-            // a single-segment deferral records the shadowable marker, but a
-            // dotted one records nothing either, so a `DottedHead` plant's
-            // silence is indistinguishable from a deferral and asserts nothing.
-            (Ours::Denied, _) if plant.form == tier_corpus::Form::DottedHead => deferred += 1,
             (Ours::Denied, None) => deferred += 1,
             (Ours::Denied, Some(f)) => {
                 diverged.insert(
