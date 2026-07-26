@@ -514,13 +514,19 @@ fn sweep_retained_auto_open() -> usize {
         &[ImplFile::cast(parse(&src).root).expect("impl file")],
         &env,
     );
+    // The *exact* entity, not merely `is_some`: a `Deferred` is a resolution
+    // too, so an availability check that accepts one cannot fail when the
+    // guard goes back to deferring — the regression it exists to catch.
+    let target = env
+        .lookup_type(&["Cases".into(), "Union".into()], "Target", 0)
+        .expect("Cases.Union.Target in the fixture env");
     for probe in probes.iter().filter(|p| p.namespace == "Cases.Union") {
-        assert!(
-            proj.file(0).resolution_at(probe.head).is_some(),
+        assert_eq!(
+            proj.file(0).resolution_at(probe.head),
+            Some(Resolution::Entity(target)),
             "{}: the enclosing namespace out-ranks the manifest auto-open surface, \
-             so the head must bind; got {:?}",
+             so the head must bind Cases.Union.Target",
             probe.label,
-            proj.file(0).resolution_at(probe.head)
         );
     }
     compared

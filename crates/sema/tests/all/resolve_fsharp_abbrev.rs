@@ -1419,9 +1419,15 @@ fn a_retained_surface_walk_declines_on_projection_uncertainty() {
     let head = TextRange::new(whole.start(), whole.start() + TextSize::from(6u32));
 
     // Control: with the surface fully modelled the enclosing namespace commits.
+    // Pinned to the entity, since a `Deferred` is a resolution too and would
+    // make the three declines below vacuous.
     let env = case_pattern_autoopen_env();
-    assert!(
-        resolve(src, &env).resolution_at(head).is_some(),
+    let target = env
+        .lookup_type(&["Cases".into(), "Union".into()], "Target", 0)
+        .expect("Cases.Union.Target in the fixture env");
+    assert_eq!(
+        resolve(src, &env).resolution_at(head),
+        Some(Resolution::Entity(target)),
         "control: the enclosing namespace outranks the manifest surface"
     );
 
