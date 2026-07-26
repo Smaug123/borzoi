@@ -82,8 +82,19 @@ Optional project-load settings:
 
 Optional failure ratchets:
 
+- `BORZOI_PROJECT_EXPECT_DIVERGENCES`: the exact divergence counts this corpus
+  is known to produce, spelled `assembly=<n>,project=<n>,reverse=<n>` in any
+  order. All three categories are required. **Two-sided**: a run that diverges
+  more fails, and so does a run that diverges less — so a fix cannot land
+  without bringing the recorded number down with it, and the gate cannot decay
+  into a rubber stamp. Per category rather than a total, because a change that
+  trades a project wrong target for an assembly one moves the total by zero.
+  This is what `ci.yml`'s `corpus-diff` job sets.
 - `BORZOI_PROJECT_MAX_DIVERGENCES`: maximum allowed project, assembly, and
-  reverse divergences combined. Defaults to `0`.
+  reverse divergences combined. Defaults to `0`. The one-sided form; setting it
+  alongside `BORZOI_PROJECT_EXPECT_DIVERGENCES` is a configuration error rather
+  than a precedence rule, since the two are incompatible readings of the same
+  quantity.
 - `BORZOI_PROJECT_MIN_COMPARABLE`: non-zero minimum number of comparable
   projects.
 - `BORZOI_PROJECT_MAX_SKIPPED`: maximum number of visited projects allowed

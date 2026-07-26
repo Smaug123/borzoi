@@ -5,6 +5,7 @@
 //! and compare the two without letting skipped or erroring projects look like
 //! proof.
 
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
@@ -1310,7 +1311,17 @@ impl CorpusSummary {
     }
 
     pub fn total_divergences(&self) -> usize {
-        self.project_divergences + self.assembly_divergences + self.reverse_divergences
+        self.divergence_counts().total()
+    }
+
+    /// This run's divergences split by comparison, for
+    /// [`CorpusRunnerConfig::expect_divergences`].
+    pub fn divergence_counts(&self) -> DivergenceCounts {
+        DivergenceCounts {
+            project: self.project_divergences,
+            assembly: self.assembly_divergences,
+            reverse: self.reverse_divergences,
+        }
     }
 
     pub fn skipped_projects_basis_points(&self) -> Option<u64> {
@@ -1552,8 +1563,46 @@ impl fmt::Display for BasisPoints {
     }
 }
 
+/// The divergence counts of a run, split by the oracle comparison that found
+/// them — the currency of [`CorpusRunnerConfig::expect_divergences`].
+///
+/// Per category and not a single total, because the categories are independent
+/// claims: a change that introduces an assembly wrong target while fixing a
+/// project one moves the total by zero.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct DivergenceCounts {
+    pub project: usize,
+    pub assembly: usize,
+    pub reverse: usize,
+}
+
+impl DivergenceCounts {
+    pub fn total(&self) -> usize {
+        self.project + self.assembly + self.reverse
+    }
+}
+
+impl fmt::Display for DivergenceCounts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "assembly={},project={},reverse={}",
+            self.assembly, self.project, self.reverse
+        )
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct CorpusRunnerConfig {
+    /// The exact per-category divergence counts this corpus is known to
+    /// produce, if the caller records them. **Two-sided**: a run that diverges
+    /// more fails, and so does a run that diverges less, so a fix cannot land
+    /// without bringing the recorded number down with it. A one-sided ceiling
+    /// only ever ratchets in the direction nobody has to act on.
+    ///
+    /// Mutually exclusive with [`Self::max_divergences`]; see
+    /// [`CorpusRunnerConfigError::ConflictingDivergenceRatchets`].
+    pub expect_divergences: Option<DivergenceCounts>,
     pub max_divergences: usize,
     pub min_comparable_projects: Option<NonZeroUsize>,
     pub max_skipped_projects: Option<usize>,
@@ -1604,6 +1653,10 @@ pub enum CorpusRunFailure {
     SoundnessGate {
         max_divergences: usize,
         divergences: usize,
+    },
+    DivergenceExpectation {
+        expected: DivergenceCounts,
+        observed: DivergenceCounts,
     },
 }
 
@@ -1656,6 +1709,48 @@ impl fmt::Display for CorpusRunFailure {
                 f,
                 "project resolution divergences ({divergences} > {max_divergences})"
             ),
+            Self::DivergenceExpectation { expected, observed } => {
+                write!(
+                    f,
+                    "divergence expectation failed: expected {expected}, observed {observed}"
+                )?;
+                let moved = |name: &str, exp: usize, obs: usize| -> String {
+                    match obs.cmp(&exp) {
+                        Ordering::Greater => format!(" {name} +{}", obs - exp),
+                        Ordering::Less => format!(" {name} -{}", exp - obs),
+                        Ordering::Equal => String::new(),
+                    }
+                };
+                write!(f, " —")?;
+                write!(
+                    f,
+                    "{}",
+                    moved("assembly", expected.assembly, observed.assembly)
+                )?;
+                write!(
+                    f,
+                    "{}",
+                    moved("project", expected.project, observed.project)
+                )?;
+                write!(
+                    f,
+                    "{}",
+                    moved("reverse", expected.reverse, observed.reverse)
+                )?;
+                if observed.total() < expected.total() {
+                    write!(
+                        f,
+                        ". Some of this is a fix: lower BORZOI_PROJECT_EXPECT_DIVERGENCES to \
+                         \"{observed}\" so the ratchet holds the new floor"
+                    )
+                } else {
+                    write!(
+                        f,
+                        ". A raised count is a wrong target the corpus did not have before; \
+                         raise the recorded count only with a reason"
+                    )
+                }
+            }
         }
     }
 }
@@ -1790,7 +1885,20 @@ pub fn check_project_corpus_run(
             });
         }
     }
-    if !run.summary.passes_soundness_gate(config.max_divergences) {
+    // A recorded expectation owns this check in both directions, because it can
+    // say which category moved and which way; the one-sided ceiling only knows
+    // a total. The `comparable_projects` floor `passes_soundness_gate` carries
+    // is kept explicitly: a run that measured nothing must not satisfy an
+    // expectation of zero by arithmetic.
+    if let Some(expected) = config.expect_divergences {
+        if run.summary.comparable_projects == 0 {
+            return Err(CorpusRunFailure::NoComparableProjects);
+        }
+        let observed = run.summary.divergence_counts();
+        if observed != expected {
+            return Err(CorpusRunFailure::DivergenceExpectation { expected, observed });
+        }
+    } else if !run.summary.passes_soundness_gate(config.max_divergences) {
         return Err(CorpusRunFailure::SoundnessGate {
             max_divergences: config.max_divergences,
             divergences: run.summary.total_divergences(),
@@ -3235,7 +3343,12 @@ impl CorpusRunnerConfig {
     }
 
     pub fn from_raw_env(raw: CorpusRunnerRawEnv) -> Result<Self, CorpusRunnerConfigError> {
+        let expect_divergences = parse_divergence_expectation(raw.expect_divergences)?;
+        if expect_divergences.is_some() && raw.max_divergences.is_some() {
+            return Err(CorpusRunnerConfigError::ConflictingDivergenceRatchets);
+        }
         Ok(Self {
+            expect_divergences,
             max_divergences: parse_runner_usize(
                 "BORZOI_PROJECT_MAX_DIVERGENCES",
                 raw.max_divergences,
@@ -3263,6 +3376,7 @@ impl CorpusRunnerConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CorpusRunnerRawEnv {
+    pub expect_divergences: Option<OsString>,
     pub max_divergences: Option<OsString>,
     pub min_comparable_projects: Option<OsString>,
     pub max_skipped_projects: Option<OsString>,
@@ -3273,6 +3387,7 @@ pub struct CorpusRunnerRawEnv {
 impl CorpusRunnerRawEnv {
     pub fn current() -> Self {
         Self {
+            expect_divergences: std::env::var_os("BORZOI_PROJECT_EXPECT_DIVERGENCES"),
             max_divergences: std::env::var_os("BORZOI_PROJECT_MAX_DIVERGENCES"),
             min_comparable_projects: std::env::var_os("BORZOI_PROJECT_MIN_COMPARABLE"),
             max_skipped_projects: std::env::var_os("BORZOI_PROJECT_MAX_SKIPPED"),
@@ -3284,14 +3399,40 @@ impl CorpusRunnerRawEnv {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CorpusRunnerConfigError {
-    InvalidUsize { key: &'static str, value: String },
-    InvalidNonZeroUsize { key: &'static str, value: String },
-    InvalidBasisPoints { key: &'static str, value: String },
+    /// `BORZOI_PROJECT_EXPECT_DIVERGENCES` and `BORZOI_PROJECT_MAX_DIVERGENCES`
+    /// were both set. They are two incompatible readings of the same quantity —
+    /// a two-sided expectation and a one-sided ceiling — so a precedence rule
+    /// would silently discard whichever the caller meant.
+    ConflictingDivergenceRatchets,
+    InvalidDivergenceExpectation {
+        value: String,
+        reason: &'static str,
+    },
+    InvalidUsize {
+        key: &'static str,
+        value: String,
+    },
+    InvalidNonZeroUsize {
+        key: &'static str,
+        value: String,
+    },
+    InvalidBasisPoints {
+        key: &'static str,
+        value: String,
+    },
 }
 
 impl fmt::Display for CorpusRunnerConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ConflictingDivergenceRatchets => write!(
+                f,
+                "set BORZOI_PROJECT_EXPECT_DIVERGENCES or BORZOI_PROJECT_MAX_DIVERGENCES, not both"
+            ),
+            Self::InvalidDivergenceExpectation { value, reason } => write!(
+                f,
+                "BORZOI_PROJECT_EXPECT_DIVERGENCES must be \"assembly=<n>,project=<n>,reverse=<n>\"                  ({reason}); got {value:?}"
+            ),
             Self::InvalidUsize { key, value } => {
                 write!(f, "{key} must be a non-negative integer; got {value:?}")
             }
@@ -3386,6 +3527,53 @@ impl fmt::Display for ProjectCandidateSettingsError {
 }
 
 impl std::error::Error for ProjectCandidateSettingsError {}
+
+/// Parse `BORZOI_PROJECT_EXPECT_DIVERGENCES`, spelled
+/// `assembly=<n>,project=<n>,reverse=<n>` in any order.
+///
+/// All three categories are required and no category may repeat: the value is a
+/// *record* of what the corpus produces, and a spelling that silently defaults a
+/// category would record a claim nobody wrote. An unknown key is an error for
+/// the same reason — a typo would otherwise leave the category it meant to pin
+/// at its default.
+fn parse_divergence_expectation(
+    raw: Option<OsString>,
+) -> Result<Option<DivergenceCounts>, CorpusRunnerConfigError> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let text = raw.to_string_lossy().into_owned();
+    let invalid = |reason: &'static str| CorpusRunnerConfigError::InvalidDivergenceExpectation {
+        value: text.clone(),
+        reason,
+    };
+    let (mut project, mut assembly, mut reverse) = (None, None, None);
+    for field in text.split(',') {
+        let (key, value) = field
+            .split_once('=')
+            .ok_or_else(|| invalid("each field is <category>=<count>"))?;
+        let count: usize = value
+            .parse()
+            .map_err(|_| invalid("each count is a non-negative integer"))?;
+        let slot = match key.trim() {
+            "project" => &mut project,
+            "assembly" => &mut assembly,
+            "reverse" => &mut reverse,
+            _ => return Err(invalid("categories are assembly, project and reverse")),
+        };
+        if slot.replace(count).is_some() {
+            return Err(invalid("each category appears exactly once"));
+        }
+    }
+    match (project, assembly, reverse) {
+        (Some(project), Some(assembly), Some(reverse)) => Ok(Some(DivergenceCounts {
+            project,
+            assembly,
+            reverse,
+        })),
+        _ => Err(invalid("all three categories are required")),
+    }
+}
 
 fn parse_runner_usize(
     key: &'static str,
@@ -3912,6 +4100,7 @@ mod tests {
             max_skipped_projects: Some(OsString::from("4")),
             max_skipped_project_rate: Some(OsString::from("2500")),
             min_coverage: Some(OsString::from("9000")),
+            expect_divergences: None,
         })
         .expect("runner config is valid");
 
@@ -4199,6 +4388,188 @@ mod tests {
 
         assert!(!summary.passes_soundness_gate(0));
         assert!(summary.passes_soundness_gate(1));
+    }
+
+    /// A summary carrying `project`/`assembly`/`reverse` divergences, for the
+    /// expectation tests below.
+    fn summary_with_divergences(counts: DivergenceCounts) -> CorpusSummary {
+        let mut summary = CorpusSummary::new(1);
+        summary.record_project_visited();
+        summary.record_comparison(&Comparison {
+            divergences: (0..counts.project)
+                .map(|i| Divergence {
+                    file: PathBuf::from("/tmp/B.fs"),
+                    range: (i, i + 1),
+                    name: "x".to_string(),
+                    expected: DeclSite {
+                        file: PathBuf::from("/tmp/A.fs"),
+                        start: 1,
+                        end: 2,
+                    },
+                    actual: "Unresolved".to_string(),
+                })
+                .collect(),
+            assembly_divergences: (0..counts.assembly)
+                .map(|i| AssemblyDivergence {
+                    file: PathBuf::from("/tmp/B.fs"),
+                    range: (i, i + 1),
+                    name: "y".to_string(),
+                    expected: AssemblyDecl {
+                        assembly: "Lib".to_string(),
+                        full_name: "Lib.T".to_string(),
+                    },
+                    actual: "Other.T".to_string(),
+                })
+                .collect(),
+            reverse_divergences: (0..counts.reverse)
+                .map(|i| ReverseDivergence {
+                    file: PathBuf::from("/tmp/B.fs"),
+                    range: (i, i + 1),
+                    actual: "project \"x\" at /tmp/A.fs:1..2".to_string(),
+                    covering_oracles: Vec::new(),
+                })
+                .collect(),
+            ..Comparison::default()
+        });
+        summary
+    }
+
+    fn run_with_divergences(counts: DivergenceCounts) -> CorpusRun {
+        CorpusRun {
+            summary: summary_with_divergences(counts),
+            exhaustive: false,
+            divergence_details: Vec::new(),
+        }
+    }
+
+    const RECORDED: DivergenceCounts = DivergenceCounts {
+        project: 1,
+        assembly: 16,
+        reverse: 16,
+    };
+
+    fn expecting(counts: DivergenceCounts) -> CorpusRunnerConfig {
+        CorpusRunnerConfig {
+            expect_divergences: Some(counts),
+            ..CorpusRunnerConfig::default()
+        }
+    }
+
+    #[test]
+    fn a_divergence_expectation_passes_only_on_the_exact_counts() {
+        assert_eq!(
+            check_project_corpus_run(&run_with_divergences(RECORDED), expecting(RECORDED)),
+            Ok(())
+        );
+    }
+
+    /// The regression direction — what a `#204`-shaped change does.
+    #[test]
+    fn a_divergence_expectation_fails_when_a_category_regresses() {
+        let observed = DivergenceCounts {
+            assembly: 17,
+            ..RECORDED
+        };
+        assert_eq!(
+            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
+            Err(CorpusRunFailure::DivergenceExpectation {
+                expected: RECORDED,
+                observed,
+            })
+        );
+    }
+
+    /// The other side of the ratchet: fixing a divergence fails until the
+    /// recorded count comes down with it. Without this the ceiling never
+    /// descends and the gate decays into a rubber stamp.
+    #[test]
+    fn a_divergence_expectation_fails_when_a_category_improves() {
+        let observed = DivergenceCounts {
+            assembly: 15,
+            ..RECORDED
+        };
+        assert_eq!(
+            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
+            Err(CorpusRunFailure::DivergenceExpectation {
+                expected: RECORDED,
+                observed,
+            })
+        );
+    }
+
+    /// Why the expectation is per-category rather than a single total: a change
+    /// that introduces an assembly wrong target while fixing a project one
+    /// leaves the total untouched, and a total-only ratchet cannot see it.
+    #[test]
+    fn a_divergence_expectation_sees_a_trade_that_keeps_the_total() {
+        let observed = DivergenceCounts {
+            project: 0,
+            assembly: 17,
+            reverse: 16,
+        };
+        assert_eq!(observed.total(), RECORDED.total());
+        assert_eq!(
+            check_project_corpus_run(&run_with_divergences(observed), expecting(RECORDED)),
+            Err(CorpusRunFailure::DivergenceExpectation {
+                expected: RECORDED,
+                observed,
+            })
+        );
+    }
+
+    /// An expectation is still a ceiling: a run that measured nothing at all
+    /// must not satisfy it by accident.
+    #[test]
+    fn a_divergence_expectation_still_requires_a_comparable_project() {
+        let empty = CorpusRun {
+            summary: CorpusSummary::new(1),
+            exhaustive: false,
+            divergence_details: Vec::new(),
+        };
+        assert!(check_project_corpus_run(&empty, expecting(RECORDED)).is_err());
+    }
+
+    #[test]
+    fn a_divergence_expectation_parses_its_three_categories_in_any_order() {
+        let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+            expect_divergences: Some(OsString::from("reverse=16,assembly=16,project=1")),
+            ..CorpusRunnerRawEnv::default()
+        })
+        .expect("parses");
+        assert_eq!(parsed.expect_divergences, Some(RECORDED));
+    }
+
+    #[test]
+    fn a_divergence_expectation_rejects_a_malformed_spelling() {
+        for bad in [
+            "assembly=16,project=1",                        // reverse missing
+            "assembly=16,project=1,reverse=16,x=0",         // unknown category
+            "assembly=16,assembly=16,project=1,reverse=16", // duplicate
+            "assembly=16 project=1 reverse=16",             // wrong separator
+            "assembly=-1,project=1,reverse=16",             // not a count
+        ] {
+            let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+                expect_divergences: Some(OsString::from(bad)),
+                ..CorpusRunnerRawEnv::default()
+            });
+            assert!(parsed.is_err(), "{bad:?} must not parse");
+        }
+    }
+
+    /// The two knobs say the same thing in incompatible ways — one-sided
+    /// ceiling versus two-sided expectation — so setting both is a
+    /// configuration error rather than a silent precedence rule.
+    #[test]
+    fn a_divergence_expectation_conflicts_with_a_max_divergences_ceiling() {
+        let parsed = CorpusRunnerConfig::from_raw_env(CorpusRunnerRawEnv {
+            expect_divergences: Some(OsString::from("assembly=16,project=1,reverse=16")),
+            max_divergences: Some(OsString::from("33")),
+            ..CorpusRunnerRawEnv::default()
+        });
+        assert_eq!(
+            parsed,
+            Err(CorpusRunnerConfigError::ConflictingDivergenceRatchets)
+        );
     }
 
     #[test]
