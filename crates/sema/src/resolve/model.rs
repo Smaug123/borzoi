@@ -1810,6 +1810,29 @@ pub enum DeferredReason {
     /// to type a primitive-alias annotation soundly (only at the unrecorded
     /// signal); see `docs/sema-phase3-impl-plan.md` (R1).
     ShadowableType,
+    /// A name that **did** resolve into a referenced assembly, demoted because
+    /// the env's projection is incomplete: some DLL is present that it could not
+    /// read at all ([`AssemblyEnv::identities_incomplete`]).
+    ///
+    /// Nothing read out of the assemblies is provably unshadowed in that state.
+    /// The missing DLL could declare a type that collides with the one we
+    /// reached, could carry an assembly-level `[<AutoOpen>]` bringing names into
+    /// the namespace we resolved through, and could itself be the CCU a pickled
+    /// reference names. None of that is visible to a resolver that never saw it,
+    /// so no per-name test can rule it out — the uncertainty is wholesale, and
+    /// so is the decline.
+    ///
+    /// The contract in that state, so a consumer can rely on it: **sema commits
+    /// to no assembly-rooted resolution**, on any of the three surfaces that
+    /// record one. Inference's *types* are a stated gap, not part of the
+    /// guarantee — see `Gen::finish` for what still leaks and what closing it
+    /// would take.
+    ///
+    /// Distinct from the other reasons because its cause is *environmental*: the
+    /// user's code is fine and a name that would otherwise resolve is being
+    /// declined, which is worth saying out loud rather than reporting as an
+    /// ordinary unresolved qualified access.
+    IncompleteAssemblies,
 }
 
 /// How a name use resolves. A closed, inspectable value (not a callback), per
@@ -1839,6 +1862,29 @@ pub enum Resolution {
     /// Genuinely absent from every scope and import we model. The only
     /// error-eligible variant; not produced until Phase 4.
     Unresolved,
+}
+
+impl Resolution {
+    /// This resolution with an **assembly-rooted** reading — the two variants
+    /// that name something in a referenced assembly — demoted to
+    /// [`DeferredReason::IncompleteAssemblies`]. Everything else is returned
+    /// unchanged: an in-file binder cannot be shadowed by anything an assembly
+    /// declares, and a decline is already a decline.
+    ///
+    /// The single definition of what the seal *does*, so the phases that apply
+    /// it (`Resolver::finish` for its two maps, inference's for its one) cannot
+    /// drift apart on which variants count. Callers decide *whether* to seal, by
+    /// asking [`AssemblyEnv::identities_incomplete`]; **any future map of
+    /// `Resolution` must be swept the same way**, since a consumer reading it
+    /// would otherwise see a claim the rest of the file has withdrawn.
+    pub(crate) fn sealed_under_incomplete_projection(self) -> Resolution {
+        match self {
+            Resolution::Entity(_) | Resolution::Member { .. } => {
+                Resolution::Deferred(DeferredReason::IncompleteAssemblies)
+            }
+            other => other,
+        }
+    }
 }
 
 /// The ways an `open` declaration **perturbs later name resolution** — the "why

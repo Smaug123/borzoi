@@ -19,10 +19,12 @@
 //! concern this layer intentionally does not predict).
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use borzoi_sema::{DeferredReason, Resolution, ResolvedFile};
+use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile};
 use rowan::{TextRange, TextSize};
 
-use super::{smallest_resolution_at, smallest_resolution_with_range};
+use super::{
+    smallest_member_resolution_with_range, smallest_resolution_at, smallest_resolution_with_range,
+};
 
 /// Why go-to-definition produced no navigable location under the cursor. Each
 /// variant is a distinct, honest reason we declined — the closed set mirrors
@@ -44,6 +46,13 @@ pub enum UnavailableReason {
     /// opaque `open` could supply a type of this name
     /// ([`DeferredReason::ShadowableType`]) — so we decline rather than guess.
     ShadowableType,
+    /// The name *did* resolve into a referenced assembly, but one of the
+    /// project's referenced DLLs could not be read at all
+    /// ([`DeferredReason::IncompleteAssemblies`]), so nothing read out of the
+    /// others is provably the right target. The user's code is fine; the
+    /// analyzer's view of the project is not — which is why this is worth
+    /// distinguishing from an ordinary unresolved access.
+    IncompleteAssemblies,
     /// The name resolves to nothing in any scope or import we model
     /// ([`Resolution::Unresolved`]). Sema reserves this for Phase 4 and does
     /// not produce it yet; carried so the mapping is total the day it does.
@@ -100,6 +109,12 @@ impl UnavailableReason {
                 "This type name could be shadowed by an `open` the analyzer can't see through, so \
                  it declines to guess which type it refers to."
             }
+            UnavailableReason::IncompleteAssemblies => {
+                "One of this project's referenced assemblies couldn't be read, so any name that \
+                 resolves into a referenced assembly could be shadowed by something in the one \
+                 that's missing — the analyzer declines all of them rather than guess. The \
+                 server log names the DLL."
+            }
             UnavailableReason::Unresolved => {
                 "This name resolves to nothing in any scope or import the analyzer models."
             }
@@ -124,13 +139,22 @@ const DEGRADED_NOTE: &str = "_Analyzed without project context (its `.fsproj` di
 /// — in both cases there is no honest explanation to give. `degraded_single_file`
 /// is threaded through unchanged: it reflects *how* `file` was resolved, which
 /// the caller knows and the classifier does not.
+///
+/// `inferred` is the same side-table go-to-definition consults, under the same
+/// precedence: the resolver's answer wins unless it deferred or recorded
+/// nothing, in which case inference's member resolution decides. It must be
+/// passed wherever it exists, or this explains a member-name deferral the
+/// *resolver* left behind while go-to-definition acts on inference's verdict —
+/// two surfaces disagreeing about the same cursor. `None` where there is no
+/// inference to consult (a signature buffer, or the single-file fallback).
 pub fn classify(
     file: &ResolvedFile,
+    inferred: Option<&InferredFile>,
     root: &SyntaxNode,
     byte: usize,
     degraded_single_file: bool,
 ) -> Option<DefinitionUnavailable> {
-    let reason = match smallest_resolution_at(file, byte) {
+    let reason = match effective_resolution(file, inferred, byte) {
         // Navigable: go-to-definition can answer (source-IO caveats aside).
         Some(
             Resolution::Local(_)
@@ -144,6 +168,9 @@ pub fn classify(
         }
         Some(Resolution::Deferred(DeferredReason::ShadowableType)) => {
             UnavailableReason::ShadowableType
+        }
+        Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
+            UnavailableReason::IncompleteAssemblies
         }
         Some(Resolution::Unresolved) => UnavailableReason::Unresolved,
         // No recorded occurrence: only an *identifier* under the cursor is worth
@@ -163,13 +190,51 @@ pub fn classify(
     })
 }
 
-/// Where to anchor the explanation tooltip: the resolved-occurrence range if the
-/// cursor sits on one, else the identifier token's range. `Some` whenever
+/// The resolution the LSP would *act* on at `byte`: the resolver's, unless it
+/// deferred or recorded nothing there and inference resolved the member. This is
+/// [`crate::handlers::definition`]'s precedence, shared so the explanation and
+/// the navigation can never disagree about which verdict is in force.
+fn effective_resolution(
+    file: &ResolvedFile,
+    inferred: Option<&InferredFile>,
+    byte: usize,
+) -> Option<Resolution> {
+    match smallest_resolution_at(file, byte) {
+        Some(res) if !matches!(res, Resolution::Deferred(_)) => Some(res),
+        deferred_or_none => inferred
+            .and_then(|i| smallest_member_resolution_with_range(i, byte))
+            .map(|(_, res)| res)
+            .or(deferred_or_none),
+    }
+}
+
+/// Where to anchor the explanation tooltip: the occurrence range the verdict in
+/// force came from, else the identifier token's range. `Some` whenever
 /// [`classify`] returns `Some` (a resolution carries a range; an
 /// [`UnavailableReason::UntrackedName`] came from an identifier token).
-pub fn explanation_range(file: &ResolvedFile, root: &SyntaxNode, byte: usize) -> Option<TextRange> {
-    if let Some((range, _)) = smallest_resolution_with_range(file, byte) {
-        return Some(range);
+///
+/// Takes `inferred` for the same reason [`classify`] does: when inference's
+/// member resolution is the verdict, its *member* range is what the tooltip
+/// covers — the resolver's range at that cursor is a different span (often the
+/// whole dotted path), or absent entirely.
+pub fn explanation_range(
+    file: &ResolvedFile,
+    inferred: Option<&InferredFile>,
+    root: &SyntaxNode,
+    byte: usize,
+) -> Option<TextRange> {
+    match smallest_resolution_with_range(file, byte) {
+        Some((range, res)) if !matches!(res, Resolution::Deferred(_)) => return Some(range),
+        resolver_side => {
+            if let Some((range, _)) =
+                inferred.and_then(|i| smallest_member_resolution_with_range(i, byte))
+            {
+                return Some(range);
+            }
+            if let Some((range, _)) = resolver_side {
+                return Some(range);
+            }
+        }
     }
     identifier_token_range(root, byte)
 }
@@ -208,7 +273,7 @@ mod tests {
     fn reasons_in(src: &str) -> Vec<UnavailableReason> {
         let (file, root) = resolve(src);
         (0..=src.len())
-            .filter_map(|byte| classify(&file, &root, byte, false).map(|u| u.reason))
+            .filter_map(|byte| classify(&file, None, &root, byte, false).map(|u| u.reason))
             .collect()
     }
 
@@ -243,7 +308,7 @@ mod tests {
         ) {
             let (file, root) = resolve(snippet);
             let byte = pick.index(snippet.len() + 1);
-            let got = classify(&file, &root, byte, false).map(|u| u.reason);
+            let got = classify(&file, None, &root, byte, false).map(|u| u.reason);
             let expected = match smallest_resolution_at(&file, byte) {
                 Some(
                     Resolution::Local(_)
@@ -259,6 +324,9 @@ mod tests {
                 }
                 Some(Resolution::Deferred(DeferredReason::ShadowableType)) => {
                     Some(UnavailableReason::ShadowableType)
+                }
+                Some(Resolution::Deferred(DeferredReason::IncompleteAssemblies)) => {
+                    Some(UnavailableReason::IncompleteAssemblies)
                 }
                 Some(Resolution::Unresolved) => Some(UnavailableReason::Unresolved),
                 None => identifier_token_range(&root, byte)
@@ -276,8 +344,8 @@ mod tests {
         ) {
             let (file, root) = resolve(snippet);
             let byte = pick.index(snippet.len() + 1);
-            let plain = classify(&file, &root, byte, false);
-            let degraded = classify(&file, &root, byte, true);
+            let plain = classify(&file, None, &root, byte, false);
+            let degraded = classify(&file, None, &root, byte, true);
             prop_assert_eq!(plain.map(|u| u.reason), degraded.map(|u| u.reason));
             prop_assert_eq!(plain.is_some(), degraded.is_some());
             prop_assert_eq!(plain.map(|u| u.degraded_single_file), plain.map(|_| false));
@@ -298,7 +366,7 @@ mod tests {
             let byte = pick.index(snippet.len() + 1);
             if let Some(res) = smallest_resolution_at(&file, byte) {
                 let locatable = file.resolved_def(res).is_some();
-                let explained = classify(&file, &root, byte, false).is_some();
+                let explained = classify(&file, None, &root, byte, false).is_some();
                 if locatable {
                     prop_assert!(!explained, "a locatable definition must not be explained-away");
                 }
@@ -399,13 +467,13 @@ mod tests {
         // Column 3 of `let x = 1` is the space after `let` — no identifier
         // touches it, so there is nothing to explain.
         let (file, root) = resolve("let x = 1\n");
-        assert!(classify(&file, &root, 3, true).is_none());
+        assert!(classify(&file, None, &root, 3, true).is_none());
     }
 
     #[test]
     fn past_end_offset_does_not_panic() {
         let (file, root) = resolve("let x = 1\n");
         // Far past the buffer: no token, no resolution, no explanation.
-        assert!(classify(&file, &root, 10_000, false).is_none());
+        assert!(classify(&file, None, &root, 10_000, false).is_none());
     }
 }
