@@ -4821,10 +4821,15 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
     // type for it, so composing "declaring entity plus symbol name" would name
     // `Dictionary.Enumerator.Enumerator` for `Dictionary<_,_>.Enumerator()`.
     // Reported rather than guessed at from the spelling.
-    let isConstructor : objnull =
+    // Always a JSON boolean, never `null`: the consumers deserialise it as a
+    // `bool`, and a null would fail the *whole* dump's parse — turning one
+    // unreadable symbol into a skipped project. `false` on failure is the
+    // fail-closed answer: a constructor read as an ordinary member composes a
+    // name that matches nothing, so the site stays a divergence.
+    let isConstructor : bool =
         match u.Symbol with
-        | :? FSharpMemberOrFunctionOrValue as m -> (try box m.IsConstructor with _ -> null)
-        | _ -> box false
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
+        | _ -> false
     {| SymbolName = u.Symbol.DisplayName
        Range = u.Range
        IsFromDefinition = u.IsFromDefinition

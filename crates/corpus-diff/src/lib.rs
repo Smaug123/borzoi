@@ -824,6 +824,8 @@ pub struct ProjectUse {
     /// present for a member, field, union case or nested type. See
     /// [`DeclaringEntity`].
     pub declaring: Option<DeclaringEntity>,
+    /// The used symbol's own generic-parameter count, when it is an entity.
+    pub generic_arity: Option<usize>,
 }
 
 /// The declaring entity of a used symbol, as the oracle reports it rather than
@@ -1036,12 +1038,17 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
     #[serde(rename = "DeclaringPath", default)]
     declaring_path: Option<Vec<RawDeclaringSegment>>,
     #[serde(rename = "DeclaringNamespace", default)]
     declaring_namespace: Option<String>,
+    // `Option` although the oracle always emits a boolean: a `null` here would
+    // fail the whole dump's parse and skip the project, and "unknown" is worth
+    // no more than "not a constructor" — both decline the composition.
     #[serde(rename = "IsConstructor", default)]
-    is_constructor: bool,
+    is_constructor: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1115,6 +1122,7 @@ pub fn parse_project_uses(
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        generic_arity: u.generic_arity,
                         declaring: match (u.declaring_path, u.declaring_namespace) {
                             // A path without the namespace it sits in names a
                             // shape rather than a place, and neither half alone
@@ -1130,7 +1138,7 @@ pub fn parse_project_uses(
                                         .into_iter()
                                         .map(|segment| (segment.name, segment.arity))
                                         .collect(),
-                                    is_constructor: u.is_constructor,
+                                    is_constructor: u.is_constructor.unwrap_or(false),
                                 })
                             }
                             (Some(_), _) | (None, _) => None,
@@ -2456,6 +2464,13 @@ pub struct StructuralName {
     pub declaring: DeclaringEntity,
     /// The used symbol's own display name.
     pub leaf: String,
+    /// The used symbol's own generic-parameter count, when it is an entity.
+    ///
+    /// The declaring path names the *enclosing* entity, so a nested type's own
+    /// arity is not in it: `Outer<T>.Inner<U>` and `Outer<T>.Inner<U,V>` both
+    /// report the path `Outer` and the leaf `Inner`. Without this a bare
+    /// nested-type use could certify the wrong one.
+    pub leaf_arity: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2669,6 +2684,7 @@ fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
             structural: use_.declaring.as_ref().map(|declaring| StructuralName {
                 declaring: declaring.clone(),
                 leaf: use_.name.clone(),
+                leaf_arity: use_.generic_arity,
             }),
         }),
         (Some(_), None) | (None, Some(_)) | (None, None) => None,
@@ -2921,6 +2937,15 @@ fn certified_expected(
         | Resolution::Deferred(_)
         | Resolution::Unresolved => return None,
     };
+    // The path names the *enclosing* entity, so for a use that is itself an
+    // entity the leaf's own arity is the only thing separating
+    // `Outer<T>.Inner<U>` from `Outer<T>.Inner<U,V>`.
+    if let (Resolution::Entity(handle), Some(arity)) = (res, structural.leaf_arity)
+        && !structural.declaring.is_constructor
+        && env.entity(handle).generic_parameters.len() != arity
+    {
+        return None;
+    }
     let position = chain_position(env, &chain, &structural.declaring)?;
     let named = env.entity_full_name(chain[position]);
     Some(if structural.declaring.is_constructor {
@@ -2969,7 +2994,13 @@ fn chain_position(
 /// it too, so the two names live in one domain.
 fn strip_ecma_arity(name: &str) -> &str {
     match name.rsplit_once('`') {
-        Some((spelling, arity)) if arity.parse::<usize>().is_ok() => spelling,
+        // Canonical mangling only — no leading zero. ``C`01`` and ``C`1`` are
+        // distinct metadata names that both mean arity 1, and the projection
+        // strips both to `C`; leaving the non-canonical one un-stripped keeps
+        // them apart here rather than certifying one against the other.
+        Some((spelling, arity)) if arity.parse::<usize>().is_ok() && !arity.starts_with('0') => {
+            spelling
+        }
         Some(_) | None => name,
     }
 }
@@ -4226,6 +4257,7 @@ mod tests {
                     is_constructor,
                 },
                 leaf: leaf.to_string(),
+                leaf_arity: None,
             }),
         }
     }
@@ -4473,6 +4505,7 @@ mod tests {
                     is_constructor: true,
                 },
                 leaf: "Inner".to_string(),
+                leaf_arity: None,
             }),
         };
         assert_eq!(
@@ -4509,6 +4542,7 @@ mod tests {
                     is_constructor: false,
                 },
                 leaf: "Case".to_string(),
+                leaf_arity: None,
             }),
         };
         assert_eq!(
@@ -4567,6 +4601,44 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// A nested type's *own* arity is not in the declaring path, which names its
+    /// encloser: `Outer<T>.Inner<U>` and `Outer<T>.Inner<U,V>` both report the
+    /// path `Outer` and the leaf `Inner`. The used symbol's own arity, which the
+    /// oracle reports for an entity, is what tells them apart.
+    #[test]
+    fn a_nested_types_own_arity_separates_two_same_named_ones() {
+        let mut outer = fixture_entity("Outer", EntityKind::Class, 1, &[]);
+        outer.nested_types = vec![fixture_entity("Inner", EntityKind::Class, 2, &[])];
+        let env = AssemblyEnv::from_entities(vec![outer]);
+        let outer_handle = fixture_handle(&env, "Outer", 1, false);
+        let inner = env
+            .children(outer_handle)
+            .iter()
+            .copied()
+            .find(|h| env.entity(*h).name == "Inner")
+            .expect("Demo.Outer.Inner");
+        let res = Resolution::Entity(inner);
+        let nested = |leaf_arity: usize| AssemblyDecl {
+            assembly: "Demo".to_string(),
+            full_name: "Demo.Outer<_>.Inner".to_string(),
+            structural: Some(StructuralName {
+                declaring: DeclaringEntity {
+                    namespace: vec!["Demo".to_string()],
+                    path: vec![("Outer`1".to_string(), 1)],
+                    is_constructor: false,
+                },
+                leaf: "Inner".to_string(),
+                leaf_arity: Some(leaf_arity),
+            }),
+        };
+        // Ours declares one of its own on top of the encloser's: two in total.
+        assert_eq!(
+            certified_expected(&env, res, &nested(2)).as_deref(),
+            Some("Demo.Outer.Inner")
+        );
+        assert_eq!(certified_expected(&env, res, &nested(3)), None);
     }
 
     /// A use with no declaring entity — a bare type, or an oracle that reported
@@ -4665,6 +4737,7 @@ mod tests {
                         is_constructor: false,
                     },
                     leaf: theirs.member.to_string(),
+                    leaf_arity: None,
                 }),
             };
             let same_declaration = ours.name == theirs.name && ours.member == theirs.member;
