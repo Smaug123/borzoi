@@ -662,6 +662,59 @@ impl ProjectItems {
     /// fragment's own member: the auto-open fold folds each `[<AutoOpen>]`
     /// fragment's members at *its* file, so it must read the export declared
     /// *there*, not the collapsed latest.
+    /// Whether **any** preceding project file exports a value named `name` in a
+    /// container that is bare-visible here: the enclosing `namespace` (whose
+    /// direct union/exception cases F# makes bare without an `open`) or the root.
+    ///
+    /// The project-side arm of the constructor fallback's "is this name a value?"
+    /// question. `lookup` does not materialise a *namespace-direct* case from an
+    /// earlier file into the value frame, and `decide_type_path` ignores values by
+    /// design, so neither sees this. Deferral-only, so matching too eagerly is
+    /// sound: the check is by simple name, ignoring accessibility and shadowing.
+    pub(super) fn namespace_exports_value_named(&self, namespace: &[String], name: &str) -> bool {
+        let mut container = namespace.to_vec();
+        loop {
+            if self.container_value_surface_could_supply(&container, name) {
+                return true;
+            }
+            // An `[<AutoOpen>]` module *inside* this container puts its values in
+            // bare scope too, and its export is keyed under the module path
+            // (`Demo.A.Thing`), which the container probe above never reaches.
+            // Recurses, since an auto-open module may hold another.
+            let mut frontier = self.auto_open_modules_directly_in(&container);
+            while let Some(module) = frontier.pop() {
+                if self.container_value_surface_could_supply(&module, name) {
+                    return true;
+                }
+                frontier.extend(self.auto_open_modules_directly_in(&module));
+            }
+            if container.pop().is_none() {
+                return false;
+            }
+        }
+    }
+
+    /// Whether `container` could contribute a bare value named `name` from a
+    /// preceding file: an enumerated export of that name, **or** the container's
+    /// *residue*.
+    ///
+    /// [`Self::modules_with_hidden_values`] is the project-side twin of
+    /// [`OpenFoldSurface::residue`](crate::OpenFoldSurface::residue): a container
+    /// declaring union cases, exception constructors, active patterns or aliases
+    /// has value-space names the export index cannot enumerate, so an absent
+    /// `value_exports` row there is not evidence of absence. Consulting it is what
+    /// keeps this from being a bespoke query that re-derives the fold badly.
+    fn container_value_surface_could_supply(&self, container: &[String], name: &str) -> bool {
+        if self.modules_with_hidden_values.contains(container) {
+            return true;
+        }
+        let mut path = container.to_vec();
+        path.push(name.to_string());
+        self.value_exports
+            .get(&path[..])
+            .is_some_and(|history| !history.is_empty())
+    }
+
     fn latest_accessible_in_file(
         &self,
         path: &[String],

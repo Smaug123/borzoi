@@ -16,9 +16,12 @@
 use crate::common::{
     ensure_assembly_fixture_built, invoke_fcs_dump_with_refs, parse_fcs_uses, temp_fs_file,
 };
-use borzoi_assembly::{Ecma335Assembly, Member};
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use borzoi_assembly::{Ecma335Assembly, EcmaView, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
 use rowan::TextRange;
 
@@ -280,11 +283,176 @@ fn assembly_resolution_is_sound_across_the_tier_surface() {
         // it must defer, never wrong-target `Demo.Sub.Calc` (the ours→FCS guard).
         "module M\nopen Demo\nmodule Sub =\n    type Calc = int\nlet f (x : Sub.Calc) = x\n",
         "module M\nopen Demo\nmodule Sub =\n    let placeholder = 1\nlet f (x : Sub.Calc) = x\n",
+        // Expression-position constructor fallback edge cases (the ours→FCS guard
+        // catches a wrong-target): a same-file `type Thing` shadows the opened
+        // `Demo.Thing` (FCS binds the project type), and an explicit type
+        // application must not name the arity-0 sibling.
+        "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
+        "open Demo\nlet x = Pair<int> ()\n",
+        "open Demo\nlet x = Calc ()\n", // static class → no bare constructor
+        // An `extern` prototype introduces a module-level *value* `Thing` that
+        // shadows the opened `Demo.Thing`, but is deliberately not interned as a
+        // usable binder and has no pattern to reach the binder-name pre-scan —
+        // so the value-frame miss there is conservative, not a genuine unbound.
+        "module M\nopen Demo\nextern int Thing(int x)\nlet y = Thing 1\n",
+        // A *named-argument label* colliding with the opened type: `Calc.Named`
+        // takes an `int Thing`, so FCS binds this `Thing` to the parameter. The
+        // label is visited as a bare ident, so the fallback must not name the type.
+        "module M\nopen Demo\nlet y = Calc.Named(Thing = 1)\n",
     ];
     for src in cases {
         let (agreed, total) = sweep_sound(src);
         eprintln!("[sweep] {agreed}/{total} {src:?}");
     }
+}
+
+/// The expression-position **constructor** fallback, swept generatively over
+/// *every* public type the fixture declares in `Demo`. For each, `open Demo; let
+/// x = <Name> ()` is checked certain-implies-exact against FCS ([`sweep_sound`]):
+/// where we commit an `Entity`, FCS must name the same one; otherwise we must
+/// honestly defer. Enumerating from the assembly (not a hand-list) means a new
+/// fixture type is probed automatically — the guard against the
+/// [`AssemblyEnv::bare_expr_constructible`] predicate silently drifting from
+/// FCS's actual constructor surface (a static class, union, record, generic, or
+/// abbreviation that must defer, vs a plain class that must resolve).
+///
+/// This is the systematic backstop for the constructor fallback: the type-kind
+/// edge cases (static `Calc`/`Exts` → nothing, generic `Pair<'T>` → the arity
+/// sibling, struct unions → nothing) are checked by the machine rather than
+/// reasoned about one at a time.
+#[test]
+fn bare_constructor_fallback_is_sound_over_every_demo_type() {
+    let fixture = ensure_assembly_fixture_built();
+    let bytes = std::fs::read(fixture).expect("read fixture dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse fixture dll");
+    let entities = view.enumerate_type_defs().expect("enumerate type defs");
+
+    // Distinct public simple names declared directly in `Demo` (dedup the
+    // generic-arity siblings `Pair` / `Pair`1` / `Pair`2`, which share a name).
+    let mut names: Vec<String> = Vec::new();
+    for e in &entities {
+        if e.namespace == ["Demo"] && !names.contains(&e.name) {
+            names.push(e.name.clone());
+        }
+    }
+    assert!(names.len() > 5, "fixture should declare many Demo types");
+
+    let mut total_agreed = 0usize;
+    for name in &names {
+        let src = format!("open Demo\nlet x = {name} ()\n");
+        let (agreed, _total) = sweep_sound(&src);
+        eprintln!("[ctor-sweep] agreed={agreed} {src:?}");
+        total_agreed += agreed;
+    }
+    // Non-vacuity: the fallback must actually resolve at least the plain classes
+    // (`Thing`, `Other`, `Widget`, `Gizmo`, `Pair`), or the sweep proves nothing.
+    assert!(
+        total_agreed >= 4,
+        "the constructor fallback resolved nothing — the sweep is vacuous"
+    );
+}
+
+/// Every in-file **declaration form** that introduces a name colliding with the
+/// opened `Demo.Thing`, crossed with every bare-`Thing` use position, checked
+/// certain-implies-exact against FCS ([`sweep_sound`]).
+///
+/// This is the sibling axis to [`bare_constructor_fallback_is_sound_over_every_demo_type`]:
+/// that one sweeps *which assembly types* are constructible, this one sweeps
+/// *which project declarations shadow them*. It exists because the fallback's
+/// precondition — "the value frame missed, so the name is unbound" — is only
+/// **conservative**: `lookup` also misses names F# genuinely binds (a `let` the
+/// generation barrier staled, a provisional uppercase parameter, an `extern`
+/// prototype that is deliberately never interned). Each such declaration form is
+/// a separate channel, and the channels are not derivable from the code the
+/// fallback can see, so enumerating the *syntax* and letting FCS adjudicate is
+/// the only way to know the veto covers them all. A newly-modelled declaration
+/// form is probed here automatically once added to `FORMS`.
+#[test]
+fn bare_constructor_fallback_is_sound_under_every_shadowing_declaration() {
+    // Each entry declares something named `Thing` in the same file as `open Demo`.
+    const FORMS: &[&str] = &[
+        "let Thing = 1",
+        "let Thing () = 1",
+        "let inline Thing x = x",
+        "let mutable Thing = 1",
+        "[<Literal>]\nlet Thing = 1",
+        "let rec Thing x = Thing x",
+        "extern int Thing(int x)",
+        "exception Thing of int",
+        "type U =\n    | Thing of int",
+        "type U =\n    | Thing",
+        "module Thing =\n    let x = 1",
+        "type Thing() = class end",
+        "type Thing = int",
+        "let (|Thing|_|) x = None",
+        // A *provisional* uppercase parameter: FCS binds the RHS `Thing`, but the
+        // resolution pass drops the would-be binder, so `lookup` misses.
+        "let f (Thing: int) = Thing",
+        // The staled-head channel: an intervening open raises the generation
+        // barrier, so the earlier `Thing` binder is staled out of the value frame.
+        "let Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P",
+        // The same declarations inside an in-file `[<AutoOpen>]` module: their
+        // names are bare-visible without an `open`, and a case has no `Pat` for
+        // the binder pre-scan to reach.
+        "[<AutoOpen>]\nmodule A =\n    exception Thing of int",
+        "[<AutoOpen>]\nmodule A =\n    type U =\n        | Thing of int",
+        "[<AutoOpen>]\nmodule A =\n    let Thing = 1",
+    ];
+    // The bare-`Thing` use positions the fallback can reach.
+    //
+    // The *named-argument label* position (`Calc.Named(Thing = 1)`) is checked
+    // once, unshadowed, in `assembly_resolution_is_sound_across_the_tier_surface`
+    // rather than crossed with these forms. Crossed, it stops testing this
+    // property: a label over a shadowing declaration resolves to the *project
+    // value*, which is wrong (FCS binds the callee's parameter) but wrong on main
+    // too — the expression walker recurses into application arguments blindly, so
+    // the label reaches the bare-ident path at all. That is a named-argument
+    // modelling gap, not a constructor-fallback one, and folding it in here would
+    // make this sweep gate on a defect it does not own.
+    const USES: &[&str] = &["let y = Thing 1", "let y = Thing ()", "let y = Thing"];
+
+    // Control: with no shadowing declaration the fallback *must* resolve, or every
+    // "deferred, therefore sound" verdict below would hold vacuously (a disabled
+    // fallback passes the whole sweep).
+    let (agreed, _) = sweep_sound("module M\nopen Demo\nlet y = Thing ()\n");
+    assert_eq!(
+        agreed, 1,
+        "unshadowed control must resolve — otherwise the shadow sweep is vacuous"
+    );
+
+    // Collect every violation rather than stopping at the first: the point of the
+    // sweep is the *worklist* of unguarded channels, not one example of one.
+    let mut failures: Vec<(String, String)> = Vec::new();
+    for form in FORMS {
+        for use_site in USES {
+            let src = format!("module M\nopen Demo\n{form}\n{use_site}\n");
+            let guard = silence_panics_here();
+            let outcome = catch_unwind(AssertUnwindSafe(|| sweep_sound(&src)));
+            drop(guard);
+            match outcome {
+                Ok((agreed, total)) => eprintln!("[shadow-sweep] {agreed}/{total} {src:?}"),
+                Err(payload) => {
+                    let msg = payload
+                        .downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                        .unwrap_or_else(|| "<non-string panic>".to_string());
+                    eprintln!("[shadow-sweep] UNSOUND {src:?}");
+                    failures.push((src, msg));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "the constructor fallback wrong-targets under {} shadowing declaration(s):\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(src, msg)| format!("  {src:?}\n    {msg}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 #[test]
@@ -305,6 +473,13 @@ fn assembly_resolution_agrees_with_fcs() {
     // namespace prefix coming from the open, not the source.
     assert_matches_fcs("open Demo\nlet x = Calc.Zero()\n", 2);
     assert_matches_fcs("open Demo\nlet y = Calc.Answer\n", 2);
+
+    // A bare *constructor* call uses the type name as an expression head: `open
+    // Demo` then `Thing ()` resolves the bare `Thing` to the `Demo.Thing` type
+    // (Entity). FCS reports the type symbol at the occurrence, so this is the
+    // expression-position twin of the type-position `(x : Thing)` below — only
+    // the type use counts (the `Demo` open-clause qualifier we leave unresolved).
+    assert_matches_fcs("open Demo\nlet x = Thing ()\n", 1);
 
     // An inaccessible `open Demo.Hidden` (internal type) must not suppress the
     // valid `open Demo`: `Calc.Zero` still resolves to `Demo.Calc.Zero`.
@@ -585,4 +760,99 @@ fn type_position_resolution_is_complete_in_the_assembly_envelope() {
     // FCS-free `resolve_assembly.rs`; the differential's `our_assembly_full`
     // doesn't reconstruct a nested type's enclosing-chain full name, so it's not
     // re-checked here.)
+}
+
+/// Every **binding form** that can introduce a bare-visible value named `Thing`,
+/// each with a use inside its own scope, checked certain-implies-exact against
+/// FCS ([`sweep_sound`]).
+///
+/// The third axis of the constructor fallback's soundness, and the one review
+/// found one case at a time. `bare_constructor_fallback_is_sound_under_every_shadowing_declaration`
+/// sweeps *declaration* forms and
+/// `bare_constructor_fallback_is_sound_over_every_bare_value_surface` sweeps
+/// *assembly* surfaces; neither reaches a binder written as an **expression**.
+/// The binder pre-scan walks `Pat` nodes, so every such form is invisible to it
+/// — `extern`, a union case, and a query range variable each arrived as a
+/// separate review finding before this existed.
+///
+/// A form our parser rejects is reported as a coverage gap, not a soundness
+/// failure: the sweep is about what we resolve, not what we parse.
+#[test]
+fn bare_constructor_fallback_is_sound_under_every_binding_form() {
+    // Each snippet binds `Thing` and uses it bare within that binding's scope.
+    const FORMS: &[&str] = &[
+        // Query operators — binders written as expressions, not patterns.
+        "let q xs ys =\n    query {\n        for x in xs do\n        join Thing in ys on (x = Thing)\n        select Thing\n    }\n",
+        "let q xs ys =\n    query {\n        for x in xs do\n        groupJoin Thing in ys on (x = Thing) into g\n        select g\n    }\n",
+        // The *other* binding position of the same form: `into` names a second
+        // range variable. A form that binds more than one name must be probed in
+        // each position, or the sweep inherits the blind spot it exists to close.
+        "let q xs ys =\n    query {\n        for x in xs do\n        groupJoin y in ys on (x = y) into Thing\n        select Thing\n    }\n",
+        // The same `into` binder under a different query operator — the reason
+        // the scan is keyed on the clause rather than on `JoinInExpr`.
+        "let q xs =\n    query {\n        for x in xs do\n        groupBy x into Thing\n        select Thing\n    }\n",
+        "let q xs =\n    query {\n        for Thing in xs do\n        select Thing\n    }\n",
+        // Computation-expression binders.
+        "let f x =\n    async {\n        let! Thing = x\n        return Thing\n    }\n",
+        "let f x =\n    async {\n        use! Thing = x\n        return Thing\n    }\n",
+        // Ordinary value binders in every position that can hold one.
+        "let f = fun Thing -> Thing\n",
+        "let f xs =\n    for Thing in xs do\n        ignore Thing\n",
+        "let f (d: System.IDisposable) =\n    use Thing = d\n    ignore Thing\n",
+        "let f x =\n    match x with\n    | Thing -> Thing\n",
+        "let f =\n    function\n    | Thing -> Thing\n",
+        "let f x =\n    let Thing = x\n    Thing\n",
+        "let f xs = seq { for Thing in xs -> Thing }\n",
+        "let f xs = [ for Thing in xs -> Thing ]\n",
+        // Member and constructor parameters.
+        "type C(Thing: int) =\n    member _.X = Thing\n",
+        "type C() =\n    member _.M(Thing: int) = Thing\n",
+    ];
+
+    // Control: with no binder in scope the fallback *must* commit, or every
+    // "deferred, therefore sound" verdict below holds vacuously — a fallback that
+    // never fires would pass the whole sweep.
+    let (agreed, _) = sweep_sound("module M\nopen Demo\nlet f () = Thing ()\n");
+    assert_eq!(
+        agreed, 1,
+        "unbound control must resolve — otherwise the binding sweep is vacuous"
+    );
+
+    let mut failures: Vec<(String, String)> = Vec::new();
+    let mut unparsed: Vec<String> = Vec::new();
+    for form in FORMS {
+        let src = format!("module M\nopen Demo\n{form}");
+        if !parse(&src).errors.is_empty() {
+            unparsed.push(src);
+            continue;
+        }
+        let guard = silence_panics_here();
+        let outcome = catch_unwind(AssertUnwindSafe(|| sweep_sound(&src)));
+        drop(guard);
+        match outcome {
+            Ok((agreed, total)) => eprintln!("[binding-sweep] {agreed}/{total} {src:?}"),
+            Err(payload) => {
+                let msg = payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+                    .unwrap_or_else(|| "<non-string panic>".to_string());
+                eprintln!("[binding-sweep] UNSOUND {src:?}");
+                failures.push((src, msg));
+            }
+        }
+    }
+    for src in &unparsed {
+        eprintln!("[binding-sweep] UNPARSED (coverage gap, not unsound) {src:?}");
+    }
+    assert!(
+        failures.is_empty(),
+        "the constructor fallback wrong-targets under {} binding form(s):\n{}",
+        failures.len(),
+        failures
+            .iter()
+            .map(|(src, msg)| format!("  {src:?}\n    {msg}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }

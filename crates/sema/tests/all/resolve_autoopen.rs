@@ -703,6 +703,27 @@ fn manifest_auto_open_module_nested_type_defers_a_bare_type_annotation() {
 }
 
 #[test]
+fn manifest_auto_open_module_nested_type_defers_a_bare_constructor_use() {
+    // The expression-position twin of the annotation case above — the fixture
+    // comment records that FCS binds the auto-opened `DirectShadow` in *both*
+    // positions. A bare constructor use resolves through `decide_type_path`, so
+    // the manifest-surface veto (which keys on the written arity for a
+    // single-segment path — exactly this query) must cover it too. Committing
+    // the root decoy the prefix walk finds would be a wrong go-to-definition.
+    let env = fixture_env();
+    let src = "let x = DirectShadow ()\n";
+    let rf = resolve(src, &env);
+    let root_decoy = env
+        .lookup_type(&[], "DirectShadow", 0)
+        .expect("fixture must declare a global-namespace DirectShadow decoy");
+    assert_ne!(
+        rf.resolution_at(at(src, "DirectShadow")),
+        Some(Resolution::Entity(root_decoy)),
+        "the constructor fallback must not commit the root decoy the manifest surface shadows"
+    );
+}
+
+#[test]
 fn manifest_auto_open_module_nested_type_defers_without_a_decoy() {
     // The decoy-free twin: `DirectOnly` exists ONLY as a nested type of the
     // auto-opened module. FCS resolves it there (fsi-verified), so the
@@ -2008,5 +2029,71 @@ fn a_name_supplied_by_both_the_module_and_namespace_halves_of_a_path_defers() {
         ),
         "the namespace half's unique name must still resolve, got {:?}",
         rf.resolution_at(at(src, "onlyInNamespaceHalf"))
+    );
+}
+
+#[test]
+fn manifest_auto_open_module_value_defers_a_bare_constructor_use() {
+    // `SemaAutoOpen.DirectOps` — a MODULE named by an assembly-level AutoOpen —
+    // declares a plain `let DirectValueShadow ()`, and the global namespace
+    // declares a *constructible class* of the same name. FCS imports the
+    // module's value and binds it over the lower-tier class (fsi-verified: the
+    // call returns the value's `int`, not an instance of the class), so
+    // committing the class would be a wrong go-to-definition.
+    //
+    // This is the one shadow channel `decide_type_path` cannot supply. Its
+    // manifest veto scans nested *entities*, which is right for type position
+    // — a value never shadows a type, and `x: DirectValueShadow` does bind the
+    // class — and blind in expression position, where a value is exactly what
+    // shadows. So the constructor fallback carries its own value-surface veto.
+    //
+    // Honest about its own strength: this fixture also declares an unresolvable
+    // `[<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]`, so the env-wide
+    // `extension_surface_unknowable` arm defers here too and would carry this
+    // assertion on its own. What the case pins is the *observable* contract
+    // (this name must never name the class); the value arm is what covers the
+    // same shape once the metadata is knowable, and is swept in
+    // `manifest_autoopen_surface_diff`.
+    let env = fixture_env();
+    let src = "let x = DirectValueShadow ()\n";
+    let rf = resolve(src, &env);
+    let decoy = env
+        .lookup_type(&[], "DirectValueShadow", 0)
+        .expect("fixture must declare a global-namespace DirectValueShadow class");
+    assert_ne!(
+        rf.resolution_at(at(src, "DirectValueShadow")),
+        Some(Resolution::Entity(decoy)),
+        "an imported module value outranks the class — committing it is a wrong target"
+    );
+}
+
+#[test]
+fn a_compiled_name_value_does_not_let_the_fallback_commit_a_class() {
+    // `SemaAutoOpen.DirectOps` declares `[<CompiledName("CompiledOther")>] let
+    // CompiledNameShadow`, and the global namespace a constructible class of the
+    // logical name. FCS imports the value under its LOGICAL name, so the class is
+    // a wrong target.
+    //
+    // The shape exists because a guard that compares `SkippedMember::name` — the
+    // **IL** name — by equality can never match the source spelling, so an
+    // enumeration that reports "no member of that name" is wrong by construction.
+    // Answering through `open_fold_surface` makes that moot: an unlistable member
+    // is `residue`, and residue defers regardless of naming.
+    //
+    // Honest about strength: this fixture also declares an unresolvable
+    // `[<assembly: AutoOpen("SemaAutoOpen.NoSuchPath")>]`, so the env-wide
+    // unknowable arm defers here too and would carry this assertion alone.
+    // Discriminating the residue path needs a fixture assembly without that
+    // negative control; what this pins is the observable contract.
+    let env = fixture_env();
+    let src = "let x = CompiledNameShadow ()\n";
+    let rf = resolve(src, &env);
+    let decoy = env
+        .lookup_type(&[], "CompiledNameShadow", 0)
+        .expect("fixture must declare a global CompiledNameShadow class");
+    assert_ne!(
+        rf.resolution_at(at(src, "CompiledNameShadow")),
+        Some(Resolution::Entity(decoy)),
+        "a CompiledName-renamed module value must not let the fallback commit the class"
     );
 }

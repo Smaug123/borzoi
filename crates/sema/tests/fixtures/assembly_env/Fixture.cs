@@ -199,6 +199,17 @@ namespace Demo
         // `Twice` rather than pick one (we don't model overload resolution).
         public static int Twice(int x) => x * 2;
         public static string Twice(string s) => s + s;
+
+        // A parameter whose name collides with the sibling type `Demo.Thing`, so
+        // `Calc.Named(Thing = 1)` puts a *named-argument label* in expression
+        // position that FCS binds to this parameter — never to the opened type.
+        // The expression-constructor fallback must not commit `Demo.Thing` there.
+        public static int Named(int Thing) => Thing;
+
+        // A static whose name collides with the sibling constructible class
+        // `Demo.Thing`. `[<AutoOpen>] type T = Demo.Calc` folds this into scope
+        // (fsi-verified), so a bare `Thing ()` binds THIS, not the class.
+        public static int Thing() => 0;
     }
 
     // A C#-style extension class: `Doubled` is an extension method (a static

@@ -49,13 +49,14 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use borzoi_cst::syntax::{
-    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ImplFile, LongIdent, ModuleDecl,
-    ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat, SigDecl, SigFile, SyntaxNode,
-    SyntaxToken, Type, TypeDefn, TypeDefnRepr,
+    ActivePatName, AstNode, AttributeList, ExceptionDefnDecl, ExternDecl, ImplFile, JoinInExpr,
+    LongIdent, ModuleDecl, ModuleOrNamespace, ModuleOrNamespaceKind, NestedModuleDecl, Pat,
+    SigDecl, SigFile, SyntaxKind, SyntaxNode, SyntaxToken, Type, TypeDefn, TypeDefnRepr, UnionCase,
 };
 use rowan::TextRange;
 
 use crate::assembly_env::{AssemblyEnv, EntityHandle};
+use crate::binders::{BinderRole, binders};
 use crate::def::{Def, DefId, DefKind};
 use crate::qnof::QualifiedNameOfFile;
 
@@ -185,6 +186,85 @@ pub fn resolve_file(
                 }
                 _ => {}
             }
+        }
+    }
+    // Every value-binder simple name in the file — the constructor fallback's
+    // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
+    // pattern through the resolution-independent [`binders`] walk, which yields a
+    // binder *before* the resolution stage's provisional/interning drops, so a
+    // would-be-shadowed local and a provisional uppercase parameter are both
+    // captured. Called on every pattern node (not just outermost) so no construct
+    // `binders` might not recurse can hide a name — over-collection only defers.
+    // File-global and order-independent, like the type-name pre-scans above.
+    for pat in file.syntax().descendants().filter_map(Pat::cast) {
+        for def in binders(&pat, BinderRole::Let) {
+            r.own_binder_simple_names
+                .insert(id_text(&def.name).to_string());
+        }
+    }
+    // An `extern` prototype is the one value-namespace binder with no pattern for
+    // the walk above to reach: its name is a `LongIdent`, and the decl arm
+    // deliberately does not intern it as a usable value. Both halves of the
+    // fallback's "not a value" evidence therefore miss it, so it is added to the
+    // same oracle directly — otherwise `open Demo; extern int Thing(int x);
+    // Thing 1` would name the opened `Demo.Thing` where F# binds the prototype.
+    // Union and exception **cases** are bare-visible values with no `Pat` for the
+    // walk above to reach: `[<AutoOpen>] module A = exception Thing of int` puts
+    // `Thing` in bare expression scope, and a namespace-level union does the same.
+    // File-wide and kind-blind, like the binder scan — over-collection only
+    // defers, and a case name that never becomes bare-visible costs one deferral.
+    for case in file.syntax().descendants().filter_map(UnionCase::cast) {
+        if let Some(name) = case.ident() {
+            r.own_binder_simple_names
+                .insert(id_text(name.text()).to_string());
+        }
+    }
+    // A query `join`/`groupJoin` range variable (`join Thing in ys on …`) is a
+    // value binder written as an *expression*, so the pattern walk cannot reach it
+    // either. FCS binds the LHS occurrence as the definition and later ones as
+    // uses of it. Only the binding position — the LHS — names a binder; the `rhs`
+    // is the source collection, an ordinary expression.
+    // A query `into` clause (`groupJoin … into Thing`, `group … into Thing`)
+    // names a further range variable. `into` lexes as an ordinary ident, so the
+    // binder is simply the ident that follows it. Scanned file-wide rather than
+    // per node kind: `into` appears under several query operators, not only
+    // `JoinInExpr`. A user value actually named `into` would over-collect the
+    // following name, which costs one deferral.
+    {
+        let mut prev_was_into = false;
+        for tok in file
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        {
+            if prev_was_into {
+                r.own_binder_simple_names
+                    .insert(id_text(tok.text()).to_string());
+            }
+            prev_was_into = id_text(tok.text()) == "into";
+        }
+    }
+    for join in file.syntax().descendants().filter_map(JoinInExpr::cast) {
+        let Some(lhs) = join.lhs() else { continue };
+        // Every ident in the binding position, not just a bare one: the `join`
+        // keyword itself lexes as an ident, so the LHS is the application
+        // `join Thing` rather than the binder alone. Over-collecting (the keyword,
+        // a `groupJoin` alias) only ever defers, which is what this oracle is for.
+        for tok in lhs
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|t| t.into_token())
+            .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+        {
+            r.own_binder_simple_names
+                .insert(id_text(tok.text()).to_string());
+        }
+    }
+    for ext in file.syntax().descendants().filter_map(ExternDecl::cast) {
+        if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
+            r.own_binder_simple_names
+                .insert(id_text(last.text()).to_string());
         }
     }
     // The top-level value scope is *per container*, not one shared base frame: F#
@@ -1676,6 +1756,7 @@ impl<'a> Resolver<'a> {
             open_extension_unknowable: false,
             attribute_resolutions: HashMap::new(),
             own_type_simple_names: HashSet::new(),
+            own_binder_simple_names: HashSet::new(),
             own_generic_type_simple_names: HashSet::new(),
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),

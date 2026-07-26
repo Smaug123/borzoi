@@ -569,6 +569,63 @@ fn assert_merge_sound(label: &str, files: &[(&'static str, &'static str)]) {
 
 #[test]
 fn namespace_merge_resolution_is_sound_against_fcs() {
+    // A *preceding file*'s namespace-direct union case shadows a same-named
+    // referenced class for a later file in that namespace. FCS binds the project
+    // case; `lookup` never materialises a namespace-direct case from an earlier
+    // file, and `decide_type_path` ignores values by design, so the bare
+    // constructor fallback must consult the project's export surface or it
+    // commits `Demo.Thing` — a wrong go-to-definition (codex round 12).
+    // The residue shape: an earlier file's auto-open module declares an `extern`,
+    // which is deliberately never interned, so the container is marked
+    // *hidden* rather than listed in the export index. An absent `value_exports`
+    // row there is not evidence of absence — the veto must read the marker, the
+    // project-side twin of `OpenFoldSurface::residue`.
+    assert_merge_sound(
+        "preceding-hidden-value-container-defers",
+        &[
+            (
+                "a",
+                "namespace Demo\n\n[<AutoOpen>]\nmodule A =\n    extern int Thing(int x)\n",
+            ),
+            ("b", "namespace Demo\n\nmodule M =\n    let x = Thing ()\n"),
+        ],
+    );
+    // The same shape one level deeper: an earlier file's `[<AutoOpen>]` module in
+    // the namespace. Its export is keyed `Demo.A.Thing`, so probing the namespace
+    // and its ancestors never reaches it — the veto must walk the auto-open
+    // fragments too (codex round 13).
+    assert_merge_sound(
+        "preceding-auto-open-value-shadows-assembly-class",
+        &[
+            (
+                "a",
+                "namespace Demo\n\n[<AutoOpen>]\nmodule A =\n    let Thing () = 1\n",
+            ),
+            ("b", "namespace Demo\n\nmodule M =\n    let x = Thing ()\n"),
+        ],
+    );
+    assert_merge_sound(
+        "preceding-file-case-shadows-assembly-class",
+        &[
+            (
+                "a",
+                "namespace Demo
+
+type Host =
+    | Thing of unit
+",
+            ),
+            (
+                "b",
+                "namespace Demo
+
+module M =
+    let x = Thing ()
+",
+            ),
+        ],
+    );
+
     // Pure-assembly opens (no project shadow): the merge readings must land on the
     // right assembly namespace, latest-open-wins, relative-before-root.
     assert_merge_sound(

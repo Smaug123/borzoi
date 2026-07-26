@@ -228,6 +228,92 @@ pub struct OpenFoldSurface {
     pub contestant_names: Vec<String>,
 }
 
+impl OpenFoldSurface {
+    /// Whether this surface could put a **value** named `name` into bare
+    /// expression scope.
+    ///
+    /// Lives on the type so a caller cannot consult [`Self::entries`] while
+    /// forgetting [`Self::residue`] — the mistake that makes a name the surface
+    /// merely *could not list* read as a name it does not have. Either residue
+    /// flag counts. Only value-space entries do: a pattern-only entry (an
+    /// active-pattern tag) binds no expression.
+    ///
+    /// [`Self::contestant_names`] is deliberately excluded — those are
+    /// constructible *type* names taking the constructor slot, the type-namespace
+    /// contest `decide_type_path` arbitrates.
+    pub fn could_supply_value(&self, name: &str) -> bool {
+        if self.residue || self.residue_below_vals {
+            return true;
+        }
+        self.entries.iter().any(|e| {
+            e.name == name && matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both)
+        })
+    }
+}
+
+/// The precomputed answer for the closure-fixed arms of
+/// [`AssemblyEnv::assembly_bare_value_surface_could_supply`].
+///
+/// `uncertain` collapses every incompleteness marker those arms consult: once any
+/// of them is set the answer is `true` for every name, so no name set is needed.
+#[derive(Debug, Clone, Default)]
+struct BareValueIndex {
+    uncertain: bool,
+    names: std::collections::HashSet<String>,
+}
+
+/// A container's bare-visible **value** surface, paired with the uncertainty its
+/// fold surfaces cannot encode.
+///
+/// Exists so the pairing is not a convention. `open_namespace_fold_surfaces`
+/// enumerates *surviving* entities, and the markers that say "there were others"
+/// — a dropped type, an undecodable pickle — are keyed by namespace in the env,
+/// not carried on the surface. Asking the surfaces alone therefore reads a name
+/// the projection *lost* as a name the container does not have, which for a
+/// certain-implies-exact guard is a wrong answer, not a missing one.
+///
+/// Both fields are private and the only accessor consults both, so that mistake
+/// is unavailable rather than merely documented. Construct with
+/// [`AssemblyEnv::namespace_value_surface`] or
+/// [`AssemblyEnv::module_value_surface`].
+#[derive(Debug, Clone)]
+pub struct ValueSurface {
+    surfaces: Vec<OpenFoldSurface>,
+    uncertain: bool,
+}
+
+impl ValueSurface {
+    /// Whether this container could put a **value** named `name` into bare
+    /// expression scope. `true` when the container is uncertain at all — a
+    /// deferral, never a resolution, so over-approximating is sound.
+    pub fn could_supply(&self, name: &str) -> bool {
+        self.uncertain || self.surfaces.iter().any(|s| s.could_supply_value(name))
+    }
+
+    /// Whether this container is uncertain at all — either its namespace-scoped
+    /// markers or any surface's residue. A caller that intends to *enumerate*
+    /// must ask this first: the name list is only meaningful when it is `false`.
+    pub fn is_uncertain(&self) -> bool {
+        self.uncertain
+            || self
+                .surfaces
+                .iter()
+                .any(|s| s.residue || s.residue_below_vals)
+    }
+
+    /// Add every value name this container definitely contributes to `out`.
+    /// Meaningful only when [`Self::is_uncertain`] is `false`.
+    pub fn collect_value_names(&self, out: &mut std::collections::HashSet<String>) {
+        for surface in &self.surfaces {
+            for e in &surface.entries {
+                if matches!(e.space, OpenFoldSpace::Value | OpenFoldSpace::Both) {
+                    out.insert(e.name.clone());
+                }
+            }
+        }
+    }
+}
+
 /// One bare name of an [`OpenFoldSurface`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFoldName {
@@ -649,6 +735,15 @@ pub struct AssemblyEnv {
     /// [`Self::mark_extension_surface_unknowable`] (the LSP host, which observes
     /// these failures); false by default (a clean projection is trusted).
     extension_surface_unknowable: bool,
+    /// Lazily-built index behind [`Self::assembly_bare_value_surface_could_supply`]
+    /// for the arms that do **not** vary per call: the implicit-open namespaces,
+    /// the contested ones, and the root. Rebuilding their fold surfaces per name
+    /// made resolution scale as `misses × referenced entities` — measured at ~24µs
+    /// a name over a 175-assembly closure, several times the rest of resolution.
+    ///
+    /// Not the *enclosing* namespace, which is a property of the file being
+    /// resolved rather than of the closure, so it has no fixed answer to cache.
+    bare_value_index: std::sync::OnceLock<BareValueIndex>,
     /// Namespaces in which a referenced assembly **dropped an undecodable type**
     /// (possibly a C#-style `[<Extension>]` class the entity tree no longer shows).
     /// The OV-6 gate treats these as possibly-extension-bearing per
@@ -2128,6 +2223,135 @@ impl AssemblyEnv {
             })
     }
 
+    /// Whether **any** assembly-side surface F# makes bare-visible *without an
+    /// explicit `open`* could supply a **value** named `name`.
+    ///
+    /// The single question the expression-position constructor fallback asks
+    /// before committing a class. It exists because that fallback's precondition
+    /// — the value frame missed, so nothing binds this name — is only
+    /// *conservative*: the containers below are opened by F# with no source
+    /// `open`, and their values land in no value frame, so `lookup` cannot see
+    /// them.
+    ///
+    /// Answered through [`Self::open_fold_surface`] /
+    /// [`Self::open_namespace_fold_surfaces`] rather than a bespoke walk. Those
+    /// already model *every* bare name a container contributes, in FCS fold
+    /// order, **and** carry the name-unknown remainder ([`OpenFoldSurface::residue`])
+    /// for the shapes an enumeration silently drops: an undecodable member, a
+    /// union whose case names the pickle withheld, an `[<AutoOpen>]` child *type*
+    /// whose statics cannot be listed. A hand-rolled scan re-derives that and
+    /// misses arms — notably `SkippedMember::name` is the **IL** name, so a
+    /// `[<CompiledName>]` value never matches by equality, which the residue flag
+    /// makes moot.
+    ///
+    /// Deliberately the **value** twin of
+    /// [`Self::retained_auto_open_could_supply_entity_named`]: a value never
+    /// shadows a type, so the entity query is right to scan nested entities and
+    /// blind in exactly this position. Every arm is deferral-only — a `true`
+    /// withholds a commitment, never resolves — so over-approximating is sound.
+    pub(crate) fn assembly_bare_value_surface_could_supply(&self, name: &str) -> bool {
+        let index = self
+            .bare_value_index
+            .get_or_init(|| self.build_bare_value_index());
+        index.uncertain || index.names.contains(name)
+    }
+
+    /// Build [`Self::bare_value_index`]: fold every container F# opens without a
+    /// source `open` whose identity is fixed by the closure, and collect the value
+    /// names they contribute.
+    ///
+    /// Short-circuits to `uncertain` the moment any arm is uncertain, since the
+    /// answer is then `true` for every name and the name set is dead weight.
+    fn build_bare_value_index(&self) -> BareValueIndex {
+        let uncertain = || BareValueIndex {
+            uncertain: true,
+            names: std::collections::HashSet::new(),
+        };
+        // An assembly whose auto-open list could not be read, or whose projection
+        // was skipped, may auto-open a container supplying any name at all.
+        if self.extension_surface_unknowable {
+            return uncertain();
+        }
+        let mut names = std::collections::HashSet::new();
+        // Namespace-shaped implicit auto-opens, the contested ones FCS still
+        // applies per contributor, and the root namespace (no `open` at all).
+        let namespaces = self
+            .effective_implicit_open_namespace_paths()
+            .into_iter()
+            .chain(self.contested_auto_opens.iter().map(|(_, ns)| ns.clone()))
+            .chain(std::iter::once(Vec::new()));
+        for ns in namespaces {
+            let surface = self.namespace_value_surface(&ns);
+            if surface.is_uncertain() {
+                return uncertain();
+            }
+            surface.collect_value_names(&mut names);
+        }
+        // Retained module-shaped manifest auto-opens.
+        for &(h, effectively_public) in &self.auto_open_module_handles {
+            if !effectively_public {
+                continue;
+            }
+            let surface = self.module_value_surface(h);
+            if surface.is_uncertain() {
+                return uncertain();
+            }
+            surface.collect_value_names(&mut names);
+        }
+        BareValueIndex {
+            uncertain: false,
+            names,
+        }
+    }
+
+    /// The bare-visible **value** surface of `namespace`: its fold surfaces plus
+    /// the namespace-scoped uncertainty they cannot encode. The only sanctioned
+    /// way to ask whether a namespace could supply a value.
+    pub fn namespace_value_surface(&self, namespace: &[String]) -> ValueSurface {
+        ValueSurface {
+            surfaces: self.open_namespace_fold_surfaces(namespace),
+            uncertain: self.namespace_uncertain(namespace),
+        }
+    }
+
+    /// The same, for a module opened by a module-shaped manifest `AutoOpen`. Its
+    /// uncertainty is that of the namespace that *owns* it — the marker is
+    /// namespace-keyed, and forgetting it here was the audit's finding.
+    pub fn module_value_surface(&self, handle: EntityHandle) -> ValueSurface {
+        ValueSurface {
+            surfaces: vec![self.open_fold_surface(handle)],
+            uncertain: self.namespace_uncertain(&self.nodes[handle.index()].owning_namespace),
+        }
+    }
+
+    /// The namespace-scoped incompleteness markers a fold surface cannot encode,
+    /// since it enumerates *surviving* entities: a dropped type could be a union
+    /// supplying a case or an `[<AutoOpen>]` module supplying a value, and an
+    /// undecodable pickle hides module-scoped aliases.
+    ///
+    /// Paired with **every** namespace read in the value queries — a name-keyed
+    /// surface answer alone is never evidence of absence.
+    fn namespace_uncertain(&self, namespace: &[String]) -> bool {
+        self.namespace_has_dropped_type(namespace)
+            || self.unknowable_abbreviations_in_namespace(namespace)
+    }
+
+    /// Whether the fold surface of `namespace` could put a **value** named `name`
+    /// into bare expression scope.
+    ///
+    /// The per-file half of [`Self::assembly_bare_value_surface_could_supply`]:
+    /// the *enclosing* namespace of the source file is opened with no `open`
+    /// clause, but which namespace that is depends on the file, not the assembly
+    /// closure, so the caller supplies it. An empty path is the root namespace,
+    /// which the env-wide query already covers.
+    pub(crate) fn namespace_surface_could_supply_value(
+        &self,
+        namespace: &[String],
+        name: &str,
+    ) -> bool {
+        !namespace.is_empty() && self.namespace_value_surface(namespace).could_supply(name)
+    }
+
     /// Whether opening the module `handle` imports an entity named `name`
     /// into bare scope: its **public direct children** (a nested type is
     /// bare-visible; a nested module is a bare-visible dotted head), matched
@@ -2225,6 +2449,41 @@ impl AssemblyEnv {
     /// interning); use [`Self::children`] / [`Self::nested`] for nesting.
     pub fn entity(&self, handle: EntityHandle) -> &Entity {
         &self.nodes[handle.index()].entity
+    }
+
+    /// Whether `handle` is a type FCS resolves to *itself* when its bare name is
+    /// used as an **expression-position constructor** (`StringBuilder ()`, `Thing
+    /// ()`) — the predicate the expression resolver's opened-type constructor
+    /// fallback gates on (`crates/sema/src/resolve/exprs.rs`). Deliberately
+    /// narrow: a wrong go-to-definition is worse than "no definition", so this
+    /// commits only where FCS certainly names the type entity.
+    ///
+    /// The conditions (verified against FCS over the `assembly_env` fixture's
+    /// type zoo by the constructor-fallback differential):
+    ///
+    /// - **[`EntityKind::Class`] only.** A struct union / record / enum /
+    ///   interface / delegate / module / measure / abbreviation is not exposed as
+    ///   a bare constructor (a struct union yields *no* symbol at the occurrence;
+    ///   an abbreviation would need chasing to its target). Plain **structs** are
+    ///   constructible but excluded until the fixture exercises one — sound
+    ///   under-resolution, not a wrong target.
+    /// - **non-generic.** The fallback does an arity-0 lookup, so a generic type
+    ///   (`Pair<'T>`) would be mis-identified as its non-generic sibling; the
+    ///   caller also suppresses the fallback under an explicit type application.
+    /// - **an accessible public instance constructor.** This is what separates a
+    ///   constructible class (`Thing`) from a C# *static* class (`Calc`, projected
+    ///   as a `Class` with only a `.cctor`), which FCS resolves to nothing.
+    pub fn bare_expr_constructible(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.kind == EntityKind::Class
+            && e.generic_parameters.is_empty()
+            && e.members.iter().any(|m| {
+                matches!(
+                    m,
+                    Member::Method(mm)
+                        if mm.is_constructor && !mm.is_static && mm.access == Access::Public
+                )
+            })
     }
 
     /// The [`SemanticClass`] of a referenced-assembly entity, or `None` where we
@@ -2944,6 +3203,7 @@ impl AssemblyEnv {
     /// after building the env, since the projection happens outside this crate.
     pub fn mark_extension_surface_unknowable(&mut self) {
         self.extension_surface_unknowable = true;
+        self.invalidate_bare_value_index();
     }
 
     /// Mark the env's loaded-DLL **identity set incomplete** — the host skipped a
@@ -2973,6 +3233,17 @@ impl AssemblyEnv {
     /// enclosing namespace (empty for a root-namespace type).
     pub fn mark_namespace_dropped_type(&mut self, namespace: Vec<String>) {
         self.namespaces_with_dropped_types.insert(namespace);
+        self.invalidate_bare_value_index();
+    }
+
+    /// Drop the memoised [`Self::bare_value_index`].
+    ///
+    /// Called by every mutator of an input it folds in. The index answers a
+    /// *soundness* question, so a stale `false` is a wrong commitment, not a
+    /// stale optimisation — a mark that arrives after the first query must still
+    /// take effect. `&mut self` makes this a plain reset rather than a race.
+    fn invalidate_bare_value_index(&mut self) {
+        self.bare_value_index = std::sync::OnceLock::new();
     }
 
     /// Whether a referenced assembly **dropped an undecodable type** in `namespace`

@@ -586,6 +586,101 @@ fn open_namespace_resolves_unqualified_type_and_member() {
 }
 
 #[test]
+fn open_namespace_resolves_bare_constructor_use() {
+    // A bare *constructor* call `Thing ()` uses the type name as an expression
+    // head. `open Demo` brings the type `Demo.Thing` into scope, so the bare
+    // `Thing` must resolve to the `Demo.Thing` entity — FCS reports the type
+    // symbol at this occurrence (verified: `StringBuilder ()` under
+    // `open System.Text` → `System.Text.StringBuilder`), so expression-position
+    // resolution must consult opened assembly *types*, not just the value frame.
+    let env = fixture_env();
+    let src = "open Demo\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "a bare constructor use resolves to the opened type entity"
+    );
+}
+
+#[test]
+fn bare_constructor_defers_when_shadowed_or_not_constructible() {
+    // The constructor fallback must never wrong-target. Three arms, each FCS-sound
+    // (verified in `resolve_assembly_diff`), that must NOT record the assembly
+    // entity:
+    //   - a same-file `type Thing` shadows the opened `Demo.Thing` (FCS binds the
+    //     project type — which this resolution-only pass does not model, so defer);
+    //   - `Demo.Calc` is a *static* class (no accessible instance constructor);
+    //   - `Demo.GenericBase` is generic — the arity-0 fallback would misname it.
+    // Plus value-frame misses that are only *conservative*, not genuinely unbound
+    // — the binder-name oracle (`own_binder_simple_names`) and the staled-head
+    // guard must keep the fallback from naming the opened type where FCS binds a
+    // value:
+    //   - a local `let Thing` staled by a later project-module open's generation
+    //     barrier (the module contributes an active pattern, which raises the
+    //     barrier) is one FCS still binds;
+    //   - a *provisional* uppercase parameter `(Thing: int)` binds the RHS `Thing`
+    //     in FCS, though the resolution pass drops the would-be binder so `lookup`
+    //     misses — the binder-name pre-scan still sees it;
+    //   - an `extern` prototype, which has no pattern for the binder walk and is
+    //     deliberately never interned, so the pre-scan reads its name directly.
+    // `resolve_assembly_diff`'s `bare_constructor_fallback_is_sound_under_every_
+    // shadowing_declaration` sweeps these forms against FCS systematically; these
+    // arms pin the specific channels without needing the oracle.
+    let env = fixture_env();
+    for src in [
+        "module M\nopen Demo\ntype Thing() = class end\nlet y = Thing ()\n",
+        "open Demo\nlet x = Calc ()\n",
+        "open Demo\nlet x = GenericBase ()\n",
+        "module M\nopen Demo\nlet Thing () = 1\nmodule P =\n    let (|Foo|_|) x = None\nopen P\nlet y = Thing ()\n",
+        "module M\nopen Demo\nlet f (Thing: int) = Thing\n",
+        "module M\nopen Demo\nextern int Thing(int x)\nlet y = Thing 1\n",
+    ] {
+        let rf = resolve(src, &env);
+        assert!(
+            !rf.resolutions()
+                .values()
+                .any(|r| matches!(r, Resolution::Entity(_) | Resolution::Member { .. })),
+            "constructor fallback must defer, not wrong-target, for {src:?}"
+        );
+    }
+}
+
+#[test]
+fn a_named_argument_label_does_not_resolve_to_an_opened_type() {
+    // `Demo.Calc.Named` takes an `int Thing`, so in `Calc.Named(Thing = 1)` F#
+    // binds `Thing` to the *parameter* — never to the opened `Demo.Thing`. The
+    // label reaches the resolver as a bare ident, so the constructor fallback
+    // must not fire there. The callee path must still resolve, or the veto has
+    // swallowed the whole application rather than just the label.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\nlet y = Calc.Named(Thing = 1)\n";
+    let rf = resolve(src, &env);
+
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "a named-argument label must not resolve to the same-named opened type"
+    );
+
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "Calc")),
+        Some(Resolution::Entity(calc)),
+        "the callee's type qualifier still resolves — only the label is skipped"
+    );
+}
+
+#[test]
 fn open_type_resolves_unqualified_static_members() {
     // `open type Demo.Calc` brings the type's static members into unqualified
     // scope, so bare `Zero` (a static method) and `Answer` (a static property)
@@ -2363,6 +2458,21 @@ fn contested_same_fqn_type_defers_in_type_position() {
 fn contested_same_fqn_type_defers_when_shortened_by_an_open() {
     let env = contested_color_env();
     let src = "module M\nopen Ns\nlet x : Color = Unchecked.defaultof<_>\n";
+    assert_defers(&resolve(src, &env), src, "Color");
+}
+
+#[test]
+fn contested_same_fqn_type_defers_a_bare_constructor_use() {
+    // The expression-position twin of the annotation case above. A bare
+    // constructor use resolves through `decide_type_path`, so a contested
+    // rooting must defer here exactly as it does in type position: FCS binds
+    // the *latest* reference while `lookup_type`'s slot is first-wins, so
+    // committing the slot's entity would be a wrong go-to-definition.
+    //
+    // This pins the shared guard as load-bearing for the constructor position
+    // — without it the fallback commits the first-wins contestant.
+    let env = contested_color_env();
+    let src = "module M\nopen Ns\nlet x = Color ()\n";
     assert_defers(&resolve(src, &env), src, "Color");
 }
 
@@ -5981,5 +6091,71 @@ fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
         matches!(resolution, None | Some(Resolution::Deferred(_))),
         "three DLLs contest `Ns.Color`; committing any one DLL's member is a \
          wrong target — got {resolution:?}"
+    );
+}
+
+#[test]
+fn an_in_file_auto_open_type_defers_the_constructor_fallback() {
+    // `[<AutoOpen>] type T = Demo.Calc` folds `Calc`'s *statics* into the rest of
+    // the container (fsi-verified: bare `Zero()` resolves through exactly this).
+    // One of them is `Thing`, colliding with the constructible `Demo.Thing`, so
+    // FCS binds the static and committing the class is a wrong target.
+    //
+    // These borrowed names are not `own_binder_simple_names` entries — nothing in
+    // this file declares `Thing` — so the file's own hidden-value marker is the
+    // only evidence, exactly as for a preceding file's.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\n[<AutoOpen>]\ntype T = Demo.Calc\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "an auto-open type's borrowed statics must keep the fallback off the class"
+    );
+}
+
+#[test]
+fn an_auto_open_descendants_hidden_values_defer_the_constructor_fallback() {
+    // The marker for an `[<AutoOpen>] type` sits on the container that declares
+    // it — here the nested `[<AutoOpen>] module A`, so at `M.A`. A later use in
+    // `M` is still in scope of A's borrowed statics (FCS opens A into the rest of
+    // M), so checking only `M` and its ancestors misses it: the veto must reach
+    // auto-open *descendants* too, exactly as the project-side twin walks
+    // `auto_open_modules_directly_in`.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\n[<AutoOpen>]\nmodule A =\n    [<AutoOpen>]\n    type T = Demo.Calc\nlet x = Thing ()\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Thing")),
+        Some(Resolution::Entity(thing)),
+        "an auto-open descendant's borrowed statics must keep the fallback off the class"
+    );
+}
+
+#[test]
+fn a_query_join_binder_defers_the_constructor_fallback() {
+    // `join Thing in ys on (x = Thing)` makes `Thing` a query *range variable*:
+    // FCS binds the first occurrence as its definition and the later one as a use
+    // of it. The binder pre-scan only visits `Pat`, and a range variable is an
+    // expression node, so `lookup` misses it — the same `Pat`-less in-file binder
+    // shape as `extern` and a union case. With `open Demo`, committing the
+    // constructible `Demo.Thing` at either occurrence is a wrong target.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\nlet q xs ys =\n    query {\n        for x in xs do\n        join Thing in ys on (x = Thing)\n        select x\n    }\n";
+    let rf = resolve(src, &env);
+    let thing = env
+        .lookup_type(&["Demo".to_string()], "Thing", 0)
+        .expect("Demo.Thing in env");
+    assert!(
+        !rf.resolutions()
+            .values()
+            .any(|r| *r == Resolution::Entity(thing)),
+        "a query range variable must not resolve to the opened type"
     );
 }

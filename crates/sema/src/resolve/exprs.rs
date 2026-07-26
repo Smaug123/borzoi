@@ -8,6 +8,7 @@ use crate::def::{Def, DefKind};
 use super::id_text;
 use super::model::{DeferredReason, Resolution};
 use super::state::{Frame, Resolver, ScopeEntry};
+use super::types::TypePathResolution;
 
 impl<'a> Resolver<'a> {
     pub(super) fn resolve_expr(&mut self, expr: &Expr) {
@@ -22,7 +23,19 @@ impl<'a> Resolver<'a> {
             Expr::Null(_) => {}
             Expr::Ident(e) => {
                 if let Some(tok) = e.ident() {
-                    self.resolve_name_use(&tok);
+                    // A genuinely bare ident: allow the opened-type constructor
+                    // fallback (`Thing ()`). A dotted-path head reaching
+                    // `resolve_name_use` is member access on a *value* and must
+                    // not fall through to an opened type — see the call in
+                    // [`Self::resolve_long_ident`].
+                    //
+                    // The exception is a **named-argument label** (`M(Thing = 1)`),
+                    // which F# binds to the callee's *parameter*: it reaches here as
+                    // a bare ident, so the fallback would name an opened type of the
+                    // same name. Deferring costs nothing — a type name is never a
+                    // legal label, so nothing that would have resolved is lost.
+                    let is_label = is_named_arg_label(e);
+                    self.resolve_name_use(&tok, !is_label);
                 }
             }
             // `'T` (FCS's `SynExpr.Typar`) — a type parameter used as the head of
@@ -214,7 +227,18 @@ impl<'a> Resolver<'a> {
                 // `f<T>` — resolve the type-applied head expression (the value
                 // reference `f`) and each type argument (a type use).
                 if let Some(head) = e.expr() {
-                    self.resolve_expr(&head);
+                    // A bare-ident head under explicit type arguments (`Pair<int>
+                    // ()`) must not take the opened-type constructor fallback: that
+                    // tier does an arity-0 lookup, so it would name the non-generic
+                    // sibling rather than the arity-matched generic type. Defer the
+                    // fallback (the value frame still resolves a genuine value).
+                    if let Expr::Ident(id) = &head
+                        && let Some(tok) = id.ident()
+                    {
+                        self.resolve_name_use(&tok, false);
+                    } else {
+                        self.resolve_expr(&head);
+                    }
                 }
                 for ty in e.type_args() {
                     self.resolve_type(&ty);
@@ -759,7 +783,7 @@ impl<'a> Resolver<'a> {
         entries
     }
 
-    pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken) {
+    pub(super) fn resolve_name_use(&mut self, tok: &SyntaxToken, allow_opened_type: bool) {
         // The `base` keyword reaches here as the receiver of a direct
         // `base.[i]` indexer (parsed as a bare `Ident("base")` head). Like the
         // `base`-headed long-ident path, it is the reserved base-class receiver,
@@ -786,11 +810,228 @@ impl<'a> Resolver<'a> {
         // [`Self::top_level`] and [`Self::open_type_statics`]). So the ordinary
         // [`lookup`](Self::lookup) — innermost frame first, latest entry within a
         // frame — resolves opened statics, opened module values, locals, and cases
-        // uniformly by source order, the latest in scope winning. An unbound name
-        // (or one shadowed away by an opaque open) falls back to `Deferred`.
+        // uniformly by source order, the latest in scope winning.
+        let name = id_text(tok.text());
         let res = self
-            .lookup(id_text(tok.text()))
+            .lookup(name)
+            .or_else(|| self.opened_constructor_target(name, allow_opened_type))
+            // An unbound name (or one shadowed away by an opaque open) falls back
+            // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
         self.record(tok.text_range(), res);
     }
+
+    /// The opened-type **constructor** fallback for a bare expression name that
+    /// missed the value frame: a type used as a constructor (`StringBuilder ()`,
+    /// `Thing ()`) — FCS resolves the occurrence to the type symbol, not a `.ctor`
+    /// member, and uses the *same* type-name resolution it uses in type position.
+    /// So this delegates to [`Self::decide_type_path`], the fully-vetoed
+    /// type-position resolver, and commits only its unambiguous assembly leaf — a
+    /// wrong go-to-def is worse than "no definition":
+    ///
+    /// - `decide_type_path` already defers every shadow channel its tiered walk
+    ///   covers — an opaque/unmodelled `open`, a nested-module descent, an in-scope
+    ///   auto-open module's nested type of the same name, an unknowable-abbreviation
+    ///   namespace — and returns
+    ///   [`InFileType`](super::types::TypePathResolution::InFileType) (not an
+    ///   assembly leaf) when a project `type` shadows the name. We commit **only**
+    ///   the `Assembly { leaf: Some(_) }` case, so all of those defer here;
+    /// - `allow_opened_type` is false for a dotted-path head (member access on a
+    ///   *value*) and under an explicit type application (`Pair<int> ()`, whose
+    ///   arity the arity-0 resolution cannot honour);
+    /// - a value-frame miss is only *conservative*, not a genuine unbound — the
+    ///   crux, since `lookup` returns `None` for names FCS still binds as values.
+    ///   Two channels cover that, both invisible to `decide_type_path` (type
+    ///   position): [`own_binder_simple_names`](Self::own_binder_simple_names) — the
+    ///   file's whole value-binder name set, so a would-be-shadowed local, a
+    ///   *provisional* uppercase parameter (`let f (Thing: int) = Thing`), or an
+    ///   `extern` prototype (`extern int Thing(int x)`, which is never interned) —
+    ///   each of which FCS binds but `lookup` misses — defers rather than naming
+    ///   the opened type — and [`head_entry_staled`](Self::head_entry_staled), a
+    ///   staled *opened* value (which is not a file binder). The sweep
+    ///   `bare_constructor_fallback_is_sound_under_every_shadowing_declaration`
+    ///   adjudicates every declaration form against FCS, so a binder form that
+    ///   escapes both channels is caught by the machine, not by review;
+    /// - the leaf must be a bare-expression-constructible class
+    ///   ([`AssemblyEnv::bare_expr_constructible`]): a static class, union, record,
+    ///   abbreviation, or generic type is not, so it defers.
+    ///
+    /// Delegating to `decide_type_path` rather than reimplementing a bare-name
+    /// lookup is what makes the two positions agree on which *type* a bare name
+    /// denotes, so its shadow guards apply here unchanged. Two are load-bearing
+    /// enough to have expression-position regression tests of their own, since a
+    /// coarser guard in either place would silently stop covering the
+    /// constructor position: `contested_same_fqn_type_defers_a_bare_constructor_use`
+    /// (a rooting FQN contested across differently-named DLLs) and
+    /// `manifest_auto_open_module_nested_type_defers_a_bare_constructor_use` (a
+    /// module-shaped `[<assembly: AutoOpen>]` surface kept out of the prefix
+    /// walk — its veto keys on the written arity, which this queries as 0).
+    ///
+    /// Where the delegation stops is the **value namespace**, and that asymmetry
+    /// is not a gap in `decide_type_path` but a difference between the positions:
+    /// a value never shadows a type, so type position is right to ignore values,
+    /// while expression position is precisely where a value wins. The manifest
+    /// veto above therefore has a value-keyed twin that only this caller needs
+    /// ([`AssemblyEnv::manifest_auto_open_module_could_supply_value_named`]) — a
+    /// module-shaped auto-open's `let` bindings are imported into bare expression
+    /// scope and land in no value frame, so `lookup` misses them exactly as it
+    /// misses an `extern`. Any *further* shadow channel that binds values rather
+    /// than types will need the same treatment; it will not arrive via
+    /// `decide_type_path`.
+    ///
+    /// One limitation remains, and it is *not* one `decide_type_path` owns: an F#
+    /// **named-argument label** (`M(arg = 1)`) reaches the bare-ident path at all,
+    /// since named arguments are unmodelled and the walker recurses into
+    /// application arguments blindly. [`is_named_arg_label`] keeps the *fallback*
+    /// off it, but the label still resolves against the enclosing scope, so one
+    /// naming a project value binds that value where F# binds the callee's
+    /// parameter — a defect that predates this fallback. Fixing it means modelling
+    /// the argument shape at the walker.
+    /// Whether the container this use sits in — or any container enclosing it —
+    /// was marked as holding values the resolver cannot enumerate.
+    ///
+    /// The in-file twin of `ProjectItems::modules_with_hidden_values`. Name-blind
+    /// by necessity: the whole point of the marker is that the names are unknown,
+    /// so this defers every bare constructor use in such a container. Sound, and
+    /// the containers that set it are rare (an auto-open type abbreviation, a
+    /// module alias, an `extern`).
+    fn container_and_ancestors_hide_values(&self) -> bool {
+        let mut path = self.container_path.clone();
+        loop {
+            if self.modules_with_hidden_values.contains(&path) {
+                return true;
+            }
+            // …and the `[<AutoOpen>]` modules *inside* it, whose contents F# folds
+            // into the rest of this container. The marker is stored on the
+            // declaring container, so a nested auto-open module's borrowed values
+            // are recorded at the child path — invisible to the ancestor walk.
+            // Recurses, since an auto-open module may hold another.
+            let mut frontier = self.auto_open_modules_directly_in(&path);
+            while let Some(module) = frontier.pop() {
+                if self.modules_with_hidden_values.contains(&module) {
+                    return true;
+                }
+                frontier.extend(self.auto_open_modules_directly_in(&module));
+            }
+            if path.pop().is_none() {
+                return false;
+            }
+        }
+    }
+
+    /// The `[<AutoOpen>]` modules declared *directly* in `container`, from this
+    /// file's own pre-scan. The in-file twin of
+    /// `ProjectItems::auto_open_modules_directly_in`.
+    fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
+        self.auto_open_module_paths
+            .iter()
+            .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+
+    fn opened_constructor_target(&self, name: &str, allow_opened_type: bool) -> Option<Resolution> {
+        if !allow_opened_type
+            || self.own_binder_simple_names.contains(name)
+            || self.head_entry_staled(name)
+            // Every assembly-side surface F# makes bare-visible without an
+            // explicit `open` — auto-opened module values, contested contributor
+            // surfaces, global union cases — lands in no value frame, so the
+            // miss above is conservative there too. This is the one guard
+            // `decide_type_path` cannot supply: its vetoes scan nested entities,
+            // which is correct for type position (a value does not shadow a
+            // type) and blind in exactly this position.
+            || self
+                .assemblies
+                .assembly_bare_value_surface_could_supply(name)
+            // The *enclosing* namespace is bare-visible without an `open` too, and
+            // is per-file rather than a property of the closure, so it is asked
+            // here rather than inside the env-wide query above: a referenced
+            // assembly's `N.Host` union contributes its cases bare to a file that
+            // declares `namespace N`.
+            || self
+                .assemblies
+                .namespace_surface_could_supply_value(self.enclosing_namespace(), name)
+            // The project's own preceding files: a namespace-direct union or
+            // exception case from an earlier file is bare-visible here, but
+            // `lookup` does not materialise it into the value frame and
+            // `decide_type_path` ignores values by design, so nothing else sees it.
+            || self
+                .preceding
+                .namespace_exports_value_named(self.enclosing_namespace(), name)
+            // This file's own residue. An `[<AutoOpen>]` **type** abbreviation
+            // (`[<AutoOpen>] type T = Demo.Calc`) folds the target's statics into
+            // the rest of the container — fsi-verified — and an alias or `extern`
+            // does the same for its own names. Nothing here *declares* them, so
+            // `own_binder_simple_names` is empty for them; the container's hidden
+            // marker is the only evidence, exactly as for a preceding file.
+            || self.container_and_ancestors_hide_values()
+        {
+            return None;
+        }
+        match self.decide_type_path(std::slice::from_ref(&name.to_string()), 0) {
+            TypePathResolution::Assembly {
+                leaf: Some(handle), ..
+            } if self.assemblies.bare_expr_constructible(handle) => {
+                Some(Resolution::Entity(handle))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Split an application-argument element of the **named-argument shape**
+/// `lhs = value` — F# parses it as `App[ InfixApp[lhs, "="], value ]`, an outer
+/// non-infix application whose function is the infix `=` operator applied to
+/// `lhs`. A positional infix element (`a + b`) is the infix `App` itself, not an
+/// outer application of one, so it does not match; neither does a nested `=`
+/// (not the element's own top-level operator). Either side may be `None` on a
+/// recovery tree.
+///
+/// Deliberately the same split `infer`'s `is_named_arg` performs, so the two
+/// readings of the shape cannot drift.
+pub(crate) fn named_arg_shape(el: &Expr) -> Option<(Option<Expr>, Option<Expr>)> {
+    let Expr::App(outer) = el else {
+        return None;
+    };
+    if outer.is_infix() {
+        return None;
+    }
+    let Some(Expr::App(op_app)) = outer.func() else {
+        return None;
+    };
+    if !op_app.is_infix()
+        || !op_app
+            .func()
+            .is_some_and(|op| op.syntax().text().to_string().trim() == "=")
+    {
+        return None;
+    }
+    Some((op_app.arg(), outer.arg()))
+}
+
+/// Whether this bare ident is the **label** of a named argument (`M(Thing = 1)`)
+/// rather than an ordinary use. The label sits as the `lhs` of the
+/// [`named_arg_shape`] element two levels up (`App[ InfixApp[lhs, "="], value ]`),
+/// so the element is the ident's grandparent.
+///
+/// Syntactically a label is indistinguishable from an equality operand
+/// (`f (x = y)`), and this cannot tell them apart. It is consulted **only** to
+/// suppress the opened-type constructor fallback, where the conflation is free:
+/// the fallback fires only on a value-frame miss, so a genuine equality operand
+/// that names something in scope never reaches it, and a *type* name is never a
+/// legal operand of a comparison whose result is passed as an argument.
+fn is_named_arg_label(ident: &borzoi_cst::syntax::IdentExpr) -> bool {
+    let Some(el) = ident
+        .syntax()
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(Expr::cast)
+    else {
+        return false;
+    };
+    matches!(
+        named_arg_shape(&el),
+        Some((Some(Expr::Ident(lhs)), _)) if lhs.syntax() == ident.syntax()
+    )
 }

@@ -307,6 +307,22 @@ module DirectOps =
     type DirectGenHead<'T>() =
         member _.Marker = 10
 
+    // A plain `let` VALUE whose name matches a constructible class in the
+    // global namespace below. A module's `let` compiles to a static *member*
+    // of the module class, not to a child entity, so it is invisible to the
+    // nested-entity shadow scan — correctly so for TYPE position, where a
+    // value never shadows a type (`x: DirectValueShadow` binds the global
+    // class). EXPRESSION position is the opposite: FCS binds this value, so a
+    // bare `DirectValueShadow ()` must never commit the class.
+    let DirectValueShadow () = 12
+
+    // codex round 11: a value whose IL name differs from its F# logical name.
+    // A guard that compares `SkippedMember::name` (the IL name) by equality can
+    // never match the source spelling FCS imports, so the surface must report it
+    // as *residue* rather than as an absent name.
+    [<CompiledName("CompiledOther")>]
+    let CompiledNameShadow () = 13
+
 // ===== ModuleSuffix / companion-pair manifest targets =====
 //
 // FCS derefs a manifest AutoOpen path through the contributing assembly's
@@ -775,12 +791,50 @@ namespace global
 type DirectShadow() =
     member _.Decoy = 1
 
+// The decoy for `DirectOps`'s plain `let DirectValueShadow`: a *constructible*
+// class, so the expression-position constructor fallback finds it attractive.
+// FCS binds the module's value instead, making this a wrong target.
+type DirectValueShadow() =
+    member _.Decoy = 12
+
+// The decoy for the `[<CompiledName>]` value above: FCS imports the module's
+// value under its LOGICAL name, so a bare `CompiledNameShadow ()` binds that,
+// never this class.
+type CompiledNameShadow() =
+    member _.Decoy = 13
+
 module DirectSub =
     type DirectSubT() =
         member _.Decoy = 2
 
 type GlobalPlain() =
     member _.Decoy = 3
+
+// ===== Root-namespace VALUE surfaces (no `open` required at all) =====
+//
+// A global union's cases are bare-visible because the union type itself is,
+// with no `open` anywhere. So `GlobalCaseShadow ()` binds THIS case, not the
+// same-named class below (fsi-verified) — the constructor fallback must not
+// treat "no open imports it" as "no value binds it".
+type GlobalUnionHost =
+    | GlobalCaseShadow of unit
+    | GlobalCasePlain of int
+
+// The constructible-class decoy the case above must outrank.
+type GlobalCaseShadow() =
+    member _.Decoy = 20
+
+// A `[<RequireQualifiedAccess>]` union: its cases need the type qualifier, so
+// bare `RqaCaseName` does NOT bind here and the class decoy below stays
+// resolvable. The veto is allowed to be conservative and defer it — but this
+// records that FCS does not shadow, so an over-broad veto is visible as an
+// availability loss rather than passing unnoticed.
+[<RequireQualifiedAccess>]
+type GlobalRqaHost =
+    | RqaCaseName of unit
+
+type RqaCaseName() =
+    member _.Decoy = 21
 
 // The decoy for `DirectOps`'s PRIVATE nested type of the same name: the
 // private one is not importable, so FCS binds THIS one bare (fsi-verified) —

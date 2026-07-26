@@ -899,12 +899,12 @@ fn assert_same_identity(env: &AssemblyEnv, handle: EntityHandle, expected: &Enti
 
 #[test]
 fn open_static_entries_are_distinct_and_public_only() {
-    // `Demo.Calc` has public statics `Zero`, `Answer`, and an overloaded `Twice`
-    // (two public statics), plus an *internal* `Hush`. The opened-name set must
-    // list each public static name exactly once — the unique ones carrying their
-    // member index, the overloaded `Twice` carrying `None` (in scope, deferred) —
-    // and omit the internal one: exactly what `open type Demo.Calc` brings into
-    // scope.
+    // `Demo.Calc` has public statics `Zero`, `Answer`, `Named`, `Thing`, and an overloaded
+    // `Twice` (two public statics), plus an *internal* `Hush`. The opened-name set
+    // must list each public static name exactly once — the unique ones carrying
+    // their member index, the overloaded `Twice` carrying `None` (in scope,
+    // deferred) — and omit the internal one: exactly what `open type Demo.Calc`
+    // brings into scope.
     let env = fixture_env();
     let calc = env
         .lookup_type(&ns(&["Demo"]), "Calc", 0)
@@ -912,12 +912,12 @@ fn open_static_entries_are_distinct_and_public_only() {
     let mut entries = env.open_static_entries(calc);
     entries.sort_unstable_by_key(|(name, _)| *name);
     let names: Vec<&str> = entries.iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, vec!["Answer", "Twice", "Zero"]);
+    assert_eq!(names, vec!["Answer", "Named", "Thing", "Twice", "Zero"]);
     let unique: Vec<bool> = entries.iter().map(|(_, idx)| idx.is_some()).collect();
     assert_eq!(
         unique,
-        vec![true, false, true],
-        "the overloaded `Twice` is not uniquely selectable; `Answer`/`Zero` are"
+        vec![true, true, true, false, true],
+        "the overloaded `Twice` is not uniquely selectable; the others are"
     );
 
     // The same names round-trip through the *qualified* lookups, which differ only
