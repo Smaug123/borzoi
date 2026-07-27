@@ -65,9 +65,21 @@
 //! this costs is that an incomplete reference set stops the project
 //! type-checking rather than degrading quietly — hence the oracle-error gate.
 //!
-//! Validated against `WoofWare.{WeakHashTable, LiangHyphenation, Expect}`
-//! (hundreds of in-project + FSharp.Core/BCL/NuGet-package resolutions each, zero
-//! divergences).
+//! An imported symbol's name is adjudicated by the comparator shared with
+//! `borzoi-corpus-diff` ([`borzoi_sema::test_support`]): FCS's rendered name
+//! **or** the structural declaration our own resolution certifies. Without the
+//! second, `ImmutableArray<byte>.Empty` — FCS printing the enclosing generic
+//! type with its arguments, which our full names never carry — scores a correct
+//! resolution as a wrong target.
+//!
+//! Validated against `WoofWare.{WeakHashTable, LiangHyphenation, Expect,
+//! PawPrint.Domain}` (hundreds to thousands of in-project +
+//! FSharp.Core/BCL/NuGet-package resolutions each, zero divergences and zero
+//! alt-binders). `WoofWare.PawPrint`'s main library reaches zero divergences
+//! across 41k in-project + 13.6k imported uses, and holds 6 alt-binders whose
+//! cause is known: an `[<AutoOpen>]` module's active patterns in a referenced
+//! project's assembly are not in scope from the enclosing namespace, so a
+//! parameterised case's argument binds as a pattern binder.
 //!
 //! `#[ignore]`d and driven by `BORZOI_PROJECT_FSPROJ` (an absolute path to
 //! a **restored** `.fsproj` — its `obj/project.assets.json` must exist). Skips
@@ -90,6 +102,7 @@ use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::SemanticState;
 use borzoi::workspace::Workspace;
 use borzoi_cst::language_version::LanguageVersion;
+use borzoi_sema::test_support::{assembly_full_name_agrees, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
 use rowan::TextRange;
 
@@ -196,15 +209,12 @@ fn our_assembly_full(env: &AssemblyEnv, res: Resolution) -> OurAsm {
     }
 }
 
-/// Whether one of our renderings equals FCS's full name, modulo the
-/// double-backtick quoting FCS applies to identifiers that need it
-/// (`Operators.``not```). Only the delimiter pairs are removed, never a lone
-/// backtick: a quoted identifier may contain one (`lex.fsl` closes the quote on
-/// a *doubled* backtick only), so ``a`b`` and ``ab`` name different symbols.
-fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
-    let unquote = |s: &str| s.replace("``", "");
-    let f = unquote(fcs);
-    unquote(&ours.qualified) == f || unquote(&ours.unqualified) == f
+/// Whether one of our renderings equals `expected` — FCS's own full name, or
+/// the structural declaration our resolution certified. See
+/// [`assembly_full_name_agrees`] for what "equals" tolerates.
+fn full_matches(ours: &OurAsm, expected: &str) -> bool {
+    assembly_full_name_agrees(&ours.qualified, expected)
+        || assembly_full_name_agrees(&ours.unqualified, expected)
 }
 
 /// Our resolution's full name with a **nested** entity's enclosing chain
@@ -477,11 +487,28 @@ fn project_resolution_matches_fcs() {
                     None | Some(Resolution::Deferred(_)) => tally.gaps += 1,
                     Some(r @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                         let ours = our_assembly_full(&env, r);
-                        if &ours.assembly == asm && full_matches(&ours, full) {
+                        // The oracle's *rendered* name and the structural one
+                        // our own resolution certifies are both accepted, and
+                        // neither replaces the other: FCS names a constructor
+                        // use by its type while the declaring entity and
+                        // display name compose to `T.T`, so substituting would
+                        // turn agreement into a divergence.
+                        let certified = u
+                            .structural
+                            .as_ref()
+                            .and_then(|s| certified_expected(&env, r, s));
+                        if &ours.assembly == asm
+                            && (full_matches(&ours, full)
+                                || certified.as_deref().is_some_and(|c| full_matches(&ours, c)))
+                        {
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm
-                            && our_assembly_full_nested(&env, r)
-                                .is_some_and(|n| n.replace("``", "") == full.replace("``", ""))
+                            && our_assembly_full_nested(&env, r).is_some_and(|n| {
+                                assembly_full_name_agrees(&n, full)
+                                    || certified
+                                        .as_deref()
+                                        .is_some_and(|c| assembly_full_name_agrees(&n, c))
+                            })
                         {
                             // A nested entity named in full — an adjudicated
                             // match, not a rendering gap.

@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use borzoi_oracle_harness::{BatchChild, default_timeout};
+use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
 use borzoi_spawn::BoundedCommand;
 use serde::Deserialize;
 
@@ -433,6 +434,25 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringPath", default)]
+    declaring_path: Option<Vec<RawDeclaringSegment>>,
+    #[serde(rename = "DeclaringNamespace", default)]
+    declaring_namespace: Option<String>,
+    // `Option` although the oracle always emits a boolean: a `null` here would
+    // fail the whole dump's parse, and "unknown" is worth no more than "not a
+    // constructor" — both decline the structural composition.
+    #[serde(rename = "IsConstructor", default)]
+    is_constructor: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RawDeclaringSegment {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Arity")]
+    arity: usize,
 }
 
 #[derive(Deserialize)]
@@ -534,6 +554,12 @@ pub struct NormalisedProjectUse {
     pub decl: Option<DeclSite>,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
+    /// The declaration named **structurally**, when the oracle reported a
+    /// declaring entity for it. [`Self::full_name`] is a rendering that prints
+    /// an enclosing generic type with its type arguments; this is the same
+    /// declaration with no rendering in it, so a comparator can certify it
+    /// against our own resolution. See [`StructuralName`].
+    pub structural: Option<StructuralName>,
 }
 
 /// One error-severity diagnostic the oracle reported for a project file. A
@@ -627,6 +653,30 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                             }
                         })
                     });
+                    let structural = match u.declaring_path {
+                        Some(path) if !path.is_empty() => Some(StructuralName {
+                            declaring: DeclaringEntity {
+                                // Absent is the **root** namespace, which the
+                                // oracle reports as such rather than as the
+                                // string `global` — a namespace can be called
+                                // that, and the two are different places.
+                                namespace: u
+                                    .declaring_namespace
+                                    .iter()
+                                    .flat_map(|namespace| namespace.split('.'))
+                                    .map(str::to_string)
+                                    .collect(),
+                                path: path
+                                    .into_iter()
+                                    .map(|segment| (segment.name, segment.arity))
+                                    .collect(),
+                                is_constructor: u.is_constructor.unwrap_or(false),
+                            },
+                            leaf: u.symbol_name.clone(),
+                            leaf_arity: u.generic_arity,
+                        }),
+                        Some(_) | None => None,
+                    };
                     NormalisedProjectUse {
                         name: u.symbol_name,
                         start: idx.offset(u.range.start.line, u.range.start.col),
@@ -635,6 +685,7 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        structural,
                     }
                 })
                 .collect();

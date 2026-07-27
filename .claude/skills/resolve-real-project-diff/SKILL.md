@@ -127,9 +127,20 @@ assembly at all, that assembly *was* resolved and read — the disagreement is
 about resolution *precedence*. A genuine dependency-resolution failure shows up
 instead as `asm_match == 0`, an empty env, or the vacuity assertion firing.
 
-Validated (zero divergences) against `WoofWare.{WeakHashTable, LiangHyphenation,
-Expect, PawPrint.Domain}` (the last across ~5.1k in-project + ~1.4k
-imported-assembly uses). `PawPrint.Domain` originally surfaced one `String`
+An imported symbol's name is adjudicated by the comparator shared with
+`borzoi-corpus-diff` (`borzoi_sema::test_support`, behind its `test-support`
+feature): FCS's rendered name **or** the structural declaration our own
+resolution certifies. That is what stops `ImmutableArray<byte>.Empty` — FCS
+printing the enclosing generic type with its arguments, which our full names
+never carry — being scored as a wrong target.
+
+Validated (zero divergences, zero alt-binders) against
+`WoofWare.{WeakHashTable, LiangHyphenation, Expect, PawPrint.Domain}`.
+`WoofWare.PawPrint`'s main library reaches zero divergences across 41k
+in-project + 13.6k imported uses but still holds 6 alt-binders: an
+`[<AutoOpen>]` module's active patterns in a *referenced project's* assembly are
+not in scope from the enclosing namespace, so a parameterised case's argument
+binds as a pattern binder. `PawPrint.Domain` originally surfaced one `String`
 qualifier-precedence divergence (the FSharp.Core `String` *module* picked over
 `System.String` for `String.Equals`) — a sema precedence bug, fixed by making
 module-qualified member lookup follow FCS's in-module search domain
