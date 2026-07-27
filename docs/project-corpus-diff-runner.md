@@ -271,6 +271,13 @@ exactly as it arrives. The structural fields themselves are pinned against the
 real oracle by `crates/sema/tests/all/companion_head_diff.rs`, against what its
 corpus planted rather than against what the oracle reported.
 
+A use FCS reports as **compiler-generated** is skipped and counted, never
+compared: a destructuring parameter (`let inline toUnit FakeUnit.FakeUnit = ()`)
+gets a synthetic `_arg1` whose use spans the *pattern*, which is also the span of
+the union case the pattern names. Two oracle answers arrive for one site, and the
+one keyed on the span is the one the author never wrote — so `fcs-dump` reports
+`IsCompilerGenerated` and the comparison declines it rather than guessing.
+
 The default soundness gate allows zero divergences.
 
 ## Current Failure Gates

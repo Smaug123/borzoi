@@ -4833,6 +4833,17 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
     // unreadable symbol into a skipped project. `false` on failure is the
     // fail-closed answer: a constructor read as an ordinary member composes a
     // name that matches nothing, so the site stays a divergence.
+    // Whether the compiler *made* this value rather than the author writing it.
+    // A destructuring parameter pattern (`let inline toUnit FakeUnit.FakeUnit =
+    // ()`) gives the parameter a synthetic `_arg1`, whose use spans the pattern
+    // — the same span as the union case the pattern matches. A consumer keyed on
+    // spans sees two answers for one site and cannot tell which is the author's
+    // without this.
+    let isCompilerGenerated : bool =
+        match u.Symbol with
+        | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsCompilerGenerated with _ -> false)
+        | _ -> false
+
     let isConstructor : bool =
         match u.Symbol with
         | :? FSharpMemberOrFunctionOrValue as m -> (try m.IsConstructor with _ -> false)
@@ -4847,7 +4858,8 @@ let private projectSymbolUse (u: FSharpSymbolUse) =
        GenericArity = genericArity
        DeclaringPath = declaringPath
        DeclaringNamespace = declaringNamespace
-       IsConstructor = isConstructor |}
+       IsConstructor = isConstructor
+       IsCompilerGenerated = isCompilerGenerated |}
 
 let private projectDiagnostic (d: FSharp.Compiler.Diagnostics.FSharpDiagnostic) =
     {| Severity = d.Severity.ToString()

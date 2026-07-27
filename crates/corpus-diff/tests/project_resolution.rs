@@ -318,6 +318,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
                 start: use_start,
                 end: use_end,
                 is_from_definition: false,
+                is_compiler_generated: false,
                 decl: UseDecl::InProject(DeclSite {
                     file: sig_path,
                     start: decl_start,
@@ -335,6 +336,54 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
         (comparison.uses_considered, comparison.matches),
         (1, 1),
         "the sig-exposed val must match the `.fsi` declaration, not defer"
+    );
+}
+
+/// FCS reports a destructuring parameter's synthetic value over the *pattern's*
+/// span — the same span as the union case the pattern names — so a comparison
+/// keyed on spans has two oracle answers for one site and no way to prefer the
+/// one the author wrote. `WoofWare.Incremental`'s
+/// `let inline toUnit FakeUnit.FakeUnit = ()` is the measured case: the oracle
+/// emits both `_arg1` and `FakeUnit` at `FakeUnit.FakeUnit`, and picking `_arg1`
+/// made a correct case resolution a divergence.
+///
+/// The compiler-generated ones are skipped, and counted so the skip is visible
+/// rather than silent.
+#[test]
+fn a_compiler_generated_value_is_skipped_rather_than_compared() {
+    // The helper fixes the path; the oracle's file must be the same one.
+    let path = PathBuf::from("/tmp/corpus-diff-synthetic/B.fs");
+    let src = "module A\nlet x = 1\n";
+    let compared = ProjectUse {
+        name: "x".to_string(),
+        start: 13,
+        end: 14,
+        is_from_definition: false,
+        is_compiler_generated: false,
+        decl: UseDecl::Unlocated,
+        assembly: None,
+        full_name: None,
+        generic_arity: None,
+        declaring: None,
+    };
+    let generated = ProjectUse {
+        name: "_arg1".to_string(),
+        is_compiler_generated: true,
+        ..compared.clone()
+    };
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::from_entities(Vec::new()));
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: path.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![compared, generated],
+        }],
+    );
+    assert_eq!(comparison.skipped_uses.compiler_generated, 1);
+    assert_eq!(
+        comparison.skipped_uses.no_oracle_declaration, 1,
+        "the author-written use is still adjudicated"
     );
 }
 
@@ -712,6 +761,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -727,6 +777,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -801,6 +852,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     start: pattern_start,
                     end: pattern_end,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: pattern_start,
@@ -816,6 +868,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     start: first,
                     end: first + 2,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -831,6 +884,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     start: body,
                     end: body + 2,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: first,
@@ -873,6 +927,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 1,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
@@ -888,6 +943,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 4,
                     end: 4,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: 0,
@@ -903,6 +959,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 7,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::Unlocated,
                     assembly: Some("FSharp.Core".to_string()),
                     full_name: None,
@@ -914,6 +971,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     start: 0,
                     end: 9,
                     is_from_definition: false,
+                    is_compiler_generated: false,
                     decl: UseDecl::Unlocated,
                     assembly: None,
                     full_name: None,
@@ -934,6 +992,7 @@ fn comparison_reports_skipped_oracle_categories() {
         SkippedUses {
             definitions: 1,
             zero_width: 1,
+            compiler_generated: 0,
             non_project_declarations: 1,
             out_of_project_declarations: 0,
             no_oracle_declaration: 1,
@@ -960,6 +1019,7 @@ fn comparison_matches_assembly_oracle_declarations() {
                 start,
                 end,
                 is_from_definition: false,
+                is_compiler_generated: false,
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Value".to_string()),
@@ -994,6 +1054,7 @@ fn comparison_reports_wrong_assembly_resolution() {
                 start,
                 end,
                 is_from_definition: false,
+                is_compiler_generated: false,
                 decl: UseDecl::Unlocated,
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Other".to_string()),
@@ -1033,6 +1094,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: module_start,
                     end: module_end,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: module_start,
@@ -1048,6 +1110,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: x_def_start,
                     end: x_def_end,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: x_def_start,
@@ -1063,6 +1126,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     start: y_def_start,
                     end: y_def_end,
                     is_from_definition: true,
+                    is_compiler_generated: false,
                     decl: UseDecl::InProject(DeclSite {
                         file: file.clone(),
                         start: y_def_start,
