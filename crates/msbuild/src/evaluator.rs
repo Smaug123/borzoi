@@ -1394,13 +1394,10 @@ struct State<'r> {
     /// `compile_context`) — we already don't model the framework defines the
     /// SDK adds in targets.
     define_context: bool,
-    /// Whether the write being walked sits under a `Condition` — its own or
-    /// any enclosing `<PropertyGroup>`'s — that reads `$(Configuration)`.
-    /// Such a write names one configuration's directory even when its value
-    /// never mentions it (`Condition="'$(Configuration)' == 'Debug'"` with a
-    /// body of `fast/`), which is invisible to any inspection of the value.
-    /// Read by [`State::record_out_dir_write`].
-    configuration_gate_context: bool,
+    /// Whether the element being walked sits under any `Condition` — its own
+    /// or an enclosing `<PropertyGroup>`'s. Read by
+    /// [`State::note_out_dir_element`].
+    conditioned_context: bool,
     /// `true` only while expanding a `<DefineConstants>` *value* (not its
     /// condition). The `$(DefineConstants)` self-reference exemption
     /// ([`is_define_self_reference`]) applies only here — the append idiom is a
@@ -1481,9 +1478,16 @@ struct State<'r> {
     /// undefined property is exactly empty under this walker's environment
     /// model, and so is deliberately *not* recorded as untrusted.
     out_dir_write: OutDirWrite,
-    /// Whether the write in [`Self::out_dir_write`] was gated on the
-    /// configuration ([`State::configuration_gate_context`]).
-    out_dir_configuration_gated: bool,
+    /// How many `<OutDir>` elements the whole walk saw, and whether any sat
+    /// under a `Condition`. Counted whatever their gate decided: a write
+    /// skipped under `'$(Configuration)' == 'Release'` still says the
+    /// directory is not the one every build writes to. See
+    /// [`State::output_dir_verdict`].
+    out_dir_elements_seen: usize,
+    out_dir_any_conditioned: bool,
+    /// Whether a caller global pinned `OutDir`, in which case no XML write can
+    /// change it and the counts above say nothing about the outcome.
+    out_dir_globally_pinned: bool,
     /// Whether a **user-authored** file (not the SDK subtree) wrote
     /// `OutputPath` or `AppendTargetFrameworkToOutputPath`. Either redirects
     /// the default layout, so the default arm of
@@ -1934,7 +1938,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: Vec::new(),
             items_uncertain: false,
             define_context: false,
-            configuration_gate_context: false,
+            conditioned_context: false,
             in_define_value: false,
             define_constants_uncertain: false,
             import_gate_context: false,
@@ -1964,7 +1968,11 @@ impl<'r> State<'r> {
                 .map_or(OutDirWrite::NeverWritten, |(_, v)| {
                     OutDirWrite::Raw(v.clone())
                 }),
-            out_dir_configuration_gated: false,
+            out_dir_globally_pinned: extra_properties
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("OutDir")),
+            out_dir_elements_seen: 0,
+            out_dir_any_conditioned: false,
             output_path_redirected_by_user: false,
         }
     }
@@ -2266,7 +2274,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: _,
             items_uncertain,
             define_context: _,
-            configuration_gate_context: _,
+            conditioned_context: _,
             in_define_value: _,
             define_constants_uncertain,
             import_gate_context: _,
@@ -2286,7 +2294,9 @@ impl<'r> State<'r> {
             walk_opaque: _,
             unevaluable_written: _,
             out_dir_write: _,
-            out_dir_configuration_gated: _,
+            out_dir_elements_seen: _,
+            out_dir_any_conditioned: _,
+            out_dir_globally_pinned: _,
             output_path_redirected_by_user: _,
         } = self;
         // Central Package Management opt-in: a versionless
@@ -2412,6 +2422,19 @@ impl<'r> State<'r> {
         }
     }
 
+    /// Note that an `<OutDir>` element exists, **before** its gate is
+    /// evaluated. A skipped write is still evidence: a project with
+    /// `<OutDir Condition="'$(Configuration)' == 'Release'">release/</OutDir>`
+    /// does not write to one fixed directory, and the walk under `Debug`
+    /// would otherwise see only the unconditioned write it does take.
+    fn note_out_dir_element(&mut self, name: &str) {
+        if self.in_sdk_subtree || !name.eq_ignore_ascii_case("OutDir") {
+            return;
+        }
+        self.out_dir_elements_seen += 1;
+        self.out_dir_any_conditioned |= self.conditioned_context;
+    }
+
     /// Record how a write to `OutDir` went, for [`Self::output_dir_verdict`].
     /// Called from every exit of the property-write path — including the
     /// refusals, since a write we could not evaluate must not read as "never
@@ -2431,7 +2454,6 @@ impl<'r> State<'r> {
             return;
         }
         if name.eq_ignore_ascii_case("OutDir") {
-            self.out_dir_configuration_gated = self.configuration_gate_context;
             self.out_dir_write = write;
         } else if name.eq_ignore_ascii_case("OutputPath")
             || name.eq_ignore_ascii_case("AppendTargetFrameworkToOutputPath")
@@ -2443,31 +2465,27 @@ impl<'r> State<'r> {
     /// The [`ParsedProject::output_dir`] verdict. See [`OutputDirVerdict`]
     /// for what each arm licenses a consumer to do.
     ///
-    /// The raw body decides what the evaluated value cannot: a reference to a
-    /// property this walk never saw defined expands to empty (the environment
-    /// model resolves an undefined name *exactly*, so it is not untrusted
-    /// either) and would leave `$(SolutionDir)artifacts/` looking like a
-    /// clean project-relative `artifacts/`. Any undefined reference declines.
+    /// **Commits only to a value that cannot vary with anything.** The
+    /// directory a build writes to can depend on the configuration, the
+    /// platform, or any property gating or feeding the write, and this walker
+    /// runs under whichever of those the editor supplied rather than whichever
+    /// the user last built. Chasing that dependence — through gates, helper
+    /// properties, skipped alternatives — is an open-ended taint analysis, and
+    /// every gap in one is a *commitment* to a directory the build may never
+    /// write to, where a stale assembly can be waiting.
     ///
-    /// Configuration dependence, by contrast, is decided on the **evaluated
-    /// value**, by looking for the configuration in the result. Deciding it
-    /// from the raw body would see only a direct `$(Configuration)`
-    /// reference, and miss every other way the value comes to name one
-    /// configuration out of several the user might have built: a write gated
-    /// on `Condition="'$(Configuration)' == 'Debug'"`, or one expanded
-    /// through a helper property that holds it. Those commit to a directory
-    /// that exists only for the configuration this evaluation happened to run
-    /// under. Searching for the value catches all three, and the occurrence
-    /// is reported as it is spelled in `path` so a consumer can find it
-    /// again without repeating the case-insensitive search.
+    /// So the commit is certified by construction instead of by analysis. A
+    /// sole, unconditioned `<OutDir>` whose body holds no `$(...)` at all is a
+    /// literal: there is nothing in it or around it for a build dimension to
+    /// reach. Anything else declines and reaches the consumer's default scan,
+    /// which is where it would have gone before this verdict existed.
     fn output_dir_verdict(&self) -> OutputDirVerdict {
         let raw = match &self.out_dir_write {
             // No `OutDir` at all. That is the default layout *only* if
             // nothing else redirected it: a user `OutputPath` moves the
             // output without ever mentioning `OutDir` (MSBuild derives one
             // from it), and claiming the default there sends a consumer to
-            // scan `bin/` for a DLL the build writes elsewhere — which is
-            // precisely the miss this verdict exists to stop.
+            // scan `bin/` for a DLL the build writes elsewhere.
             OutDirWrite::NeverWritten if self.output_path_redirected_by_user => {
                 return OutputDirVerdict::Unknown;
             }
@@ -2475,6 +2493,23 @@ impl<'r> State<'r> {
             OutDirWrite::Unevaluable => return OutputDirVerdict::Unknown,
             OutDirWrite::Raw(raw) => raw,
         };
+        // A caller global cannot be rebound by any XML write, so the element
+        // counts below say nothing about the outcome — but it is still a
+        // literal supplied from outside, so the `$(...)` test still applies.
+        if !self.out_dir_globally_pinned
+            && (self.out_dir_elements_seen != 1 || self.out_dir_any_conditioned)
+        {
+            return OutputDirVerdict::Unknown;
+        }
+        // The one test that makes the rest of this unnecessary: with no
+        // expansion in the body, the evaluated value *is* the literal, so it
+        // cannot have been reached by a property that varies. Everything a
+        // reference could have brought in — an undefined name expanding to
+        // empty, `$(Configuration)`, `$(Platform)`, a helper property holding
+        // either — is excluded at once rather than enumerated.
+        if raw.contains("$(") {
+            return OutputDirVerdict::Unknown;
+        }
         if self.property_provenance_untrusted("OutDir") {
             return OutputDirVerdict::Unknown;
         }
@@ -2482,15 +2517,6 @@ impl<'r> State<'r> {
             // Written, evaluated, and yet absent: a later refusal removed it.
             return OutputDirVerdict::Unknown;
         };
-        // The reference scan runs **before** the emptiness checks below.
-        // An undefined reference expands to nothing, so `<OutDir>$(SolutionDir)</OutDir>`
-        // would otherwise reach the empty arm and read as "the default layout
-        // applies" — the most confidently wrong answer available.
-        for referenced in simple_property_references(raw) {
-            if self.lookup.get(referenced).is_none() {
-                return OutputDirVerdict::Unknown;
-            }
-        }
         // Empty is not a decline: MSBuild's own default gate is
         // `'$(OutDir)' == ''`, so writing empty leaves the default layout in
         // force. Whitespace-only is a decline for the reason
@@ -2501,27 +2527,6 @@ impl<'r> State<'r> {
             return OutputDirVerdict::Default;
         }
         if path.trim().is_empty() {
-            return OutputDirVerdict::Unknown;
-        }
-        // **A configuration-dependent directory is never committed to.** This
-        // evaluation ran under whichever configuration the environment
-        // supplied, while the user may have built another, so the value names
-        // a directory that need not be the one the build writes — and a stale
-        // assembly sitting in it would be folded against current source.
-        //
-        // Dependence is taken conservatively, because every way of getting it
-        // wrong commits: the write is gated on `$(Configuration)`, its body
-        // names it, or the configuration merely *appears* in the result (which
-        // catches a value laundered through a helper property, and costs only
-        // the occasional `Debugging/` that never depended on it at all).
-        let names_configuration = self
-            .lookup
-            .get("Configuration")
-            .map(|v| v.unescape())
-            .is_some_and(|cfg| !cfg.is_empty() && ascii_ci_contains(&path, &cfg));
-        let reads_configuration =
-            simple_property_references(raw).any(|r| r.eq_ignore_ascii_case("Configuration"));
-        if self.out_dir_configuration_gated || names_configuration || reads_configuration {
             return OutputDirVerdict::Unknown;
         }
         OutputDirVerdict::Declared { path }
@@ -3277,8 +3282,8 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             let prev = state.define_context;
             state.define_context =
                 prev || (!state.in_sdk_subtree && property_group_writes_define_constants(node));
-            let prev_cfg_gate = state.configuration_gate_context;
-            state.configuration_gate_context = prev_cfg_gate || condition_reads_configuration(node);
+            let prev_conditioned = state.conditioned_context;
+            state.conditioned_context = prev_conditioned || node.attribute("Condition").is_some();
             // The same discipline for a group writing a CPM flag: its condition
             // decides whether Central Package Management turns on, or whether
             // the central versions import marker can be trusted. Setting
@@ -3364,7 +3369,7 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                     state.package_context = prev_pkg;
                 }
             }
-            state.configuration_gate_context = prev_cfg_gate;
+            state.conditioned_context = prev_conditioned;
         }
         "Import" => handle_import(node, current_file_dir, state),
         "ImportGroup" => {
@@ -3801,8 +3806,9 @@ fn walk_property_child(
     // reference uncertainty.
     let prev_package = state.package_context;
     state.package_context = prev_package || is_cpm_flag_property_name(&name);
-    let prev_cfg_gate = state.configuration_gate_context;
-    state.configuration_gate_context = prev_cfg_gate || condition_reads_configuration(node);
+    let prev_conditioned = state.conditioned_context;
+    state.conditioned_context = prev_conditioned || node.attribute("Condition").is_some();
+    state.note_out_dir_element(&name);
     walk_property_child_inner(
         node,
         name,
@@ -3812,7 +3818,7 @@ fn walk_property_child(
         inherited_unpinned_root,
         state,
     );
-    state.configuration_gate_context = prev_cfg_gate;
+    state.conditioned_context = prev_conditioned;
     state.package_context = prev_package;
     state.define_context = prev_define;
 }
@@ -4676,6 +4682,14 @@ fn mark_property_group_children_provenance(
         if state.protected.contains(&name.to_ascii_lowercase()) {
             continue;
         }
+        // The group's own gate did not run, so `walk_property_child` never
+        // saw this element. It is still an `<OutDir>` the project can write
+        // under some other configuration — and by construction a conditioned
+        // one, since a group whose gate did not run had a gate.
+        if name.eq_ignore_ascii_case("OutDir") && !state.in_sdk_subtree {
+            state.note_out_dir_element(name);
+            state.out_dir_any_conditioned = true;
+        }
         let lower = name.to_ascii_lowercase();
         state.apply_property_provenance(
             name,
@@ -4689,24 +4703,6 @@ fn mark_property_group_children_provenance(
             },
         );
     }
-}
-
-/// Whether `haystack` contains `needle`, comparing ASCII case-insensitively.
-/// MSBuild compares property values that way, and a directory named for a
-/// configuration is routinely spelled in another case than the property
-/// (`debug-out/` under `Debug`).
-fn ascii_ci_contains(haystack: &str, needle: &str) -> bool {
-    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
-    h.len() >= n.len() && (0..=h.len() - n.len()).any(|i| h[i..i + n.len()].eq_ignore_ascii_case(n))
-}
-
-/// Whether `node`'s own `Condition` reads `$(Configuration)`. Such a gate
-/// decides *which configuration's* directory the write names, whatever the
-/// written value looks like.
-fn condition_reads_configuration(node: Node<'_, '_>) -> bool {
-    node.attribute("Condition").is_some_and(|condition| {
-        simple_property_references(condition).any(|r| r.eq_ignore_ascii_case("Configuration"))
-    })
 }
 
 pub(crate) fn simple_property_references(raw: &str) -> impl Iterator<Item = &str> {

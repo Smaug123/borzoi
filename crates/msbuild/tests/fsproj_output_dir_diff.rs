@@ -116,6 +116,12 @@ const BODIES: &[&str] = &[
      <OutDir Condition=\"'$(Configuration)' == 'Release'\">release-out/</OutDir>",
     // …and the same thing laundered through a helper property.
     "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
+    // A gated sibling of an unconditioned write: skipped in this evaluation,
+    // taken in the build the user actually ran.
+    "<OutDir>common/</OutDir>\
+     <OutDir Condition=\"'$(Configuration)' == 'Release'\">release/</OutDir>",
+    // The other build dimension the LSP pins as a global.
+    "<OutDir>artifacts/$(Platform)/</OutDir>",
 ];
 
 /// The two sides as *directories*: separators unified, and at most one

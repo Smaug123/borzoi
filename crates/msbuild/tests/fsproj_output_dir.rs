@@ -106,44 +106,32 @@ fn a_plain_declared_directory_is_reported_verbatim() {
     );
 }
 
-/// **The reason this is a verdict and not a property read.** A reference to a
-/// property this walk never saw defined expands to *empty*, and — because the
-/// environment model resolves an undefined name exactly — the result is not
-/// marked untrusted either. `$(SolutionDir)artifacts/` therefore evaluates to
-/// a clean-looking, wrong, project-relative `artifacts/`.
+/// **The reason this is a verdict and not a property read.** Any `$(...)` in
+/// the body declines, whatever it expands to, because the expansion is where
+/// a build dimension gets in. `$(SolutionDir)artifacts/` is the motivating
+/// shape — undefined outside a solution build, which is exactly the situation
+/// an editor is in, so it expands to a clean-looking, wrong, project-relative
+/// `artifacts/`.
 ///
-/// `$(SolutionDir)` is the realistic spelling: it is undefined outside a
-/// solution build, which is exactly the situation an editor is in.
+/// The rule is deliberately blunt rather than a definedness check. A defined
+/// reference is no safer: `$(Root)` may itself have been written under a
+/// configuration gate, and `$(Platform)` varies with a dimension the editor
+/// picks. Excluding expansion outright excludes all of them at once, instead
+/// of enumerating the ways dependence can hide.
 #[test]
-fn a_value_leaning_on_an_undefined_property_declines() {
-    assert_eq!(
-        verdict("<OutDir>$(SolutionDir)artifacts/</OutDir>"),
-        OutputDirVerdict::Unknown
-    );
-
-    // The contrast that proves the check is about *definedness*, not about
-    // `$(...)` appearing: the same shape with the property defined commits,
-    // and commits to the expanded value.
-    assert_eq!(
-        verdict("<Root>/srv</Root><OutDir>$(Root)/artifacts/</OutDir>"),
-        OutputDirVerdict::Declared {
-            path: "/srv/artifacts/".to_owned(),
-        }
-    );
-}
-
-/// A defined-but-empty property is genuinely empty, so it commits — the
-/// walker's environment model is exact about it, unlike the undefined case
-/// above. Pinned because the two produce *identical* evaluated strings, so
-/// only the raw-body check can tell them apart.
-#[test]
-fn a_defined_but_empty_reference_still_commits() {
-    assert_eq!(
-        verdict("<Empty></Empty><OutDir>$(Empty)artifacts/</OutDir>"),
-        OutputDirVerdict::Declared {
-            path: "artifacts/".to_owned(),
-        }
-    );
+fn any_expansion_in_the_body_declines() {
+    for body in [
+        "<OutDir>$(SolutionDir)artifacts/</OutDir>",
+        "<Root>/srv</Root><OutDir>$(Root)/artifacts/</OutDir>",
+        "<Empty></Empty><OutDir>$(Empty)artifacts/</OutDir>",
+        "<OutDir>artifacts/$(Platform)/</OutDir>",
+    ] {
+        assert_eq!(
+            verdict(body),
+            OutputDirVerdict::Unknown,
+            "{body} leans on an expansion and must not commit"
+        );
+    }
 }
 
 /// **A configuration-dependent directory is never committed to.** This
@@ -172,18 +160,19 @@ fn a_configuration_dependent_directory_declines() {
     }
 }
 
-/// Deciding on the evaluated value means a directory that merely *contains*
-/// the configuration declines too. That is the deliberate direction to err:
-/// the only tool for seeing through a helper property is the value itself, so
-/// distinguishing `Debugging/` from a genuine dependence would cost the
-/// helper case. A decline sends the consumer to the scan it would have run
-/// anyway; a wrong commit sends it to a directory the build never writes.
+/// A literal that merely *contains* the configuration's name is still a
+/// literal: nothing about it varies. Pinned because the previous approach —
+/// inspecting the evaluated value for the configuration — declined this, and
+/// the reason it no longer has to is that the body test already excludes
+/// every way a value could have depended on one.
 #[test]
-fn an_incidental_occurrence_declines_too() {
+fn a_literal_resembling_the_configuration_still_commits() {
     let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
     assert_eq!(
         verdict_with("<OutDir>Debugging/</OutDir>", &extras),
-        OutputDirVerdict::Unknown
+        OutputDirVerdict::Declared {
+            path: "Debugging/".to_owned(),
+        }
     );
 }
 
@@ -221,19 +210,25 @@ fn an_unmodellable_body_is_a_refusal_not_an_absence() {
     );
 }
 
-/// A later write wins, as everywhere else in the property pass — including
-/// when the later one is the *worse* verdict.
+/// More than one `<OutDir>` element anywhere in the walk declines, even when
+/// the winner looks unconditional. Which one wins is a property of the build
+/// this evaluation happens to model: a sibling gated on another configuration
+/// is skipped here and taken there, so the directory is not one fixed place.
+/// Counting elements rather than surviving writes is what sees the skipped
+/// one at all.
 #[test]
-fn the_last_write_decides() {
+fn more_than_one_out_dir_element_declines() {
     assert_eq!(
         verdict("<OutDir>first/</OutDir><OutDir>second/</OutDir>"),
-        OutputDirVerdict::Declared {
-            path: "second/".to_owned(),
-        }
+        OutputDirVerdict::Unknown
     );
     assert_eq!(
-        verdict("<OutDir>fine/</OutDir><OutDir>$(SolutionDir)x/</OutDir>"),
-        OutputDirVerdict::Unknown
+        verdict(
+            "<OutDir>common/</OutDir>\
+             <OutDir Condition=\"'$(Configuration)' == 'Release'\">release/</OutDir>"
+        ),
+        OutputDirVerdict::Unknown,
+        "the Release write is skipped under Debug, but it still exists"
     );
 }
 

@@ -276,6 +276,14 @@ impl ItemMetadataValue {
 /// a `bin/Debug/`-shaped partial answer. Its `== ''` condition means it never
 /// fires over a user value, so ignoring it costs no coverage.
 ///
+/// A commitment is **certified by construction, not by analysis**. The
+/// directory a build writes to can depend on the configuration, the platform,
+/// or any property gating or feeding the write, while this walker runs under
+/// whichever of those the caller supplied rather than whichever the user last
+/// built. Chasing that dependence is an open-ended taint analysis, and every
+/// gap in one is a commitment to a directory the build may never write to —
+/// where a stale assembly can be waiting. So only a literal commits.
+///
 /// The verdict carries trust semantics for the same reason
 /// [`ParsedProject::target_name`] does: a consumer that looks in the wrong
 /// directory reports a built project as unbuilt.
@@ -288,21 +296,20 @@ pub enum OutputDirVerdict {
     /// A user-declared output directory, verbatim as evaluated — relative to
     /// the project directory unless rooted.
     ///
-    /// Never configuration-dependent: this evaluation runs under whichever
-    /// configuration the environment supplied, while the user may have built
-    /// another, so a value that names one configuration's directory is
-    /// declined rather than committed to. A consumer may therefore take
-    /// `path` as *the* output directory.
+    /// A **literal**: a sole, unconditioned `<OutDir>` whose body held no
+    /// `$(...)` (or a caller-supplied global). Nothing in it or around it can
+    /// vary with the configuration, the platform, or any other build
+    /// dimension this evaluation had to pick a value for, so a consumer may
+    /// take `path` as *the* output directory rather than one candidate among
+    /// several. Anything less certifiable declines — see [`Self::Unknown`].
     Declared { path: String },
-    /// No claim — but note what this is *not*: a project that declares
-    /// nothing lands in [`Self::Default`], so arriving here means the project
-    /// said something about where it builds that could not be pinned down.
-    /// Untrusted provenance, a write this walker refused to evaluate, a value
-    /// leaning on a property never defined here (which expands to empty and
-    /// would otherwise look like a clean relative path —
-    /// `$(SolutionDir)artifacts/` becoming `artifacts/`), a
-    /// `$(Configuration)` whose evaluated value cannot be located
-    /// unambiguously in the result, or a user-authored `OutputPath` /
+    /// No claim, and — unlike [`Self::Default`] — no suggestion that nothing
+    /// was declared. Everything that is not certifiably a literal lands here:
+    /// a body holding any `$(...)` (whatever it expands to, since expansion
+    /// is how a build dimension gets in), a write under a `Condition` or with
+    /// a gated sibling (which one wins is a property of the build being
+    /// modelled), untrusted provenance, a write this walker refused to
+    /// evaluate, or a user-authored `OutputPath` /
     /// `AppendTargetFrameworkToOutputPath` (from which MSBuild derives
     /// `OutDir` in a targets file, appending the framework — a computation
     /// this walker does not reproduce).

@@ -91,14 +91,14 @@ fn a_user_out_dir_still_commits_under_the_real_sdk() {
     );
 }
 
-/// A configuration-dependent redirect declines, and it must decline *here* in
-/// particular: the LSP injects `Configuration` as a global
-/// (`workspace::default_build_properties`), so unlike an SDK-blind walk this
-/// one evaluates the reference cleanly and would commit to `Debug`'s
-/// directory. The user may have built `Release`, and a stale `Debug` assembly
-/// sitting there would be folded against current source.
+/// A redirect that varies with a build dimension declines, and it must decline
+/// *here* in particular: the LSP injects `Configuration` and `Platform` as
+/// globals (`workspace::default_build_properties`), so unlike an SDK-blind
+/// walk this one evaluates those references cleanly and would commit to
+/// whichever pair the editor picked. The user may have built another, and a
+/// stale assembly sitting there would be folded against current source.
 #[test]
-fn a_configuration_dependent_out_dir_declines() {
+fn a_build_dimension_dependent_out_dir_declines() {
     for body in [
         "<OutDir>artifacts/$(Configuration)/</OutDir>",
         // Gated rather than referenced: the value never mentions the
@@ -107,6 +107,12 @@ fn a_configuration_dependent_out_dir_declines() {
         // Laundered through a helper: neither the gate nor the body says
         // `$(Configuration)`, and only the evaluated value gives it away.
         "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
+        // The other dimension the LSP pins as a global.
+        "<OutDir>artifacts/$(Platform)/</OutDir>",
+        // A gated sibling of an unconditioned write: skipped here, taken in
+        // the build the user actually ran.
+        "<OutDir>common/</OutDir>\
+         <OutDir Condition=\"'$(Configuration)' == 'Release'\">release/</OutDir>",
     ] {
         assert_eq!(
             verdict_under_real_sdk(body),
