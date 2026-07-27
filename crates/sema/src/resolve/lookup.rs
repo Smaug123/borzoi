@@ -360,30 +360,34 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Demote to [`OpenFoldTarget::Opaque`] every fold entry whose name this
-    /// file declares in a way that *out-ranks a position-0 fold* but that
-    /// position-0 ordering does not express.
+    /// Demote every fold entry this block may shadow in a way that position-0
+    /// ordering does not express.
     ///
-    /// Two such declarations, both file-global pre-scans because this runs
-    /// before the block's walk and so cannot see anything the block declares
-    /// later:
+    /// Two shadowings the resolver does not model anywhere — they reproduce
+    /// through an explicit `open` too, and their fixes are their own slices. But
+    /// this channel meets them far more often, since it brings a whole
+    /// namespace's names in at position 0, before the block's walk has seen
+    /// anything; so rather than commit a target FCS shadows, it declines:
     ///
-    /// - a **constructible type** ([`Resolver::own_type_simple_names`]) takes
-    ///   FCS's unqualified value slot from a same-named opened value, wherever
-    ///   in the block it is written;
-    /// - a value inside an **`[<AutoOpen>]` module**
-    ///   ([`Resolver::own_auto_open_value_names`]), whose contents FCS folds
-    ///   into the enclosing container above anything opened before it.
+    /// - a **constructible type** the block declares takes FCS's unqualified
+    ///   value slot from a same-named opened value. Screened per name against
+    ///   [`Resolver::own_type_simple_names`], which is a *closed* set — every
+    ///   type definition in the file, and nothing else can enter the slot;
+    /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
+    ///   scope above anything opened before it. Here the whole group is demoted
+    ///   rather than screened per name, because that surface is open-ended:
+    ///   values, union and exception cases, `extern` prototypes, active-pattern
+    ///   tags, a single-case union spelled exactly like an abbreviation, an
+    ///   auto-open type's statics, statics borrowed through an abbreviation.
+    ///   Enumerating them is a list that grows under review and can only be
+    ///   audited by inspection; [`Resolver::own_auto_open_container`] is one
+    ///   closed question, and it costs commits only in files that declare such
+    ///   a container.
     ///
-    /// Both shadowings are missing from the resolver generally, not just here:
-    /// they reproduce through an explicit `open` too, and their fixes are their
-    /// own slices. This screen exists so that *this* channel — which brings a
-    /// whole namespace's worth of names into position 0 and so meets the two
-    /// far more often — declines instead of committing a target FCS shadows.
-    /// `Opaque` rather than removal keeps the entry in scope shadowing by
+    /// `Opaque` rather than removal keeps an entry in scope shadowing by
     /// position, so an earlier open's same-named value cannot wrongly win.
-    /// Position-blind, so it also declines uses the local provably cannot reach
-    /// — availability, in the direction the pre-scans already accept.
+    /// Position-blind, so it also declines uses the shadower provably cannot
+    /// reach — availability, in the direction the pre-scans already accept.
     fn screen_block_local_shadows(&self, group: &mut AssemblyFoldGroup) {
         for surface in &mut group.surfaces {
             for entry in &mut surface.entries {
@@ -394,10 +398,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether this file declares `name` in one of the two ways
-    /// [`Self::screen_block_local_shadows`] screens for.
+    /// Whether the block may shadow `name` in one of the two ways
+    /// [`Self::screen_block_local_shadows`] describes.
     fn block_local_shadow(&self, name: &str) -> bool {
-        self.own_type_simple_names.contains(name) || self.own_auto_open_value_names.contains(name)
+        self.own_auto_open_container || self.own_type_simple_names.contains(name)
     }
 
     /// The [`Self::screen_block_local_shadows`] screen applied to entries
@@ -405,11 +409,10 @@ impl<'a> Resolver<'a> {
     /// which [`Self::open_project_namespace_values`] writes directly rather than
     /// through an [`AssemblyFoldGroup`].
     ///
-    /// The project half is screened for the same reason the assembly halves are
-    /// and by the same names: an earlier file's `[<AutoOpen>]` module value at
-    /// this namespace is folded at position 0 too, so a later local type takes
-    /// its slot just as it takes an assembly member's. `Deferred` here is what
-    /// `Opaque` is there — in scope, shadowing by position, naming nothing.
+    /// The project half is folded at position 0 for the same reason the assembly
+    /// halves are, so the same shadowers reach it: an earlier file's auto-open
+    /// module value at this namespace loses its slot to a later local type just
+    /// as an assembly member does. `Deferred` here is what `Opaque` is there.
     fn demote_block_local_shadowed_entries(&mut self, from: usize) {
         let names: Vec<String> = self.module_frame().entries[from..]
             .iter()
@@ -965,6 +968,7 @@ impl<'a> Resolver<'a> {
         // `open_shortening_matrix`). Pushing one there is not a no-op: the
         // prefix reroutes a dotted head through tier 1, which cost the
         // companion-module grid a committed cell.
+        //
         if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
             self.open_shortening_prefixes.push(ShorteningPrefix {
                 path: namespace.clone(),
@@ -972,6 +976,20 @@ impl<'a> Resolver<'a> {
                 module_reading: !handles.is_empty(),
             });
         }
+        // NOTE: a project `[<AutoOpen>]` module in this namespace nests short
+        // names too, and FCS folds the project fragment last, so `open <short>`
+        // binds the project's where both sides nest that name — while the
+        // project half lends no shortening prefix of its own (task #30), so we
+        // bind the assembly's. Neither lever available here fixes it:
+        // withholding the assembly prefix leaves the *enclosing* auto-open value
+        // standing (a wrong target of its own — the reason
+        // `open_shortening_matrix` exists), and recording the namespace in
+        // `incomplete_open_prefixes` — whose veto is exactly "a prefix may hide
+        // a nested module" — is unusable here because that veto fires on the
+        // presence of ANY incomplete prefix for EVERY relative open: measured,
+        // it took `WoofWare.PawPrint.Domain` from 2348 imported-symbol matches
+        // to 44. Task #30 is the fix; the shape needs a project and an assembly
+        // auto-open module in one namespace nesting the SAME short name.
         // The assembly **module** half's dotted-head bookkeeping, keyed on the
         // handles rather than the merged surface list — the explicit-`open`
         // path's, for the same reasons, because the reachability it describes is

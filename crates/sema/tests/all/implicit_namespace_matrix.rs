@@ -447,6 +447,21 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        // An `[<AutoOpen>]` **type**'s statics fold into the enclosing scope
+        // too, and are reachable by no name-level pre-scan — the closed
+        // container flag is what covers them.
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a later [<AutoOpen>] type's static out-ranks the implicit member",
+        body: &[
+            "[<AutoOpen>]",
+            "type LocalStatics =",
+            "    static member extraValue () = 1",
+        ],
+        probe: "extraValue",
+        position: Position::Expr,
+    },
+    Cell {
         // The **project** half needs the same screen: an earlier file's
         // auto-open module value is folded at position 0 too, so a later local
         // type takes its slot exactly as it takes an assembly member's.

@@ -231,58 +231,26 @@ pub fn resolve_file(
                 _ => {}
             }
         }
-        // …and its **value** binders, for the implicit enclosing-namespace
-        // fold's block-local screen. Scoped to this node but otherwise the
-        // file-global binder walk below, so it over-collects (a lambda
-        // parameter counts) in the same sound direction — and, like that walk,
-        // it needs the three value-space binders no `Pat` reaches: union and
-        // exception **cases**, `extern` prototypes, and the **tags** of an
-        // active-pattern recognizer, whose binder is the single mangled ident
-        // `(|A|B|_|)` rather than one ident per tag.
-        for pat in nm.syntax().descendants().filter_map(Pat::cast) {
-            for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
-                if let PatternName::Binder(def) = name {
-                    let text = id_text(&def.name);
-                    for tag in active_pattern_tags(text) {
-                        r.own_auto_open_value_names.insert(tag);
-                    }
-                    r.own_auto_open_value_names.insert(text.to_string());
-                }
-            }
-        }
-        for case in nm.syntax().descendants().filter_map(UnionCase::cast) {
-            if let Some(name) = case.ident() {
-                r.own_auto_open_value_names
-                    .insert(id_text(name.text()).to_string());
-            }
-        }
-        for ext in nm.syntax().descendants().filter_map(ExternDecl::cast) {
-            if let Some(last) = ext.name().and_then(|n| n.idents().last()) {
-                r.own_auto_open_value_names
-                    .insert(id_text(last.text()).to_string());
-            }
-        }
-        // `type U = Tag` is an ABBREVIATION when `Tag` names a type and a
-        // single-case UNION otherwise — a distinction only resolution makes, so
-        // the parse alone cannot say whether `Tag` is a case (a bare-visible
-        // value) or a type reference. A pre-scan feeding a conservative screen
-        // resolves that by taking both readings: every ident in an
-        // abbreviation's right-hand side counts as a possible case name. Broad,
-        // and bounded by the auto-open module's own text; a name that is really
-        // a type reference costs one deferral.
-        for defn in nm.syntax().descendants().filter_map(TypeDefn::cast) {
-            let Some(TypeDefnRepr::Abbrev(rhs)) = defn.repr() else {
-                continue;
-            };
-            for tok in rhs
-                .syntax()
-                .descendants_with_tokens()
-                .filter_map(|e| e.into_token())
-                .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
-            {
-                r.own_auto_open_value_names
-                    .insert(id_text(tok.text()).to_string());
-            }
+        // …and the fact that it EXISTS. Its contents are not enumerated: a
+        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
+        // values, union and exception cases, `extern` prototypes,
+        // active-pattern tags, a single-case union spelled like an
+        // abbreviation, an auto-open *type*'s statics, statics borrowed through
+        // an abbreviation — and each is invisible to a different part of the
+        // parse. Enumerating them is a list that keeps growing and can only be
+        // audited by inspection; the flag is one closed question with a
+        // one-line soundness argument, and it costs commits only in files that
+        // actually declare such a container. Read by the implicit
+        // enclosing-namespace fold, which runs before the block's walk and so
+        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
+        r.own_auto_open_container = true;
+    }
+    // An `[<AutoOpen>]` **type** is the other container whose surface folds into
+    // the rest of its enclosing scope — its statics, and (fsi-verified) the
+    // statics of an abbreviation's target. Same closed flag, same reason.
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if attrs_auto_open(defn.attributes()) {
+            r.own_auto_open_container = true;
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -1880,7 +1848,7 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
-            own_auto_open_value_names: HashSet::new(),
+            own_auto_open_container: false,
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),
@@ -2189,30 +2157,6 @@ fn attrs_mark_struct(attrs: impl Iterator<Item = AttributeList>) -> bool {
 }
 
 /// Every nested-module name declared anywhere under `decls` (all depths),
-/// The **tags** of an active-pattern recognizer's mangled binder name — `["A",
-/// "B"]` for `(|A|B|_|)` — or empty when `name` is an ordinary binder.
-///
-/// A recognizer definition binds ONE ident spelling out every tag, so a walk
-/// that collects binder names records `(|A|B|_|)` and never `A`. The tags are
-/// what a bare use writes, so a screen keyed on binder names alone cannot see
-/// them ([`Resolver::own_auto_open_value_names`]).
-///
-/// Tolerant by design: it is a pre-scan feeding a conservative screen, so a
-/// malformed or partial spelling that yields a spurious tag costs one deferral.
-fn active_pattern_tags(name: &str) -> Vec<String> {
-    let inner = name
-        .strip_prefix("(|")
-        .or_else(|| name.strip_prefix('|'))
-        .map(|rest| rest.trim_end_matches(&[')', '|'][..]))
-        .unwrap_or("");
-    inner
-        .split('|')
-        .map(str::trim)
-        .filter(|t| !t.is_empty() && *t != "_")
-        .map(str::to_string)
-        .collect()
-}
-
 /// for the `rec`-block pre-scan ([`Resolver::rec_module_names`]): inside
 /// `module rec` / `namespace rec`, a later-declared module is already in
 /// scope, so its name must veto multi-segment type paths the source-ordered

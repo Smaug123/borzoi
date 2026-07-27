@@ -1121,17 +1121,23 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
-    /// The **value** binder simple names inside any `[<AutoOpen>]` module of
-    /// this file — the value-side twin of [`Self::own_auto_open_type_names`],
-    /// pre-scanned file-globally and equally position-blind.
+    /// Whether this file declares **any** `[<AutoOpen>]` container — a module
+    /// or a type — whose bare-visible surface therefore folds into the rest of
+    /// its enclosing scope.
     ///
-    /// Read only by the implicit enclosing-namespace fold's block-local screen
-    /// ([`Resolver::open_own_enclosing_namespace`]), which runs at position 0
-    /// and so cannot see a module the block declares later. Over-collects — a
-    /// lambda parameter or a `match` binder deep inside the module's bodies
-    /// counts, and none of those is bare-visible — which only costs a deferral,
-    /// exactly the concession every pre-scan here already makes.
-    pub(super) own_auto_open_value_names: HashSet<String>,
+    /// A flag rather than a name set on purpose. That surface is open-ended:
+    /// values, union and exception cases, `extern` prototypes, active-pattern
+    /// tags, a single-case union spelled exactly like an abbreviation, an
+    /// auto-open type's statics, statics borrowed through an abbreviation —
+    /// each invisible to a different part of the parse, and each discoverable
+    /// only by someone thinking of it. Enumerating them is a list that grows
+    /// under review; this is one closed question whose soundness argument fits
+    /// in a sentence, and it costs commits only in the files that declare such
+    /// a container.
+    ///
+    /// Read by [`Resolver::open_own_enclosing_namespace`], which folds at
+    /// position 0 — before the block's walk — and so can see none of it.
+    pub(super) own_auto_open_container: bool,
     /// `true` when some attribute in the file has no resolvable *name shape*
     /// — a nameless `[<>]` or an ident-less path — so the gate cannot key it
     /// and must keep the presence defer (EX-3 §2(d) stage 5).
