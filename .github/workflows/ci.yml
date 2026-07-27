@@ -836,12 +836,14 @@ jobs:
       # that earns it. Raising it means this corpus now resolves something to
       # the wrong declaration and wants a reason in the commit message.
       #
-      # `project=1` is `WoofWare.Incremental`'s `FakeUnit.fs` binder divergence,
-      # and predates this series. Assembly and reverse are at **zero**: the last
-      # of each was `NodeToDot.fs`'s `File.Open`, where the oracle had been
-      # resolving against the running SDK's framework as well as the project's
-      # own references and named a different `System.IO.File`.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=1,reverse=0"
+      # `assembly=1,reverse=1` are one site seen from both directions:
+      # `NodeToDot.fs`'s `File.Open`, where the oracle resolves against the
+      # running SDK's framework as well as the project's own references and so
+      # names a different `System.IO.File`. Running it against *our* set alone
+      # (`BORZOI_PROJECT_EXCLUSIVE_REFS=1`) takes both to zero, but cannot be
+      # turned on here until the composition covers netstandard target
+      # frameworks. `project=1` predates the series.
+      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=1,project=1,reverse=1"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
