@@ -249,8 +249,19 @@ pub fn resolve_file(
     // the rest of its enclosing scope — its statics, and (fsi-verified) the
     // statics of an abbreviation's target. Same closed flag, same reason.
     for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
-        if attrs_auto_open(defn.attributes()) {
+        // `CanAutoOpenTyconRef` (`NameResolution.fs`) ends `tcref.Typars(m) |>
+        // List.isEmpty`, so a GENERIC `[<AutoOpen>]` type auto-opens nothing at
+        // all — flagging it would defer every name the enclosing namespace
+        // supplies for a container that contributes none (fcs-dump-verified).
+        if attrs_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
             r.own_auto_open_container = true;
+        }
+        // The value-slot subset of the type-name pre-scan above.
+        if let Some(name) = defn.long_id().and_then(|li| li.idents().last())
+            && decls::type_slot_class(&defn) != model::SlotClass::Keeps
+        {
+            r.own_value_slot_type_names
+                .insert(id_text(name.text()).to_string());
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -1849,6 +1860,7 @@ impl<'a> Resolver<'a> {
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
             own_auto_open_container: false,
+            own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),

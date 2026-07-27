@@ -86,7 +86,7 @@ fn merge_auto_open_shadow(
 /// inference-dependent; unions/records never enter (M20k/M20l); everything
 /// else — abbreviations (target-chased, M20n), delegates (langversion-gated),
 /// bodyless/IL reprs — is statically undecidable.
-fn type_slot_class(defn: &TypeDefn) -> SlotClass {
+pub(super) fn type_slot_class(defn: &TypeDefn) -> SlotClass {
     match defn.repr() {
         Some(TypeDefnRepr::Enum(_)) => SlotClass::Evicts,
         Some(TypeDefnRepr::Union(_) | TypeDefnRepr::Record(_)) => {

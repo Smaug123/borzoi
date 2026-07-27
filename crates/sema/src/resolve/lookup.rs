@@ -371,8 +371,8 @@ impl<'a> Resolver<'a> {
     ///
     /// - a **constructible type** the block declares takes FCS's unqualified
     ///   value slot from a same-named opened value. Screened per name against
-    ///   [`Resolver::own_type_simple_names`], which is a *closed* set — every
-    ///   type definition in the file, and nothing else can enter the slot;
+    ///   [`Resolver::own_value_slot_type_names`], which is a *closed* set — the
+    ///   file's type definitions that can enter the slot, and nothing else can;
     /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
     ///   scope above anything opened before it. Here the whole group is demoted
     ///   rather than screened per name, because that surface is open-ended:
@@ -401,7 +401,7 @@ impl<'a> Resolver<'a> {
     /// Whether the block may shadow `name` in one of the two ways
     /// [`Self::screen_block_local_shadows`] describes.
     fn block_local_shadow(&self, name: &str) -> bool {
-        self.own_auto_open_container || self.own_type_simple_names.contains(name)
+        self.own_auto_open_container || self.own_value_slot_type_names.contains(name)
     }
 
     /// Whether a project `[<AutoOpen>]` module directly in `namespace` — this

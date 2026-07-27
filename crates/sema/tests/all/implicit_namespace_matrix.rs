@@ -462,6 +462,33 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        // A plain union **keeps** the value slot (`SlotClass::Keeps`), so it
+        // shadows nothing and the assembly value must still resolve
+        // (fcs-dump-verified: bare `Tag` is `Demo.Auto.Extra.Tag`). Screening on
+        // every type name rather than the slot classification cost this cell.
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a slot-keeping union does not shadow the implicit member",
+        body: &["type Tag =", "    | A", "    | B"],
+        probe: "Tag",
+        position: Position::Expr,
+    },
+    Cell {
+        // FCS's `CanAutoOpenTyconRef` ends `tcref.Typars(m) |> List.isEmpty`, so
+        // a GENERIC `[<AutoOpen>]` type auto-opens nothing at all and shadows
+        // nothing (fcs-dump-verified: `extraValue` still binds the assembly's).
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a generic [<AutoOpen>] type auto-opens nothing",
+        body: &[
+            "[<AutoOpen>]",
+            "type Holder<'a> =",
+            "    static member Hold = 1",
+        ],
+        probe: "extraValue",
+        position: Position::Expr,
+    },
+    Cell {
         // The **project** half needs the same screen: an earlier file's
         // auto-open module value is folded at position 0 too, so a later local
         // type takes its slot exactly as it takes an assembly member's.
