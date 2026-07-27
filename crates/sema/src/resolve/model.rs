@@ -2026,6 +2026,12 @@ pub enum DeclineCause {
     /// A dotted path headed by the raw `global` namespace-root marker, which is
     /// not a name use.
     GlobalMarkerHead,
+    /// A reading of this path may be **signature-exposed**, and FCS binds the
+    /// signature — so no lower-priority candidate may be committed.
+    SignatureScreened,
+    /// A **same-file** type owns this exact case, rooting the reference in this
+    /// file, so an earlier file's same-written-path case is never the target.
+    SameFileCaseShadow,
     /// An explicit `open` puts a referenced-assembly entity of a `Type.Case`
     /// pattern head's name in scope, above the project case reading that would
     /// otherwise bind — so the project reading may not be committed and the
@@ -2073,6 +2079,8 @@ impl DeclineCause {
         DeclineCause::HeadSlotUnordered,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
+        DeclineCause::SignatureScreened,
+        DeclineCause::SameFileCaseShadow,
         DeclineCause::AssemblyCaseHeadContends,
         DeclineCause::IncompleteAssemblies,
     ];
@@ -2110,6 +2118,8 @@ impl DeclineCause {
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
+            DeclineCause::SignatureScreened => "signature_screened",
+            DeclineCause::SameFileCaseShadow => "same_file_case_shadow",
             DeclineCause::AssemblyCaseHeadContends => "assembly_case_head_contends",
             DeclineCause::IncompleteAssemblies => "incomplete_assemblies",
         }

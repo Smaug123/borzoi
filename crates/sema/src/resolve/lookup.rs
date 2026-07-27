@@ -3496,12 +3496,24 @@ impl<'a> Resolver<'a> {
             // case-flavour exemption, since this site commits exactly the
             // type-qualified case the signature exports.
             if self.sig_screens_case_reading_of(&written) {
+                if let Some(head) = segs.first() {
+                    self.record_decline(
+                        head.text_range(),
+                        DeclineSite::pre_walk(DeclineCause::SignatureScreened),
+                    );
+                }
                 return;
             }
             // A same-file type owning this exact case roots the reference in
             // this file, so the cross-file index must not commit an earlier
             // file's same-written-path case (the expression path's twin).
             if self.cross_file_case_shadowed_same_file(&written) {
+                if let Some(head) = segs.first() {
+                    self.record_decline(
+                        head.text_range(),
+                        DeclineSite::pre_walk(DeclineCause::SameFileCaseShadow),
+                    );
+                }
                 return;
             }
             let project = self.cross_file_type_case_tiered(&written, false);
