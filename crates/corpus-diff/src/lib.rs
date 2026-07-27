@@ -30,7 +30,10 @@ use borzoi_msbuild::{
 use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural,
 };
-use borzoi_sema::{AssemblyEnv, Def, OpenOpacity, Resolution, ResolvedProject};
+use borzoi_sema::{
+    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, OpenOpacity, Resolution,
+    ResolvedProject,
+};
 
 // The oracle's structural naming of a declaration is shared with the LSP
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
@@ -1197,6 +1200,76 @@ pub fn write_json_report_line(path: &Path, summary: &CorpusSummary) -> std::io::
     std::fs::write(path, line)
 }
 
+/// Which guard declined, over a whole run — the census
+/// ([`borzoi_sema::ResolvedFile::decline_site`]) aggregated.
+///
+/// Closed by construction: `DeclineCause::ALL` and `DeclineTier::ALL` are
+/// iterated when rendering, so a cause that did not occur emits a zero rather
+/// than vanishing. A sparse map would mint a different metric set each run,
+/// which `docs/continuous-measurements.md` names as the way a series stops
+/// being comparable.
+///
+/// `unattributed` is not a residual to be inferred. A decline site is a claim
+/// and its absence is not, so the count of declines no guard accounted for is
+/// carried explicitly — it is the number that says how much of the census is
+/// actually working, and driving it down is empirical rather than a matter of
+/// finding uncovered call sites by inspection.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct DeclineCensus {
+    by_cause: BTreeMap<&'static str, usize>,
+    by_tier: BTreeMap<&'static str, usize>,
+    /// Declines with no recorded site.
+    pub unattributed: usize,
+    /// Declines with one — the denominator `unattributed` is read against.
+    pub attributed: usize,
+}
+
+impl DeclineCensus {
+    /// Record one decline, attributed or not.
+    pub fn observe(&mut self, site: Option<DeclineSite>) {
+        match site {
+            Some(site) => {
+                self.attributed += 1;
+                *self.by_cause.entry(site.cause.label()).or_default() += 1;
+                *self.by_tier.entry(site.tier.label()).or_default() += 1;
+            }
+            None => self.unattributed += 1,
+        }
+    }
+
+    fn add_assign(&mut self, other: &DeclineCensus) {
+        for (k, v) in &other.by_cause {
+            *self.by_cause.entry(k).or_default() += v;
+        }
+        for (k, v) in &other.by_tier {
+            *self.by_tier.entry(k).or_default() += v;
+        }
+        self.unattributed += other.unattributed;
+        self.attributed += other.attributed;
+    }
+
+    /// Every cause with its count, **including the zeros** — see the type docs.
+    pub fn causes(&self) -> BTreeMap<&'static str, usize> {
+        DeclineCause::ALL
+            .iter()
+            .map(|c| {
+                (
+                    c.label(),
+                    self.by_cause.get(c.label()).copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    /// Every tier with its count, including the zeros.
+    pub fn tiers(&self) -> BTreeMap<&'static str, usize> {
+        DeclineTier::ALL
+            .iter()
+            .map(|t| (t.label(), self.by_tier.get(t.label()).copied().unwrap_or(0)))
+            .collect()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Comparison {
     pub files_compared: usize,
@@ -1207,6 +1280,8 @@ pub struct Comparison {
     pub assembly_matches: usize,
     pub deferrals: usize,
     pub assembly_deferrals: usize,
+    /// Which guard declined each of the two deferral counts above.
+    pub decline_census: DeclineCensus,
     pub skipped_uses: SkippedUses,
     /// Our *defining* occurrences at ranges FCS reports nothing about. The
     /// forward direction does not grade FCS's definitions either, and silence
@@ -1301,6 +1376,11 @@ pub struct CorpusSummary {
     pub assembly_matches: usize,
     pub project_deferrals: usize,
     pub assembly_deferrals: usize,
+    /// Aggregate of [`Comparison::decline_census`]: which guard declined, and
+    /// at which ladder tier. The deferral totals above say *how much* we lost;
+    /// this says *to what*, which is what a change to the precedence ladder
+    /// moves.
+    pub decline_census: DeclineCensus,
     pub skipped_uses: SkippedUses,
     /// Aggregate of [`Comparison::unoracled_definitions`].
     pub unoracled_definitions: usize,
@@ -1384,6 +1464,7 @@ impl CorpusSummary {
         self.assembly_matches += comparison.assembly_matches;
         self.project_deferrals += comparison.deferrals;
         self.assembly_deferrals += comparison.assembly_deferrals;
+        self.decline_census.add_assign(&comparison.decline_census);
         self.skipped_uses.add_assign(&comparison.skipped_uses);
         self.project_divergences += comparison.divergences.len();
         self.assembly_divergences += comparison.assembly_divergences.len();
@@ -1497,6 +1578,33 @@ impl CorpusSummary {
             self.total_deferrals()
         )
         .expect("write String");
+        let census = &self.decline_census;
+        writeln!(
+            out,
+            "project-corpus-diff decline causes: {} attributed | {} unattributed | {}",
+            census.attributed,
+            census.unattributed,
+            census
+                .causes()
+                .iter()
+                .filter(|(_, n)| **n > 0)
+                .map(|(k, n)| format!("{k}={n}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .expect("write String");
+        writeln!(
+            out,
+            "project-corpus-diff decline tiers: {}",
+            census
+                .tiers()
+                .iter()
+                .filter(|(_, n)| **n > 0)
+                .map(|(k, n)| format!("{k}={n}"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .expect("write String");
         writeln!(
             out,
             "project-corpus-diff divergences: {} project | {} assembly | {} reverse | {} total",
@@ -1587,6 +1695,7 @@ impl CorpusSummary {
                 assembly: self.assembly_deferrals,
                 total: self.total_deferrals(),
             },
+            decline_census: CorpusDeclineCensus::of(&self.decline_census),
             divergences: CorpusTieredCount {
                 project: self.project_divergences,
                 assembly: self.assembly_divergences,
@@ -2068,6 +2177,8 @@ struct CorpusJsonReport<'a> {
     uses: CorpusUsesReport,
     matches: CorpusProjectAssemblyCount,
     deferrals: CorpusProjectAssemblyCount,
+    /// Which guard declined each deferral, and at which ladder tier.
+    decline_census: CorpusDeclineCensus,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageReport,
     project_assets: CorpusProjectAssetsReport<'a>,
@@ -2110,6 +2221,28 @@ struct CorpusProjectAssemblyCount {
     project: usize,
     assembly: usize,
     total: usize,
+}
+
+/// The decline census as the report and the generator summary render it: two
+/// closed maps plus the attributed/unattributed split. Both maps carry every
+/// variant including the zeros, so a metric never vanishes between runs.
+#[derive(Debug, Serialize)]
+struct CorpusDeclineCensus {
+    attributed: usize,
+    unattributed: usize,
+    by_cause: BTreeMap<&'static str, usize>,
+    by_tier: BTreeMap<&'static str, usize>,
+}
+
+impl CorpusDeclineCensus {
+    fn of(census: &DeclineCensus) -> CorpusDeclineCensus {
+        CorpusDeclineCensus {
+            attributed: census.attributed,
+            unattributed: census.unattributed,
+            by_cause: census.causes(),
+            by_tier: census.tiers(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2198,6 +2331,11 @@ struct GeneratorStatistics {
     /// which is exactly why it needs plotting, since a change that makes us
     /// more timid is otherwise invisible.
     deferrals: CorpusProjectAssemblyCount,
+    /// What those deferrals were *to*: which guard declined and at which ladder
+    /// tier. The totals above move whenever the resolver gets more or less
+    /// timid; this says which model owns the move, which is the question every
+    /// change to the precedence ladder asks and which no aggregate can answer.
+    decline_census: CorpusDeclineCensus,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageBasisPoints,
     skipped_uses: CorpusSkippedUsesCounts,
@@ -2307,6 +2445,7 @@ pub fn render_generator_summary(
                 assembly: summary.assembly_deferrals,
                 total: summary.total_deferrals(),
             },
+            decline_census: CorpusDeclineCensus::of(&summary.decline_census),
             divergences: CorpusTieredCount {
                 project: summary.project_divergences,
                 assembly: summary.assembly_divergences,
@@ -2574,6 +2713,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                         match rf.resolution_at(range) {
                             None | Some(Resolution::Deferred(_)) => {
                                 comparison.assembly_deferrals += 1;
+                                comparison.decline_census.observe(rf.decline_site(range));
                             }
                             Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
@@ -2631,7 +2771,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             };
             comparison.uses_considered += 1;
             match rf.resolution_at(range) {
-                None | Some(Resolution::Deferred(_)) => comparison.deferrals += 1,
+                None | Some(Resolution::Deferred(_)) => {
+                    comparison.deferrals += 1;
+                    comparison.decline_census.observe(rf.decline_site(range));
+                }
                 Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
                     match resolution_def(loaded, file_idx, res) {
                         Some((actual_file_idx, def))
@@ -5040,6 +5183,7 @@ mod tests {
             assembly_matches: 1,
             deferrals: 1,
             assembly_deferrals: 1,
+            decline_census: DeclineCensus::default(),
             skipped_uses: SkippedUses {
                 definitions: 2,
                 zero_width: 1,
@@ -5803,6 +5947,37 @@ mod tests {
 
         // A list and a walk are never the same series, whatever the knobs.
         assert_ne!(render(&listed), walked);
+    }
+
+    /// A cause that did not occur must still be a key. The null walker below
+    /// cannot catch this: a sparse map has no `null` in it, it simply has
+    /// fewer entries, so it reads to the dashboard as a measurement with fewer
+    /// metrics rather than as a metric that vanished. The only defence is a
+    /// census that iterates the variants, and the only check is to observe one
+    /// cause and demand every other still be reported as zero.
+    #[test]
+    fn a_cause_that_did_not_occur_is_still_a_key() {
+        let mut census = DeclineCensus::default();
+        census.observe(Some(DeclineSite {
+            cause: DeclineCause::OpaqueOpen,
+            tier: DeclineTier::PreWalk,
+        }));
+        census.observe(None);
+
+        let causes = census.causes();
+        assert_eq!(causes.len(), DeclineCause::ALL.len());
+        assert_eq!(causes[DeclineCause::OpaqueOpen.label()], 1);
+        assert_eq!(causes[DeclineCause::ContestedRooting.label()], 0);
+
+        let tiers = census.tiers();
+        assert_eq!(tiers.len(), DeclineTier::ALL.len());
+        assert_eq!(tiers[DeclineTier::PreWalk.label()], 1);
+        assert_eq!(tiers[DeclineTier::Root.label()], 0);
+
+        // The unattributed decline is carried, not silently dropped into the
+        // attributed maps — it is the number that says how much of the census
+        // is working.
+        assert_eq!((census.attributed, census.unattributed), (1, 1));
     }
 
     /// Every leaf of `statistics` must be a number, on every run, whatever the
