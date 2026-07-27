@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use borzoi_oracle_harness::{BatchChild, default_timeout};
+use borzoi_sema::test_support::{DeclaringEntity, StructuralName};
 use borzoi_spawn::BoundedCommand;
 use serde::Deserialize;
 
@@ -280,14 +281,33 @@ fn fcs_dump_command(subcommand: &str) -> Command {
     }
 }
 
-/// Run `fcs-dump uses-project` over `paths` (Compile order), with `refs` (extra
-/// `-r:` assembly DLLs — the project's resolved NuGet/framework closure) exposed
-/// via `BORZOI_FCS_EXTRA_REFS`, `defines` (the `#if` symbols the caller
+/// What `refs` is, relative to the references the oracle would resolve for
+/// itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleRefScope {
+    /// `refs` is *added* to the references FCS discovers from its own SDK. The
+    /// oracle can then bind names in assemblies the caller never read, and a
+    /// use the caller's own env cannot resolve is scored as a gap rather than a
+    /// divergence — so a differential that gates on divergences is only
+    /// meaningful under this scope if it treats gaps as findings too.
+    SdkPlusExtra,
+    /// `refs` is the **whole** reference set: the oracle resolves against it and
+    /// nothing else (`--noframework`). Requires a non-empty `refs` — "resolve
+    /// against exactly nothing" makes FCS abort.
+    Exclusive,
+}
+
+/// Run `fcs-dump uses-project` over `paths` (Compile order), with `refs` (`-r:`
+/// assembly DLLs — the project's resolved reference closure) exposed via
+/// `BORZOI_FCS_EXTRA_REFS`, `defines` (the `#if` symbols the caller
 /// parsed under) via `BORZOI_FCS_DEFINES`, and `lang_version` (the project's
 /// resolved `<LangVersion>`, canonical spelling) via `BORZOI_FCS_LANGVERSION`,
 /// and return its JSON stdout. Type-checks the files as one project so cross-file
 /// *and* referenced-assembly names resolve, under the caller's conditional-
 /// compilation symbols and pinned language version.
+///
+/// `scope` says whether `refs` supplements the oracle's own SDK references or
+/// replaces them; see [`OracleRefScope`].
 ///
 /// `lang_version` should be `None` when the project uses the SDK-default version
 /// (FCS's default already agrees with our `LanguageVersion::DEFAULT`, so no
@@ -295,6 +315,7 @@ fn fcs_dump_command(subcommand: &str) -> Command {
 pub fn invoke_fcs_dump_project_with_refs(
     paths: &[&Path],
     refs: &[&Path],
+    scope: OracleRefScope,
     defines: &[&str],
     lang_version: Option<&str>,
 ) -> String {
@@ -306,6 +327,24 @@ pub fn invoke_fcs_dump_project_with_refs(
             .collect::<Vec<_>>()
             .join(";");
         cmd.env("BORZOI_FCS_EXTRA_REFS", joined);
+    }
+    match scope {
+        OracleRefScope::Exclusive => {
+            assert!(
+                !refs.is_empty(),
+                "an exclusive reference set must have something in it — FCS aborts \
+                 when told to resolve against nothing"
+            );
+            cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
+        }
+        // Cleared rather than merely left unset: the child inherits this
+        // process's environment, so a `BORZOI_FCS_EXCLUSIVE_REFS` set for the
+        // whole test run would silently make a caller that asked for the SDK's
+        // references get `--noframework` — with an empty `refs`, FCS then has
+        // nothing to resolve against and aborts.
+        OracleRefScope::SdkPlusExtra => {
+            cmd.env_remove("BORZOI_FCS_EXCLUSIVE_REFS");
+        }
     }
     if !defines.is_empty() {
         cmd.env("BORZOI_FCS_DEFINES", defines.join(";"));
@@ -405,6 +444,25 @@ struct RawUse {
     assembly: Option<String>,
     #[serde(rename = "FullName", default)]
     full_name: Option<String>,
+    #[serde(rename = "GenericArity", default)]
+    generic_arity: Option<usize>,
+    #[serde(rename = "DeclaringPath", default)]
+    declaring_path: Option<Vec<RawDeclaringSegment>>,
+    #[serde(rename = "DeclaringNamespace", default)]
+    declaring_namespace: Option<String>,
+    // `Option` although the oracle always emits a boolean: a `null` here would
+    // fail the whole dump's parse, and "unknown" is worth no more than "not a
+    // constructor" — both decline the structural composition.
+    #[serde(rename = "IsConstructor", default)]
+    is_constructor: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct RawDeclaringSegment {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Arity")]
+    arity: usize,
 }
 
 #[derive(Deserialize)]
@@ -506,13 +564,31 @@ pub struct NormalisedProjectUse {
     pub decl: Option<DeclSite>,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
+    /// The declaration named **structurally**, when the oracle reported a
+    /// declaring entity for it. [`Self::full_name`] is a rendering that prints
+    /// an enclosing generic type with its type arguments; this is the same
+    /// declaration with no rendering in it, so a comparator can certify it
+    /// against our own resolution. See [`StructuralName`].
+    pub structural: Option<StructuralName>,
 }
 
-/// All symbol uses FCS reported for one project file.
+/// One error-severity diagnostic the oracle reported for a project file. A
+/// differential reads these to tell "the oracle resolved this project and we
+/// disagree" from "the oracle could not check this project at all" — the latter
+/// turns every use into a silent non-comparison rather than a divergence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FcsError {
+    pub message: String,
+    pub error_number: i32,
+}
+
+/// All symbol uses FCS reported for one project file, plus the errors it hit
+/// checking it.
 #[derive(Debug, Clone)]
 pub struct FileUses {
     pub path: PathBuf,
     pub uses: Vec<NormalisedProjectUse>,
+    pub errors: Vec<FcsError>,
 }
 
 #[derive(Deserialize)]
@@ -525,8 +601,20 @@ struct ProjectUsesDump {
 struct RawFileUses {
     #[serde(rename = "Path")]
     path: String,
+    #[serde(rename = "Diagnostics", default)]
+    diagnostics: Vec<RawDiagnostic>,
     #[serde(rename = "Uses")]
     uses: Vec<RawUse>,
+}
+
+#[derive(Deserialize)]
+struct RawDiagnostic {
+    #[serde(rename = "Severity")]
+    severity: String,
+    #[serde(rename = "Message")]
+    message: String,
+    #[serde(rename = "ErrorNumber")]
+    error_number: i32,
 }
 
 /// Parse `uses-project` JSON into per-file, byte-offset-normalised uses with
@@ -575,6 +663,30 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                             }
                         })
                     });
+                    let structural = match u.declaring_path {
+                        Some(path) if !path.is_empty() => Some(StructuralName {
+                            declaring: DeclaringEntity {
+                                // Absent is the **root** namespace, which the
+                                // oracle reports as such rather than as the
+                                // string `global` — a namespace can be called
+                                // that, and the two are different places.
+                                namespace: u
+                                    .declaring_namespace
+                                    .iter()
+                                    .flat_map(|namespace| namespace.split('.'))
+                                    .map(str::to_string)
+                                    .collect(),
+                                path: path
+                                    .into_iter()
+                                    .map(|segment| (segment.name, segment.arity))
+                                    .collect(),
+                                is_constructor: u.is_constructor.unwrap_or(false),
+                            },
+                            leaf: u.symbol_name.clone(),
+                            leaf_arity: u.generic_arity,
+                        }),
+                        Some(_) | None => None,
+                    };
                     NormalisedProjectUse {
                         name: u.symbol_name,
                         start: idx.offset(u.range.start.line, u.range.start.col),
@@ -583,12 +695,22 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
+                        structural,
                     }
                 })
                 .collect();
             FileUses {
                 path: path.to_path_buf(),
                 uses,
+                errors: f
+                    .diagnostics
+                    .into_iter()
+                    .filter(|d| d.severity == "Error")
+                    .map(|d| FcsError {
+                        message: d.message,
+                        error_number: d.error_number,
+                    })
+                    .collect(),
             }
         })
         .collect()

@@ -227,6 +227,7 @@ dependencies = [
  "borzoi-assembly",
  "borzoi-cst",
  "borzoi-oracle-harness",
+ "borzoi-sema",
  "ena",
  "proptest",
  "rowan",

@@ -82,5 +82,8 @@ sourcelink-fetch = ["dep:minreq"]
 [dev-dependencies]
 borzoi-oracle-harness = { path = "../oracle-harness" }
 borzoi-assembly = { path = "../assembly", features = ["test-support"] }
+# The FCS-differential comparator (`borzoi_sema::test_support`), shared with
+# `borzoi-corpus-diff`, used by `resolve_real_project_diff`.
+borzoi-sema = { path = "../sema", features = ["test-support"] }
 proptest = "1"
 tempfile = "3"

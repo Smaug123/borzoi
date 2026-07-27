@@ -8,14 +8,17 @@
 //!
 //! 1. Compile order + `#if` defines via the workspace's `.fsproj` evaluation
 //!    ([`SemanticState::parses_for_project`]).
-//! 2. The referenced-assembly closure from the project's
-//!    `obj/project.assets.json` ([`resolve_assemblies_root_only`]) → an
-//!    [`AssemblyEnv`] built from those DLLs.
+//! 2. The project's composed reference set and the [`AssemblyEnv`] built from
+//!    it, out of one cache entry
+//!    ([`SemanticState::env_reference_dlls_for_project`] +
+//!    [`SemanticState::assembly_env_for_project`]): the assets file's package
+//!    and framework DLLs, each F# `<ProjectReference>`'s built output DLL, and
+//!    the C# sidecar's metadata DLLs.
 //! 3. `resolve_project` folds cross-file + assembly resolution over the lot.
 //!
 //! FCS is the oracle: `fcs-dump uses-project` type-checks the same Compile-
 //! ordered files as one project (so cross-file *and* referenced-assembly names
-//! resolve), with the project's NuGet DLLs injected as extra references. Each
+//! resolve), reading **exactly** that reference set and nothing else. Each
 //! FCS use is bucketed:
 //!
 //! * **match** — in-project: our `Local`/`Item` points at a binder in the same
@@ -32,19 +35,18 @@
 //!
 //! ## Supported project scope
 //!
-//! The oracle (`fcs-dump uses-project`) resolves references from its own SDK plus
-//! the injected NuGet DLLs and parses under the caller's `#if` symbols. It is a
-//! faithful differential for projects that are:
+//! The oracle reads the composed reference set and parses under the caller's
+//! `#if` symbols. It is a faithful differential for projects that are:
 //!
 //! * **signature-light** — a `.fsi`-bearing project folds (Stage 1 of
 //!   `docs/fsi-signature-restriction-plan.md`), but a signatured module's
 //!   members resolve to `Deferred`/the merged assembly until Stage 2 exports
 //!   the signature surface, so heavy `.fsi` use shows up as gaps, not
 //!   divergences;
-//! * **SDK-default framework** — a non-default `<FrameworkReference>`
-//!   (`Microsoft.AspNetCore.App`, `WindowsDesktop`) is *not* handed to FCS, which
-//!   would then fail to resolve those framework symbols our `AssemblyEnv` (built
-//!   from `framework_dlls`) does have. Such projects are out of scope.
+//! * **restored, and with their F# `<ProjectReference>`s built** — the composed
+//!   set names each referenced project's *output* DLL, so an unbuilt one is
+//!   absent from both sides and its uses cannot be checked at all. That is not
+//!   silent: FCS then errors, and the oracle-error gate below fails.
 //!
 //! A non-default `<LangVersion>` *is* supported: the project's resolved
 //! `LanguageVersion` is threaded to the oracle as `--langversion:<canonical>`
@@ -55,17 +57,29 @@
 //! the `--langversion` flag, which surfaces as a *loud* oracle failure rather
 //! than a silent divergence.
 //!
-//! The `(assembly, full name)` currency is version-independent, so the SDK-vs-
-//! project skew in FSharp.Core / BCL *version* does not matter (only a symbol
-//! relocating assemblies across framework versions would, and that surfaces as a
-//! divergence rather than being masked). Feeding FCS the project's exact closure
-//! with `--noframework` was tried and rejected — it aborts / drops resolutions,
-//! because a faithful check needs MSBuild's full command line, not the assets
-//! DLL list.
+//! The oracle reads our set *exclusively* because a differential is only
+//! evidence when both sides read the same assemblies. An oracle that also
+//! resolved its own SDK's framework would answer names our `AssemblyEnv` cannot
+//! resolve at all; our side defers, and **a deferral is not a divergence**, so
+//! the gate below would pass while the two sides read different worlds. What
+//! this costs is that an incomplete reference set stops the project
+//! type-checking rather than degrading quietly — hence the oracle-error gate.
 //!
-//! Validated against `WoofWare.{WeakHashTable, LiangHyphenation, Expect}`
-//! (hundreds of in-project + FSharp.Core/BCL/NuGet-package resolutions each, zero
-//! divergences).
+//! An imported symbol's name is adjudicated by the comparator shared with
+//! `borzoi-corpus-diff` ([`borzoi_sema::test_support`]): FCS's rendered name
+//! **or** the structural declaration our own resolution certifies. Without the
+//! second, `ImmutableArray<byte>.Empty` — FCS printing the enclosing generic
+//! type with its arguments, which our full names never carry — scores a correct
+//! resolution as a wrong target.
+//!
+//! Validated against `WoofWare.{WeakHashTable, LiangHyphenation, Expect,
+//! PawPrint.Domain}` (hundreds to thousands of in-project +
+//! FSharp.Core/BCL/NuGet-package resolutions each, zero divergences and zero
+//! alt-binders). `WoofWare.PawPrint`'s main library reaches zero divergences
+//! across 41k in-project + 13.6k imported uses, and holds 6 alt-binders whose
+//! cause is known: an `[<AutoOpen>]` module's active patterns in a referenced
+//! project's assembly are not in scope from the enclosing namespace, so a
+//! parameterised case's argument binds as a pattern binder.
 //!
 //! `#[ignore]`d and driven by `BORZOI_PROJECT_FSPROJ` (an absolute path to
 //! a **restored** `.fsproj` — its `obj/project.assets.json` must exist). Skips
@@ -78,21 +92,31 @@
 
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::common::{invoke_fcs_dump_project_with_refs, parse_fcs_uses_project};
-use borzoi::assembly_cache::AssemblyCache;
-use borzoi::project_assets::resolve_assemblies_root_only;
+use crate::common::{
+    FcsError, OracleRefScope, invoke_fcs_dump_project_with_refs, parse_fcs_uses_project,
+};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
-use borzoi::semantic::{SemanticState, build_env_from_dll_paths};
+use borzoi::semantic::SemanticState;
 use borzoi::workspace::Workspace;
 use borzoi_cst::language_version::LanguageVersion;
+use borzoi_sema::test_support::{assembly_full_name_agrees, certified_expected};
 use borzoi_sema::{AssemblyEnv, Resolution, resolve_project_files};
 use rowan::TextRange;
 
-/// How many sites of each kind to print for triage.
-const SAMPLE: usize = 40;
+/// How many sites of each kind to print for triage. A run on a large project
+/// can gate on more sites than fit a readable report, and triage needs the
+/// *whole* list to tell "one known class" from "one known class plus three of
+/// something else" — so `BORZOI_PROJECT_SAMPLE` raises it.
+fn sample_limit() -> usize {
+    std::env::var("BORZOI_PROJECT_SAMPLE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(40)
+}
 
 fn span(start: usize, end: usize) -> TextRange {
     TextRange::new(
@@ -122,6 +146,13 @@ struct Tally {
     divergences: Vec<Site>,
     alt_binders: Vec<Site>,
     gaps: usize,
+    /// Errors the oracle itself hit. An erroring file yields no divergences and
+    /// never will — FCS reports no target for a use it could not check, so the
+    /// use is skipped entirely. Counting these is what tells "we agree with the
+    /// oracle" from "the oracle had nothing to say".
+    oracle_errors: usize,
+    /// A sample of the above, for triage.
+    oracle_error_sites: Vec<(PathBuf, FcsError)>,
 }
 
 /// What our resolution names an assembly symbol: the declaring assembly's simple
@@ -179,15 +210,12 @@ fn our_assembly_full(env: &AssemblyEnv, res: Resolution) -> OurAsm {
     }
 }
 
-/// Whether one of our renderings equals FCS's full name, modulo the
-/// double-backtick quoting FCS applies to identifiers that need it
-/// (`Operators.``not```). Only the delimiter pairs are removed, never a lone
-/// backtick: a quoted identifier may contain one (`lex.fsl` closes the quote on
-/// a *doubled* backtick only), so ``a`b`` and ``ab`` name different symbols.
-fn full_matches(ours: &OurAsm, fcs: &str) -> bool {
-    let unquote = |s: &str| s.replace("``", "");
-    let f = unquote(fcs);
-    unquote(&ours.qualified) == f || unquote(&ours.unqualified) == f
+/// Whether one of our renderings equals `expected` — FCS's own full name, or
+/// the structural declaration our resolution certified. See
+/// [`assembly_full_name_agrees`] for what "equals" tolerates.
+fn full_matches(ours: &OurAsm, expected: &str) -> bool {
+    assembly_full_name_agrees(&ours.qualified, expected)
+        || assembly_full_name_agrees(&ours.unqualified, expected)
 }
 
 /// Our resolution's full name with a **nested** entity's enclosing chain
@@ -291,74 +319,72 @@ fn project_resolution_matches_fcs() {
         );
     }
 
-    // 2. Referenced-assembly closure from the restored assets file.
+    // 2. The project's reference set and the `AssemblyEnv` built from it — the
+    //    LSP's own composition, out of one cache entry so the two cannot be two
+    //    resolutions that disagree: the assets file's package and framework
+    //    DLLs, each F# `<ProjectReference>`'s built output DLL, and the C#
+    //    sidecar's metadata DLLs. Composing the set here from the assets file
+    //    alone (as this did) omits every `<ProjectReference>` on *both* sides,
+    //    so a use of a referenced project's types is `Unresolved` for us and
+    //    FS0039 for the oracle — landing in the ungated gaps bucket rather than
+    //    being adjudicated.
     let assets = project_dir.join("obj").join("project.assets.json");
     assert!(
         assets.is_file(),
         "no project.assets.json at {assets:?} — restore the project first \
          (`dotnet restore {project:?}`)"
     );
-    let resolved = resolve_assemblies_root_only(
-        &assets,
-        dotnet_root.as_deref().unwrap_or_else(|| Path::new("/")),
-    )
-    .expect("resolve_assemblies_root_only");
-
-    // The project's full referenced-assembly closure (package + framework DLLs) —
-    // fed to *both* our AssemblyEnv and (below) the FCS oracle, so the two compare
-    // against the same assemblies.
-    let dll_paths: Vec<&Path> = resolved
-        .package_dlls
-        .iter()
-        .chain(resolved.framework_dlls.iter())
-        .map(PathBuf::as_path)
-        .collect();
-
-    // Our AssemblyEnv over that closure, built through the LSP's own
-    // `build_env_from_dll_paths` — the *exact* runtime env-build (per-DLL
-    // panic-safety, AbbreviationVisibility, manifest identities, type
-    // forwarders, and the same-name version-unification drop), so the oracle
-    // validates the env the shipped server builds rather than a hand-rolled copy
-    // that drifts. A disabled cache keeps the read deterministic. The per-panic
-    // backtrace is silenced so a skipped DLL doesn't spam the report.
+    let target_framework = workspace.served_tfm_for_project(&project);
+    // The per-DLL panic backtraces a real reference closure provokes are
+    // silenced so a skipped DLL doesn't spam the report.
     let _silence = silence_panics_here();
-    let (env, _kept) =
-        build_env_from_dll_paths(dll_paths.iter().copied(), &AssemblyCache::disabled());
+    let (ref_dlls, retryable) = sema.env_reference_dlls_for_project(
+        &project,
+        dotnet_root.as_deref(),
+        &target_framework,
+        &workspace,
+    );
+    // A transient C# sidecar failure leaves the set uncached, so the env below
+    // may be built from a *different* resolution. Comparing across two reference
+    // sets is not evidence either way; fail rather than report a number.
+    assert!(
+        !retryable,
+        "the reference set for {project:?} was not stable (a transient C# sidecar \
+         failure left it uncached) — rerun"
+    );
+    let env = sema.assembly_env_for_project(
+        &project,
+        dotnet_root.as_deref(),
+        &target_framework,
+        &workspace,
+    );
     drop(_silence);
+    assert!(
+        !ref_dlls.is_empty(),
+        "composed no references for {project:?} — the oracle below needs a \
+         non-empty set to be exclusive about"
+    );
 
     // 3. Our whole-project resolution — the signature-aware fold, exactly as
     //    the LSP runs it (a `.fsi`-bearing project folds since Stage 1 of
     //    `docs/fsi-signature-restriction-plan.md`).
     let proj = resolve_project_files(&parses.files, &env);
 
-    // FCS oracle over the same Compile order. We inject the project's genuinely
-    // *external* NuGet DLLs (so FCS can resolve references to them) but let FCS
-    // supply FSharp.Core and the BCL from its own SDK — filtering FSharp.Core out
-    // of the injected set to avoid double-referencing it.
-    //
-    // On the reference-set skew (fcs-dump's SDK is net10 / a newer FSharp.Core,
-    // while a project may target net5.0 / FSharp.Core 5.0.0): the diff currency is
-    // `(assembly simple name, full name)`, which is version-independent, and FCS
-    // only reports uses of symbols the project's code actually references — a set
-    // that, by definition, resolves in whatever FSharp.Core/BCL the project
-    // compiles against, and whose members exist under the same names in the newer
-    // SDK. Feeding FCS the project's own closure with `--noframework` instead was
-    // tried and rejected: it makes FCS abort or drop most resolutions, because a
-    // faithful check needs MSBuild's full compiler command line, not just the
-    // assets DLL list. The residual risk (a symbol relocating assemblies across
-    // framework versions) surfaces as a *divergence* if it ever bites — it is not
-    // silently masked — and did not occur across the validated projects.
-    let fcs_refs: Vec<&Path> = resolved
-        .package_dlls
-        .iter()
-        .filter(|p| p.file_stem().and_then(|s| s.to_str()) != Some("FSharp.Core"))
-        .map(PathBuf::as_path)
-        .collect();
+    // FCS oracle over the same Compile order, reading **exactly** the set above
+    // and nothing else. Letting it also resolve the running SDK's framework
+    // would leave it able to bind names in assemblies we never read: our side
+    // defers, FCS answers, and a deferral is not a divergence — so the run
+    // scores plausible coverage while the two sides read different worlds.
+    // Nothing is filtered out either: FSharp.Core and the framework DLLs are
+    // part of the set our env was built from, and dropping either recreates the
+    // same asymmetry from the other end.
+    let fcs_refs: Vec<&Path> = ref_dlls.iter().map(PathBuf::as_path).collect();
     let path_refs: Vec<&Path> = parses.paths.iter().map(PathBuf::as_path).collect();
     let define_refs: Vec<&str> = symbols.iter().map(String::as_str).collect();
     let json = invoke_fcs_dump_project_with_refs(
         &path_refs,
         &fcs_refs,
+        OracleRefScope::Exclusive,
         &define_refs,
         lang_version.as_deref(),
     );
@@ -383,6 +409,13 @@ fn project_resolution_matches_fcs() {
             .unwrap_or_else(|| panic!("FCS reported no uses entry for Compile file {path:?}"));
         let rf = proj.file(i);
         let src = &parses.texts[i];
+
+        tally.oracle_errors += fu.errors.len();
+        if let Some(first) = fu.errors.first()
+            && tally.oracle_error_sites.len() < sample_limit()
+        {
+            tally.oracle_error_sites.push((path.clone(), first.clone()));
+        }
 
         for u in &fu.uses {
             if u.is_from_definition || u.start == u.end {
@@ -455,11 +488,39 @@ fn project_resolution_matches_fcs() {
                     None | Some(Resolution::Deferred(_)) => tally.gaps += 1,
                     Some(r @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                         let ours = our_assembly_full(&env, r);
-                        if &ours.assembly == asm && full_matches(&ours, full) {
+                        // The oracle's *rendered* name and the structural one
+                        // our own resolution certifies are both accepted, and
+                        // neither replaces the other: FCS names a constructor
+                        // use by its type while the declaring entity and
+                        // display name compose to `T.T`, so substituting would
+                        // turn agreement into a divergence.
+                        //
+                        // Computed at most once, and only once the rendered
+                        // name has already missed: `certified_expected` runs
+                        // `enclosing_chain` and `entity_full_name`, both
+                        // searches from the environment's roots, while nearly
+                        // every one of a real project's tens of thousands of
+                        // imported uses agrees on the rendered name alone.
+                        let certified_cell: OnceCell<Option<String>> = OnceCell::new();
+                        let certified = || {
+                            certified_cell
+                                .get_or_init(|| {
+                                    u.structural
+                                        .as_ref()
+                                        .and_then(|s| certified_expected(&env, r, s))
+                                })
+                                .as_deref()
+                        };
+                        if &ours.assembly == asm
+                            && (full_matches(&ours, full)
+                                || certified().is_some_and(|c| full_matches(&ours, c)))
+                        {
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm
-                            && our_assembly_full_nested(&env, r)
-                                .is_some_and(|n| n.replace("``", "") == full.replace("``", ""))
+                            && our_assembly_full_nested(&env, r).is_some_and(|n| {
+                                assembly_full_name_agrees(&n, full)
+                                    || certified().is_some_and(|c| assembly_full_name_agrees(&n, c))
+                            })
                         {
                             // A nested entity named in full — an adjudicated
                             // match, not a rendering gap.
@@ -499,6 +560,19 @@ fn project_resolution_matches_fcs() {
         tally.asm_match > 0,
         "no assembly resolutions matched — not exercising imported-assembly lookups"
     );
+    // The oracle must actually have checked the project. With an exclusive
+    // reference set, a reference we failed to compose makes FCS report FS0039 on
+    // every use of it — which is *not* a divergence, because an unchecked use
+    // carries no target to disagree with, so it silently leaves the comparison
+    // instead of failing it. Gate on it, or the harness's own gap is the one
+    // thing it cannot see.
+    assert_eq!(
+        tally.oracle_errors, 0,
+        "the FCS oracle reported {} errors checking {project:?} (see the printed \
+         sample) — the reference set we handed it is incomplete, so the counts \
+         above compare against a project FCS could not check",
+        tally.oracle_errors,
+    );
     // The soundness gate: over a *fully* type-checked real project (no
     // isolation-bias recovery), every use FCS resolves concretely must be one we
     // agree with or honestly defer — never a wrong binder, wrong assembly symbol,
@@ -520,7 +594,7 @@ fn project_resolution_matches_fcs() {
 fn report(project: &Path, t: &Tally) {
     eprintln!(
         "\nresolve-real-project {}: {} in-proj match ({} cross-file) | {} asm match | \
-         {} diverge | {} alt-binder | {} gaps",
+         {} diverge | {} alt-binder | {} gaps | {} oracle errors",
         project.display(),
         t.in_proj_match,
         t.cross_file_match,
@@ -528,17 +602,37 @@ fn report(project: &Path, t: &Tally) {
         t.divergences.len(),
         t.alt_binders.len(),
         t.gaps,
+        t.oracle_errors,
     );
     print_sites("divergences", &t.divergences);
     print_sites("alt-binders", &t.alt_binders);
+    if !t.oracle_error_sites.is_empty() {
+        eprintln!(
+            "\noracle errors ({}, first per file, showing up to {}):",
+            t.oracle_errors,
+            sample_limit(),
+        );
+        for (path, err) in &t.oracle_error_sites {
+            eprintln!(
+                "  {:?}: FS{:04} {}",
+                path.file_name().unwrap_or_default(),
+                err.error_number,
+                err.message,
+            );
+        }
+    }
 }
 
 fn print_sites(label: &str, sites: &[Site]) {
     if sites.is_empty() {
         return;
     }
-    eprintln!("\n{label} ({}, showing up to {SAMPLE}):", sites.len());
-    for s in sites.iter().take(SAMPLE) {
+    eprintln!(
+        "\n{label} ({}, showing up to {}):",
+        sites.len(),
+        sample_limit()
+    );
+    for s in sites.iter().take(sample_limit()) {
         eprintln!(
             "  {:?}:{:?} {:?} -> FCS {}, we gave {}",
             s.file.file_name().unwrap_or_default(),

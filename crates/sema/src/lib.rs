@@ -43,6 +43,8 @@ mod member_ty;
 mod overload;
 mod qnof;
 mod resolve;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod ty;
 mod unify;
 

@@ -27,7 +27,7 @@ use lsp_types::{
 use tempfile::TempDir;
 
 use crate::common::{
-    DeclSite, FileUses, NormalisedProjectUse, invoke_fcs_dump_project_with_refs,
+    DeclSite, FileUses, NormalisedProjectUse, OracleRefScope, invoke_fcs_dump_project_with_refs,
     parse_fcs_uses_project,
 };
 
@@ -260,7 +260,10 @@ let classify c =
         (client.clone(), client_source.to_string()),
     ];
     let paths: Vec<&Path> = sources.iter().map(|(path, _)| path.as_path()).collect();
-    let json = invoke_fcs_dump_project_with_refs(&paths, &[], &[], None);
+    // No references of our own: this fixture's sources use only FSharp.Core and
+    // the BCL, which the oracle's own SDK supplies.
+    let json =
+        invoke_fcs_dump_project_with_refs(&paths, &[], OracleRefScope::SdkPlusExtra, &[], None);
     let fcs = parse_fcs_uses_project(&json, &sources);
     let targets = source_targets(&fcs);
 
