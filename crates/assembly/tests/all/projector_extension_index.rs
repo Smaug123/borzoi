@@ -90,6 +90,37 @@ fn every_augmentation_carries_the_name_resolution_flag() {
     );
 }
 
+/// An instance augmentation's pickled `ValReprInfo` counts the **receiver** as a
+/// group, while `arg_group_count` is what a *caller* writes. `type String with
+/// member x.GenericExt y` is two groups in the pickle and one at the call site;
+/// publishing the raw count would make a tupled extension look possibly-curried
+/// and the overload engine defer it.
+#[test]
+fn an_instance_extensions_group_count_excludes_the_receiver() {
+    let entities = load(ensure_fs_ext_index_built());
+    let extensions = module_named(&entities, "Extensions");
+    let groups = |name: &str| -> Option<usize> {
+        extensions
+            .members
+            .iter()
+            .find_map(|m| match m {
+                Member::Method(mm) if mm.source_name.as_deref().unwrap_or(&mm.name) == name => {
+                    Some(mm.arg_group_count)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("Extensions has {name}"))
+    };
+    assert_eq!(
+        groups("GenericExt"),
+        Some(1),
+        "one callable group: the receiver is not one of them"
+    );
+    // A *static* extension has no receiver to strip, so its count is the
+    // pickle's as-is.
+    assert_eq!(groups("StaticExt"), Some(1));
+}
+
 #[test]
 fn extension_index_excludes_static_extension_and_plain_let() {
     // The exact-set assertion above already implies these, but pin the two
