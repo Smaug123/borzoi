@@ -195,7 +195,11 @@ fn resolve_assemblies_impl(
                     }
                     worklist.push(next_assets);
                 }
-                Reference::Framework { name, tfm } => {
+                Reference::Framework {
+                    name,
+                    tfm,
+                    package_path,
+                } => {
                     // Skip a framework we already resolved *successfully*. The
                     // dedup is recorded only on `Ok` below — not here — because
                     // resolution now depends on this assets file's
@@ -220,6 +224,7 @@ fn resolve_assemblies_impl(
                         &assets.package_folders,
                         &name,
                         &tfm,
+                        package_path.as_deref(),
                     ) {
                         Ok(dlls) => {
                             frameworks_resolved.insert((name, tfm));

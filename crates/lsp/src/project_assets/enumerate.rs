@@ -52,6 +52,13 @@ pub enum Reference {
     Framework {
         name: String,
         tfm: String,
+        /// The package directory the assets file *selected* for this framework,
+        /// relative to a package folder (`netstandard.library/2.0.3`) — set
+        /// only for a framework whose reference assemblies ship inside an
+        /// ordinary package rather than a targeting pack. Resolution uses it
+        /// verbatim: MSBuild imports the version the restore chose, and a
+        /// newer copy sitting in the same folder is not that version.
+        package_path: Option<String>,
     },
 }
 
@@ -179,29 +186,56 @@ fn enumerate_target(
             out.push(Reference::Framework {
                 name: name.clone(),
                 tfm: tfm.to_string(),
+                package_path: None,
             });
         }
     }
 
     // A **netstandard** project has no `frameworkReferences` — that is a net5+
-    // concept — and its `NETStandard.Library` entry is a package whose compile
-    // asset is the `_._` placeholder. Nothing in the assets file therefore
-    // names the BCL, yet the project compiles against one: MSBuild takes the
-    // reference assemblies from the targeting pack (netstandard2.1) or from the
-    // `netstandard.library` package's own `build/<tfm>/ref` directory
-    // (netstandard2.0). Emit it as the framework reference it effectively is,
-    // so it goes down the same resolution path — otherwise the reference set
-    // has no core library at all, and every imported name in such a project is
-    // unresolvable (measured on `WoofWare.Expect`: FCS reports 1008 errors from
-    // our set, starting with `RequireQualifiedAccess is not defined`).
-    if tfm.starts_with("netstandard") {
+    // concept — and the `NETStandard.Library` entry that stands in for them is a
+    // *package* whose compile asset is the `_._` placeholder. Nothing in the
+    // assets file therefore names the BCL, yet the project compiles against
+    // one: MSBuild takes the reference assemblies from that package's own
+    // `build/{tfm}/ref` directory. Emit it as the framework reference it
+    // effectively is, so it goes down the same resolution path — otherwise the
+    // reference set has no core library at all, and every imported name in such
+    // a project is unresolvable (measured on `WoofWare.Expect`: FCS reports
+    // 1008 errors from our set, starting with `RequireQualifiedAccess is not
+    // defined`).
+    //
+    // Keyed on the target entry, never on the TFM: a project built with
+    // `DisableImplicitFrameworkReferences` has no such entry, and inventing one
+    // would let us resolve names the compiler rejects. The *selected* package
+    // directory rides along for the same reason — the restore chose a version.
+    if !out
+        .iter()
+        .any(|r| matches!(r, Reference::Framework { name, .. } if name == NETSTANDARD_LIBRARY))
+        && let Some(package_path) = netstandard_library_path(assets, target)
+    {
         out.push(Reference::Framework {
             name: NETSTANDARD_LIBRARY.to_string(),
             tfm: tfm.to_string(),
+            package_path: Some(package_path),
         });
     }
 
     Ok(out)
+}
+
+/// The package directory the assets file selected for `NETStandard.Library`,
+/// relative to a package folder — `None` when the target does not contain it
+/// (`DisableImplicitFrameworkReferences`, or a TFM that has real framework
+/// references instead).
+fn netstandard_library_path(
+    assets: &RawAssets,
+    target: &std::collections::BTreeMap<String, crate::project_assets::raw::RawTargetEntry>,
+) -> Option<String> {
+    let name_version = target.keys().find(|name_version| {
+        name_version
+            .split_once('/')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case(NETSTANDARD_LIBRARY))
+    })?;
+    assets.libraries.get(name_version)?.path.clone()
 }
 
 /// Pick the single compile-time TFM and the matching target group.
@@ -407,6 +441,67 @@ mod tests {
             package_folders,
             project: RawProject { frameworks },
         }
+    }
+
+    /// A netstandard target's `NETStandard.Library` entry stands in for the
+    /// framework references the TFM does not have, so it becomes one — carrying
+    /// the package directory the restore *selected*.
+    #[test]
+    fn a_netstandard_target_names_its_library_as_a_framework() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawTargetEntry {
+                kind: "package".to_string(),
+                compile: None,
+                framework: None,
+            },
+        );
+        let mut targets = BTreeMap::new();
+        targets.insert("netstandard2.0".to_string(), entries);
+        let mut assets = build_assets(targets);
+        assets.libraries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawLibrary {
+                kind: "package".to_string(),
+                path: Some("netstandard.library/2.0.3".to_string()),
+                msbuild_project: None,
+            },
+        );
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        let frameworks: Vec<(&str, Option<&str>)> = refs
+            .iter()
+            .filter_map(|r| match r {
+                Reference::Framework {
+                    name, package_path, ..
+                } => Some((name.as_str(), package_path.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frameworks,
+            vec![("NETStandard.Library", Some("netstandard.library/2.0.3"))]
+        );
+    }
+
+    /// …and *only* when the target has it. `DisableImplicitFrameworkReferences`
+    /// leaves a netstandard target with no such entry, and MSBuild then compiles
+    /// against no BCL; inventing one from any cached copy would let us resolve
+    /// names the compiler rejects.
+    #[test]
+    fn a_netstandard_target_without_the_library_gets_no_framework() {
+        let mut targets = BTreeMap::new();
+        targets.insert("netstandard2.0".to_string(), BTreeMap::new());
+        let assets = build_assets(targets);
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        assert!(
+            !refs
+                .iter()
+                .any(|r| matches!(r, Reference::Framework { .. })),
+            "no framework reference is in the assets file: {refs:?}"
+        );
     }
 
     #[test]

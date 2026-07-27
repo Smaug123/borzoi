@@ -60,13 +60,15 @@ pub fn resolve_framework(
     package_folders: &[PathBuf],
     name: &str,
     tfm: &str,
+    package_path: Option<&str>,
 ) -> Result<Vec<PathBuf>, ProjectAssetsError> {
-    // `NETStandard.Library` at netstandard2.0 is not a targeting pack at all:
-    // the reference assemblies ship inside the ordinary `netstandard.library`
-    // package, under `build/{tfm}/ref/`. (netstandard2.1 *does* have a
-    // `NETStandard.Library.Ref` pack, which the standard probe below finds.)
-    if name == NETSTANDARD_LIBRARY
-        && let Some(dlls) = netstandard_build_ref_dlls(package_folders, tfm)?
+    // A framework whose reference assemblies ship inside an ordinary package
+    // rather than a targeting pack: `NETStandard.Library` at netstandard2.0
+    // puts them under the *selected* package's `build/{tfm}/ref/`.
+    // (netstandard2.1 does have a `NETStandard.Library.Ref` pack, which the
+    // standard probe below finds — hence "try, then fall through".)
+    if let Some(package_path) = package_path
+        && let Some(dlls) = package_build_ref_dlls(package_folders, package_path, tfm)?
     {
         return Ok(dlls);
     }
@@ -127,70 +129,46 @@ pub fn resolve_framework(
     Ok(dlls)
 }
 
-/// The netstandard reference assemblies as the `netstandard.library` package
-/// lays them out: `{package folder}/netstandard.library/{version}/build/{tfm}/ref/*.dll`.
-/// `None` when no package folder holds that shape, so the caller falls through
-/// to the targeting-pack probe.
-fn netstandard_build_ref_dlls(
+/// A package's own reference assemblies: `{package folder}/{package path}/build/{tfm}/ref/*.dll`,
+/// where `package path` is the directory the **assets file selected**
+/// (`netstandard.library/2.0.3`). `None` when no package folder holds that
+/// shape, so the caller falls through to the targeting-pack probe.
+///
+/// The selected path rather than a version scan: MSBuild imports the version
+/// the restore chose, and a newer copy of the same package sitting in the
+/// folder is a different reference set.
+fn package_build_ref_dlls(
     package_folders: &[PathBuf],
+    package_path: &str,
     tfm: &str,
 ) -> Result<Option<Vec<PathBuf>>, ProjectAssetsError> {
-    let roots: Vec<PathBuf> = package_folders
-        .iter()
-        .map(|pf| pf.join("netstandard.library"))
-        .collect();
-    let mut best: Option<(VersionKey, PathBuf)> = None;
-    for root in &roots {
-        let entries = match std::fs::read_dir(root) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => {
-                return Err(ProjectAssetsError::Io {
-                    path: root.clone(),
-                    source: e,
-                });
-            }
-        };
-        for entry in entries {
-            let entry = entry.map_err(|e| ProjectAssetsError::Io {
-                path: root.clone(),
-                source: e,
-            })?;
-            let dir = entry.path();
-            let ref_dir = dir.join("build").join(tfm).join("ref");
-            if !ref_dir.is_dir() {
-                continue;
-            }
-            let Some(version) = dir.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            let Some(key) = parse_version(version) else {
-                continue;
-            };
-            if best.as_ref().is_none_or(|(b, _)| key > *b) {
-                best = Some((key, ref_dir));
-            }
+    for folder in package_folders {
+        let ref_dir = folder
+            .join(package_path)
+            .join("build")
+            .join(tfm)
+            .join("ref");
+        if !ref_dir.is_dir() {
+            continue;
         }
-    }
-    let Some((_, ref_dir)) = best else {
-        return Ok(None);
-    };
-    let mut dlls = Vec::new();
-    for entry in std::fs::read_dir(&ref_dir).map_err(|e| ProjectAssetsError::Io {
-        path: ref_dir.clone(),
-        source: e,
-    })? {
-        let entry = entry.map_err(|e| ProjectAssetsError::Io {
+        let mut dlls = Vec::new();
+        for entry in std::fs::read_dir(&ref_dir).map_err(|e| ProjectAssetsError::Io {
             path: ref_dir.clone(),
             source: e,
-        })?;
-        let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "dll") {
-            dlls.push(path);
+        })? {
+            let entry = entry.map_err(|e| ProjectAssetsError::Io {
+                path: ref_dir.clone(),
+                source: e,
+            })?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "dll") {
+                dlls.push(path);
+            }
         }
+        dlls.sort();
+        return Ok(Some(dlls));
     }
-    dlls.sort();
-    Ok(Some(dlls))
+    Ok(None)
 }
 
 /// Scan each candidate `{name}.Ref` root for the highest version directory whose
@@ -274,6 +252,9 @@ mod tests {
     /// `netstandard.library` package, under `build/{tfm}/ref` — not in a
     /// targeting pack. Without this the composed set has no core library at
     /// all, and every imported name in such a project is unresolvable.
+    ///
+    /// The **selected** version, not the newest installed: MSBuild imports what
+    /// the restore chose, so a newer copy beside it is a different reference set.
     #[test]
     fn netstandard_refs_come_from_the_packages_build_ref_directory() {
         let tmp = TempDir::new().unwrap();
@@ -288,21 +269,22 @@ mod tests {
         fs::write(refs.join("netstandard.dll"), b"").unwrap();
         fs::write(refs.join("System.Runtime.dll"), b"").unwrap();
         fs::write(refs.join("notes.txt"), b"").unwrap();
-        // An older version beside it: the highest wins, as everywhere else.
-        let older = pkgs
+        // A *newer* copy beside it, which the restore did not select.
+        let newer = pkgs
             .join("netstandard.library")
-            .join("1.6.1")
+            .join("2.9.9")
             .join("build")
             .join("netstandard2.0")
             .join("ref");
-        fs::create_dir_all(&older).unwrap();
-        fs::write(older.join("netstandard.dll"), b"").unwrap();
+        fs::create_dir_all(&newer).unwrap();
+        fs::write(newer.join("Unselected.dll"), b"").unwrap();
 
         let dlls = resolve_framework(
             &tmp.path().join("dotnet"),
             std::slice::from_ref(&pkgs),
             NETSTANDARD_LIBRARY,
             "netstandard2.0",
+            Some("netstandard.library/2.0.3"),
         )
         .expect("netstandard refs resolve from the package layout");
         assert_eq!(
@@ -336,6 +318,7 @@ mod tests {
             std::slice::from_ref(&pkgs),
             NETSTANDARD_LIBRARY,
             "netstandard2.1",
+            Some("netstandard.library/2.0.3"),
         )
         .expect("the targeting pack resolves");
         assert_eq!(dlls, vec![pack.join("netstandard.dll")]);
@@ -359,7 +342,8 @@ mod tests {
         touch(&pack.join("8.0.11/ref/net8.0/System.dll"));
         touch(&pack.join("8.0.11/ref/net8.0/System.Console.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None).unwrap();
         let expected = vec![
             pack.join("8.0.11/ref/net8.0/System.Console.dll"),
             pack.join("8.0.11/ref/net8.0/System.dll"),
@@ -375,7 +359,8 @@ mod tests {
         fs::create_dir_all(pack.join("not-a-version/ref/net8.0")).unwrap();
         touch(&pack.join("not-a-version/ref/net8.0/Ghost.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None).unwrap();
         assert_eq!(dlls, vec![pack.join("8.0.1/ref/net8.0/System.dll")]);
     }
 
@@ -386,7 +371,8 @@ mod tests {
         touch(&pack.join("9.0.0/ref/net9.0/System.dll"));
         touch(&pack.join("8.0.1/ref/net8.0/System.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None).unwrap();
         assert_eq!(dlls, vec![pack.join("8.0.1/ref/net8.0/System.dll")]);
     }
 
@@ -398,14 +384,15 @@ mod tests {
         touch(&pack.join("8.0.1/ref/net8.0/System.xml"));
         touch(&pack.join("8.0.1/ref/net8.0/FrameworkList.xml"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None).unwrap();
         assert_eq!(dlls, vec![pack.join("8.0.1/ref/net8.0/System.dll")]);
     }
 
     #[test]
     fn missing_pack_is_reported() {
         let tmp = TempDir::new().unwrap();
-        match resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0") {
+        match resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None) {
             Err(ProjectAssetsError::FrameworkPackNotFound { name, searched }) => {
                 assert_eq!(name, "Microsoft.NETCore.App");
                 assert_eq!(searched, tmp.path().join("packs/Microsoft.NETCore.App.Ref"));
@@ -427,6 +414,7 @@ mod tests {
             std::slice::from_ref(&nuget),
             "Microsoft.NETCore.App",
             "net6.0",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -452,6 +440,7 @@ mod tests {
             std::slice::from_ref(&nuget),
             "Microsoft.NETCore.App",
             "net6.0",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -479,6 +468,7 @@ mod tests {
             std::slice::from_ref(&nuget),
             "Microsoft.NETCore.App",
             "net8.0",
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -498,7 +488,13 @@ mod tests {
         let nuget = tmp.path().join("nuget");
         touch(&nuget.join("microsoft.netcore.app.ref/9.0.0/ref/net9.0/System.dll"));
 
-        match resolve_framework(tmp.path(), &[nuget], "Microsoft.NETCore.App", "net6.0") {
+        match resolve_framework(
+            tmp.path(),
+            &[nuget],
+            "Microsoft.NETCore.App",
+            "net6.0",
+            None,
+        ) {
             Err(ProjectAssetsError::FrameworkRefForTfmMissing { tfm, .. }) => {
                 assert_eq!(tfm, "net6.0");
             }
@@ -512,7 +508,7 @@ mod tests {
         let pack = tmp.path().join("packs/Microsoft.NETCore.App.Ref");
         touch(&pack.join("9.0.0/ref/net9.0/System.dll"));
 
-        match resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0") {
+        match resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None) {
             Err(ProjectAssetsError::FrameworkRefForTfmMissing { name, tfm }) => {
                 assert_eq!(name, "Microsoft.NETCore.App");
                 assert_eq!(tfm, "net8.0");
@@ -527,7 +523,8 @@ mod tests {
         let pack = tmp.path().join("packs/Microsoft.NETCore.App.Ref");
         touch(&pack.join("10.0.0-preview.7.25380.108/ref/net10.0/System.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0", None).unwrap();
         assert_eq!(
             dlls,
             vec![pack.join("10.0.0-preview.7.25380.108/ref/net10.0/System.dll")]
@@ -541,7 +538,8 @@ mod tests {
         touch(&pack.join("10.0.0-preview.7.25380.108/ref/net10.0/Preview.dll"));
         touch(&pack.join("10.0.0/ref/net10.0/Stable.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0", None).unwrap();
         assert_eq!(dlls, vec![pack.join("10.0.0/ref/net10.0/Stable.dll")]);
     }
 
@@ -553,7 +551,8 @@ mod tests {
         touch(&pack.join("9.0.0/ref/net10.0/Old.dll"));
         touch(&pack.join("10.0.0-preview.7.25380.108/ref/net10.0/Preview.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net10.0", None).unwrap();
         assert_eq!(
             dlls,
             vec![pack.join("10.0.0-preview.7.25380.108/ref/net10.0/Preview.dll")]
@@ -568,7 +567,8 @@ mod tests {
         touch(&pack.join("9.0.0/ref/net8.0/Old.dll"));
         touch(&pack.join("10.0.1/ref/net8.0/New.dll"));
 
-        let dlls = resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0").unwrap();
+        let dlls =
+            resolve_framework(tmp.path(), &[], "Microsoft.NETCore.App", "net8.0", None).unwrap();
         assert_eq!(dlls, vec![pack.join("10.0.1/ref/net8.0/New.dll")]);
     }
 }
