@@ -837,11 +837,12 @@ jobs:
       # the wrong declaration and wants a reason in the commit message.
       #
       # `assembly=1,reverse=1` are one site seen from both directions:
-      # `NodeToDot.fs`'s `File.Open`, where FCS names the `System.Runtime`
-      # facade and we name `System.IO.FileSystem` — the forwarder equivalence
-      # task #20 is about, not a resolution disagreement. `project=1` predates
-      # the series. The other 15 of each were FCS's generic-arity *rendering*,
-      # retired by the structural declaring-entity comparison.
+      # `NodeToDot.fs`'s `File.Open`, where the oracle resolves against the
+      # running SDK's framework as well as the project's own references and so
+      # names a different `System.IO.File`. Running it against *our* set alone
+      # (`BORZOI_PROJECT_EXCLUSIVE_REFS=1`) takes both to zero, but cannot be
+      # turned on here until the composition covers netstandard target
+      # frameworks. `project=1` predates the series.
       BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=1,project=1,reverse=1"
     steps:
       - name: Checkout code

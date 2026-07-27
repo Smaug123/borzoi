@@ -1430,8 +1430,8 @@ fn build_assembly_env(
         recovered_ref_tfms,
         restore_env,
     );
-    let env = build_env_from_dll_paths(dlls.iter().map(PathBuf::as_path), cache);
-    (env, dlls, retryable)
+    let (env, kept) = build_env_from_dll_paths(dlls.iter().map(PathBuf::as_path), cache);
+    (env, kept, retryable)
 }
 
 /// The project-reference targets the env fold consumes, derived from the
@@ -2097,7 +2097,7 @@ fn unified_reference_keep_mask(identities: &[Option<AssemblyIdentity>]) -> Vec<b
 pub fn build_env_from_dll_paths<'a>(
     dlls: impl Iterator<Item = &'a Path>,
     cache: &AssemblyCache,
-) -> AssemblyEnv {
+) -> (AssemblyEnv, Vec<PathBuf>) {
     let paths: Vec<&Path> = dlls.collect();
     let _span = tracing::info_span!("build_env_from_dll_paths", count = paths.len()).entered();
     let workers = std::thread::available_parallelism()
@@ -2241,6 +2241,16 @@ pub fn build_env_from_dll_paths<'a>(
         .iter()
         .flat_map(|(_, _, p)| p.dropped_type_namespaces.iter().cloned())
         .collect();
+    // The set the env is actually built from — the caller's list minus the
+    // unified-away duplicates. A caller that hands these references on (the
+    // differential harnesses hand them to FCS) must pass *this* list: a
+    // reference we dropped is one the compiler's importer never resolves
+    // through, so passing the raw list makes the other side read an assembly we
+    // do not have. The measured shape: a legacy `system.runtime/4.3.1` contract
+    // assembly beside the framework pack's 8.0 — with both in FCS's `-r:` set,
+    // type-checking `WoofWare.PawPrint`'s main library never terminates
+    // (100%+ CPU, RSS past 21 GB in five minutes).
+    let kept: Vec<PathBuf> = indexed.iter().map(|(_, path, _)| path.clone()).collect();
     let assemblies = indexed
         .into_iter()
         .map(|(_, path, projection)| {
@@ -2267,7 +2277,7 @@ pub fn build_env_from_dll_paths<'a>(
     for namespace in dropped_type_namespaces {
         env.mark_namespace_dropped_type(namespace);
     }
-    env
+    (env, kept)
 }
 
 /// [`enumerate_dll_type_defs`] through the on-disk cache: a hit returns the
@@ -2523,6 +2533,33 @@ mod tests {
 
     const PKT_A: Option<[u8; 8]> = Some([176, 63, 95, 127, 17, 213, 10, 58]);
     const PKT_B: Option<[u8; 8]> = Some([204, 123, 19, 255, 205, 45, 221, 81]);
+
+    /// The set [`build_env_from_dll_paths`] hands back is the one the env was
+    /// built from, not the one it was given: a DLL it could not project is not
+    /// in it.
+    ///
+    /// That distinction is the whole point of returning it. A caller that
+    /// passes the references on — the differentials hand them to FCS — must not
+    /// pass a reference we dropped, or the other side reads an assembly we do
+    /// not have. With a superseded duplicate corelib in FCS's `-r:` set,
+    /// type-checking `WoofWare.PawPrint`'s main library never terminated.
+    #[test]
+    fn the_returned_reference_set_is_the_one_the_env_was_built_from() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unreadable = tmp.path().join("unreadable.dll");
+        std::fs::write(&unreadable, b"MZ but nothing else").unwrap();
+        let native = tmp.path().join("native.dll");
+        std::fs::write(&native, native_pe_image()).unwrap();
+
+        let (_, kept) = build_env_from_dll_paths(
+            [unreadable.as_path(), native.as_path()].into_iter(),
+            &AssemblyCache::disabled(),
+        );
+        assert!(
+            kept.is_empty(),
+            "neither DLL projects, so neither is in the set the env was built from: {kept:?}"
+        );
+    }
 
     #[test]
     fn unified_reference_mask_drops_lower_version_of_same_name_and_pkt() {
@@ -4941,7 +4978,7 @@ mod tests {
             Some(SkipCause::NotAManagedAssembly)
         );
 
-        let env =
+        let (env, _) =
             build_env_from_dll_paths([native.as_path()].into_iter(), &AssemblyCache::disabled());
         assert!(
             !env.identities_incomplete(),
@@ -4952,7 +4989,7 @@ mod tests {
         // identity unknown, and the env says so.
         let unreadable = tmp.path().join("unreadable.dll");
         std::fs::write(&unreadable, b"MZ but nothing else").unwrap();
-        let env = build_env_from_dll_paths(
+        let (env, _) = build_env_from_dll_paths(
             [native.as_path(), unreadable.as_path()].into_iter(),
             &AssemblyCache::disabled(),
         );
