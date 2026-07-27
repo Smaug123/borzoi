@@ -2989,8 +2989,31 @@ impl ResolvedFile {
         self.decline_sites.iter().map(|(&r, &s)| (r, s))
     }
 
+    /// Every answer this file **commits** at `range`, whichever map holds it.
+    ///
+    /// Name resolution records into two range-keyed maps — ordinary occurrences
+    /// and attribute types, which answer FCS's suffix-first candidate walk and
+    /// so are kept apart. Both are served to users: the LSP navigates an
+    /// attribute name through the second one exactly as it navigates any other
+    /// name. A differential asking what this file claims must therefore read
+    /// **this**, not [`Self::resolution_at`]: reading one map alone reports a
+    /// committed answer as silence, which is how a wrong answer goes
+    /// uncompared. The maps answer at disjoint ranges (asserted in `finish`), so
+    /// the union is unambiguous.
+    ///
+    /// Not exhaustive over the *crate*: member resolutions are produced by
+    /// inference over a separate value (`Inferred::member_resolutions`) and are
+    /// not reachable from a `ResolvedFile`.
+    pub fn committed_resolution_at(&self, range: TextRange) -> Option<Resolution> {
+        self.resolution_at(range)
+            .or_else(|| self.attribute_resolution_at(range))
+    }
+
     /// The type the attribute written at `range` resolved to, if the resolver
     /// made any claim there (see [`Self::attribute_resolutions`]).
+    ///
+    /// Answers only the attribute map; a caller asking what the file commits
+    /// anywhere wants [`Self::committed_resolution_at`].
     pub fn attribute_resolution_at(&self, range: TextRange) -> Option<Resolution> {
         self.attribute_resolutions.get(&range).copied()
     }

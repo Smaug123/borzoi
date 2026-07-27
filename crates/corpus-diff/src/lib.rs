@@ -6,7 +6,8 @@
 //! proof.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
@@ -864,6 +865,20 @@ pub struct ProjectUse {
     pub declaring: Option<DeclaringEntity>,
     /// The used symbol's own generic-parameter count, when it is an entity.
     pub generic_arity: Option<usize>,
+    /// The oracle reported this record for the **constructor** the site invokes,
+    /// not for the name the author wrote.
+    ///
+    /// FCS emits both at one range wherever a written name both names a type and
+    /// calls it — `[<Alias>]`, `inherit Base(1)`, `Foo()`. Sema answers only the
+    /// first question: it resolves the written name, and models no separate
+    /// resolution for the constructor. So a constructor record is not a second
+    /// answer to compare against, and grading a type answer by it is a category
+    /// error that happens to pass whenever the constructor's declaration range
+    /// coincides with its type's. Carried here rather than inferred from the
+    /// spelling of `.ctor`, and independent of
+    /// [`DeclaringEntity::is_constructor`], which is present only for a record
+    /// that also carries a declaring path.
+    pub is_constructor: bool,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1136,6 +1151,7 @@ pub fn parse_project_uses(
                         assembly: u.assembly,
                         full_name: u.full_name,
                         generic_arity: u.generic_arity,
+                        is_constructor: u.is_constructor.unwrap_or(false),
                         declaring: match u.declaring_path {
                             Some(path) if !path.is_empty() => Some(DeclaringEntity {
                                 // Absent is the **root** namespace, which the
@@ -1337,6 +1353,19 @@ pub struct Comparison {
     /// identical though both classifications moved.
     pub project_decline_census: DeclineCensus,
     pub assembly_decline_census: DeclineCensus,
+    /// How many of the considered uses were answered out of the **attribute**
+    /// commit map rather than the main one
+    /// ([`borzoi_sema::ResolvedFile::committed_resolution_at`]).
+    ///
+    /// Published because the alternative to publishing it is not noticing. An
+    /// attribute answer is invisible to `resolution_at`, so a differential that
+    /// reads one map counts every attribute use as a deferral — which is to say
+    /// it makes no claim about a surface the LSP does serve, and stays green
+    /// however wrong those answers are. Nothing else in this report moves when
+    /// that happens: the divergence gate holds at zero and the deferral counts
+    /// merely rise. This number going to zero on a corpus that contains
+    /// attributes is the signal.
+    pub attribute_commits_compared: usize,
     pub skipped_uses: SkippedUses,
     /// Our *defining* occurrences at ranges FCS reports nothing about. The
     /// forward direction does not grade FCS's definitions either, and silence
@@ -1377,6 +1406,29 @@ pub struct SkippedUses {
     /// compare instead, so nothing can adjudicate the use.
     pub out_of_project_declarations: usize,
     pub no_oracle_declaration: usize,
+    /// FCS reported **two or more different declarations at one range**, so the
+    /// oracle does not say what the site resolves to and cannot adjudicate a
+    /// single answer.
+    ///
+    /// `[<Alias>]`, where `Alias` abbreviates an attribute class, is the shape:
+    /// the range carries a use of the abbreviation *and* a use naming the
+    /// constructed type, and both readings are correct — the author wrote one
+    /// name that both names a type and calls its constructor. Any single answer
+    /// contradicts one of them, so grading against either would report a right
+    /// answer as wrong half the time and, worse, would let a genuinely wrong
+    /// answer pass whenever it happened to match the other voice.
+    ///
+    /// Counted rather than silently dropped, and adjudicated on the oracle's
+    /// answers alone — never on whether ours agrees — so this can never become
+    /// the bucket a disagreement escapes into. It is the project-stream twin of
+    /// the attribute oracle's `ambiguous` record.
+    pub ambiguous_oracle_range: usize,
+    /// A **constructor** record at a range that also carries a record for the
+    /// name itself — see [`ProjectUse::is_constructor`]. The name's record is
+    /// the one this differential can grade, so the constructor's steps aside
+    /// rather than being compared against a resolution that never claimed to
+    /// answer it.
+    pub shadowed_constructor_use: usize,
 }
 
 impl SkippedUses {
@@ -1387,6 +1439,8 @@ impl SkippedUses {
             + self.non_project_declarations
             + self.out_of_project_declarations
             + self.no_oracle_declaration
+            + self.ambiguous_oracle_range
+            + self.shadowed_constructor_use
     }
 
     fn add_assign(&mut self, other: &Self) {
@@ -1396,6 +1450,8 @@ impl SkippedUses {
         self.non_project_declarations += other.non_project_declarations;
         self.out_of_project_declarations += other.out_of_project_declarations;
         self.no_oracle_declaration += other.no_oracle_declaration;
+        self.ambiguous_oracle_range += other.ambiguous_oracle_range;
+        self.shadowed_constructor_use += other.shadowed_constructor_use;
     }
 }
 
@@ -1437,6 +1493,8 @@ pub struct CorpusSummary {
     /// a change to the precedence ladder moves.
     pub project_decline_census: DeclineCensus,
     pub assembly_decline_census: DeclineCensus,
+    /// Aggregate of [`Comparison::attribute_commits_compared`].
+    pub attribute_commits_compared: usize,
     pub skipped_uses: SkippedUses,
     /// Aggregate of [`Comparison::unoracled_definitions`].
     pub unoracled_definitions: usize,
@@ -1524,6 +1582,7 @@ impl CorpusSummary {
             .add_assign(&comparison.project_decline_census);
         self.assembly_decline_census
             .add_assign(&comparison.assembly_decline_census);
+        self.attribute_commits_compared += comparison.attribute_commits_compared;
         self.skipped_uses.add_assign(&comparison.skipped_uses);
         self.project_divergences += comparison.divergences.len();
         self.assembly_divergences += comparison.assembly_divergences.len();
@@ -1631,6 +1690,12 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
+            "project-corpus-diff attribute commits compared: {}",
+            self.attribute_commits_compared
+        )
+        .expect("write String");
+        writeln!(
+            out,
             "project-corpus-diff deferrals: {} project | {} assembly | {} total",
             self.project_deferrals,
             self.assembly_deferrals,
@@ -1669,13 +1734,15 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} ambiguous oracle ranges | {} shadowed constructor uses | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
             self.skipped_uses.compiler_generated,
             self.skipped_uses.non_project_declarations,
             self.skipped_uses.out_of_project_declarations,
             self.skipped_uses.no_oracle_declaration,
+            self.skipped_uses.ambiguous_oracle_range,
+            self.skipped_uses.shadowed_constructor_use,
             self.skipped_uses.total(),
             self.unoracled_definitions,
             self.unoracled_or_pattern_aliases
@@ -1737,6 +1804,7 @@ impl CorpusSummary {
                 project_considered: self.project_uses_considered,
                 assembly_considered: self.assembly_uses_considered,
                 total_considered: self.total_uses_considered(),
+                attribute_commits_compared: self.attribute_commits_compared,
             },
             matches: CorpusProjectAssemblyCount {
                 project: self.project_matches,
@@ -2270,6 +2338,10 @@ struct CorpusUsesReport {
     project_considered: usize,
     assembly_considered: usize,
     total_considered: usize,
+    /// See [`Comparison::attribute_commits_compared`]. Sits beside the considered
+    /// counts because it says which commit map answered them, not how many
+    /// there were.
+    attribute_commits_compared: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -2457,6 +2529,8 @@ struct CorpusSkippedUsesCounts {
     non_project_declarations: usize,
     out_of_project_declarations: usize,
     no_oracle_declaration: usize,
+    ambiguous_oracle_range: usize,
+    shadowed_constructor_use: usize,
     total: usize,
 }
 
@@ -2503,6 +2577,7 @@ pub fn render_generator_summary(
                 project_considered: summary.project_uses_considered,
                 assembly_considered: summary.assembly_uses_considered,
                 total_considered: summary.total_uses_considered(),
+                attribute_commits_compared: summary.attribute_commits_compared,
             },
             matches: CorpusProjectAssemblyCount {
                 project: summary.project_matches,
@@ -2534,6 +2609,8 @@ pub fn render_generator_summary(
                 non_project_declarations: summary.skipped_uses.non_project_declarations,
                 out_of_project_declarations: summary.skipped_uses.out_of_project_declarations,
                 no_oracle_declaration: summary.skipped_uses.no_oracle_declaration,
+                ambiguous_oracle_range: summary.skipped_uses.ambiguous_oracle_range,
+                shadowed_constructor_use: summary.skipped_uses.shadowed_constructor_use,
                 total: summary.skipped_uses.total(),
             },
             unoracled_definitions: summary.unoracled_definitions,
@@ -2689,6 +2766,18 @@ pub struct AssemblyDecl {
     pub structural: Option<StructuralName>,
 }
 
+/// Whether the answer at `range` is a **commit** the attribute map alone holds
+/// — the case that is compared here only because
+/// [`borzoi_sema::ResolvedFile::committed_resolution_at`] is what gets asked.
+///
+/// A deferral recorded in that map is excluded: it makes no claim, so counting
+/// it would inflate the number that is supposed to say how much was actually
+/// put to the oracle.
+fn attribute_commit(rf: &borzoi_sema::ResolvedFile, range: TextRange) -> bool {
+    rf.resolution_at(range).is_none()
+        && matches!(rf.attribute_resolution_at(range), Some(res) if !matches!(res, Resolution::Deferred(_)))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divergence {
     pub file: PathBuf,
@@ -2761,6 +2850,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         comparison.uses_reported += file_uses.uses.len();
         comparable_fcs_files.push((file_idx, file_uses));
         let rf = loaded.resolved.file(file_idx);
+        let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
             if u.is_from_definition {
                 comparison.skipped_uses.definitions += 1;
@@ -2774,6 +2864,14 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 comparison.skipped_uses.compiler_generated += 1;
                 continue;
             }
+            if !shape.grades(u) {
+                comparison.skipped_uses.shadowed_constructor_use += 1;
+                continue;
+            }
+            if shape.is_ambiguous(u) {
+                comparison.skipped_uses.ambiguous_oracle_range += 1;
+                continue;
+            }
             let range = TextRange::new(
                 u32::try_from(u.start).expect("use start fits u32").into(),
                 u32::try_from(u.end).expect("use end fits u32").into(),
@@ -2782,7 +2880,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 match assembly_decl(u) {
                     Some(expected) => {
                         comparison.assembly_uses_considered += 1;
-                        match rf.resolution_at(range) {
+                        if attribute_commit(rf, range) {
+                            comparison.attribute_commits_compared += 1;
+                        }
+                        match rf.committed_resolution_at(range) {
                             None | Some(Resolution::Deferred(_)) => {
                                 comparison.assembly_deferrals += 1;
                                 comparison
@@ -2844,7 +2945,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 continue;
             };
             comparison.uses_considered += 1;
-            match rf.resolution_at(range) {
+            if attribute_commit(rf, range) {
+                comparison.attribute_commits_compared += 1;
+            }
+            match rf.committed_resolution_at(range) {
                 None | Some(Resolution::Deferred(_)) => {
                     comparison.deferrals += 1;
                     comparison
@@ -2904,6 +3008,90 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
     comparison
 }
 
+/// How this file's oracle records are to be read where several land on one
+/// range: which are shadowed by a better answer, and which ranges stay
+/// [ambiguous](SkippedUses::ambiguous_oracle_range) even after that.
+///
+/// Only records the comparator would actually **grade** take part, which is
+/// exactly the ones that are answers about the site. Everything it sets aside is
+/// set aside because it says nothing this differential can read: a *defining*
+/// occurrence is not a use; the compiler-generated `_arg1` of a destructuring
+/// pattern spans the whole pattern and so shares its range with the union case
+/// the author actually wrote; and a record with neither an in-project
+/// declaration nor a complete assembly identity names no target at all. Letting
+/// any of those weigh in would rule on a site using a record that was never an
+/// answer to begin with.
+struct OracleShape {
+    /// Ranges carrying a non-constructor record, so a constructor record there
+    /// is answering a different question and steps aside.
+    named_at: HashSet<(usize, usize)>,
+    ambiguous: HashSet<(usize, usize)>,
+}
+
+impl OracleShape {
+    /// Whether this record is the one to grade its site by.
+    ///
+    /// A constructor record beside the type it constructs is not a rival answer
+    /// — it is the same site described at a level sema does not model. Grading a
+    /// type answer against it is a category error that passes only when the
+    /// constructor's declaration range happens to coincide with its type's.
+    fn grades(&self, u: &ProjectUse) -> bool {
+        !(u.is_constructor && self.named_at.contains(&(u.start, u.end)))
+    }
+
+    fn is_ambiguous(&self, u: &ProjectUse) -> bool {
+        self.ambiguous.contains(&(u.start, u.end))
+    }
+}
+
+fn oracle_shape(file_uses: &FileUses) -> OracleShape {
+    /// What the oracle said a use resolves to: its declaration, plus the
+    /// assembly identity that adjudicates a non-project one.
+    type OracleAnswer<'a> = (&'a UseDecl, Option<&'a str>, Option<&'a str>);
+
+    let gradable = |u: &&ProjectUse| {
+        !u.is_from_definition
+            && u.start != u.end
+            && !u.is_compiler_generated
+            // The same eligibility the comparator applies: an in-project
+            // declaration, or failing that an assembly identity to adjudicate by.
+            && (matches!(u.decl, UseDecl::InProject(_)) || assembly_decl(u).is_some())
+    };
+
+    let named_at: HashSet<(usize, usize)> = file_uses
+        .uses
+        .iter()
+        .filter(gradable)
+        .filter(|u| !u.is_constructor)
+        .map(|u| (u.start, u.end))
+        .collect();
+
+    let mut answer_at: HashMap<(usize, usize), OracleAnswer<'_>> = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for u in file_uses.uses.iter().filter(gradable) {
+        if u.is_constructor && named_at.contains(&(u.start, u.end)) {
+            continue;
+        }
+        let answer = (&u.decl, u.assembly.as_deref(), u.full_name.as_deref());
+        match answer_at.entry((u.start, u.end)) {
+            Entry::Vacant(slot) => {
+                slot.insert(answer);
+            }
+            Entry::Occupied(slot) => {
+                // Two records naming the *same* declaration are one answer said
+                // twice, which adjudicates fine.
+                if *slot.get() != answer {
+                    ambiguous.insert((u.start, u.end));
+                }
+            }
+        }
+    }
+    OracleShape {
+        named_at,
+        ambiguous,
+    }
+}
+
 fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
     match (&use_.assembly, &use_.full_name) {
         (Some(assembly), Some(full_name)) => Some(AssemblyDecl {
@@ -2955,7 +3143,20 @@ fn add_reverse_divergences(
 ) {
     for (file_idx, file_uses) in fcs_files {
         let rf = loaded.resolved.file(*file_idx);
-        let mut resolutions: Vec<_> = rf.resolutions().iter().collect();
+        // The same reading of the oracle the forward pass uses. A constructor
+        // record standing beside the name it constructs must not *confirm* one
+        // of our answers either: it names the constructed type, so it would
+        // silently accept a resolution to that type at a site whose written
+        // name is something else — a wrong answer, ratified.
+        let shape = oracle_shape(file_uses);
+        // Both commit maps, for the same reason the forward direction reads
+        // both: an attribute answer is a claim served to users, and a claim the
+        // oracle is never asked about is the one that can be wrong forever.
+        let mut resolutions: Vec<_> = rf
+            .resolutions()
+            .iter()
+            .chain(rf.attribute_resolutions().iter())
+            .collect();
         resolutions.sort_by_key(|(range, _)| range_pair(**range));
         for (range, &res) in resolutions {
             if !is_concrete_resolution(res) {
@@ -2965,6 +3166,7 @@ fn add_reverse_divergences(
             if file_uses
                 .uses
                 .iter()
+                .filter(|u| shape.grades(u))
                 .any(|u| fcs_use_confirms_resolution(loaded, *file_idx, u, start, end, res))
             {
                 continue;
@@ -5261,6 +5463,7 @@ mod tests {
             assembly_deferrals: 1,
             project_decline_census: DeclineCensus::default(),
             assembly_decline_census: DeclineCensus::default(),
+            attribute_commits_compared: 1,
             skipped_uses: SkippedUses {
                 definitions: 2,
                 zero_width: 1,
@@ -5268,6 +5471,8 @@ mod tests {
                 non_project_declarations: 3,
                 out_of_project_declarations: 0,
                 no_oracle_declaration: 4,
+                ambiguous_oracle_range: 2,
+                shadowed_constructor_use: 3,
             },
             unoracled_definitions: 0,
             unoracled_or_pattern_aliases: 0,
@@ -5328,7 +5533,7 @@ mod tests {
         assert_eq!(summary.total_matches(), 4);
         assert_eq!(summary.total_deferrals(), 2);
         assert_eq!(summary.total_divergences(), 3);
-        assert_eq!(summary.skipped_uses.total(), 15);
+        assert_eq!(summary.skipped_uses.total(), 20);
         assert_eq!(summary.coverage_percent_string(), "66.67");
         assert_eq!(summary.skipped_projects_percent_string(), "66.67");
 

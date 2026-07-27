@@ -12,6 +12,7 @@ mod attr_resolution_diff;
 mod attr_resolution_sweep;
 mod classify_assembly_diff;
 mod classify_diff;
+mod commit_surface;
 mod companion_head_diff;
 mod companion_module_case_matrix;
 mod decline_cause;

@@ -439,6 +439,19 @@ fn diff_in_file_alias_commits_locally() {
     assert_attrs_match_fcs(src, &env, 1);
 }
 
+/// An in-file abbreviation of an **in-file** attribute class, where the alias
+/// and its terminal are both project binders. The BCL-abbreviation case above
+/// is adjudicated by assembly identity, which cannot see this question at all:
+/// here both candidate answers are `Local` def ranges, so the comparator checks
+/// *which binder* we navigate to — the alias as written, or the type it stands
+/// for.
+#[test]
+fn diff_in_file_alias_of_an_in_file_attribute_commits_locally() {
+    let env = fsharp_core_env();
+    let src = "module Test\n\ntype BaseAttribute() =\n    inherit System.Attribute()\n\ntype Alias = BaseAttribute\n\n[<Alias>]\nlet x = 1\n";
+    assert_attrs_match_fcs(src, &env, 1);
+}
+
 /// A self-referential attribute (`[<MyAttr>]` on `type MyAttrAttribute`) —
 /// FCS checks a tycon's attributes *after* entering it, and the resolver's
 /// post-dispatch ordering must match.
