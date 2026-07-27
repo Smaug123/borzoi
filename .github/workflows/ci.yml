@@ -836,12 +836,15 @@ jobs:
       # that earns it. Raising it means this corpus now resolves something to
       # the wrong declaration and wants a reason in the commit message.
       #
-      # Assembly and reverse are at **zero**: both sides now read one reference
-      # set — ours, netstandard's BCL included — so neither can resolve a name
-      # in an assembly the other cannot see. `project=1` is
-      # `WoofWare.Incremental`'s `FakeUnit.fs` binder divergence and predates
-      # the series.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=1,reverse=0"
+      # **Zero, in every direction.** Both sides read one reference set — ours,
+      # netstandard's BCL included — so neither can resolve a name in an
+      # assembly the other cannot see, and the oracle's compiler-generated
+      # values (a destructuring pattern's synthetic parameter, whose use spans
+      # the pattern) are skipped rather than compared against the case the
+      # author actually wrote. Raising any of these means this corpus now
+      # resolves something to the wrong declaration and wants a reason in the
+      # commit message.
+      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=0,reverse=0"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

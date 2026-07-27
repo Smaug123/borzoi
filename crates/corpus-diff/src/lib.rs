@@ -833,6 +833,10 @@ pub struct ProjectUse {
     pub start: usize,
     pub end: usize,
     pub is_from_definition: bool,
+    /// Whether FCS made this value rather than the author writing it — the
+    /// synthetic parameter of a destructuring pattern, whose use spans the
+    /// pattern itself. See [`SkippedUses::compiler_generated`].
+    pub is_compiler_generated: bool,
     pub decl: UseDecl,
     pub assembly: Option<String>,
     pub full_name: Option<String>,
@@ -1065,6 +1069,8 @@ struct RawUse {
     // no more than "not a constructor" — both decline the composition.
     #[serde(rename = "IsConstructor", default)]
     is_constructor: Option<bool>,
+    #[serde(rename = "IsCompilerGenerated", default)]
+    is_compiler_generated: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -1135,6 +1141,7 @@ pub fn parse_project_uses(
                         start: idx.offset(u.range.start.line, u.range.start.col),
                         end: idx.offset(u.range.end.line, u.range.end.col),
                         is_from_definition: u.is_from_definition,
+                        is_compiler_generated: u.is_compiler_generated.unwrap_or(false),
                         decl,
                         assembly: u.assembly,
                         full_name: u.full_name,
@@ -1239,6 +1246,14 @@ pub struct Comparison {
 pub struct SkippedUses {
     pub definitions: usize,
     pub zero_width: usize,
+    /// A value the **compiler** made, not the author: the synthetic parameter a
+    /// destructuring pattern gets (`let inline toUnit FakeUnit.FakeUnit = ()`
+    /// gives its argument `_arg1`). Its use spans the whole pattern — the same
+    /// span as the union case the pattern names — so a comparison keyed on the
+    /// span sees two oracle answers for one site, and the author never wrote the
+    /// one it would pick. There is nothing of ours to compare it against: we
+    /// record what the source says, and the source says the case.
+    pub compiler_generated: usize,
     pub non_project_declarations: usize,
     /// FCS declared the symbol in a real file the project does not compile
     /// ([`UseDecl::OutsideProject`]) *and* gave no assembly identity to
@@ -1251,6 +1266,7 @@ impl SkippedUses {
     pub fn total(&self) -> usize {
         self.definitions
             + self.zero_width
+            + self.compiler_generated
             + self.non_project_declarations
             + self.out_of_project_declarations
             + self.no_oracle_declaration
@@ -1259,6 +1275,7 @@ impl SkippedUses {
     fn add_assign(&mut self, other: &Self) {
         self.definitions += other.definitions;
         self.zero_width += other.zero_width;
+        self.compiler_generated += other.compiler_generated;
         self.non_project_declarations += other.non_project_declarations;
         self.out_of_project_declarations += other.out_of_project_declarations;
         self.no_oracle_declaration += other.no_oracle_declaration;
@@ -1504,9 +1521,10 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
+            self.skipped_uses.compiler_generated,
             self.skipped_uses.non_project_declarations,
             self.skipped_uses.out_of_project_declarations,
             self.skipped_uses.no_oracle_declaration,
@@ -2241,6 +2259,7 @@ fn defined_ratio(ratio: Option<u64>) -> u64 {
 struct CorpusSkippedUsesCounts {
     definitions: usize,
     zero_width: usize,
+    compiler_generated: usize,
     non_project_declarations: usize,
     out_of_project_declarations: usize,
     no_oracle_declaration: usize,
@@ -2313,6 +2332,7 @@ pub fn render_generator_summary(
             skipped_uses: CorpusSkippedUsesCounts {
                 definitions: summary.skipped_uses.definitions,
                 zero_width: summary.skipped_uses.zero_width,
+                compiler_generated: summary.skipped_uses.compiler_generated,
                 non_project_declarations: summary.skipped_uses.non_project_declarations,
                 out_of_project_declarations: summary.skipped_uses.out_of_project_declarations,
                 no_oracle_declaration: summary.skipped_uses.no_oracle_declaration,
@@ -2568,6 +2588,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             }
             if u.start == u.end {
                 comparison.skipped_uses.zero_width += 1;
+                continue;
+            }
+            if u.is_compiler_generated {
+                comparison.skipped_uses.compiler_generated += 1;
                 continue;
             }
             let range = TextRange::new(
@@ -5166,6 +5190,7 @@ mod tests {
             skipped_uses: SkippedUses {
                 definitions: 2,
                 zero_width: 1,
+                compiler_generated: 5,
                 non_project_declarations: 3,
                 out_of_project_declarations: 0,
                 no_oracle_declaration: 4,
@@ -5229,7 +5254,7 @@ mod tests {
         assert_eq!(summary.total_matches(), 4);
         assert_eq!(summary.total_deferrals(), 2);
         assert_eq!(summary.total_divergences(), 3);
-        assert_eq!(summary.skipped_uses.total(), 10);
+        assert_eq!(summary.skipped_uses.total(), 15);
         assert_eq!(summary.coverage_percent_string(), "66.67");
         assert_eq!(summary.skipped_projects_percent_string(), "66.67");
 
