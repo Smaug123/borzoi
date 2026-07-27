@@ -19,7 +19,7 @@ use std::sync::Arc;
 use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, ImportError, Version};
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
-use borzoi_msbuild::ItemKind;
+use borzoi_msbuild::{ItemKind, OutputDirVerdict};
 use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile};
 use lsp_types::Url;
 
@@ -1616,15 +1616,17 @@ struct GraphRefTargets {
 }
 
 /// One F# node of the closure, as the env fold consumes it: the
-/// canonicalised project path, the walk's TFM verdict, and the node's
+/// canonicalised project path, the walk's TFM verdict, the node's
 /// evaluated output-assembly name
 /// ([`crate::project_graph::ProjectNode::output_name`] — the fallback when
-/// the entry's assets file doesn't cover the ref).
+/// the entry's assets file doesn't cover the ref), and where that assembly
+/// lands ([`crate::project_graph::ProjectNode::output_dir`]).
 #[derive(Debug, PartialEq, Eq)]
 struct FsharpRefTarget {
     path: PathBuf,
     tfm: NodeTfm,
     output_name: Option<String>,
+    output_dir: OutputDirVerdict,
 }
 
 /// Project [`graph`](Workspace::project_graph) nodes → [`GraphRefTargets`],
@@ -1652,6 +1654,7 @@ fn graph_ref_targets(graph: &ProjectGraph, entry: &Path) -> GraphRefTargets {
                         path: canonicalise(&node.path),
                         tfm: node.tfm.clone(),
                         output_name: node.output_name.clone(),
+                        output_dir: node.output_dir.clone(),
                     });
                 }
             }
@@ -2141,8 +2144,12 @@ fn fsharp_project_ref_outcome(
         };
     };
     let located = match &t.tfm {
-        NodeTfm::Known(tfm) => locate_fsharp_output_dll(&t.path, Some(tfm), output_name),
-        NodeTfm::NoneDeclared => locate_fsharp_output_dll(&t.path, None, output_name),
+        NodeTfm::Known(tfm) => {
+            locate_fsharp_output_dll(&t.path, Some(tfm), output_name, &t.output_dir)
+        }
+        NodeTfm::NoneDeclared => {
+            locate_fsharp_output_dll(&t.path, None, output_name, &t.output_dir)
+        }
         NodeTfm::Unresolved | NodeTfm::NotEvaluated => {
             tracing::info!(
                 fsproj = %t.path.display(),
@@ -2168,9 +2175,19 @@ fn fsharp_project_ref_outcome(
     }
 }
 
-/// Given a referenced F# project file, find its built output DLL under
-/// `<project_dir>/bin/<config>/<tfm>/<output_name>.dll`. Returns `None`
-/// when the project hasn't been built (no matching DLL on disk).
+/// Given a referenced F# project file, find its built output DLL.
+///
+/// `layout` says which directory to look in
+/// ([`crate::project_graph::ProjectNode::output_dir`]):
+///
+/// - [`OutputDirVerdict::Default`] — the standard
+///   `<project_dir>/bin/<config>/<tfm>/<output_name>.dll` tree.
+/// - [`OutputDirVerdict::Declared`] — the directory the project redirected to,
+///   *instead of* the `bin` tree. MSBuild uses a declared `OutDir` verbatim:
+///   neither the TFM nor `OutputPath` is appended to it, so this is the whole
+///   answer and `producer_tfm` does not narrow it further (see below).
+/// - [`OutputDirVerdict::Unknown`] — nothing is searched at all, and the ref
+///   grades [`OutputLocation::Absent`]. See the arm's comment.
 ///
 /// `output_name` is the producer's resolved output name — the caller
 /// recovers it from the entry's assets file or the graph node's own
@@ -2193,10 +2210,18 @@ fn fsharp_project_ref_outcome(
 /// deterministically across configs — a `Debug` config first (the editing
 /// default), then the lexicographically-smallest path — so a warm rebuild
 /// picks the same DLL and the env stays byte-stable.
+///
+/// A **declared** directory has no TFM segment to select on, so that check
+/// has nothing to bite: MSBuild dispatches each inner build of a
+/// multi-targeted project with the same `OutDir`, so its own builds overwrite
+/// one another there. Whatever assembly is at that path is therefore exactly
+/// the one a real `<ProjectReference>` to this producer would pick up —
+/// matching the build rather than out-guessing it.
 fn locate_fsharp_output_dll(
     fsproj: &Path,
     producer_tfm: Option<&str>,
     output_name: &str,
+    layout: &OutputDirVerdict,
 ) -> OutputLocation {
     let mut dll_name = std::ffi::OsString::from(output_name);
     dll_name.push(".dll");
@@ -2206,6 +2231,34 @@ fn locate_fsharp_output_dll(
             transient: false,
         };
     };
+    match layout {
+        OutputDirVerdict::Default => {
+            locate_in_default_layout(fsproj, project_dir, producer_tfm, &dll_name)
+        }
+        OutputDirVerdict::Declared {
+            path,
+            configuration,
+        } => locate_in_declared_dir(project_dir, path, configuration.as_deref(), &dll_name),
+        // The project wrote *something* about where its output goes and the
+        // evaluation could not pin it down, so there is no directory to
+        // search. Falling back to the `bin` tree would be worse than not
+        // looking: against positive evidence of a redirect, a DLL still
+        // sitting there is most likely a leftover from before it, and folding
+        // a stale assembly fabricates. Reporting the absence — rather than
+        // [`OutputLocation::Undecidable`] — keeps the env complete, which is
+        // exactly the trade [`OutputLocation::Absent`] documents.
+        OutputDirVerdict::Unknown => OutputLocation::Absent,
+    }
+}
+
+/// The `bin/<config>/<tfm>/` scan: every built variant on disk, narrowed by
+/// `producer_tfm` when one is known. See [`locate_fsharp_output_dll`].
+fn locate_in_default_layout(
+    fsproj: &Path,
+    project_dir: &Path,
+    producer_tfm: Option<&str>,
+    dll_name: &std::ffi::OsStr,
+) -> OutputLocation {
     let bin = project_dir.join("bin");
 
     // `bin/<config>/<tfm>/<stem>.dll` — collect every built variant on disk.
@@ -2235,7 +2288,7 @@ fn locate_fsharp_output_dll(
             {
                 continue;
             }
-            let dll = tfm_dir.join(&dll_name);
+            let dll = tfm_dir.join(dll_name);
             // `Path::is_file` folds a failed `stat` into `false`, which would
             // put an output we could not examine into the proven-absence
             // bucket. Ask for the metadata so a non-`NotFound` error is a
@@ -2282,21 +2335,143 @@ fn locate_fsharp_output_dll(
     }
 }
 
+/// Look for `dll_name` in the directory the project declared, taking the
+/// first candidate that holds it.
+///
+/// `configuration`, when present, names the one substring of `declared` that
+/// came from `$(Configuration)`. It must be *searched* rather than trusted:
+/// this evaluation saw whatever configuration the environment defaulted to,
+/// while the user may have built another. So the segment holding it becomes a
+/// wildcard — the directory above it is enumerated and every child with the
+/// same surrounding text qualifies, which is the same move the default layout
+/// makes by enumerating `bin/`. The `Debug` substitution is tried first (the
+/// editing default), then the rest in path order, so a warm rebuild keeps
+/// picking the same DLL.
+fn locate_in_declared_dir(
+    project_dir: &Path,
+    declared: &str,
+    configuration: Option<&str>,
+    dll_name: &std::ffi::OsStr,
+) -> OutputLocation {
+    let dirs = match configuration {
+        None => vec![join_declared(project_dir, declared)],
+        Some(configuration) => {
+            let Some(dirs) = configuration_candidates(project_dir, declared, configuration) else {
+                return OutputLocation::Undecidable {
+                    why: "a declared output directory could not be read",
+                    transient: true,
+                };
+            };
+            dirs
+        }
+    };
+    for dir in dirs {
+        let dll = dir.join(dll_name);
+        // As in the default scan: a failed `stat` must not fold into "absent",
+        // which is a proven-absence claim.
+        match dll.metadata() {
+            Ok(meta) if meta.is_file() => return OutputLocation::Found(dll),
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => {
+                tracing::info!(dll = %dll.display(), error = %err, "cannot stat a declared output");
+                return OutputLocation::Undecidable {
+                    why: "a candidate output could not be examined",
+                    transient: true,
+                };
+            }
+        }
+    }
+    OutputLocation::Absent
+}
+
+/// Every directory `declared` could name once the `configuration` substring is
+/// treated as a wildcard, in preference order: the `Debug` substitution first,
+/// then the rest by path. `None` if the enclosing directory could not be
+/// enumerated (`child_dirs`' contract: not the same as "nothing is there").
+///
+/// The wildcard need not be a whole path segment — `artifacts-$(Configuration)`
+/// is as legal as `artifacts/$(Configuration)` — so the text on each side of it
+/// *within its segment* is kept as the affix a candidate child must match.
+fn configuration_candidates(
+    project_dir: &Path,
+    declared: &str,
+    configuration: &str,
+) -> Option<Vec<PathBuf>> {
+    // The verdict only carries a configuration it located exactly once.
+    let at = declared.find(configuration)?;
+    let (head, rest) = declared.split_at(at);
+    let tail = &rest[configuration.len()..];
+    let (parent, before) = match head.rfind(['/', '\\']) {
+        Some(i) => (&head[..=i], &head[i + 1..]),
+        None => ("", head),
+    };
+    let (after, suffix) = match tail.find(['/', '\\']) {
+        Some(i) => (&tail[..i], &tail[i + 1..]),
+        None => (tail, ""),
+    };
+    let mut candidates: Vec<(bool, PathBuf)> = Vec::new();
+    for child in child_dirs(&join_declared(project_dir, parent))? {
+        let Some(name) = child.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.len() < before.len() + after.len()
+            || !name.starts_with(before)
+            || !name.ends_with(after)
+        {
+            continue;
+        }
+        let substituted = &name[before.len()..name.len() - after.len()];
+        candidates.push((
+            !substituted.eq_ignore_ascii_case(crate::BUILD_CONFIGURATION),
+            join_declared(&child, suffix),
+        ));
+    }
+    candidates.sort();
+    Some(candidates.into_iter().map(|(_, dir)| dir).collect())
+}
+
+/// Join an MSBuild-authored relative-or-rooted directory onto `base`.
+///
+/// MSBuild path properties use `\` as a separator whatever the host, and real
+/// projects are full of `bin\Debug\`-style values, so both spellings are
+/// mapped to the platform separator before joining. A rooted value replaces
+/// `base` outright, which is [`Path::join`]'s own behaviour and the right one:
+/// `<OutDir>/srv/out/</OutDir>` names `/srv/out/`, not a subdirectory of the
+/// project.
+fn join_declared(base: &Path, declared: &str) -> PathBuf {
+    let native: String = declared
+        .chars()
+        .map(|c| {
+            if c == '/' || c == '\\' {
+                std::path::MAIN_SEPARATOR
+            } else {
+                c
+            }
+        })
+        .collect();
+    base.join(native)
+}
+
 /// Where a referenced F# project's built output is, or why we cannot say.
 ///
 /// [`Self::Absent`] is the load-bearing one: it is the only outcome that grades
 /// as [`ReferenceOutcome::NotBuilt`], which leaves the env *complete*. It means
-/// **the standard layout held no matching output** — not that no output exists.
-/// A project whose `OutDir` / `OutputPath` / `AppendTargetFrameworkToOutputPath`
-/// puts its assembly elsewhere is built and still lands here, because deciding
-/// otherwise needs that project's evaluated output path, which the graph node
-/// does not carry.
+/// **the directory the layout named held no matching output** — not that no
+/// output exists anywhere.
 ///
-/// That is deliberately inside the trade `NotBuilt` already makes: the grade is
-/// "we did not fold this reference and are choosing to carry on", never "we
-/// proved there is nothing to fold". A custom layout is one more way into that
-/// same accepted bucket, not a new kind of hole — the shadow it risks is the
-/// one the grade was created to accept.
+/// Which directory that is comes from the node's
+/// [`OutputDirVerdict`](crate::project_graph::ProjectNode::output_dir), so a
+/// project that redirects its output is searched where it actually builds. A
+/// project whose redirect the evaluator could not pin down lands here without
+/// anything being searched at all: there is nowhere to look, and the `bin` tree
+/// it is *not* building to would only offer a pre-redirect leftover.
+///
+/// Both are inside the trade `NotBuilt` makes: the grade is "we did not fold
+/// this reference and are choosing to carry on", never "we proved there is
+/// nothing to fold". An unpindownable layout is one more way into that same
+/// accepted bucket, not a new kind of hole — the shadow it risks is the one the
+/// grade was created to accept.
 ///
 /// What must *not* land in it is a reference we hit an **error** looking for.
 /// That is a different claim — we could not look, rather than looked and found
@@ -4161,6 +4336,7 @@ mod tests {
             references: Vec::new(),
             tfm: crate::project_graph::NodeTfm::NotEvaluated,
             output_name: None,
+            output_dir: OutputDirVerdict::Unknown,
         }
     }
 
@@ -4192,6 +4368,7 @@ mod tests {
                 path: PathBuf::from("/p/LibA/LibA.fsproj"),
                 tfm: crate::project_graph::NodeTfm::NotEvaluated,
                 output_name: None,
+                output_dir: OutputDirVerdict::Unknown,
             }]
         );
         assert_eq!(targets.csharp, vec![PathBuf::from("/p/CsLib/CsLib.csproj")]);
@@ -4222,6 +4399,7 @@ mod tests {
                 path: fs::canonicalize(&dep).unwrap(),
                 tfm: crate::project_graph::NodeTfm::NotEvaluated,
                 output_name: None,
+                output_dir: OutputDirVerdict::Unknown,
             }]
         );
         assert!(targets.csharp.is_empty());
@@ -4314,8 +4492,8 @@ mod tests {
     fn locate_output_dll_finds_built_dll() {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Release", "net10.0", b"stub");
-        let found =
-            locate_fsharp_output_dll(&proj, None, "Lib").expect_found("built DLL is located");
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default)
+            .expect_found("built DLL is located");
         assert!(found.ends_with("bin/Release/net10.0/Lib.dll"), "{found:?}");
     }
 
@@ -4326,7 +4504,7 @@ mod tests {
         write(&proj, "<Project />");
         // No bin/ at all.
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default),
             OutputLocation::Found(_)
         ));
     }
@@ -4341,7 +4519,8 @@ mod tests {
         write(&debug, "");
         std::fs::write(&debug, b"dbg").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, None, "Lib").expect_found("a DLL is located");
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default)
+            .expect_found("a DLL is located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Lib.dll"),
             "expected the Debug build to win, got {found:?}"
@@ -4358,7 +4537,7 @@ mod tests {
         let other = tmp.path().join("bin/Debug/net10.0/Other.dll");
         write(&other, "");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default),
             OutputLocation::Found(_)
         ));
     }
@@ -4376,11 +4555,12 @@ mod tests {
 
         // Stem-based lookup misses (there is no Lib.dll)…
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Lib"),
+            locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default),
             OutputLocation::Found(_)
         ));
         // …but the recovered name finds the override's output.
-        let found = locate_fsharp_output_dll(&proj, None, "Renamed").expect_found("located");
+        let found = locate_fsharp_output_dll(&proj, None, "Renamed", &OutputDirVerdict::Default)
+            .expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net10.0/Renamed.dll"),
             "{found:?}"
@@ -4395,7 +4575,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stub");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, None, "Renamed"),
+            locate_fsharp_output_dll(&proj, None, "Renamed", &OutputDirVerdict::Default),
             OutputLocation::Found(_)
         ));
     }
@@ -4414,7 +4594,7 @@ mod tests {
         std::fs::write(&eight, b"eight").unwrap();
         assert!(
             !matches!(
-                locate_fsharp_output_dll(&proj, None, "Lib"),
+                locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default),
                 OutputLocation::Found(_)
             ),
             "two TFM variants with no producer TFM must skip, not guess"
@@ -4433,7 +4613,9 @@ mod tests {
         write(&eight, "");
         std::fs::write(&eight, b"eight").unwrap();
 
-        let found = locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib").expect_found("located");
+        let found =
+            locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib", &OutputDirVerdict::Default)
+                .expect_found("located");
         assert!(
             found.ends_with("bin/Debug/net8.0/Lib.dll"),
             "expected the producer TFM's build, got {found:?}"
@@ -4448,9 +4630,198 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"ten");
         assert!(!matches!(
-            locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib"),
+            locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib", &OutputDirVerdict::Default),
             OutputLocation::Found(_)
         ));
+    }
+
+    // ---- a producer that redirects its output elsewhere ----
+
+    /// A `<name>.fsproj` with no `bin` tree, for the declared-layout tests.
+    fn unbuilt_fsproj(dir: &Path, name: &str) -> PathBuf {
+        let proj = dir.join(format!("{name}.fsproj"));
+        write(&proj, "<Project />");
+        proj
+    }
+
+    fn declared(path: &str) -> OutputDirVerdict {
+        OutputDirVerdict::Declared {
+            path: path.to_owned(),
+            configuration: None,
+        }
+    }
+
+    fn declared_with_config(path: &str, configuration: &str) -> OutputDirVerdict {
+        OutputDirVerdict::Declared {
+            path: path.to_owned(),
+            configuration: Some(configuration.to_owned()),
+        }
+    }
+
+    /// A declared `OutDir` is where MSBuild writes, so that is where we look —
+    /// project-relative, with no `bin`, config or TFM segment interposed.
+    #[test]
+    fn locate_output_dll_finds_a_declared_output_directory() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("artifacts/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts/"))
+            .expect_found("the declared directory is searched");
+        assert!(found.ends_with("artifacts/Lib.dll"), "{found:?}");
+    }
+
+    /// The declared directory *replaces* the `bin` tree rather than adding to
+    /// it. A DLL left in `bin` is a pre-redirect leftover — folding it would
+    /// serve a stale assembly against current source.
+    #[test]
+    fn locate_output_dll_declared_directory_replaces_the_bin_tree() {
+        let tmp = TempDir::new().unwrap();
+        let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stale");
+        write(&tmp.path().join("artifacts/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts/"))
+            .expect_found("the declared directory wins");
+        assert!(found.ends_with("artifacts/Lib.dll"), "{found:?}");
+
+        // …and with nothing in the declared directory the stale `bin` DLL is
+        // still not served: the producer is simply not built.
+        let bare = TempDir::new().unwrap();
+        let proj = built_fsproj(bare.path(), "Lib", "Debug", "net10.0", b"stale");
+        assert_eq!(
+            locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts/")),
+            OutputLocation::Absent
+        );
+    }
+
+    /// A declared directory that was never built is a proven absence, not a
+    /// refusal to look: the env stays complete.
+    #[test]
+    fn locate_output_dll_declared_but_unbuilt_is_absent() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        assert_eq!(
+            locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts/")),
+            OutputLocation::Absent
+        );
+    }
+
+    /// The configuration segment is **searched, not trusted**. The evaluation
+    /// ran under `Debug` (the environment's default) while the user built
+    /// `Release`; committing to the evaluated spelling would miss the only
+    /// output on disk.
+    #[test]
+    fn locate_output_dll_searches_the_declared_configuration_segment() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("artifacts/Release/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &declared_with_config("artifacts/Debug/", "Debug"),
+        )
+        .expect_found("the configuration segment is a wildcard");
+        assert!(found.ends_with("artifacts/Release/Lib.dll"), "{found:?}");
+    }
+
+    /// With several configurations built the pick is deterministic and matches
+    /// the default layout's: `Debug` first, whatever the evaluated spelling.
+    #[test]
+    fn locate_output_dll_declared_configuration_prefers_debug() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("artifacts/Debug/Lib.dll"), "");
+        write(&tmp.path().join("artifacts/Release/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &declared_with_config("artifacts/Release/", "Release"),
+        )
+        .expect_found("a DLL is located");
+        assert!(found.ends_with("artifacts/Debug/Lib.dll"), "{found:?}");
+    }
+
+    /// `$(Configuration)` need not be a whole path segment: the text around it
+    /// *within* its segment is the affix a candidate must match, and anything
+    /// below it still has to be there.
+    #[test]
+    fn locate_output_dll_declared_configuration_inside_a_segment() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("out-Release/lib/Lib.dll"), "");
+        // A near miss that must not be taken: right prefix, wrong tail.
+        write(&tmp.path().join("out-Other/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &declared_with_config("out-Debug/lib/", "Debug"),
+        )
+        .expect_found("the wildcard spans only its own segment");
+        assert!(found.ends_with("out-Release/lib/Lib.dll"), "{found:?}");
+    }
+
+    /// A rooted `OutDir` names an absolute directory — it is not a
+    /// subdirectory of the project.
+    #[test]
+    fn locate_output_dll_declared_accepts_a_rooted_directory() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(&tmp.path().join("src"), "Lib");
+        let out = tmp.path().join("shared-out");
+        write(&out.join("Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(
+            &proj,
+            None,
+            "Lib",
+            &declared(&format!("{}/", out.display())),
+        )
+        .expect_found("a rooted directory is used as-is");
+        assert_eq!(found, out.join("Lib.dll"));
+    }
+
+    /// MSBuild path properties use `\` as a separator whatever the host, and
+    /// real projects are full of them.
+    #[test]
+    fn locate_output_dll_declared_accepts_windows_separators() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("artifacts/out/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts\\out\\"))
+            .expect_found("backslashes separate directories");
+        assert!(found.ends_with("artifacts/out/Lib.dll"), "{found:?}");
+    }
+
+    /// MSBuild appends no TFM to a declared `OutDir`, so a known producer TFM
+    /// adds no segment to look under and rules nothing out.
+    #[test]
+    fn locate_output_dll_declared_ignores_the_producer_tfm() {
+        let tmp = TempDir::new().unwrap();
+        let proj = unbuilt_fsproj(tmp.path(), "Lib");
+        write(&tmp.path().join("artifacts/Lib.dll"), "");
+
+        let found = locate_fsharp_output_dll(&proj, Some("net8.0"), "Lib", &declared("artifacts/"))
+            .expect_found("a declared directory has no TFM segment");
+        assert!(found.ends_with("artifacts/Lib.dll"), "{found:?}");
+    }
+
+    /// An unpindownable layout means the project said *something* about where
+    /// it builds — so the `bin` tree is not it, and a DLL sitting there is a
+    /// leftover. Nothing is searched, and the absence keeps the env complete.
+    #[test]
+    fn locate_output_dll_unknown_layout_never_reads_the_bin_tree() {
+        let tmp = TempDir::new().unwrap();
+        let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stale");
+        assert_eq!(
+            locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Unknown),
+            OutputLocation::Absent
+        );
     }
 
     impl OutputLocation {
@@ -4465,14 +4836,16 @@ mod tests {
     }
 
     /// A [`FsharpRefTarget`] whose graph-carried name is the project-file
-    /// stem — the shape the walk produces for a producer without an
-    /// `<AssemblyName>` override.
+    /// stem and which builds to the standard layout — the shape the walk
+    /// produces for a producer without an `<AssemblyName>` override or an
+    /// output redirect.
     fn ref_target(path: PathBuf, tfm: NodeTfm) -> FsharpRefTarget {
         let output_name = path.file_stem().map(|s| s.to_string_lossy().into_owned());
         FsharpRefTarget {
             path,
             tfm,
             output_name,
+            output_dir: OutputDirVerdict::Default,
         }
     }
 
@@ -4603,6 +4976,7 @@ mod tests {
             path: proj,
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: Some("Renamed".to_string()),
+            output_dir: OutputDirVerdict::Default,
         }];
         let dlls = fsharp_ref_paths(&refs, &BTreeMap::new());
         assert_eq!(dlls.len(), 1, "{dlls:?}");
@@ -4631,6 +5005,7 @@ mod tests {
             path: proj,
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: None,
+            output_dir: OutputDirVerdict::Default,
         }];
         let dlls = fsharp_ref_paths(&refs, &BTreeMap::new());
         assert!(dlls.is_empty(), "{dlls:?}");
@@ -4660,6 +5035,7 @@ mod tests {
             path: proj,
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: Some("FsFileName".to_string()),
+            output_dir: OutputDirVerdict::Default,
         }];
         let dlls = fsharp_ref_paths(&refs, &names);
         assert_eq!(dlls.len(), 1, "{dlls:?}");
@@ -4685,6 +5061,7 @@ mod tests {
             path: proj,
             tfm: NodeTfm::Known("net10.0".to_string()),
             output_name: None,
+            output_dir: OutputDirVerdict::Default,
         }];
         let dlls = fsharp_ref_paths(&refs, &names);
         assert_eq!(dlls.len(), 1, "{dlls:?}");
@@ -4777,7 +5154,7 @@ mod tests {
 
         assert!(
             matches!(
-                locate_fsharp_output_dll(&proj, Some("net10.0"), "Lib"),
+                locate_fsharp_output_dll(&proj, Some("net10.0"), "Lib", &OutputDirVerdict::Default),
                 OutputLocation::Undecidable { .. }
             ),
             "an unreadable bin tree is undecidable, not a proven absence"
@@ -4804,7 +5181,7 @@ mod tests {
 
         assert!(
             matches!(
-                locate_fsharp_output_dll(&proj, None, "Lib"),
+                locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Default),
                 OutputLocation::Undecidable { .. }
             ),
             "two built TFMs and no producer TFM cannot be resolved"
@@ -4842,6 +5219,7 @@ mod tests {
                 path: unbuilt,
                 tfm: NodeTfm::Known("net10.0".into()),
                 output_name: None,
+                output_dir: OutputDirVerdict::Default,
             },
             ref_target(stray, NodeTfm::Known("net10.0".into())),
         ];
@@ -4900,6 +5278,7 @@ mod tests {
                     path: unbuilt,
                     tfm: NodeTfm::Known("net10.0".into()),
                     output_name: None,
+                    output_dir: OutputDirVerdict::Default,
                 }],
                 &BTreeMap::new()
             ),
@@ -5033,6 +5412,52 @@ mod tests {
             env.has_namespace(&["MiniLibFs".to_string()]),
             "expected the referenced project's `MiniLibFs` namespace in the env; \
              env len = {}",
+            env.len()
+        );
+    }
+
+    /// End-to-end for the redirected producer: the sibling declares an
+    /// `<OutDir>` and builds *only* there, with no `bin` tree at all. Its
+    /// types still reach the env, which they cannot without the node's
+    /// evaluated output directory being carried all the way from the fsproj
+    /// walk to the DLL locator.
+    #[test]
+    fn assembly_env_includes_a_redirected_project_reference() {
+        let dll_bytes = minilibfs_dll_bytes();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+
+        let sibling_dir = root.join("MiniLibFs");
+        write(
+            &sibling_dir.join("MiniLibFs.fsproj"),
+            r#"<Project>
+              <PropertyGroup>
+                <OutDir>artifacts/</OutDir>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let dll = sibling_dir.join("artifacts/MiniLibFs.dll");
+        write(&dll, "");
+        std::fs::write(&dll, &dll_bytes).unwrap();
+
+        let proj = root.join("App.fsproj");
+        write(&proj, &fsproj_with_refs(&["MiniLibFs/MiniLibFs.fsproj"]));
+        let dotnet_root = root.join("dotnet");
+        std::fs::create_dir_all(&dotnet_root).unwrap();
+        write_app_assets(root, true);
+
+        let mut sema = SemanticState::new();
+        let env = sema.assembly_env_for_project(
+            &proj,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert!(
+            env.has_namespace(&["MiniLibFs".to_string()]),
+            "expected the redirected producer's `MiniLibFs` namespace in the \
+             env; env len = {}",
             env.len()
         );
     }

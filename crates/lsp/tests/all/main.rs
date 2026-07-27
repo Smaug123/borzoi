@@ -29,6 +29,7 @@ mod handlers_workspace_symbol;
 mod ifdef_diagnostics_integration;
 mod lsp_integration;
 mod lsp_msbuild_user_extensions_e2e;
+mod output_dir_under_real_sdk;
 mod parse_cache;
 mod parser_corpus_sweep;
 mod project_assets_integration;

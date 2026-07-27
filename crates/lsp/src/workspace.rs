@@ -46,7 +46,7 @@ use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
-use borzoi_msbuild::ItemMetadataValue;
+use borzoi_msbuild::{ItemMetadataValue, OutputDirVerdict};
 
 const COMPILED: &str = "COMPILED";
 const EDITING: &str = "EDITING";
@@ -846,6 +846,14 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
     }
 }
 
+/// Where one evaluation says the node's build writes its output
+/// ([`ProjectNode::output_dir`]). The evaluator already grades its own
+/// certainty, so this is a straight read: the verdict is reported exactly as
+/// far as it commits, and the env fold decides what each grade licenses.
+fn evaluated_output_dir(evaluated: &EvaluatedProject) -> OutputDirVerdict {
+    evaluated.parsed.output_dir.clone()
+}
+
 /// Read and evaluate `project_path`. Returns `None` on any failure
 /// (IO, XML, or evaluation) — the caller caches the `None` so we don't
 /// retry on every keystroke.
@@ -923,6 +931,7 @@ fn resolve_node_uncached(
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
+            output_dir: evaluated_output_dir(&outer),
         };
     }
     if outer.tfm_untrusted {
@@ -932,8 +941,8 @@ fn resolve_node_uncached(
         // validated against declarations shaped by it proves nothing. The
         // node's TFM is genuinely unknown, so the env fold must skip its
         // output (a Known verdict would locate — and could fold — a stale
-        // wrong-TFM DLL) and its evaluated output name (possibly TFM-gated
-        // itself) declines with it. The EDGES are kept: any TFM-dependent
+        // wrong-TFM DLL) and its evaluated output name and directory (both
+        // possibly TFM-gated themselves) decline with it. The EDGES are kept: any TFM-dependent
         // edge reads the unpinned `TargetFramework` and has already flipped
         // `project_references_uncertain` (emptying the compile walk's
         // `edges_of`), so an edge that survived is TFM-invariant.
@@ -941,6 +950,7 @@ fn resolve_node_uncached(
             edges: outer_edges,
             tfm: NodeTfm::Unresolved,
             output_name: None,
+            output_dir: OutputDirVerdict::Unknown,
         };
     }
     if let Some(body) = &outer.body_target_framework {
@@ -950,6 +960,7 @@ fn resolve_node_uncached(
             edges: outer_edges,
             tfm: NodeTfm::Known(body.clone()),
             output_name: evaluated_output_name(path, &outer),
+            output_dir: evaluated_output_dir(&outer),
         };
     }
     let declared = &outer.declared_tfms;
@@ -963,6 +974,7 @@ fn resolve_node_uncached(
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
+            output_dir: evaluated_output_dir(&outer),
         };
     }
     if let Some(seed) = seed_tfm {
@@ -978,6 +990,7 @@ fn resolve_node_uncached(
                     edges: outer_edges,
                     tfm: NodeTfm::Known(current.clone()),
                     output_name: evaluated_output_name(path, &outer),
+                    output_dir: evaluated_output_dir(&outer),
                 };
             }
             let mut map = extra_build_properties.clone();
@@ -989,6 +1002,7 @@ fn resolve_node_uncached(
                     // The name must come from the same (inner) evaluation as
                     // the edges: `<AssemblyName>` may itself be TFM-gated.
                     output_name: evaluated_output_name(path, &inner),
+                    output_dir: evaluated_output_dir(&inner),
                 },
                 None => NodeResult::resolved(Vec::new()),
             };
@@ -1000,16 +1014,17 @@ fn resolve_node_uncached(
             "restored producer TFM is no longer declared by the project; treating the node as unseeded"
         );
     }
-    // From here the node's TFM is unresolved, so its output-assembly name is
-    // too: `<AssemblyName>` may be TFM-gated, and no single evaluation's
-    // value is the one the real build would use. The env fold skips
-    // TFM-unresolved nodes anyway; a `None` name keeps the two verdicts
-    // consistent.
+    // From here the node's TFM is unresolved, so its output-assembly name and
+    // output directory are too: `<AssemblyName>` and `<OutDir>` may be
+    // TFM-gated, and no single evaluation's value is the one the real build
+    // would use. The env fold skips TFM-unresolved nodes anyway; declining
+    // both keeps the verdicts consistent.
     match purpose {
         GraphWalkPurpose::DeclaredStructure => NodeResult::Resolved {
             edges: outer_edges,
             tfm: NodeTfm::Unresolved,
             output_name: None,
+            output_dir: OutputDirVerdict::Unknown,
         },
         GraphWalkPurpose::CompileClosure => {
             // `outer` is the first-declared inner pass; re-evaluate under
@@ -1030,6 +1045,7 @@ fn resolve_node_uncached(
                         edges: Vec::new(),
                         tfm: NodeTfm::Unresolved,
                         output_name: None,
+                        output_dir: OutputDirVerdict::Unknown,
                     };
                 };
                 let mut branch_kinds: HashMap<PathBuf, EdgeKind> = HashMap::new();
@@ -1062,6 +1078,7 @@ fn resolve_node_uncached(
                 edges: surviving,
                 tfm: NodeTfm::Unresolved,
                 output_name: None,
+                output_dir: OutputDirVerdict::Unknown,
             }
         }
     }
@@ -2857,6 +2874,74 @@ mod tests {
             name_of(&gated),
             None,
             "an AssemblyName written under an untrusted gate must decline"
+        );
+    }
+
+    /// The walk carries each node's output *directory* alongside its name, so
+    /// the env fold looks where the producer actually builds. The three grades
+    /// license different things (see
+    /// [`crate::semantic`]'s output-DLL locator), so all three must arrive
+    /// distinguishable — collapsing the decline into `Default` would send the
+    /// fold to scan a `bin` tree the producer is not writing to.
+    #[test]
+    fn graph_nodes_carry_the_evaluated_output_dir() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/A.fsproj");
+        let plain = tmp.path().join("Plain/Plain.fsproj");
+        let redirected = tmp.path().join("Redirected/Redirected.fsproj");
+        let unpinnable = tmp.path().join("Unpinnable/Unpinnable.fsproj");
+        write_file(
+            &a,
+            &fsproj_with_refs(&[
+                "../Plain/Plain.fsproj",
+                "../Redirected/Redirected.fsproj",
+                "../Unpinnable/Unpinnable.fsproj",
+            ]),
+        );
+        write_file(&plain, &fsproj_with_refs(&[]));
+        write_file(
+            &redirected,
+            r#"<Project>
+              <PropertyGroup>
+                <OutDir>artifacts/</OutDir>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        // `$(SolutionDir)` is undefined outside a solution build — exactly the
+        // situation an editor is in — so this expands to a clean-looking but
+        // wrong project-relative `artifacts/`.
+        write_file(
+            &unpinnable,
+            r#"<Project>
+              <PropertyGroup>
+                <OutDir>$(SolutionDir)artifacts/</OutDir>
+              </PropertyGroup>
+            </Project>"#,
+        );
+
+        let ws = Workspace::default();
+        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let dir_of = |p: &Path| {
+            graph
+                .nodes
+                .iter()
+                .find(|n| n.path == lexically_normalize(p))
+                .unwrap_or_else(|| panic!("{} is in the graph", p.display()))
+                .output_dir
+                .clone()
+        };
+        assert_eq!(dir_of(&plain), OutputDirVerdict::Default);
+        assert_eq!(
+            dir_of(&redirected),
+            OutputDirVerdict::Declared {
+                path: "artifacts/".to_owned(),
+                configuration: None,
+            }
+        );
+        assert_eq!(
+            dir_of(&unpinnable),
+            OutputDirVerdict::Unknown,
+            "an OutDir leaning on an undefined property must decline"
         );
     }
 

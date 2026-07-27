@@ -31,6 +31,8 @@ use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use borzoi_msbuild::OutputDirVerdict;
+
 use crate::paths::lexically_normalize;
 
 /// How a referenced project file is classified, by extension (case-insensitive).
@@ -123,20 +125,23 @@ pub enum NodeResult {
         /// See [`ProjectNode::output_name`]; from the same evaluation the
         /// TFM verdict came from.
         output_name: Option<String>,
+        /// See [`ProjectNode::output_dir`]; likewise from that evaluation.
+        output_dir: OutputDirVerdict,
     },
     /// The project file does not exist on disk.
     NotFound,
 }
 
 impl NodeResult {
-    /// A [`NodeResult::Resolved`] with no TFM or output-name information —
-    /// the shape every resolver produced before TFM tracking; used by tests
-    /// and the non-F#-terminal short-circuit.
+    /// A [`NodeResult::Resolved`] carrying edges and nothing else: no TFM, no
+    /// output name, and no output-directory claim. Used by tests and the
+    /// non-F#-terminal short-circuit.
     pub fn resolved(edges: Vec<Edge>) -> NodeResult {
         NodeResult::Resolved {
             edges,
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
+            output_dir: OutputDirVerdict::Unknown,
         }
     }
 }
@@ -165,6 +170,22 @@ pub struct ProjectNode {
     /// `<AssemblyName>` may leave a stale stem-named DLL on disk, and
     /// folding it would fabricate.
     pub output_name: Option<String>,
+    /// Where the node's build writes its output, from the same evaluation as
+    /// [`Self::tfm`] ([`borzoi_msbuild::ParsedProject::output_dir`]).
+    ///
+    /// [`OutputDirVerdict::Default`] — the overwhelmingly common answer — is
+    /// the positive claim that the standard `bin/<config>/<tfm>/` layout
+    /// holds, so the env fold may scan it. A
+    /// [`OutputDirVerdict::Declared`] node redirects its output, and the
+    /// fold looks *there* instead.
+    ///
+    /// [`OutputDirVerdict::Unknown`] is the decline, and it is not the same
+    /// as "nothing was declared": it means the project wrote *something*
+    /// about where its output goes that this evaluation could not pin down.
+    /// A TFM-unresolved or unevaluated node declines here too, for the same
+    /// reason its [`Self::output_name`] does — `OutDir` may itself be
+    /// TFM-gated, so no single evaluation's value is the real build's.
+    pub output_dir: OutputDirVerdict,
 }
 
 /// A problem found while building the graph. Each carries the offending
@@ -278,6 +299,7 @@ impl Builder {
                 edges: references,
                 tfm,
                 output_name,
+                output_dir,
             } => {
                 let key = lexically_normalize(path);
                 self.visited.insert(key.clone());
@@ -288,6 +310,7 @@ impl Builder {
                     references: references.clone(),
                     tfm,
                     output_name,
+                    output_dir,
                 });
                 for edge in references {
                     match edge.kind {
@@ -360,6 +383,7 @@ impl Builder {
                         references: Vec::new(),
                         tfm: NodeTfm::NotEvaluated,
                         output_name: None,
+                        output_dir: OutputDirVerdict::Unknown,
                     });
                 }
             }
@@ -402,6 +426,7 @@ impl Builder {
                         edges: references,
                         tfm,
                         output_name,
+                        output_dir,
                     } => {
                         self.visited.insert(key.clone());
                         self.nodes.push(ProjectNode {
@@ -410,6 +435,7 @@ impl Builder {
                             references,
                             tfm,
                             output_name,
+                            output_dir,
                         });
                     }
                 }
