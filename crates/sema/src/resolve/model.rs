@@ -1971,9 +1971,19 @@ pub enum DeclineCause {
     /// The reading's namespace belongs to an assembly whose type abbreviations
     /// could not be decoded, so what it declares there is unknowable.
     UnknowableAbbreviationShadow,
-    /// A **project** entity owns the name at the winning priority and may
-    /// satisfy the whole path invisibly.
-    ProjectShadowed,
+    /// Something **occupies** the name at the winning priority and may satisfy
+    /// the whole path invisibly, so no lower reading may be applied over it.
+    ///
+    /// **Coarse on purpose, for now.** It is read off
+    /// `AssemblyPath::ProjectShadowed`, and that variant is overloaded: a
+    /// project entity owning the path is its namesake case, but an unchaseable
+    /// abbreviation target, an alias with a companion module, a tail on an
+    /// alias-owned surface, a cross-DLL rooting collision and an occupied
+    /// case-pattern head all reach it too. The verdict is identical in each —
+    /// the walk stops here — so the resolver is right not to distinguish them;
+    /// the *census* would be more useful if it did, which is a change to the
+    /// variant rather than to this mapping.
+    Occupied,
     /// The current module's own name qualifies the path, which FCS does not
     /// bind as a self-qualifier.
     SelfModuleShadowed,
@@ -2064,7 +2074,7 @@ impl DeclineCause {
         DeclineCause::AssemblyAutoOpenShadow,
         DeclineCause::ProjectAutoOpenShadow,
         DeclineCause::UnknowableAbbreviationShadow,
-        DeclineCause::ProjectShadowed,
+        DeclineCause::Occupied,
         DeclineCause::SelfModuleShadowed,
         DeclineCause::AbbreviationOpaque,
         DeclineCause::ContestedRooting,
@@ -2103,7 +2113,7 @@ impl DeclineCause {
             DeclineCause::AssemblyAutoOpenShadow => "assembly_auto_open_shadow",
             DeclineCause::ProjectAutoOpenShadow => "project_auto_open_shadow",
             DeclineCause::UnknowableAbbreviationShadow => "unknowable_abbreviation_shadow",
-            DeclineCause::ProjectShadowed => "project_shadowed",
+            DeclineCause::Occupied => "occupied",
             DeclineCause::SelfModuleShadowed => "self_module_shadowed",
             DeclineCause::AbbreviationOpaque => "abbreviation_opaque",
             DeclineCause::ContestedRooting => "contested_rooting",

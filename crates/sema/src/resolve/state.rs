@@ -296,7 +296,7 @@ impl<T> AssemblyPath<T> {
     /// cannot silently join the census without a cause of its own.
     pub(super) fn decline_cause(&self) -> Option<DeclineCause> {
         match self {
-            AssemblyPath::ProjectShadowed => Some(DeclineCause::ProjectShadowed),
+            AssemblyPath::ProjectShadowed => Some(DeclineCause::Occupied),
             AssemblyPath::SelfModuleShadowed => Some(DeclineCause::SelfModuleShadowed),
             AssemblyPath::AbbreviationOpaque => Some(DeclineCause::AbbreviationOpaque),
             AssemblyPath::ContestedRooting => Some(DeclineCause::ContestedRooting),

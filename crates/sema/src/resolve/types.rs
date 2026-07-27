@@ -1843,6 +1843,14 @@ impl<'a> Resolver<'a> {
                     AttrCandidate::Resolved(Resolution::Local(id))
                 }
             }
+            // Ahead of the refinements below: the walk already named the guard
+            // that declined, and every arm here would replace that specific
+            // cause with a broader attribute one. `attribute_candidate_unrulable`
+            // repeats `dropped_type_could_root_this_path`, so without this every
+            // dropped-TypeDef attribute decline would be reported as merely
+            // unrulable. The verdict is a deferral either way — only the census
+            // changes.
+            TypePathResolution::Deferred(site) => AttrCandidate::Deferred(site),
             _ if names
                 .last()
                 .is_some_and(|last| self.project_type_named(last)) =>
@@ -1892,7 +1900,6 @@ impl<'a> Resolver<'a> {
                 cause: DeclineCause::AttributeOpaqueLeaf,
                 tier,
             }),
-            TypePathResolution::Deferred(site) => AttrCandidate::Deferred(site),
             TypePathResolution::NoMatch => AttrCandidate::NoMatch,
         }
     }

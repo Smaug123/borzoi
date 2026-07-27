@@ -1024,7 +1024,7 @@ impl<'a> Resolver<'a> {
         let mut root = as_written_vetoes_opens.then(|| records(&[]));
         if matches!(root, Some(AssemblyPath::ProjectShadowed)) {
             return TieredResolution::ShadowDeferred(DeclineSite {
-                cause: DeclineCause::ProjectShadowed,
+                cause: DeclineCause::Occupied,
                 tier: DeclineTier::Root,
             });
         }
