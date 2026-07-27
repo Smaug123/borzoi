@@ -70,29 +70,52 @@ fn fsharp_core_enumerates_end_to_end() {
 }
 
 #[test]
-fn fsharp_core_methods_have_unknown_arg_group_count() {
-    // OV-6.1: FSharp.Core is an F# assembly (it carries a host F# signature
-    // pickle), so a curried `member x.M a b` is indistinguishable from a tupled
-    // `member x.M(a, b)` in its flattened MethodDef signatures.
-    // `enumerate_with_skips_impl` therefore blanks *every* method's
-    // `arg_group_count` to `None`, and the overload engine treats an unknown
-    // grouping as possibly curried. Assert the blanking reached the whole tree
-    // (nested types included). See `docs/completed/ov-6.1-curry-detection-plan.md`.
-    fn assert_all_none(entities: &[Entity]) {
+fn an_fsharp_methods_arg_group_count_is_the_pickle_s_or_unknown() {
+    // OV-6.1: FSharp.Core is an F# assembly, so a curried `member x.M a b` is
+    // indistinguishable from a tupled `member x.M(a, b)` in its flattened
+    // MethodDef signatures — `enumerate_with_skips_impl` blanks *every* method to
+    // `None`, and the overload engine treats an unknown grouping as possibly
+    // curried. The F# signature pickle *can* tell them apart, so the module-member
+    // merge restores the count for every val it claims: that is the refinement
+    // `docs/completed/ov-6.1-curry-detection-plan.md` left as a follow-up, and it
+    // is what lets a consumer split a parameterized active pattern's arguments.
+    //
+    // So the rule is: a claimed val carries the pickle's count; everything else
+    // stays unknown. A *member* is never claimed (the merge skips
+    // `member_info`), so instance members remain `None`.
+    let entities = load();
+
+    // Claimed module-level vals — the pickle's own argument groups.
+    let list_module = entity(
+        &entities,
+        &["Microsoft", "FSharp", "Collections"],
+        "ListModule",
+    );
+    let map = method_by_source(list_module, "map");
+    assert_eq!(
+        map.arg_group_count,
+        Some(2),
+        "`List.map mapping list` is two curried groups, which only the pickle knows"
+    );
+
+    // Unclaimed methods — every *member* of a type — stay unknown.
+    fn assert_members_unknown(entities: &[Entity]) {
         for e in entities {
             for m in &e.members {
-                if let Member::Method(m) = m {
+                if let Member::Method(m) = m
+                    && !m.is_static
+                {
                     assert_eq!(
                         m.arg_group_count, None,
-                        "F# method {}.{} should have arg_group_count == None",
+                        "F# instance member {}.{} is not a claimed val, so its grouping stays unknown",
                         e.name, m.name
                     );
                 }
             }
-            assert_all_none(&e.nested_types);
+            assert_members_unknown(&e.nested_types);
         }
     }
-    assert_all_none(&load());
+    assert_members_unknown(&entities);
 }
 
 #[test]

@@ -17,7 +17,7 @@
 //! devShell provides it.
 
 use borzoi_assembly::{
-    Ecma335Assembly, EcmaView, FSharpResource, ModuleMemberTarget, ResourceKind,
+    Ecma335Assembly, EcmaView, FSharpResource, Member, ModuleMemberTarget, ResourceKind,
     collect_module_member_targets, unpickle_signature,
 };
 
@@ -157,6 +157,50 @@ fn indexes_real_fsharp_core_operators_and_printf() {
 
 /// The two IL-shape facts a naive val read gets wrong, pinned on real
 /// FSharp.Core: a *value* binding pickles zero argument groups (fsc emits a
+/// The pickle's argument-group count reaches the **projected member**.
+///
+/// The IL projector blanks every method of an F# assembly to "unknown": a
+/// flattened parameter list cannot tell a curried `f a b` from a tupled
+/// `f (a, b)`. The pickle can, and the merge carries its answer — without which
+/// a consumer that must split curried arguments (a parameterized active
+/// pattern's parameters from its result) has nothing to split on.
+#[test]
+fn a_projected_fsharp_method_carries_the_pickles_argument_group_count() {
+    let dll = ensure_fsharp_core_dll();
+    let bytes = std::fs::read(&dll).expect("read FSharp.Core.dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse FSharp.Core.dll");
+    let entities = view.enumerate_type_defs().expect("enumerate FSharp.Core");
+
+    let group_count = |type_name: &str, method: &str| -> Option<usize> {
+        entities
+            .iter()
+            .find(|e| e.name == type_name)
+            .unwrap_or_else(|| panic!("FSharp.Core has {type_name}"))
+            .members
+            .iter()
+            .find_map(|m| match m {
+                Member::Method(mm) if mm.source_name.as_deref().unwrap_or(&mm.name) == method => {
+                    Some(mm.arg_group_count)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{type_name} has {method}"))
+    };
+
+    // Looked up by *source* name: fsc compiles `map` as `Map`.
+    //
+    // `List.map (mapping: 'T -> 'U) (list: 'T list)` — two curried groups, and
+    // two IL parameters. `List.length (list: 'T list)` — one of each. The IL
+    // signatures are what makes these indistinguishable in general: nothing in
+    // a flattened two-parameter list says whether it was `f a b` or `f (a, b)`,
+    // which is why the projector blanks the count and the pickle restores it.
+    assert_eq!(group_count("ListModule", "map"), Some(2));
+    assert_eq!(group_count("ListModule", "length"), Some(1));
+    // `Array.blit source sourceIndex target targetIndex count` — five groups,
+    // so the count is not merely "0, 1, or many".
+    assert_eq!(group_count("ArrayModule", "blit"), Some(5));
+}
+
 /// static property, not a MethodDef of the val's name), and measure-only
 /// genericity is erased from IL.
 #[test]

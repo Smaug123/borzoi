@@ -1288,6 +1288,16 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // Carry it so semantic-token classification can colour the latter a
                 // value rather than a function.
                 m.is_module_value_binding = matches!(v.arg_group_count, Some(0));
+                // …and the count itself. The IL projector blanks every method of
+                // an F# assembly to "unknown" (`Ecma335Assembly::enumerate_type_defs`)
+                // because a flattened parameter list cannot distinguish a curried
+                // `f a b` from a tupled `f (a, b)`. The pickle *can*: this is
+                // FCS's own `ValReprInfo`, the same value it computes the split
+                // from. Carrying it turns that unknown into the fact for every
+                // val the merge claimed — which is what lets a consumer split a
+                // parameterized active pattern's arguments, and lets the overload
+                // engine commit where it previously had to defer.
+                m.arg_group_count = v.arg_group_count;
                 let facts = &groups[&(name, shape)];
                 // Unanimous rename → the val's logical name; a conflicted
                 // group under-sets. The CLR `[Extension]`-attribute flag
