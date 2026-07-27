@@ -123,6 +123,8 @@ pub enum NodeResult {
         /// See [`ProjectNode::output_name`]; from the same evaluation the
         /// TFM verdict came from.
         output_name: Option<String>,
+        /// See [`ProjectNode::references_uncertain`].
+        references_uncertain: bool,
     },
     /// The project file does not exist on disk.
     NotFound,
@@ -137,6 +139,7 @@ impl NodeResult {
             edges,
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
+            references_uncertain: false,
         }
     }
 }
@@ -165,6 +168,20 @@ pub struct ProjectNode {
     /// `<AssemblyName>` may leave a stale stem-named DLL on disk, and
     /// folding it would fabricate.
     pub output_name: Option<String>,
+    /// Whether this node's `<ProjectReference>` list was **suppressed** rather
+    /// than empty: the evaluator could not trust it
+    /// ([`borzoi_msbuild::ParsedProject::project_references_uncertain`] — an
+    /// unmodelled `Update`/`Remove`, an untrusted gate, an undecided
+    /// `<Choose>`), so [`Self::references`] carries none of them.
+    ///
+    /// Load-bearing for the env fold's conservation, and the reason the
+    /// suppression is marked rather than left implicit: the edges are gone by
+    /// the time anything downstream runs, so an emptied list is
+    /// indistinguishable from a project that genuinely references nothing.
+    /// Without the mark, every one of those references is missing from the env
+    /// while the env still claims to be complete — and any of them could
+    /// declare a type that shadows a package or framework one.
+    pub references_uncertain: bool,
 }
 
 /// A problem found while building the graph. Each carries the offending
@@ -278,6 +295,7 @@ impl Builder {
                 edges: references,
                 tfm,
                 output_name,
+                references_uncertain,
             } => {
                 let key = lexically_normalize(path);
                 self.visited.insert(key.clone());
@@ -288,6 +306,7 @@ impl Builder {
                     references: references.clone(),
                     tfm,
                     output_name,
+                    references_uncertain,
                 });
                 for edge in references {
                     match edge.kind {
@@ -360,6 +379,7 @@ impl Builder {
                         references: Vec::new(),
                         tfm: NodeTfm::NotEvaluated,
                         output_name: None,
+                        references_uncertain: false,
                     });
                 }
             }
@@ -402,6 +422,7 @@ impl Builder {
                         edges: references,
                         tfm,
                         output_name,
+                        references_uncertain,
                     } => {
                         self.visited.insert(key.clone());
                         self.nodes.push(ProjectNode {
@@ -410,6 +431,7 @@ impl Builder {
                             references,
                             tfm,
                             output_name,
+                            references_uncertain,
                         });
                     }
                 }
