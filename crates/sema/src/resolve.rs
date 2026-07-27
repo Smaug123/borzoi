@@ -71,8 +71,9 @@ mod state;
 mod types;
 
 pub use model::{
-    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace,
-    ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
+    ItemId, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
+    ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{
@@ -1841,6 +1842,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
     }
@@ -1956,17 +1958,60 @@ impl<'a> Resolver<'a> {
         if !self.assemblies.identities_incomplete() {
             return;
         }
-        for res in self
+        // The census follows the seal. A sealed occurrence is a decline the
+        // resolver *made* — it had an answer and withdrew it — so leaving it
+        // unattributed would report the one mode where nothing assembly-rooted
+        // may be trusted as the mode where nothing declined. The seal is
+        // wholesale, so the cause is too.
+        let sealed = model::DeclineSite::pre_walk(model::DeclineCause::IncompleteAssemblies);
+        for (range, res) in self
             .resolutions
-            .values_mut()
-            .chain(self.attribute_resolutions.values_mut())
+            .iter_mut()
+            .chain(self.attribute_resolutions.iter_mut())
         {
+            let before = *res;
             *res = res.sealed_under_incomplete_projection();
+            if *res != before {
+                self.decline_sites.entry(*range).or_insert(sealed);
+            }
+        }
+    }
+
+    /// The census invariant the type path *can* guarantee, checked rather than
+    /// argued: every [`DeferredReason::ShadowableType`] carries a
+    /// [`model::DeclineSite`].
+    ///
+    /// That reason is produced by exactly one recording shell
+    /// (`resolve_type_path`) over exactly one total decision enum
+    /// (`TypePathResolution`, whose `Deferred` cannot be constructed without a
+    /// cause), so the coverage is structural and the assertion only has to
+    /// notice if that structure is ever broken — a second producer, or a shell
+    /// that forgets to record.
+    ///
+    /// Deliberately **not** extended to `QualifiedAccess` / `UnboundName`. Most
+    /// of those are dotted-path *tail* segments deferred because member
+    /// resolution is a later phase, not because any guard declined them, and
+    /// asserting a cause there would force one to be invented. Their
+    /// unattributed share is a number to watch on real corpora
+    /// (`borzoi-corpus-diff`), not an invariant.
+    ///
+    /// Debug-only: it walks the whole map, and a release LSP should not pay for
+    /// a diagnostic cross-check. Every test in the workspace runs it.
+    fn debug_assert_shadowable_types_are_attributed(&self) {
+        if cfg!(debug_assertions) {
+            for (range, res) in &self.resolutions {
+                debug_assert!(
+                    *res != Resolution::Deferred(DeferredReason::ShadowableType)
+                        || self.decline_sites.contains_key(range),
+                    "type-position deferral at {range:?} names no guard;                      a second producer of ShadowableType has appeared, or the                      recording shell stopped recording"
+                );
+            }
         }
     }
 
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
+        self.debug_assert_shadowable_types_are_attributed();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
@@ -1996,6 +2041,7 @@ impl<'a> Resolver<'a> {
             resolution_trace: model::ResolutionTrace {
                 opens: self.trace_opens,
             },
+            decline_sites: self.decline_sites,
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),
@@ -2006,6 +2052,18 @@ impl<'a> Resolver<'a> {
         let id = DefId::new(self.defs.len());
         self.defs.push(def);
         id
+    }
+
+    /// Record **why** the occurrence at `range` declined, for the census
+    /// ([`ResolvedFile::decline_site`](model::ResolvedFile::decline_site)).
+    ///
+    /// First writer wins. A decline is often reached through several guards in
+    /// sequence — the tiered walk declines, then a downstream fallback declines
+    /// the same head again — and the *earliest* one is the specific answer
+    /// while the later ones are the general shape of "and so we deferred".
+    /// Last-write-wins would replace every precise cause with the broadest one.
+    fn record_decline(&mut self, range: TextRange, site: model::DeclineSite) {
+        self.decline_sites.entry(range).or_insert(site);
     }
 
     fn record(&mut self, range: TextRange, res: Resolution) {
