@@ -1977,8 +1977,41 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The census invariant the type path *can* guarantee, checked rather than
+    /// argued: every [`DeferredReason::ShadowableType`] carries a
+    /// [`model::DeclineSite`].
+    ///
+    /// That reason is produced by exactly one recording shell
+    /// (`resolve_type_path`) over exactly one total decision enum
+    /// (`TypePathResolution`, whose `Deferred` cannot be constructed without a
+    /// cause), so the coverage is structural and the assertion only has to
+    /// notice if that structure is ever broken — a second producer, or a shell
+    /// that forgets to record.
+    ///
+    /// Deliberately **not** extended to `QualifiedAccess` / `UnboundName`. Most
+    /// of those are dotted-path *tail* segments deferred because member
+    /// resolution is a later phase, not because any guard declined them, and
+    /// asserting a cause there would force one to be invented. Their
+    /// unattributed share is a number to watch on real corpora
+    /// (`borzoi-corpus-diff`), not an invariant.
+    ///
+    /// Debug-only: it walks the whole map, and a release LSP should not pay for
+    /// a diagnostic cross-check. Every test in the workspace runs it.
+    fn debug_assert_shadowable_types_are_attributed(&self) {
+        if cfg!(debug_assertions) {
+            for (range, res) in &self.resolutions {
+                debug_assert!(
+                    *res != Resolution::Deferred(DeferredReason::ShadowableType)
+                        || self.decline_sites.contains_key(range),
+                    "type-position deferral at {range:?} names no guard;                      a second producer of ShadowableType has appeared, or the                      recording shell stopped recording"
+                );
+            }
+        }
+    }
+
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
+        self.debug_assert_shadowable_types_are_attributed();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,

@@ -2085,6 +2085,12 @@ impl<'a> Resolver<'a> {
                             first.text_range(),
                             Resolution::Deferred(DeferredReason::QualifiedAccess),
                         );
+                        // An unorderable contest between the head's two slots,
+                        // reached before the fallback that usually names it.
+                        self.record_decline(
+                            first.text_range(),
+                            DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
+                        );
                         return;
                     }
                 }
