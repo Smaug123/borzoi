@@ -387,12 +387,43 @@ impl<'a> Resolver<'a> {
     fn screen_block_local_shadows(&self, group: &mut AssemblyFoldGroup) {
         for surface in &mut group.surfaces {
             for entry in &mut surface.entries {
-                if self.own_type_simple_names.contains(&entry.name)
-                    || self.own_auto_open_value_names.contains(&entry.name)
-                {
+                if self.block_local_shadow(&entry.name) {
                     entry.target = OpenFoldTarget::Opaque;
                 }
             }
+        }
+    }
+
+    /// Whether this file declares `name` in one of the two ways
+    /// [`Self::screen_block_local_shadows`] screens for.
+    fn block_local_shadow(&self, name: &str) -> bool {
+        self.own_type_simple_names.contains(name) || self.own_auto_open_value_names.contains(name)
+    }
+
+    /// The [`Self::screen_block_local_shadows`] screen applied to entries
+    /// already pushed into the frame, from `from` onwards — the project half's,
+    /// which [`Self::open_project_namespace_values`] writes directly rather than
+    /// through an [`AssemblyFoldGroup`].
+    ///
+    /// The project half is screened for the same reason the assembly halves are
+    /// and by the same names: an earlier file's `[<AutoOpen>]` module value at
+    /// this namespace is folded at position 0 too, so a later local type takes
+    /// its slot just as it takes an assembly member's. `Deferred` here is what
+    /// `Opaque` is there — in scope, shadowing by position, naming nothing.
+    fn demote_block_local_shadowed_entries(&mut self, from: usize) {
+        let names: Vec<String> = self.module_frame().entries[from..]
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        let shadowed: Vec<usize> = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| self.block_local_shadow(n))
+            .map(|(i, _)| from + i)
+            .collect();
+        for i in shadowed {
+            self.module_frame().entries[i].resolution =
+                Resolution::Deferred(DeferredReason::UnboundName);
         }
     }
 
@@ -980,7 +1011,9 @@ impl<'a> Resolver<'a> {
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
         // so that on a shared name the project entry wins by position.
         if project_ns {
+            let before = self.module_frame().entries.len();
             self.open_project_namespace_values(&namespace, 0);
+            self.demote_block_local_shadowed_entries(before);
         }
         // The project module half's opaque-marker bump: hidden names no
         // signature screen bounds must stale this fold's own assembly entries

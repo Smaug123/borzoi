@@ -447,6 +447,33 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        // The **project** half needs the same screen: an earlier file's
+        // auto-open module value is folded at position 0 too, so a later local
+        // type takes its slot exactly as it takes an assembly member's.
+        container: Container::Namespace("Demo.PjFold.AutoMod"),
+        decls: &[PJ_AUTOMOD],
+        label: "later-decl / a later type shadows the project half's auto-open value",
+        body: &["type pjAutoSolo() =", "    member _.Marker = 1"],
+        probe: "pjAutoSolo",
+        position: Position::Expr,
+    },
+    Cell {
+        // A union case inside a same-block `[<AutoOpen>]` module is a
+        // value-space binder no `Pat` walk reaches, so the screen's pre-scan
+        // must collect it separately.
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a later [<AutoOpen>] module's union case out-ranks the implicit member",
+        body: &[
+            "[<AutoOpen>]",
+            "module LocalCases =",
+            "    type LocalU =",
+            "        | Tag",
+        ],
+        probe: "Tag",
+        position: Position::Expr,
+    },
+    Cell {
         container: Container::Namespace("Demo.Auto"),
         decls: &[],
         label: "later-decl / a later [<AutoOpen>] module's value out-ranks the implicit member",
