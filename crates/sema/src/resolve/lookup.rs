@@ -2366,24 +2366,35 @@ impl<'a> Resolver<'a> {
                     AssemblyPath::Resolved {
                         payload: root_recs, ..
                     } => {
+                        // The *tier* of the first reading that differs, not
+                        // merely that one does: this is a ladder fact, and a
+                        // census that flattened it could not see the
+                        // conflicting reading move between tiers.
                         let higher_reading_differs =
-                            self.assembly_prefixes_by_priority().any(|(_, prefix)| {
-                                match self.assembly_path_records(prefix, segments) {
-                                    AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    // A higher abbreviation-defer / self-module /
-                                    // contested-rooting reading is uncertain, so the
-                                    // root binding is unsafe.
-                                    AssemblyPath::ProjectShadowed
-                                    | AssemblyPath::SelfModuleShadowed
-                                    | AssemblyPath::AbbreviationOpaque
-                                    | AssemblyPath::ContestedRooting => true,
-                                    AssemblyPath::NoMatch => false,
-                                }
-                            });
-                        if higher_reading_differs {
+                            self.assembly_prefixes_by_priority()
+                                .find_map(|(tier, prefix)| {
+                                    let differs = match self.assembly_path_records(prefix, segments)
+                                    {
+                                        AssemblyPath::Resolved { payload, .. } => {
+                                            payload != root_recs
+                                        }
+                                        // A higher abbreviation-defer / self-module /
+                                        // contested-rooting reading is uncertain, so the
+                                        // root binding is unsafe.
+                                        AssemblyPath::ProjectShadowed
+                                        | AssemblyPath::SelfModuleShadowed
+                                        | AssemblyPath::AbbreviationOpaque
+                                        | AssemblyPath::ContestedRooting => true,
+                                        AssemblyPath::NoMatch => false,
+                                    };
+                                    differs.then_some(tier)
+                                });
+                        if let Some(tier) = higher_reading_differs {
                             // a higher-precedence reading would win, but is unsafe → defer
-                            declined_at =
-                                Some(DeclineSite::pre_walk(DeclineCause::UnmodelledOpenRoot));
+                            declined_at = Some(DeclineSite {
+                                cause: DeclineCause::UnmodelledOpenRoot,
+                                tier,
+                            });
                             None
                         } else {
                             Some(root_recs)
@@ -3451,7 +3462,11 @@ impl<'a> Resolver<'a> {
         // as ``global`` here and is unaffected). Follow-up: real rooted lookup,
         // threading rooting through these helpers as the module path does in
         // `decls.rs`.
-        if segs.first().is_some_and(|t| t.text() == "global") {
+        if let Some(head) = segs.first().filter(|t| t.text() == "global") {
+            self.record_decline(
+                head.text_range(),
+                DeclineSite::pre_walk(DeclineCause::GlobalMarkerHead),
+            );
             return;
         }
         if let [type_seg, case_seg] = segs
