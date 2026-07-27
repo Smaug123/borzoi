@@ -3474,6 +3474,23 @@ impl AssemblyEnv {
             if authoritative_module && name.starts_with('|') {
                 match active_pattern_banana(&name) {
                     Some((tags, shape)) => {
+                        // The banana name carries totality and the case list; the
+                        // *arity* comes from the val's argument-group count, which
+                        // the F# signature pickle supplies (`MethodLike::arg_group_count`
+                        // — FCS's own `ValReprInfo`, not the flattened IL parameter
+                        // list, which cannot tell `f a b` from `f (a, b)`). The last
+                        // group is the value being matched, so the recognizer's
+                        // parameter count is one fewer. Absent — a val the merge did
+                        // not claim, or a non-F# projection — the arity stays
+                        // unknown and only the arity-free total single-case split
+                        // applies, as before.
+                        let arity = idx
+                            .and_then(|idx| match self.member_at(handle, idx) {
+                                Member::Method(m) => m.arg_group_count,
+                                _ => None,
+                            })
+                            .and_then(|groups| groups.checked_sub(1));
+                        let shape = ActivePatternShape { arity, ..shape };
                         // The tags carry the recognizer shape. Whether that shape
                         // may actually drive a use-site split is decided at the
                         // split site, where the full scope is known: a same-named

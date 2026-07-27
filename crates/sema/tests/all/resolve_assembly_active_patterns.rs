@@ -15,7 +15,8 @@
 //!
 //! - `Scale factor v` → `factor` = the outer value (a parameter), `v` = the
 //!   result binder (fsi: `factor` stays the outer 999);
-//! - `arity` is `None` for every assembly recognizer (the flattened IL parameter
+//! - `arity` comes from the F# signature pickle's argument-group count when the
+//!   projection carries one, and is `None` otherwise (the flattened IL parameter
 //!   count over-counts under tupling), so a **partial** recognizer keeps today's
 //!   fabricate-a-binder behaviour — a sound decline, the 3c residue.
 
@@ -148,14 +149,17 @@ fn total_single_case_nullary_assembly_pattern_binds_its_result() {
 }
 
 #[test]
-fn partial_assembly_pattern_is_not_given_the_total_single_case_split() {
-    // `(|DivBy|_|) d n` is PARTIAL single-case. Its arity is underivable from
-    // metadata (the flattened IL param count over-counts under tupling), so
-    // `arity == None` and the split declines to today's behaviour: an applied
-    // `DivBy divisor q` fabricates a binder for `divisor` — it must NOT be given
-    // the total single-case frontAndBack (which would resolve `divisor` to the
-    // outer value). A sound decline (the 3c residue), pinned so a mis-attached
-    // `total: true` on a partial recognizer would fail here.
+fn partial_assembly_pattern_splits_on_its_pickled_arity() {
+    // `(|DivBy|_|) d n` is PARTIAL single-case with one parameter. The flattened
+    // IL signature cannot say so — it cannot tell `f a b` from `f (a, b)` — but
+    // the F# signature pickle can, and the projection carries its argument-group
+    // count, so the recognizer arrives with `arity == Some(1)`.
+    //
+    // `DivBy divisor q` is then `k = p + 1`: `divisor` is a **parameter**,
+    // evaluated in the enclosing scope (FCS's `frontAndBack` branch), and only
+    // `q` binds. Before the pickled arity reached here, `divisor` fabricated a
+    // binder and the arm body's `divisor` resolved to *it* rather than to the
+    // outer `let`.
     let env = fixture_env();
     let src = "module Client\n\
                open Demo.ApShape.Recognizers\n\
@@ -163,9 +167,8 @@ fn partial_assembly_pattern_is_not_given_the_total_single_case_split() {
                let h n = match n with DivBy divisor q -> divisor + q | _ -> 0\n";
     let rf = resolve(src, &env);
 
-    // `divisor` (occurrence 1 — the pattern arg) fabricates a binder (today's
-    // behaviour), so the arm body `divisor` (occurrence 2) resolves to it, NOT to
-    // the outer `let divisor` (occurrence 0).
+    // The arm body's `divisor` (occurrence 2) reaches the **outer** binding
+    // (occurrence 0), not the pattern argument (occurrence 1).
     let body_use = nth(src, "divisor", 2);
     let res = rf
         .resolution_at(body_use)
@@ -175,10 +178,21 @@ fn partial_assembly_pattern_is_not_given_the_total_single_case_split() {
         .expect("`divisor` names a same-file def");
     assert_eq!(
         def.range,
-        nth(src, "divisor", 1),
-        "a partial assembly recognizer keeps today's fabricate-a-binder for `divisor`"
+        nth(src, "divisor", 0),
+        "the parameter argument is an expression use of the outer `let divisor`"
     );
-    assert_eq!(def.kind, DefKind::PatternLocal);
+    assert!(
+        matches!(def.kind, DefKind::Value { .. }),
+        "the outer binding is a value, got {:?}",
+        def.kind
+    );
+
+    // …and the result sub-pattern still binds.
+    let q_body = nth(src, "q", 1);
+    let q_res = rf.resolution_at(q_body).expect("`q` body use resolves");
+    let q_def = rf.resolved_def(q_res).expect("`q` names a same-file def");
+    assert_eq!(q_def.range, nth(src, "q", 0));
+    assert_eq!(q_def.kind, DefKind::PatternLocal);
 }
 
 #[test]

@@ -1108,6 +1108,22 @@ fn val_facts(v: &ModuleMemberVal) -> ValFacts {
         instance_extension: v.is_extension && v.is_instance,
         fsharp_extension: v.is_extension && v.is_member,
         definition_range: v.definition_range.clone(),
+        arg_group_count: callable_arg_group_count(v),
+    }
+}
+
+/// The val's argument groups as a *caller* counts them.
+///
+/// `ValReprInfo.arg_repr` counts the groups the **definition** has, which for an
+/// instance augmentation includes the receiver — `type String with member
+/// x.GenericExt y` is two groups there and one at the call site. `arg_group_count`
+/// is consumed as the callable count (the overload engine asks "could this be
+/// curried?" of the argument list a call writes), so drop the receiver group.
+fn callable_arg_group_count(v: &ModuleMemberVal) -> Option<usize> {
+    match (v.arg_group_count, v.is_instance) {
+        (Some(groups), true) => groups.checked_sub(1),
+        (count, false) => count,
+        (None, true) => None,
     }
 }
 
@@ -1117,6 +1133,12 @@ struct ValFacts {
     instance_extension: bool,
     fsharp_extension: bool,
     definition_range: Option<FsharpSourceRange>,
+    /// See [`callable_arg_group_count`]. A *group* fact like the rest: which val
+    /// claimed which MethodDef is unprovable inside a claim group, and a
+    /// same-compiled-name group can legitimately hold a curried val beside a
+    /// tupled one, so a disagreeing group under-sets to "unknown" rather than
+    /// handing one method the other's grouping.
+    arg_group_count: Option<usize>,
 }
 
 /// Per-claim-group facts, `None` when the group's vals disagree. A group is
@@ -1133,6 +1155,7 @@ struct GroupFacts {
     extension: Option<bool>,
     fsharp_extension: Option<bool>,
     definition_range: Option<Option<FsharpSourceRange>>,
+    arg_group_count: Option<Option<usize>>,
 }
 
 /// Rebuild `ecma`'s member list from the module's pickled vals — the Slice C
@@ -1177,12 +1200,16 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 if g.definition_range.as_ref() != Some(&facts.definition_range) {
                     g.definition_range = None;
                 }
+                if g.arg_group_count.as_ref() != Some(&facts.arg_group_count) {
+                    g.arg_group_count = None;
+                }
             })
             .or_insert(GroupFacts {
                 source_name: Some(facts.source_name),
                 extension: Some(facts.instance_extension),
                 fsharp_extension: Some(facts.fsharp_extension),
                 definition_range: Some(facts.definition_range),
+                arg_group_count: Some(facts.arg_group_count),
             });
     }
 
@@ -1288,7 +1315,17 @@ fn rebuild_module_member_list(ecma: &mut Entity, target: &ModuleMemberTarget) {
                 // Carry it so semantic-token classification can colour the latter a
                 // value rather than a function.
                 m.is_module_value_binding = matches!(v.arg_group_count, Some(0));
+                // …and the count itself. The IL projector blanks every method of
+                // an F# assembly to "unknown" (`Ecma335Assembly::enumerate_type_defs`)
+                // because a flattened parameter list cannot distinguish a curried
+                // `f a b` from a tupled `f (a, b)`. The pickle *can*: this is
+                // FCS's own `ValReprInfo`, the same value it computes the split
+                // from. Carrying it turns that unknown into the fact for every
+                // val the merge claimed — which is what lets a consumer split a
+                // parameterized active pattern's arguments, and lets the overload
+                // engine commit where it previously had to defer.
                 let facts = &groups[&(name, shape)];
+                m.arg_group_count = facts.arg_group_count.flatten();
                 // Unanimous rename → the val's logical name; a conflicted
                 // group under-sets. The CLR `[Extension]`-attribute flag
                 // `project_method` read is never *cleared* — the pickle bit

@@ -1,6 +1,10 @@
 # Shape-aware resolution of active-pattern arguments in pattern position
 
-> **Status:** design + implementation plan. Not started. Closes the pre-existing
+> **Status:** Stages 1, 2, 3a and 3b delivered. What remains is 3c (declining the
+> shape-unknown residue) and the *assembly auto-open* path: an `[<AutoOpen>]`
+> module's recognizers reach a consumer through the auto-open plumbing, which
+> does not carry `ap_shape`, so their arguments still fabricate binders
+> (`WoofWare.PawPrint`'s `ConcreteGenericArray` sites are this). Closes the pre-existing
 > limitation documented at `crates/sema/src/resolve/types.rs:286-295` (the
 > `define_active_pattern` doc-comment) and flagged as codex finding 3a during the
 > `stage-1-sema-classification` review — see memory
@@ -424,10 +428,16 @@ first, shrinking the unknown-shape residue, and only the remainder is declined.
   same-file via `self.items[..].def`, cross-file via
   `ProjectItems::active_pattern_shape_of`. **Unknown shape still keeps today's
   fabricate-a-binder behaviour — no declines in 3a.**
-- **3b — assembly side.** Derive assembly AP shape from metadata (mangled
-  `|A|B|` name → cases + totality; signature arity → `arity = params − 1`) and
-  attach it to the assembly fold's `opened_case` entries, so `(|KeyValue|)` /
-  `(|Failure|_|)` split too.
+- **3b — assembly side (delivered).** Assembly AP shape comes from metadata: the
+  mangled `|A|B|` name gives the cases and totality, and the **F# signature
+  pickle's argument-group count** gives `arity = groups − 1`. The count is the
+  pickle's, not the flattened IL parameter list's — that cannot tell `f a b`
+  from `f (a, b)`, which is why the projector blanks it and why an IL-derived
+  arity would have been a wrong commit. Attached to the fold's `opened_case`
+  entries, so a partial recognizer splits too.
+  **Not yet**: a recognizer reached through an `[<AutoOpen>]` module arrives by
+  the auto-open path, which carries no `ap_shape`, so its arguments still
+  fabricate binders.
 - **3c — degrade the residue.** *Then* decline the name arguments of a
   still-unknown-shape AP-certain head, pushing an `ap_case_barrier`-style shadow
   barrier for a declined maybe-result binder so an arm-body use does not wrongly
