@@ -19,6 +19,13 @@
 //! The cases that matter here are the ones where the *evaluated string alone*
 //! would mislead a consumer, since that is the whole reason the verdict exists
 //! rather than a `properties.get("OutDir")` read at the call site.
+//!
+//! These cases resolve **no SDK**, so every write they see is user-authored.
+//! That is the axis they cannot test: under a resolved SDK the chain writes
+//! `OutDir` itself, and only a user-authored write is a redirect. The
+//! verdicts in that configuration are pinned by
+//! `borzoi`'s `output_dir_under_real_sdk` group, which runs the LSP's own
+//! evaluation path against the host's install.
 
 use std::collections::HashMap;
 

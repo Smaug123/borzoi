@@ -34,12 +34,24 @@
 //!   than reporting something read.
 //!
 //! Nothing else is normalised: a wrong *directory* must still fail.
+//!
+//! **Both sides resolve the real SDK, and our side carries the LSP's global
+//! properties.** Neither is optional detail. The SDK chain writes `OutDir`
+//! itself, and it only computes an `OutputPath` for that write to read once
+//! `Configuration` is defined — so a walk without a resolver, or without the
+//! `Configuration`/`Platform` globals the LSP always injects
+//! (`workspace::default_build_properties`), is answering a different question
+//! from the one asked at runtime. An agreement reached there says nothing
+//! about the configuration that ships. MSBuild needs no globals to match: the
+//! SDK defaults `Configuration` to `Debug` on its side, and the assertions
+//! read MSBuild's own evaluated `Configuration` back rather than assuming it.
 
 mod common;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
-use borzoi_msbuild::{OutputDirVerdict, parse_fsproj_with_imports};
+use borzoi_msbuild::{OutputDirVerdict, parse_fsproj_with_imports, resolve_sdk, workloads};
 use common::Oracle;
 use tempfile::TempDir;
 
@@ -80,6 +92,11 @@ const BODIES: &[&str] = &[
     // Shapes the property pass refuses outright.
     "<OutDir>@(Thing)/out/</OutDir>",
     "<OutDir>%(Meta)/out/</OutDir>",
+    // The SDK's own `<OutDir Condition="'$(OutDir)' == ''">$(OutputPath)</OutDir>`
+    // means a user write carrying the *same* condition never fires. Whichever
+    // side of it we record, the answer must still be MSBuild's.
+    "<OutDir Condition=\"'$(OutDir)' == ''\">artifacts/</OutDir>",
+    "<OutDir Condition=\"'$(OutDir)' != ''\">artifacts/</OutDir>",
 ];
 
 /// The two sides as *directories*: separators unified, and at most one
@@ -90,9 +107,34 @@ fn as_directory(path: &str) -> String {
     unified.strip_suffix('/').unwrap_or(&unified).to_owned()
 }
 
+/// The workload context of this process, so our SDK resolution consults the
+/// same user-local roots the oracle child's dotnet host does. Mirrors
+/// `fsproj_packageref_diff`'s helper of the same name.
+fn workload_env_from_process() -> (Option<PathBuf>, bool) {
+    let non_empty = |var: &str| std::env::var_os(var).filter(|value| !value.is_empty());
+    let user_dotnet_root = non_empty("DOTNET_CLI_HOME")
+        .or_else(|| non_empty("HOME"))
+        .map(|home| PathBuf::from(home).join(".dotnet"));
+    let overrides_present = std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_ROOTS").is_some()
+        || std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_IGNORE_DEFAULT_ROOTS").is_some()
+        || non_empty("DOTNETSDK_WORKLOAD_PACK_ROOTS").is_some();
+    (user_dotnet_root, overrides_present)
+}
+
 #[test]
 fn declared_output_dirs_agree_with_msbuild() {
     let mut oracle = Oracle::spawn();
+    let dotnet_root = std::env::var_os("DOTNET_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("DOTNET_ROOT is not set; run under nix develop"));
+    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let workload_env = workloads::WorkloadEnvironment {
+        user_dotnet_root: user_dotnet_root.as_deref(),
+        overrides_present,
+        // The fixture tempdirs have no global.json above them.
+        global_json_pins_workload_set: false,
+    };
+    let sdk = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
     let names: Vec<String> = ["OutDir", "Configuration"]
         .iter()
         .map(|s| s.to_string())
@@ -111,13 +153,16 @@ fn declared_output_dirs_agree_with_msbuild() {
         let path = tmp.path().join("P.fsproj");
         std::fs::write(&path, &xml).expect("write project");
 
-        let empty = HashMap::new();
+        let globals = HashMap::from([
+            ("Configuration".to_owned(), "Debug".to_owned()),
+            ("Platform".to_owned(), "AnyCPU".to_owned()),
+        ]);
         let parsed = parse_fsproj_with_imports(
             &xml,
             &path,
-            &empty,
+            &globals,
             &common::oracle_environment(),
-            None,
+            Some(&sdk),
             None,
         )
         .expect("well-formed");

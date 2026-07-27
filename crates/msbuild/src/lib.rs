@@ -257,8 +257,8 @@ impl ItemMetadataValue {
     pub const ABSENT: ItemMetadataValue = ItemMetadataValue::Known(None);
 }
 
-/// Where a project's build output lands, as far as the props/targets chain
-/// this walker follows can say — the basis for locating a referenced
+/// Whether a project **redirects** its build output away from MSBuild's
+/// default layout, and if so to where — the basis for locating a referenced
 /// project's assembly.
 ///
 /// `OutDir` is the property that names the actual output directory (probed
@@ -267,17 +267,26 @@ impl ItemMetadataValue {
 /// does not touch it). A declared value is therefore a *complete* answer,
 /// not a base to append to.
 ///
+/// Only a **user-authored** write is a redirect. The SDK writes
+/// `<OutDir Condition="'$(OutDir)' == ''">$(OutputPath)</OutDir>` itself
+/// while assembling the default, so under a resolved SDK every project has a
+/// write on `OutDir`; and that value is one this walker cannot finish
+/// computing, since the framework segment is appended in a targets file
+/// outside the chain it follows. Reading it as a declaration would commit to
+/// a `bin/Debug/`-shaped partial answer. Its `== ''` condition means it never
+/// fires over a user value, so ignoring it costs no coverage.
+///
 /// The verdict carries trust semantics for the same reason
 /// [`ParsedProject::target_name`] does: a consumer that looks in the wrong
 /// directory reports a built project as unbuilt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputDirVerdict {
-    /// No `OutDir` write, so MSBuild's default layout applies
+    /// No user-authored redirect, so MSBuild's default layout applies
     /// (`bin/$(Configuration)/$(TargetFramework)/`, the tail segment
     /// dropped when `AppendTargetFrameworkToOutputPath` is false).
     Default,
-    /// A declared output directory, verbatim as evaluated — relative to the
-    /// project directory unless rooted.
+    /// A user-declared output directory, verbatim as evaluated — relative to
+    /// the project directory unless rooted.
     ///
     /// `configuration` is `Some(cfg)` when the declared value was written in
     /// terms of `$(Configuration)` and the evaluated `cfg` occurs exactly
@@ -290,12 +299,18 @@ pub enum OutputDirVerdict {
         path: String,
         configuration: Option<String>,
     },
-    /// No claim: untrusted provenance, a write this walker refused to
-    /// evaluate, a value leaning on a property never defined here (which
-    /// expands to empty and would otherwise look like a clean relative
-    /// path — `$(SolutionDir)artifacts/` becoming `artifacts/`), or a
+    /// No claim — but note what this is *not*: a project that declares
+    /// nothing lands in [`Self::Default`], so arriving here means the project
+    /// said something about where it builds that could not be pinned down.
+    /// Untrusted provenance, a write this walker refused to evaluate, a value
+    /// leaning on a property never defined here (which expands to empty and
+    /// would otherwise look like a clean relative path —
+    /// `$(SolutionDir)artifacts/` becoming `artifacts/`), a
     /// `$(Configuration)` whose evaluated value cannot be located
-    /// unambiguously in the result.
+    /// unambiguously in the result, or a user-authored `OutputPath` /
+    /// `AppendTargetFrameworkToOutputPath` (from which MSBuild derives
+    /// `OutDir` in a targets file, appending the framework — a computation
+    /// this walker does not reproduce).
     Unknown,
 }
 

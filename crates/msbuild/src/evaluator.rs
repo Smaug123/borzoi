@@ -2392,12 +2392,24 @@ impl<'r> State<'r> {
     /// Called from every exit of the property-write path — including the
     /// refusals, since a write we could not evaluate must not read as "never
     /// written" (the default layout) at the end.
+    ///
+    /// **Only a user-authored write counts**, for all three properties. The
+    /// SDK writes `<OutDir Condition="'$(OutDir)' == ''">$(OutputPath)</OutDir>`
+    /// itself while assembling the default layout, and that write is not a
+    /// redirect — it is the default. Worse, its value is one this walk cannot
+    /// finish computing: the framework segment is appended in a targets file
+    /// outside the chain, so the SDK's `OutDir` reads as a
+    /// `bin\Debug\`-shaped *partial* answer that would be committed to as if
+    /// it were the whole one. Its own `== ''` condition means it never fires
+    /// over a user value, so ignoring it costs nothing.
     fn record_out_dir_write(&mut self, name: &str, write: OutDirWrite) {
+        if self.in_sdk_subtree {
+            return;
+        }
         if name.eq_ignore_ascii_case("OutDir") {
             self.out_dir_write = write;
-        } else if !self.in_sdk_subtree
-            && (name.eq_ignore_ascii_case("OutputPath")
-                || name.eq_ignore_ascii_case("AppendTargetFrameworkToOutputPath"))
+        } else if name.eq_ignore_ascii_case("OutputPath")
+            || name.eq_ignore_ascii_case("AppendTargetFrameworkToOutputPath")
         {
             self.output_path_redirected_by_user = true;
         }
