@@ -1904,6 +1904,226 @@ impl Resolution {
     }
 }
 
+/// **Which guard** declined a name use — one variant per branch that already
+/// exists in the two assembly precedence walks, named after the predicate that
+/// guards it.
+///
+/// [`DeferredReason`] says what *kind* of decline a consumer is looking at, for
+/// a consumer deciding what to tell a user. This says which of the resolver's
+/// many guards produced it, for a consumer deciding whether a change moved the
+/// right ones. `decide_type_path` alone has a dozen distinct `Deferred`
+/// branches; without this they are one indistinguishable outcome, and the only
+/// way to price a change to the precedence ladder is to disable one guard at a
+/// time and re-run a whole-project differential.
+///
+/// The enumeration is kept **total by the compiler**, not by discipline:
+/// `TypePathResolution::Deferred` carries one, so a decline site added later
+/// cannot compile without naming its cause. That is what makes the census
+/// trustworthy as the resolver grows.
+///
+/// Purely diagnostic — see [`ResolvedFile::decline_site`]. Nothing in the
+/// resolver reads a cause back to make a decision, and a `Resolution` is
+/// identical whether or not a cause was recorded beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclineCause {
+    /// A same-file `[<AutoOpen>]` module opened a type of this name into scope,
+    /// with no later same-container `type` outranking it.
+    SameFileAutoOpenType,
+    /// A single-segment name inside an active `rec` block, where a
+    /// forward-declared project type may not be in `type_defs` yet.
+    RecursiveModuleActive,
+    /// A dotted path whose head names a module declared anywhere in the
+    /// enclosing `rec` block — it may descend into a forward-declared nested
+    /// module.
+    RecursiveModuleHead,
+    /// An opaque / unmodelled `open` is in scope and could supply a shadowing
+    /// type we do not model.
+    OpaqueOpen,
+    /// The path descends into a project **nested** module, whose own type of
+    /// that name would win and which we do not enumerate.
+    DescendsIntoNestedModule,
+    /// A **dropped TypeDef** somewhere the walk would look could be the type
+    /// FCS binds (a path-scoped, pre-walk gate rather than a per-tier veto).
+    DroppedTypeCouldRoot,
+    /// A manifest auto-open surface is uncertain *name-blind*: the projection is
+    /// incomplete across a whole namespace, so no tier is safe to prefer.
+    ManifestSurfaceUncertain,
+    /// A manifest auto-open surface declares the head at the written position,
+    /// and no reading out-ranking that surface resolved the path.
+    ManifestSurfaceContest,
+    /// A manifest auto-open surface holds the head only at a *different* arity.
+    /// FCS's arity preference is a fallback rather than a filter, so with no
+    /// trustworthy exact-arity leaf the surface's generic may be what it binds.
+    ManifestSurfaceArityFallback,
+    /// The winning reading's leaf is an **authoritative** module, which can
+    /// never be a type — FCS errors on the annotation and reports no use.
+    AuthoritativeModuleLeaf,
+    /// No reading matched at the written arity, but the name has an occupant at
+    /// another one, which FCS binds (with an arity error) rather than treating
+    /// the name as absent.
+    WrongArityOccupant,
+    /// An in-scope assembly `[<AutoOpen>]` module declares a nested type or
+    /// module of exactly the head's name.
+    AssemblyAutoOpenShadow,
+    /// A project `[<AutoOpen>]` module in the reading could own the written
+    /// path, and sema does not enumerate its types.
+    ProjectAutoOpenShadow,
+    /// The reading's namespace belongs to an assembly whose type abbreviations
+    /// could not be decoded, so what it declares there is unknowable.
+    UnknowableAbbreviationShadow,
+    /// A **project** entity owns the name at the winning priority and may
+    /// satisfy the whole path invisibly.
+    ProjectShadowed,
+    /// The current module's own name qualifies the path, which FCS does not
+    /// bind as a self-qualifier.
+    SelfModuleShadowed,
+    /// The reading lands on a type-abbreviation marker, which we never resolve
+    /// through.
+    AbbreviationOpaque,
+    /// Several references contest the rooting of this path and none is
+    /// authoritative.
+    ContestedRooting,
+    /// A type binding evicted the value of this name from scope, so the
+    /// assembly tiers are unsafe for it.
+    ValueEvicted,
+    /// An `unmodelled_open_active` open is in scope and a higher-priority
+    /// reading differs from — or shadows — the as-written root, so the root
+    /// binding is unsafe.
+    UnmodelledOpenRoot,
+}
+
+impl DeclineCause {
+    /// Every variant, for a census that must emit a count per cause **including
+    /// the zeros**. A consumer that collected only the causes it observed would
+    /// mint a different metric set each run, which is the sparse-map failure
+    /// `docs/continuous-measurements.md` names; iterating this cannot.
+    pub const ALL: &'static [DeclineCause] = &[
+        DeclineCause::SameFileAutoOpenType,
+        DeclineCause::RecursiveModuleActive,
+        DeclineCause::RecursiveModuleHead,
+        DeclineCause::OpaqueOpen,
+        DeclineCause::DescendsIntoNestedModule,
+        DeclineCause::DroppedTypeCouldRoot,
+        DeclineCause::ManifestSurfaceUncertain,
+        DeclineCause::ManifestSurfaceContest,
+        DeclineCause::ManifestSurfaceArityFallback,
+        DeclineCause::AuthoritativeModuleLeaf,
+        DeclineCause::WrongArityOccupant,
+        DeclineCause::AssemblyAutoOpenShadow,
+        DeclineCause::ProjectAutoOpenShadow,
+        DeclineCause::UnknowableAbbreviationShadow,
+        DeclineCause::ProjectShadowed,
+        DeclineCause::SelfModuleShadowed,
+        DeclineCause::AbbreviationOpaque,
+        DeclineCause::ContestedRooting,
+        DeclineCause::ValueEvicted,
+        DeclineCause::UnmodelledOpenRoot,
+    ];
+
+    /// A stable snake-case label, for a census key that must mean the same
+    /// thing in every run of a series.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeclineCause::SameFileAutoOpenType => "same_file_auto_open_type",
+            DeclineCause::RecursiveModuleActive => "recursive_module_active",
+            DeclineCause::RecursiveModuleHead => "recursive_module_head",
+            DeclineCause::OpaqueOpen => "opaque_open",
+            DeclineCause::DescendsIntoNestedModule => "descends_into_nested_module",
+            DeclineCause::DroppedTypeCouldRoot => "dropped_type_could_root",
+            DeclineCause::ManifestSurfaceUncertain => "manifest_surface_uncertain",
+            DeclineCause::ManifestSurfaceContest => "manifest_surface_contest",
+            DeclineCause::ManifestSurfaceArityFallback => "manifest_surface_arity_fallback",
+            DeclineCause::AuthoritativeModuleLeaf => "authoritative_module_leaf",
+            DeclineCause::WrongArityOccupant => "wrong_arity_occupant",
+            DeclineCause::AssemblyAutoOpenShadow => "assembly_auto_open_shadow",
+            DeclineCause::ProjectAutoOpenShadow => "project_auto_open_shadow",
+            DeclineCause::UnknowableAbbreviationShadow => "unknowable_abbreviation_shadow",
+            DeclineCause::ProjectShadowed => "project_shadowed",
+            DeclineCause::SelfModuleShadowed => "self_module_shadowed",
+            DeclineCause::AbbreviationOpaque => "abbreviation_opaque",
+            DeclineCause::ContestedRooting => "contested_rooting",
+            DeclineCause::ValueEvicted => "value_evicted",
+            DeclineCause::UnmodelledOpenRoot => "unmodelled_open_root",
+        }
+    }
+}
+
+/// **Where in the referenced-assembly precedence ladder** a decline fired — the
+/// tier of the reading being considered when the guard spoke, in strict
+/// precedence order.
+///
+/// A cause without its tier cannot say what a change to the ladder would do to
+/// it, which is the whole question a reorder asks. The ordering is the walk's
+/// own: [`Self::PreWalk`] guards run before any reading is tried, then explicit
+/// source `open`s, the implicit ones (`FSharp.Core`'s seed and namespace-shaped
+/// manifest auto-opens), the enclosing namespace, and finally the root /
+/// as-written reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclineTier {
+    /// The guard runs before the precedence walk starts, so no reading is in
+    /// play and no reordering of the ladder can move it.
+    PreWalk,
+    /// A reading through an **explicit source `open`**.
+    ExplicitOpen,
+    /// A reading through an **implicit** open — `FSharp.Core`'s seed, or a
+    /// namespace-shaped `[<assembly: AutoOpen>]`.
+    ImplicitOpen,
+    /// A reading through the **current enclosing namespace**.
+    EnclosingNamespace,
+    /// The **root / as-written** reading (the empty prefix).
+    Root,
+    /// The walk ran to completion and every tier declined, so no single tier
+    /// owns the decline.
+    WholeWalk,
+}
+
+impl DeclineTier {
+    /// Every variant — see [`DeclineCause::ALL`] for why a census needs this
+    /// rather than the tiers it happened to observe.
+    pub const ALL: &'static [DeclineTier] = &[
+        DeclineTier::PreWalk,
+        DeclineTier::ExplicitOpen,
+        DeclineTier::ImplicitOpen,
+        DeclineTier::EnclosingNamespace,
+        DeclineTier::Root,
+        DeclineTier::WholeWalk,
+    ];
+
+    /// A stable snake-case label, for a census key that must mean the same
+    /// thing in every run of a series.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeclineTier::PreWalk => "pre_walk",
+            DeclineTier::ExplicitOpen => "explicit_open",
+            DeclineTier::ImplicitOpen => "implicit_open",
+            DeclineTier::EnclosingNamespace => "enclosing_namespace",
+            DeclineTier::Root => "root",
+            DeclineTier::WholeWalk => "whole_walk",
+        }
+    }
+}
+
+/// One recorded decline: the guard that declined, and the ladder position it
+/// spoke from. See [`ResolvedFile::decline_site`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclineSite {
+    /// Which guard declined.
+    pub cause: DeclineCause,
+    /// Where in the precedence ladder it spoke from.
+    pub tier: DeclineTier,
+}
+
+impl DeclineSite {
+    /// A decline from a guard that runs before the precedence walk, so no
+    /// reading is in play.
+    pub(super) const fn pre_walk(cause: DeclineCause) -> DeclineSite {
+        DeclineSite {
+            cause,
+            tier: DeclineTier::PreWalk,
+        }
+    }
+}
+
 /// The ways an `open` declaration **perturbs later name resolution** — the "why
 /// a later name deferred" fact the [`ResolutionTrace`] exposes. Named for its
 /// main constituents, the opacity flags, but it also carries the generation
@@ -2351,6 +2571,18 @@ pub struct ResolvedFile {
     /// not perturb the `incremental ≡ batch` value-equality differential. Read
     /// through [`Self::resolution_trace`].
     pub(super) resolution_trace: ResolutionTrace,
+    /// The **decline census**: which guard declined each declined occurrence,
+    /// and the ladder tier it spoke from, keyed by the occurrence's source range
+    /// exactly as [`Self::resolutions`] is. Read through
+    /// [`Self::decline_site`].
+    ///
+    /// Purely diagnostic, on the same terms as [`Self::resolution_trace`]: no
+    /// cross-file fold or use-site resolver reads it, so it is excluded from
+    /// [`Self::same_export_contribution`]; and it is deterministic from source,
+    /// so it does not perturb the `incremental ≡ batch` value-equality
+    /// differential. It is the *per-token* half the per-open
+    /// [`ResolutionTrace`] cannot supply.
+    pub(super) decline_sites: HashMap<TextRange, DeclineSite>,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
@@ -2525,6 +2757,7 @@ impl ResolvedFile {
             active_pattern_shape: HashMap::new(),
             diagnostics: Vec::new(),
             resolution_trace: ResolutionTrace::default(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
             sig_exports,
@@ -2620,6 +2853,30 @@ impl ResolvedFile {
     /// to judge; see [`ResolutionTrace`]).
     pub fn resolution_trace(&self) -> &ResolutionTrace {
         &self.resolution_trace
+    }
+
+    /// Which guard declined the occurrence at `range`, and the ladder tier it
+    /// spoke from — the per-token complement of [`Self::resolution_trace`]'s
+    /// per-open view, which can say only that *some* open in the file perturbs
+    /// resolution and leaves the correlation to the caller.
+    ///
+    /// `None` means no guard declined here: the occurrence resolved, or nothing
+    /// in the model resolves *or shadows* it (the "no shadow possible" signal a
+    /// consumer reads from an unrecorded name). A declined occurrence whose
+    /// range has no site is a census gap, not a category — see
+    /// [`DeclineCause`], whose totality the type system enforces at the decline
+    /// sites themselves.
+    ///
+    /// Purely diagnostic: nothing in the resolver reads a site back, and the
+    /// [`Resolution`] at `range` is what it would be were no census kept.
+    pub fn decline_site(&self, range: TextRange) -> Option<DeclineSite> {
+        self.decline_sites.get(&range).copied()
+    }
+
+    /// Every recorded decline, in arbitrary order — for a census that counts
+    /// causes over a whole file or corpus rather than asking about one range.
+    pub fn decline_sites(&self) -> impl Iterator<Item = (TextRange, DeclineSite)> + '_ {
+        self.decline_sites.iter().map(|(&r, &s)| (r, s))
     }
 
     /// The type the attribute written at `range` resolved to, if the resolver

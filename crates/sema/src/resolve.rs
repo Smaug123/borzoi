@@ -71,8 +71,9 @@ mod state;
 mod types;
 
 pub use model::{
-    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace,
-    ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
+    ItemId, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
+    ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{
@@ -1841,6 +1842,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
     }
@@ -1996,6 +1998,7 @@ impl<'a> Resolver<'a> {
             resolution_trace: model::ResolutionTrace {
                 opens: self.trace_opens,
             },
+            decline_sites: self.decline_sites,
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),

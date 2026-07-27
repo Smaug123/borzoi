@@ -11,7 +11,9 @@ use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFold
 use crate::def::{DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
+use super::model::{
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -2350,9 +2352,14 @@ impl<'a> Resolver<'a> {
             // Sub.Calc.Zero()` is `Demo.Sub.Calc.Zero` via the explicit open —
             // neither the root `Sub.Calc.Zero`. (The root prefix walks too and
             // self-compares equal — a no-op.)
+            // The census site for whichever guard declines below, recorded at
+            // the head — the segment a reading contests. Diagnostic only; it
+            // never feeds back into `resolved`.
+            let mut declined_at: Option<DeclineSite> = None;
             let resolved = if value_evicted {
                 // The assembly tiers are type-side too — the evicting type
                 // shadows them the same way (see the M20t/M20u note above).
+                declined_at = Some(DeclineSite::pre_walk(DeclineCause::ValueEvicted));
                 None
             } else if self.unmodelled_open_active {
                 match self.assembly_path_records(&[], segments) {
@@ -2360,7 +2367,7 @@ impl<'a> Resolver<'a> {
                         payload: root_recs, ..
                     } => {
                         let higher_reading_differs =
-                            self.assembly_prefixes_by_priority().any(|prefix| {
+                            self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                                 match self.assembly_path_records(prefix, segments) {
                                     AssemblyPath::Resolved { payload, .. } => payload != root_recs,
                                     // A higher abbreviation-defer / self-module /
@@ -2374,7 +2381,10 @@ impl<'a> Resolver<'a> {
                                 }
                             });
                         if higher_reading_differs {
-                            None // a higher-precedence reading would win, but is unsafe → defer
+                            // a higher-precedence reading would win, but is unsafe → defer
+                            declined_at =
+                                Some(DeclineSite::pre_walk(DeclineCause::UnmodelledOpenRoot));
+                            None
                         } else {
                             Some(root_recs)
                         }
@@ -2383,11 +2393,20 @@ impl<'a> Resolver<'a> {
                     // open in scope could supply the current module's own name
                     // (which FCS does not bind as a self-qualifier), so — unlike the
                     // opens-modelled `else` arm — we cannot safely resolve it.
-                    AssemblyPath::ProjectShadowed
+                    // A no-match records nothing: the path resolves nowhere, so
+                    // the open in scope is not what declined it. The other four
+                    // do, at the root tier — the only reading this branch tried.
+                    declining @ (AssemblyPath::ProjectShadowed
                     | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
-                    | AssemblyPath::ContestedRooting
-                    | AssemblyPath::NoMatch => None,
+                    | AssemblyPath::ContestedRooting) => {
+                        declined_at = declining.decline_cause().map(|cause| DeclineSite {
+                            cause,
+                            tier: DeclineTier::Root,
+                        });
+                        None
+                    }
+                    AssemblyPath::NoMatch => None,
                 }
             } else {
                 // Value/member path: a project-bound head (nested module, local,
@@ -2401,9 +2420,16 @@ impl<'a> Resolver<'a> {
                     |_| ShadowVeto::None,
                 ) {
                     TieredResolution::Resolved(recs) => Some(recs),
-                    TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                    TieredResolution::ShadowDeferred(site) => {
+                        declined_at = Some(site);
+                        None
+                    }
+                    TieredResolution::NoMatch => None,
                 }
             };
+            if let Some(site) = declined_at {
+                self.decline_sites.insert(first.text_range(), site);
+            }
             if let Some(recs) = resolved {
                 self.apply(recs);
                 return;
@@ -2694,7 +2720,7 @@ impl<'a> Resolver<'a> {
             }
         };
         screened(written)
-            || self.assembly_prefixes_by_priority().any(|prefix| {
+            || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 let full: Vec<String> = prefix
                     .iter()
                     .cloned()
@@ -3523,7 +3549,7 @@ impl<'a> Resolver<'a> {
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
-        self.explicit_open_reading_prefixes().any(|prefix| {
+        self.explicit_open_reading_prefixes().any(|(_, prefix)| {
             !self
                 .assemblies
                 .public_entities_named(prefix, type_name)
@@ -3641,12 +3667,12 @@ impl<'a> Resolver<'a> {
                 shadow_at,
             ) {
                 TieredResolution::Resolved(recs) => Some(recs),
-                TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                TieredResolution::ShadowDeferred(_) | TieredResolution::NoMatch => None,
             };
         }
         match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
             TieredResolution::Resolved(reading) => Some(reading),
-            TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+            TieredResolution::ShadowDeferred(_) | TieredResolution::NoMatch => None,
         }
     }
 

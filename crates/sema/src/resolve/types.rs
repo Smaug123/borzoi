@@ -17,7 +17,8 @@ use crate::def::{Def, DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, Resolution, SlotClass,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportedItem,
+    ItemId, Resolution, SlotClass,
 };
 use super::state::{
     ActivePatternShape, MemberEntry, Resolver, ScopeEntry, ShadowVeto, TieredResolution,
@@ -51,7 +52,15 @@ pub(super) enum TypePathResolution {
     /// unmodelled `open`, a project shadow, an in-scope auto-open type, a
     /// forward `rec` declaration, an abbreviation marker, a nested-module
     /// descent). The recording shell defers as shadowable.
-    Deferred,
+    ///
+    /// The payload is **which** of those it was, and the ladder tier it spoke
+    /// from — the decline census
+    /// ([`ResolvedFile::decline_site`](super::model::ResolvedFile::decline_site)).
+    /// Carrying it here rather than recording it at each guard is what keeps
+    /// the census total: a decline site added later cannot compile without
+    /// naming its cause. Diagnostic only — every caller branches on the
+    /// variant, never on the site.
+    Deferred(DeclineSite),
     /// Nothing in the model resolves *or shadows* this path — the recording
     /// shell records nothing, the signal a consumer reads as "no shadow
     /// possible" (see [`Resolver::defer_shadowable_type`]).
@@ -1242,7 +1251,7 @@ impl<'a> Resolver<'a> {
             // the shadowable marker so a primitive-alias consumer knows not to
             // type it; a multi-segment path records nothing (never a primitive
             // alias) — [`Self::defer_shadowable_type`] makes that distinction.
-            TypePathResolution::Deferred => self.defer_shadowable_type(segs),
+            TypePathResolution::Deferred(site) => self.defer_shadowable_type(segs, site),
             // Genuine no-match: nothing in our model resolves *or shadows* this
             // name at any priority. Record nothing — the signal a consumer
             // reads as "no shadow possible" (see [`Self::defer_shadowable_type`]).
@@ -1295,7 +1304,9 @@ impl<'a> Resolver<'a> {
                 .lookup_type_def(only)
                 .is_some_and(|id| u32::from(self.defs[id.index()].range.start()) > import_pos);
             if !later_in_file_type {
-                return TypePathResolution::Deferred;
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::SameFileAutoOpenType,
+                ));
             }
         }
 
@@ -1317,7 +1328,9 @@ impl<'a> Resolver<'a> {
         // this must defer unconditionally rather than participate in the
         // tiered walk's priority ordering.
         if names.len() == 1 && self.recursive_module_active {
-            return TypePathResolution::Deferred;
+            return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                DeclineCause::RecursiveModuleActive,
+            ));
         }
 
         // The multi-segment counterpart: a path whose head names a module
@@ -1330,7 +1343,9 @@ impl<'a> Resolver<'a> {
             && self.recursive_module_active
             && self.rec_module_names.contains(&names[0])
         {
-            return TypePathResolution::Deferred;
+            return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                DeclineCause::RecursiveModuleHead,
+            ));
         }
 
         // An opaque / unmodelled open could supply a *type* we do not model that
@@ -1343,7 +1358,7 @@ impl<'a> Resolver<'a> {
         // the former), yet an opened project module with unenumerable contents can
         // still supply a shadowing type.
         if self.unmodelled_open_active || self.opaque_dotted_open || self.opaque_value_open {
-            return TypePathResolution::Deferred;
+            return TypePathResolution::Deferred(DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
         }
 
         // A path that descends **into a project nested module** (`Sub.Calc` where
@@ -1355,14 +1370,18 @@ impl<'a> Resolver<'a> {
         // A *top-level* module is deliberately **not** vetoed: it merges with the
         // assembly namespace (F# falls through), so the type resolves there.
         if self.type_path_descends_into_nested_module(names) {
-            return TypePathResolution::Deferred;
+            return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                DeclineCause::DescendsIntoNestedModule,
+            ));
         }
 
         // A **dropped TypeDef** anywhere the walk would look may be the very
         // type FCS binds. Path-scoped and pre-walk, not a per-tier
         // [`ShadowVeto`] — see [`Self::dropped_type_could_root_this_path`].
         if self.dropped_type_could_root_this_path(names) {
-            return TypePathResolution::Deferred;
+            return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                DeclineCause::DroppedTypeCouldRoot,
+            ));
         }
 
         // Resolve through the shared precedence walk (opens → enclosing namespace
@@ -1427,7 +1446,10 @@ impl<'a> Resolver<'a> {
             if reading.leaf.is_some_and(|leaf| {
                 self.assemblies.entity_class(leaf) == Some(crate::SemanticClass::Module)
             }) {
-                return TypePathResolution::Deferred;
+                return TypePathResolution::Deferred(DeclineSite {
+                    cause: DeclineCause::AuthoritativeModuleLeaf,
+                    tier: DeclineTier::WholeWalk,
+                });
             }
             TypePathResolution::Assembly {
                 idx_recs: reading.idx_recs,
@@ -1471,7 +1493,9 @@ impl<'a> Resolver<'a> {
             })
         {
             if surface_is_uncertain {
-                return TypePathResolution::Deferred;
+                return TypePathResolution::Deferred(DeclineSite::pre_walk(
+                    DeclineCause::ManifestSurfaceUncertain,
+                ));
             }
             return match self.resolve_assembly_path_over(
                 self.prefixes_outranking_the_manifest_surface(),
@@ -1480,7 +1504,13 @@ impl<'a> Resolver<'a> {
                 shadow_at,
             ) {
                 TieredResolution::Resolved(reading) if reading.leaf.is_some() => commit(reading),
-                _ => TypePathResolution::Deferred,
+                // The site the walk itself reached, when it reached one; a
+                // partial or a no-match is the surface's contest instead.
+                TieredResolution::ShadowDeferred(site) => TypePathResolution::Deferred(site),
+                _ => TypePathResolution::Deferred(DeclineSite {
+                    cause: DeclineCause::ManifestSurfaceContest,
+                    tier: DeclineTier::WholeWalk,
+                }),
             };
         }
 
@@ -1522,12 +1552,19 @@ impl<'a> Resolver<'a> {
                             leaf: reading.leaf,
                         }
                     }
-                    _ => TypePathResolution::Deferred,
+                    _ => TypePathResolution::Deferred(DeclineSite {
+                        cause: DeclineCause::ManifestSurfaceArityFallback,
+                        tier: DeclineTier::WholeWalk,
+                    }),
                 },
+                TieredResolution::ShadowDeferred(site) => TypePathResolution::Deferred(site),
                 // Even a genuine no-match defers: FCS binds the surface's
                 // generic (with an arity error), so "no shadow possible"
                 // would be the wrong signal.
-                _ => TypePathResolution::Deferred,
+                TieredResolution::NoMatch => TypePathResolution::Deferred(DeclineSite {
+                    cause: DeclineCause::ManifestSurfaceArityFallback,
+                    tier: DeclineTier::WholeWalk,
+                }),
             };
         }
 
@@ -1536,7 +1573,7 @@ impl<'a> Resolver<'a> {
             // A project entity shadows the name at winning priority, or an
             // unmodelled type shadow won the walk at a higher-or-equal
             // priority than any real match.
-            TieredResolution::ShadowDeferred => TypePathResolution::Deferred,
+            TieredResolution::ShadowDeferred(site) => TypePathResolution::Deferred(site),
             // No exact-arity match anywhere. That is only a *genuine* no-match
             // if the name has no occupant at another arity either: FCS's arity
             // preference is a fallback, not a filter, so with nothing at the
@@ -1546,7 +1583,10 @@ impl<'a> Resolver<'a> {
             // bind. The manifest-surface half of this is handled above; this is
             // the same question asked of the ordinary walk prefixes.
             TieredResolution::NoMatch if self.name_occupies_another_arity(names) => {
-                TypePathResolution::Deferred
+                TypePathResolution::Deferred(DeclineSite {
+                    cause: DeclineCause::WrongArityOccupant,
+                    tier: DeclineTier::WholeWalk,
+                })
             }
             // Genuine no-match: nothing in our model resolves *or shadows* this
             // name at any priority.
@@ -1568,7 +1608,7 @@ impl<'a> Resolver<'a> {
             return false;
         };
         self.assembly_prefixes_by_priority()
-            .any(|prefix| self.assemblies.declares_type_at_any_arity(prefix, only))
+            .any(|(_, prefix)| self.assemblies.declares_type_at_any_arity(prefix, only))
     }
 
     /// EX-3 §2(d) (`docs/extension-scope-enumeration-plan.md`): resolve the
@@ -1788,7 +1828,7 @@ impl<'a> Resolver<'a> {
             // but our partial evidence is not that proof — the unmodelled tail
             // could resolve for FCS. No claim.
             TypePathResolution::Assembly { leaf: None, .. } => AttrCandidate::Deferred,
-            TypePathResolution::Deferred => AttrCandidate::Deferred,
+            TypePathResolution::Deferred(_) => AttrCandidate::Deferred,
             TypePathResolution::NoMatch => AttrCandidate::NoMatch,
         }
     }
@@ -1846,7 +1886,7 @@ impl<'a> Resolver<'a> {
         if self.dropped_type_could_root_this_path(names) {
             return true;
         }
-        self.assembly_prefixes_by_priority().any(|prefix| {
+        self.assembly_prefixes_by_priority().any(|(_, prefix)| {
             let mut full = prefix.to_vec();
             full.extend(names.iter().cloned());
             (prefix.len()..full.len()).any(|k| {
@@ -1914,12 +1954,20 @@ impl<'a> Resolver<'a> {
     /// and only then types a primitive-alias annotation. Only single-segment
     /// names are marked — a dotted path's tail is never a primitive alias, and
     /// nothing reads a multi-segment marker. See [`DeferredReason::ShadowableType`].
-    fn defer_shadowable_type(&mut self, segs: &[SyntaxToken]) {
+    fn defer_shadowable_type(&mut self, segs: &[SyntaxToken], site: DeclineSite) {
         if let [only] = segs {
             self.record(
                 only.text_range(),
                 Resolution::Deferred(DeferredReason::ShadowableType),
             );
+        }
+        // The census records **every** decline, including the multi-segment
+        // ones that record no `Resolution` — a dotted path is where the
+        // precedence ladder does most of its work, so a census blind to it
+        // could not price a change to that ladder at all. Keyed at the head,
+        // which is the segment a reading contests.
+        if let Some(head) = segs.first() {
+            self.decline_sites.insert(head.text_range(), site);
         }
     }
 
@@ -2120,13 +2168,13 @@ impl<'a> Resolver<'a> {
             .assemblies
             .auto_open_modules_in_namespace_shadow_type_named(prefix, head)
         {
-            return ShadowVeto::Preemptive;
+            return ShadowVeto::Vetoed(DeclineCause::AssemblyAutoOpenShadow);
         }
         if self.project_shadow_at(prefix, names) {
-            return ShadowVeto::Preemptive;
+            return ShadowVeto::Vetoed(DeclineCause::ProjectAutoOpenShadow);
         }
         if names.len() == 1 && self.unknowable_abbreviation_shadow_at(prefix) {
-            return ShadowVeto::Preemptive;
+            return ShadowVeto::Vetoed(DeclineCause::UnknowableAbbreviationShadow);
         }
         ShadowVeto::None
     }
@@ -2181,7 +2229,7 @@ impl<'a> Resolver<'a> {
     /// cache) the projector drops **one** type, so the deferrals this can cause
     /// are vanishingly rare in practice.
     pub(super) fn dropped_type_could_root_this_path(&self, names: &[String]) -> bool {
-        self.assembly_prefixes_by_priority().any(|prefix| {
+        self.assembly_prefixes_by_priority().any(|(_, prefix)| {
             let mut full = prefix.to_vec();
             full.extend(names.iter().cloned());
             self.assemblies
