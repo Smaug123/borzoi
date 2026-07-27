@@ -404,6 +404,24 @@ impl<'a> Resolver<'a> {
         self.own_auto_open_container || self.own_type_simple_names.contains(name)
     }
 
+    /// Whether a project `[<AutoOpen>]` module directly in `namespace` — this
+    /// file's or an earlier Compile-order one's — holds a **nested module**.
+    ///
+    /// Such a submodule is enterable by its short name (FCS enters every nested
+    /// module of a folded container into `eModulesAndNamespaces`), so `open
+    /// Inner` reaches it and its values out-rank the auto-open module's own. We
+    /// lend no project shortening prefix (task #30), so that `open` does nothing
+    /// on our side — which makes the outer value's entry unsafe to commit.
+    fn project_auto_open_here_nests_a_module(&self, namespace: &[String]) -> bool {
+        let mut auto_opens = self.auto_open_modules_directly_in(namespace);
+        auto_opens.extend(self.preceding.auto_open_modules_directly_in(namespace));
+        auto_opens.iter().any(|ao| {
+            let under = |p: &Vec<String>| p.len() > ao.len() && p.starts_with(ao.as_slice());
+            self.nested_module_exports.iter().any(under)
+                || self.preceding.nested_module_paths.iter().any(under)
+        })
+    }
+
     /// The [`Self::screen_block_local_shadows`] screen applied to entries
     /// already pushed into the frame, from `from` onwards — the project half's,
     /// which [`Self::open_project_namespace_values`] writes directly rather than
@@ -1032,6 +1050,25 @@ impl<'a> Resolver<'a> {
             let before = self.module_frame().entries.len();
             self.open_project_namespace_values(&namespace, 0);
             self.demote_block_local_shadowed_entries(before);
+            // A project `[<AutoOpen>]` module here that holds a **nested module**
+            // can be shortened through: FCS enters that submodule under its short
+            // name, so `open Inner` reaches it and its `target` out-ranks the
+            // auto-open module's own `target` this fold just pushed. The project
+            // half lends no shortening prefix (task #30), so the `open` does
+            // nothing on our side and the outer entry would stand — a wrong
+            // target. Nothing here can weigh the two, so the entries decline.
+            //
+            // Gated on a nested module actually existing: an auto-open module of
+            // plain values shortens to nothing and keeps its entries. That is
+            // what makes this affordable — the `[<AutoOpen>]` modules real
+            // projects put in their own namespace are overwhelmingly flat.
+            if self.project_auto_open_here_nests_a_module(&namespace) {
+                let count = self.module_frame().entries.len();
+                for i in before..count {
+                    self.module_frame().entries[i].resolution =
+                        Resolution::Deferred(DeferredReason::UnboundName);
+                }
+            }
         }
         // The project module half's opaque-marker bump: hidden names no
         // signature screen bounds must stale this fold's own assembly entries

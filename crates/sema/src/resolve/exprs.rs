@@ -942,7 +942,7 @@ impl<'a> Resolver<'a> {
     /// The `[<AutoOpen>]` modules declared *directly* in `container`, from this
     /// file's own pre-scan. The in-file twin of
     /// `ProjectItems::auto_open_modules_directly_in`.
-    fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
+    pub(super) fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
         self.auto_open_module_paths
             .iter()
             .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))

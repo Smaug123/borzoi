@@ -2516,3 +2516,34 @@ fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
         "the block's own `[<AutoOpen>] module LocalAuto` out-ranks the assembly's; got {res:?}"
     );
 }
+
+#[test]
+fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value() {
+    // A project `[<AutoOpen>]` module in the namespace holds a nested module,
+    // which FCS enters under its short name — so `open Inner` reaches it and its
+    // `shortTarget` out-ranks `ProjectAuto`'s own, which the implicit fold
+    // pushed at position 0. We lend no project shortening prefix (task #30), so
+    // the `open` does nothing on our side and the outer value would stand: a
+    // wrong target. The fold declines instead.
+    let env = fixture_env();
+    let src0 = "namespace Demo.Auto\n\n[<AutoOpen>]\nmodule ProjectAuto =\n    \
+                let shortTarget () = 1\n    module Inner =\n        let shortTarget () = 2\n";
+    let src1 = "namespace Demo.Auto\n\nmodule Client =\n    open Inner\n    \
+                let t () = shortTarget ()\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("shortTarget").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "shortTarget".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    let outer = proj
+        .file(0)
+        .resolution_at(at(src0, "shortTarget"))
+        .and_then(|r| proj.item_def(r));
+    assert!(
+        res.and_then(|r| proj.item_def(r)) != outer || outer.is_none(),
+        "the outer `ProjectAuto.shortTarget` must not win over the shortened \
+         `Inner.shortTarget`; got {res:?}"
+    );
+}
