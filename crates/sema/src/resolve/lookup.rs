@@ -3431,6 +3431,14 @@ impl<'a> Resolver<'a> {
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
         if self.opaque_value_open || self.opaque_dotted_open || self.unmodelled_open_active {
+            // A definite decline by a named gate, so the census says so — the
+            // pattern head is where a reading would root.
+            if let Some(head) = segs.first() {
+                self.record_decline(
+                    head.text_range(),
+                    DeclineSite::pre_walk(DeclineCause::OpaqueOpen),
+                );
+            }
             return;
         }
         // A `global.`-rooted head (now parseable — see `pat.rs`) is the

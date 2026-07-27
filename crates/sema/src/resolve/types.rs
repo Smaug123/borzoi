@@ -47,6 +47,14 @@ pub(super) enum TypePathResolution {
     Assembly {
         idx_recs: Vec<(usize, Resolution)>,
         leaf: Option<EntityHandle>,
+        /// The ladder tier the winning reading came from. A caller that
+        /// post-filters this verdict into a decline needs it: the walk resolved
+        /// at a *specific* tier, and recording an exhausted walk instead would
+        /// hide the winner moving between tiers. Carried here rather than
+        /// recomputed per post-filter, so a post-filter added later cannot drop
+        /// it — the class of misattribution this closes was found twice by
+        /// review, one site at a time.
+        tier: DeclineTier,
     },
     /// Resolution deferred — a shadow is possible but unpinnable (an opaque /
     /// unmodelled `open`, a project shadow, an in-scope auto-open type, a
@@ -1464,6 +1472,7 @@ impl<'a> Resolver<'a> {
                 TypePathResolution::Assembly {
                     idx_recs: reading.idx_recs,
                     leaf: reading.leaf,
+                    tier,
                 }
             };
 
@@ -1573,6 +1582,7 @@ impl<'a> Resolver<'a> {
                         TypePathResolution::Assembly {
                             idx_recs: reading.idx_recs,
                             leaf: reading.leaf,
+                            tier,
                         }
                     }
                     // The tier this reading won at: it resolved and was then
@@ -1874,12 +1884,12 @@ impl<'a> Resolver<'a> {
             // the whole path. FCS would fail this candidate and try the next,
             // but our partial evidence is not that proof — the unmodelled tail
             // could resolve for FCS. No claim.
-            TypePathResolution::Assembly { leaf: None, .. } => {
-                AttrCandidate::Deferred(DeclineSite {
-                    cause: DeclineCause::AttributeOpaqueLeaf,
-                    tier: DeclineTier::WholeWalk,
-                })
-            }
+            TypePathResolution::Assembly {
+                leaf: None, tier, ..
+            } => AttrCandidate::Deferred(DeclineSite {
+                cause: DeclineCause::AttributeOpaqueLeaf,
+                tier,
+            }),
             TypePathResolution::Deferred(site) => AttrCandidate::Deferred(site),
             TypePathResolution::NoMatch => AttrCandidate::NoMatch,
         }
