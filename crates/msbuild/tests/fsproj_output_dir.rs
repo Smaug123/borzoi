@@ -57,17 +57,17 @@ fn no_write_is_the_default_layout() {
     );
 }
 
-/// `Default` is a **positive claim** — "run your default-layout scan" — so a
-/// project that redirected its output without ever naming `OutDir` must not
-/// land there. MSBuild derives `OutDir` from a user `OutputPath`
-/// (`<OutputPath>elsewhere/</OutputPath>` builds to `elsewhere/net10.0/`), and
-/// claiming the default would send a consumer to scan `bin/` for a DLL that
-/// is not there — reporting a built project as unbuilt, which is the whole
-/// miss this verdict exists to stop.
+/// A project can move its output without ever naming `OutDir` — MSBuild
+/// derives one from a user `OutputPath`, so `<OutputPath>elsewhere/</OutputPath>`
+/// builds to `elsewhere/net10.0/`. Deriving that is a targets-file computation
+/// this walker does not reproduce, so it declines rather than committing to
+/// the base it can see.
 ///
-/// Found by the MSBuild differential, not by hand.
+/// Declining is all this buys: both non-committing arms send the consumer to
+/// the same `bin` scan. What matters is that the *committing* arm never
+/// carries `elsewhere/` without the framework segment.
 #[test]
-fn a_user_redirect_without_an_out_dir_is_not_the_default_layout() {
+fn a_user_redirect_without_an_out_dir_declines() {
     assert_eq!(
         verdict("<OutputPath>elsewhere/</OutputPath>"),
         OutputDirVerdict::Unknown
@@ -167,6 +167,61 @@ fn a_configuration_dependent_directory_reports_the_configuration() {
     );
 }
 
+/// Configuration dependence is decided on the **evaluated value**, not on the
+/// raw body, so a write that names one configuration without ever referencing
+/// `$(Configuration)` is still caught. A gate is the common spelling, and the
+/// directory need not be spelled like the property — what comes back is the
+/// occurrence as `path` spells it, which is what a consumer has to match.
+#[test]
+fn a_configuration_gated_directory_reports_its_segment() {
+    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    assert_eq!(
+        verdict_with(
+            "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">debug-out/</OutDir>\
+             <OutDir Condition=\"'$(Configuration)' == 'Release'\">release-out/</OutDir>",
+            &extras
+        ),
+        OutputDirVerdict::Declared {
+            path: "debug-out/".to_owned(),
+            configuration: Some("debug".to_owned()),
+        }
+    );
+}
+
+/// The same, laundered through a helper property — invisible to a scan of the
+/// raw body, which sees only `$(Which)`.
+#[test]
+fn a_configuration_reached_through_a_helper_reports_its_segment() {
+    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    assert_eq!(
+        verdict_with(
+            "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
+            &extras
+        ),
+        OutputDirVerdict::Declared {
+            path: "out/Debug/".to_owned(),
+            configuration: Some("Debug".to_owned()),
+        }
+    );
+}
+
+/// Deciding on the value means a directory that merely *contains* the
+/// configuration is treated as configuration-dependent too. That widens the
+/// search — `Debugging/` is looked for as `*ging/` — and cannot narrow it,
+/// since the spelling we were given still matches its own pattern. Erring
+/// this way finds outputs; erring the other way misses them.
+#[test]
+fn an_incidental_occurrence_is_treated_as_the_segment() {
+    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    assert_eq!(
+        verdict_with("<OutDir>Debugging/</OutDir>", &extras),
+        OutputDirVerdict::Declared {
+            path: "Debugging/".to_owned(),
+            configuration: Some("Debug".to_owned()),
+        }
+    );
+}
+
 /// …but only when the configuration can be *located* in the result. If its
 /// value occurs more than once there is no way to say which occurrence is the
 /// wildcard, and a consumer searching the wrong one would look in a directory
@@ -222,8 +277,11 @@ fn a_whitespace_only_value_from_a_global_declines() {
 
 /// The ordering hazard between the two checks above and the undefined-reference
 /// check: `$(SolutionDir)` alone expands to nothing, so an implementation that
-/// tested emptiness first would report the *default layout* for a project that
-/// declares a custom one — the most confidently wrong answer available.
+/// tested emptiness first would file a project that declares a custom layout
+/// under "declares nothing". Both arms send the consumer to the same scan, so
+/// nothing observable turns on it today — this pins the distinction while it
+/// is still true, since the emptiness fallback is only sound for a value that
+/// really is empty.
 #[test]
 fn an_undefined_reference_expanding_to_nothing_is_not_the_default_layout() {
     assert_eq!(
@@ -233,8 +291,9 @@ fn an_undefined_reference_expanding_to_nothing_is_not_the_default_layout() {
 }
 
 /// A write carrying an item reference is refused by the property pass, which
-/// removes the binding. That must not read back as "never written" — the real
-/// build has *some* value there, and it is not the default layout.
+/// removes the binding. That must not read back as "never written": the real
+/// build has *some* value there, and a later reader of this verdict should see
+/// a refusal rather than an absence.
 #[test]
 fn a_refused_write_is_not_the_default_layout() {
     assert_eq!(

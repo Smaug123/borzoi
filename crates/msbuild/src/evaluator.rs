@@ -2418,16 +2418,23 @@ impl<'r> State<'r> {
     /// The [`ParsedProject::output_dir`] verdict. See [`OutputDirVerdict`]
     /// for what each arm licenses a consumer to do.
     ///
-    /// The raw body decides two things the evaluated value cannot. A
-    /// reference to a property this walk never saw defined expands to empty
-    /// (the environment model resolves an undefined name *exactly*, so it is
-    /// not untrusted either) and would leave `$(SolutionDir)artifacts/`
-    /// looking like a clean project-relative `artifacts/` — so any undefined
-    /// reference declines. And a `$(Configuration)` reference means the value
-    /// names one configuration out of several the user might have built, so
-    /// the segment must be handed back for searching rather than committed
-    /// to; if the evaluated configuration cannot be located in the result
-    /// exactly once, that is not expressible and the verdict declines.
+    /// The raw body decides what the evaluated value cannot: a reference to a
+    /// property this walk never saw defined expands to empty (the environment
+    /// model resolves an undefined name *exactly*, so it is not untrusted
+    /// either) and would leave `$(SolutionDir)artifacts/` looking like a
+    /// clean project-relative `artifacts/`. Any undefined reference declines.
+    ///
+    /// Configuration dependence, by contrast, is decided on the **evaluated
+    /// value**, by looking for the configuration in the result. Deciding it
+    /// from the raw body would see only a direct `$(Configuration)`
+    /// reference, and miss every other way the value comes to name one
+    /// configuration out of several the user might have built: a write gated
+    /// on `Condition="'$(Configuration)' == 'Debug'"`, or one expanded
+    /// through a helper property that holds it. Those commit to a directory
+    /// that exists only for the configuration this evaluation happened to run
+    /// under. Searching for the value catches all three, and the occurrence
+    /// is reported as it is spelled in `path` so a consumer can find it
+    /// again without repeating the case-insensitive search.
     fn output_dir_verdict(&self) -> OutputDirVerdict {
         let raw = match &self.out_dir_write {
             // No `OutDir` at all. That is the default layout *only* if
@@ -2454,19 +2461,9 @@ impl<'r> State<'r> {
         // An undefined reference expands to nothing, so `<OutDir>$(SolutionDir)</OutDir>`
         // would otherwise reach the empty arm and read as "the default layout
         // applies" — the most confidently wrong answer available.
-        let mut configuration = None;
         for referenced in simple_property_references(raw) {
-            let Some(value) = self.lookup.get(referenced) else {
+            if self.lookup.get(referenced).is_none() {
                 return OutputDirVerdict::Unknown;
-            };
-            if referenced.eq_ignore_ascii_case("Configuration") {
-                // Locatable exactly once, or we cannot say which segment of
-                // the result is the one to search.
-                let cfg = value.unescape();
-                if cfg.is_empty() || path.matches(cfg.as_str()).count() != 1 {
-                    return OutputDirVerdict::Unknown;
-                }
-                configuration = Some(cfg);
             }
         }
         // Empty is not a decline: MSBuild's own default gate is
@@ -2481,6 +2478,25 @@ impl<'r> State<'r> {
         if path.trim().is_empty() {
             return OutputDirVerdict::Unknown;
         }
+        // MSBuild compares property values case-insensitively, and a
+        // directory named for a configuration is routinely spelled in another
+        // case than the property (`debug-out/` under `Debug`), so the search
+        // is case-insensitive — but what is handed back is the occurrence as
+        // `path` spells it, which is what a consumer has to match.
+        let configuration = match self.lookup.get("Configuration").map(|v| v.unescape()) {
+            Some(cfg) if !cfg.is_empty() => {
+                let mut found = ascii_ci_matches(&path, &cfg);
+                match (found.next(), found.next()) {
+                    (None, _) => None,
+                    // Two places it could be: no way to say which one the
+                    // build would move, and searching the wrong one looks in
+                    // a directory the build never writes.
+                    (Some(_), Some(_)) => return OutputDirVerdict::Unknown,
+                    (Some(at), None) => Some(path[at..at + cfg.len()].to_owned()),
+                }
+            }
+            _ => None,
+        };
         OutputDirVerdict::Declared {
             path,
             configuration,
@@ -4642,6 +4658,24 @@ fn mark_property_group_children_provenance(
             },
         );
     }
+}
+
+/// Byte offsets of every ASCII-case-insensitive occurrence of `needle` in
+/// `haystack`. Empty when `needle` is empty.
+///
+/// The offsets are safe to slice at: a match is byte-wise
+/// ASCII-case-equal to `needle`, and an ASCII byte never sits inside a
+/// multi-byte UTF-8 sequence, so both ends land on char boundaries.
+fn ascii_ci_matches<'a>(haystack: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    let last = h.len().checked_sub(n.len());
+    (0..=last.unwrap_or(0))
+        .take(if n.is_empty() || last.is_none() {
+            0
+        } else {
+            usize::MAX
+        })
+        .filter(move |&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
 }
 
 pub(crate) fn simple_property_references(raw: &str) -> impl Iterator<Item = &str> {

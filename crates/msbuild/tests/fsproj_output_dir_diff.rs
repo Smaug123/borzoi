@@ -8,17 +8,24 @@
 //! - [`OutputDirVerdict::Declared`] with no configuration ⟹ MSBuild's `OutDir`
 //!   is that string, exactly.
 //! - [`OutputDirVerdict::Declared`] carrying a configuration ⟹ MSBuild's
-//!   `OutDir` is that string with the configuration segment replaced by
-//!   whatever configuration MSBuild evaluated under. Checked by substituting
-//!   MSBuild's own `Configuration` into our wildcard, because a consumer
-//!   searching that segment must find the real directory among the
-//!   candidates.
-//! - [`OutputDirVerdict::Default`] ⟹ MSBuild's `OutDir` is the default layout
-//!   (`bin/<config>/<tfm>/`, or `bin/<config>/` with the TFM suppressed) —
-//!   *not* merely "we said nothing". This arm is a positive claim: it tells
-//!   the consumer to run its default-layout scan, so a project that quietly
-//!   redirected its output must never land here.
-//! - [`OutputDirVerdict::Unknown`] ⟹ no claim. MSBuild may say anything.
+//!   `OutDir` matches that string with the configuration occurrence treated
+//!   as a wildcard spanning one path segment. That, and not "substitute
+//!   MSBuild's own `Configuration`", is what the consumer does: it enumerates
+//!   the directory above the occurrence and takes any sibling with the same
+//!   surrounding text, because the segment need not be spelled like the
+//!   property (`debug-out/` under `Debug`).
+//! - [`OutputDirVerdict::Default`] and [`OutputDirVerdict::Unknown`] ⟹ no
+//!   claim. MSBuild may say anything.
+//!
+//! Only the committing arm is checked, because only it is a claim. `Default`
+//! is the absence of a redirect *this walker recognises*, and MSBuild has more
+//! ways to move the output than the props chain can be read for —
+//! `BaseOutputPath`, `UseArtifactsOutput`, a redirect assembled in a targets
+//! file. Asserting the standard layout there would be asserting the walker is
+//! exhaustive about a set it cannot enumerate. Its consumer treats both
+//! non-committing arms alike (scan the `bin` tree, as before the verdict
+//! existed), so a misfiled project costs the coverage it always cost and
+//! never a wrong directory.
 //!
 //! Two normalisations, both deliberate and both semantics-free *for a
 //! directory*, which is what the verdict names:
@@ -43,8 +50,7 @@
 //! (`workspace::default_build_properties`), is answering a different question
 //! from the one asked at runtime. An agreement reached there says nothing
 //! about the configuration that ships. MSBuild needs no globals to match: the
-//! SDK defaults `Configuration` to `Debug` on its side, and the assertions
-//! read MSBuild's own evaluated `Configuration` back rather than assuming it.
+//! SDK defaults `Configuration` to `Debug` on its side too.
 
 mod common;
 
@@ -60,7 +66,8 @@ use tempfile::TempDir;
 /// is free, so there is no reason to restrict the inputs to shapes we expect
 /// to commit — only a wrong commit fails.
 const BODIES: &[&str] = &[
-    // Nothing: the default layout, and the one that must stay a positive claim.
+    // Nothing declared, and the two properties that suppress or move the
+    // framework segment without naming `OutDir`.
     "",
     "<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>",
     // Plain declared directories.
@@ -97,6 +104,23 @@ const BODIES: &[&str] = &[
     // side of it we record, the answer must still be MSBuild's.
     "<OutDir Condition=\"'$(OutDir)' == ''\">artifacts/</OutDir>",
     "<OutDir Condition=\"'$(OutDir)' != ''\">artifacts/</OutDir>",
+    // The other SDK properties that move the output. The walker does not
+    // model them, so it must not commit — and the `Default` arm asserting
+    // nothing is what makes that safe rather than wrong.
+    "<BaseOutputPath>elsewhere/</BaseOutputPath>",
+    "<UseArtifactsOutput>true</UseArtifactsOutput>",
+    // Declarations that *keep* the standard layout. Declining them is a
+    // coverage gap, never a wrong directory.
+    "<OutputPath>bin/$(Configuration)/</OutputPath>",
+    "<AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>",
+    // Configuration-gated writes: the value names one configuration without
+    // ever referencing `$(Configuration)`, so only a search of the evaluated
+    // value can see it. Committing without the wildcard would send a consumer
+    // to a directory that exists for one configuration alone.
+    "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">debug-out/</OutDir>\
+     <OutDir Condition=\"'$(Configuration)' == 'Release'\">release-out/</OutDir>",
+    // …and the same thing laundered through a helper property.
+    "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
 ];
 
 /// The two sides as *directories*: separators unified, and at most one
@@ -179,39 +203,46 @@ fn declared_output_dirs_agree_with_msbuild() {
             continue;
         };
         let real = as_directory(theirs.get("OutDir").map(String::as_str).unwrap_or_default());
-        let real_config = theirs.get("Configuration").cloned().unwrap_or_default();
 
         match &parsed.output_dir {
-            OutputDirVerdict::Unknown => declined += 1,
-            OutputDirVerdict::Default => {
-                committed += 1;
-                // A positive claim: the consumer will run its default-layout
-                // scan, so the real directory must be one that scan reaches.
-                let expected_with_tfm = format!("bin/{real_config}/net10.0");
-                let expected_bare = format!("bin/{real_config}");
-                assert!(
-                    real == expected_with_tfm || real == expected_bare,
-                    "we claimed the default layout but MSBuild writes to \
-                     {real:?} (expected {expected_with_tfm:?} or \
-                     {expected_bare:?}) for {body:?}"
-                );
-            }
+            OutputDirVerdict::Unknown | OutputDirVerdict::Default => declined += 1,
             OutputDirVerdict::Declared {
                 path: ours,
                 configuration,
             } => {
                 committed += 1;
                 let ours = as_directory(ours);
-                let expected = match configuration {
-                    // The consumer substitutes each candidate configuration
-                    // into this segment; MSBuild's own must be among them.
-                    Some(cfg) => ours.replacen(cfg.as_str(), &real_config, 1),
-                    None => ours,
-                };
-                assert_eq!(
-                    expected, real,
-                    "our committed output directory disagrees with MSBuild for {body:?}"
-                );
+                match configuration {
+                    // The consumer treats this occurrence as a wildcard and
+                    // enumerates the directory above it, so what we license is
+                    // "any sibling with the same surrounding text". MSBuild's
+                    // real directory has to be one of them — checked as the
+                    // pattern rather than by substituting MSBuild's own
+                    // `Configuration`, because the segment need not be spelled
+                    // like the property (`debug-out/` under `Debug`).
+                    Some(cfg) => {
+                        let at = ours
+                            .find(cfg.as_str())
+                            .expect("the reported occurrence is a substring of the path");
+                        let (head, tail) = (&ours[..at], &ours[at + cfg.len()..]);
+                        let matches_pattern = real.len() >= head.len() + tail.len()
+                            && real.starts_with(head)
+                            && real.ends_with(tail)
+                            // The wildcard spans one path segment, so the
+                            // consumer's enumeration cannot reach across a
+                            // separator.
+                            && !real[head.len()..real.len() - tail.len()].contains('/');
+                        assert!(
+                            matches_pattern,
+                            "MSBuild writes to {real:?}, which searching {ours:?} at its \
+                             configuration segment ({cfg:?}) cannot reach, for {body:?}"
+                        );
+                    }
+                    None => assert_eq!(
+                        ours, real,
+                        "our committed output directory disagrees with MSBuild for {body:?}"
+                    ),
+                }
             }
         }
     }

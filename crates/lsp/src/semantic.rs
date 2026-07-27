@@ -2180,14 +2180,14 @@ fn fsharp_project_ref_outcome(
 /// `layout` says which directory to look in
 /// ([`crate::project_graph::ProjectNode::output_dir`]):
 ///
-/// - [`OutputDirVerdict::Default`] — the standard
-///   `<project_dir>/bin/<config>/<tfm>/<output_name>.dll` tree.
 /// - [`OutputDirVerdict::Declared`] — the directory the project redirected to,
 ///   *instead of* the `bin` tree. MSBuild uses a declared `OutDir` verbatim:
 ///   neither the TFM nor `OutputPath` is appended to it, so this is the whole
 ///   answer and `producer_tfm` does not narrow it further (see below).
-/// - [`OutputDirVerdict::Unknown`] — nothing is searched at all, and the ref
-///   grades [`OutputLocation::Absent`]. See the arm's comment.
+/// - anything else — the standard
+///   `<project_dir>/bin/<config>/<tfm>/<output_name>.dll` tree, as for every
+///   project before the verdict existed. See the arm's comment for why a
+///   non-commitment is not evidence of anything.
 ///
 /// `output_name` is the producer's resolved output name — the caller
 /// recovers it from the entry's assets file or the graph node's own
@@ -2232,22 +2232,28 @@ fn locate_fsharp_output_dll(
         };
     };
     match layout {
-        OutputDirVerdict::Default => {
-            locate_in_default_layout(fsproj, project_dir, producer_tfm, &dll_name)
-        }
         OutputDirVerdict::Declared {
             path,
             configuration,
         } => locate_in_declared_dir(project_dir, path, configuration.as_deref(), &dll_name),
-        // The project wrote *something* about where its output goes and the
-        // evaluation could not pin it down, so there is no directory to
-        // search. Falling back to the `bin` tree would be worse than not
-        // looking: against positive evidence of a redirect, a DLL still
-        // sitting there is most likely a leftover from before it, and folding
-        // a stale assembly fabricates. Reporting the absence — rather than
-        // [`OutputLocation::Undecidable`] — keeps the env complete, which is
-        // exactly the trade [`OutputLocation::Absent`] documents.
-        OutputDirVerdict::Unknown => OutputLocation::Absent,
+        // **Everything the verdict does not commit to scans the `bin` tree**,
+        // which is what this locator did for every project before the verdict
+        // existed. Neither of these arms licenses a claim about where the
+        // build writes: `Default` is the absence of a redirect *this walker
+        // recognises*, and MSBuild has more ways to move the output than the
+        // props chain can be read for (`BaseOutputPath`, `UseArtifactsOutput`,
+        // a redirect assembled in a targets file); `Unknown` is a write that
+        // could not be pinned down, which is as often a project that keeps
+        // the standard layout — `<OutputPath>bin/$(Configuration)/</OutputPath>`
+        // — as one that leaves it.
+        //
+        // So the only claim worth acting on is the positive one, and every
+        // gap in it degrades to the behaviour that shipped before rather than
+        // to a project whose references silently stop resolving. A redirected
+        // producer we fail to classify is missed exactly as it always was.
+        OutputDirVerdict::Default | OutputDirVerdict::Unknown => {
+            locate_in_default_layout(fsproj, project_dir, producer_tfm, &dll_name)
+        }
     }
 }
 
@@ -2461,17 +2467,16 @@ fn join_declared(base: &Path, declared: &str) -> PathBuf {
 /// output exists anywhere.
 ///
 /// Which directory that is comes from the node's
-/// [`OutputDirVerdict`](crate::project_graph::ProjectNode::output_dir), so a
-/// project that redirects its output is searched where it actually builds. A
-/// project whose redirect the evaluator could not pin down lands here without
-/// anything being searched at all: there is nowhere to look, and the `bin` tree
-/// it is *not* building to would only offer a pre-redirect leftover.
+/// [`OutputDirVerdict`](crate::project_graph::ProjectNode::output_dir) when it
+/// commits to one, and is the `bin` tree otherwise. So a project whose
+/// redirect the evaluator can read is searched where it actually builds, and
+/// one whose layout it cannot pin down is searched where it always was.
 ///
-/// Both are inside the trade `NotBuilt` makes: the grade is "we did not fold
-/// this reference and are choosing to carry on", never "we proved there is
-/// nothing to fold". An unpindownable layout is one more way into that same
-/// accepted bucket, not a new kind of hole — the shadow it risks is the one the
-/// grade was created to accept.
+/// The latter is inside the trade `NotBuilt` makes: the grade is "we did not
+/// fold this reference and are choosing to carry on", never "we proved there
+/// is nothing to fold". A redirect we failed to read is one more way into that
+/// same accepted bucket, not a new kind of hole — the shadow it risks is the
+/// one the grade was created to accept.
 ///
 /// What must *not* land in it is a reference we hit an **error** looking for.
 /// That is a different claim — we could not look, rather than looked and found
@@ -4811,17 +4816,18 @@ mod tests {
         assert!(found.ends_with("artifacts/Lib.dll"), "{found:?}");
     }
 
-    /// An unpindownable layout means the project said *something* about where
-    /// it builds — so the `bin` tree is not it, and a DLL sitting there is a
-    /// leftover. Nothing is searched, and the absence keeps the env complete.
+    /// A layout the evaluator could not pin down is **not** evidence that the
+    /// project redirects: `<OutputPath>bin/$(Configuration)/</OutputPath>` is
+    /// a write we decline on and a standard layout at the same time. So the
+    /// `bin` tree is still searched, exactly as it was before the verdict
+    /// existed — a classification gap must cost no coverage.
     #[test]
-    fn locate_output_dll_unknown_layout_never_reads_the_bin_tree() {
+    fn locate_output_dll_unknown_layout_still_reads_the_bin_tree() {
         let tmp = TempDir::new().unwrap();
-        let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"stale");
-        assert_eq!(
-            locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Unknown),
-            OutputLocation::Absent
-        );
+        let proj = built_fsproj(tmp.path(), "Lib", "Debug", "net10.0", b"built");
+        let found = locate_fsharp_output_dll(&proj, None, "Lib", &OutputDirVerdict::Unknown)
+            .expect_found("an undecided layout falls back to the default scan");
+        assert!(found.ends_with("bin/Debug/net10.0/Lib.dll"), "{found:?}");
     }
 
     impl OutputLocation {
