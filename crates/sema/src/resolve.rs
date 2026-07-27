@@ -1958,12 +1958,22 @@ impl<'a> Resolver<'a> {
         if !self.assemblies.identities_incomplete() {
             return;
         }
-        for res in self
+        // The census follows the seal. A sealed occurrence is a decline the
+        // resolver *made* — it had an answer and withdrew it — so leaving it
+        // unattributed would report the one mode where nothing assembly-rooted
+        // may be trusted as the mode where nothing declined. The seal is
+        // wholesale, so the cause is too.
+        let sealed = model::DeclineSite::pre_walk(model::DeclineCause::IncompleteAssemblies);
+        for (range, res) in self
             .resolutions
-            .values_mut()
-            .chain(self.attribute_resolutions.values_mut())
+            .iter_mut()
+            .chain(self.attribute_resolutions.iter_mut())
         {
+            let before = *res;
             *res = res.sealed_under_incomplete_projection();
+            if *res != before {
+                self.decline_sites.entry(*range).or_insert(sealed);
+            }
         }
     }
 

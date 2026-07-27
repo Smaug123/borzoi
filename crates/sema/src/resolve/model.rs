@@ -2026,6 +2026,11 @@ pub enum DeclineCause {
     /// A dotted path headed by the raw `global` namespace-root marker, which is
     /// not a name use.
     GlobalMarkerHead,
+    /// The env's projection is incomplete — some DLL is present that could not
+    /// be read at all — so every assembly-rooted reading in the file was
+    /// withdrawn (`Resolution::sealed_under_incomplete_projection`). The one
+    /// cause that *replaces* a resolution the resolver had already made.
+    IncompleteAssemblies,
 }
 
 impl DeclineCause {
@@ -2063,6 +2068,7 @@ impl DeclineCause {
         DeclineCause::HeadSlotUnordered,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
+        DeclineCause::IncompleteAssemblies,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2098,6 +2104,7 @@ impl DeclineCause {
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
+            DeclineCause::IncompleteAssemblies => "incomplete_assemblies",
         }
     }
 }
@@ -2914,12 +2921,28 @@ impl ResolvedFile {
     /// per-open view, which can say only that *some* open in the file perturbs
     /// resolution and leaves the correlation to the caller.
     ///
-    /// `None` means no guard declined here: the occurrence resolved, or nothing
-    /// in the model resolves *or shadows* it (the "no shadow possible" signal a
-    /// consumer reads from an unrecorded name). A declined occurrence whose
-    /// range has no site is a census gap, not a category — see
-    /// [`DeclineCause`], whose totality the type system enforces at the decline
-    /// sites themselves.
+    /// **A site is a claim; its absence is not.** When one is present it names
+    /// the guard that declined, and that is what a consumer may rely on.
+    /// Absence means only that the census did not attribute this occurrence —
+    /// which covers three quite different things: it resolved, nothing in the
+    /// model resolves *or shadows* it, or it declined for a reason no guard on
+    /// the attributed paths accounts for.
+    ///
+    /// The scope is deliberate rather than provisional. The census exists to
+    /// price changes to the referenced-assembly precedence ladder, so it
+    /// attributes what that ladder and its pre-walk gates do — every branch of
+    /// `decide_type_path`, the value/member walk, the attribute candidates, the
+    /// `Type.Case` pattern walk, and the incomplete-projection seal. It does
+    /// **not** try to attribute a bare name that simply is not in scope: an
+    /// opaque `open` being live is not evidence that it is why *this* name
+    /// found nothing, and attributing it would inflate every count with
+    /// declines no ladder change can move.
+    ///
+    /// A consumer counting declines should therefore carry an explicit
+    /// *unattributed* bucket rather than treating absence as zero. What the
+    /// type system does enforce is the other direction: [`DeclineCause`] is
+    /// total over the decline sites that do report, so a new branch on an
+    /// attributed path cannot compile without naming its cause.
     ///
     /// Purely diagnostic: nothing in the resolver reads a site back, and the
     /// [`Resolution`] at `range` is what it would be were no census kept.

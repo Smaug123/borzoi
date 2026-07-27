@@ -454,11 +454,13 @@ const DENIED: &str = "denied";
 fn deferred_verdict(site: Option<DeclineSite>) -> String {
     match site {
         Some(s) => format!("deferred:{}@{}", s.cause.label(), s.tier.label()),
-        // No guard spoke: the walk found nothing at the written arity, and on
-        // a *dotted* path recording nothing is not a claim (a bare one would
-        // be [`Ours::Denied`]). Distinct from a decline, and named so — the
-        // `J` family reaches this and nothing else does, which `our_target`
-        // asserts rather than leaves to the reader.
+        // The census did not attribute this one. In this corpus that is
+        // always the same thing — the walk found nothing at the written arity,
+        // and on a *dotted* path recording nothing is not a claim (a bare one
+        // would be [`Ours::Denied`]) — and the `J` family is the only family
+        // that reaches it. `our_target` asserts the stronger half rather than
+        // leaving it to the reader: a *recorded* deferral always names a
+        // guard, so this can never be a threading gap in disguise.
         None => "deferred:no-claim".to_string(),
     }
 }
