@@ -1,3 +1,4 @@
+use crate::project_assets::framework::NETSTANDARD_LIBRARY;
 use std::path::{Path, PathBuf};
 
 use crate::project_assets::error::ProjectAssetsError;
@@ -51,6 +52,14 @@ pub enum Reference {
     Framework {
         name: String,
         tfm: String,
+        /// The directory the assets file's *selected* assets put this
+        /// framework's reference assemblies in, relative to a package folder
+        /// (`netstandard.library/2.0.3/build/netstandard2.0/ref`) — set only
+        /// for a framework whose reference assemblies ship inside an ordinary
+        /// package rather than a targeting pack. Resolution uses it verbatim:
+        /// both the package version and the asset TFM are NuGet's choices, and
+        /// neither can be rebuilt from the consumer's TFM.
+        package_ref_dir: Option<String>,
     },
 }
 
@@ -178,11 +187,85 @@ fn enumerate_target(
             out.push(Reference::Framework {
                 name: name.clone(),
                 tfm: tfm.to_string(),
+                package_ref_dir: None,
             });
         }
     }
 
+    // A **netstandard** project has no `frameworkReferences` — that is a net5+
+    // concept — and the `NETStandard.Library` entry that stands in for them is a
+    // *package* whose compile asset is the `_._` placeholder. Nothing in the
+    // assets file therefore names the BCL, yet the project compiles against
+    // one: MSBuild takes the reference assemblies from that package's own
+    // `build/{tfm}/ref` directory. Emit it as the framework reference it
+    // effectively is, so it goes down the same resolution path — otherwise the
+    // reference set has no core library at all, and every imported name in such
+    // a project is unresolvable (measured on `WoofWare.Expect`: FCS reports
+    // 1008 errors from our set, starting with `RequireQualifiedAccess is not
+    // defined`).
+    //
+    // Keyed on the target entry, never on the TFM: a project built with
+    // `DisableImplicitFrameworkReferences` has no such entry, and inventing one
+    // would let us resolve names the compiler rejects. The *selected* package
+    // directory rides along for the same reason — the restore chose a version.
+    // `NETStandard.Library.targets` adds its reference directory only when the
+    // consumer's `TargetFrameworkIdentifier` is `.NETStandard`, so a `net8.0`
+    // project that merely references the package compiles against
+    // `Microsoft.NETCore.App` alone — adding the old facade set beside it would
+    // be a reference set the compiler does not have.
+    if tfm.starts_with("netstandard")
+        && !out
+            .iter()
+            .any(|r| matches!(r, Reference::Framework { name, .. } if name == NETSTANDARD_LIBRARY))
+        && let Some(package_ref_dir) = netstandard_library_ref_dir(assets, target)
+    {
+        out.push(Reference::Framework {
+            name: NETSTANDARD_LIBRARY.to_string(),
+            tfm: tfm.to_string(),
+            package_ref_dir: Some(package_ref_dir),
+        });
+    }
+
     Ok(out)
+}
+
+/// Where the assets file's selected assets put `NETStandard.Library`'s
+/// reference assemblies, relative to a package folder — `None` when the target
+/// does not contain it as a *package* (`DisableImplicitFrameworkReferences`, a
+/// TFM with real framework references, or a project reference that merely
+/// shares the name), or when NuGet selected no `build` asset to sit beside.
+///
+/// Both halves come from the file: the package directory is the version the
+/// restore chose, and the `build/{tfm}` directory is the asset NuGet's content
+/// model selected — which is *not* the consumer's TFM in general (a
+/// netstandard2.1 project referencing 2.0.3 gets the 2.0 asset, and compiles
+/// against the 2.0 references beside it).
+fn netstandard_library_ref_dir(
+    assets: &RawAssets,
+    target: &std::collections::BTreeMap<String, crate::project_assets::raw::RawTargetEntry>,
+) -> Option<String> {
+    let (name_version, entry) = target.iter().find(|(name_version, entry)| {
+        entry.kind == "package"
+            && name_version
+                .split_once('/')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case(NETSTANDARD_LIBRARY))
+    })?;
+    let library = assets.libraries.get(name_version)?;
+    if library.kind != "package" {
+        return None;
+    }
+    let package_path = library.path.as_deref()?;
+    // The selected `build` asset names the directory MSBuild imported from; the
+    // reference assemblies are its `ref` sibling. A `_._` placeholder selects
+    // nothing, so there is nothing beside it.
+    let build_dir = entry
+        .build
+        .as_ref()?
+        .keys()
+        .filter(|asset| !asset.ends_with("/_._"))
+        .filter_map(|asset| asset.rsplit_once('/').map(|(dir, _)| dir))
+        .next()?;
+    Some(format!("{package_path}/{build_dir}/ref"))
 }
 
 /// Pick the single compile-time TFM and the matching target group.
@@ -390,6 +473,120 @@ mod tests {
         }
     }
 
+    /// A netstandard target's `NETStandard.Library` entry stands in for the
+    /// framework references the TFM does not have, so it becomes one — carrying
+    /// the package directory the restore *selected*.
+    #[test]
+    fn a_netstandard_target_names_its_library_as_a_framework() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawTargetEntry {
+                kind: "package".to_string(),
+                compile: None,
+                framework: None,
+                // NuGet's content model selected the 2.0 build asset; the
+                // reference assemblies sit beside it.
+                build: Some(BTreeMap::from([(
+                    "build/netstandard2.0/NETStandard.Library.targets".to_string(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                )])),
+            },
+        );
+        let mut targets = BTreeMap::new();
+        targets.insert("netstandard2.0".to_string(), entries);
+        let mut assets = build_assets(targets);
+        assets.libraries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawLibrary {
+                kind: "package".to_string(),
+                path: Some("netstandard.library/2.0.3".to_string()),
+                msbuild_project: None,
+            },
+        );
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        let frameworks: Vec<(&str, Option<&str>)> = refs
+            .iter()
+            .filter_map(|r| match r {
+                Reference::Framework {
+                    name,
+                    package_ref_dir,
+                    ..
+                } => Some((name.as_str(), package_ref_dir.as_deref())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            frameworks,
+            vec![(
+                "NETStandard.Library",
+                // The *selected* build asset's directory, not the consumer's
+                // TFM: NuGet's content model chose `build/netstandard2.0`.
+                Some("netstandard.library/2.0.3/build/netstandard2.0/ref")
+            )]
+        );
+    }
+
+    /// …and only for a **netstandard** consumer. `NETStandard.Library.targets`
+    /// adds its references only when `TargetFrameworkIdentifier` is
+    /// `.NETStandard`, so a `net8.0` project that merely references the package
+    /// compiles against `Microsoft.NETCore.App` alone.
+    #[test]
+    fn a_net_target_referencing_the_library_gets_no_netstandard_bcl() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawTargetEntry {
+                kind: "package".to_string(),
+                compile: None,
+                framework: None,
+                build: Some(BTreeMap::from([(
+                    "build/netstandard2.0/NETStandard.Library.targets".to_string(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                )])),
+            },
+        );
+        let mut targets = BTreeMap::new();
+        targets.insert("net8.0".to_string(), entries);
+        let mut assets = build_assets(targets);
+        assets.libraries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawLibrary {
+                kind: "package".to_string(),
+                path: Some("netstandard.library/2.0.3".to_string()),
+                msbuild_project: None,
+            },
+        );
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        assert!(
+            !refs
+                .iter()
+                .any(|r| matches!(r, Reference::Framework { .. })),
+            "a net8.0 consumer gets no netstandard facade set: {refs:?}"
+        );
+    }
+
+    /// …and *only* when the target has it. `DisableImplicitFrameworkReferences`
+    /// leaves a netstandard target with no such entry, and MSBuild then compiles
+    /// against no BCL; inventing one from any cached copy would let us resolve
+    /// names the compiler rejects.
+    #[test]
+    fn a_netstandard_target_without_the_library_gets_no_framework() {
+        let mut targets = BTreeMap::new();
+        targets.insert("netstandard2.0".to_string(), BTreeMap::new());
+        let assets = build_assets(targets);
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        assert!(
+            !refs
+                .iter()
+                .any(|r| matches!(r, Reference::Framework { .. })),
+            "no framework reference is in the assets file: {refs:?}"
+        );
+    }
+
     #[test]
     fn multiple_tfms_errors() {
         let mut targets = BTreeMap::new();
@@ -434,6 +631,7 @@ mod tests {
                 kind: "package".to_string(),
                 compile: Some(pkg_compile),
                 framework: None,
+                build: None,
             },
         );
 
@@ -449,6 +647,7 @@ mod tests {
                 kind: "package".to_string(),
                 compile: Some(rid_compile),
                 framework: None,
+                build: None,
             },
         );
 
@@ -500,6 +699,7 @@ mod tests {
                 kind: "package".to_string(),
                 compile: Some(pkg_compile),
                 framework: None,
+                build: None,
             },
         );
 
@@ -640,6 +840,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some("net8.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -679,6 +880,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some("net8.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -722,6 +924,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: Some(compile),
                 framework: Some("net8.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -757,6 +960,7 @@ mod tests {
                     .collect::<BTreeMap<_, _>>(),
             ),
             framework: Some("net8.0".to_string()),
+            build: None,
         };
         // A `_._` placeholder is not an output name.
         assert_eq!(
@@ -779,6 +983,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some("net8.0".to_string()),
+                build: None,
             }),
             None
         );
@@ -798,6 +1003,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: None,
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -840,6 +1046,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some(".NETCoreApp,Version=v8.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -916,6 +1123,7 @@ mod tests {
                 kind: "package".to_string(),
                 compile: Some(compile),
                 framework: None,
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -987,6 +1195,7 @@ mod tests {
                     kind: "package".to_string(),
                     compile: Some(compile),
                     framework: None,
+                    build: None,
                 };
                 let library = RawLibrary {
                     kind: "package".to_string(),
@@ -1016,6 +1225,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some(framework.to_string()),
+                build: None,
             };
             let library = RawLibrary {
                 kind: "project".to_string(),

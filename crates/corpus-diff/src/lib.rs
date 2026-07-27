@@ -693,24 +693,10 @@ pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvo
     // recorded as a divergence in each direction. A project whose composed set
     // is *incomplete* now fails to type-check and is skipped, loudly, rather
     // than compared against a framework we never read.
-    // …but only when asked, and only when there *is* one.
-    //
-    // `BORZOI_PROJECT_EXCLUSIVE_REFS=1` opts in. It is not yet the default
-    // because the composition is incomplete for **netstandard** target
-    // frameworks: no `netstandard.dll` facade is resolved for them, so FCS
-    // cannot type-check such a project at all from our set alone (measured on
-    // the pinned `WoofWare.Expect`, netstandard2.0: 1008 errors, starting with
-    // `RequireQualifiedAccess is not defined`). Our own env is missing it just
-    // as badly — every imported name there is a deferral — which is why the
-    // differential never noticed: our side declines, the oracle's SDK
-    // references answer, and a deferral is not a divergence. Turning this on
-    // by default belongs with the fix for that composition gap.
-    //
-    // A project with no assets file composes no references at all, and
-    // "resolve against exactly nothing" is not a reference set — FCS aborts.
-    if std::env::var_os("BORZOI_PROJECT_EXCLUSIVE_REFS").is_some_and(|v| v == "1")
-        && !loaded.fcs_extra_refs.is_empty()
-    {
+    // …and *only* those. A project with no assets file composes no references
+    // at all, and "resolve against exactly nothing" is not a reference set —
+    // FCS aborts — so the mode needs a set to be exclusive about.
+    if !loaded.fcs_extra_refs.is_empty() {
         cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
     }
     // The Compile order goes in on stdin; `BoundedCommand` streams it from its

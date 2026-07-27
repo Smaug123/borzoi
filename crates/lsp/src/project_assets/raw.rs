@@ -31,6 +31,14 @@ pub struct RawTargetEntry {
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compile: Option<BTreeMap<String, serde_json::Value>>,
+    /// The package's MSBuild `build` assets NuGet selected for this consumer
+    /// (`build/netstandard2.0/NETStandard.Library.targets`). The selection is
+    /// the content model's, not the consumer TFM's — a netstandard2.1 project
+    /// referencing `NETStandard.Library` 2.0.3 gets the *2.0* asset — so a
+    /// consumer that needs what MSBuild imported must read it rather than
+    /// rebuild the path from its own TFM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build: Option<BTreeMap<String, serde_json::Value>>,
     /// For `type: "project"` only: the *producer's* TFM that NuGet
     /// selected for this consumer. Written in the long moniker form
     /// (e.g. `.NETStandard,Version=v2.0`); short-form conversion is

@@ -152,12 +152,7 @@ For each visited project, the runner:
    (net5.0), it bound `System.IO.File` in the SDK's `System.Runtime` while the
    project's own references declare it in `System.IO.FileSystem`, and a
    resolution both sides had right was recorded as a divergence in each
-   direction. That mode is **opt-in** (`BORZOI_PROJECT_EXCLUSIVE_REFS=1`) until
-   the composition covers netstandard target frameworks, for which no
-   `netstandard.dll` is resolved and so FCS cannot type-check from our set at
-   all (task #42 — our own env is equally starved there, which is why the
-   differential never noticed: our side defers and a deferral is not a
-   divergence). And exactly the **unified** set: a superseded duplicate (a legacy
+   direction. And exactly the **unified** set: a superseded duplicate (a legacy
    `system.runtime/4.3.1` contract assembly beside the framework pack's 8.0)
    which our env drops must not reach FCS either — with both in its `-r:` set,
    type-checking `WoofWare.PawPrint`'s main library never terminated (100%+ CPU,
