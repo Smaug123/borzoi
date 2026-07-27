@@ -132,6 +132,28 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
     project half, and re-running it at a later `open`'s text position would
     wrongly override a binding declared in between.
 
+  Folding at position 0 means the fold runs *before* the block's walk, so it
+  cannot see what the block declares. Two shadowings the resolver does not model
+  anywhere then become reachable — a later constructible type taking the value
+  slot, and a same-block `[<AutoOpen>]` container folding above it — so the fold
+  **declines** rather than committing a target FCS shadows
+  (`screen_block_local_shadows`). The auto-open arm is a single closed flag
+  rather than a name set on purpose: that surface is open-ended (values, union
+  and exception cases, `extern`s, active-pattern tags, a single-case union
+  spelled like an abbreviation, an auto-open type's statics, statics borrowed
+  through an abbreviation), so an enumeration is a list that grows under review
+  and can only be audited by inspection. Both shadowings reproduce through an
+  explicit `open` too and have their own tasks; the screen goes when they land.
+
+  The project half lends no **shortening prefix** (task #30), which is the one
+  place this channel still gives ground. Where a project `[<AutoOpen>]` module
+  in the namespace nests a module, `open Inner` reaches it in FCS and not in us,
+  so the fold declines that half's entries — affordable because such modules are
+  overwhelmingly flat, and measured at zero cost across the corpus. Where the
+  contest is with an *assembly* auto-open module nesting the same short name,
+  no affordable decline exists; #30 records both levers tried and why they were
+  rejected.
+
 ## Still to do
 
 ### A4 / S4 — operators (`op_Addition` ⇒ `+`)
