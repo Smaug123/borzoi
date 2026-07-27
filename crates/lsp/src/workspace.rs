@@ -850,8 +850,19 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
 /// ([`ProjectNode::output_dir`]). The evaluator already grades its own
 /// certainty, so this is a straight read: the verdict is reported exactly as
 /// far as it commits, and the env fold decides what each grade licenses.
-fn evaluated_output_dir(evaluated: &EvaluatedProject) -> OutputDirVerdict {
-    evaluated.parsed.output_dir.clone()
+fn evaluated_output_dir(evaluated: &EvaluatedProject, multi_targeted: bool) -> OutputDirVerdict {
+    match &evaluated.parsed.output_dir {
+        // A **multi-targeted** producer with one declared directory writes
+        // every inner build to it, so the file on disk is whichever target was
+        // built last. `dotnet build` of a consumer would rebuild the selected
+        // one first; this locator only reads, so it would fold whatever is
+        // there — a `net8.0` assembly against a parse evaluated for `net10.0`.
+        // The default layout keeps them apart by TFM directory and has nothing
+        // to guess at; a declared directory has no such segment, so the ref
+        // falls back to that scan rather than cross-resolving.
+        OutputDirVerdict::Declared { .. } if multi_targeted => OutputDirVerdict::Unknown,
+        verdict => verdict.clone(),
+    }
 }
 
 /// Read and evaluate `project_path`. Returns `None` on any failure
@@ -923,6 +934,9 @@ fn resolve_node_uncached(
         return NodeResult::resolved(Vec::new());
     };
     let outer_edges = edges_of(&outer, purpose, is_entry);
+    // Read from the outer (seedless) pass: an inner build sees `TargetFramework`
+    // as a global and no longer declares the plural it was selected from.
+    let multi_targeted = outer.declared_tfms.len() > 1;
     if caller_owns_target_framework(extra_build_properties) {
         return NodeResult::Resolved {
             edges: outer_edges,
@@ -931,7 +945,7 @@ fn resolve_node_uncached(
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
-            output_dir: evaluated_output_dir(&outer),
+            output_dir: evaluated_output_dir(&outer, multi_targeted),
         };
     }
     if outer.tfm_untrusted {
@@ -960,7 +974,7 @@ fn resolve_node_uncached(
             edges: outer_edges,
             tfm: NodeTfm::Known(body.clone()),
             output_name: evaluated_output_name(path, &outer),
-            output_dir: evaluated_output_dir(&outer),
+            output_dir: evaluated_output_dir(&outer, multi_targeted),
         };
     }
     let declared = &outer.declared_tfms;
@@ -974,7 +988,7 @@ fn resolve_node_uncached(
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
-            output_dir: evaluated_output_dir(&outer),
+            output_dir: evaluated_output_dir(&outer, multi_targeted),
         };
     }
     if let Some(seed) = seed_tfm {
@@ -990,7 +1004,7 @@ fn resolve_node_uncached(
                     edges: outer_edges,
                     tfm: NodeTfm::Known(current.clone()),
                     output_name: evaluated_output_name(path, &outer),
-                    output_dir: evaluated_output_dir(&outer),
+                    output_dir: evaluated_output_dir(&outer, multi_targeted),
                 };
             }
             let mut map = extra_build_properties.clone();
@@ -1002,7 +1016,7 @@ fn resolve_node_uncached(
                     // The name must come from the same (inner) evaluation as
                     // the edges: `<AssemblyName>` may itself be TFM-gated.
                     output_name: evaluated_output_name(path, &inner),
-                    output_dir: evaluated_output_dir(&inner),
+                    output_dir: evaluated_output_dir(&inner, multi_targeted),
                 },
                 None => NodeResult::resolved(Vec::new()),
             };
@@ -2935,7 +2949,6 @@ mod tests {
             dir_of(&redirected),
             OutputDirVerdict::Declared {
                 path: "artifacts/".to_owned(),
-                configuration: None,
             }
         );
         assert_eq!(
@@ -2943,6 +2956,36 @@ mod tests {
             OutputDirVerdict::Unknown,
             "an OutDir leaning on an undefined property must decline"
         );
+    }
+
+    /// A multi-targeted producer's declared directory holds whichever inner
+    /// build ran last, so it cannot answer for the TFM the consumer selected.
+    /// The node declines it and the fold falls back to the `bin` scan, which
+    /// keeps the variants apart by directory name.
+    #[test]
+    fn a_multi_targeted_node_declines_its_declared_output_dir() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/A.fsproj");
+        let multi = tmp.path().join("Multi/Multi.fsproj");
+        write_file(&a, &fsproj_with_refs(&["../Multi/Multi.fsproj"]));
+        write_file(
+            &multi,
+            r#"<Project>
+              <PropertyGroup>
+                <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
+                <OutDir>artifacts/</OutDir>
+              </PropertyGroup>
+            </Project>"#,
+        );
+
+        let ws = Workspace::default();
+        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| n.path == lexically_normalize(&multi))
+            .expect("the producer is in the graph");
+        assert_eq!(node.output_dir, OutputDirVerdict::Unknown);
     }
 
     /// A body `TargetFramework` whose write sits behind an untrusted gate is

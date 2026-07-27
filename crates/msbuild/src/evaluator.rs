@@ -1394,6 +1394,13 @@ struct State<'r> {
     /// `compile_context`) — we already don't model the framework defines the
     /// SDK adds in targets.
     define_context: bool,
+    /// Whether the write being walked sits under a `Condition` — its own or
+    /// any enclosing `<PropertyGroup>`'s — that reads `$(Configuration)`.
+    /// Such a write names one configuration's directory even when its value
+    /// never mentions it (`Condition="'$(Configuration)' == 'Debug'"` with a
+    /// body of `fast/`), which is invisible to any inspection of the value.
+    /// Read by [`State::record_out_dir_write`].
+    configuration_gate_context: bool,
     /// `true` only while expanding a `<DefineConstants>` *value* (not its
     /// condition). The `$(DefineConstants)` self-reference exemption
     /// ([`is_define_self_reference`]) applies only here — the append idiom is a
@@ -1474,6 +1481,9 @@ struct State<'r> {
     /// undefined property is exactly empty under this walker's environment
     /// model, and so is deliberately *not* recorded as untrusted.
     out_dir_write: OutDirWrite,
+    /// Whether the write in [`Self::out_dir_write`] was gated on the
+    /// configuration ([`State::configuration_gate_context`]).
+    out_dir_configuration_gated: bool,
     /// Whether a **user-authored** file (not the SDK subtree) wrote
     /// `OutputPath` or `AppendTargetFrameworkToOutputPath`. Either redirects
     /// the default layout, so the default arm of
@@ -1924,6 +1934,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: Vec::new(),
             items_uncertain: false,
             define_context: false,
+            configuration_gate_context: false,
             in_define_value: false,
             define_constants_uncertain: false,
             import_gate_context: false,
@@ -1942,7 +1953,18 @@ impl<'r> State<'r> {
             env_property_names,
             walk_opaque: false,
             unevaluable_written: HashSet::new(),
-            out_dir_write: OutDirWrite::NeverWritten,
+            // A caller-supplied global `OutDir` is read-only for the whole
+            // walk (`protected`), so no XML write will ever reach the
+            // recorder for it — but MSBuild honours it and writes there.
+            // Seed the tracker so it is classified rather than read back as
+            // "nobody declared anything".
+            out_dir_write: extra_properties
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("OutDir"))
+                .map_or(OutDirWrite::NeverWritten, |(_, v)| {
+                    OutDirWrite::Raw(v.clone())
+                }),
+            out_dir_configuration_gated: false,
             output_path_redirected_by_user: false,
         }
     }
@@ -2244,6 +2266,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: _,
             items_uncertain,
             define_context: _,
+            configuration_gate_context: _,
             in_define_value: _,
             define_constants_uncertain,
             import_gate_context: _,
@@ -2263,6 +2286,7 @@ impl<'r> State<'r> {
             walk_opaque: _,
             unevaluable_written: _,
             out_dir_write: _,
+            out_dir_configuration_gated: _,
             output_path_redirected_by_user: _,
         } = self;
         // Central Package Management opt-in: a versionless
@@ -2407,6 +2431,7 @@ impl<'r> State<'r> {
             return;
         }
         if name.eq_ignore_ascii_case("OutDir") {
+            self.out_dir_configuration_gated = self.configuration_gate_context;
             self.out_dir_write = write;
         } else if name.eq_ignore_ascii_case("OutputPath")
             || name.eq_ignore_ascii_case("AppendTargetFrameworkToOutputPath")
@@ -2478,29 +2503,28 @@ impl<'r> State<'r> {
         if path.trim().is_empty() {
             return OutputDirVerdict::Unknown;
         }
-        // MSBuild compares property values case-insensitively, and a
-        // directory named for a configuration is routinely spelled in another
-        // case than the property (`debug-out/` under `Debug`), so the search
-        // is case-insensitive — but what is handed back is the occurrence as
-        // `path` spells it, which is what a consumer has to match.
-        let configuration = match self.lookup.get("Configuration").map(|v| v.unescape()) {
-            Some(cfg) if !cfg.is_empty() => {
-                let mut found = ascii_ci_matches(&path, &cfg);
-                match (found.next(), found.next()) {
-                    (None, _) => None,
-                    // Two places it could be: no way to say which one the
-                    // build would move, and searching the wrong one looks in
-                    // a directory the build never writes.
-                    (Some(_), Some(_)) => return OutputDirVerdict::Unknown,
-                    (Some(at), None) => Some(path[at..at + cfg.len()].to_owned()),
-                }
-            }
-            _ => None,
-        };
-        OutputDirVerdict::Declared {
-            path,
-            configuration,
+        // **A configuration-dependent directory is never committed to.** This
+        // evaluation ran under whichever configuration the environment
+        // supplied, while the user may have built another, so the value names
+        // a directory that need not be the one the build writes — and a stale
+        // assembly sitting in it would be folded against current source.
+        //
+        // Dependence is taken conservatively, because every way of getting it
+        // wrong commits: the write is gated on `$(Configuration)`, its body
+        // names it, or the configuration merely *appears* in the result (which
+        // catches a value laundered through a helper property, and costs only
+        // the occasional `Debugging/` that never depended on it at all).
+        let names_configuration = self
+            .lookup
+            .get("Configuration")
+            .map(|v| v.unescape())
+            .is_some_and(|cfg| !cfg.is_empty() && ascii_ci_contains(&path, &cfg));
+        let reads_configuration =
+            simple_property_references(raw).any(|r| r.eq_ignore_ascii_case("Configuration"));
+        if self.out_dir_configuration_gated || names_configuration || reads_configuration {
+            return OutputDirVerdict::Unknown;
         }
+        OutputDirVerdict::Declared { path }
     }
 
     fn record_directory_build_path_write(&mut self, name: &str) {
@@ -3253,6 +3277,8 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             let prev = state.define_context;
             state.define_context =
                 prev || (!state.in_sdk_subtree && property_group_writes_define_constants(node));
+            let prev_cfg_gate = state.configuration_gate_context;
+            state.configuration_gate_context = prev_cfg_gate || condition_reads_configuration(node);
             // The same discipline for a group writing a CPM flag: its condition
             // decides whether Central Package Management turns on, or whether
             // the central versions import marker can be trusted. Setting
@@ -3338,6 +3364,7 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                     state.package_context = prev_pkg;
                 }
             }
+            state.configuration_gate_context = prev_cfg_gate;
         }
         "Import" => handle_import(node, current_file_dir, state),
         "ImportGroup" => {
@@ -3774,6 +3801,8 @@ fn walk_property_child(
     // reference uncertainty.
     let prev_package = state.package_context;
     state.package_context = prev_package || is_cpm_flag_property_name(&name);
+    let prev_cfg_gate = state.configuration_gate_context;
+    state.configuration_gate_context = prev_cfg_gate || condition_reads_configuration(node);
     walk_property_child_inner(
         node,
         name,
@@ -3783,6 +3812,7 @@ fn walk_property_child(
         inherited_unpinned_root,
         state,
     );
+    state.configuration_gate_context = prev_cfg_gate;
     state.package_context = prev_package;
     state.define_context = prev_define;
 }
@@ -3877,6 +3907,7 @@ fn walk_property_child_inner(
         state.lookup.remove(&name);
         state.written.remove(&lower);
         state.record_directory_build_path_write(&name);
+        state.record_out_dir_write(&name, OutDirWrite::Unevaluable);
         state.apply_property_provenance(
             &name,
             &lower,
@@ -4660,22 +4691,22 @@ fn mark_property_group_children_provenance(
     }
 }
 
-/// Byte offsets of every ASCII-case-insensitive occurrence of `needle` in
-/// `haystack`. Empty when `needle` is empty.
-///
-/// The offsets are safe to slice at: a match is byte-wise
-/// ASCII-case-equal to `needle`, and an ASCII byte never sits inside a
-/// multi-byte UTF-8 sequence, so both ends land on char boundaries.
-fn ascii_ci_matches<'a>(haystack: &'a str, needle: &'a str) -> impl Iterator<Item = usize> + 'a {
+/// Whether `haystack` contains `needle`, comparing ASCII case-insensitively.
+/// MSBuild compares property values that way, and a directory named for a
+/// configuration is routinely spelled in another case than the property
+/// (`debug-out/` under `Debug`).
+fn ascii_ci_contains(haystack: &str, needle: &str) -> bool {
     let (h, n) = (haystack.as_bytes(), needle.as_bytes());
-    let last = h.len().checked_sub(n.len());
-    (0..=last.unwrap_or(0))
-        .take(if n.is_empty() || last.is_none() {
-            0
-        } else {
-            usize::MAX
-        })
-        .filter(move |&i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+    h.len() >= n.len() && (0..=h.len() - n.len()).any(|i| h[i..i + n.len()].eq_ignore_ascii_case(n))
+}
+
+/// Whether `node`'s own `Condition` reads `$(Configuration)`. Such a gate
+/// decides *which configuration's* directory the write names, whatever the
+/// written value looks like.
+fn condition_reads_configuration(node: Node<'_, '_>) -> bool {
+    node.attribute("Condition").is_some_and(|condition| {
+        simple_property_references(condition).any(|r| r.eq_ignore_ascii_case("Configuration"))
+    })
 }
 
 pub(crate) fn simple_property_references(raw: &str) -> impl Iterator<Item = &str> {

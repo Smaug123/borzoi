@@ -82,7 +82,6 @@ fn a_user_redirect_without_an_out_dir_declines() {
         verdict("<OutDir>artifacts/</OutDir><OutputPath>elsewhere/</OutputPath>"),
         OutputDirVerdict::Declared {
             path: "artifacts/".to_owned(),
-            configuration: None,
         }
     );
 }
@@ -95,7 +94,6 @@ fn a_plain_declared_directory_is_reported_verbatim() {
         verdict("<OutDir>artifacts/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "artifacts/".to_owned(),
-            configuration: None,
         }
     );
     // A rooted value is equally verbatim; making it project-relative is the
@@ -104,7 +102,6 @@ fn a_plain_declared_directory_is_reported_verbatim() {
         verdict("<OutDir>/srv/out/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "/srv/out/".to_owned(),
-            configuration: None,
         }
     );
 }
@@ -131,7 +128,6 @@ fn a_value_leaning_on_an_undefined_property_declines() {
         verdict("<Root>/srv</Root><OutDir>$(Root)/artifacts/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "/srv/artifacts/".to_owned(),
-            configuration: None,
         }
     );
 }
@@ -146,91 +142,81 @@ fn a_defined_but_empty_reference_still_commits() {
         verdict("<Empty></Empty><OutDir>$(Empty)artifacts/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "artifacts/".to_owned(),
-            configuration: None,
         }
     );
 }
 
-/// A `$(Configuration)`-dependent directory hands the configuration back for
-/// the consumer to search. Committing to it would be a guess: this evaluation
-/// sees whatever the environment defaulted to, while the user may have built
-/// another configuration entirely.
+/// **A configuration-dependent directory is never committed to.** This
+/// evaluation runs under whichever configuration the environment supplied,
+/// while the user may have built another, so the value names a directory that
+/// need not be the one the build writes — and a stale assembly sitting in it
+/// would be folded against current source.
+///
+/// Three ways in, because each is invisible to the checks that catch the
+/// others: a direct reference in the body; a *gate*, whose value never
+/// mentions the configuration at all; and a helper property, which neither
+/// the gate check nor the body scan can see through.
 #[test]
-fn a_configuration_dependent_directory_reports_the_configuration() {
+fn a_configuration_dependent_directory_declines() {
     let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
-    assert_eq!(
-        verdict_with("<OutDir>artifacts/$(Configuration)/</OutDir>", &extras),
-        OutputDirVerdict::Declared {
-            path: "artifacts/Debug/".to_owned(),
-            configuration: Some("Debug".to_owned()),
-        }
-    );
+    for body in [
+        "<OutDir>artifacts/$(Configuration)/</OutDir>",
+        "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">fast/</OutDir>",
+        "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
+    ] {
+        assert_eq!(
+            verdict_with(body, &extras),
+            OutputDirVerdict::Unknown,
+            "{body} must not commit to a single configuration's directory"
+        );
+    }
 }
 
-/// Configuration dependence is decided on the **evaluated value**, not on the
-/// raw body, so a write that names one configuration without ever referencing
-/// `$(Configuration)` is still caught. A gate is the common spelling, and the
-/// directory need not be spelled like the property — what comes back is the
-/// occurrence as `path` spells it, which is what a consumer has to match.
+/// Deciding on the evaluated value means a directory that merely *contains*
+/// the configuration declines too. That is the deliberate direction to err:
+/// the only tool for seeing through a helper property is the value itself, so
+/// distinguishing `Debugging/` from a genuine dependence would cost the
+/// helper case. A decline sends the consumer to the scan it would have run
+/// anyway; a wrong commit sends it to a directory the build never writes.
 #[test]
-fn a_configuration_gated_directory_reports_its_segment() {
-    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
-    assert_eq!(
-        verdict_with(
-            "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">debug-out/</OutDir>\
-             <OutDir Condition=\"'$(Configuration)' == 'Release'\">release-out/</OutDir>",
-            &extras
-        ),
-        OutputDirVerdict::Declared {
-            path: "debug-out/".to_owned(),
-            configuration: Some("debug".to_owned()),
-        }
-    );
-}
-
-/// The same, laundered through a helper property — invisible to a scan of the
-/// raw body, which sees only `$(Which)`.
-#[test]
-fn a_configuration_reached_through_a_helper_reports_its_segment() {
-    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
-    assert_eq!(
-        verdict_with(
-            "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
-            &extras
-        ),
-        OutputDirVerdict::Declared {
-            path: "out/Debug/".to_owned(),
-            configuration: Some("Debug".to_owned()),
-        }
-    );
-}
-
-/// Deciding on the value means a directory that merely *contains* the
-/// configuration is treated as configuration-dependent too. That widens the
-/// search — `Debugging/` is looked for as `*ging/` — and cannot narrow it,
-/// since the spelling we were given still matches its own pattern. Erring
-/// this way finds outputs; erring the other way misses them.
-#[test]
-fn an_incidental_occurrence_is_treated_as_the_segment() {
+fn an_incidental_occurrence_declines_too() {
     let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
     assert_eq!(
         verdict_with("<OutDir>Debugging/</OutDir>", &extras),
+        OutputDirVerdict::Unknown
+    );
+}
+
+/// A caller-supplied global is read-only for the whole walk, so no XML write
+/// ever reaches the recorder for it — but MSBuild honours the global and
+/// writes there. Reading that back as "nobody declared anything" would send a
+/// consumer to scan `bin` for a project building somewhere else.
+#[test]
+fn a_global_out_dir_is_a_declaration() {
+    let extras = HashMap::from([("OutDir".to_owned(), "from-global/".to_owned())]);
+    assert_eq!(
+        verdict_with("", &extras),
         OutputDirVerdict::Declared {
-            path: "Debugging/".to_owned(),
-            configuration: Some("Debug".to_owned()),
+            path: "from-global/".to_owned(),
+        }
+    );
+    // The project cannot rebind it, so its own write does not win.
+    assert_eq!(
+        verdict_with("<OutDir>ignored/</OutDir>", &extras),
+        OutputDirVerdict::Declared {
+            path: "from-global/".to_owned(),
         }
     );
 }
 
-/// …but only when the configuration can be *located* in the result. If its
-/// value occurs more than once there is no way to say which occurrence is the
-/// wildcard, and a consumer searching the wrong one would look in a directory
-/// the build never writes.
+/// A body this walker cannot model (CDATA, entity-encoded whitespace) is a
+/// write whose result is unknown — not an absence of one. MSBuild accepts the
+/// value and redirects, so reading it back as "never written" would claim the
+/// standard layout for a project that left it.
 #[test]
-fn an_unlocatable_configuration_declines() {
-    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+fn an_unmodellable_body_is_a_refusal_not_an_absence() {
     assert_eq!(
-        verdict_with("<OutDir>Debug/$(Configuration)/</OutDir>", &extras),
+        verdict("<OutDir><![CDATA[artifacts/]]></OutDir>"),
         OutputDirVerdict::Unknown
     );
 }
@@ -243,7 +229,6 @@ fn the_last_write_decides() {
         verdict("<OutDir>first/</OutDir><OutDir>second/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "second/".to_owned(),
-            configuration: None,
         }
     );
     assert_eq!(

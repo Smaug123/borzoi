@@ -288,17 +288,12 @@ pub enum OutputDirVerdict {
     /// A user-declared output directory, verbatim as evaluated — relative to
     /// the project directory unless rooted.
     ///
-    /// `configuration` is `Some(cfg)` when the declared value was written in
-    /// terms of `$(Configuration)` and the evaluated `cfg` occurs exactly
-    /// once in `path`. A consumer must **not** commit to `cfg`: this
-    /// evaluation sees whichever configuration the environment happened to
-    /// default to (`Debug`), while the user may have built another. Treat
-    /// that one occurrence as a wildcard and search it, exactly as the
-    /// default layout's `bin/<config>/` segment is searched.
-    Declared {
-        path: String,
-        configuration: Option<String>,
-    },
+    /// Never configuration-dependent: this evaluation runs under whichever
+    /// configuration the environment supplied, while the user may have built
+    /// another, so a value that names one configuration's directory is
+    /// declined rather than committed to. A consumer may therefore take
+    /// `path` as *the* output directory.
+    Declared { path: String },
     /// No claim — but note what this is *not*: a project that declares
     /// nothing lands in [`Self::Default`], so arriving here means the project
     /// said something about where it builds that could not be pinned down.

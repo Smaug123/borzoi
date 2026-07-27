@@ -5,15 +5,10 @@
 //! *licenses a consumer to do* — which is the only thing worth checking, since
 //! the consumer looks for a DLL in the directory this names:
 //!
-//! - [`OutputDirVerdict::Declared`] with no configuration ⟹ MSBuild's `OutDir`
-//!   is that string, exactly.
-//! - [`OutputDirVerdict::Declared`] carrying a configuration ⟹ MSBuild's
-//!   `OutDir` matches that string with the configuration occurrence treated
-//!   as a wildcard spanning one path segment. That, and not "substitute
-//!   MSBuild's own `Configuration`", is what the consumer does: it enumerates
-//!   the directory above the occurrence and takes any sibling with the same
-//!   surrounding text, because the segment need not be spelled like the
-//!   property (`debug-out/` under `Debug`).
+//! - [`OutputDirVerdict::Declared`] ⟹ MSBuild's `OutDir` is that string,
+//!   exactly. There is no configuration caveat: the verdict declines a value
+//!   whose directory depends on the configuration, so what it commits to is
+//!   the directory the build writes whichever one was chosen.
 //! - [`OutputDirVerdict::Default`] and [`OutputDirVerdict::Unknown`] ⟹ no
 //!   claim. MSBuild may say anything.
 //!
@@ -80,8 +75,8 @@ const BODIES: &[&str] = &[
     // `OutputPath` alone: we never claim a directory for it, MSBuild derives
     // `OutDir` from it. A decline here is expected; a commit would be a bug.
     "<OutputPath>elsewhere/</OutputPath>",
-    // Configuration-dependent, the case that must be handed back rather than
-    // committed to.
+    // Configuration-dependent, the case that must decline rather than commit
+    // to whichever configuration this evaluation happened to run under.
     "<OutDir>artifacts/$(Configuration)/</OutDir>",
     "<OutDir>$(Configuration)/out/</OutDir>",
     // Undefined references: the trap the verdict exists for.
@@ -113,10 +108,10 @@ const BODIES: &[&str] = &[
     // coverage gap, never a wrong directory.
     "<OutputPath>bin/$(Configuration)/</OutputPath>",
     "<AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>",
-    // Configuration-gated writes: the value names one configuration without
-    // ever referencing `$(Configuration)`, so only a search of the evaluated
-    // value can see it. Committing without the wildcard would send a consumer
-    // to a directory that exists for one configuration alone.
+    // Configuration-dependent writes, each hidden from a different check: a
+    // gate whose value never mentions the configuration, and a value laundered
+    // through a helper property. Committing to either would name a directory
+    // that exists for one configuration alone.
     "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">debug-out/</OutDir>\
      <OutDir Condition=\"'$(Configuration)' == 'Release'\">release-out/</OutDir>",
     // …and the same thing laundered through a helper property.
@@ -206,43 +201,13 @@ fn declared_output_dirs_agree_with_msbuild() {
 
         match &parsed.output_dir {
             OutputDirVerdict::Unknown | OutputDirVerdict::Default => declined += 1,
-            OutputDirVerdict::Declared {
-                path: ours,
-                configuration,
-            } => {
+            OutputDirVerdict::Declared { path: ours } => {
                 committed += 1;
-                let ours = as_directory(ours);
-                match configuration {
-                    // The consumer treats this occurrence as a wildcard and
-                    // enumerates the directory above it, so what we license is
-                    // "any sibling with the same surrounding text". MSBuild's
-                    // real directory has to be one of them — checked as the
-                    // pattern rather than by substituting MSBuild's own
-                    // `Configuration`, because the segment need not be spelled
-                    // like the property (`debug-out/` under `Debug`).
-                    Some(cfg) => {
-                        let at = ours
-                            .find(cfg.as_str())
-                            .expect("the reported occurrence is a substring of the path");
-                        let (head, tail) = (&ours[..at], &ours[at + cfg.len()..]);
-                        let matches_pattern = real.len() >= head.len() + tail.len()
-                            && real.starts_with(head)
-                            && real.ends_with(tail)
-                            // The wildcard spans one path segment, so the
-                            // consumer's enumeration cannot reach across a
-                            // separator.
-                            && !real[head.len()..real.len() - tail.len()].contains('/');
-                        assert!(
-                            matches_pattern,
-                            "MSBuild writes to {real:?}, which searching {ours:?} at its \
-                             configuration segment ({cfg:?}) cannot reach, for {body:?}"
-                        );
-                    }
-                    None => assert_eq!(
-                        ours, real,
-                        "our committed output directory disagrees with MSBuild for {body:?}"
-                    ),
-                }
+                assert_eq!(
+                    as_directory(ours),
+                    real,
+                    "our committed output directory disagrees with MSBuild for {body:?}"
+                );
             }
         }
     }

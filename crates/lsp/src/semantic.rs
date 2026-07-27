@@ -2232,10 +2232,7 @@ fn locate_fsharp_output_dll(
         };
     };
     match layout {
-        OutputDirVerdict::Declared {
-            path,
-            configuration,
-        } => locate_in_declared_dir(project_dir, path, configuration.as_deref(), &dll_name),
+        OutputDirVerdict::Declared { path } => locate_in_declared_dir(project_dir, path, &dll_name),
         // **Everything the verdict does not commit to scans the `bin` tree**,
         // which is what this locator did for every project before the verdict
         // existed. Neither of these arms licenses a claim about where the
@@ -2341,100 +2338,34 @@ fn locate_in_default_layout(
     }
 }
 
-/// Look for `dll_name` in the directory the project declared, taking the
-/// first candidate that holds it.
+/// Look for `dll_name` in the directory the project declared.
 ///
-/// `configuration`, when present, names the one substring of `declared` that
-/// came from `$(Configuration)`. It must be *searched* rather than trusted:
-/// this evaluation saw whatever configuration the environment defaulted to,
-/// while the user may have built another. So the segment holding it becomes a
-/// wildcard — the directory above it is enumerated and every child with the
-/// same surrounding text qualifies, which is the same move the default layout
-/// makes by enumerating `bin/`. The `Debug` substitution is tried first (the
-/// editing default), then the rest in path order, so a warm rebuild keeps
-/// picking the same DLL.
+/// One directory, no search: the verdict only commits when the location does
+/// not depend on which configuration was built, so there is nothing here to
+/// disambiguate. A `Declared` path that varied by configuration would be a
+/// claim this evaluation cannot make — it ran under whichever configuration
+/// the environment supplied — so the evaluator declines those, and they reach
+/// the default scan instead.
 fn locate_in_declared_dir(
     project_dir: &Path,
     declared: &str,
-    configuration: Option<&str>,
     dll_name: &std::ffi::OsStr,
 ) -> OutputLocation {
-    let dirs = match configuration {
-        None => vec![join_declared(project_dir, declared)],
-        Some(configuration) => {
-            let Some(dirs) = configuration_candidates(project_dir, declared, configuration) else {
-                return OutputLocation::Undecidable {
-                    why: "a declared output directory could not be read",
-                    transient: true,
-                };
-            };
-            dirs
-        }
-    };
-    for dir in dirs {
-        let dll = dir.join(dll_name);
-        // As in the default scan: a failed `stat` must not fold into "absent",
-        // which is a proven-absence claim.
-        match dll.metadata() {
-            Ok(meta) if meta.is_file() => return OutputLocation::Found(dll),
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                tracing::info!(dll = %dll.display(), error = %err, "cannot stat a declared output");
-                return OutputLocation::Undecidable {
-                    why: "a candidate output could not be examined",
-                    transient: true,
-                };
+    let dll = join_declared(project_dir, declared).join(dll_name);
+    // As in the default scan: a failed `stat` must not fold into "absent",
+    // which is a proven-absence claim.
+    match dll.metadata() {
+        Ok(meta) if meta.is_file() => OutputLocation::Found(dll),
+        Ok(_) => OutputLocation::Absent,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => OutputLocation::Absent,
+        Err(err) => {
+            tracing::info!(dll = %dll.display(), error = %err, "cannot stat a declared output");
+            OutputLocation::Undecidable {
+                why: "a candidate output could not be examined",
+                transient: true,
             }
         }
     }
-    OutputLocation::Absent
-}
-
-/// Every directory `declared` could name once the `configuration` substring is
-/// treated as a wildcard, in preference order: the `Debug` substitution first,
-/// then the rest by path. `None` if the enclosing directory could not be
-/// enumerated (`child_dirs`' contract: not the same as "nothing is there").
-///
-/// The wildcard need not be a whole path segment — `artifacts-$(Configuration)`
-/// is as legal as `artifacts/$(Configuration)` — so the text on each side of it
-/// *within its segment* is kept as the affix a candidate child must match.
-fn configuration_candidates(
-    project_dir: &Path,
-    declared: &str,
-    configuration: &str,
-) -> Option<Vec<PathBuf>> {
-    // The verdict only carries a configuration it located exactly once.
-    let at = declared.find(configuration)?;
-    let (head, rest) = declared.split_at(at);
-    let tail = &rest[configuration.len()..];
-    let (parent, before) = match head.rfind(['/', '\\']) {
-        Some(i) => (&head[..=i], &head[i + 1..]),
-        None => ("", head),
-    };
-    let (after, suffix) = match tail.find(['/', '\\']) {
-        Some(i) => (&tail[..i], &tail[i + 1..]),
-        None => (tail, ""),
-    };
-    let mut candidates: Vec<(bool, PathBuf)> = Vec::new();
-    for child in child_dirs(&join_declared(project_dir, parent))? {
-        let Some(name) = child.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if name.len() < before.len() + after.len()
-            || !name.starts_with(before)
-            || !name.ends_with(after)
-        {
-            continue;
-        }
-        let substituted = &name[before.len()..name.len() - after.len()];
-        candidates.push((
-            !substituted.eq_ignore_ascii_case(crate::BUILD_CONFIGURATION),
-            join_declared(&child, suffix),
-        ));
-    }
-    candidates.sort();
-    Some(candidates.into_iter().map(|(_, dir)| dir).collect())
 }
 
 /// Join an MSBuild-authored relative-or-rooted directory onto `base`.
@@ -4652,14 +4583,6 @@ mod tests {
     fn declared(path: &str) -> OutputDirVerdict {
         OutputDirVerdict::Declared {
             path: path.to_owned(),
-            configuration: None,
-        }
-    }
-
-    fn declared_with_config(path: &str, configuration: &str) -> OutputDirVerdict {
-        OutputDirVerdict::Declared {
-            path: path.to_owned(),
-            configuration: Some(configuration.to_owned()),
         }
     }
 
@@ -4709,66 +4632,6 @@ mod tests {
             locate_fsharp_output_dll(&proj, None, "Lib", &declared("artifacts/")),
             OutputLocation::Absent
         );
-    }
-
-    /// The configuration segment is **searched, not trusted**. The evaluation
-    /// ran under `Debug` (the environment's default) while the user built
-    /// `Release`; committing to the evaluated spelling would miss the only
-    /// output on disk.
-    #[test]
-    fn locate_output_dll_searches_the_declared_configuration_segment() {
-        let tmp = TempDir::new().unwrap();
-        let proj = unbuilt_fsproj(tmp.path(), "Lib");
-        write(&tmp.path().join("artifacts/Release/Lib.dll"), "");
-
-        let found = locate_fsharp_output_dll(
-            &proj,
-            None,
-            "Lib",
-            &declared_with_config("artifacts/Debug/", "Debug"),
-        )
-        .expect_found("the configuration segment is a wildcard");
-        assert!(found.ends_with("artifacts/Release/Lib.dll"), "{found:?}");
-    }
-
-    /// With several configurations built the pick is deterministic and matches
-    /// the default layout's: `Debug` first, whatever the evaluated spelling.
-    #[test]
-    fn locate_output_dll_declared_configuration_prefers_debug() {
-        let tmp = TempDir::new().unwrap();
-        let proj = unbuilt_fsproj(tmp.path(), "Lib");
-        write(&tmp.path().join("artifacts/Debug/Lib.dll"), "");
-        write(&tmp.path().join("artifacts/Release/Lib.dll"), "");
-
-        let found = locate_fsharp_output_dll(
-            &proj,
-            None,
-            "Lib",
-            &declared_with_config("artifacts/Release/", "Release"),
-        )
-        .expect_found("a DLL is located");
-        assert!(found.ends_with("artifacts/Debug/Lib.dll"), "{found:?}");
-    }
-
-    /// `$(Configuration)` need not be a whole path segment: the text around it
-    /// *within* its segment is the affix a candidate must match, and anything
-    /// below it still has to be there.
-    #[test]
-    fn locate_output_dll_declared_configuration_inside_a_segment() {
-        let tmp = TempDir::new().unwrap();
-        let proj = unbuilt_fsproj(tmp.path(), "Lib");
-        write(&tmp.path().join("out-Release/lib/Lib.dll"), "");
-        // A near miss that must not be taken: right prefix, wrong tail.
-        write(&tmp.path().join("out-Other/Lib.dll"), "");
-
-        let found = locate_fsharp_output_dll(
-            &proj,
-            None,
-            "Lib",
-            &declared_with_config("out-Debug/lib/", "Debug"),
-        )
-        .expect_found("the wildcard spans only its own segment");
-        assert!(found.ends_with("out-Release/lib/Lib.dll"), "{found:?}");
     }
 
     /// A rooted `OutDir` names an absolute directory — it is not a

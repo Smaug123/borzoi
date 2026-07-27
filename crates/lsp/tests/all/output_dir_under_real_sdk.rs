@@ -87,24 +87,33 @@ fn a_user_out_dir_still_commits_under_the_real_sdk() {
         verdict_under_real_sdk("<OutDir>artifacts/</OutDir>"),
         OutputDirVerdict::Declared {
             path: "artifacts/".to_owned(),
-            configuration: None,
         }
     );
 }
 
-/// The LSP injects `Configuration` as a global
-/// (`workspace::default_build_properties`), so a configuration-dependent
-/// redirect evaluates rather than declining — and comes back with the segment
-/// marked for searching, since the user may have built another one.
+/// A configuration-dependent redirect declines, and it must decline *here* in
+/// particular: the LSP injects `Configuration` as a global
+/// (`workspace::default_build_properties`), so unlike an SDK-blind walk this
+/// one evaluates the reference cleanly and would commit to `Debug`'s
+/// directory. The user may have built `Release`, and a stale `Debug` assembly
+/// sitting there would be folded against current source.
 #[test]
-fn a_configuration_dependent_out_dir_reports_its_segment() {
-    assert_eq!(
-        verdict_under_real_sdk("<OutDir>artifacts/$(Configuration)/</OutDir>"),
-        OutputDirVerdict::Declared {
-            path: format!("artifacts/{}/", borzoi::BUILD_CONFIGURATION),
-            configuration: Some(borzoi::BUILD_CONFIGURATION.to_owned()),
-        }
-    );
+fn a_configuration_dependent_out_dir_declines() {
+    for body in [
+        "<OutDir>artifacts/$(Configuration)/</OutDir>",
+        // Gated rather than referenced: the value never mentions the
+        // configuration, so only the gate gives it away.
+        "<OutDir Condition=\"'$(Configuration)' == 'Debug'\">fast/</OutDir>",
+        // Laundered through a helper: neither the gate nor the body says
+        // `$(Configuration)`, and only the evaluated value gives it away.
+        "<Which>$(Configuration)</Which><OutDir>out/$(Which)/</OutDir>",
+    ] {
+        assert_eq!(
+            verdict_under_real_sdk(body),
+            OutputDirVerdict::Unknown,
+            "{body} must not commit to one configuration's directory"
+        );
+    }
 }
 
 /// A user `<OutputPath>` redirect is not something this walk can turn into a
