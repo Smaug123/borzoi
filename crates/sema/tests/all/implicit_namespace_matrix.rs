@@ -416,6 +416,28 @@ const CELLS: &[Cell] = &[
         probe: "onlyInNamespaceHalf",
         position: Position::Expr,
     },
+    // ====== what a LATER declaration in the same block does to the fold ======
+    // The implicit open sits at position 0, below everything the block declares
+    // — including declarations the fold itself cannot see when it runs. A local
+    // target is "nothing" in the matrix currency on both sides, so these cells
+    // read: FCS binds something local (None) ⟺ we do not commit the assembly's
+    // (None). A wrong commit shows up as `ours: Some(<fixture member>)`.
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a later local binding out-ranks the implicit member",
+        body: &["let extraValue () = 1"],
+        probe: "extraValue",
+        position: Position::Expr,
+    },
+    // Two more cells belong here and are NOT yet listed: a later constructible
+    // `type Tag()` taking the implicit member's slot, and a later `[<AutoOpen>]
+    // module`'s value out-ranking it. Both are wrong targets today, and both
+    // reproduce identically through an explicit `open Demo.Auto` — so they are
+    // defects of the slot-eviction and same-block-auto-open machinery, not of
+    // this channel, and this grid has no "known wrong" bucket by design. They
+    // are recorded with their exact cell text as their own task; add them here
+    // when it lands.
 ];
 
 /// Cells where we deliberately defer while FCS resolves — the ratchet only

@@ -905,6 +905,39 @@ impl<'a> Resolver<'a> {
                 module_reading: !handles.is_empty(),
             });
         }
+        // The assembly **module** half's dotted-head bookkeeping, keyed on the
+        // handles rather than the merged surface list — the explicit-`open`
+        // path's, for the same reasons, because the reachability it describes is
+        // the path's and not the open's.
+        if !handles.is_empty() {
+            // A prefix that could hide a whole nested *module* (a dropped type,
+            // an unknowable pickle) can make a later `open Sub` name something
+            // we cannot see, so it must not commit a lower root's `Sub`. The
+            // dropped-type ask spans every split of the path.
+            if handles
+                .iter()
+                .any(|&h| self.assemblies.module_may_hide_nested_modules(h))
+                || self
+                    .assemblies
+                    .any_split_of_a_module_path_has_a_dropped_type(&namespace)
+            {
+                self.incomplete_open_prefixes.push(namespace.clone());
+            }
+            // A dotted head through an assembly module is not modelled yet, so
+            // it stays conservative while such a module is in scope — but only
+            // when the module could actually seed one: it has an **accessible**
+            // nested member. The accessibility filter is load-bearing, since an
+            // F# module's `let`s compile to non-public closure classes that
+            // surface as children and can never be a dotted-head prefix.
+            if handles.iter().any(|&h| {
+                self.assemblies
+                    .children(h)
+                    .iter()
+                    .any(|&c| self.assemblies.is_public(c))
+            }) {
+                self.opaque_dotted_open = true;
+            }
+        }
         self.apply_assembly_fold_group(&namespace, group, 0);
         // The project namespace half's own cases/exceptions and its
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves

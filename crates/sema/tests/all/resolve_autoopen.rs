@@ -2466,3 +2466,53 @@ fn implicit_enclosing_namespace_project_module_hidden_values_shadow_the_assembly
          `plainCore`; got {res:?}"
     );
 }
+
+/// A constructible type declared *later in the same block* must take the value
+/// slot of a same-named value an `open` folded in. Reproduced through an
+/// explicit `open`, which is what places the defect in the slot-eviction
+/// machinery rather than in any one open channel — the implicit
+/// enclosing-namespace fold hits it identically, and widened its reach.
+#[test]
+#[ignore = "pre-existing wrong target on main: a later type does not evict an opened value"]
+fn a_later_type_declaration_evicts_an_opened_value_of_the_same_name() {
+    // FCS binds the local `Tag` type's constructor; we bind the assembly's
+    // `Demo.Auto.Extra.Tag` value.
+    let env = fixture_env();
+    let src = "module M\nopen Demo.Auto\ntype Tag() =\n    member _.Marker = 1\nlet x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the block's own `type Tag()` takes the slot; got {res:?}"
+    );
+}
+
+/// An `[<AutoOpen>] module` declared *later in the same block* must fold its
+/// values into the enclosing frame, out-ranking a same-named value an earlier
+/// `open` brought in. Reproduced through an explicit `open` for the same reason
+/// as the test above.
+#[test]
+#[ignore = "pre-existing wrong target on main: a same-block auto-open module does not fold back"]
+fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
+    // FCS binds `LocalAuto.extraValue`; we bind the assembly's
+    // `Demo.Auto.Extra.extraValue`.
+    let env = fixture_env();
+    let src = "module M\nopen Demo.Auto\n[<AutoOpen>]\nmodule LocalAuto =\n    \
+               let extraValue () = 1\nlet x = extraValue\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the block's own `[<AutoOpen>] module LocalAuto` out-ranks the assembly's; got {res:?}"
+    );
+}
