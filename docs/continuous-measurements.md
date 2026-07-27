@@ -252,6 +252,40 @@ Read `unattributed` against `attributed`; a *rise* in the ratio means a new
 decline path appeared that no guard accounts for, which is worth looking at even
 though nothing failed.
 
+`uses.attribute_commits_compared` is a **coverage** number, not a quality one:
+how many of the compared uses were answered out of name resolution's attribute
+commit map rather than its main one. It is published because the failure it
+guards against is silent in every other number here. Attribute types are
+recorded separately (they answer FCS's suffix-first candidate walk) and are
+served to users like any other name, so a comparison that reads only the main
+map sees an attribute answer as *silence* — and silence is what this runner
+banks as a deferral, which claims nothing. Every headline would hold: the
+divergence gate stays at zero, and the deferral count merely rises, which is
+exactly the shape of ordinary timidity. So a fall in this number towards zero on
+a corpus that still contains attributes means a committed surface stopped being
+diffed, and nothing else would say so.
+
+Two skip buckets travel with it, because asking the oracle about a range for the
+first time exposed that it can answer more than once.
+`skipped_uses.shadowed_constructor_use` counts the sites where FCS reported both
+the name the author wrote and the **constructor** that name invokes — `[<Alias>]`,
+`inherit Base(1)`, `Foo()`. Sema resolves the written name and models no separate
+resolution for the constructor, so the name's record grades the site and the
+constructor's steps aside. This is a coverage-preserving reading, not a decline:
+the site is still compared, just against the record that answers the question
+sema was asked. Grading against the constructor instead would pass only when its
+declaration range happened to coincide with its type's, and in the reverse
+direction would *ratify* a resolution to the constructed type at a site whose
+written name is something else.
+
+`skipped_uses.ambiguous_oracle_range` is what survives that: a range where two
+records still disagree about the declaration after the constructor has stepped
+aside, so the oracle genuinely does not say what the site resolves to. It is
+decided on the oracle's answers alone, never on whether ours agrees, so it cannot
+become the bucket a real disagreement escapes into. Watch it against
+`attribute_commits_compared`: a rise here alongside a fall there is coverage
+draining into "unadjudicable", which is the honest bucket but not a free one.
+
 ## Local validation
 
 ```sh

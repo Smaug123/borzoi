@@ -56,6 +56,31 @@ fn tiny_project() -> (TempDir, PathBuf) {
     (tmp, project)
 }
 
+/// An attribute whose type is an in-file **abbreviation** of an in-file
+/// attribute class, which is the shape where FCS's general symbol-use stream is
+/// at its most crowded: the attribute's range can carry an entity use *and* a
+/// constructor use, and the two name different declarations.
+fn alias_attribute_project() -> (TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("AliasAttr.fsproj");
+    write(
+        &project,
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>
+"#,
+    );
+    // Both halves in one file: `[<Base>]` names its attribute class directly and
+    // must be graded, `[<Alias>]` goes through an abbreviation and must not be.
+    write(
+        &tmp.path().join("A.fs"),
+        "module A\n\ntype BaseAttribute() =\n    inherit System.Attribute()\n\ntype Alias = BaseAttribute\n\n[<Base>]\nlet direct = 1\n\n[<Alias>]\nlet aliased = 2\n",
+    );
+    (tmp, project)
+}
+
 fn arcade_gated_project() -> (TempDir, PathBuf) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let project = tmp.path().join("ArcadeGated.fsproj");
@@ -327,6 +352,7 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
                 assembly: None,
                 full_name: None,
                 generic_arity: None,
+                is_constructor: false,
                 declaring: None,
             }],
         }],
@@ -364,6 +390,7 @@ fn a_compiler_generated_value_is_skipped_rather_than_compared() {
         assembly: None,
         full_name: None,
         generic_arity: None,
+        is_constructor: false,
         declaring: None,
     };
     let generated = ProjectUse {
@@ -770,6 +797,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -786,6 +814,7 @@ fn an_unoracled_or_pattern_alias_is_not_a_reverse_divergence() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
             ],
@@ -861,6 +890,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -877,6 +907,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -893,6 +924,7 @@ fn an_enclosing_synthetic_use_does_not_defeat_the_alias_exemption() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
             ],
@@ -936,6 +968,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -952,6 +985,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -964,6 +998,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     assembly: Some("FSharp.Core".to_string()),
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -976,6 +1011,7 @@ fn comparison_reports_skipped_oracle_categories() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
             ],
@@ -996,6 +1032,8 @@ fn comparison_reports_skipped_oracle_categories() {
             non_project_declarations: 1,
             out_of_project_declarations: 0,
             no_oracle_declaration: 1,
+            ambiguous_oracle_range: 0,
+            shadowed_constructor_use: 0,
         }
     );
     assert_eq!(comparison.divergences, Vec::new());
@@ -1024,6 +1062,7 @@ fn comparison_matches_assembly_oracle_declarations() {
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Value".to_string()),
                 generic_arity: None,
+                is_constructor: false,
                 declaring: None,
             }],
         }],
@@ -1036,6 +1075,188 @@ fn comparison_matches_assembly_oracle_declarations() {
     assert_eq!(comparison.divergences, Vec::new());
     assert_eq!(comparison.assembly_divergences, Vec::new());
     assert_eq!(comparison.reverse_divergences, Vec::new());
+}
+
+/// An attribute type is answered out of a **second** commit map, and the
+/// differential has to read it.
+///
+/// Name resolution keeps attribute types apart from ordinary occurrences (they
+/// answer FCS's suffix-first candidate walk), but the LSP serves both — hover
+/// and go-to-definition on `[<Mark>]` reach the attribute's type. A comparison
+/// that asked only `resolution_at` would see silence here and bank a
+/// *deferral*, which claims nothing; the answer would go undiffed however wrong
+/// it was, with every headline number and the divergence gate unmoved. So this
+/// pins the join rather than the count: revert
+/// `committed_resolution_at` to `resolution_at` and `matches` falls to 0 while
+/// `deferrals` rises to 1.
+#[test]
+fn comparison_diffs_an_attribute_type_the_main_resolution_map_never_sees() {
+    let src = "\
+module B
+
+type MarkAttribute () =
+    inherit System.Attribute ()
+
+[<Mark>]
+let value = 1
+";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    // Occurrence 0 is the type's own declaration; occurrence 1 is the written
+    // attribute name, which is where FCS reports the use.
+    let (use_start, use_end) = nth_text_range(src, "Mark", 1);
+    let (decl_start, decl_end) = text_range(src, "MarkAttribute");
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: vec![ProjectUse {
+                // FCS names the suffixed type, as it resolves it.
+                name: "MarkAttribute".to_string(),
+                start: use_start,
+                end: use_end,
+                is_from_definition: false,
+                is_compiler_generated: false,
+                decl: UseDecl::InProject(DeclSite {
+                    file,
+                    start: decl_start,
+                    end: decl_end,
+                }),
+                assembly: None,
+                full_name: None,
+                generic_arity: None,
+                is_constructor: false,
+                declaring: None,
+            }],
+        }],
+    );
+
+    assert_eq!(comparison.uses_considered, 1);
+    assert_eq!(comparison.matches, 1);
+    assert_eq!(comparison.deferrals, 0);
+    assert_eq!(comparison.attribute_commits_compared, 1);
+    assert_eq!(comparison.divergences, Vec::new());
+    assert_eq!(comparison.reverse_divergences, Vec::new());
+}
+
+/// A constructor record does not cost the site its comparison.
+///
+/// Wherever a written name both names something and calls it — `inherit
+/// Base(1)`, `Foo()`, `[<Alias>]` — FCS reports the name *and* the constructor
+/// at one range, and for a type with more than one constructor the two carry
+/// different declarations. Sema answers the written name and models no separate
+/// resolution for the constructor, so the name's record is the one that grades
+/// the site and the constructor's steps aside. Treating the pair as two rival
+/// answers instead would retire the comparison, quietly shrinking coverage on
+/// ordinary code that has nothing to do with attributes.
+#[test]
+fn a_constructor_record_steps_aside_for_the_name_the_author_wrote() {
+    let src = "module B\nlet x = 1\nlet y = x\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    let (x_def_start, x_def_end) = nth_text_range(src, "x", 0);
+    let (y_def_start, y_def_end) = text_range(src, "y");
+    let (use_start, use_end) = nth_text_range(src, "x", 1);
+    let named = ProjectUse {
+        name: "x".to_string(),
+        start: use_start,
+        end: use_end,
+        is_from_definition: false,
+        is_compiler_generated: false,
+        decl: UseDecl::InProject(DeclSite {
+            file: file.clone(),
+            start: x_def_start,
+            end: x_def_end,
+        }),
+        assembly: None,
+        full_name: None,
+        generic_arity: None,
+        is_constructor: false,
+        declaring: None,
+    };
+    // Same range, a *different* declaration, and flagged as the constructor —
+    // the shape a multi-constructor type produces.
+    let constructor = ProjectUse {
+        is_constructor: true,
+        decl: UseDecl::InProject(DeclSite {
+            file: file.clone(),
+            start: y_def_start,
+            end: y_def_end,
+        }),
+        ..named.clone()
+    };
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file,
+            diagnostics: Vec::new(),
+            uses: vec![named, constructor],
+        }],
+    );
+
+    assert_eq!(comparison.skipped_uses.shadowed_constructor_use, 1);
+    assert_eq!(comparison.skipped_uses.ambiguous_oracle_range, 0);
+    assert_eq!(comparison.uses_considered, 1);
+    assert_eq!(comparison.matches, 1);
+    assert_eq!(comparison.divergences, Vec::new());
+    assert_eq!(comparison.reverse_divergences, Vec::new());
+}
+
+/// A record the comparator cannot grade does not get a vote on whether its
+/// range is ambiguous.
+///
+/// The ambiguity skip exists because two *answers* at one range cannot
+/// adjudicate a single verdict. A record with neither an in-project declaration
+/// nor a complete assembly identity is not a second answer — it is a record the
+/// forward pass sets aside as unadjudicable on its own account. Letting it vote
+/// would silently retire a comparison that is perfectly well determined, and
+/// nothing would fail: coverage would just quietly drain into the skip bucket.
+#[test]
+fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
+    let src = "module B\nlet x = 1\nlet y = x\n";
+    let loaded = synthetic_loaded_project(src, AssemblyEnv::default());
+    let file = loaded.parses.paths[0].clone();
+    let (x_def_start, x_def_end) = nth_text_range(src, "x", 0);
+    let (use_start, use_end) = nth_text_range(src, "x", 1);
+    let gradable = ProjectUse {
+        name: "x".to_string(),
+        start: use_start,
+        end: use_end,
+        is_from_definition: false,
+        is_compiler_generated: false,
+        decl: UseDecl::InProject(DeclSite {
+            file: file.clone(),
+            start: x_def_start,
+            end: x_def_end,
+        }),
+        assembly: None,
+        full_name: None,
+        generic_arity: None,
+        is_constructor: false,
+        declaring: None,
+    };
+    // Same range, but no declaration and no assembly identity: the forward pass
+    // counts this one as `no_oracle_declaration`.
+    let ungradable = ProjectUse {
+        name: "x".to_string(),
+        decl: UseDecl::Unlocated,
+        ..gradable.clone()
+    };
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file,
+            diagnostics: Vec::new(),
+            uses: vec![gradable, ungradable],
+        }],
+    );
+
+    assert_eq!(comparison.skipped_uses.ambiguous_oracle_range, 0);
+    assert_eq!(comparison.skipped_uses.no_oracle_declaration, 1);
+    assert_eq!(comparison.uses_considered, 1);
+    assert_eq!(comparison.matches, 1);
+    assert_eq!(comparison.divergences, Vec::new());
 }
 
 #[test]
@@ -1059,6 +1280,7 @@ fn comparison_reports_wrong_assembly_resolution() {
                 assembly: Some("Synthetic.Assembly".to_string()),
                 full_name: Some("Demo.Widget.Other".to_string()),
                 generic_arity: None,
+                is_constructor: false,
                 declaring: None,
             }],
         }],
@@ -1103,6 +1325,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -1119,6 +1342,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
                 ProjectUse {
@@ -1135,6 +1359,7 @@ fn comparison_reports_reverse_only_project_resolution() {
                     assembly: None,
                     full_name: None,
                     generic_arity: None,
+                    is_constructor: false,
                     declaring: None,
                 },
             ],
@@ -1260,6 +1485,51 @@ fn tiny_project_matches_fcs() {
     assert!(
         comparison.matches > 0,
         "fixture should produce at least one exact match"
+    );
+}
+
+/// The attribute commit surface, end to end against the **general** symbol-use
+/// stream the corpus runner actually uses — not the attribute-specific oracle,
+/// which reports one record per attribute and so cannot see this question.
+///
+/// `uses-project` may report more than one symbol at an attribute's range (an
+/// entity use and a constructor use), and for an abbreviation those name
+/// different declarations. Since a single range gets a single answer from us,
+/// the crowded range is where reading the attribute map could turn a correct
+/// answer into a divergence and fail the zero-divergence gate for a project
+/// that is entirely valid.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn alias_attribute_project_matches_fcs() {
+    let (_tmp, project) = alias_attribute_project();
+    let loaded = load_lsp_project(&project).expect("project should load");
+    let json = invoke_fcs_uses_project(&loaded).expect("fcs-dump uses-project");
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
+    let comparison = compare_project_uses(&loaded, &fcs);
+    assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
+    assert_eq!(comparison.divergences, Vec::new());
+    assert_eq!(comparison.assembly_divergences, Vec::new());
+    assert_eq!(comparison.reverse_divergences, Vec::new());
+    assert!(
+        comparison.attribute_commits_compared > 0,
+        "the directly-named attribute class must be put to the oracle"
+    );
+    assert!(
+        comparison.skipped_uses.shadowed_constructor_use > 0,
+        "the constructor record must step aside for the record naming what the \
+         author wrote, rather than grading a type answer it never spoke about"
+    );
+    assert_eq!(
+        comparison.skipped_uses.ambiguous_oracle_range, 0,
+        "with the constructor shadowed there is one answer per range, so \
+         nothing here is unadjudicable"
     );
 }
 

@@ -2009,9 +2009,37 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// The two commit maps answer at disjoint ranges, checked rather than
+    /// asserted in prose.
+    ///
+    /// Both consumers of the union rely on it: the LSP chains the maps to
+    /// navigate an attribute name, and `borzoi-corpus-diff` reads
+    /// [`ResolvedFile::committed_resolution_at`] to diff every answer this file
+    /// commits. A collision would make either one's verdict depend on which map
+    /// it happened to look in first — a wrong answer, arrived at silently.
+    ///
+    /// It holds because an attribute name's range is written where no other name
+    /// is: `resolve_attribute_type` keys on the attribute path's own
+    /// `rangeOfLid`, which no expression or type occurrence shares.
+    ///
+    /// Debug-only, like the census cross-check beside it; every test in the
+    /// workspace runs it.
+    fn debug_assert_commit_maps_are_disjoint(&self) {
+        if cfg!(debug_assertions) {
+            for range in self.attribute_resolutions.keys() {
+                debug_assert!(
+                    !self.resolutions.contains_key(range),
+                    "attribute and main resolutions both answer at {range:?}; \
+                     the union a consumer reads is no longer unambiguous"
+                );
+            }
+        }
+    }
+
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
         self.debug_assert_shadowable_types_are_attributed();
+        self.debug_assert_commit_maps_are_disjoint();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
