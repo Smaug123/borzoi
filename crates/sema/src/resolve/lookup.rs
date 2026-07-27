@@ -3531,9 +3531,19 @@ impl<'a> Resolver<'a> {
                 // Nothing project-side reads the path: the assembly walk decides,
                 // subject to the project-simple-name guard.
                 None => match segs {
-                    [type_seg, case_seg]
-                        if !self.project_binds_type_simple_name(id_text(type_seg.text())) =>
+                    // A project type of the head's simple name shadows every
+                    // assembly reading, so the walk is skipped — a deliberate
+                    // pre-walk decline, and the census names it as one.
+                    [type_seg, _]
+                        if self.project_binds_type_simple_name(id_text(type_seg.text())) =>
                     {
+                        pattern_decline = Some((
+                            type_seg.text_range(),
+                            DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow),
+                        ));
+                        None
+                    }
+                    [type_seg, case_seg] => {
                         let (reading, site) =
                             self.assembly_case_pattern_reading(type_seg, case_seg);
                         pattern_decline = site.map(|s| (type_seg.text_range(), s));

@@ -1869,12 +1869,14 @@ impl<'a> Resolver<'a> {
             // abbreviation before the `…Attribute`-suffix candidates apply,
             // and that interaction is unprobed — committing either the marker
             // or its terminal here would be a guess.
-            TypePathResolution::Assembly { leaf: Some(h), .. }
-                if self.assemblies.is_module(h) || self.assemblies.is_abbreviation(h) =>
-            {
+            TypePathResolution::Assembly {
+                leaf: Some(h),
+                tier,
+                ..
+            } if self.assemblies.is_module(h) || self.assemblies.is_abbreviation(h) => {
                 AttrCandidate::Deferred(DeclineSite {
                     cause: DeclineCause::AttributeOpaqueLeaf,
-                    tier: DeclineTier::WholeWalk,
+                    tier,
                 })
             }
             TypePathResolution::Assembly { leaf: Some(h), .. } => {
