@@ -2829,6 +2829,40 @@ struct MemberCommits {
 }
 
 impl MemberCommits {
+    /// The member answers the LSP would actually **serve**, out of everything
+    /// inference recorded — the only ones a differential may grade, since an
+    /// answer no user is shown is not a claim.
+    ///
+    /// Two things are dropped, and both are dropped here rather than at each
+    /// use so that neither the grading nor the count can forget one:
+    ///
+    /// - **A deferred entry.** Inference's table is sealed wholesale to
+    ///   `Deferred(IncompleteAssemblies)` when the env's identity set is
+    ///   incomplete, and a deferral claims nothing.
+    /// - **An entry a concrete resolver answer contains.** The LSP takes the
+    ///   smallest *containing* resolver resolution first, so where the resolver
+    ///   answers `System.Object.ReferenceEquals` across the whole path, the
+    ///   member token inside it is never reached. Keeping it would let one
+    ///   served answer be graded twice — and reported twice, at two ranges, in
+    ///   the reverse direction.
+    fn served(
+        entries: impl IntoIterator<Item = (TextRange, Resolution)>,
+        concrete_resolver_ranges: &[TextRange],
+    ) -> Self {
+        MemberCommits {
+            by_end: entries
+                .into_iter()
+                .filter(|(_, res)| is_concrete_resolution(*res))
+                .filter(|(member, _)| {
+                    !concrete_resolver_ranges.iter().any(|answered| {
+                        answered.start() <= member.start() && member.end() <= answered.end()
+                    })
+                })
+                .map(|(range, res)| (range.end(), (range, res)))
+                .collect(),
+        }
+    }
+
     /// Inference's answer for the symbol an oracle use at `range` names, if it
     /// has one: the member whose name is that use's tail. Equality of ranges is
     /// the common case (FCS reports a bare `x.Length` at `Length`); a qualified
@@ -2845,7 +2879,7 @@ impl MemberCommits {
     }
 }
 
-/// Solve `file_idx` and collect what inference committed about its members.
+/// Solve `file_idx` and collect the member answers it serves.
 ///
 /// Empty for a `.fsi` Compile slot: a signature file has no implementation tree
 /// to infer over, which is why the LSP's enrichment is impl-only too.
@@ -2853,24 +2887,22 @@ fn member_commits(loaded: &LoadedProject, file_idx: usize) -> MemberCommits {
     let Some(impl_file) = loaded.parses.files[file_idx].file.as_impl() else {
         return MemberCommits::default();
     };
-    let inferred = infer_file(
-        impl_file,
-        loaded.resolved.file(file_idx),
-        &loaded.assembly_env,
-    );
-    MemberCommits {
-        by_end: inferred
+    let rf = loaded.resolved.file(file_idx);
+    let inferred = infer_file(impl_file, rf, &loaded.assembly_env);
+    let answered: Vec<TextRange> = rf
+        .resolutions()
+        .iter()
+        .chain(rf.attribute_resolutions().iter())
+        .filter(|(_, res)| is_concrete_resolution(**res))
+        .map(|(range, _)| *range)
+        .collect();
+    MemberCommits::served(
+        inferred
             .member_resolutions()
             .iter()
-            .map(|(range, res)| (range.end(), (*range, *res)))
-            .collect(),
-    }
-}
-
-/// Whether the resolver itself answered `range` — as opposed to deferring, or
-/// saying nothing, which is where inference's member table stands in.
-fn resolver_committed(rf: &ResolvedFile, range: TextRange) -> bool {
-    matches!(rf.committed_resolution_at(range), Some(res) if !matches!(res, Resolution::Deferred(_)))
+            .map(|(range, res)| (*range, *res)),
+        &answered,
+    )
 }
 
 /// The answer this file commits at `range` across **every** surface the LSP
@@ -2893,16 +2925,17 @@ fn committed_answer(
     }
 }
 
-/// Whether the answer at `range` is one **inference** supplied — the resolver
-/// deferred (or was silent) and the member table stood in. Asked through the
-/// same lookup [`committed_answer`] grades by, so the count cannot drift from
-/// what was actually compared.
+/// Whether the answer at `range` is one **inference** supplied. Asked through
+/// the same lookup [`committed_answer`] grades by, over a table holding only
+/// what [`MemberCommits::served`] admits, so the count cannot drift from what
+/// was actually compared: an entry the resolver's own answer covers, or one
+/// deferred, is not in the table to be found.
 ///
 /// Counted for the same reason [`attribute_commit`] is: it is the number that
 /// says how much of this surface the oracle was actually asked about. It going
 /// to zero is the signal that the differential has stopped reading the surface.
-fn member_commit(rf: &ResolvedFile, members: &MemberCommits, range: TextRange) -> bool {
-    members.answer_for(range).is_some() && !resolver_committed(rf, range)
+fn member_commit(members: &MemberCommits, range: TextRange) -> bool {
+    members.answer_for(range).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3010,7 +3043,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                         if attribute_commit(rf, range) {
                             comparison.attribute_commits_compared += 1;
                         }
-                        if member_commit(rf, &members, range) {
+                        if member_commit(&members, range) {
                             comparison.member_commits_compared += 1;
                         }
                         match committed_answer(rf, &members, range) {
@@ -3078,7 +3111,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             if attribute_commit(rf, range) {
                 comparison.attribute_commits_compared += 1;
             }
-            if member_commit(rf, &members, range) {
+            if member_commit(&members, range) {
                 comparison.member_commits_compared += 1;
             }
             match committed_answer(rf, &members, range) {
@@ -3289,19 +3322,14 @@ fn add_reverse_divergences(
         // Every answer any of the three surfaces commits, each at its own range:
         // an attribute or member answer is a claim served to users, and a claim
         // the oracle is never asked about is the one that can be wrong forever.
-        // A member entry the resolver also answers concretely is dropped — the
-        // resolver's answer is the one served there, and it is already in this
-        // list.
+        // The member table holds only what is served (`MemberCommits::served`),
+        // so an answer the resolver's own covers is not counted here twice.
         let mut answers: Vec<(TextRange, Resolution)> = rf
             .resolutions()
             .iter()
             .chain(rf.attribute_resolutions().iter())
             .map(|(range, res)| (*range, *res))
-            .chain(
-                members
-                    .iter()
-                    .filter(|(range, _)| !resolver_committed(rf, *range)),
-            )
+            .chain(members.iter())
             .filter(|(_, res)| is_concrete_resolution(*res))
             .collect();
         answers.sort_by_key(|(range, _)| range_pair(*range));
@@ -4462,6 +4490,66 @@ mod tests {
             std::fs::create_dir_all(parent).expect("create parent dir");
         }
         std::fs::write(path, text).expect("write fixture file");
+    }
+
+    fn range(start: u32, end: u32) -> TextRange {
+        TextRange::new(start.into(), end.into())
+    }
+
+    /// A concrete answer to stand in for one of inference's. Which *kind* it is
+    /// does not matter to the filter under test — it admits or drops an entry on
+    /// concreteness and containment alone — so this takes the one the fixture env
+    /// can hand out.
+    fn concrete_answer(env: &AssemblyEnv) -> Resolution {
+        Resolution::Entity(fixture_handle(env, "Holder", 0, false))
+    }
+
+    /// A deferred member entry is not a commit.
+    ///
+    /// Inference's table is sealed wholesale to `Deferred(IncompleteAssemblies)`
+    /// when the env's identity set is incomplete. Counting one would report a
+    /// site as *compared* in the same breath as the comparison recorded it as a
+    /// deferral — a coverage number claiming an answer that was never put to the
+    /// oracle.
+    #[test]
+    fn a_deferred_member_entry_is_not_served() {
+        let env = marker_fixture_env();
+        let answer = concrete_answer(&env);
+        let served = MemberCommits::served(
+            [
+                (range(10, 16), answer),
+                (
+                    range(20, 26),
+                    Resolution::Deferred(borzoi_sema::DeferredReason::IncompleteAssemblies),
+                ),
+            ],
+            &[],
+        );
+
+        assert_eq!(served.answer_for(range(10, 16)), Some(answer));
+        assert_eq!(served.answer_for(range(20, 26)), None);
+    }
+
+    /// A member entry a concrete resolver answer *contains* is not served, so it
+    /// is not graded either.
+    ///
+    /// At `System.Object.ReferenceEquals` the resolver answers across the whole
+    /// path and inference also records the member token inside it. The LSP takes
+    /// the smallest containing resolver answer first, so the inner entry is
+    /// never reached; grading it too would compare one served answer twice and,
+    /// where the oracle says nothing, report it as two reverse divergences.
+    #[test]
+    fn a_member_entry_a_resolver_answer_covers_is_not_served() {
+        let env = marker_fixture_env();
+        let answer = concrete_answer(&env);
+        let covered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 58)]);
+        assert_eq!(covered.answer_for(range(43, 58)), None);
+        assert_eq!(covered.iter().count(), 0);
+
+        // Merely overlapping is not covering: a resolver answer that stops short
+        // of the member name leaves it served.
+        let uncovered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 42)]);
+        assert_eq!(uncovered.answer_for(range(43, 58)), Some(answer));
     }
 
     #[test]

@@ -1415,6 +1415,42 @@ fn a_member_answer_the_oracle_is_silent_about_is_a_reverse_divergence() {
     );
 }
 
+/// One served answer is reported once.
+///
+/// At a static call the resolver answers across the whole path *and* inference
+/// records the member token inside it. The LSP reaches the resolver's answer
+/// first (it takes the smallest resolution *containing* the cursor), so the
+/// inner entry is never served — and grading it as well would compare one answer
+/// twice and, with the oracle silent, report it as two separate soundness
+/// failures at two ranges.
+#[test]
+fn a_member_entry_the_resolver_answers_over_is_not_reported_twice() {
+    let src = "module B\nlet b = System.Object.ReferenceEquals (\"a\", \"b\")\n";
+    let loaded = bcl_loaded_project(src);
+    let file = loaded.parses.paths[0].clone();
+    let path = text_range(src, "System.Object.ReferenceEquals");
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: Vec::new(),
+        }],
+    );
+
+    let member: Vec<_> = comparison
+        .reverse_divergences
+        .iter()
+        .filter(|d| d.range.1 == path.1)
+        .map(|d| d.range)
+        .collect();
+    assert_eq!(
+        member,
+        vec![path],
+        "the whole-path answer is the served one, and the only one reported"
+    );
+}
+
 #[test]
 fn comparison_reports_wrong_assembly_resolution() {
     let src = "module B\nlet _ = Demo.Widget.Value\n";
