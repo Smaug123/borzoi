@@ -130,6 +130,63 @@ struct SubmoduleFold {
     has_type: bool,
 }
 
+/// One open-fold **group**'s assembly-side surfaces and the residue verdicts
+/// that decide how its names may be committed — see
+/// [`Resolver::assembly_fold_group`], which is the only thing that builds one.
+///
+/// Carries the verdicts rather than re-deriving them per caller: `demote` and
+/// `below_vals` feed [`Resolver::open_assembly_module_fold`], while `barrier`
+/// and `hides_names` decide the generation bump and the dotted-head blanket.
+/// A caller that recomputed any of these from `surfaces` alone would miss
+/// `path_dropped` (a same-FQN module half with no surface at all).
+pub(super) struct AssemblyFoldGroup {
+    /// The fold surfaces, in FCS fold order: the assembly module half(s), then
+    /// the assembly namespace half, then the project half's contestant names.
+    pub(super) surfaces: Vec<OpenFoldSurface>,
+    /// The group's fold order is not decidable — every one of its names defers.
+    pub(super) demote: bool,
+    /// Tycon-tier-confined residue: the group's **case** entries defer, its vals
+    /// stay definite.
+    pub(super) below_vals: bool,
+    /// A type was dropped at some split of the path, so a same-FQN module half
+    /// may exist that contributes no surface at all.
+    path_dropped: bool,
+    /// A namespace half's constructor-slot type name may evict an earlier open's
+    /// same-named value, with no collision entry to demote.
+    cross_kind_ns_type: bool,
+    /// Whether the path is also an in-project namespace — the caller's cue to
+    /// fold the project half's own values after this group.
+    pub(super) project_ns: bool,
+}
+
+impl AssemblyFoldGroup {
+    /// Whether this group must **shadow everything folded before it**: any
+    /// unseen or unordered name, or a cross-kind namespace type that evicts an
+    /// earlier value.
+    ///
+    /// A risen barrier stales every earlier name — an earlier open's value AND a
+    /// local binding. A *dotted head* through such a staled entry (`X.Zero`
+    /// after `let X = …`) must then DEFER rather than fall through to a
+    /// qualified path an earlier open can still see: FCS binds the local the
+    /// bump staled. Every caller gets that from the per-head `head_entry_staled`
+    /// veto in the qualified channels (codex round 10).
+    pub(super) fn barrier(&self) -> bool {
+        (!self.surfaces.is_empty() || self.path_dropped)
+            && (self.demote || self.below_vals || self.cross_kind_ns_type)
+    }
+
+    /// Whether the group hides names it cannot LIST — which needs more than the
+    /// per-head staleness veto, because the hidden name could itself be a dotted
+    /// HEAD with no earlier entry to go stale (`X.Red` where the residue conceals
+    /// a value `X` — codex round 7). The KNOWN-names arm alone
+    /// (`cross_kind_ns_type` — every name it contests is an entry or a
+    /// contestant) hides nothing, so a group with only that keeps its dotted
+    /// resolution.
+    pub(super) fn hides_names(&self) -> bool {
+        self.demote || self.below_vals
+    }
+}
+
 impl<'a> Resolver<'a> {
     /// Push one source-ordered *opened* value entry per distinct bare name of
     /// `handle` into the current frame — the names an `open type T` (or the
@@ -177,6 +234,163 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         self.module_frame().entries.extend(entries);
+    }
+
+    /// Collect one open-fold **group**'s assembly-side surfaces at path `gp`,
+    /// and the residue verdicts that decide how its names may be committed.
+    ///
+    /// The group is FCS's unit of folding: its environment maps a head to the
+    /// LIST of every same-named module/namespace — across every tier and every
+    /// assembly — and an open folds them ALL together
+    /// (`AddModuleOrNamespaceRefsContentsToNameEnv`, a `foldBack`). So the
+    /// halves sharing one path form ONE unit whose barrier and demotion
+    /// decisions span exactly its members. Both channels that fold a path go
+    /// through here — an `open` the source wrote ([`super::decls`]'s
+    /// `ModuleDecl::Open` arm) and the implicit open of a block's own enclosing
+    /// namespace ([`Self::open_own_enclosing_namespace`]) — because the halves
+    /// a path has, and what their residue costs, are properties of the *path*,
+    /// not of how it came to be opened. Splitting them was exactly how the
+    /// implicit channel first shipped able to commit an assembly member over a
+    /// contesting half that the explicit channel already deferred.
+    ///
+    /// The caller supplies the assembly **module** half's handles (which it
+    /// needs separately for the dotted-head bookkeeping) and says whether the
+    /// assembly **namespace** half applies; the project namespace half's
+    /// constructor-slot type names join as a contestant-only surface. What the
+    /// caller still owns is *ordering*: where the generation barrier lands
+    /// relative to its own other pushes, and where the project half's values go
+    /// (after this group, so they out-rank it by position — Q14).
+    pub(super) fn assembly_fold_group(
+        &mut self,
+        gp: &[String],
+        handles: &[EntityHandle],
+        assembly_ns_applies: bool,
+    ) -> AssemblyFoldGroup {
+        let mut surfaces: Vec<OpenFoldSurface> = handles
+            .iter()
+            .map(|&h| self.assemblies.open_fold_surface(h))
+            .collect();
+        // The **assembly namespace half** joins the fold as one more surface
+        // (`docs/assembly-module-open-plan.md`, "the namespace half joins the
+        // fold"): its direct tycon tier (exceptions, non-RQA union cases) and its
+        // `[<AutoOpen>]` submodules' contents. Folding it here is what lets the
+        // cross-kind demote below stay per-name: a name the namespace half
+        // supplies collides per-name with the module half inside the fold writer,
+        // and its name-unknown residue feeds the group verdict, instead of the
+        // whole module half deferring wholesale.
+        if assembly_ns_applies {
+            surfaces.extend(self.assemblies.open_namespace_fold_surfaces(gp));
+        }
+        // The **project namespace half**'s own constructible type names join the
+        // fold as a contestant-only surface (codex review of §7's machinery
+        // slice): a project type at this FQN takes FCS's unqualified constructor
+        // slot exactly like an assembly namespace's constructible types do, so it
+        // can evict a same-named *value* from a DIFFERENT surface (a colocated
+        // assembly module) — `collisions()` in [`Self::open_assembly_module_fold`]
+        // demotes the colliding name once it sees both. Not entries (sema does not
+        // model project type members), so the contested name itself still defers —
+        // sound, just unavailable, like the assembly-side analogue.
+        let project_ns = self.is_project_namespace_path(gp);
+        if project_ns {
+            let contestants = self.project_namespace_contestant_names(gp);
+            if !contestants.is_empty() {
+                surfaces.push(OpenFoldSurface {
+                    contestant_names: contestants,
+                    ..Default::default()
+                });
+            }
+        }
+        // Name-unknown residue of the fold group — full tier: a surface that
+        // cannot list all its names, or a dropped type at ANY split of the path,
+        // which may be a same-FQN module half we cannot see at all (round 16 — the
+        // check must span the same splits as the lookup). Ungated on the module
+        // half existing: a dropped type at a split can be a same-FQN module half of
+        // a READING-only or project-only group too (codex round 23) — its hidden
+        // contents shadow earlier opens and contest the group's assembly-side names
+        // either way.
+        let path_dropped = self
+            .assemblies
+            .any_split_of_a_module_path_has_a_dropped_type(gp);
+        // The **project namespace half**'s own name-unknown residue — an
+        // `[<AutoOpen>]` type (or any other construct `open_project_namespace_values`
+        // cannot enumerate the names of) directly in `gp` or one of its
+        // `[<AutoOpen>]` submodules (codex review round 5, fcs-dump-verified: sema
+        // has no project-side `open_type_statics` equivalent, so such a type's
+        // statics are invisible to every enumeration this fold does). Folds into
+        // `full_residue` exactly like an assembly surface's own residue does — a
+        // colliding assembly value must defer, not stay wrongly definite, when the
+        // project half might supply a name we cannot see.
+        let project_ns_hidden = project_ns && self.namespace_fold_has_hidden_values(gp);
+        let full_residue = surfaces.iter().any(|s| s.residue) || path_dropped || project_ns_hidden;
+        // Tycon-tier-confined residue (a case-nameless union): hidden names that
+        // FCS folds *before* the vals. They shadow earlier opens (barrier) and
+        // contest the group's own case entries, but never its vals (round 10) — in
+        // ONE surface. Across a merge (module half + namespace half, or two
+        // assemblies) the tiers interleave in reference order, so with more than
+        // one surface it escalates to the full demote.
+        let below_vals = surfaces.iter().any(|s| s.residue_below_vals);
+        // A cross-kind path where the FQN is ALSO a **project** namespace needs no
+        // blanket demote (§7's "machinery" slice): unlike two assemblies
+        // (unknowable reference order, `collisions()`'s reason to defer), the
+        // project half's fold position relative to every assembly half is FIXED —
+        // it is pushed strictly after this group's assembly fold
+        // (`open_project_namespace_values`, Q14: the project's own fragment always
+        // folds last) — so a name it supplies simply out-ranks the module half's by
+        // **position**, whether or not the module half's own entry stays definite.
+        let demote = full_residue || (below_vals && surfaces.len() > 1);
+        // A namespace half's constructor-slot **type** name enters FCS's unqualified
+        // slot and **evicts** a same-named value from an EARLIER open — even when
+        // nothing in this group supplies that name, so no collision entry is emitted
+        // for it. The type is not a fold entry (it takes its slot via the
+        // eviction/type channel, which also serves qualified `Type.Member`), so the
+        // only lever left is the generation barrier. Gated on the **module half**: a
+        // pure namespace open needs no barrier — its own entries shadow by position,
+        // and the head-slot eviction machinery already handles a local value vs a
+        // namespace type, so bumping there would stale that local and mis-resolve
+        // the eviction probes.
+        let cross_kind_ns_type =
+            !handles.is_empty() && surfaces.iter().any(|s| !s.contestant_names.is_empty());
+        AssemblyFoldGroup {
+            surfaces,
+            demote,
+            below_vals,
+            path_dropped,
+            cross_kind_ns_type,
+            project_ns,
+        }
+    }
+
+    /// Apply one [`AssemblyFoldGroup`]: the Stage-1 signature screen, then the
+    /// fold itself at `open_pos`.
+    ///
+    /// The screen (`docs/fsi-signature-restriction-plan.md`): a bare name this
+    /// open would commit to an assembly member, at a path a signatured project
+    /// module *may* expose, must defer instead — FCS binds the `.fsi` (probe:
+    /// bare `shown` after `open ProbeNs.Shared` with a colliding `RefLib` → the
+    /// `.fsi`). The entry is demoted to [`OpenFoldTarget::Opaque`] (in scope,
+    /// shadowing by position, naming nothing) rather than removed, so an
+    /// earlier open's same-named value cannot wrongly win. Names the signature
+    /// provably cannot expose keep their assembly target (probe: bare `bar` →
+    /// the assembly). Runs on the *complete* surface list — the namespace half's
+    /// auto-open contents included.
+    pub(super) fn apply_assembly_fold_group(
+        &mut self,
+        gp: &[String],
+        mut group: AssemblyFoldGroup,
+        open_pos: u32,
+    ) {
+        if group.surfaces.is_empty() {
+            return;
+        }
+        let implicit_screened = self.preceding.implicit_module_open_screened(gp);
+        for surface in &mut group.surfaces {
+            for entry in &mut surface.entries {
+                if implicit_screened || self.preceding.sig_screened_open_name(gp, &entry.name) {
+                    entry.target = OpenFoldTarget::Opaque;
+                }
+            }
+        }
+        self.open_assembly_module_fold(group.surfaces, open_pos, group.demote, group.below_vals);
     }
 
     /// Push the complete-or-opaque **fold surfaces** of the assembly module(s)
@@ -567,8 +781,8 @@ impl<'a> Resolver<'a> {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
     }
 
-    /// Bring the **referenced assemblies'** contribution to this block's own
-    /// enclosing namespace into scope, with no `open` written.
+    /// Bring this block's own enclosing namespace into scope, with no `open`
+    /// written.
     ///
     /// FCS opens the enclosing namespace path implicitly, once per top-level
     /// block and before any of its declarations
@@ -580,50 +794,58 @@ impl<'a> Resolver<'a> {
     /// auto-open module of `A` is not in scope. A `module A.B.M` header
     /// encloses in `A.B`, which is what `namespace_depth` already measures.
     ///
-    /// Deliberately cross-assembly: FCS's `eModulesAndNamespaces` holds one
-    /// modref per CCU declaring the namespace and opens all of them, so
-    /// restricting this to one assembly would under-resolve. The
-    /// per-contributing-assembly surfaces carry that: a name two assemblies
-    /// both supply is a reference-order contest we cannot decide, and
-    /// [`Self::open_assembly_module_fold`] defers it.
+    /// It is the SAME fold an explicit `open` of that path performs, so it goes
+    /// through the same [`AssemblyFoldGroup`] — every half the path has, and
+    /// each half's residue cost, is a property of the path rather than of how
+    /// it came to be opened. FCS says so directly: the implicit open resolves
+    /// the path with `ResolveLongIdentAsModuleOrNamespace`, which yields
+    /// **every** modref at the FQN — this project's own fragment, each
+    /// referenced assembly's namespace, and a same-FQN top-level *module* in
+    /// any of them — and `OpenModuleOrNamespaceRefs` folds them together. So:
     ///
-    /// The **project's** half of the namespace is not folded here: a project
-    /// `[<AutoOpen>]` submodule's values already reach the rest of their own
-    /// enclosing namespace from the submodule's declaration site, which is
-    /// why the explicit-`open` path skips a literal self-open of the current
-    /// namespace too (see the `open` arm in `decls.rs`, fcs-dump-verified).
+    /// - **cross-assembly**: a name two assemblies both supply is a
+    ///   reference-order contest we cannot decide, and
+    ///   [`Self::open_assembly_module_fold`] defers it;
+    /// - **cross-kind**: a path that is a namespace in one reference and a
+    ///   module in another merges both halves, so a name they both supply
+    ///   defers rather than committing the namespace half's;
+    /// - **the project's own half folds last** (Q14), pushed after the assembly
+    ///   halves so a project union case out-ranks a colliding assembly
+    ///   auto-open value by position (fcs-dump-verified: with `type Color = Tag
+    ///   | Other` in an earlier file of the namespace, bare `Tag` is
+    ///   `Demo.Auto.Color.Tag`, not the assembly's `Extra.Tag`).
     ///
     /// Position 0: this precedes every declaration in the block, so anything
     /// the file writes — a `let`, a later `open`, a type it defines — outranks
-    /// it, which is FCS's last-write-wins env.
+    /// it, which is FCS's last-write-wins env. That is also why the project
+    /// half is folded *here* but skipped by an explicit self-`open` of the same
+    /// namespace (see the `open` arm in `decls.rs`): position 0 is FCS's real
+    /// fold position for it, while re-running it at a later `open`'s text
+    /// position would wrongly override a binding declared in between.
     pub(super) fn open_own_enclosing_namespace(&mut self) {
         let namespace = self.enclosing_namespace().to_vec();
         if namespace.is_empty() {
             return;
         }
-        let surfaces = self.assemblies.open_namespace_fold_surfaces(&namespace);
-        if surfaces.is_empty() {
-            return;
+        // The same-FQN assembly **module** half — `ResolveLongIdentAsModuleOrNamespace`
+        // returns modules and namespaces alike, so a top-level `module A.B` in
+        // one reference merges with `namespace A.B` in another.
+        let handles = self.opened_assembly_modules(&namespace);
+        let group = self.assembly_fold_group(&namespace, &handles, true);
+        if group.barrier() {
+            self.open_generation += 1;
         }
-        // Same residue reasoning as the explicit-`open` group fold: a surface
-        // that hides names cannot have its siblings' fold order decided, and a
-        // type dropped at any split of the path may be a module half whose
-        // contents we never saw.
-        let full_residue = surfaces.iter().any(|s| s.residue)
-            || self
-                .assemblies
-                .any_split_of_a_module_path_has_a_dropped_type(&namespace);
-        // Tycon-tier-confined residue contests only the group's own case
-        // entries within one surface; across a merge the tiers interleave in
-        // reference order, so it escalates to the full demote.
-        let below_vals = surfaces.iter().any(|s| s.residue_below_vals);
-        let demote = full_residue || (below_vals && surfaces.len() > 1);
-        // A group that hides names we cannot list could conceal a dotted
-        // *head*, which no per-head staleness test can see.
-        if full_residue || below_vals {
+        if group.hides_names() {
             self.opaque_dotted_open = true;
         }
-        self.open_assembly_module_fold(surfaces, 0, demote, below_vals);
+        let project_ns = group.project_ns;
+        self.apply_assembly_fold_group(&namespace, group, 0);
+        // The project half's own cases/exceptions and its `[<AutoOpen>]`
+        // submodules' contents, pushed AFTER the assembly halves so that on a
+        // shared name the project entry wins by position.
+        if project_ns {
+            self.open_project_namespace_values(&namespace, 0);
+        }
     }
 
     /// Whether opening module `mp` may bring **value-space names we cannot

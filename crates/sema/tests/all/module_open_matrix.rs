@@ -22,11 +22,12 @@
 //! children (Slice B's nested-type / submodule channels), plus project-`let`
 //! contests on both sides of the open.
 
-use crate::common::fold_matrix::{Cell, Position, run_matrix};
+use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
 const CELLS: &[Cell] = &[
     // ---- values and a literal: the fold's bread and butter ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "vals / module value, expression",
         body: &["open Demo.MOpen.Vals"],
@@ -34,6 +35,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "vals / literal, expression",
         body: &["open Demo.MOpen.Vals"],
@@ -41,6 +43,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         // A `[<Literal>]` is a CONSTANT pattern; a plain value in pattern
         // position would be a fresh binder instead.
         decls: &[],
@@ -51,6 +54,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- project-`let` contests around the open (position-ordered) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "vals / project binding shadows the earlier open, expression",
         body: &["open Demo.MOpen.Vals", "let mVal = 5"],
@@ -58,6 +62,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "vals / later open shadows the project binding, expression",
         body: &["let mVal = 5", "open Demo.MOpen.Vals"],
@@ -66,6 +71,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- module-level exception: commits (the §8 demotion is namespace-only) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-mod / module value, expression",
         body: &["open Demo.MOpen.ExnMod"],
@@ -73,6 +79,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-mod / exception, expression",
         body: &["open Demo.MOpen.ExnMod"],
@@ -80,6 +87,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-mod / exception, pattern",
         body: &["open Demo.MOpen.ExnMod"],
@@ -91,6 +99,7 @@ const CELLS: &[Cell] = &[
     // exception and wins the bare name in both positions — in a pattern it is
     // a constant pattern, so returning the exception would be a wrong target ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-lit-mod / literal-vs-exception, expression",
         body: &["open Demo.MOpen.ExnLitMod"],
@@ -98,6 +107,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-lit-mod / literal-vs-exception, bare pattern",
         body: &["open Demo.MOpen.ExnLitMod"],
@@ -106,6 +116,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- the same shadow with a PLAIN value: what does the pattern bind? ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-shadow-mod / plain value shadows the exception, expression",
         body: &["open Demo.MOpen.ExnShadowMod"],
@@ -113,6 +124,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-shadow-mod / plain value shadows the exception, pattern",
         body: &["open Demo.MOpen.ExnShadowMod"],
@@ -121,6 +133,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- plain union: cases fold opaque (Q1) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union-mod / unique case, expression",
         body: &["open Demo.MOpen.UnionMod"],
@@ -128,6 +141,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union-mod / unique case, pattern",
         body: &["open Demo.MOpen.UnionMod"],
@@ -135,6 +149,7 @@ const CELLS: &[Cell] = &[
         position: Position::PatternCtor,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union-mod-dotted / type-qualified case, expression",
         body: &["open Demo.MOpen.UnionMod"],
@@ -143,6 +158,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- RQA union: cases NOT imported bare; the dotted channel is the only one ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa-mod / case not imported, expression",
         body: &["open Demo.MOpen.RqaMod"],
@@ -150,6 +166,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa-mod-dotted / required-qualified case, expression",
         body: &["open Demo.MOpen.RqaMod"],
@@ -157,6 +174,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa-mod-dotted / required-qualified case, bare pattern",
         body: &["open Demo.MOpen.RqaMod"],
@@ -165,6 +183,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- struct union: cases import bare (non-RQA) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "struct-mod / unique case, expression",
         body: &["open Demo.MOpen.StructMod"],
@@ -172,6 +191,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "struct-mod / unique case, bare pattern",
         body: &["open Demo.MOpen.StructMod"],
@@ -180,6 +200,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- active pattern: tags fold opaque ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "actpat / tag, bare pattern",
         body: &["open Demo.MOpen.ActPat"],
@@ -188,6 +209,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- [<AutoOpen>] submodule: folded recursively ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-sub / module value, expression",
         body: &["open Demo.MOpen.AutoSub"],
@@ -195,6 +217,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-sub / auto-open inner value, expression",
         body: &["open Demo.MOpen.AutoSub"],
@@ -202,6 +225,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-sub-dotted / submodule-qualified value, expression",
         body: &["open Demo.MOpen.AutoSub"],
@@ -213,6 +237,7 @@ const CELLS: &[Cell] = &[
     // still commits soundly (contrast the namespace matrix's AutoType shape,
     // where the value sat on another surface and reference order demoted it) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-type-mod / module value beside the auto-open type, expression",
         body: &["open Demo.MOpen.AutoTypeMod"],
@@ -220,6 +245,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-type-mod / auto-opened static, expression",
         body: &["open Demo.MOpen.AutoTypeMod"],
@@ -228,6 +254,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- nested class: the bare constructor slot, and Slice B's dotted head ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-mod / module value, expression",
         body: &["open Demo.MOpen.ClassMod"],
@@ -235,6 +262,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-mod / nested type constructor, bare expression",
         body: &["open Demo.MOpen.ClassMod"],
@@ -242,6 +270,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-mod-dotted / static under the nested-type head, expression",
         body: &["open Demo.MOpen.ClassMod"],
@@ -250,6 +279,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- plain submodule: contents NOT imported; Slice B's dotted head ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "sub-mod / submodule content not imported, expression",
         body: &["open Demo.MOpen.SubMod"],
@@ -257,6 +287,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "sub-mod-dotted / submodule-qualified value, expression",
         body: &["open Demo.MOpen.SubMod"],
@@ -265,6 +296,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- two module opens: position-ordered shadowing, no reference-order haze ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "dup / later open wins the colliding value, expression",
         body: &["open Demo.MOpen.DupA", "open Demo.MOpen.DupB"],
@@ -272,6 +304,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "dup / value unique to the earlier open, expression",
         body: &["open Demo.MOpen.DupA", "open Demo.MOpen.DupB"],

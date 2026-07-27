@@ -41,11 +41,12 @@
 //! resolves). That channel is pinned against the real article instead, by
 //! `resolve_fsharp_core::open_checked_binds_the_checked_conversions`.
 
-use crate::common::fold_matrix::{Cell, Position, run_matrix};
+use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
 const CELLS: &[Cell] = &[
     // ---- explicit namespace prefix ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "explicit-ns / control: the enclosing auto-open value",
         body: &["open Demo.Auto"],
@@ -53,6 +54,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "explicit-ns / plain submodule of the namespace's auto-open module",
         body: &["open Demo.Auto", "open ExtraShorten"],
@@ -61,6 +63,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- transitive: two auto-open levels down ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "transitive / plain submodule two auto-open levels down",
         body: &["open Demo.Auto", "open DeepShorten"],
@@ -69,6 +72,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- precedence: auto-open-derived vs the container's own submodule ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "precedence / auto-open-derived prefix out-ranks the direct submodule",
         body: &["open Demo.Auto", "open ShortenContest"],
@@ -77,6 +81,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- module prefix (the opened container is a module, not a namespace) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "module-prefix / control: the enclosing auto-open submodule's value",
         body: &["open Demo.MOpen.AutoSub"],
@@ -84,6 +89,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "module-prefix / plain submodule of the opened module's auto-open submodule",
         body: &["open Demo.MOpen.AutoSub", "open InnerShorten"],
@@ -92,6 +98,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- negative controls ----
     Cell {
+        container: Container::Anon,
         // The closure recurses through `[<AutoOpen>]` modules only: a plain
         // module nested in a plain module answers to no short name.
         decls: &[],
@@ -101,6 +108,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         // An `internal` auto-open module is inaccessible cross-assembly, so it
         // contributes neither contents nor a shortening prefix.
         decls: &[],
@@ -111,6 +119,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- two auto-open roots contesting the short name ----
     Cell {
+        container: Container::Anon,
         // Sibling roots in one namespace, contributed by DIFFERENT assemblies:
         // FCS folds `AsmAutoA` then `AsmAutoB` in reference order and the later
         // fold wins. Unlike the same-FQN merge (`Demo.ModuleOpen.Shared`, which

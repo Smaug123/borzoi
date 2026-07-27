@@ -2350,7 +2350,6 @@ fn an_auto_open_module_shadows_a_dotted_paths_head_at_an_explicit_open() {
 }
 
 #[test]
-#[ignore = "unsound: the implicit fold commits over the project half — see task #43"]
 fn implicit_enclosing_namespace_does_not_outrank_a_project_case() {
     // The implicit self-open sibling of
     // `project_namespace_case_outranks_assembly_auto_open`: with no `open`
@@ -2368,9 +2367,53 @@ fn implicit_enclosing_namespace_does_not_outrank_a_project_case() {
         u32::try_from(start + "Tag".len()).unwrap().into(),
     );
     let res = proj.file(1).resolution_at(use_at);
+    let (file_idx, def) = res.and_then(|r| proj.item_def(r)).unwrap_or_else(|| {
+        panic!("bare `Tag` must bind the project's own union case; got {res:?}")
+    });
+    assert_eq!(
+        file_idx, 0,
+        "the project union case in file 0, not the assembly `Extra.Tag`"
+    );
+    assert_eq!(def.range, at(src0, "Tag"));
+}
+
+#[test]
+fn implicit_enclosing_namespace_merges_a_same_fqn_assembly_module_half() {
+    // The implicit self-open sibling of
+    // `a_name_supplied_by_both_the_module_and_namespace_halves_of_a_path_defers`.
+    // `Demo.ModuleOpen.Merged` is a **module** in the autoopen fixture and a
+    // **namespace** (with an `[<AutoOpen>]` submodule) in the abbrev one, and
+    // both supply `fromModuleHalf`. FCS's `ImplicitlyOpenOwnNamespace` resolves
+    // the enclosing path with `ResolveLongIdentAsModuleOrNamespace`, which
+    // returns **every** modref at the FQN — modules and namespaces alike — and
+    // folds them together in reference order. We do not model reference order,
+    // so a name both halves supply must DEFER; collecting only the namespace
+    // half would commit its member instead.
+    let env = two_fsharp_assembly_env();
+    let src =
+        "namespace Demo.ModuleOpen.Merged\n\nmodule Client =\n    let t () = fromModuleHalf 1\n";
+    let rf = resolve(src, &env);
     assert!(
-        !matches!(res, Some(Resolution::Member { .. })),
-        "the implicit enclosing-namespace fold must not commit the assembly's \
-         `Extra.Tag` over the project's own union case; got {res:?}"
+        !matches!(
+            rf.resolution_at(at(src, "fromModuleHalf")),
+            Some(Resolution::Member { .. })
+        ),
+        "both halves of the enclosing path supply `fromModuleHalf`; FCS orders them \
+         by reference, which we do not model — defer, got {:?}",
+        rf.resolution_at(at(src, "fromModuleHalf"))
+    );
+
+    // A name only ONE half supplies is uncontested and still resolves — the merge
+    // must not blanket-decline (Q13, `docs/assembly-module-open-plan.md` §4c).
+    let src = "namespace Demo.ModuleOpen.Merged\n\nmodule Client =\n    \
+               let t () = onlyInNamespaceHalf ()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "onlyInNamespaceHalf")),
+            Some(Resolution::Member { .. })
+        ),
+        "a name unique to the namespace half is uncontested by the module half; got {:?}",
+        rf.resolution_at(at(src, "onlyInNamespaceHalf"))
     );
 }

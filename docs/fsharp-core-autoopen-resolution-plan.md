@@ -110,16 +110,27 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   (`ImplicitlyOpenOwnNamespace`, `CheckDeclarations.fs`); a `module A.B.M`
   header encloses in `A.B`. Never a prefix: from inside `namespace A.B`, an
   auto-open module of `A` is out of scope (fcs-dump-verified, both directions).
-  Deliberately **cross-assembly** — `eModulesAndNamespaces` holds one modref per
-  CCU declaring the namespace and FCS opens all of them — which is the opposite
-  of the manifest channel above, where `ApplyAssemblyLevelAutoOpenAttribute`
-  builds a modref into the declaring CCU alone. `Resolver::open_own_enclosing_namespace`
-  routes it through the same per-contributing-assembly surfaces + collision /
-  residue verdicts as an explicit `open`, so a name two assemblies both supply
-  defers rather than committing one. The project's own half is *not* folded
-  here: its auto-open submodules already reach the rest of their namespace from
-  their declaration site, which is why the explicit-`open` path skips a literal
-  self-open too.
+  It is the **same fold** an explicit `open` of that path performs, and
+  `Resolver::open_own_enclosing_namespace` shares the machinery
+  (`Resolver::assembly_fold_group`) rather than reimplementing it — FCS resolves
+  the path with `ResolveLongIdentAsModuleOrNamespace`, which yields *every*
+  modref at the FQN, so which halves a path has, and what each half's residue
+  costs, is a property of the path and not of how it came to be opened. Three
+  consequences, each a cell of `implicit_namespace_matrix`:
+  - **cross-assembly** — `eModulesAndNamespaces` holds one modref per CCU
+    declaring the namespace and FCS opens all of them (the opposite of the
+    manifest channel above, where `ApplyAssemblyLevelAutoOpenAttribute` builds a
+    modref into the declaring CCU alone), so a name two assemblies both supply
+    is a reference-order contest that defers;
+  - **cross-kind** — a path that is a namespace in one reference and a top-level
+    module in another merges both halves, so the module half's unique values are
+    in scope and a name both supply defers;
+  - **the project's own half folds last** (Q14), pushed after the assembly
+    halves at position 0, so a project union case out-ranks a colliding assembly
+    auto-open value. This is why the *explicit* path skips a literal self-open
+    of the current namespace: position 0 is FCS's real fold position for the
+    project half, and re-running it at a later `open`'s text position would
+    wrongly override a binding declared in between.
 
 ## Still to do
 
