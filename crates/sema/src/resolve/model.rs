@@ -1990,6 +1990,42 @@ pub enum DeclineCause {
     /// reading differs from — or shadows — the as-written root, so the root
     /// binding is unsafe.
     UnmodelledOpenRoot,
+    /// A **qualified** (or `global.`-rooted) attribute path, which the
+    /// attribute resolver declines wholesale rather than making every
+    /// qualifier segment participate in every shadow guard.
+    QualifiedAttribute,
+    /// An attribute candidate resolving to an in-file type the resolver cannot
+    /// trust here: the name is also a generic/exception/auto-open type, sits in
+    /// a `rec` block, or an `open` later than the definition could redirect it.
+    AttributeInFileUnreliable,
+    /// A project type of this name — declared later in the file, in a sibling
+    /// block, or in a preceding Compile-order file — could satisfy the path
+    /// invisibly, so neither its match nor its no-match is trustworthy.
+    ProjectTypeShadow,
+    /// An attribute candidate whose `…Attribute`-suffix contest the resolver
+    /// cannot rule on.
+    AttributeUnrulable,
+    /// An attribute candidate whose leaf is a module or an abbreviation marker:
+    /// FCS chases neither in attribute position the way the walk would, and the
+    /// interaction is unprobed.
+    AttributeOpaqueLeaf,
+    /// A dotted **value** path whose head is opaque before the assembly walk is
+    /// reached: an opaque value/dotted open could supply it, the head was
+    /// staled by a later `open`'s generation barrier, or its unqualified slot
+    /// is in an unorderable contest with a type. Distinct from
+    /// [`Self::OpaqueOpen`], which is the type path's pre-walk twin.
+    OpaqueValueHead,
+    /// A definite-value head whose FCS unqualified slot is in an *unorderable*
+    /// contest with a type of the same name, so the path may be read as
+    /// module/type-qualified rather than as member access.
+    HeadSlotUnordered,
+    /// A dotted path whose head is a constructor **case**: a nullary case has
+    /// no dottable members, so FCS reads it as a qualifier into a same-named
+    /// module or type we could not resolve.
+    CaseQualifierHead,
+    /// A dotted path headed by the raw `global` namespace-root marker, which is
+    /// not a name use.
+    GlobalMarkerHead,
 }
 
 impl DeclineCause {
@@ -2018,6 +2054,15 @@ impl DeclineCause {
         DeclineCause::ContestedRooting,
         DeclineCause::ValueEvicted,
         DeclineCause::UnmodelledOpenRoot,
+        DeclineCause::QualifiedAttribute,
+        DeclineCause::AttributeInFileUnreliable,
+        DeclineCause::ProjectTypeShadow,
+        DeclineCause::AttributeUnrulable,
+        DeclineCause::AttributeOpaqueLeaf,
+        DeclineCause::OpaqueValueHead,
+        DeclineCause::HeadSlotUnordered,
+        DeclineCause::CaseQualifierHead,
+        DeclineCause::GlobalMarkerHead,
     ];
 
     /// A stable snake-case label, for a census key that must mean the same
@@ -2044,6 +2089,15 @@ impl DeclineCause {
             DeclineCause::ContestedRooting => "contested_rooting",
             DeclineCause::ValueEvicted => "value_evicted",
             DeclineCause::UnmodelledOpenRoot => "unmodelled_open_root",
+            DeclineCause::QualifiedAttribute => "qualified_attribute",
+            DeclineCause::AttributeInFileUnreliable => "attribute_in_file_unreliable",
+            DeclineCause::ProjectTypeShadow => "project_type_shadow",
+            DeclineCause::AttributeUnrulable => "attribute_unrulable",
+            DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
+            DeclineCause::OpaqueValueHead => "opaque_value_head",
+            DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::CaseQualifierHead => "case_qualifier_head",
+            DeclineCause::GlobalMarkerHead => "global_marker_head",
         }
     }
 }

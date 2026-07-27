@@ -2428,7 +2428,7 @@ impl<'a> Resolver<'a> {
                 }
             };
             if let Some(site) = declined_at {
-                self.decline_sites.insert(first.text_range(), site);
+                self.record_decline(first.text_range(), site);
             }
             if let Some(recs) = resolved {
                 self.apply(recs);
@@ -2465,12 +2465,43 @@ impl<'a> Resolver<'a> {
                 first.text_range(),
                 Resolution::Deferred(DeferredReason::QualifiedAccess),
             );
+            // Name the guard, so the census does not read a guarded decline as
+            // a clean miss. An opaque head is checked first because it is what
+            // kept the assembly walk from running at all; the other three are
+            // reached with the walk already declined, and `record_decline`
+            // keeps whichever cause spoke first.
+            let cause = if self.opaque_value_open || self.opaque_dotted_open || head_staled {
+                DeclineCause::OpaqueValueHead
+            } else if head_is_case {
+                DeclineCause::CaseQualifierHead
+            } else if first.text() == "global" {
+                DeclineCause::GlobalMarkerHead
+            } else {
+                DeclineCause::HeadSlotUnordered
+            };
+            self.record_decline(first.text_range(), DeclineSite::pre_walk(cause));
         } else {
             // The head is member access on a *value*; a type-as-qualifier was
             // already handled by the assembly-path resolution above. Forbid the
             // opened-type constructor fallback so a declined type-qualifier does
             // not re-resolve the head to a colliding opened assembly type.
             self.resolve_name_use(first, false);
+            // An opaque `open` kept the assembly walk from running at all, and
+            // the head found nothing in scope either: the binding the walk
+            // might have made is lost, so the census names the guard rather
+            // than reading it as a clean miss.
+            if !rest.is_empty()
+                && (self.opaque_value_open || self.opaque_dotted_open || head_staled)
+                && matches!(
+                    self.resolutions.get(&first.text_range()),
+                    Some(Resolution::Deferred(_)) | None
+                )
+            {
+                self.record_decline(
+                    first.text_range(),
+                    DeclineSite::pre_walk(DeclineCause::OpaqueValueHead),
+                );
+            }
         }
         for seg in rest {
             self.record(
@@ -3464,6 +3495,9 @@ impl<'a> Resolver<'a> {
             // cross-DLL collision, a type whose surface we cannot enumerate) is
             // still something FCS may bind the head to, so it must veto the
             // project reading just the same.
+            // The guard that declined the assembly reading, when one did —
+            // recorded after the match, which needs `&mut self`.
+            let mut pattern_decline: Option<(TextRange, DeclineSite)> = None;
             let winner = match project {
                 Some((CaseTier::Alias, id)) => Some(Ok(id)),
                 Some((_, id)) => match segs {
@@ -3481,12 +3515,15 @@ impl<'a> Resolver<'a> {
                     [type_seg, case_seg]
                         if !self.project_binds_type_simple_name(id_text(type_seg.text())) =>
                     {
-                        self.assembly_case_pattern_reading(type_seg, case_seg)
-                            .map(Err)
+                        let (reading, site) =
+                            self.assembly_case_pattern_reading(type_seg, case_seg);
+                        pattern_decline = site.map(|s| (type_seg.text_range(), s));
+                        reading.map(Err)
                     }
                     _ => None,
                 },
             };
+            let nothing_bound = winner.is_none();
             match winner {
                 Some(Ok(id)) => {
                     let (first, last) = (
@@ -3508,6 +3545,12 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 None => {}
+            }
+            // Only when nothing bound: a guard that declined the *assembly*
+            // reading while a project one won is not what decided the pattern,
+            // and recording it would attribute a decline that never happened.
+            if nothing_bound && let Some((range, site)) = pattern_decline {
+                self.record_decline(range, site);
             }
         }
     }
@@ -3599,11 +3642,15 @@ impl<'a> Resolver<'a> {
     /// [`Self::project_binds_type_simple_name`] can still stop it committing, and
     /// its caller applies that at commit time so a contender the project cannot
     /// bind still gets to out-rank — and so veto — a lower-tier project reading.
+    /// The second element is the guard that declined, when one did — the
+    /// census's share of this walk. Returned rather than recorded because the
+    /// reading is computed with `&self`; the caller owns the recording, keyed
+    /// at the type head.
     fn assembly_case_pattern_reading(
         &self,
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
-    ) -> Option<Vec<(TextRange, Resolution)>> {
+    ) -> (Option<Vec<(TextRange, Resolution)>>, Option<DeclineSite>) {
         let type_name = id_text(type_seg.text());
         let case_name = id_text(case_seg.text());
         // The head is the whole source path this walk looks up — the `Case` is a
@@ -3616,7 +3663,10 @@ impl<'a> Resolver<'a> {
         // pre-walk, see [`Self::dropped_type_could_root_this_path`]. Ahead of
         // both branches below, since each commits a reading of its own.
         if self.dropped_type_could_root_this_path(&head_path) {
-            return None;
+            return (
+                None,
+                Some(DeclineSite::pre_walk(DeclineCause::DroppedTypeCouldRoot)),
+            );
         }
         let leaf = |prefix: &[String]| {
             self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
@@ -3658,7 +3708,12 @@ impl<'a> Resolver<'a> {
             // the risks left here: the pre-walk gate above has already declined
             // for it, on this branch and the full walk alike.
             if self.assemblies.retained_auto_open_is_uncertain() {
-                return None;
+                return (
+                    None,
+                    Some(DeclineSite::pre_walk(
+                        DeclineCause::ManifestSurfaceUncertain,
+                    )),
+                );
             }
             return match self.resolve_assembly_path_over(
                 self.prefixes_outranking_the_manifest_surface(),
@@ -3666,13 +3721,24 @@ impl<'a> Resolver<'a> {
                 false,
                 shadow_at,
             ) {
-                TieredResolution::Resolved(recs) => Some(recs),
-                TieredResolution::ShadowDeferred(_) | TieredResolution::NoMatch => None,
+                TieredResolution::Resolved(recs) => (Some(recs), None),
+                TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+                // A no-match here is the surface's contest: the tiers above it
+                // declined, and the surface itself is unwalkable.
+                TieredResolution::NoMatch => (
+                    None,
+                    Some(DeclineSite {
+                        cause: DeclineCause::ManifestSurfaceContest,
+                        tier: DeclineTier::WholeWalk,
+                    }),
+                ),
             };
         }
         match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
-            TieredResolution::Resolved(reading) => Some(reading),
-            TieredResolution::ShadowDeferred(_) | TieredResolution::NoMatch => None,
+            TieredResolution::Resolved(reading) => (Some(reading), None),
+            TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+            // Nothing resolves or shadows the head: no guard declined it.
+            TieredResolution::NoMatch => (None, None),
         }
     }
 

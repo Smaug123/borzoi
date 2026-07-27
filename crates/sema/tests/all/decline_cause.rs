@@ -125,3 +125,56 @@ fn every_shadowable_type_deferral_carries_a_site() {
         }
     }
 }
+
+/// A dotted **value** path can be declined before the assembly walk is reached
+/// at all — an opaque `open` could supply its head. The walk never runs, so
+/// nothing downstream of it can name the guard; the census has to record it
+/// where the fallback defers.
+#[test]
+fn an_opaque_open_names_the_guard_that_declined_a_dotted_value_head() {
+    let src = "\
+module DeclineOpaqueValue
+
+module Sub =
+    let inner = 1
+
+open Sub
+
+let value = Zed.foo
+";
+    assert!(
+        declines(src).contains(&(DeclineCause::OpaqueValueHead, DeclineTier::PreWalk)),
+        "expected an opaque-value-head decline, got {:?}",
+        declines(src)
+    );
+}
+
+/// An attribute name is a *type* use resolved through the same walk and the
+/// same shadow guards as a written annotation, so a census blind to it would
+/// under-report exactly the guards it exists to weigh.
+#[test]
+fn a_declined_attribute_names_its_guard_too() {
+    let src = "\
+module DeclineAttr
+
+module Sub =
+    let inner = 1
+
+open Sub
+
+[<Widget>]
+let value = 1
+";
+    let sites: Vec<_> = declines(src);
+    assert!(
+        sites.iter().any(|(cause, _)| matches!(
+            cause,
+            DeclineCause::OpaqueOpen
+                | DeclineCause::AttributeUnrulable
+                | DeclineCause::AttributeInFileUnreliable
+                | DeclineCause::ProjectTypeShadow
+                | DeclineCause::AttributeOpaqueLeaf
+        )),
+        "expected the declined attribute to name a guard, got {sites:?}"
+    );
+}

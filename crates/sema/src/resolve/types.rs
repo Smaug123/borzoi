@@ -80,7 +80,12 @@ enum AttrCandidate {
     /// The candidate cannot be pinned — no claim, and no further candidate is
     /// consulted (a shadow that could redirect this candidate would win in
     /// FCS over anything a later candidate resolves to).
-    Deferred,
+    ///
+    /// Carries the guard that declined, for the census: an attribute name is a
+    /// *type* use resolved through the same walk and the same shadow guards as
+    /// a written annotation, so a census that dropped it would under-report
+    /// exactly the guards it exists to weigh.
+    Deferred(DeclineSite),
     /// The candidate misses everywhere we model, with no shadow possible: FCS
     /// would fail it too, so the next candidate may be tried.
     NoMatch,
@@ -1699,6 +1704,12 @@ impl<'a> Resolver<'a> {
         if toks.len() > 1 || first.text() == "global" {
             self.attribute_resolutions
                 .insert(range, Resolution::Deferred(DeferredReason::ShadowableType));
+            // Declined by this function's own rule rather than by the walk —
+            // the census names it as such instead of leaving it unattributed.
+            self.decline_sites.insert(
+                range,
+                DeclineSite::pre_walk(DeclineCause::QualifiedAttribute),
+            );
             return;
         }
 
@@ -1706,19 +1717,28 @@ impl<'a> Resolver<'a> {
         let mut suffixed = names.clone();
         *suffixed.last_mut().expect("split checked") = format!("{}Attribute", id_text(last.text()));
 
+        let mut declined_at = None;
+        let mut defer = |site: DeclineSite| {
+            declined_at = Some(site);
+            Some(Resolution::Deferred(DeferredReason::ShadowableType))
+        };
         let verdict = match self.attribute_candidate(&suffixed) {
             AttrCandidate::Resolved(res) => Some(res),
-            AttrCandidate::Deferred => Some(Resolution::Deferred(DeferredReason::ShadowableType)),
+            AttrCandidate::Deferred(site) => defer(site),
             AttrCandidate::NoMatch => match self.attribute_candidate(&names) {
                 AttrCandidate::Resolved(res) => Some(res),
-                AttrCandidate::Deferred => {
-                    Some(Resolution::Deferred(DeferredReason::ShadowableType))
-                }
+                AttrCandidate::Deferred(site) => defer(site),
                 AttrCandidate::NoMatch => None,
             },
         };
         if let Some(res) = verdict {
             self.attribute_resolutions.insert(range, res);
+        }
+        // Keyed by the written attribute name's range, matching
+        // `attribute_resolutions` — the attribute path has no token the main
+        // resolution map claims, so the two tables agree on one key.
+        if let Some(site) = declined_at {
+            self.decline_sites.insert(range, site);
         }
     }
 
@@ -1786,7 +1806,9 @@ impl<'a> Resolver<'a> {
                 }) || self.recursive_module_active
                     || self.latest_open_pos > u32::from(self.defs[id.index()].range.start());
                 if unreliable {
-                    AttrCandidate::Deferred
+                    AttrCandidate::Deferred(DeclineSite::pre_walk(
+                        DeclineCause::AttributeInFileUnreliable,
+                    ))
                 } else {
                     AttrCandidate::Resolved(Resolution::Local(id))
                 }
@@ -1802,9 +1824,11 @@ impl<'a> Resolver<'a> {
                 // here. No claim. (Checked on the last segment for *every*
                 // candidate shape — a qualified project alias shadows the same
                 // way a bare one does.)
-                AttrCandidate::Deferred
+                AttrCandidate::Deferred(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow))
             }
-            _ if self.attribute_candidate_unrulable(names) => AttrCandidate::Deferred,
+            _ if self.attribute_candidate_unrulable(names) => {
+                AttrCandidate::Deferred(DeclineSite::pre_walk(DeclineCause::AttributeUnrulable))
+            }
             // A module-shaped leaf is not an attribute type: FCS does not bind
             // a module in attribute position (probed — `[<M>]` with a module
             // `MAttribute` falls through to a written type `M`). We do not
@@ -1818,7 +1842,10 @@ impl<'a> Resolver<'a> {
             TypePathResolution::Assembly { leaf: Some(h), .. }
                 if self.assemblies.is_module(h) || self.assemblies.is_abbreviation(h) =>
             {
-                AttrCandidate::Deferred
+                AttrCandidate::Deferred(DeclineSite {
+                    cause: DeclineCause::AttributeOpaqueLeaf,
+                    tier: DeclineTier::WholeWalk,
+                })
             }
             TypePathResolution::Assembly { leaf: Some(h), .. } => {
                 AttrCandidate::Resolved(Resolution::Entity(h))
@@ -1827,8 +1854,13 @@ impl<'a> Resolver<'a> {
             // the whole path. FCS would fail this candidate and try the next,
             // but our partial evidence is not that proof — the unmodelled tail
             // could resolve for FCS. No claim.
-            TypePathResolution::Assembly { leaf: None, .. } => AttrCandidate::Deferred,
-            TypePathResolution::Deferred(_) => AttrCandidate::Deferred,
+            TypePathResolution::Assembly { leaf: None, .. } => {
+                AttrCandidate::Deferred(DeclineSite {
+                    cause: DeclineCause::AttributeOpaqueLeaf,
+                    tier: DeclineTier::WholeWalk,
+                })
+            }
+            TypePathResolution::Deferred(site) => AttrCandidate::Deferred(site),
             TypePathResolution::NoMatch => AttrCandidate::NoMatch,
         }
     }

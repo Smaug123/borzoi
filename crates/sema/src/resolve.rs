@@ -2011,6 +2011,18 @@ impl<'a> Resolver<'a> {
         id
     }
 
+    /// Record **why** the occurrence at `range` declined, for the census
+    /// ([`ResolvedFile::decline_site`](model::ResolvedFile::decline_site)).
+    ///
+    /// First writer wins. A decline is often reached through several guards in
+    /// sequence — the tiered walk declines, then a downstream fallback declines
+    /// the same head again — and the *earliest* one is the specific answer
+    /// while the later ones are the general shape of "and so we deferred".
+    /// Last-write-wins would replace every precise cause with the broadest one.
+    fn record_decline(&mut self, range: TextRange, site: model::DeclineSite) {
+        self.decline_sites.entry(range).or_insert(site);
+    }
+
     fn record(&mut self, range: TextRange, res: Resolution) {
         self.resolutions.insert(range, res);
     }
