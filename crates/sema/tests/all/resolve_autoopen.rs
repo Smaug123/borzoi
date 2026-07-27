@@ -2417,3 +2417,52 @@ fn implicit_enclosing_namespace_merges_a_same_fqn_assembly_module_half() {
         rf.resolution_at(at(src, "onlyInNamespaceHalf"))
     );
 }
+
+#[test]
+fn implicit_enclosing_namespace_folds_a_project_module_half() {
+    // `ImplicitlyOpenOwnNamespace` resolves the enclosing path with
+    // `ResolveLongIdentAsModuleOrNamespace`, which returns an in-project
+    // top-level **module** at the FQN too — so a file that declares `namespace
+    // N` sees the values of an earlier file's `module N`, with no `open`.
+    // fcs-dump-verified on the real article (`module Demo.HiddenOwn` with an
+    // `extern`, then `namespace Demo.HiddenOwn` using it bare: FCS binds
+    // `Demo.HiddenOwn.plainCore`, diagnostics-clean).
+    //
+    // `plainCore` deliberately collides with the fixture assembly's
+    // `Microsoft.FSharp.Core` value, so a project module half we fail to fold is
+    // a **wrong target** — we would commit the assembly member — not a gap.
+    let env = fixture_env();
+    let src0 = "module Demo.HiddenOwn\n\nlet plainCore (x: int) = x\n";
+    let src1 = "namespace Demo.HiddenOwn\n\nmodule Client =\n    let t () = plainCore 1\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let res = proj.file(1).resolution_at(at(src1, "plainCore"));
+    let (file_idx, def) = res.and_then(|r| proj.item_def(r)).unwrap_or_else(|| {
+        panic!("bare `plainCore` must bind the project module's value; got {res:?}")
+    });
+    assert_eq!(
+        file_idx, 0,
+        "the project module in file 0, not the assembly"
+    );
+    assert_eq!(def.range, at(src0, "plainCore"));
+}
+
+#[test]
+fn implicit_enclosing_namespace_project_module_hidden_values_shadow_the_assembly() {
+    // The unenumerable half of the same channel. An `extern` is a value binder
+    // no export walk sees, so the project module half may supply a name we
+    // cannot list; it still shadows the assembly-level implicit auto-opens
+    // folded before it, so a colliding assembly member must NOT stay committed.
+    // FCS binds the `extern` (fcs-dump-verified); we cannot name it, so the
+    // requirement is exactly "do not commit the assembly's".
+    let env = fixture_env();
+    let src0 = "module Demo.HiddenOwn\n\n[<System.Runtime.InteropServices.DllImport(\"libc\")>]\n\
+                extern int plainCore(int x)\n";
+    let src1 = "namespace Demo.HiddenOwn\n\nmodule Client =\n    let t () = plainCore 1\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let res = proj.file(1).resolution_at(at(src1, "plainCore"));
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "an unenumerable project module half shadows the assembly's colliding \
+         `plainCore`; got {res:?}"
+    );
+}

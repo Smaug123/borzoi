@@ -839,6 +839,40 @@ impl<'a> Resolver<'a> {
             self.opaque_dotted_open = true;
         }
         let project_ns = group.project_ns;
+        // The **project module** half. `ResolveLongIdentAsModuleOrNamespace`
+        // returns an in-project top-level module at the FQN too, so an earlier
+        // file's `module N` is folded into a later file's `namespace N`
+        // (fcs-dump-verified: `module Demo.HiddenOwn` with an `extern`, then
+        // `namespace Demo.HiddenOwn` using it bare, binds the `extern`).
+        //
+        // Its *enumerable* values already reach here — a project module's
+        // exports are visible at its own FQN — so what this adds is the
+        // **barrier**: when the module may bring value-space names we cannot
+        // enumerate (an `extern`, an alias, union cases or active patterns we do
+        // not export), those names shadow everything folded before it, so a
+        // colliding assembly member from the implicit auto-opens must not stay
+        // committed. Without it the assembly's `plainCore` wins where FCS binds
+        // the project's `extern` — a wrong target, and one the *enumerable* case
+        // does not expose, since there the project value simply out-positions it.
+        //
+        // The bump's position splits on marker provenance exactly as the
+        // explicit-`open` path's does (`docs/fsi-signature-restriction-plan.md`):
+        // when every hidden marker for the path is sig-screened, the names the
+        // barrier fears are bounded by the signature text and
+        // `apply_assembly_fold_group`'s per-name screen already defers them, so
+        // bump BEFORE the fold and let the rest fall through to the assembly. A
+        // borrowed-name marker keeps the bump after.
+        let project_module_bump =
+            self.is_project_module_path(&namespace) && self.module_has_hidden_values(&namespace);
+        let bump_covered_by_screen = project_module_bump
+            && !self
+                .modules_with_hidden_values
+                .iter()
+                .any(|path| path.starts_with(namespace.as_slice()))
+            && !self.preceding.opaque_hidden_value_module(&namespace);
+        if bump_covered_by_screen {
+            self.open_generation += 1;
+        }
         // The reading's **shortening prefix**. Opening a container enters every
         // nested module of it under its short name and then recurses into the
         // `[<AutoOpen>]` ones, so the implicit open makes an auto-open module's
@@ -872,11 +906,25 @@ impl<'a> Resolver<'a> {
             });
         }
         self.apply_assembly_fold_group(&namespace, group, 0);
-        // The project half's own cases/exceptions and its `[<AutoOpen>]`
-        // submodules' contents, pushed AFTER the assembly halves so that on a
-        // shared name the project entry wins by position.
+        // The project namespace half's own cases/exceptions and its
+        // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
+        // so that on a shared name the project entry wins by position.
         if project_ns {
             self.open_project_namespace_values(&namespace, 0);
+        }
+        // The project module half's opaque-marker bump: hidden names no
+        // signature screen bounds must stale this fold's own assembly entries
+        // too, so they go after it.
+        if project_module_bump && !bump_covered_by_screen {
+            self.open_generation += 1;
+        }
+        // A project module may hold submodules and types we do not model, so a
+        // dotted head through it stays conservative. No shortening prefix: the
+        // project half lends none (task #30), and the path is this block's own
+        // enclosing namespace, which `open_tier_candidates` already offers at
+        // tier 2 — an extra tier-1 copy of the same path would decide nothing.
+        if self.is_project_module_path(&namespace) {
+            self.opaque_dotted_open = true;
         }
     }
 
