@@ -29,7 +29,7 @@
 
 use std::collections::HashMap;
 
-use borzoi_msbuild::{OutputDirVerdict, parse_fsproj};
+use borzoi_msbuild::{OutputDirVerdict, parse_fsproj, parse_fsproj_with_imports};
 use tempfile::TempDir;
 
 fn verdict(body: &str) -> OutputDirVerdict {
@@ -226,6 +226,62 @@ fn a_sole_choose_arm_is_still_conditional() {
     let path = tmp.path().join("P.fsproj");
     std::fs::write(&path, xml).expect("write project");
     let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    assert_eq!(
+        parse_fsproj(xml, &path, &extras, &HashMap::new())
+            .expect("well-formed")
+            .output_dir,
+        OutputDirVerdict::Unknown
+    );
+}
+
+/// A document the project pulls in but this walk never scanned could hold the
+/// `<OutDir>` the real build takes, so the counts say nothing and the verdict
+/// declines. `parse_fsproj` follows no imports at all, which makes it the
+/// sharpest form of the case: the local declaration looks sole and
+/// unconditioned, and is not.
+#[test]
+fn an_unscanned_import_declines() {
+    assert_eq!(
+        verdict(
+            "<OutDir>local/</OutDir></PropertyGroup><Import Project=\"other.props\" /><PropertyGroup>"
+        ),
+        OutputDirVerdict::Unknown
+    );
+}
+
+/// A property-expanded `Project` selects *which file* arrives, so what that
+/// file declares is as conditional as anything behind a `Condition` — there
+/// is no `Condition` attribute here to notice.
+#[test]
+fn a_property_selected_import_makes_its_declarations_conditional() {
+    let tmp = TempDir::new().expect("temp dir");
+    std::fs::write(
+        tmp.path().join("Debug.props"),
+        "<Project><PropertyGroup><OutDir>debug/</OutDir></PropertyGroup></Project>",
+    )
+    .expect("write imported props");
+    let xml = "<Project><PropertyGroup><Configuration>Debug</Configuration></PropertyGroup>\
+               <Import Project=\"$(Configuration).props\" /></Project>";
+    let path = tmp.path().join("P.fsproj");
+    std::fs::write(&path, xml).expect("write project");
+    let parsed =
+        parse_fsproj_with_imports(xml, &path, &HashMap::new(), &HashMap::new(), None, None)
+            .expect("well-formed");
+    assert_eq!(parsed.output_dir, OutputDirVerdict::Unknown);
+}
+
+/// `TreatAsLocalProperty` hands a global back to the project, so the global
+/// no longer pins the answer and the project's own writes decide — which
+/// means the element counts apply after all.
+#[test]
+fn a_global_taken_back_locally_is_not_pinned() {
+    let extras = HashMap::from([("OutDir".to_owned(), "from-global/".to_owned())]);
+    let xml = "<Project TreatAsLocalProperty=\"OutDir\">\
+               <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\
+               <OutDir>local/</OutDir></PropertyGroup></Project>";
+    let tmp = TempDir::new().expect("temp dir");
+    let path = tmp.path().join("P.fsproj");
+    std::fs::write(&path, xml).expect("write project");
     assert_eq!(
         parse_fsproj(xml, &path, &extras, &HashMap::new())
             .expect("well-formed")

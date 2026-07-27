@@ -1489,6 +1489,10 @@ struct State<'r> {
     /// Whether a caller global pinned `OutDir`, in which case no XML write can
     /// change it and the counts above say nothing about the outcome.
     out_dir_globally_pinned: bool,
+    /// Whether some user-authored document the project pulls in was never
+    /// scanned — a skipped or unresolvable import. Its `<OutDir>` is then
+    /// missing from the counts above, so nothing they say can be trusted.
+    out_dir_scan_incomplete: bool,
     /// Whether a **user-authored** file (not the SDK subtree) wrote
     /// `OutputPath` or `AppendTargetFrameworkToOutputPath`. Either redirects
     /// the default layout, so the default arm of
@@ -1885,6 +1889,10 @@ impl<'r> State<'r> {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_default();
+        // Only a global that stayed *protected* pins `OutDir`. A project
+        // declaring `TreatAsLocalProperty="OutDir"` takes it back, and then
+        // its own writes decide — so the element counts apply after all.
+        let out_dir_globally_pinned = protected.contains("outdir");
         Self {
             lookup,
             protected,
@@ -1969,11 +1977,10 @@ impl<'r> State<'r> {
                 .map_or(OutDirWrite::NeverWritten, |(_, v)| {
                     OutDirWrite::Raw(v.clone())
                 }),
-            out_dir_globally_pinned: extra_properties
-                .keys()
-                .any(|k| k.eq_ignore_ascii_case("OutDir")),
+            out_dir_globally_pinned,
             out_dir_elements_seen: 0,
             out_dir_any_conditioned: false,
+            out_dir_scan_incomplete: false,
             output_path_redirected_by_user: false,
         }
     }
@@ -2298,6 +2305,7 @@ impl<'r> State<'r> {
             out_dir_elements_seen: _,
             out_dir_any_conditioned: _,
             out_dir_globally_pinned: _,
+            out_dir_scan_incomplete: _,
             output_path_redirected_by_user: _,
         } = self;
         // Central Package Management opt-in: a versionless
@@ -2423,6 +2431,18 @@ impl<'r> State<'r> {
         }
     }
 
+    /// Note that a user-authored document the project pulls in will not be
+    /// scanned, so [`Self::out_dir_elements_seen`] is missing whatever it
+    /// declares. Every reason an import goes unwalked qualifies — a false or
+    /// unsupported gate, a file we could not read or parse, the depth limit,
+    /// pure mode — because each leaves a document that may hold the `<OutDir>`
+    /// the real build takes.
+    fn note_document_not_scanned(&mut self) {
+        if !self.in_sdk_subtree {
+            self.out_dir_scan_incomplete = true;
+        }
+    }
+
     /// Count every `<OutDir>` element this document declares, and whether any
     /// of them is reached through a condition — **syntactically**, from the
     /// document root, before any gate is evaluated.
@@ -2528,7 +2548,9 @@ impl<'r> State<'r> {
         // counts below say nothing about the outcome — but it is still a
         // literal supplied from outside, so the `$(...)` test still applies.
         if !self.out_dir_globally_pinned
-            && (self.out_dir_elements_seen != 1 || self.out_dir_any_conditioned)
+            && (self.out_dir_elements_seen != 1
+                || self.out_dir_any_conditioned
+                || self.out_dir_scan_incomplete)
         {
             return OutputDirVerdict::Unknown;
         }
@@ -4814,6 +4836,7 @@ fn handle_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
             DiagnosticKind::UnresolvedImport { path: project },
             node.range(),
         );
+        state.note_document_not_scanned();
         return;
     }
     // A **user-authored** conditioned import makes everything it pulls in
@@ -4823,9 +4846,17 @@ fn handle_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
     // `'$(ImportDirectoryBuildProps)' == 'true'` plumbing as a user's
     // configuration switch would decline the commonest place to put an
     // `<OutDir>`.
+    // A `Project` that is itself property-expanded selects *which file*
+    // arrives — `<Import Project="$(Configuration).props"/>` brings a
+    // different document per configuration — so what it declares is as
+    // conditional as anything behind a `Condition`.
     let prev = state.conditioned_import;
-    state.conditioned_import =
-        prev || (!state.in_sdk_subtree && node.attribute("Condition").is_some());
+    state.conditioned_import = prev
+        || (!state.in_sdk_subtree
+            && (node.attribute("Condition").is_some()
+                || node
+                    .attribute("Project")
+                    .is_some_and(|project| project.contains("$("))));
     follow_explicit_import(node, current_file_dir, state);
     state.conditioned_import = prev;
 }
@@ -4920,7 +4951,10 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     }
     match gate {
         CondGate::Run => {}
-        CondGate::Skip => return,
+        CondGate::Skip => {
+            state.note_document_not_scanned();
+            return;
+        }
         CondGate::Unsupported => {
             // Re-enter the gate context so the `UnsupportedCondition` flags.
             state.import_gate_context = prev_gate || !state.in_sdk_subtree;
@@ -4928,6 +4962,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             emit_unsupported_condition(node, state);
             state.import_gate_context = prev_gate;
             state.package_import_gate_context = prev_pkg_gate;
+            state.note_document_not_scanned();
             return;
         }
     }
@@ -5717,6 +5752,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             },
             span,
         );
+        state.note_document_not_scanned();
         return;
     }
     if state.depth >= MAX_IMPORT_DEPTH {
@@ -5727,6 +5763,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             },
             span,
         );
+        state.note_document_not_scanned();
         return;
     }
     // Canonical (symlink-resolved) identity for `walked_files` and the
@@ -5771,6 +5808,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                 },
                 span,
             );
+            state.note_document_not_scanned();
             return;
         }
     };
@@ -5786,6 +5824,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                 },
                 span,
             );
+            state.note_document_not_scanned();
             return;
         }
     };
