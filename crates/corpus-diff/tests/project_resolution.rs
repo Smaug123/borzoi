@@ -1259,6 +1259,162 @@ fn an_ungradable_oracle_record_does_not_make_its_range_ambiguous() {
     assert_eq!(comparison.divergences, Vec::new());
 }
 
+/// A source whose member access only **inference** can answer, and the BCL env
+/// it needs: the resolver defers at `Length` (its receiver is a value, not a
+/// path it can walk) and the `HasMember` wake resolves it against
+/// `System.String`.
+fn member_access_source() -> &'static str {
+    "module B\nlet s = \"hi\"\nlet n = s.Length\n"
+}
+
+fn bcl_loaded_project(src: &str) -> LoadedProject {
+    let bytes = fs::read(system_runtime_dll()).expect("read System.Runtime.dll");
+    let bcl = borzoi_assembly::Ecma335Assembly::parse(&bytes).expect("parse System.Runtime.dll");
+    synthetic_loaded_project(
+        src,
+        AssemblyEnv::from_views(&[bcl]).expect("build AssemblyEnv"),
+    )
+}
+
+/// The oracle record FCS reports for the `Length` access, spanning `span`.
+fn string_length_use(span: (usize, usize)) -> ProjectUse {
+    ProjectUse {
+        name: "Length".to_string(),
+        start: span.0,
+        end: span.1,
+        is_from_definition: false,
+        is_compiler_generated: false,
+        decl: UseDecl::Unlocated,
+        assembly: Some("System.Runtime".to_string()),
+        full_name: Some("System.String.Length".to_string()),
+        generic_arity: None,
+        is_constructor: false,
+        declaring: None,
+    }
+}
+
+/// The answer inference commits at a member name is put to the oracle.
+///
+/// `x.Length` is a site the *resolver* only ever defers on, and inference then
+/// answers — a go-to-definition target the LSP serves (`handlers/definition.rs`
+/// layers the member table over the resolver's deferral). Read through the
+/// resolver alone the site counts as a deferral, which claims nothing, so a
+/// wrong member answer could never fail this differential however long it stood.
+#[test]
+fn a_member_answer_inference_supplies_is_put_to_the_oracle() {
+    let src = member_access_source();
+    let loaded = bcl_loaded_project(src);
+    let file = loaded.parses.paths[0].clone();
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file,
+            diagnostics: Vec::new(),
+            uses: vec![string_length_use(text_range(src, "Length"))],
+        }],
+    );
+
+    assert_eq!(comparison.assembly_uses_considered, 1);
+    assert_eq!(comparison.member_commits_compared, 1);
+    assert_eq!(comparison.assembly_matches, 1);
+    assert_eq!(comparison.assembly_deferrals, 0);
+    assert_eq!(comparison.assembly_divergences, Vec::new());
+    // The one oracle record here is about `Length`, so only that range's answer
+    // is confirmed; `let s` is reported unconfirmed for want of a record, which
+    // is this fixture's doing and not the member surface's.
+    let length = text_range(src, "Length");
+    assert!(
+        !comparison
+            .reverse_divergences
+            .iter()
+            .any(|d| d.range == length),
+        "the member answer is confirmed by the record covering it: {:?}",
+        comparison.reverse_divergences
+    );
+}
+
+/// The two sides key the same answer at different spans, and the comparison is
+/// on the span they share the *end* of.
+///
+/// Inference keys the member **name** token so hover can scope its tooltip to
+/// it; FCS reports one use spanning the whole access and names it by the final
+/// segment's symbol. Comparing whole ranges instead compares nothing at all —
+/// silently, since a missing answer reads as a deferral.
+#[test]
+fn a_member_answer_is_graded_against_the_oracle_span_it_ends() {
+    let src = member_access_source();
+    let loaded = bcl_loaded_project(src);
+    let file = loaded.parses.paths[0].clone();
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file,
+            diagnostics: Vec::new(),
+            uses: vec![string_length_use(text_range(src, "s.Length"))],
+        }],
+    );
+
+    assert_eq!(comparison.member_commits_compared, 1);
+    assert_eq!(comparison.assembly_matches, 1);
+    assert_eq!(comparison.assembly_deferrals, 0);
+}
+
+/// The member surface is *graded*, not merely counted: a member answer the
+/// oracle contradicts is a divergence like any other.
+#[test]
+fn a_wrong_member_answer_is_a_divergence() {
+    let src = member_access_source();
+    let loaded = bcl_loaded_project(src);
+    let file = loaded.parses.paths[0].clone();
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file,
+            diagnostics: Vec::new(),
+            uses: vec![ProjectUse {
+                full_name: Some("System.String.Chars".to_string()),
+                ..string_length_use(text_range(src, "Length"))
+            }],
+        }],
+    );
+
+    assert_eq!(comparison.member_commits_compared, 1);
+    assert_eq!(comparison.assembly_matches, 0);
+    assert_eq!(comparison.assembly_divergences.len(), 1);
+    assert_eq!(
+        comparison.assembly_divergences[0].actual,
+        "assembly System.Runtime full_name System.String.Length"
+    );
+}
+
+/// The reverse direction reads the member table too — the direction that
+/// catches an answer the oracle never licensed at all, rather than one it
+/// contradicts.
+#[test]
+fn a_member_answer_the_oracle_is_silent_about_is_a_reverse_divergence() {
+    let src = member_access_source();
+    let loaded = bcl_loaded_project(src);
+    let file = loaded.parses.paths[0].clone();
+    let comparison = compare_project_uses(
+        &loaded,
+        &[FileUses {
+            path: file.clone(),
+            diagnostics: Vec::new(),
+            uses: Vec::new(),
+        }],
+    );
+
+    let (start, end) = text_range(src, "Length");
+    assert!(
+        comparison
+            .reverse_divergences
+            .iter()
+            .any(|d| d.file == file && d.range == (start, end)),
+        "the member commit must be reported unconfirmed: {:?}",
+        comparison.reverse_divergences
+    );
+}
+
 #[test]
 fn comparison_reports_wrong_assembly_resolution() {
     let src = "module B\nlet _ = Demo.Widget.Value\n";
@@ -1530,6 +1686,62 @@ fn alias_attribute_project_matches_fcs() {
         comparison.skipped_uses.ambiguous_oracle_range, 0,
         "with the constructor shadowed there is one answer per range, so \
          nothing here is unadjudicable"
+    );
+}
+
+/// What span the **real** oracle reports a member access at — the fact the
+/// comparison's alignment rests on, and the one thing the unit tests above
+/// cannot establish, since they write the spans themselves.
+///
+/// Inference keys the member *name* token so hover can scope its tooltip to it.
+/// FCS reports one use spanning the whole access (`s.Length`) and names it by
+/// the final segment's symbol. Keying the comparison on whole ranges therefore
+/// compares nothing at all — silently, because a missing answer reads as a
+/// deferral — which is what this pins against.
+///
+/// The two sides here resolve `System.String` through different facades: our env
+/// is the ref pack's `System.Runtime`, while FCS's default reference set
+/// surfaces it through `netstandard`. So identities are deliberately not
+/// asserted — a real project hands the oracle the very reference set its own env
+/// was built from ([`the_oracle_reference_set_is_the_set_the_env_is_built_from`]),
+/// and the corpus runner is where identities get graded.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn fcs_reports_a_member_access_over_a_span_our_key_ends() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tmp.path().join("B.fs");
+    let src = member_access_source();
+    write(&path, src);
+    let mut loaded = bcl_loaded_project(src);
+    loaded.project = tmp.path().join("Synthetic.fsproj");
+    loaded.parses.paths = vec![path.clone()];
+
+    let json = invoke_fcs_uses_project(&loaded).expect("fcs-dump uses-project");
+    let sources = vec![(path.clone(), loaded.parses.texts[0].clone())];
+    let fcs = parse_project_uses(&json, &sources).expect("parse FCS uses");
+
+    let member = text_range(src, "Length");
+    let reported: Vec<(usize, usize)> = fcs
+        .iter()
+        .flat_map(|f| f.uses.iter())
+        .filter(|u| u.name == "Length")
+        .map(|u| (u.start, u.end))
+        .collect();
+    assert_eq!(
+        reported,
+        vec![text_range(src, "s.Length")],
+        "FCS reports the member over the whole access, not the name alone"
+    );
+    assert!(
+        reported[0].0 < member.0 && reported[0].1 == member.1,
+        "the spans share their end and nothing else: oracle {reported:?}, ours {member:?}"
+    );
+
+    let comparison = compare_project_uses(&loaded, &fcs);
+    assert_eq!(comparison.fcs_error_files, Vec::<FcsErrorFile>::new());
+    assert_eq!(
+        comparison.member_commits_compared, 1,
+        "the answer inference commits at that span's tail must be put to the oracle"
     );
 }
 
