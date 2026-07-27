@@ -2858,10 +2858,10 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
     let file = ImplFile::cast(parsed.root).expect("probe is an impl file");
     let rf = resolve_file(&file, &ProjectItems::default(), env);
     let (start, end) = tier_corpus::probe_use_span(src, plant);
-    // The census keys a decline at the path's **head**, which for a dotted
-    // probe is not the leaf both oracles report the use at.
-    let (head_start, head_end) = tier_corpus::probe_head_span(src, plant);
-    let site = rf.decline_site(span(head_start, head_end));
+    // The census keys a path decline at the **whole written path**, which for a
+    // dotted probe is not the leaf both oracles report the use at.
+    let (path_start, path_end) = tier_corpus::probe_path_span(src, plant);
+    let site = rf.decline_site(span(path_start, path_end));
     match rf.resolution_at(span(start, end)) {
         // `entity_full_name` is the currency `fcs-dump` was taught to report
         // in: nesting-aware, and named from `source_name` so a generic's
