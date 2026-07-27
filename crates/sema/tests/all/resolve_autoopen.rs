@@ -2348,3 +2348,29 @@ fn an_auto_open_module_shadows_a_dotted_paths_head_at_an_explicit_open() {
         "module M\nopen DottedShadow\nlet f (x : DottedHead.Leaf) = x\n",
     );
 }
+
+#[test]
+#[ignore = "unsound: the implicit fold commits over the project half — see task #43"]
+fn implicit_enclosing_namespace_does_not_outrank_a_project_case() {
+    // The implicit self-open sibling of
+    // `project_namespace_case_outranks_assembly_auto_open`: with no `open`
+    // written at all, a file in `namespace Demo.Auto` sees BOTH the project's
+    // own union case `Tag` (file 0, same namespace) and the referenced
+    // assembly's auto-open `Extra.Tag`. fcs-dump-verified: bare `Tag` is
+    // `Demo.Auto.Color.Tag` — the project fragment folds last.
+    let env = fixture_env();
+    let src0 = "namespace Demo.Auto\ntype Color = Tag | Other\n";
+    let src1 = "namespace Demo.Auto\n\nmodule Client =\n    let x = Tag\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the implicit enclosing-namespace fold must not commit the assembly's \
+         `Extra.Tag` over the project's own union case; got {res:?}"
+    );
+}
