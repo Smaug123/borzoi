@@ -231,7 +231,10 @@ and all three travel together in every observation.
 
 `decline_census` says what those deferrals were *to*: `by_cause` names the guard
 that declined, `by_tier` the position in the referenced-assembly precedence
-ladder it spoke from. The totals move whenever the resolver gets more or less
+ladder it spoke from, and `by_pair` the two together. The pairs are not
+redundant: if a ladder change moves equal numbers of two causes between two
+tiers, every decline in the corpus changed and both marginals read identically,
+so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
 timid; the census says which model owns the move, which is the question every
 change to that ladder asks and which no aggregate can answer. Both maps carry
 every variant including the zeros — a cause that stops occurring must read as

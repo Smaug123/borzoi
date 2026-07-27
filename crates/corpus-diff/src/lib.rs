@@ -1218,6 +1218,7 @@ pub fn write_json_report_line(path: &Path, summary: &CorpusSummary) -> std::io::
 pub struct DeclineCensus {
     by_cause: BTreeMap<&'static str, usize>,
     by_tier: BTreeMap<&'static str, usize>,
+    by_pair: BTreeMap<(&'static str, &'static str), usize>,
     /// Declines with no recorded site.
     pub unattributed: usize,
     /// Declines with one — the denominator `unattributed` is read against.
@@ -1232,6 +1233,10 @@ impl DeclineCensus {
                 self.attributed += 1;
                 *self.by_cause.entry(site.cause.label()).or_default() += 1;
                 *self.by_tier.entry(site.tier.label()).or_default() += 1;
+                *self
+                    .by_pair
+                    .entry((site.cause.label(), site.tier.label()))
+                    .or_default() += 1;
             }
             None => self.unattributed += 1,
         }
@@ -1243,6 +1248,9 @@ impl DeclineCensus {
         }
         for (k, v) in &other.by_tier {
             *self.by_tier.entry(k).or_default() += v;
+        }
+        for (k, v) in &other.by_pair {
+            *self.by_pair.entry(*k).or_default() += v;
         }
         self.unattributed += other.unattributed;
         self.attributed += other.attributed;
@@ -1266,6 +1274,43 @@ impl DeclineCensus {
         DeclineTier::ALL
             .iter()
             .map(|t| (t.label(), self.by_tier.get(t.label()).copied().unwrap_or(0)))
+            .collect()
+    }
+
+    /// Every `(cause, tier)` pair with its count, as a cause-keyed map of
+    /// tier-keyed counts — including the zeros, on both axes.
+    ///
+    /// The marginals above cannot see an **exchange**: if a change to the
+    /// precedence ladder moves equal numbers of two causes between two tiers,
+    /// every `DeclineSite` in the corpus changed and both marginals read
+    /// identically. Since seeing which guard moved where is the census's whole
+    /// purpose, the pairs have to be published, not merely derivable.
+    ///
+    /// **Dense on purpose.** Most causes can only ever carry one tier — the
+    /// pre-walk guards are constructed with it fixed — so most of this map is
+    /// permanently rather than incidentally zero, and a table of each cause's
+    /// reachable tiers would emit a much smaller closed set. That table would
+    /// be a second source of truth about the resolver, correct only for as long
+    /// as someone maintains it, and wrong in the direction that silently drops
+    /// an observation. Emitting the full product is duller and cannot go stale.
+    pub fn pairs(&self) -> BTreeMap<&'static str, BTreeMap<&'static str, usize>> {
+        DeclineCause::ALL
+            .iter()
+            .map(|c| {
+                let tiers = DeclineTier::ALL
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.label(),
+                            self.by_pair
+                                .get(&(c.label(), t.label()))
+                                .copied()
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect();
+                (c.label(), tiers)
+            })
             .collect()
     }
 }
@@ -2232,6 +2277,9 @@ struct CorpusDeclineCensus {
     unattributed: usize,
     by_cause: BTreeMap<&'static str, usize>,
     by_tier: BTreeMap<&'static str, usize>,
+    /// The pairs the two marginals above cannot reconstruct — see
+    /// [`DeclineCensus::pairs`].
+    by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
 }
 
 impl CorpusDeclineCensus {
@@ -2241,6 +2289,7 @@ impl CorpusDeclineCensus {
             unattributed: census.unattributed,
             by_cause: census.causes(),
             by_tier: census.tiers(),
+            by_pair: census.pairs(),
         }
     }
 }
@@ -5973,6 +6022,22 @@ mod tests {
         assert_eq!(tiers.len(), DeclineTier::ALL.len());
         assert_eq!(tiers[DeclineTier::PreWalk.label()], 1);
         assert_eq!(tiers[DeclineTier::Root.label()], 0);
+
+        // The pairs are dense on both axes, so an exchange between two causes
+        // is visible where the marginals would read identically.
+        let pairs = census.pairs();
+        assert_eq!(pairs.len(), DeclineCause::ALL.len());
+        for tiers in pairs.values() {
+            assert_eq!(tiers.len(), DeclineTier::ALL.len());
+        }
+        assert_eq!(
+            pairs[DeclineCause::OpaqueOpen.label()][DeclineTier::PreWalk.label()],
+            1
+        );
+        assert_eq!(
+            pairs[DeclineCause::OpaqueOpen.label()][DeclineTier::Root.label()],
+            0
+        );
 
         // The unattributed decline is carried, not silently dropped into the
         // attributed maps — it is the number that says how much of the census

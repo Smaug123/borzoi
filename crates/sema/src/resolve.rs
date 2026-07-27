@@ -2066,6 +2066,31 @@ impl<'a> Resolver<'a> {
         self.decline_sites.entry(range).or_insert(site);
     }
 
+    /// Record one decline against **every segment** of the path it declined,
+    /// and against the path's whole span.
+    ///
+    /// One guard declines one path, so this is one decline however many tokens
+    /// it covers — but a consumer asks by *range*, and the range it holds is
+    /// whichever one its oracle reports the use at: FCS names a dotted type use
+    /// at the leaf, a member use at the member, a qualifier at the qualifier.
+    /// Keying only the head would answer none of those, and a lookup that
+    /// missed would read as "no guard declined this" — the census's one
+    /// reserved meaning. So every segment answers, and each answer is the same
+    /// site.
+    fn record_path_decline(&mut self, segs: &[SyntaxToken], site: model::DeclineSite) {
+        for seg in segs {
+            self.record_decline(seg.text_range(), site);
+        }
+        if let (Some(first), Some(last)) = (segs.first(), segs.last())
+            && segs.len() > 1
+        {
+            self.record_decline(
+                TextRange::new(first.text_range().start(), last.text_range().end()),
+                site,
+            );
+        }
+    }
+
     fn record(&mut self, range: TextRange, res: Resolution) {
         self.resolutions.insert(range, res);
     }
