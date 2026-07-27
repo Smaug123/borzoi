@@ -1218,7 +1218,7 @@ pub fn write_json_report_line(path: &Path, summary: &CorpusSummary) -> std::io::
 pub struct DeclineCensus {
     by_cause: BTreeMap<&'static str, usize>,
     by_tier: BTreeMap<&'static str, usize>,
-    by_pair: BTreeMap<(&'static str, &'static str), usize>,
+    by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
     /// Declines with no recorded site.
     pub unattributed: usize,
     /// Declines with one — the denominator `unattributed` is read against.
@@ -1235,7 +1235,9 @@ impl DeclineCensus {
                 *self.by_tier.entry(site.tier.label()).or_default() += 1;
                 *self
                     .by_pair
-                    .entry((site.cause.label(), site.tier.label()))
+                    .entry(site.cause.label())
+                    .or_default()
+                    .entry(site.tier.label())
                     .or_default() += 1;
             }
             None => self.unattributed += 1,
@@ -1249,8 +1251,11 @@ impl DeclineCensus {
         for (k, v) in &other.by_tier {
             *self.by_tier.entry(k).or_default() += v;
         }
-        for (k, v) in &other.by_pair {
-            *self.by_pair.entry(*k).or_default() += v;
+        for (cause, tiers) in &other.by_pair {
+            let into = self.by_pair.entry(cause).or_default();
+            for (tier, v) in tiers {
+                *into.entry(tier).or_default() += v;
+            }
         }
         self.unattributed += other.unattributed;
         self.attributed += other.attributed;
@@ -1303,7 +1308,8 @@ impl DeclineCensus {
                         (
                             t.label(),
                             self.by_pair
-                                .get(&(c.label(), t.label()))
+                                .get(c.label())
+                                .and_then(|tiers| tiers.get(t.label()))
                                 .copied()
                                 .unwrap_or(0),
                         )
@@ -1325,8 +1331,12 @@ pub struct Comparison {
     pub assembly_matches: usize,
     pub deferrals: usize,
     pub assembly_deferrals: usize,
-    /// Which guard declined each of the two deferral counts above.
-    pub decline_census: DeclineCensus,
+    /// Which guard declined each of the two deferral counts above, kept apart
+    /// on the same axis they are: a change that swaps a `(cause, tier)` between
+    /// a project deferral and an assembly one leaves every merged count
+    /// identical though both classifications moved.
+    pub project_decline_census: DeclineCensus,
+    pub assembly_decline_census: DeclineCensus,
     pub skipped_uses: SkippedUses,
     /// Our *defining* occurrences at ranges FCS reports nothing about. The
     /// forward direction does not grade FCS's definitions either, and silence
@@ -1421,11 +1431,12 @@ pub struct CorpusSummary {
     pub assembly_matches: usize,
     pub project_deferrals: usize,
     pub assembly_deferrals: usize,
-    /// Aggregate of [`Comparison::decline_census`]: which guard declined, and
-    /// at which ladder tier. The deferral totals above say *how much* we lost;
-    /// this says *to what*, which is what a change to the precedence ladder
-    /// moves.
-    pub decline_census: DeclineCensus,
+    /// Aggregate of [`Comparison::project_decline_census`] and its assembly
+    /// twin: which guard declined, and at which ladder tier. The deferral
+    /// totals above say *how much* we lost; these say *to what*, which is what
+    /// a change to the precedence ladder moves.
+    pub project_decline_census: DeclineCensus,
+    pub assembly_decline_census: DeclineCensus,
     pub skipped_uses: SkippedUses,
     /// Aggregate of [`Comparison::unoracled_definitions`].
     pub unoracled_definitions: usize,
@@ -1509,7 +1520,10 @@ impl CorpusSummary {
         self.assembly_matches += comparison.assembly_matches;
         self.project_deferrals += comparison.deferrals;
         self.assembly_deferrals += comparison.assembly_deferrals;
-        self.decline_census.add_assign(&comparison.decline_census);
+        self.project_decline_census
+            .add_assign(&comparison.project_decline_census);
+        self.assembly_decline_census
+            .add_assign(&comparison.assembly_decline_census);
         self.skipped_uses.add_assign(&comparison.skipped_uses);
         self.project_divergences += comparison.divergences.len();
         self.assembly_divergences += comparison.assembly_divergences.len();
@@ -1623,33 +1637,27 @@ impl CorpusSummary {
             self.total_deferrals()
         )
         .expect("write String");
-        let census = &self.decline_census;
-        writeln!(
-            out,
-            "project-corpus-diff decline causes: {} attributed | {} unattributed | {}",
-            census.attributed,
-            census.unattributed,
-            census
-                .causes()
-                .iter()
-                .filter(|(_, n)| **n > 0)
-                .map(|(k, n)| format!("{k}={n}"))
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-        .expect("write String");
-        writeln!(
-            out,
-            "project-corpus-diff decline tiers: {}",
-            census
-                .tiers()
-                .iter()
-                .filter(|(_, n)| **n > 0)
-                .map(|(k, n)| format!("{k}={n}"))
-                .collect::<Vec<_>>()
-                .join(" "),
-        )
-        .expect("write String");
+        for (which, census) in [
+            ("project", &self.project_decline_census),
+            ("assembly", &self.assembly_decline_census),
+        ] {
+            let nonzero = |m: BTreeMap<&'static str, usize>| {
+                m.iter()
+                    .filter(|(_, n)| **n > 0)
+                    .map(|(k, n)| format!("{k}={n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            writeln!(
+                out,
+                "project-corpus-diff {which} declines: {} attributed | {} unattributed | {} | tiers {}",
+                census.attributed,
+                census.unattributed,
+                nonzero(census.causes()),
+                nonzero(census.tiers()),
+            )
+            .expect("write String");
+        }
         writeln!(
             out,
             "project-corpus-diff divergences: {} project | {} assembly | {} reverse | {} total",
@@ -1740,7 +1748,10 @@ impl CorpusSummary {
                 assembly: self.assembly_deferrals,
                 total: self.total_deferrals(),
             },
-            decline_census: CorpusDeclineCensus::of(&self.decline_census),
+            decline_census: CorpusDeclineCensusPair {
+                project: CorpusDeclineCensus::of(&self.project_decline_census),
+                assembly: CorpusDeclineCensus::of(&self.assembly_decline_census),
+            },
             divergences: CorpusTieredCount {
                 project: self.project_divergences,
                 assembly: self.assembly_divergences,
@@ -2223,7 +2234,7 @@ struct CorpusJsonReport<'a> {
     matches: CorpusProjectAssemblyCount,
     deferrals: CorpusProjectAssemblyCount,
     /// Which guard declined each deferral, and at which ladder tier.
-    decline_census: CorpusDeclineCensus,
+    decline_census: CorpusDeclineCensusPair,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageReport,
     project_assets: CorpusProjectAssetsReport<'a>,
@@ -2280,6 +2291,15 @@ struct CorpusDeclineCensus {
     /// The pairs the two marginals above cannot reconstruct — see
     /// [`DeclineCensus::pairs`].
     by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+}
+
+/// The census on the axis the deferral totals already have. A merged census
+/// cannot explain either headline bucket, and a swap between them moves nothing
+/// it reports.
+#[derive(Debug, Serialize)]
+struct CorpusDeclineCensusPair {
+    project: CorpusDeclineCensus,
+    assembly: CorpusDeclineCensus,
 }
 
 impl CorpusDeclineCensus {
@@ -2384,7 +2404,7 @@ struct GeneratorStatistics {
     /// tier. The totals above move whenever the resolver gets more or less
     /// timid; this says which model owns the move, which is the question every
     /// change to the precedence ladder asks and which no aggregate can answer.
-    decline_census: CorpusDeclineCensus,
+    decline_census: CorpusDeclineCensusPair,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageBasisPoints,
     skipped_uses: CorpusSkippedUsesCounts,
@@ -2494,7 +2514,10 @@ pub fn render_generator_summary(
                 assembly: summary.assembly_deferrals,
                 total: summary.total_deferrals(),
             },
-            decline_census: CorpusDeclineCensus::of(&summary.decline_census),
+            decline_census: CorpusDeclineCensusPair {
+                project: CorpusDeclineCensus::of(&summary.project_decline_census),
+                assembly: CorpusDeclineCensus::of(&summary.assembly_decline_census),
+            },
             divergences: CorpusTieredCount {
                 project: summary.project_divergences,
                 assembly: summary.assembly_divergences,
@@ -2762,7 +2785,9 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                         match rf.resolution_at(range) {
                             None | Some(Resolution::Deferred(_)) => {
                                 comparison.assembly_deferrals += 1;
-                                comparison.decline_census.observe(rf.decline_site(range));
+                                comparison
+                                    .assembly_decline_census
+                                    .observe(rf.decline_site(range));
                             }
                             Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
@@ -2822,7 +2847,9 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             match rf.resolution_at(range) {
                 None | Some(Resolution::Deferred(_)) => {
                     comparison.deferrals += 1;
-                    comparison.decline_census.observe(rf.decline_site(range));
+                    comparison
+                        .project_decline_census
+                        .observe(rf.decline_site(range));
                 }
                 Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
                     match resolution_def(loaded, file_idx, res) {
@@ -5232,7 +5259,8 @@ mod tests {
             assembly_matches: 1,
             deferrals: 1,
             assembly_deferrals: 1,
-            decline_census: DeclineCensus::default(),
+            project_decline_census: DeclineCensus::default(),
+            assembly_decline_census: DeclineCensus::default(),
             skipped_uses: SkippedUses {
                 definitions: 2,
                 zero_width: 1,
@@ -6022,6 +6050,12 @@ mod tests {
         assert_eq!(tiers.len(), DeclineTier::ALL.len());
         assert_eq!(tiers[DeclineTier::PreWalk.label()], 1);
         assert_eq!(tiers[DeclineTier::Root.label()], 0);
+
+        // Serialising is part of the contract, not an afterthought: this type
+        // is a field of the `Serialize`-derived summary, and a tuple-keyed map
+        // would fail at run time the moment any pair was recorded — after the
+        // measurement, which is the worst place to find out.
+        serde_json::to_value(&census).expect("a populated census serialises");
 
         // The pairs are dense on both axes, so an exchange between two causes
         // is visible where the marginals would read identically.

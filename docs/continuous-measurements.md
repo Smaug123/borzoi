@@ -229,9 +229,12 @@ precisely why a rise in them is otherwise invisible. Watch
 a deferral count only means something against the population it was drawn from,
 and all three travel together in every observation.
 
-`decline_census` says what those deferrals were *to*: `by_cause` names the guard
-that declined, `by_tier` the position in the referenced-assembly precedence
-ladder it spoke from, and `by_pair` the two together. The pairs are not
+`decline_census` says what those deferrals were *to*, on the same
+project/assembly axis the totals already have — a merged census could not
+explain either bucket, and a swap between them would move nothing it reports.
+Within each: `by_cause` names the guard that declined, `by_tier` the position in
+the referenced-assembly precedence ladder it spoke from, and `by_pair` the two
+together. The pairs are not
 redundant: if a ladder change moves equal numbers of two causes between two
 tiers, every decline in the corpus changed and both marginals read identically,
 so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
