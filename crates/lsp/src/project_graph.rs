@@ -123,6 +123,8 @@ pub enum NodeResult {
         /// See [`ProjectNode::output_name`]; from the same evaluation the
         /// TFM verdict came from.
         output_name: Option<String>,
+        /// See [`ProjectNode::references_uncertain`].
+        references_uncertain: bool,
     },
     /// The project file does not exist on disk.
     NotFound,
@@ -137,6 +139,7 @@ impl NodeResult {
             edges,
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
+            references_uncertain: false,
         }
     }
 }
@@ -165,6 +168,20 @@ pub struct ProjectNode {
     /// `<AssemblyName>` may leave a stale stem-named DLL on disk, and
     /// folding it would fabricate.
     pub output_name: Option<String>,
+    /// Whether this node's `<ProjectReference>` list was **suppressed** rather
+    /// than empty: the evaluator could not trust it
+    /// ([`borzoi_msbuild::ParsedProject::project_references_uncertain`] — an
+    /// unmodelled `Update`/`Remove`, an untrusted gate, an undecided
+    /// `<Choose>`), so [`Self::references`] carries none of them.
+    ///
+    /// Load-bearing for the env fold's conservation, and the reason the
+    /// suppression is marked rather than left implicit: the edges are gone by
+    /// the time anything downstream runs, so an emptied list is
+    /// indistinguishable from a project that genuinely references nothing.
+    /// Without the mark, every one of those references is missing from the env
+    /// while the env still claims to be complete — and any of them could
+    /// declare a type that shadows a package or framework one.
+    pub references_uncertain: bool,
 }
 
 /// A problem found while building the graph. Each carries the offending
@@ -278,6 +295,7 @@ impl Builder {
                 edges: references,
                 tfm,
                 output_name,
+                references_uncertain,
             } => {
                 let key = lexically_normalize(path);
                 self.visited.insert(key.clone());
@@ -288,6 +306,7 @@ impl Builder {
                     references: references.clone(),
                     tfm,
                     output_name,
+                    references_uncertain,
                 });
                 for edge in references {
                     match edge.kind {
@@ -360,6 +379,7 @@ impl Builder {
                         references: Vec::new(),
                         tfm: NodeTfm::NotEvaluated,
                         output_name: None,
+                        references_uncertain: false,
                     });
                 }
             }
@@ -402,6 +422,7 @@ impl Builder {
                         edges: references,
                         tfm,
                         output_name,
+                        references_uncertain: _,
                     } => {
                         self.visited.insert(key.clone());
                         self.nodes.push(ProjectNode {
@@ -410,6 +431,16 @@ impl Builder {
                             references,
                             tfm,
                             output_name,
+                            // Reached only through an output-only edge, whose
+                            // whole point is that this target's references do
+                            // *not* flow to the consumer — MSBuild keeps them
+                            // off its `ReferencePath`. Their absence is the
+                            // intended result, so a suppressed list here costs
+                            // the consumer nothing and must not mark the env
+                            // incomplete. A target also reachable transparently
+                            // was already recorded by the full walk, which runs
+                            // first and keeps its own mark.
+                            references_uncertain: false,
                         });
                     }
                 }
@@ -614,6 +645,60 @@ mod tests {
         let want: BTreeSet<PathBuf> = (0..=3).map(fsproj).collect();
         assert_eq!(got, want);
         assert_eq!(graph.nodes.len(), 4);
+    }
+
+    /// An output-only edge exists precisely so the target's references do
+    /// *not* flow to the consumer — MSBuild keeps them off its
+    /// `ReferencePath`. So a target whose own list was suppressed costs the
+    /// consumer nothing, and the mark must not travel through that boundary
+    /// and make the env incomplete over references the build excludes anyway.
+    ///
+    /// Reached transparently as well, the full walk records the node first and
+    /// its mark stands: there the references really are missing.
+    #[test]
+    fn a_suppressed_list_does_not_escape_an_output_only_boundary() {
+        let suppressed = |edges: Vec<Edge>| NodeResult::Resolved {
+            edges,
+            tfm: NodeTfm::NotEvaluated,
+            output_name: None,
+            references_uncertain: true,
+        };
+
+        // P0 -[OutputOnly]→ P1, and P1's list is suppressed.
+        let mut resolve = |path: &Path| match index_of(path) {
+            Some(0) => NodeResult::resolved(vec![output_only(fsproj(1))]),
+            Some(1) => suppressed(vec![]),
+            _ => NodeResult::NotFound,
+        };
+        let graph = build_graph(&fsproj(0), &mut resolve);
+        let p1 = graph
+            .nodes
+            .iter()
+            .find(|n| n.path == fsproj(1))
+            .expect("the output-only target is a node");
+        assert!(
+            !p1.references_uncertain,
+            "the consumer never sees this target's references, so losing them is no loss"
+        );
+
+        // The same node also reachable transparently, through P2: the full
+        // walk gets there first and the mark survives.
+        let mut resolve = |path: &Path| match index_of(path) {
+            Some(0) => NodeResult::resolved(vec![output_only(fsproj(1)), edge(fsproj(2))]),
+            Some(1) => suppressed(vec![]),
+            Some(2) => NodeResult::resolved(vec![edge(fsproj(1))]),
+            _ => NodeResult::NotFound,
+        };
+        let graph = build_graph(&fsproj(0), &mut resolve);
+        let p1 = graph
+            .nodes
+            .iter()
+            .find(|n| n.path == fsproj(1))
+            .expect("the target is a node");
+        assert!(
+            p1.references_uncertain,
+            "reached transparently, its dropped references really are missing"
+        );
     }
 
     #[test]

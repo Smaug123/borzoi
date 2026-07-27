@@ -1664,6 +1664,7 @@ mod tests {
             kind: ProjectKind::FSharp,
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
+            references_uncertain: false,
             references: targets
                 .iter()
                 .map(|t| Edge {
@@ -1696,6 +1697,7 @@ mod tests {
                 kind: ProjectKind::FSharp,
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: span.clone(),
@@ -1731,6 +1733,7 @@ mod tests {
                 kind: ProjectKind::FSharp,
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: project_ref_span(text),
@@ -1754,6 +1757,7 @@ mod tests {
             kind: ProjectKind::FSharp,
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
+            references_uncertain: false,
             references: vec![Edge {
                 target: pb("/p/A.fsproj"),
                 span: span.clone(),
@@ -1781,6 +1785,7 @@ mod tests {
                 kind: ProjectKind::FSharp,
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
+                references_uncertain: false,
                 references: vec![
                     Edge {
                         target: pb("/p/X.fsproj"),
@@ -1819,6 +1824,7 @@ mod tests {
                 kind: ProjectKind::FSharp,
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: 2..9,
