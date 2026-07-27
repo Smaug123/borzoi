@@ -11,16 +11,25 @@ use against FCS:
 
 1. Compile order + `#if` defines from the workspace's `.fsproj` evaluation
    (`SemanticState::parses_for_project`).
-2. The referenced-assembly closure from the project's
-   `obj/project.assets.json` (`resolve_assemblies_root_only`) → an
-   `AssemblyEnv` built by reading each package/framework DLL with
-   `borzoi-assembly`.
+2. The project's composed reference set and the `AssemblyEnv` built from it,
+   taken from **one** cache entry (`SemanticState::env_reference_dlls_for_project`
+   + `assembly_env_for_project`): assets-file package and framework DLLs, each
+   F# `<ProjectReference>`'s built output DLL, and the C# sidecar's metadata
+   DLLs.
 3. `resolve_project` folds cross-file + assembly resolution over the lot.
 
 FCS (`fcs-dump uses-project`) is the oracle: it type-checks the same
-Compile-ordered files as one project with the project's NuGet DLLs injected.
-This is the sharpest single test for "does dependency resolution actually work
-on a real project", because it exercises the whole chain, not a unit slice.
+Compile-ordered files as one project, reading **exactly** that reference set and
+nothing else (`--noframework`). This is the sharpest single test for "does
+dependency resolution actually work on a real project", because it exercises the
+whole chain, not a unit slice.
+
+Both sides reading the same set is what makes the numbers mean anything: an
+oracle that also resolved its own SDK binds names our `AssemblyEnv` cannot, we
+defer, and **a deferral is not a divergence** — the gate passes while the two
+sides read different worlds. The price is that an incomplete set stops the
+project type-checking, so the report counts **oracle errors** and gates them to
+zero.
 
 > **This is the single-project gate, not a corpus sweep.** It points at **one**
 > restored project, reads its **real** referenced assemblies, and **gates
@@ -38,6 +47,9 @@ on a real project", because it exercises the whole chain, not a unit slice.
   location (no `BaseIntermediateOutputPath` support), so a project that
   relocates `obj/` — e.g. the F# compiler's `artifacts/obj/` layout — will not
   resolve.
+- Its F# `<ProjectReference>`s must have been **built**: the composed set names
+  each referenced project's *output* DLL. An unbuilt one is absent from both
+  sides, and the oracle-error gate fails rather than reporting a number.
 - Run under `nix develop` (the harness builds/drives `fcs-dump`). The first run
   builds `fcs-dump` via `dotnet build -c Release`, so budget several minutes.
 
@@ -90,7 +102,7 @@ see AGENTS.md); `--test resolve_real_project_diff` does **not** resolve.
 The report line tallies (see `report`):
 
 ```
-resolve-real-project <path>: <N> in-proj match (<M> cross-file) | <A> asm match | <D> diverge | <B> alt-binder | <G> gaps
+resolve-real-project <path>: <N> in-proj match (<M> cross-file) | <A> asm match | <D> diverge | <B> alt-binder | <G> gaps | <E> oracle errors
 ```
 
 - **in-proj / asm match** — uses where our resolution equals FCS (in-project
@@ -100,6 +112,14 @@ resolve-real-project <path>: <N> in-proj match (<M> cross-file) | <A> asm match 
   wrong/`Unresolved` resolution where FCS resolved concretely; an alt-binder is
   a same-named binder at the wrong range/file (a wrong-shadow go-to-def). Each
   gated site is printed as `"<file>":<range> "<text>" -> FCS <x>, we gave <y>`.
+- **oracle errors** — FCS's own error diagnostics, **gated to zero**. Non-zero
+  means the reference set we handed it is incomplete: the affected uses carry no
+  target, so they leave the comparison rather than failing it, and every count
+  above describes a project FCS could not check.
+
+`BORZOI_PROJECT_SAMPLE=<n>` raises the per-bucket print cap (default 40) — worth
+setting when triaging, since "40 of one known class" and "40 of one known class
+plus 96 of something else" print identically.
 
 A divergence here is a **sema** (name-resolution) finding, not necessarily a
 dependency-resolution one: if the "we gave" side names a symbol in a referenced
