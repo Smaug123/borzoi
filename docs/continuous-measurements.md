@@ -265,8 +265,24 @@ exactly the shape of ordinary timidity. So a fall in this number towards zero on
 a corpus that still contains attributes means a committed surface stopped being
 diffed, and nothing else would say so.
 
-Two skip buckets travel with it, because asking the oracle about a range for the
-first time exposed that it can answer more than once.
+`uses.member_commits_compared` is the same kind of number for the third surface
+the LSP answers from: the member table **inference** fills in
+(`InferredFile::member_resolutions`), which `handlers/definition.rs` layers over
+the resolver's `Deferred(QualifiedAccess)` at a member name. An entry there is a
+go-to-definition target, and read through the resolver alone the site still
+looks deferred, so a wrong member answer could stand forever without moving a
+number. It reads **0** on the pinned corpus today: every member answer inference
+commits there is one the resolver already committed itself, so nothing is
+answered by inference alone. That is the honest state of the surface, not a
+fault — the guard is in place for when inference starts answering where the
+resolver cannot, and the fixtures in `project_resolution.rs` are what exercise
+the grading meanwhile. The two sides key one answer at different spans (FCS
+reports the whole access, inference the member name), so the comparison aligns
+on the span's **end**; keying on whole ranges compares nothing while reporting a
+clean run.
+
+Two skip buckets travel with the attribute number, because asking the oracle
+about a range for the first time exposed that it can answer more than once.
 `skipped_uses.shadowed_constructor_use` counts the sites where FCS reported both
 the name the author wrote and the **constructor** that name invokes — `[<Alias>]`,
 `inherit Base(1)`, `Foo()`. Sema resolves the written name and models no separate
