@@ -187,6 +187,96 @@ fn explicit_open_brings_in_auto_open_module() {
     }
 }
 
+/// The `[<AutoOpen>]` modules a referenced assembly declares in a file's **own
+/// enclosing namespace** are in scope with no `open` at all.
+///
+/// FCS opens the enclosing namespace path implicitly, once per top-level block
+/// (`ImplicitlyOpenOwnNamespace`, `CheckDeclarations.fs`), and opening a
+/// namespace also opens the auto-open modules it declares. Every case below is
+/// `fcs-dump`-verified against this fixture's assembly.
+mod enclosing_namespace {
+    use super::*;
+
+    #[test]
+    fn its_assembly_auto_open_module_is_in_scope() {
+        // FCS: `extraValue` -> SemaAutoOpenFixture!Demo.Auto.Extra.extraValue,
+        // with no diagnostics.
+        let env = fixture_env();
+        let src = "namespace Demo.Auto\n\nmodule Client =\n    let test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        match rf.resolution_at(at(src, "extraValue")) {
+            Some(Resolution::Member { parent, idx }) => {
+                let extra = env
+                    .lookup_type(&["Demo".into(), "Auto".into()], "Extra", 0)
+                    .expect("fixture must declare Demo.Auto.Extra");
+                assert_eq!(parent, extra, "parent module");
+                assert_eq!(il_name(env.member_at(parent, idx)), "extraValue");
+            }
+            other => panic!("expected Member for bare `extraValue`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_module_header_opens_the_namespace_above_its_own_name() {
+        // `module Demo.Auto.ClientC` encloses in `Demo.Auto`, not `Demo.Auto.ClientC`.
+        // FCS: resolves, no diagnostics.
+        let env = fixture_env();
+        let src = "module Demo.Auto.Client\n\nlet test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        assert!(
+            matches!(
+                rf.resolution_at(at(src, "extraValue")),
+                Some(Resolution::Member { .. })
+            ),
+            "expected a Member, got {:?}",
+            rf.resolution_at(at(src, "extraValue")),
+        );
+    }
+
+    #[test]
+    fn an_unrelated_namespace_does_not_reach_it() {
+        // The *full* path is opened, never a prefix and never a sibling. FCS:
+        // FS0039 "The value or constructor 'relOnlyMarker' is not defined."
+        let env = fixture_env();
+        let src = "namespace Other.Deep\n\nmodule Client =\n    let test () = relOnlyMarker\n";
+        let rf = resolve(src, &env);
+        assert!(
+            matches!(
+                rf.resolution_at(at(src, "relOnlyMarker")),
+                None | Some(Resolution::Deferred(_)) | Some(Resolution::Unresolved)
+            ),
+            "a name only an unrelated namespace's auto-open module declares must \
+             not resolve; got {:?}",
+            rf.resolution_at(at(src, "relOnlyMarker")),
+        );
+    }
+
+    #[test]
+    fn a_local_binding_of_the_same_name_wins() {
+        // The implicit open sits at the bottom of the block's environment, so
+        // anything the file declares beats it. FCS: the use binds
+        // `Demo.Auto.ClientD.extraValue`, the local one.
+        let env = fixture_env();
+        let src = "namespace Demo.Auto\n\nmodule Client =\n    let extraValue () = 999\n    \
+                   let test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        // The *use*, not the binder: the name occurs twice, and `at` wants one.
+        let start = src.rfind("extraValue").expect("the use");
+        let use_at = TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + "extraValue".len()).unwrap().into(),
+        );
+        assert!(
+            matches!(
+                rf.resolution_at(use_at),
+                Some(Resolution::Local(_)) | Some(Resolution::Item(_))
+            ),
+            "the file's own `extraValue` must win over the assembly's; got {:?}",
+            rf.resolution_at(use_at),
+        );
+    }
+}
+
 #[test]
 fn auto_open_module_nested_type_marks_bare_annotation_shadowable() {
     let env = fixture_env();

@@ -567,6 +567,65 @@ impl<'a> Resolver<'a> {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
     }
 
+    /// Bring the **referenced assemblies'** contribution to this block's own
+    /// enclosing namespace into scope, with no `open` written.
+    ///
+    /// FCS opens the enclosing namespace path implicitly, once per top-level
+    /// block and before any of its declarations
+    /// (`ImplicitlyOpenOwnNamespace` — "Inside `namespace X.Y.Z` there is an
+    /// implicit open of `X.Y.Z`"), and opening a namespace also opens the
+    /// `[<AutoOpen>]` modules it declares
+    /// (`AddModuleOrNamespaceRefsToNameEnv` recurses into them). The
+    /// **full** path, never a prefix: from inside `namespace A.B`, an
+    /// auto-open module of `A` is not in scope. A `module A.B.M` header
+    /// encloses in `A.B`, which is what `namespace_depth` already measures.
+    ///
+    /// Deliberately cross-assembly: FCS's `eModulesAndNamespaces` holds one
+    /// modref per CCU declaring the namespace and opens all of them, so
+    /// restricting this to one assembly would under-resolve. The
+    /// per-contributing-assembly surfaces carry that: a name two assemblies
+    /// both supply is a reference-order contest we cannot decide, and
+    /// [`Self::open_assembly_module_fold`] defers it.
+    ///
+    /// The **project's** half of the namespace is not folded here: a project
+    /// `[<AutoOpen>]` submodule's values already reach the rest of their own
+    /// enclosing namespace from the submodule's declaration site, which is
+    /// why the explicit-`open` path skips a literal self-open of the current
+    /// namespace too (see the `open` arm in `decls.rs`, fcs-dump-verified).
+    ///
+    /// Position 0: this precedes every declaration in the block, so anything
+    /// the file writes — a `let`, a later `open`, a type it defines — outranks
+    /// it, which is FCS's last-write-wins env.
+    pub(super) fn open_own_enclosing_namespace(&mut self) {
+        let namespace = self.enclosing_namespace().to_vec();
+        if namespace.is_empty() {
+            return;
+        }
+        let surfaces = self.assemblies.open_namespace_fold_surfaces(&namespace);
+        if surfaces.is_empty() {
+            return;
+        }
+        // Same residue reasoning as the explicit-`open` group fold: a surface
+        // that hides names cannot have its siblings' fold order decided, and a
+        // type dropped at any split of the path may be a module half whose
+        // contents we never saw.
+        let full_residue = surfaces.iter().any(|s| s.residue)
+            || self
+                .assemblies
+                .any_split_of_a_module_path_has_a_dropped_type(&namespace);
+        // Tycon-tier-confined residue contests only the group's own case
+        // entries within one surface; across a merge the tiers interleave in
+        // reference order, so it escalates to the full demote.
+        let below_vals = surfaces.iter().any(|s| s.residue_below_vals);
+        let demote = full_residue || (below_vals && surfaces.len() > 1);
+        // A group that hides names we cannot list could conceal a dotted
+        // *head*, which no per-head staleness test can see.
+        if full_residue || below_vals {
+            self.opaque_dotted_open = true;
+        }
+        self.open_assembly_module_fold(surfaces, 0, demote, below_vals);
+    }
+
     /// Whether opening module `mp` may bring **value-space names we cannot
     /// enumerate** — a module alias, or union cases / exception constructors /
     /// active patterns ([`Self::modules_with_hidden_values`], same file or an

@@ -462,6 +462,13 @@ pub fn resolve_file(
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
+        // …then the block's **own** enclosing namespace, which FCS opens
+        // implicitly as well (`ImplicitlyOpenOwnNamespace`) — that is how a
+        // referenced assembly's `[<AutoOpen>]` module in `namespace N` is in
+        // scope from a file that declares `namespace N` and opens nothing.
+        // After the implicit auto-opens, matching FCS's order: those are
+        // applied when the CCU is added, before any block env exists.
+        r.open_own_enclosing_namespace();
         // EX-3 §2(d): the block header's own attributes (`[<AutoOpen>] module
         // Test`) resolve in the block's opening scope — the implicit auto-opens
         // just seeded, no explicit `open` yet — which is FCS's env for them.

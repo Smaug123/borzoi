@@ -103,6 +103,23 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   gaps (the `$W` filter was measured durable, not bridge code, and kept — with it
   removed FSharp.Core records 153 skipped members, poisoning the overload
   extension-absence gate).
+- **The block's own enclosing namespace** — a file that declares `namespace N`
+  sees the `[<AutoOpen>]` modules a *referenced assembly* declares in `N`, with
+  no `open` written. FCS does this as one implicit open of the **full**
+  enclosing path per top-level block, before any of its declarations
+  (`ImplicitlyOpenOwnNamespace`, `CheckDeclarations.fs`); a `module A.B.M`
+  header encloses in `A.B`. Never a prefix: from inside `namespace A.B`, an
+  auto-open module of `A` is out of scope (fcs-dump-verified, both directions).
+  Deliberately **cross-assembly** — `eModulesAndNamespaces` holds one modref per
+  CCU declaring the namespace and FCS opens all of them — which is the opposite
+  of the manifest channel above, where `ApplyAssemblyLevelAutoOpenAttribute`
+  builds a modref into the declaring CCU alone. `Resolver::open_own_enclosing_namespace`
+  routes it through the same per-contributing-assembly surfaces + collision /
+  residue verdicts as an explicit `open`, so a name two assemblies both supply
+  defers rather than committing one. The project's own half is *not* folded
+  here: its auto-open submodules already reach the rest of their namespace from
+  their declaration site, which is why the explicit-`open` path skips a literal
+  self-open too.
 
 ## Still to do
 
