@@ -693,7 +693,14 @@ pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvo
     // recorded as a divergence in each direction. A project whose composed set
     // is *incomplete* now fails to type-check and is skipped, loudly, rather
     // than compared against a framework we never read.
-    cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
+    // …but only when there *is* one. A project with no assets file composes no
+    // references at all, and "resolve against exactly nothing" is not a
+    // reference set — FCS aborts. Our env has no assemblies there either, so
+    // every imported name is a deferral rather than a comparison, and letting
+    // the oracle keep its own SDK references costs the differential nothing.
+    if !loaded.fcs_extra_refs.is_empty() {
+        cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
+    }
     // The Compile order goes in on stdin; `BoundedCommand` streams it from its
     // own thread while draining both output pipes, so a project large enough to
     // fill a pipe buffer can't deadlock the round-trip (writing stdin
