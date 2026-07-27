@@ -1474,6 +1474,14 @@ struct State<'r> {
     /// undefined property is exactly empty under this walker's environment
     /// model, and so is deliberately *not* recorded as untrusted.
     out_dir_write: OutDirWrite,
+    /// Whether a **user-authored** file (not the SDK subtree) wrote
+    /// `OutputPath` or `AppendTargetFrameworkToOutputPath`. Either redirects
+    /// the default layout, so the default arm of
+    /// [`Self::output_dir_verdict`] — which is a positive claim, not a
+    /// shrug — must stand down. The SDK writes `OutputPath` itself as part
+    /// of computing that very default, so an origin-blind flag would put
+    /// every project into the unknown arm.
+    output_path_redirected_by_user: bool,
 }
 
 /// The state of the last `OutDir` write seen by the property pass. Three
@@ -1935,6 +1943,7 @@ impl<'r> State<'r> {
             walk_opaque: false,
             unevaluable_written: HashSet::new(),
             out_dir_write: OutDirWrite::NeverWritten,
+            output_path_redirected_by_user: false,
         }
     }
 
@@ -2254,6 +2263,7 @@ impl<'r> State<'r> {
             walk_opaque: _,
             unevaluable_written: _,
             out_dir_write: _,
+            output_path_redirected_by_user: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2385,6 +2395,11 @@ impl<'r> State<'r> {
     fn record_out_dir_write(&mut self, name: &str, write: OutDirWrite) {
         if name.eq_ignore_ascii_case("OutDir") {
             self.out_dir_write = write;
+        } else if !self.in_sdk_subtree
+            && (name.eq_ignore_ascii_case("OutputPath")
+                || name.eq_ignore_ascii_case("AppendTargetFrameworkToOutputPath"))
+        {
+            self.output_path_redirected_by_user = true;
         }
     }
 
@@ -2403,6 +2418,15 @@ impl<'r> State<'r> {
     /// exactly once, that is not expressible and the verdict declines.
     fn output_dir_verdict(&self) -> OutputDirVerdict {
         let raw = match &self.out_dir_write {
+            // No `OutDir` at all. That is the default layout *only* if
+            // nothing else redirected it: a user `OutputPath` moves the
+            // output without ever mentioning `OutDir` (MSBuild derives one
+            // from it), and claiming the default there sends a consumer to
+            // scan `bin/` for a DLL the build writes elsewhere — which is
+            // precisely the miss this verdict exists to stop.
+            OutDirWrite::NeverWritten if self.output_path_redirected_by_user => {
+                return OutputDirVerdict::Unknown;
+            }
             OutDirWrite::NeverWritten => return OutputDirVerdict::Default,
             OutDirWrite::Unevaluable => return OutputDirVerdict::Unknown,
             OutDirWrite::Raw(raw) => raw,

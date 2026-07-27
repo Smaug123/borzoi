@@ -50,6 +50,36 @@ fn no_write_is_the_default_layout() {
     );
 }
 
+/// `Default` is a **positive claim** — "run your default-layout scan" — so a
+/// project that redirected its output without ever naming `OutDir` must not
+/// land there. MSBuild derives `OutDir` from a user `OutputPath`
+/// (`<OutputPath>elsewhere/</OutputPath>` builds to `elsewhere/net10.0/`), and
+/// claiming the default would send a consumer to scan `bin/` for a DLL that
+/// is not there — reporting a built project as unbuilt, which is the whole
+/// miss this verdict exists to stop.
+///
+/// Found by the MSBuild differential, not by hand.
+#[test]
+fn a_user_redirect_without_an_out_dir_is_not_the_default_layout() {
+    assert_eq!(
+        verdict("<OutputPath>elsewhere/</OutputPath>"),
+        OutputDirVerdict::Unknown
+    );
+    assert_eq!(
+        verdict("<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>"),
+        OutputDirVerdict::Unknown
+    );
+    // A declared `OutDir` still wins outright: MSBuild appends neither the
+    // framework nor `OutputPath` to it, so the redirect is irrelevant.
+    assert_eq!(
+        verdict("<OutDir>artifacts/</OutDir><OutputPath>elsewhere/</OutputPath>"),
+        OutputDirVerdict::Declared {
+            path: "artifacts/".to_owned(),
+            configuration: None,
+        }
+    );
+}
+
 /// A plain declared directory is reported verbatim — not normalised, not
 /// joined to anything. MSBuild writes there directly.
 #[test]
