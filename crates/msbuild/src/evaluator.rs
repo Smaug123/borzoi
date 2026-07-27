@@ -72,8 +72,8 @@ use super::properties::escaping::Escaped;
 use super::properties::{self, Issue, PropertyMap};
 use super::{
     FrameworkReference, GlobRequest, GlobResolver, GlobalPackageReference, ItemKind,
-    ItemMetadataValue, PackageRefOp, PackageReference, PackageVersion, ParsedProject, ResolvedItem,
-    SdkPaths, SdkResolution, SdkResolveError, SdkResolver,
+    ItemMetadataValue, OutputDirVerdict, PackageRefOp, PackageReference, PackageVersion,
+    ParsedProject, ResolvedItem, SdkPaths, SdkResolution, SdkResolveError, SdkResolver,
 };
 
 mod item_pass;
@@ -1467,6 +1467,26 @@ struct State<'r> {
     /// build stores that value, so a later undefined read of the name is
     /// not exact.
     unevaluable_written: HashSet<String>,
+    /// How the last potentially-applicable write to `OutDir` went, and the
+    /// **raw** body it wrote. The raw text is what the verdict needs and
+    /// the evaluated value cannot supply: `$(SolutionDir)artifacts/`
+    /// expands to `artifacts/` — a clean-looking relative path — because an
+    /// undefined property is exactly empty under this walker's environment
+    /// model, and so is deliberately *not* recorded as untrusted.
+    out_dir_write: OutDirWrite,
+}
+
+/// The state of the last `OutDir` write seen by the property pass. Three
+/// cases, not an `Option<String>`, because "never written" (MSBuild's
+/// default layout applies) and "written but unevaluable" (no claim) are
+/// opposite verdicts.
+#[derive(Debug, Clone)]
+enum OutDirWrite {
+    NeverWritten,
+    /// The raw body of the winning write, before `$(...)` expansion.
+    Raw(String),
+    /// A write this walker refused to evaluate.
+    Unevaluable,
 }
 
 #[derive(Debug, Clone)]
@@ -1914,6 +1934,7 @@ impl<'r> State<'r> {
             env_property_names,
             walk_opaque: false,
             unevaluable_written: HashSet::new(),
+            out_dir_write: OutDirWrite::NeverWritten,
         }
     }
 
@@ -2151,6 +2172,7 @@ impl<'r> State<'r> {
         // `&self` (the pin/taint maps), so compute them before the
         // destructure below consumes them.
         let target_name = self.target_name_verdict();
+        let output_dir = self.output_dir_verdict();
         let untrusted_properties: std::collections::HashSet<String> = self
             .unpinned_value_properties
             .keys()
@@ -2231,6 +2253,7 @@ impl<'r> State<'r> {
             env_property_names: _,
             walk_opaque: _,
             unevaluable_written: _,
+            out_dir_write: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2341,6 +2364,7 @@ impl<'r> State<'r> {
             define_constants,
             lang_version,
             target_name,
+            output_dir,
             untrusted_properties,
             diagnostics,
             is_partial,
@@ -2351,6 +2375,79 @@ impl<'r> State<'r> {
             package_references_uncertain,
             package_reference_uncertainties,
             resolved_sdk_root,
+        }
+    }
+
+    /// Record how a write to `OutDir` went, for [`Self::output_dir_verdict`].
+    /// Called from every exit of the property-write path — including the
+    /// refusals, since a write we could not evaluate must not read as "never
+    /// written" (the default layout) at the end.
+    fn record_out_dir_write(&mut self, name: &str, write: OutDirWrite) {
+        if name.eq_ignore_ascii_case("OutDir") {
+            self.out_dir_write = write;
+        }
+    }
+
+    /// The [`ParsedProject::output_dir`] verdict. See [`OutputDirVerdict`]
+    /// for what each arm licenses a consumer to do.
+    ///
+    /// The raw body decides two things the evaluated value cannot. A
+    /// reference to a property this walk never saw defined expands to empty
+    /// (the environment model resolves an undefined name *exactly*, so it is
+    /// not untrusted either) and would leave `$(SolutionDir)artifacts/`
+    /// looking like a clean project-relative `artifacts/` — so any undefined
+    /// reference declines. And a `$(Configuration)` reference means the value
+    /// names one configuration out of several the user might have built, so
+    /// the segment must be handed back for searching rather than committed
+    /// to; if the evaluated configuration cannot be located in the result
+    /// exactly once, that is not expressible and the verdict declines.
+    fn output_dir_verdict(&self) -> OutputDirVerdict {
+        let raw = match &self.out_dir_write {
+            OutDirWrite::NeverWritten => return OutputDirVerdict::Default,
+            OutDirWrite::Unevaluable => return OutputDirVerdict::Unknown,
+            OutDirWrite::Raw(raw) => raw,
+        };
+        if self.property_provenance_untrusted("OutDir") {
+            return OutputDirVerdict::Unknown;
+        }
+        let Some(path) = self.lookup.get("OutDir").map(|v| v.unescape()) else {
+            // Written, evaluated, and yet absent: a later refusal removed it.
+            return OutputDirVerdict::Unknown;
+        };
+        // The reference scan runs **before** the emptiness checks below.
+        // An undefined reference expands to nothing, so `<OutDir>$(SolutionDir)</OutDir>`
+        // would otherwise reach the empty arm and read as "the default layout
+        // applies" — the most confidently wrong answer available.
+        let mut configuration = None;
+        for referenced in simple_property_references(raw) {
+            let Some(value) = self.lookup.get(referenced) else {
+                return OutputDirVerdict::Unknown;
+            };
+            if referenced.eq_ignore_ascii_case("Configuration") {
+                // Locatable exactly once, or we cannot say which segment of
+                // the result is the one to search.
+                let cfg = value.unescape();
+                if cfg.is_empty() || path.matches(cfg.as_str()).count() != 1 {
+                    return OutputDirVerdict::Unknown;
+                }
+                configuration = Some(cfg);
+            }
+        }
+        // Empty is not a decline: MSBuild's own default gate is
+        // `'$(OutDir)' == ''`, so writing empty leaves the default layout in
+        // force. Whitespace-only is a decline for the reason
+        // [`Self::target_name_verdict`] declines on it — that gate compares
+        // `== ''` exactly, so the real build has a whitespace-named directory
+        // rather than the default.
+        if path.is_empty() {
+            return OutputDirVerdict::Default;
+        }
+        if path.trim().is_empty() {
+            return OutputDirVerdict::Unknown;
+        }
+        OutputDirVerdict::Declared {
+            path,
+            configuration,
         }
     }
 
@@ -3774,6 +3871,7 @@ fn walk_property_child_inner(
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
+        state.record_out_dir_write(&name, OutDirWrite::Unevaluable);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
             node.range(),
@@ -3810,6 +3908,7 @@ fn walk_property_child_inner(
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
+        state.record_out_dir_write(&name, OutDirWrite::Unevaluable);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
             node.range(),
@@ -3838,6 +3937,7 @@ fn walk_property_child_inner(
         // undefined reads of this name are never exact (C.2b).
         state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
+        state.record_out_dir_write(&name, OutDirWrite::Unevaluable);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
             node.range(),
@@ -3889,6 +3989,7 @@ fn walk_property_child_inner(
     state.lookup.insert_escaped(name.clone(), expansion.value);
     state.written.insert(lower.clone(), name.clone());
     state.record_directory_build_path_write(&name);
+    state.record_out_dir_write(&name, OutDirWrite::Raw(raw.clone()));
     state.apply_property_provenance(&name, &lower, provenance);
 }
 

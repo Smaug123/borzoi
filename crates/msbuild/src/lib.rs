@@ -257,6 +257,48 @@ impl ItemMetadataValue {
     pub const ABSENT: ItemMetadataValue = ItemMetadataValue::Known(None);
 }
 
+/// Where a project's build output lands, as far as the props/targets chain
+/// this walker follows can say — the basis for locating a referenced
+/// project's assembly.
+///
+/// `OutDir` is the property that names the actual output directory (probed
+/// against real MSBuild, dotnet 10: with `<OutDir>artifacts/</OutDir>` the
+/// build writes `artifacts/P.dll`, and `AppendTargetFrameworkToOutputPath`
+/// does not touch it). A declared value is therefore a *complete* answer,
+/// not a base to append to.
+///
+/// The verdict carries trust semantics for the same reason
+/// [`ParsedProject::target_name`] does: a consumer that looks in the wrong
+/// directory reports a built project as unbuilt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputDirVerdict {
+    /// No `OutDir` write, so MSBuild's default layout applies
+    /// (`bin/$(Configuration)/$(TargetFramework)/`, the tail segment
+    /// dropped when `AppendTargetFrameworkToOutputPath` is false).
+    Default,
+    /// A declared output directory, verbatim as evaluated — relative to the
+    /// project directory unless rooted.
+    ///
+    /// `configuration` is `Some(cfg)` when the declared value was written in
+    /// terms of `$(Configuration)` and the evaluated `cfg` occurs exactly
+    /// once in `path`. A consumer must **not** commit to `cfg`: this
+    /// evaluation sees whichever configuration the environment happened to
+    /// default to (`Debug`), while the user may have built another. Treat
+    /// that one occurrence as a wildcard and search it, exactly as the
+    /// default layout's `bin/<config>/` segment is searched.
+    Declared {
+        path: String,
+        configuration: Option<String>,
+    },
+    /// No claim: untrusted provenance, a write this walker refused to
+    /// evaluate, a value leaning on a property never defined here (which
+    /// expands to empty and would otherwise look like a clean relative
+    /// path — `$(SolutionDir)artifacts/` becoming `artifacts/`), or a
+    /// `$(Configuration)` whose evaluated value cannot be located
+    /// unambiguously in the result.
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedItem {
     pub kind: ItemKind,
@@ -547,6 +589,12 @@ pub struct ParsedProject {
     /// Sourced from the merged `lookup` (same as [`Self::lang_version`]), so a
     /// caller-supplied global participates.
     pub target_name: ItemMetadataValue,
+    /// Where the build writes this project's output — see
+    /// [`OutputDirVerdict`]. Sourced from the same merged `lookup` as
+    /// [`Self::target_name`], plus the *raw* body of the deciding write,
+    /// which is what lets the verdict tell a value that leaned on an
+    /// undefined property from a genuinely relative one.
+    pub output_dir: OutputDirVerdict,
     /// Lowercased names of properties whose end-of-evaluation value
     /// provenance is **untrusted**: the stored value (or a gate it sat
     /// behind) leaned on an *unpinned* property or an SDK-package-tainted
