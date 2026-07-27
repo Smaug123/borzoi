@@ -69,10 +69,18 @@ pub fn resolve_framework(
     // so it is used verbatim. (netstandard2.1 does have a
     // `NETStandard.Library.Ref` pack, which the standard probe below finds,
     // hence "try, then fall through".)
-    if let Some(package_ref_dir) = package_ref_dir
-        && let Some(dlls) = package_ref_dlls(package_folders, package_ref_dir)?
-    {
-        return Ok(dlls);
+    // Authoritative when present: the caller found the assets file's own
+    // selection, so a *missing* directory (a stale or half-cleared package
+    // cache) is a miss, never a reason to substitute a targeting pack. The
+    // wrong BCL resolves names the compiler rejects; no BCL merely defers.
+    if let Some(package_ref_dir) = package_ref_dir {
+        return match package_ref_dlls(package_folders, package_ref_dir)? {
+            Some(dlls) => Ok(dlls),
+            None => Err(ProjectAssetsError::FrameworkPackNotFound {
+                name: name.to_string(),
+                searched: PathBuf::from(package_ref_dir),
+            }),
+        };
     }
     // The SDK's bundled pack is authoritative; the NuGet-restored targeting
     // packs (lowercased `{name}.ref` under each package folder) are fallbacks
@@ -289,10 +297,45 @@ mod tests {
         );
     }
 
-    /// netstandard2.1 *does* have a targeting pack, and the standard probe
-    /// finds it — the package-layout fallback must not shadow it.
+    /// The assets file's own selection is authoritative: if the package
+    /// directory it names is gone (a half-cleared cache), that is a miss.
+    /// Substituting a targeting pack would hand a netstandard2.1 project the
+    /// 2.1 BCL where the restore selected 2.0's, resolving APIs the compiler
+    /// rejects; no BCL at all merely defers.
     #[test]
-    fn a_netstandard_targeting_pack_still_wins_where_one_exists() {
+    fn a_missing_selected_package_does_not_fall_back_to_a_pack() {
+        let tmp = TempDir::new().unwrap();
+        let dotnet = tmp.path().join("dotnet");
+        let pack = dotnet
+            .join("packs")
+            .join("NETStandard.Library.Ref")
+            .join("2.1.0")
+            .join("ref")
+            .join("netstandard2.1");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("netstandard.dll"), b"").unwrap();
+        let pkgs = tmp.path().join("pkgs");
+        fs::create_dir_all(&pkgs).unwrap();
+
+        match resolve_framework(
+            &dotnet,
+            std::slice::from_ref(&pkgs),
+            NETSTANDARD_LIBRARY,
+            "netstandard2.1",
+            Some("netstandard.library/2.0.3/build/netstandard2.0/ref"),
+        ) {
+            Err(ProjectAssetsError::FrameworkPackNotFound { name, .. }) => {
+                assert_eq!(name, NETSTANDARD_LIBRARY);
+            }
+            other => panic!("expected the selected package to be authoritative, got {other:?}"),
+        }
+    }
+
+    /// netstandard2.1 gets its BCL from a targeting pack, named by a real
+    /// `frameworkReferences` entry and so carrying no package selection. The
+    /// standard probe finds it, exactly as for `Microsoft.NETCore.App`.
+    #[test]
+    fn a_netstandard_targeting_pack_resolves_without_a_package_selection() {
         let tmp = TempDir::new().unwrap();
         let dotnet = tmp.path().join("dotnet");
         let pack = dotnet
@@ -311,7 +354,7 @@ mod tests {
             std::slice::from_ref(&pkgs),
             NETSTANDARD_LIBRARY,
             "netstandard2.1",
-            Some("netstandard.library/2.0.3/build/netstandard2.0/ref"),
+            None,
         )
         .expect("the targeting pack resolves");
         assert_eq!(dlls, vec![pack.join("netstandard.dll")]);

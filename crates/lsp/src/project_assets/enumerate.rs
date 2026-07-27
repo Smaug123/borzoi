@@ -208,9 +208,15 @@ fn enumerate_target(
     // `DisableImplicitFrameworkReferences` has no such entry, and inventing one
     // would let us resolve names the compiler rejects. The *selected* package
     // directory rides along for the same reason — the restore chose a version.
-    if !out
-        .iter()
-        .any(|r| matches!(r, Reference::Framework { name, .. } if name == NETSTANDARD_LIBRARY))
+    // `NETStandard.Library.targets` adds its reference directory only when the
+    // consumer's `TargetFrameworkIdentifier` is `.NETStandard`, so a `net8.0`
+    // project that merely references the package compiles against
+    // `Microsoft.NETCore.App` alone — adding the old facade set beside it would
+    // be a reference set the compiler does not have.
+    if tfm.starts_with("netstandard")
+        && !out
+            .iter()
+            .any(|r| matches!(r, Reference::Framework { name, .. } if name == NETSTANDARD_LIBRARY))
         && let Some(package_ref_dir) = netstandard_library_ref_dir(assets, target)
     {
         out.push(Reference::Framework {
@@ -519,6 +525,46 @@ mod tests {
                 // TFM: NuGet's content model chose `build/netstandard2.0`.
                 Some("netstandard.library/2.0.3/build/netstandard2.0/ref")
             )]
+        );
+    }
+
+    /// …and only for a **netstandard** consumer. `NETStandard.Library.targets`
+    /// adds its references only when `TargetFrameworkIdentifier` is
+    /// `.NETStandard`, so a `net8.0` project that merely references the package
+    /// compiles against `Microsoft.NETCore.App` alone.
+    #[test]
+    fn a_net_target_referencing_the_library_gets_no_netstandard_bcl() {
+        let mut entries = BTreeMap::new();
+        entries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawTargetEntry {
+                kind: "package".to_string(),
+                compile: None,
+                framework: None,
+                build: Some(BTreeMap::from([(
+                    "build/netstandard2.0/NETStandard.Library.targets".to_string(),
+                    serde_json::Value::Object(serde_json::Map::new()),
+                )])),
+            },
+        );
+        let mut targets = BTreeMap::new();
+        targets.insert("net8.0".to_string(), entries);
+        let mut assets = build_assets(targets);
+        assets.libraries.insert(
+            "NETStandard.Library/2.0.3".to_string(),
+            RawLibrary {
+                kind: "package".to_string(),
+                path: Some("netstandard.library/2.0.3".to_string()),
+                msbuild_project: None,
+            },
+        );
+
+        let refs = enumerate_one(&assets, Path::new("/tmp/obj")).expect("enumerates");
+        assert!(
+            !refs
+                .iter()
+                .any(|r| matches!(r, Reference::Framework { .. })),
+            "a net8.0 consumer gets no netstandard facade set: {refs:?}"
         );
     }
 
