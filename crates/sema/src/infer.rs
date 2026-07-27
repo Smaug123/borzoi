@@ -3054,6 +3054,19 @@ impl<'a> Gen<'a> {
         let Some(member_ty) = member_ty else {
             return true;
         };
+        // **The seal, drawn at the door** (see [`Self::finish`]). Under an
+        // incomplete projection the unread DLL could declare a colliding
+        // receiver type whose member of this name returns something else, so
+        // this type is not provably the member's — and once it is unified into
+        // `result` nothing downstream can tell it apart from a type owing the
+        // assemblies nothing (a literal's). Declining the unify here is what
+        // makes the two distinguishable at all: `result` stays open, so
+        // `finish` drops it for being non-ground, while `let n = 1` keeps its
+        // `int`. The member's *identity* is still recorded above — and sealed
+        // with the rest — so the LSP can say why the type is missing.
+        if self.env.identities_incomplete() {
+            return true;
+        }
         let _ = self.table.unify_atomic(&Ty::Var(result), &member_ty);
         true
     }
@@ -3181,8 +3194,9 @@ impl<'a> Gen<'a> {
     /// answer.
     ///
     /// Under an **incomplete projection** the member resolutions are sealed
-    /// ([`Resolution::sealed_under_incomplete_projection`]); the *types* are not
-    /// — see the seal's comment below for the line between them.
+    /// here ([`Resolution::sealed_under_incomplete_projection`]); an
+    /// assembly-derived *type* is sealed at its door instead, so by here it has
+    /// simply never been unified in — see the seal's comment below.
     fn finish(mut self) -> InferredFile {
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
@@ -3226,24 +3240,18 @@ impl<'a> Gen<'a> {
         // finished map for the same reason the resolver sweeps — see
         // `Resolver::seal_assembly_readings`.
         //
-        // The **types** are not sealed, and that is a stated limit rather than a
-        // claim of safety. A type read *through* a sealed resolution goes with
-        // it (`annotation_ty` finds no entity to read); one unified in during
-        // the walk survives, so `let n = "hi".Length` still publishes `int`
-        // while declining to say which `Length` that was. If the unread DLL
-        // supplies a colliding `String` whose `Length` returns something else,
-        // that `int` is wrong.
-        //
-        // Closing it needs two things this phase does not have: taint through
-        // the unification table (a member's return type is unified into its
-        // variable during the walk, so by here it is indistinguishable from a
-        // type owing an assembly nothing), and a decision about the LSP's
-        // single-file hover fallback, which re-infers against an empty env and
-        // would republish what this dropped. Both are tracked; sealing the
-        // resolutions is what this change delivers, and the resolutions are what
-        // go-to-definition navigates by. Both directions of the current
-        // behaviour are pinned in `resolve_incomplete_projection` so the gap is
-        // visible rather than folklore.
+        // The **types** are sealed too, but not here — by the time a type
+        // reaches this map it is a `Ty::Named` like any other, with nothing to
+        // say where it came from. So the type side of the seal is drawn at each
+        // door an assembly-supplied type enters through instead. Two of them
+        // read the resolver's own map ([`Gen::entity_annotation_ty`] for an
+        // annotation head, [`Gen::static_callee`] for a static call's rooting
+        // type) and so are sealed already, since that map holds no `Entity`
+        // under an incomplete projection; [`Gen::wake_member`] is the one that
+        // reaches the env directly, and declines there. Every door leaves its
+        // variable open, and the ground-only read-off above turns open into
+        // silence — while a literal's type, owing the assemblies nothing, is
+        // untouched.
         if self.env.identities_incomplete() {
             for res in member_resolutions.values_mut() {
                 *res = res.sealed_under_incomplete_projection();
