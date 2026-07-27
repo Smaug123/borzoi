@@ -328,13 +328,23 @@ pub fn invoke_fcs_dump_project_with_refs(
             .join(";");
         cmd.env("BORZOI_FCS_EXTRA_REFS", joined);
     }
-    if scope == OracleRefScope::Exclusive {
-        assert!(
-            !refs.is_empty(),
-            "an exclusive reference set must have something in it — FCS aborts \
-             when told to resolve against nothing"
-        );
-        cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
+    match scope {
+        OracleRefScope::Exclusive => {
+            assert!(
+                !refs.is_empty(),
+                "an exclusive reference set must have something in it — FCS aborts \
+                 when told to resolve against nothing"
+            );
+            cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
+        }
+        // Cleared rather than merely left unset: the child inherits this
+        // process's environment, so a `BORZOI_FCS_EXCLUSIVE_REFS` set for the
+        // whole test run would silently make a caller that asked for the SDK's
+        // references get `--noframework` — with an empty `refs`, FCS then has
+        // nothing to resolve against and aborts.
+        OracleRefScope::SdkPlusExtra => {
+            cmd.env_remove("BORZOI_FCS_EXCLUSIVE_REFS");
+        }
     }
     if !defines.is_empty() {
         cmd.env("BORZOI_FCS_DEFINES", defines.join(";"));

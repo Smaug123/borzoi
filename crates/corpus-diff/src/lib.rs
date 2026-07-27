@@ -704,7 +704,14 @@ pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvo
     // …and *only* those. A project with no assets file composes no references
     // at all, and "resolve against exactly nothing" is not a reference set —
     // FCS aborts — so the mode needs a set to be exclusive about.
-    if !loaded.fcs_extra_refs.is_empty() {
+    //
+    // Cleared rather than merely left unset in the other case: the child
+    // inherits this process's environment, so a `BORZOI_FCS_EXCLUSIVE_REFS`
+    // set for the whole run would turn "no references at all" into
+    // `--noframework` with nothing to resolve against, which aborts.
+    if loaded.fcs_extra_refs.is_empty() {
+        cmd.env_remove("BORZOI_FCS_EXCLUSIVE_REFS");
+    } else {
         cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
     }
     // The Compile order goes in on stdin; `BoundedCommand` streams it from its

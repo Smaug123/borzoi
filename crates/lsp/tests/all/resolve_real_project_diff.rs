@@ -92,6 +92,7 @@
 
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -493,21 +494,32 @@ fn project_resolution_matches_fcs() {
                         // use by its type while the declaring entity and
                         // display name compose to `T.T`, so substituting would
                         // turn agreement into a divergence.
-                        let certified = u
-                            .structural
-                            .as_ref()
-                            .and_then(|s| certified_expected(&env, r, s));
+                        //
+                        // Computed at most once, and only once the rendered
+                        // name has already missed: `certified_expected` runs
+                        // `enclosing_chain` and `entity_full_name`, both
+                        // searches from the environment's roots, while nearly
+                        // every one of a real project's tens of thousands of
+                        // imported uses agrees on the rendered name alone.
+                        let certified_cell: OnceCell<Option<String>> = OnceCell::new();
+                        let certified = || {
+                            certified_cell
+                                .get_or_init(|| {
+                                    u.structural
+                                        .as_ref()
+                                        .and_then(|s| certified_expected(&env, r, s))
+                                })
+                                .as_deref()
+                        };
                         if &ours.assembly == asm
                             && (full_matches(&ours, full)
-                                || certified.as_deref().is_some_and(|c| full_matches(&ours, c)))
+                                || certified().is_some_and(|c| full_matches(&ours, c)))
                         {
                             tally.asm_match += 1;
                         } else if &ours.assembly == asm
                             && our_assembly_full_nested(&env, r).is_some_and(|n| {
                                 assembly_full_name_agrees(&n, full)
-                                    || certified
-                                        .as_deref()
-                                        .is_some_and(|c| assembly_full_name_agrees(&n, c))
+                                    || certified().is_some_and(|c| assembly_full_name_agrees(&n, c))
                             })
                         {
                             // A nested entity named in full — an adjudicated
