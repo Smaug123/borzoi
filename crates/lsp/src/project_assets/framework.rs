@@ -49,12 +49,27 @@ use crate::project_assets::error::ProjectAssetsError;
 /// `FrameworkRefForTfmMissing`. Both gaps are deliberate: this LSP
 /// targets cross-platform F# work, not Windows-desktop or
 /// mobile-platform development.
+/// The framework whose reference assemblies a **netstandard** project compiles
+/// against. Named here rather than at the call site because both halves — the
+/// enumerator that emits the reference and the resolver that finds its
+/// non-standard layout — have to agree on the spelling.
+pub const NETSTANDARD_LIBRARY: &str = "NETStandard.Library";
+
 pub fn resolve_framework(
     dotnet_root: &Path,
     package_folders: &[PathBuf],
     name: &str,
     tfm: &str,
 ) -> Result<Vec<PathBuf>, ProjectAssetsError> {
+    // `NETStandard.Library` at netstandard2.0 is not a targeting pack at all:
+    // the reference assemblies ship inside the ordinary `netstandard.library`
+    // package, under `build/{tfm}/ref/`. (netstandard2.1 *does* have a
+    // `NETStandard.Library.Ref` pack, which the standard probe below finds.)
+    if name == NETSTANDARD_LIBRARY
+        && let Some(dlls) = netstandard_build_ref_dlls(package_folders, tfm)?
+    {
+        return Ok(dlls);
+    }
     // The SDK's bundled pack is authoritative; the NuGet-restored targeting
     // packs (lowercased `{name}.ref` under each package folder) are fallbacks
     // searched only when the SDK pack lacks this TFM. `sdk_pack` doubles as the
@@ -110,6 +125,72 @@ pub fn resolve_framework(
     }
     dlls.sort();
     Ok(dlls)
+}
+
+/// The netstandard reference assemblies as the `netstandard.library` package
+/// lays them out: `{package folder}/netstandard.library/{version}/build/{tfm}/ref/*.dll`.
+/// `None` when no package folder holds that shape, so the caller falls through
+/// to the targeting-pack probe.
+fn netstandard_build_ref_dlls(
+    package_folders: &[PathBuf],
+    tfm: &str,
+) -> Result<Option<Vec<PathBuf>>, ProjectAssetsError> {
+    let roots: Vec<PathBuf> = package_folders
+        .iter()
+        .map(|pf| pf.join("netstandard.library"))
+        .collect();
+    let mut best: Option<(VersionKey, PathBuf)> = None;
+    for root in &roots {
+        let entries = match std::fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                return Err(ProjectAssetsError::Io {
+                    path: root.clone(),
+                    source: e,
+                });
+            }
+        };
+        for entry in entries {
+            let entry = entry.map_err(|e| ProjectAssetsError::Io {
+                path: root.clone(),
+                source: e,
+            })?;
+            let dir = entry.path();
+            let ref_dir = dir.join("build").join(tfm).join("ref");
+            if !ref_dir.is_dir() {
+                continue;
+            }
+            let Some(version) = dir.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(key) = parse_version(version) else {
+                continue;
+            };
+            if best.as_ref().is_none_or(|(b, _)| key > *b) {
+                best = Some((key, ref_dir));
+            }
+        }
+    }
+    let Some((_, ref_dir)) = best else {
+        return Ok(None);
+    };
+    let mut dlls = Vec::new();
+    for entry in std::fs::read_dir(&ref_dir).map_err(|e| ProjectAssetsError::Io {
+        path: ref_dir.clone(),
+        source: e,
+    })? {
+        let entry = entry.map_err(|e| ProjectAssetsError::Io {
+            path: ref_dir.clone(),
+            source: e,
+        })?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "dll") {
+            dlls.push(path);
+        }
+    }
+    dlls.sort();
+    Ok(Some(dlls))
 }
 
 /// Scan each candidate `{name}.Ref` root for the highest version directory whose
@@ -188,6 +269,77 @@ fn parse_version(s: &str) -> Option<VersionKey> {
 
 #[cfg(test)]
 mod tests {
+
+    /// netstandard2.0's reference assemblies ship inside the ordinary
+    /// `netstandard.library` package, under `build/{tfm}/ref` — not in a
+    /// targeting pack. Without this the composed set has no core library at
+    /// all, and every imported name in such a project is unresolvable.
+    #[test]
+    fn netstandard_refs_come_from_the_packages_build_ref_directory() {
+        let tmp = TempDir::new().unwrap();
+        let pkgs = tmp.path().join("pkgs");
+        let refs = pkgs
+            .join("netstandard.library")
+            .join("2.0.3")
+            .join("build")
+            .join("netstandard2.0")
+            .join("ref");
+        fs::create_dir_all(&refs).unwrap();
+        fs::write(refs.join("netstandard.dll"), b"").unwrap();
+        fs::write(refs.join("System.Runtime.dll"), b"").unwrap();
+        fs::write(refs.join("notes.txt"), b"").unwrap();
+        // An older version beside it: the highest wins, as everywhere else.
+        let older = pkgs
+            .join("netstandard.library")
+            .join("1.6.1")
+            .join("build")
+            .join("netstandard2.0")
+            .join("ref");
+        fs::create_dir_all(&older).unwrap();
+        fs::write(older.join("netstandard.dll"), b"").unwrap();
+
+        let dlls = resolve_framework(
+            &tmp.path().join("dotnet"),
+            std::slice::from_ref(&pkgs),
+            NETSTANDARD_LIBRARY,
+            "netstandard2.0",
+        )
+        .expect("netstandard refs resolve from the package layout");
+        assert_eq!(
+            dlls,
+            vec![
+                refs.join("System.Runtime.dll"),
+                refs.join("netstandard.dll")
+            ]
+        );
+    }
+
+    /// netstandard2.1 *does* have a targeting pack, and the standard probe
+    /// finds it — the package-layout fallback must not shadow it.
+    #[test]
+    fn a_netstandard_targeting_pack_still_wins_where_one_exists() {
+        let tmp = TempDir::new().unwrap();
+        let dotnet = tmp.path().join("dotnet");
+        let pack = dotnet
+            .join("packs")
+            .join("NETStandard.Library.Ref")
+            .join("2.1.0")
+            .join("ref")
+            .join("netstandard2.1");
+        fs::create_dir_all(&pack).unwrap();
+        fs::write(pack.join("netstandard.dll"), b"").unwrap();
+        let pkgs = tmp.path().join("pkgs");
+        fs::create_dir_all(&pkgs).unwrap();
+
+        let dlls = resolve_framework(
+            &dotnet,
+            std::slice::from_ref(&pkgs),
+            NETSTANDARD_LIBRARY,
+            "netstandard2.1",
+        )
+        .expect("the targeting pack resolves");
+        assert_eq!(dlls, vec![pack.join("netstandard.dll")]);
+    }
     use super::*;
     use std::fs;
     use tempfile::TempDir;

@@ -1,3 +1,4 @@
+use crate::project_assets::framework::NETSTANDARD_LIBRARY;
 use std::path::{Path, PathBuf};
 
 use crate::project_assets::error::ProjectAssetsError;
@@ -180,6 +181,24 @@ fn enumerate_target(
                 tfm: tfm.to_string(),
             });
         }
+    }
+
+    // A **netstandard** project has no `frameworkReferences` — that is a net5+
+    // concept — and its `NETStandard.Library` entry is a package whose compile
+    // asset is the `_._` placeholder. Nothing in the assets file therefore
+    // names the BCL, yet the project compiles against one: MSBuild takes the
+    // reference assemblies from the targeting pack (netstandard2.1) or from the
+    // `netstandard.library` package's own `build/<tfm>/ref` directory
+    // (netstandard2.0). Emit it as the framework reference it effectively is,
+    // so it goes down the same resolution path — otherwise the reference set
+    // has no core library at all, and every imported name in such a project is
+    // unresolvable (measured on `WoofWare.Expect`: FCS reports 1008 errors from
+    // our set, starting with `RequireQualifiedAccess is not defined`).
+    if tfm.starts_with("netstandard") {
+        out.push(Reference::Framework {
+            name: NETSTANDARD_LIBRARY.to_string(),
+            tfm: tfm.to_string(),
+        });
     }
 
     Ok(out)
