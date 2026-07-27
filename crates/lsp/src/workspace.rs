@@ -1073,9 +1073,13 @@ fn resolve_node_uncached(
                         true
                     }
                 });
-                if surviving.is_empty() {
-                    break;
-                }
+                // Deliberately no early exit once `surviving` empties. The
+                // loop is no longer collecting edges by then, but it is still
+                // collecting the *suppression* signal, and a later branch
+                // whose list the evaluator could not trust — or which fails to
+                // evaluate at all — is exactly what must not be missed. The
+                // retain below is a no-op on an empty vector, so the only cost
+                // is the remaining evaluations.
             }
             NodeResult::Resolved {
                 edges: surviving,
@@ -2941,6 +2945,56 @@ mod tests {
         assert!(
             !node(&a).references_uncertain,
             "A's own list is trustworthy; the mark is per-node"
+        );
+    }
+
+    /// The suppression signal is collected from **every** declared TFM, not
+    /// just the ones reached before the invariant-edge intersection empties.
+    /// Here the first two branches share no reference, so `surviving` is empty
+    /// by the time the third — whose list the evaluator cannot trust — is
+    /// reached; stopping there would report the node's references as
+    /// trustworthy and drop the incompleteness the consumer needs.
+    #[test]
+    fn suppression_is_collected_from_every_declared_tfm() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/A.fsproj");
+        let b = tmp.path().join("B/B.fsproj");
+        write_file(&a, &fsproj_with_refs(&["../B/B.fsproj"]));
+        // Disjoint references under the first two TFMs empty the intersection;
+        // the third adds an unmodelled `Update`, which suppresses the list.
+        write_file(
+            &b,
+            r#"<Project>
+              <PropertyGroup>
+                <TargetFrameworks>net10.0;net9.0;net8.0</TargetFrameworks>
+              </PropertyGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+                <ProjectReference Include="../Ten/Ten.fsproj" />
+              </ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+                <ProjectReference Include="../Nine/Nine.fsproj" />
+              </ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+                <ProjectReference Include="../Eight/Eight.fsproj" />
+                <ProjectReference Update="../Eight/Eight.fsproj" Private="false" />
+              </ItemGroup>
+            </Project>"#,
+        );
+
+        let ws = Workspace::default();
+        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let b_node = graph
+            .nodes
+            .iter()
+            .find(|n| n.path == lexically_normalize(&b))
+            .expect("B is in the graph");
+        assert!(
+            b_node.references.is_empty(),
+            "no reference survives every TFM, which is what empties the intersection"
+        );
+        assert!(
+            b_node.references_uncertain,
+            "the last TFM's list was suppressed and the walk must still have seen it"
         );
     }
 
