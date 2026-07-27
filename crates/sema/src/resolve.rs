@@ -231,6 +231,18 @@ pub fn resolve_file(
                 _ => {}
             }
         }
+        // …and its **value** binders, for the implicit enclosing-namespace
+        // fold's block-local screen. Scoped to this node but otherwise the
+        // file-global binder walk below, so it over-collects (a lambda
+        // parameter counts) in the same sound direction.
+        for pat in nm.syntax().descendants().filter_map(Pat::cast) {
+            for name in pattern_names(&pat, BinderRole::Let, &HashSet::new()) {
+                if let PatternName::Binder(def) = name {
+                    r.own_auto_open_value_names
+                        .insert(id_text(&def.name).to_string());
+                }
+            }
+        }
     }
     // Every value-binder simple name in the file — the constructor fallback's
     // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
@@ -1827,6 +1839,7 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
+            own_auto_open_value_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),

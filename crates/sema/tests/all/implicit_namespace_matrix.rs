@@ -430,14 +430,34 @@ const CELLS: &[Cell] = &[
         probe: "extraValue",
         position: Position::Expr,
     },
-    // Two more cells belong here and are NOT yet listed: a later constructible
-    // `type Tag()` taking the implicit member's slot, and a later `[<AutoOpen>]
-    // module`'s value out-ranking it. Both are wrong targets today, and both
-    // reproduce identically through an explicit `open Demo.Auto` — so they are
-    // defects of the slot-eviction and same-block-auto-open machinery, not of
-    // this channel, and this grid has no "known wrong" bucket by design. They
-    // are recorded with their exact cell text as their own task; add them here
-    // when it lands.
+    // The two shadowings the resolver does not model generally — a later
+    // constructible type taking the value slot, and a same-block `[<AutoOpen>]`
+    // module folding above an earlier open — reproduce through an explicit
+    // `open` too and have their own tasks. Their cells belong here because this
+    // channel meets them far more often, and it must DECLINE rather than commit
+    // a target FCS shadows: `screen_block_local_shadows` makes both `None` on
+    // our side, which is the same value FCS's local target renders as in the
+    // matrix currency, so they are ordinary passing cells and not gaps.
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a later constructible type takes the implicit member's slot",
+        body: &["type Tag() =", "    member _.Marker = 1"],
+        probe: "Tag",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "later-decl / a later [<AutoOpen>] module's value out-ranks the implicit member",
+        body: &[
+            "[<AutoOpen>]",
+            "module LocalAuto =",
+            "    let extraValue () = 1",
+        ],
+        probe: "extraValue",
+        position: Position::Expr,
+    },
 ];
 
 /// Cells where we deliberately defer while FCS resolves — the ratchet only

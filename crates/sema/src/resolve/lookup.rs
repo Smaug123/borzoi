@@ -360,6 +360,42 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    /// Demote to [`OpenFoldTarget::Opaque`] every fold entry whose name this
+    /// file declares in a way that *out-ranks a position-0 fold* but that
+    /// position-0 ordering does not express.
+    ///
+    /// Two such declarations, both file-global pre-scans because this runs
+    /// before the block's walk and so cannot see anything the block declares
+    /// later:
+    ///
+    /// - a **constructible type** ([`Resolver::own_type_simple_names`]) takes
+    ///   FCS's unqualified value slot from a same-named opened value, wherever
+    ///   in the block it is written;
+    /// - a value inside an **`[<AutoOpen>]` module**
+    ///   ([`Resolver::own_auto_open_value_names`]), whose contents FCS folds
+    ///   into the enclosing container above anything opened before it.
+    ///
+    /// Both shadowings are missing from the resolver generally, not just here:
+    /// they reproduce through an explicit `open` too, and their fixes are their
+    /// own slices. This screen exists so that *this* channel — which brings a
+    /// whole namespace's worth of names into position 0 and so meets the two
+    /// far more often — declines instead of committing a target FCS shadows.
+    /// `Opaque` rather than removal keeps the entry in scope shadowing by
+    /// position, so an earlier open's same-named value cannot wrongly win.
+    /// Position-blind, so it also declines uses the local provably cannot reach
+    /// — availability, in the direction the pre-scans already accept.
+    fn screen_block_local_shadows(&self, group: &mut AssemblyFoldGroup) {
+        for surface in &mut group.surfaces {
+            for entry in &mut surface.entries {
+                if self.own_type_simple_names.contains(&entry.name)
+                    || self.own_auto_open_value_names.contains(&entry.name)
+                {
+                    entry.target = OpenFoldTarget::Opaque;
+                }
+            }
+        }
+    }
+
     /// Apply one [`AssemblyFoldGroup`]: the Stage-1 signature screen, then the
     /// fold itself at `open_pos`.
     ///
@@ -831,7 +867,7 @@ impl<'a> Resolver<'a> {
         // returns modules and namespaces alike, so a top-level `module A.B` in
         // one reference merges with `namespace A.B` in another.
         let handles = self.opened_assembly_modules(&namespace);
-        let group = self.assembly_fold_group(&namespace, &handles, true);
+        let mut group = self.assembly_fold_group(&namespace, &handles, true);
         if group.barrier() {
             self.open_generation += 1;
         }
@@ -938,6 +974,7 @@ impl<'a> Resolver<'a> {
                 self.opaque_dotted_open = true;
             }
         }
+        self.screen_block_local_shadows(&mut group);
         self.apply_assembly_fold_group(&namespace, group, 0);
         // The project namespace half's own cases/exceptions and its
         // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
