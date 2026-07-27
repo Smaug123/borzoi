@@ -839,6 +839,38 @@ impl<'a> Resolver<'a> {
             self.opaque_dotted_open = true;
         }
         let project_ns = group.project_ns;
+        // The reading's **shortening prefix**. Opening a container enters every
+        // nested module of it under its short name and then recurses into the
+        // `[<AutoOpen>]` ones, so the implicit open makes an auto-open module's
+        // submodules openable bare — `open ExtraShorten` from inside `namespace
+        // Demo.Auto` reaches `Demo.Auto.Extra.ExtraShorten`
+        // (fcs-dump-verified). Omitting it is a **wrong target**, not a missed
+        // one: `extraShortenTarget` exists in `Extra` too, so the unshortened
+        // enclosing value is left standing rather than nothing — the same shape
+        // as the unchecked `Operators.int64` beating `Operators.Checked.int64`
+        // that `open_shortening_matrix` exists for.
+        //
+        // Pushed here, after the block reset seeded the assembly-level implicit
+        // auto-opens and before any `open` the file writes, so it ranks between
+        // them exactly as FCS's fold order puts it. `module_reading` follows the
+        // module half, whose own auto-open descendants shorten the same way.
+        //
+        // Gated on the **assemblies** declaring the path: a project-only
+        // namespace lends no prefix, because a project `[<AutoOpen>]` module
+        // lends none either — FCS auto-opens one *fragment*, and deciding which
+        // nested modules belong to the attributed fragment needs each one's
+        // declaring file (`Self::auto_open_shortening_prefixes`, and the
+        // "**Project** auto-open modules lend no shortening prefix" note on
+        // `open_shortening_matrix`). Pushing one there is not a no-op: the
+        // prefix reroutes a dotted head through tier 1, which cost the
+        // companion-module grid a committed cell.
+        if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
+            self.open_shortening_prefixes.push(ShorteningPrefix {
+                path: namespace.clone(),
+                namespace_reading: true,
+                module_reading: !handles.is_empty(),
+            });
+        }
         self.apply_assembly_fold_group(&namespace, group, 0);
         // The project half's own cases/exceptions and its `[<AutoOpen>]`
         // submodules' contents, pushed AFTER the assembly halves so that on a

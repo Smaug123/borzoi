@@ -33,13 +33,20 @@
 //! deciding which nested modules belong to the attributed fragment needs the
 //! declaring file of each — see `Resolver::auto_open_shortening_prefixes`.
 //!
-//! The **implicit** prefix — the `open Checked` shape itself — cannot be cast
-//! as a cell here: FCS applies an assembly-level `[<AutoOpen>]` inside the
-//! declaring assembly only, so the fixture's own `[<AutoOpen>]` module in
-//! `Microsoft.FSharp.Core` is not implicitly opened at all (fcs-dump-verified:
-//! bare `plainCore` is FS0039, `open Microsoft.FSharp.Core` then `plainCore`
-//! resolves). That channel is pinned against the real article instead, by
-//! `resolve_fsharp_core::open_checked_binds_the_checked_conversions`.
+//! Two implicit channels lend prefixes, and only one of them is a cell here:
+//!
+//! - the **enclosing namespace** a block declares, which FCS opens implicitly
+//!   (`ImplicitlyOpenOwnNamespace`) — the `implicit-ns` cells, each the
+//!   explicit twin above it with the first `open` deleted and the file's own
+//!   header doing that work instead. This is the [`Container`] dimension's
+//!   whole point: a header-less probe cannot reach the channel at all;
+//! - the **assembly-level** `[<AutoOpen>]` — the `open Checked` shape itself —
+//!   which cannot be cast as a cell: FCS applies one inside the declaring
+//!   assembly only, so the fixture's own `[<AutoOpen>]` module in
+//!   `Microsoft.FSharp.Core` is not implicitly opened at all (fcs-dump-verified:
+//!   bare `plainCore` is FS0039, `open Microsoft.FSharp.Core` then `plainCore`
+//!   resolves). That one is pinned against the real article instead, by
+//!   `resolve_fsharp_core::open_checked_binds_the_checked_conversions`.
 
 use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
@@ -131,6 +138,79 @@ const CELLS: &[Cell] = &[
         decls: &[],
         label: "cross-assembly / two assemblies' auto-open modules nest the same short name",
         body: &["open Demo.TwoAsm", "open AsmPick"],
+        probe: "asmPickValue",
+        position: Position::Expr,
+    },
+    // ---- the IMPLICIT prefix: the same shapes with the enclosing-namespace
+    // open doing the work `open Demo.Auto` does above. Each is its explicit
+    // twin with the first `open` deleted and the file's header supplying it
+    // instead, so a divergence between the two columns is a divergence between
+    // the two channels.
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / control: the enclosing auto-open value",
+        body: &[],
+        probe: "extraShortenTarget",
+        position: Position::Expr,
+    },
+    Cell {
+        // The wrong-target shape: `extraShortenTarget` exists in `Extra` too, so
+        // a shortening the implicit open fails to lend leaves the *enclosing*
+        // value standing rather than producing nothing.
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / plain submodule of the namespace's auto-open module",
+        body: &["open ExtraShorten"],
+        probe: "extraShortenTarget",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / plain submodule two auto-open levels down",
+        body: &["open DeepShorten"],
+        probe: "deepShortenValue",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / auto-open-derived prefix out-ranks the direct submodule",
+        body: &["open ShortenContest"],
+        probe: "contestValue",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / negative: a plain module inside a plain module is no prefix",
+        body: &["open ClosedDeeper"],
+        probe: "closedDeeperValue",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.Auto"),
+        decls: &[],
+        label: "implicit-ns / negative: an internal auto-open module is no prefix",
+        body: &["open InternalDeeper"],
+        probe: "internalDeeperValue",
+        position: Position::Expr,
+    },
+    Cell {
+        // A `module A.B.M` header encloses in `A.B`, so it lends the same prefix.
+        container: Container::Module("Demo.Auto.ShortenProbeModule"),
+        decls: &[],
+        label: "implicit-module-header / plain submodule of the namespace's auto-open module",
+        body: &["open ExtraShorten"],
+        probe: "extraShortenTarget",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Namespace("Demo.TwoAsm"),
+        decls: &[],
+        label: "implicit-ns / two assemblies' auto-open modules nest the same short name",
+        body: &["open AsmPick"],
         probe: "asmPickValue",
         position: Position::Expr,
     },
