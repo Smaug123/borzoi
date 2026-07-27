@@ -9,22 +9,31 @@
 //! same trade the abbreviation-target resolver already made for the same reason.
 //!
 //! The contract, in one sentence: under an incomplete projection sema commits to
-//! **no assembly-rooted resolution**, on any of the three surfaces that record
-//! one. Inference's *types* are a stated gap rather than part of the guarantee,
-//! and the two tests at the end pin exactly where the current line falls so it
-//! is visible rather than folklore.
+//! **no assembly-rooted resolution and no assembly-derived type**.
+//!
+//! The type half cannot be swept over the finished maps the way the resolution
+//! half is — a `Ty::Named(["System", "Int32"])` carries no record of whether it
+//! came from a member's return or from the literal `1`. So it is drawn at each
+//! door an assembly-supplied type enters inference through: the two that read
+//! the resolver's own map (an annotation head, a static call's rooting type) are
+//! sealed by that map already, and `Gen::wake_member` declines its unify. Every
+//! door leaves the variable open for the ground-only read-off to drop. The tests
+//! at the end pin both sides of that line — what goes, what stays, and why the
+//! LSP's single-file fallback cannot hand back what went.
 //!
 //! The tests come in two shapes. The targeted ones pin *which* deferral a
-//! specific use gets, so the LSP can explain it. The sweep pins the invariant
-//! itself over every source here at once: under an incomplete env, no
-//! `Entity`/`Member` survives anywhere — and, so the sweep cannot pass by
-//! resolving nothing, each source must produce one under a *complete* env.
+//! specific use gets, so the LSP can explain it. The two sweeps pin each half of
+//! the contract over every source here at once — no `Entity`/`Member` survives,
+//! and no type survives that an empty env could not have supplied — each with
+//! the guard that keeps it from passing on a sema that says nothing at all.
+
+use std::collections::BTreeMap;
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DeferredReason, InferredFile, ProjectItems, Resolution, ResolvedFile, infer_file,
-    resolve_file,
+    AssemblyEnv, DeferredReason, InferredFile, ProjectItems, Resolution, ResolvedFile, Ty,
+    infer_file, resolve_file,
 };
 use rowan::TextRange;
 
@@ -57,6 +66,12 @@ const ASSEMBLY_READING_SOURCES: &[&str] = &[
     // A member reached only through inference: the receiver's type comes from
     // the literal, and `Length` is looked up on it.
     "module M\nlet n = \"hi\".Length\n",
+    // An instance *method* call, whose return type reaches inference by the same
+    // wake but through the overload machinery rather than the data-member lookup.
+    "module M\nlet u = \"hi\".ToUpperInvariant()\n",
+    // A static call, whose receiver type is built from the resolver's rooting
+    // `Entity` (`Gen::static_callee`) rather than from a literal.
+    "module M\nlet b = System.String.IsNullOrEmpty \"hi\"\n",
 ];
 
 /// The BCL env every test here reads through, and the same env marked
@@ -142,6 +157,81 @@ fn an_incomplete_projection_leaves_no_assembly_reading_standing() {
         );
     }
 }
+
+/// The type half of the same invariant, stated so a *future* door cannot open
+/// quietly: under an incomplete projection, inference must publish exactly what
+/// it publishes with **no assemblies at all**.
+///
+/// An env holding nothing can supply nothing, so it is the oracle for "this type
+/// did not come out of the assemblies" — a check that needs no per-type
+/// provenance, which is precisely what `Ty` does not carry. Any new code path
+/// that reads a type out of the env and unifies it in fails this the moment a
+/// source here exercises it, rather than waiting for someone to notice.
+///
+/// Both guards matter. Without the *loses* assertion the sweep would pass on an
+/// inference that published nothing anywhere; without the *keeps* one it would
+/// pass on one that sealed types wholesale, which is the change that was tried
+/// and reverted (`let n = 1` must still be `int`).
+#[test]
+fn an_incomplete_projection_publishes_only_what_no_assemblies_would() {
+    let (complete, incomplete) = complete_and_incomplete();
+    let empty = AssemblyEnv::default();
+    let mut any_loses = false;
+    let mut any_keeps = false;
+
+    for src in ASSEMBLY_READING_SOURCES.iter().chain(ASSEMBLY_FREE_SOURCES) {
+        let (rc, ic) = resolve_and_infer(src, &complete);
+        let (ri, ii) = resolve_and_infer(src, &incomplete);
+        let (re, ie) = resolve_and_infer(src, &empty);
+
+        assert_eq!(
+            published(&ri, &ii),
+            published(&re, &ie),
+            "an incomplete projection published a type an empty env could not \
+             have supplied, so it came out of the assemblies: {src:?}"
+        );
+
+        let under_complete = published(&rc, &ic);
+        any_loses |= under_complete != published(&ri, &ii);
+        any_keeps |= !under_complete.is_empty() && under_complete == published(&ri, &ii);
+    }
+
+    assert!(
+        any_loses,
+        "no source lost a type to the seal — the sweep would pass vacuously"
+    );
+    assert!(
+        any_keeps,
+        "no source kept its types through the seal — the sweep would pass on a \
+         wholesale demote"
+    );
+}
+
+/// Every type this file published, in a form two runs over the same source can
+/// be compared by: expression types keyed by range, binder types by binder name
+/// (a `DefId` is an allocation index, not a stable identity across runs).
+fn published(resolved: &ResolvedFile, inferred: &InferredFile) -> BTreeMap<String, String> {
+    let exprs = inferred
+        .types()
+        .iter()
+        .map(|(range, ty)| (format!("expr {range:?}"), ty.render()));
+    let defs = inferred
+        .def_types()
+        .iter()
+        .map(|(def, ty)| (format!("def {}", resolved.def(*def).name), ty.render()));
+    exprs.chain(defs).collect()
+}
+
+/// Sources whose types owe the referenced assemblies nothing — literals and the
+/// shapes built out of them. The seal must not cost these, so the sweep above
+/// carries them alongside the assembly-reaching ones.
+const ASSEMBLY_FREE_SOURCES: &[&str] = &[
+    "module M\nlet n = 1\n",
+    "module M\nlet s = \"hi\"\n",
+    "module M\nlet p = (1, \"hi\")\n",
+    "module M\nlet f c = if c then 1 else 2\n",
+    "module M\nlet id x = x\n",
+];
 
 /// A type-position name that reaches a referenced assembly must defer with the
 /// reason that names the cause — not with a generic one, and not by vanishing.
@@ -238,45 +328,104 @@ fn an_inferred_member_access_defers() {
     );
 }
 
-/// A type unified in during the walk keeps its answer, including one that came
-/// from a member's return — the **stated gap**, pinned so a change to it is
-/// deliberate.
-///
-/// `let n = "hi".Length` still publishes `int` while declining to say which
-/// `Length` that was, and if the unread DLL supplies a colliding `String` whose
-/// `Length` returns something else, that `int` is wrong. Closing it needs taint
-/// through the unification table (by read-off a member's return type is
-/// indistinguishable from a type owing an assembly nothing) plus a decision
-/// about the LSP's single-file hover fallback, which re-infers against an empty
-/// env and would republish whatever this dropped.
+/// A type owing the assemblies nothing keeps its answer. `let n = 1` is `int`
+/// because the literal says so; no DLL, read or unread, has a say in it — so
+/// the seal must not cost it. The complement of the test below, and the reason
+/// the seal is drawn at the *door* rather than over the type maps wholesale.
 #[test]
-fn a_type_unified_in_during_the_walk_keeps_its_answer() {
+fn a_type_owing_the_assemblies_nothing_keeps_its_answer() {
     let (complete, incomplete) = complete_and_incomplete();
-    for src in [
-        // A literal, owing an assembly nothing beyond the name it lands on.
-        "module M\nlet n = 1\n",
-        // A member's return type, unified into the binder's variable while the
-        // walk ran — the case that cannot be told apart from the one above by
-        // the time the maps are read off.
-        "module M\nlet n = \"hi\".Length\n",
-    ] {
-        let (_, under_complete) = resolve_and_infer(src, &complete);
-        let (_, under_incomplete) = resolve_and_infer(src, &incomplete);
-        assert!(
-            !under_complete.def_types().is_empty(),
-            "the complete env must type the binder in {src:?}, else this pins nothing"
-        );
-        assert_eq!(
-            under_complete.def_types(),
-            under_incomplete.def_types(),
-            "binder types must not move for {src:?}"
-        );
-        assert_eq!(
-            under_complete.types(),
-            under_incomplete.types(),
-            "expression types must not move for {src:?}"
-        );
-    }
+    let src = "module M\nlet n = 1\n";
+    let (_, under_complete) = resolve_and_infer(src, &complete);
+    let (_, under_incomplete) = resolve_and_infer(src, &incomplete);
+    assert!(
+        !under_complete.def_types().is_empty(),
+        "the complete env must type the binder, else this pins nothing"
+    );
+    assert_eq!(
+        under_complete.def_types(),
+        under_incomplete.def_types(),
+        "binder types must not move"
+    );
+    assert_eq!(
+        under_complete.types(),
+        under_incomplete.types(),
+        "expression types must not move"
+    );
+}
+
+/// A type read **out of** an assembly member does not survive the seal, even
+/// though nothing downstream can tell where it came from.
+///
+/// `let n = "hi".Length` publishes `int` under a complete projection. If the
+/// unread DLL supplies a colliding `String` whose `Length` returns something
+/// else, that `int` is wrong — so under an incomplete projection the binder
+/// gets no type at all, and neither does the access expression. The receiver's
+/// own literal type is untouched: `"hi"` is `System.String` because it is a
+/// string literal, which no DLL can contradict.
+#[test]
+fn a_type_read_out_of_an_assembly_member_does_not_survive() {
+    let (complete, incomplete) = complete_and_incomplete();
+    let src = "module M\nlet n = \"hi\".Length\n";
+    let binder = at(src, "n");
+    let access = at(src, "\"hi\".Length");
+    let literal = at(src, "\"hi\"");
+
+    let def_of = |resolved: &ResolvedFile| {
+        resolved
+            .resolution_at(binder)
+            .and_then(|res| resolved.resolved_def_id(res))
+            .expect("the binder is recorded")
+    };
+
+    let (resolved, inferred) = resolve_and_infer(src, &complete);
+    assert_eq!(
+        inferred.def_type(def_of(&resolved)),
+        Some(&Ty::named("System.Int32")),
+        "the complete env must type the binder from the member's return, \
+         else this pins nothing"
+    );
+    assert_eq!(inferred.type_at(access), Some(&Ty::named("System.Int32")));
+
+    let (resolved, inferred) = resolve_and_infer(src, &incomplete);
+    assert_eq!(
+        inferred.def_type(def_of(&resolved)),
+        None,
+        "the binder's type came out of an assembly member, so it goes with the seal"
+    );
+    assert_eq!(
+        inferred.type_at(access),
+        None,
+        "the access's type is the member's return type, so it goes too"
+    );
+    assert_eq!(
+        inferred.type_at(literal),
+        Some(&Ty::named("System.String")),
+        "the receiver is typed by its own literal, which owes the assemblies nothing"
+    );
+}
+
+/// The LSP's single-file hover fallback cannot republish what the seal above
+/// dropped, which is what makes the guarantee hold end to end rather than only
+/// inside sema.
+///
+/// `hover::handle` re-infers an orphan buffer against an *empty* env. That
+/// fallback is why sealing inference *wholesale* was not viable — it would hand
+/// `let n = 1` back its `int` anyway — but an assembly-derived type is exactly
+/// what an empty env cannot produce: with no assemblies there is no entity to
+/// look the member up on. Pinned here, in sema, because it is a property of
+/// inference rather than of the handler.
+#[test]
+fn an_empty_env_cannot_republish_a_sealed_member_type() {
+    let empty = AssemblyEnv::default();
+    let src = "module M\nlet n = \"hi\".Length\n";
+    let (resolved, inferred) = resolve_and_infer(src, &empty);
+    let def = resolved
+        .resolution_at(at(src, "n"))
+        .and_then(|res| resolved.resolved_def_id(res))
+        .expect("the binder is recorded");
+    assert_eq!(inferred.def_type(def), None);
+    assert_eq!(inferred.type_at(at(src, "\"hi\".Length")), None);
 }
 
 /// A type read *through* a sealed resolution goes with it, though — a
