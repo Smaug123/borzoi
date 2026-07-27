@@ -5445,10 +5445,21 @@ let private dumpAttrsBatch () =
 /// `--define`/`--langversion` are additive to FCS's implicit symbols (e.g.
 /// `COMPILED`); any `--langversion` script resolution injected is filtered out
 /// first so the pinned one is the sole (last-wins-safe) version switch.
+///
+/// `exclusiveRefs` makes `refArgs` the **whole** reference set: the script's own
+/// `-r:` switches — the *running SDK's* framework, which is not the project's —
+/// are dropped. A caller whose set is complete wants this, because otherwise the
+/// oracle can resolve a name in an assembly the caller never read: measured on
+/// `WoofWare.Incremental` (net5.0), FCS bound `System.IO.File` in the SDK's
+/// `System.Runtime` while the project's own references declare it in
+/// `System.IO.FileSystem`, and the differential recorded a divergence for a
+/// resolution both sides had right. A caller whose refs merely *supplement* the
+/// SDK's (the fixture harnesses) must leave it off.
 let private usesProjectFiles
     (checker: FSharpChecker)
     (paths: string[])
     (refArgs: string[])
+    (exclusiveRefs: bool)
     (defineArgs: string[])
     (langVersionArgs: string[])
     =
@@ -5477,7 +5488,22 @@ let private usesProjectFiles
         |> Array.filter (fun o -> o.StartsWith("-") || o.StartsWith("/"))
         |> Array.filter (fun o ->
             not (o.StartsWith("--langversion:") || o.StartsWith("/langversion:")))
-        |> fun switches -> Array.concat [ switches; refArgs; defineArgs; langVersionArgs ]
+        |> Array.filter (fun o ->
+            not exclusiveRefs
+            || not (
+                o.StartsWith("-r:")
+                || o.StartsWith("/r:")
+                || o.StartsWith("--reference:")
+            ))
+        |> fun switches ->
+            // With the script's references dropped, nothing else tells FCS the
+            // framework is already accounted for, and it goes looking for one.
+            let framework =
+                if exclusiveRefs && not (switches |> Array.exists (fun o -> o = "--noframework")) then
+                    [| "--noframework" |]
+                else
+                    [||]
+            Array.concat [ switches; framework; refArgs; defineArgs; langVersionArgs ]
 
     let projOpts =
         { scriptOpts with
@@ -5550,8 +5576,16 @@ let private dumpUsesProject () =
         | Some s when s.Trim() = "" -> [||]
         | Some s -> [| "--langversion:" + s.Trim() |]
 
+    // `BORZOI_FCS_EXCLUSIVE_REFS=1`: the caller's refs are the whole set. The
+    // resident sibling takes it per request instead (`exclusiveRefs`).
+    let exclusiveRefs =
+        match Option.ofObj (Environment.GetEnvironmentVariable "BORZOI_FCS_EXCLUSIVE_REFS") with
+        | Some "1" -> true
+        | Some _
+        | None -> false
+
     let checker = FSharpChecker.Create()
-    let files = usesProjectFiles checker paths (extraRefArgs ()) defineArgs langVersionArgs
+    let files = usesProjectFiles checker paths (extraRefArgs ()) exclusiveRefs defineArgs langVersionArgs
     let payload = {| Files = files |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
@@ -5564,7 +5598,8 @@ let private dumpUsesProject () =
 /// `dotnet fcs-dump uses-project` per project and pay the .NET + FCS cold-start
 /// every time. One JSON request per stdin line —
 /// `{ "paths": [<abs .fs>…], "refs": [<dll>…], "defines": [<sym>…],
-/// "langversion": <token|null> }`, Compile order preserved — and one compact
+/// "langversion": <token|null>, "exclusiveRefs": <bool> }`, Compile order
+/// preserved — and one compact
 /// `{ "Files": [ { Path, Diagnostics, Uses } … ] }` response line: the SAME
 /// payload the one-shot emits (compact rather than indented; the `serde_json`
 /// consumer is whitespace-insensitive). Per-request failures become
@@ -5596,7 +5631,12 @@ let private usesProjectBatchCore () =
                     | Some s when s.Trim() <> "" -> [| "--langversion:" + s.Trim() |]
                     | _ -> [||]
                 | _ -> [||]
-            let files = usesProjectFiles checker paths refArgs defineArgs langVersionArgs
+            let exclusiveRefs =
+                match root.TryGetProperty("exclusiveRefs") with
+                | true, v when v.ValueKind = JsonValueKind.True -> true
+                | _ -> false
+            let files =
+                usesProjectFiles checker paths refArgs exclusiveRefs defineArgs langVersionArgs
             JsonSerializer.Serialize({| Files = files |}, compact)
         with ex ->
             JsonSerializer.Serialize({| BatchError = ex.Message |}, compact)

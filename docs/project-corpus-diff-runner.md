@@ -145,7 +145,20 @@ For each visited project, the runner:
 2. Parses and resolves the compile files through `SemanticState`.
 3. Hands FCS the same reference DLLs the semantic layer's `AssemblyEnv` was
    built from (see the reference-set note above), so neither side can resolve
-   against an assembly the other cannot see.
+   against an assembly the other cannot see. **Exactly** those: the oracle runs
+   with the script-resolved references dropped and `--noframework`
+   (`BORZOI_FCS_EXCLUSIVE_REFS`), because FCS otherwise resolves the *running
+   SDK's* framework as well — measured on the pinned `WoofWare.Incremental`
+   (net5.0), it bound `System.IO.File` in the SDK's `System.Runtime` while the
+   project's own references declare it in `System.IO.FileSystem`, and a
+   resolution both sides had right was recorded as a divergence in each
+   direction. And exactly the **unified** set: a superseded duplicate (a legacy
+   `system.runtime/4.3.1` contract assembly beside the framework pack's 8.0)
+   which our env drops must not reach FCS either — with both in its `-r:` set,
+   type-checking `WoofWare.PawPrint`'s main library never terminated (100%+ CPU,
+   RSS past 21 GB in five minutes). A project whose composed set is *incomplete*
+   now fails to type-check and is skipped, loudly, rather than compared against
+   a framework we never read.
 4. Invokes `fcs-dump uses-project`.
 5. Parses FCS ranges back to byte offsets using full path identity.
 6. Compares every comparable FCS project declaration and assembly declaration

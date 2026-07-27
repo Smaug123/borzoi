@@ -322,7 +322,8 @@ fn project_resolution_matches_fcs() {
     // that drifts. A disabled cache keeps the read deterministic. The per-panic
     // backtrace is silenced so a skipped DLL doesn't spam the report.
     let _silence = silence_panics_here();
-    let env = build_env_from_dll_paths(dll_paths.iter().copied(), &AssemblyCache::disabled());
+    let (env, _kept) =
+        build_env_from_dll_paths(dll_paths.iter().copied(), &AssemblyCache::disabled());
     drop(_silence);
 
     // 3. Our whole-project resolution — the signature-aware fold, exactly as

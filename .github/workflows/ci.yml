@@ -836,13 +836,12 @@ jobs:
       # that earns it. Raising it means this corpus now resolves something to
       # the wrong declaration and wants a reason in the commit message.
       #
-      # `assembly=1,reverse=1` are one site seen from both directions:
-      # `NodeToDot.fs`'s `File.Open`, where FCS names the `System.Runtime`
-      # facade and we name `System.IO.FileSystem` — the forwarder equivalence
-      # task #20 is about, not a resolution disagreement. `project=1` predates
-      # the series. The other 15 of each were FCS's generic-arity *rendering*,
-      # retired by the structural declaring-entity comparison.
-      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=1,project=1,reverse=1"
+      # `project=1` is `WoofWare.Incremental`'s `FakeUnit.fs` binder divergence,
+      # and predates this series. Assembly and reverse are at **zero**: the last
+      # of each was `NodeToDot.fs`'s `File.Open`, where the oracle had been
+      # resolving against the running SDK's framework as well as the project's
+      # own references and named a different `System.IO.File`.
+      BORZOI_PROJECT_EXPECT_DIVERGENCES: "assembly=0,project=1,reverse=0"
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

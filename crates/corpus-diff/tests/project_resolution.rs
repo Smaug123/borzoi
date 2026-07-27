@@ -338,6 +338,35 @@ fn a_sig_exposed_val_matches_an_oracle_declaring_it_in_the_fsi() {
     );
 }
 
+/// A real managed assembly to stand in for a fixture's built output.
+///
+/// The reference set the oracle is handed is the one our env was *built* from,
+/// so a fixture that writes an empty file where a DLL should be is testing
+/// nothing: the file is dropped before either side sees it.
+fn system_runtime_dll() -> PathBuf {
+    if let Some(explicit) = std::env::var_os("BORZOI_SYSTEM_RUNTIME_DLL") {
+        return PathBuf::from(explicit);
+    }
+    let dotnet_root = std::env::var_os("DOTNET_ROOT")
+        .map(PathBuf::from)
+        .expect("DOTNET_ROOT unset (run under `nix develop`, or set BORZOI_SYSTEM_RUNTIME_DLL)");
+    let packs = dotnet_root.join("packs").join("Microsoft.NETCore.App.Ref");
+    fs::read_dir(&packs)
+        .unwrap_or_else(|e| panic!("read ref packs dir {}: {e}", packs.display()))
+        .filter_map(|e| e.ok())
+        .flat_map(|entry| {
+            let refs = entry.path().join("ref");
+            fs::read_dir(&refs)
+                .into_iter()
+                .flatten()
+                .filter_map(|tfm| tfm.ok())
+                .map(|tfm| tfm.path().join("System.Runtime.dll"))
+                .collect::<Vec<_>>()
+        })
+        .find(|dll| dll.is_file())
+        .unwrap_or_else(|| panic!("no System.Runtime.dll under {}", packs.display()))
+}
+
 /// A project whose sources use a referenced **project**'s types can only be
 /// type-checked by an oracle that was handed that project's output assembly.
 /// Our own side gets it — the LSP's env fold locates each F#
@@ -364,17 +393,19 @@ fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
          </PropertyGroup>\n</Project>\n",
     );
     // The producer's *built* output — the only thing that makes the reference
-    // resolvable for either side. Content is irrelevant here: this test observes
-    // the composed path list, not a parsed assembly.
-    write(
-        &tmp.path()
-            .join("Lib")
-            .join("bin")
-            .join("Debug")
-            .join("net8.0")
-            .join("Lib.dll"),
-        "",
-    );
+    // resolvable for either side. A **real** assembly, because the set the
+    // oracle is handed is the set our env was built from: a file we cannot
+    // project is not in it (see
+    // `the_oracle_set_excludes_a_reference_we_could_not_read`).
+    let lib_dll = tmp
+        .path()
+        .join("Lib")
+        .join("bin")
+        .join("Debug")
+        .join("net8.0")
+        .join("Lib.dll");
+    std::fs::create_dir_all(lib_dll.parent().expect("Lib.dll has a parent")).expect("mkdir");
+    std::fs::copy(system_runtime_dll(), &lib_dll).expect("copy a real assembly into place");
     let app = tmp.path().join("App").join("App.fsproj");
     write(
         &app,
@@ -440,6 +471,88 @@ fn the_oracle_reference_set_is_the_set_the_env_is_built_from() {
     assert_eq!(
         loaded.fcs_extra_refs, env_refs,
         "the oracle's reference set must be the env's, not a second composition"
+    );
+}
+
+/// A reference we could not **read** is not in the set either side resolves
+/// against, so it must not be handed to the oracle.
+///
+/// The asymmetry is not cosmetic. Our env drops a superseded duplicate (a legacy
+/// `system.runtime` contract assembly beside the framework pack's) and anything
+/// it cannot project; handing FCS the *unfiltered* list gave it two corelibs,
+/// and type-checking `WoofWare.PawPrint`'s main library then never terminated
+/// (100%+ CPU, RSS past 21 GB in five minutes) — measured, and the reason this
+/// list is the env's rather than the composition's.
+#[test]
+fn the_oracle_set_excludes_a_reference_we_could_not_read() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let lib = tmp.path().join("Lib").join("Lib.fsproj");
+    write(
+        &lib,
+        "<Project>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  \
+         </PropertyGroup>\n</Project>\n",
+    );
+    // Present where the built output belongs, and not an assembly.
+    write(
+        &tmp.path()
+            .join("Lib")
+            .join("bin")
+            .join("Debug")
+            .join("net8.0")
+            .join("Lib.dll"),
+        "MZ but nothing else",
+    );
+    let app = tmp.path().join("App").join("App.fsproj");
+    write(
+        &app,
+        r#"<Project>
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Lib\Lib.fsproj" />
+  </ItemGroup>
+</Project>
+"#,
+    );
+    write(
+        &tmp.path().join("App").join("A.fs"),
+        "module A\nlet x = 1\n",
+    );
+    write(
+        &tmp.path()
+            .join("App")
+            .join("obj")
+            .join("project.assets.json"),
+        &serde_json::to_string_pretty(&serde_json::json!({
+            "version": 3,
+            "targets": {
+                "net8.0": { "Lib/1.0.0": { "type": "project", "framework": "net8.0" } }
+            },
+            "libraries": {
+                "Lib/1.0.0": {
+                    "type": "project",
+                    "msbuildProject": "../../Lib/Lib.fsproj",
+                    "path": "../../Lib/Lib.fsproj"
+                }
+            },
+            "packageFolders": { tmp.path().join("packages").to_str().expect("utf-8 tmp"): {} },
+            "project": { "frameworks": { "net8.0": {} } },
+        }))
+        .expect("assets json"),
+    );
+
+    let loaded = load_lsp_project(&app).expect("project should load");
+    assert!(
+        !loaded
+            .fcs_extra_refs
+            .iter()
+            .any(|p| p.ends_with("Lib/bin/Debug/net8.0/Lib.dll")),
+        "an unreadable DLL is in neither side's reference set; got {:?}",
+        loaded.fcs_extra_refs
     );
 }
 

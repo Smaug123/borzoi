@@ -683,6 +683,17 @@ pub fn invoke_fcs_uses_project(loaded: &LoadedProject) -> Result<String, FcsInvo
     if let Some(lang) = loaded.lang_version.as_deref() {
         cmd.env("BORZOI_FCS_LANGVERSION", lang);
     }
+    // The references we hand FCS are the **whole** set — the same
+    // `SemanticState::reference_dlls_for_project` composition our own
+    // `AssemblyEnv` is built from — so the oracle must not also resolve the
+    // *running SDK's* framework. It is not the project's: measured on
+    // `WoofWare.Incremental` (net5.0), FCS bound `System.IO.File` in the SDK's
+    // `System.Runtime` while the project's own references declare it in
+    // `System.IO.FileSystem`, and a resolution both sides had right was
+    // recorded as a divergence in each direction. A project whose composed set
+    // is *incomplete* now fails to type-check and is skipped, loudly, rather
+    // than compared against a framework we never read.
+    cmd.env("BORZOI_FCS_EXCLUSIVE_REFS", "1");
     // The Compile order goes in on stdin; `BoundedCommand` streams it from its
     // own thread while draining both output pipes, so a project large enough to
     // fill a pipe buffer can't deadlock the round-trip (writing stdin
