@@ -14,8 +14,8 @@ use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::model::{
-    DeclineCause, DeclineSite, ExportDecl, ExportedItem, ItemId, OpenTrace, ProjectItems,
-    Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId, OpenTrace,
+    ProjectItems, Resolution, SlotClass,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -394,7 +394,13 @@ pub(super) enum TieredResolution<R> {
     /// that resolves the **whole** path, or (when none does and no project
     /// shadow intervened) the highest-priority *partial* reading (rooting type
     /// resolved, tail deferred).
-    Resolved(R),
+    ///
+    /// `tier` is where in the ladder that reading came from. A caller that
+    /// post-filters a resolved reading into a decline — a module leaf is not a
+    /// type — needs it: the decline happened at a *specific* tier, and
+    /// recording [`DeclineTier::WholeWalk`] there would hide the winner moving
+    /// between tiers, which is the one thing the census exists to see.
+    Resolved { payload: R, tier: DeclineTier },
     /// Some reading at winning priority is project-shadowed: a project entity
     /// owns the name there and may satisfy the whole path invisibly (sema does
     /// not model project types / nested-module members), so no assembly reading

@@ -2419,7 +2419,7 @@ impl<'a> Resolver<'a> {
                     true,
                     |_| ShadowVeto::None,
                 ) {
-                    TieredResolution::Resolved(recs) => Some(recs),
+                    TieredResolution::Resolved { payload, .. } => Some(payload),
                     TieredResolution::ShadowDeferred(site) => {
                         declined_at = Some(site);
                         None
@@ -3505,6 +3505,17 @@ impl<'a> Resolver<'a> {
                         if self
                             .assembly_case_head_contends_at_an_open(id_text(type_seg.text())) =>
                     {
+                        // A ladder guard rejected the project reading: an
+                        // explicit `open` puts an assembly entity of the head's
+                        // name in scope above it. Always that tier, since the
+                        // helper walks the explicit opens alone.
+                        pattern_decline = Some((
+                            type_seg.text_range(),
+                            DeclineSite {
+                                cause: DeclineCause::AssemblyCaseHeadContends,
+                                tier: DeclineTier::ExplicitOpen,
+                            },
+                        ));
                         None
                     }
                     _ => Some(Ok(id)),
@@ -3721,7 +3732,7 @@ impl<'a> Resolver<'a> {
                 false,
                 shadow_at,
             ) {
-                TieredResolution::Resolved(recs) => (Some(recs), None),
+                TieredResolution::Resolved { payload, .. } => (Some(payload), None),
                 TieredResolution::ShadowDeferred(site) => (None, Some(site)),
                 // A no-match here is the surface's contest: the tiers above it
                 // declined, and the surface itself is unwalkable.
@@ -3735,7 +3746,7 @@ impl<'a> Resolver<'a> {
             };
         }
         match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
-            TieredResolution::Resolved(reading) => (Some(reading), None),
+            TieredResolution::Resolved { payload, .. } => (Some(payload), None),
             TieredResolution::ShadowDeferred(site) => (None, Some(site)),
             // Nothing resolves or shadows the head: no guard declined it.
             TieredResolution::NoMatch => (None, None),

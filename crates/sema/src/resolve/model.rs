@@ -2026,6 +2026,11 @@ pub enum DeclineCause {
     /// A dotted path headed by the raw `global` namespace-root marker, which is
     /// not a name use.
     GlobalMarkerHead,
+    /// An explicit `open` puts a referenced-assembly entity of a `Type.Case`
+    /// pattern head's name in scope, above the project case reading that would
+    /// otherwise bind — so the project reading may not be committed and the
+    /// assembly one is an entity we decline to resolve through.
+    AssemblyCaseHeadContends,
     /// The env's projection is incomplete — some DLL is present that could not
     /// be read at all — so every assembly-rooted reading in the file was
     /// withdrawn (`Resolution::sealed_under_incomplete_projection`). The one
@@ -2068,6 +2073,7 @@ impl DeclineCause {
         DeclineCause::HeadSlotUnordered,
         DeclineCause::CaseQualifierHead,
         DeclineCause::GlobalMarkerHead,
+        DeclineCause::AssemblyCaseHeadContends,
         DeclineCause::IncompleteAssemblies,
     ];
 
@@ -2104,6 +2110,7 @@ impl DeclineCause {
             DeclineCause::HeadSlotUnordered => "head_slot_unordered",
             DeclineCause::CaseQualifierHead => "case_qualifier_head",
             DeclineCause::GlobalMarkerHead => "global_marker_head",
+            DeclineCause::AssemblyCaseHeadContends => "assembly_case_head_contends",
             DeclineCause::IncompleteAssemblies => "incomplete_assemblies",
         }
     }

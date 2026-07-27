@@ -1447,20 +1447,25 @@ impl<'a> Resolver<'a> {
         // type, which the annotation genuinely binds, so that leaf keeps
         // committing (codex round 7). A module as a dotted QUALIFIER is
         // untouched — only the whole path's leaf is checked.
-        let commit = |reading: super::state::TypePathReading| -> TypePathResolution {
-            if reading.leaf.is_some_and(|leaf| {
-                self.assemblies.entity_class(leaf) == Some(crate::SemanticClass::Module)
-            }) {
-                return TypePathResolution::Deferred(DeclineSite {
-                    cause: DeclineCause::AuthoritativeModuleLeaf,
-                    tier: DeclineTier::WholeWalk,
-                });
-            }
-            TypePathResolution::Assembly {
-                idx_recs: reading.idx_recs,
-                leaf: reading.leaf,
-            }
-        };
+        let commit =
+            |reading: super::state::TypePathReading, tier: DeclineTier| -> TypePathResolution {
+                if reading.leaf.is_some_and(|leaf| {
+                    self.assemblies.entity_class(leaf) == Some(crate::SemanticClass::Module)
+                }) {
+                    // The tier the walk *resolved* at, not `WholeWalk`: this
+                    // reading won its tier and was then post-filtered out, so
+                    // recording an exhausted walk would hide the winner moving
+                    // between tiers.
+                    return TypePathResolution::Deferred(DeclineSite {
+                        cause: DeclineCause::AuthoritativeModuleLeaf,
+                        tier,
+                    });
+                }
+                TypePathResolution::Assembly {
+                    idx_recs: reading.idx_recs,
+                    leaf: reading.leaf,
+                }
+            };
 
         // The name-blind half of both surfaces, asked once. Committing at a
         // tier above a surface is licensed by the **name-keyed** halves only
@@ -1508,11 +1513,21 @@ impl<'a> Resolver<'a> {
                 false,
                 shadow_at,
             ) {
-                TieredResolution::Resolved(reading) if reading.leaf.is_some() => commit(reading),
+                TieredResolution::Resolved { payload, tier } if payload.leaf.is_some() => {
+                    commit(payload, tier)
+                }
                 // The site the walk itself reached, when it reached one; a
-                // partial or a no-match is the surface's contest instead.
+                // partial or a no-match is the surface's contest instead — the
+                // partial at the tier it was found, the no-match with the walk
+                // genuinely exhausted.
                 TieredResolution::ShadowDeferred(site) => TypePathResolution::Deferred(site),
-                _ => TypePathResolution::Deferred(DeclineSite {
+                TieredResolution::Resolved { tier, .. } => {
+                    TypePathResolution::Deferred(DeclineSite {
+                        cause: DeclineCause::ManifestSurfaceContest,
+                        tier,
+                    })
+                }
+                TieredResolution::NoMatch => TypePathResolution::Deferred(DeclineSite {
                     cause: DeclineCause::ManifestSurfaceContest,
                     tier: DeclineTier::WholeWalk,
                 }),
@@ -1544,7 +1559,10 @@ impl<'a> Resolver<'a> {
                 ))
         {
             return match self.resolve_assembly_path_tiered(core, false, shadow_at) {
-                TieredResolution::Resolved(reading) => match reading.leaf {
+                TieredResolution::Resolved {
+                    payload: reading,
+                    tier,
+                } => match reading.leaf {
                     // The same authority-keyed module test as `commit` (a
                     // non-authoritative "module" is a plain type to FCS).
                     Some(leaf)
@@ -1557,9 +1575,11 @@ impl<'a> Resolver<'a> {
                             leaf: reading.leaf,
                         }
                     }
+                    // The tier this reading won at: it resolved and was then
+                    // post-filtered, so the walk was not exhausted.
                     _ => TypePathResolution::Deferred(DeclineSite {
                         cause: DeclineCause::ManifestSurfaceArityFallback,
-                        tier: DeclineTier::WholeWalk,
+                        tier,
                     }),
                 },
                 TieredResolution::ShadowDeferred(site) => TypePathResolution::Deferred(site),
@@ -1574,7 +1594,7 @@ impl<'a> Resolver<'a> {
         }
 
         match self.resolve_assembly_path_tiered(core, false, shadow_at) {
-            TieredResolution::Resolved(reading) => commit(reading),
+            TieredResolution::Resolved { payload, tier } => commit(payload, tier),
             // A project entity shadows the name at winning priority, or an
             // unmodelled type shadow won the walk at a higher-or-equal
             // priority than any real match.

@@ -1037,7 +1037,7 @@ impl<'a> Resolver<'a> {
         // set, a held fallback already outranks anything at or below the
         // current tier — shadow risk included — so the verdict is not
         // consulted once a fallback has been seen.
-        let mut fallback: Option<R> = None;
+        let mut fallback: Option<(R, DeclineTier)> = None;
 
         for (tier, prefix) in prefixes {
             let veto = if fallback.is_none() {
@@ -1064,9 +1064,9 @@ impl<'a> Resolver<'a> {
             match reading {
                 AssemblyPath::Resolved { payload, owns_path } => {
                     if owns_path {
-                        return TieredResolution::Resolved(payload);
+                        return TieredResolution::Resolved { payload, tier };
                     }
-                    fallback.get_or_insert(payload);
+                    fallback.get_or_insert((payload, tier));
                 }
                 // A generic-abbreviation reading defers, like a project shadow —
                 // but only once *reached in priority order*. The preemptive
@@ -1089,7 +1089,7 @@ impl<'a> Resolver<'a> {
             }
         }
         match fallback {
-            Some(payload) => TieredResolution::Resolved(payload),
+            Some((payload, tier)) => TieredResolution::Resolved { payload, tier },
             None => TieredResolution::NoMatch,
         }
     }
