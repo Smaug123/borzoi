@@ -229,6 +229,29 @@ precisely why a rise in them is otherwise invisible. Watch
 a deferral count only means something against the population it was drawn from,
 and all three travel together in every observation.
 
+`decline_census` says what those deferrals were *to*, on the same
+project/assembly axis the totals already have — a merged census could not
+explain either bucket, and a swap between them would move nothing it reports.
+Within each: `by_cause` names the guard that declined, `by_tier` the position in
+the referenced-assembly precedence ladder it spoke from, and `by_pair` the two
+together. The pairs are not
+redundant: if a ladder change moves equal numbers of two causes between two
+tiers, every decline in the corpus changed and both marginals read identically,
+so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
+timid; the census says which model owns the move, which is the question every
+change to that ladder asks and which no aggregate can answer. Both maps carry
+every variant including the zeros — a cause that stops occurring must read as
+`0`, not vanish, or the metric silently leaves the series.
+
+`decline_census.unattributed` is the census's own honesty check, and it is a
+count rather than a residual. A decline site is a claim and its absence is not:
+many deferrals have no causing guard at all — a dotted path's tail segments
+defer because member resolution is a later phase — so the census attributes
+what the ladder and its pre-walk gates do and reports the rest as unattributed.
+Read `unattributed` against `attributed`; a *rise* in the ratio means a new
+decline path appeared that no guard accounts for, which is worth looking at even
+though nothing failed.
+
 ## Local validation
 
 ```sh

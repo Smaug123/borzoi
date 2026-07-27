@@ -2965,6 +2965,12 @@ impl ResolvedFile {
     /// found nothing, and attributing it would inflate every count with
     /// declines no ladder change can move.
     ///
+    /// A decline of a dotted path answers at **one** range: the whole written
+    /// path, which is what FCS's `rangeOfLid` names it by. No individual
+    /// segment does, not even the head — every segment of a dotted path defers
+    /// on its own account whatever the guard did, so answering there would
+    /// price a guard by the path's length.
+    ///
     /// A consumer counting declines should therefore carry an explicit
     /// *unattributed* bucket rather than treating absence as zero. What the
     /// type system does enforce is the other direction: [`DeclineCause`] is

@@ -735,15 +735,15 @@ pub fn probe_use_span(src: &str, plant: &Plant) -> (usize, usize) {
     (start, start + ident.len())
 }
 
-/// The span of the probe's **head** segment — where the path roots, and so the
-/// segment a reading contests and the resolver keys a decline at.
+/// The span of the probe's **whole written path** — the range the decline
+/// census keys a path decline at.
 ///
-/// For a bare probe this is [`probe_use_span`]; for a dotted one it is the
-/// plant's own name rather than the [`MARKER`] leaf that span reports. The two
-/// differ because they answer different questions: the leaf is where both
-/// oracles report the *use*, while the head is where the decline census records
-/// which guard declined the path.
-pub fn probe_head_span(src: &str, plant: &Plant) -> (usize, usize) {
+/// For a bare probe this is [`probe_use_span`]; for a dotted one it spans the
+/// plant's name through the [`MARKER`] leaf, where that span reports the leaf
+/// alone. The two differ because they answer different questions: the leaf is
+/// where both oracles report the *use*, while the whole path is what the guard
+/// declined.
+pub fn probe_path_span(src: &str, plant: &Plant) -> (usize, usize) {
     match plant.form {
         Form::Bare => probe_use_span(src, plant),
         Form::DottedHead => {
@@ -751,7 +751,7 @@ pub fn probe_head_span(src: &str, plant: &Plant) -> (usize, usize) {
             let start = src
                 .rfind(&written)
                 .expect("probe template writes the dotted path");
-            (start, start + plant.name.len())
+            (start, start + written.len())
         }
     }
 }

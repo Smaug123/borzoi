@@ -2035,11 +2035,8 @@ impl<'a> Resolver<'a> {
         // The census records **every** decline, including the multi-segment
         // ones that record no `Resolution` — a dotted path is where the
         // precedence ladder does most of its work, so a census blind to it
-        // could not price a change to that ladder at all. Keyed at the head,
-        // which is the segment a reading contests.
-        if let Some(head) = segs.first() {
-            self.decline_sites.insert(head.text_range(), site);
-        }
+        // could not price a change to that ladder at all.
+        self.record_path_decline(segs, site);
     }
 
     /// Whether `prefix` — an opened, enclosing-namespace, or root reading, in

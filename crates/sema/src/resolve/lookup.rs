@@ -2087,8 +2087,8 @@ impl<'a> Resolver<'a> {
                         );
                         // An unorderable contest between the head's two slots,
                         // reached before the fallback that usually names it.
-                        self.record_decline(
-                            first.text_range(),
+                        self.record_path_decline(
+                            segments,
                             DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
                         );
                         return;
@@ -2445,7 +2445,7 @@ impl<'a> Resolver<'a> {
                 }
             };
             if let Some(site) = declined_at {
-                self.record_decline(first.text_range(), site);
+                self.record_path_decline(segments, site);
             }
             if let Some(recs) = resolved {
                 self.apply(recs);
@@ -2496,7 +2496,7 @@ impl<'a> Resolver<'a> {
             } else {
                 DeclineCause::HeadSlotUnordered
             };
-            self.record_decline(first.text_range(), DeclineSite::pre_walk(cause));
+            self.record_path_decline(segments, DeclineSite::pre_walk(cause));
         } else {
             // The head is member access on a *value*; a type-as-qualifier was
             // already handled by the assembly-path resolution above. Forbid the
@@ -2514,8 +2514,8 @@ impl<'a> Resolver<'a> {
                     Some(Resolution::Deferred(_)) | None
                 )
             {
-                self.record_decline(
-                    first.text_range(),
+                self.record_path_decline(
+                    segments,
                     DeclineSite::pre_walk(DeclineCause::OpaqueValueHead),
                 );
             }
@@ -3448,14 +3448,8 @@ impl<'a> Resolver<'a> {
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
         if self.opaque_value_open || self.opaque_dotted_open || self.unmodelled_open_active {
-            // A definite decline by a named gate, so the census says so — the
-            // pattern head is where a reading would root.
-            if let Some(head) = segs.first() {
-                self.record_decline(
-                    head.text_range(),
-                    DeclineSite::pre_walk(DeclineCause::OpaqueOpen),
-                );
-            }
+            // A definite decline by a named gate, so the census says so.
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
             return;
         }
         // A `global.`-rooted head (now parseable — see `pat.rs`) is the
@@ -3468,11 +3462,8 @@ impl<'a> Resolver<'a> {
         // as ``global`` here and is unaffected). Follow-up: real rooted lookup,
         // threading rooting through these helpers as the module path does in
         // `decls.rs`.
-        if let Some(head) = segs.first().filter(|t| t.text() == "global") {
-            self.record_decline(
-                head.text_range(),
-                DeclineSite::pre_walk(DeclineCause::GlobalMarkerHead),
-            );
+        if segs.first().is_some_and(|t| t.text() == "global") {
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::GlobalMarkerHead));
             return;
         }
         if let [type_seg, case_seg] = segs
@@ -3496,24 +3487,20 @@ impl<'a> Resolver<'a> {
             // case-flavour exemption, since this site commits exactly the
             // type-qualified case the signature exports.
             if self.sig_screens_case_reading_of(&written) {
-                if let Some(head) = segs.first() {
-                    self.record_decline(
-                        head.text_range(),
-                        DeclineSite::pre_walk(DeclineCause::SignatureScreened),
-                    );
-                }
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SignatureScreened),
+                );
                 return;
             }
             // A same-file type owning this exact case roots the reference in
             // this file, so the cross-file index must not commit an earlier
             // file's same-written-path case (the expression path's twin).
             if self.cross_file_case_shadowed_same_file(&written) {
-                if let Some(head) = segs.first() {
-                    self.record_decline(
-                        head.text_range(),
-                        DeclineSite::pre_walk(DeclineCause::SameFileCaseShadow),
-                    );
-                }
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SameFileCaseShadow),
+                );
                 return;
             }
             let project = self.cross_file_type_case_tiered(&written, false);
@@ -3538,7 +3525,7 @@ impl<'a> Resolver<'a> {
             // project reading just the same.
             // The guard that declined the assembly reading, when one did —
             // recorded after the match, which needs `&mut self`.
-            let mut pattern_decline: Option<(TextRange, DeclineSite)> = None;
+            let mut pattern_decline: Option<DeclineSite> = None;
             let winner = match project {
                 Some((CaseTier::Alias, id)) => Some(Ok(id)),
                 Some((_, id)) => match segs {
@@ -3550,13 +3537,10 @@ impl<'a> Resolver<'a> {
                         // explicit `open` puts an assembly entity of the head's
                         // name in scope above it. Always that tier, since the
                         // helper walks the explicit opens alone.
-                        pattern_decline = Some((
-                            type_seg.text_range(),
-                            DeclineSite {
-                                cause: DeclineCause::AssemblyCaseHeadContends,
-                                tier: DeclineTier::ExplicitOpen,
-                            },
-                        ));
+                        pattern_decline = Some(DeclineSite {
+                            cause: DeclineCause::AssemblyCaseHeadContends,
+                            tier: DeclineTier::ExplicitOpen,
+                        });
                         None
                     }
                     _ => Some(Ok(id)),
@@ -3570,16 +3554,14 @@ impl<'a> Resolver<'a> {
                     [type_seg, _]
                         if self.project_binds_type_simple_name(id_text(type_seg.text())) =>
                     {
-                        pattern_decline = Some((
-                            type_seg.text_range(),
-                            DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow),
-                        ));
+                        pattern_decline =
+                            Some(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow));
                         None
                     }
                     [type_seg, case_seg] => {
                         let (reading, site) =
                             self.assembly_case_pattern_reading(type_seg, case_seg);
-                        pattern_decline = site.map(|s| (type_seg.text_range(), s));
+                        pattern_decline = site;
                         reading.map(Err)
                     }
                     _ => None,
@@ -3611,8 +3593,8 @@ impl<'a> Resolver<'a> {
             // Only when nothing bound: a guard that declined the *assembly*
             // reading while a project one won is not what decided the pattern,
             // and recording it would attribute a decline that never happened.
-            if nothing_bound && let Some((range, site)) = pattern_decline {
-                self.record_decline(range, site);
+            if nothing_bound && let Some(site) = pattern_decline {
+                self.record_path_decline(segs, site);
             }
         }
     }

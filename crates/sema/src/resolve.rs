@@ -2066,6 +2066,33 @@ impl<'a> Resolver<'a> {
         self.decline_sites.entry(range).or_insert(site);
     }
 
+    /// Record one decline against the one range that names **the path**: its
+    /// whole span, first segment through last.
+    ///
+    /// A consumer asks by range, and FCS names a dotted path by its full
+    /// `rangeOfLid` — so that is the range that must answer. For a single
+    /// segment it is the token itself, which is also what the resolution map is
+    /// keyed by.
+    ///
+    /// Deliberately **no individual segment**, not even the head. Every segment
+    /// of a dotted path defers on its own account whatever the guard did: sema
+    /// models neither module-as-def nor member access, and it defers a source
+    /// namespace qualifier even when the whole assembly lookup succeeds. Those
+    /// deferrals exist without the guard, so attributing them to it would price
+    /// the guard by the path's *length* and make a fully-qualified BCL path
+    /// look like several declines. The rule the census documents holds in both
+    /// directions this way: a decline the ladder caused is attributed, and one
+    /// waiting on a later phase is not.
+    fn record_path_decline(&mut self, segs: &[SyntaxToken], site: model::DeclineSite) {
+        let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
+            return;
+        };
+        self.record_decline(
+            TextRange::new(first.text_range().start(), last.text_range().end()),
+            site,
+        );
+    }
+
     fn record(&mut self, range: TextRange, res: Resolution) {
         self.resolutions.insert(range, res);
     }
