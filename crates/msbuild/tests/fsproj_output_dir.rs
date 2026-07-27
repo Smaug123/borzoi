@@ -176,6 +176,64 @@ fn a_literal_resembling_the_configuration_still_commits() {
     );
 }
 
+/// The declaration count is taken **syntactically**, from the document tree,
+/// so an alternative the property walk never visits is still seen. Each of
+/// these hides from a different part of that walk: a cleanly-skipped
+/// `<PropertyGroup>` is not walked at all, and a `<Choose>` arm is control
+/// flow whose unselected branch is likewise never entered. Both mean the
+/// output directory is not one fixed place.
+///
+/// Found by review, one hiding place at a time, until the count stopped being
+/// driven off the walk.
+#[test]
+fn an_alternative_the_walk_never_visits_still_declines() {
+    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    let cases = [
+        // A cleanly-false group: its gate evaluates without complaint, so the
+        // group is skipped outright.
+        "<Project><PropertyGroup><OutDir>common/</OutDir></PropertyGroup>\
+         <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\
+         <OutDir>release/</OutDir></PropertyGroup></Project>",
+        // `<Choose>`: the unselected arm is never entered.
+        "<Project><Choose><When Condition=\"'$(Configuration)' == 'Debug'\">\
+         <PropertyGroup><OutDir>debug/</OutDir></PropertyGroup></When>\
+         <Otherwise><PropertyGroup><OutDir>ship/</OutDir></PropertyGroup></Otherwise>\
+         </Choose></Project>",
+    ];
+    for xml in cases {
+        let tmp = TempDir::new().expect("temp dir");
+        let path = tmp.path().join("P.fsproj");
+        std::fs::write(&path, xml).expect("write project");
+        let verdict = parse_fsproj(xml, &path, &extras, &HashMap::new())
+            .expect("well-formed")
+            .output_dir;
+        assert_eq!(
+            verdict,
+            OutputDirVerdict::Unknown,
+            "an unvisited alternative must still decline: {xml}"
+        );
+    }
+}
+
+/// A single arm inside `<Choose>` is conditional even with no `Condition` of
+/// its own — which arm runs *is* the question, so the control flow alone
+/// disqualifies it.
+#[test]
+fn a_sole_choose_arm_is_still_conditional() {
+    let xml = "<Project><Choose><When Condition=\"'$(Configuration)' == 'Debug'\">\
+               <PropertyGroup><OutDir>debug/</OutDir></PropertyGroup></When></Choose></Project>";
+    let tmp = TempDir::new().expect("temp dir");
+    let path = tmp.path().join("P.fsproj");
+    std::fs::write(&path, xml).expect("write project");
+    let extras = HashMap::from([("Configuration".to_owned(), "Debug".to_owned())]);
+    assert_eq!(
+        parse_fsproj(xml, &path, &extras, &HashMap::new())
+            .expect("well-formed")
+            .output_dir,
+        OutputDirVerdict::Unknown
+    );
+}
+
 /// A caller-supplied global is read-only for the whole walk, so no XML write
 /// ever reaches the recorder for it — but MSBuild honours the global and
 /// writes there. Reading that back as "nobody declared anything" would send a

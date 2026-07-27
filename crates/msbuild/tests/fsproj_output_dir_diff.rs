@@ -124,6 +124,23 @@ const BODIES: &[&str] = &[
     "<OutDir>artifacts/$(Platform)/</OutDir>",
 ];
 
+/// Whole documents, for the shapes that need structure outside a single
+/// `<PropertyGroup>` — control flow and cleanly-skipped alternatives, neither
+/// of which the property walk visits.
+const DOCUMENTS: &[&str] = &[
+    "<Project Sdk=\"Microsoft.NET.Sdk\">\
+     <PropertyGroup><TargetFramework>net10.0</TargetFramework>\
+     <OutDir>common/</OutDir></PropertyGroup>\
+     <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\
+     <OutDir>release/</OutDir></PropertyGroup></Project>",
+    "<Project Sdk=\"Microsoft.NET.Sdk\">\
+     <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>\
+     <Choose><When Condition=\"'$(Configuration)' == 'Debug'\">\
+     <PropertyGroup><OutDir>debug/</OutDir></PropertyGroup></When>\
+     <Otherwise><PropertyGroup><OutDir>ship/</OutDir></PropertyGroup></Otherwise>\
+     </Choose></Project>",
+];
+
 /// The two sides as *directories*: separators unified, and at most one
 /// trailing separator dropped. See the module docs for why each is
 /// semantics-free here and what is deliberately left alone.
@@ -168,22 +185,36 @@ fn declared_output_dirs_agree_with_msbuild() {
     let mut committed = 0usize;
     let mut declined = 0usize;
 
-    for body in BODIES {
-        let xml = format!(
-            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
-             <TargetFramework>net10.0</TargetFramework>\n    {body}\n  \
-             </PropertyGroup>\n</Project>\n"
-        );
+    let cases: Vec<(String, String)> = BODIES
+        .iter()
+        .map(|body| {
+            (
+                (*body).to_string(),
+                format!(
+                    "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+                     <TargetFramework>net10.0</TargetFramework>\n    {body}\n  \
+                     </PropertyGroup>\n</Project>\n"
+                ),
+            )
+        })
+        .chain(
+            DOCUMENTS
+                .iter()
+                .map(|d| ((*d).to_string(), (*d).to_string())),
+        )
+        .collect();
+
+    for (body, xml) in &cases {
         let tmp = TempDir::new().expect("temp dir");
         let path = tmp.path().join("P.fsproj");
-        std::fs::write(&path, &xml).expect("write project");
+        std::fs::write(&path, xml).expect("write project");
 
         let globals = HashMap::from([
             ("Configuration".to_owned(), "Debug".to_owned()),
             ("Platform".to_owned(), "AnyCPU".to_owned()),
         ]);
         let parsed = parse_fsproj_with_imports(
-            &xml,
+            xml,
             &path,
             &globals,
             &common::oracle_environment(),
@@ -192,7 +223,7 @@ fn declared_output_dirs_agree_with_msbuild() {
         )
         .expect("well-formed");
 
-        let Some(theirs) = oracle.project(&xml, &names, Some(&path)) else {
+        let Some(theirs) = oracle.project(xml, &names, Some(&path)) else {
             // MSBuild rejected the document; we must not have committed a
             // directory for it.
             assert!(

@@ -973,6 +973,7 @@ fn collect_local_overrides(root: Node<'_, '_>) -> HashSet<String> {
 /// props/targets stubs aren't expected to carry an `Sdk` attribute of
 /// their own.
 fn walk_doc_body(root: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
+    state.scan_out_dir_declarations(root);
     // A top-level `<Sdk Name="X"/>` element is the `Sdk` attribute's
     // sibling form: MSBuild imports X's `Sdk.props` before everything in
     // this file and `Sdk.targets` after it, wherever the element sits
@@ -1394,10 +1395,10 @@ struct State<'r> {
     /// `compile_context`) — we already don't model the framework defines the
     /// SDK adds in targets.
     define_context: bool,
-    /// Whether the element being walked sits under any `Condition` — its own
-    /// or an enclosing `<PropertyGroup>`'s. Read by
-    /// [`State::note_out_dir_element`].
-    conditioned_context: bool,
+    /// Whether the user-authored file being walked was reached through a
+    /// conditioned `<Import>` — so its declarations are themselves
+    /// conditional. Read by [`State::scan_out_dir_declarations`].
+    conditioned_import: bool,
     /// `true` only while expanding a `<DefineConstants>` *value* (not its
     /// condition). The `$(DefineConstants)` self-reference exemption
     /// ([`is_define_self_reference`]) applies only here — the append idiom is a
@@ -1938,7 +1939,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: Vec::new(),
             items_uncertain: false,
             define_context: false,
-            conditioned_context: false,
+            conditioned_import: false,
             in_define_value: false,
             define_constants_uncertain: false,
             import_gate_context: false,
@@ -2274,7 +2275,7 @@ impl<'r> State<'r> {
             sdk_tolerance_roots: _,
             items_uncertain,
             define_context: _,
-            conditioned_context: _,
+            conditioned_import: _,
             in_define_value: _,
             define_constants_uncertain,
             import_gate_context: _,
@@ -2422,17 +2423,47 @@ impl<'r> State<'r> {
         }
     }
 
-    /// Note that an `<OutDir>` element exists, **before** its gate is
-    /// evaluated. A skipped write is still evidence: a project with
-    /// `<OutDir Condition="'$(Configuration)' == 'Release'">release/</OutDir>`
-    /// does not write to one fixed directory, and the walk under `Debug`
-    /// would otherwise see only the unconditioned write it does take.
-    fn note_out_dir_element(&mut self, name: &str) {
-        if self.in_sdk_subtree || !name.eq_ignore_ascii_case("OutDir") {
+    /// Count every `<OutDir>` element this document declares, and whether any
+    /// of them is reached through a condition — **syntactically**, from the
+    /// document root, before any gate is evaluated.
+    ///
+    /// Deliberately not driven off the property walk. That walk visits the
+    /// writes *this* evaluation takes, and the question here is the opposite
+    /// one: could another build take a different write? An alternative in a
+    /// cleanly-skipped `<PropertyGroup>`, a `<Choose>` arm not selected, a
+    /// conditioned `<Import>` not followed — none of those are walked, and
+    /// every one of them means the directory is not one fixed place. Reading
+    /// the tree answers that directly, and cannot be short of a hiding place
+    /// the walk happens not to reach.
+    ///
+    /// SDK files are skipped whole: the SDK's own
+    /// `<OutDir Condition="'$(OutDir)' == ''">$(OutputPath)</OutDir>` is the
+    /// default being assembled, not a user's redirect.
+    fn scan_out_dir_declarations(&mut self, root: Node<'_, '_>) {
+        if self.in_sdk_subtree {
             return;
         }
-        self.out_dir_elements_seen += 1;
-        self.out_dir_any_conditioned |= self.conditioned_context;
+        // A user-authored file reached through a conditioned import is
+        // itself conditional, whatever its own elements say.
+        let conditioned = self.conditioned_import;
+        self.scan_out_dir_in(root, conditioned);
+    }
+
+    fn scan_out_dir_in(&mut self, node: Node<'_, '_>, conditioned: bool) {
+        for child in node.children().filter(Node::is_element) {
+            let name = child.tag_name().name();
+            // `<Choose>`/`<When>`/`<Otherwise>` is control flow: which arm
+            // runs is exactly the question, so everything under one counts as
+            // conditioned even without a `Condition` attribute of its own.
+            let conditioned = conditioned
+                || child.attribute("Condition").is_some()
+                || matches!(name, "Choose" | "When" | "Otherwise");
+            if name.eq_ignore_ascii_case("OutDir") {
+                self.out_dir_elements_seen += 1;
+                self.out_dir_any_conditioned |= conditioned;
+            }
+            self.scan_out_dir_in(child, conditioned);
+        }
     }
 
     /// Record how a write to `OutDir` went, for [`Self::output_dir_verdict`].
@@ -3282,8 +3313,6 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             let prev = state.define_context;
             state.define_context =
                 prev || (!state.in_sdk_subtree && property_group_writes_define_constants(node));
-            let prev_conditioned = state.conditioned_context;
-            state.conditioned_context = prev_conditioned || node.attribute("Condition").is_some();
             // The same discipline for a group writing a CPM flag: its condition
             // decides whether Central Package Management turns on, or whether
             // the central versions import marker can be trusted. Setting
@@ -3369,7 +3398,6 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                     state.package_context = prev_pkg;
                 }
             }
-            state.conditioned_context = prev_conditioned;
         }
         "Import" => handle_import(node, current_file_dir, state),
         "ImportGroup" => {
@@ -3380,6 +3408,11 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
             // because skipped imports may hide dependency items.
             let prev_gate = state.import_gate_context;
             let prev_pkg_gate = state.package_import_gate_context;
+            // Same rule as a bare `<Import>`'s own condition: a user-authored
+            // group gate makes what it pulls in conditional.
+            let prev_conditioned_import = state.conditioned_import;
+            state.conditioned_import = prev_conditioned_import
+                || (!state.in_sdk_subtree && node.attribute("Condition").is_some());
             state.import_gate_context = prev_gate || !state.in_sdk_subtree;
             state.package_import_gate_context = true;
             let diagnostics_before_gate = state.diagnostics.len();
@@ -3433,8 +3466,16 @@ fn walk_top_level(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State
                     state.package_import_gate_context = prev_pkg_gate;
                 }
             }
+            state.conditioned_import = prev_conditioned_import;
         }
-        "Choose" => handle_choose(node, current_file_dir, state),
+        // Every arm is conditional by construction, so anything a selected
+        // arm imports is too.
+        "Choose" => {
+            let prev_conditioned_import = state.conditioned_import;
+            state.conditioned_import = true;
+            handle_choose(node, current_file_dir, state);
+            state.conditioned_import = prev_conditioned_import;
+        }
         // Item definitions belong to MSBuild's pass 2 — after every property
         // (pass 1), before any item (pass 3). Defer alongside `<ItemGroup>`s;
         // the replay runs all definition groups before any item group.
@@ -3806,9 +3847,6 @@ fn walk_property_child(
     // reference uncertainty.
     let prev_package = state.package_context;
     state.package_context = prev_package || is_cpm_flag_property_name(&name);
-    let prev_conditioned = state.conditioned_context;
-    state.conditioned_context = prev_conditioned || node.attribute("Condition").is_some();
-    state.note_out_dir_element(&name);
     walk_property_child_inner(
         node,
         name,
@@ -3818,7 +3856,6 @@ fn walk_property_child(
         inherited_unpinned_root,
         state,
     );
-    state.conditioned_context = prev_conditioned;
     state.package_context = prev_package;
     state.define_context = prev_define;
 }
@@ -4682,14 +4719,6 @@ fn mark_property_group_children_provenance(
         if state.protected.contains(&name.to_ascii_lowercase()) {
             continue;
         }
-        // The group's own gate did not run, so `walk_property_child` never
-        // saw this element. It is still an `<OutDir>` the project can write
-        // under some other configuration — and by construction a conditioned
-        // one, since a group whose gate did not run had a gate.
-        if name.eq_ignore_ascii_case("OutDir") && !state.in_sdk_subtree {
-            state.note_out_dir_element(name);
-            state.out_dir_any_conditioned = true;
-        }
         let lower = name.to_ascii_lowercase();
         state.apply_property_provenance(
             name,
@@ -4787,7 +4816,18 @@ fn handle_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
         );
         return;
     }
+    // A **user-authored** conditioned import makes everything it pulls in
+    // conditional: which file supplies `<OutDir>` is then a property of the
+    // build being modelled. An SDK-authored one is not — the SDK's chain is
+    // how `Directory.Build.props` arrives at all, and treating its
+    // `'$(ImportDirectoryBuildProps)' == 'true'` plumbing as a user's
+    // configuration switch would decline the commonest place to put an
+    // `<OutDir>`.
+    let prev = state.conditioned_import;
+    state.conditioned_import =
+        prev || (!state.in_sdk_subtree && node.attribute("Condition").is_some());
     follow_explicit_import(node, current_file_dir, state);
+    state.conditioned_import = prev;
 }
 
 fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<'_>) {
