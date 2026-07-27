@@ -60,15 +60,17 @@ pub fn resolve_framework(
     package_folders: &[PathBuf],
     name: &str,
     tfm: &str,
-    package_path: Option<&str>,
+    package_ref_dir: Option<&str>,
 ) -> Result<Vec<PathBuf>, ProjectAssetsError> {
     // A framework whose reference assemblies ship inside an ordinary package
-    // rather than a targeting pack: `NETStandard.Library` at netstandard2.0
-    // puts them under the *selected* package's `build/{tfm}/ref/`.
-    // (netstandard2.1 does have a `NETStandard.Library.Ref` pack, which the
-    // standard probe below finds — hence "try, then fall through".)
-    if let Some(package_path) = package_path
-        && let Some(dlls) = package_build_ref_dlls(package_folders, package_path, tfm)?
+    // rather than a targeting pack: `NETStandard.Library` puts them beside the
+    // `build` asset NuGet selected. The caller read that directory out of the
+    // assets file — package version and asset TFM are both NuGet's choices —
+    // so it is used verbatim. (netstandard2.1 does have a
+    // `NETStandard.Library.Ref` pack, which the standard probe below finds,
+    // hence "try, then fall through".)
+    if let Some(package_ref_dir) = package_ref_dir
+        && let Some(dlls) = package_ref_dlls(package_folders, package_ref_dir)?
     {
         return Ok(dlls);
     }
@@ -129,25 +131,16 @@ pub fn resolve_framework(
     Ok(dlls)
 }
 
-/// A package's own reference assemblies: `{package folder}/{package path}/build/{tfm}/ref/*.dll`,
-/// where `package path` is the directory the **assets file selected**
-/// (`netstandard.library/2.0.3`). `None` when no package folder holds that
-/// shape, so the caller falls through to the targeting-pack probe.
-///
-/// The selected path rather than a version scan: MSBuild imports the version
-/// the restore chose, and a newer copy of the same package sitting in the
-/// folder is a different reference set.
-fn package_build_ref_dlls(
+/// A package's own reference assemblies at the directory the assets file
+/// selected (`netstandard.library/2.0.3/build/netstandard2.0/ref`), under
+/// whichever package folder holds it. `None` when none does, so the caller
+/// falls through to the targeting-pack probe.
+fn package_ref_dlls(
     package_folders: &[PathBuf],
-    package_path: &str,
-    tfm: &str,
+    package_ref_dir: &str,
 ) -> Result<Option<Vec<PathBuf>>, ProjectAssetsError> {
     for folder in package_folders {
-        let ref_dir = folder
-            .join(package_path)
-            .join("build")
-            .join(tfm)
-            .join("ref");
+        let ref_dir = folder.join(package_ref_dir);
         if !ref_dir.is_dir() {
             continue;
         }
@@ -284,7 +277,7 @@ mod tests {
             std::slice::from_ref(&pkgs),
             NETSTANDARD_LIBRARY,
             "netstandard2.0",
-            Some("netstandard.library/2.0.3"),
+            Some("netstandard.library/2.0.3/build/netstandard2.0/ref"),
         )
         .expect("netstandard refs resolve from the package layout");
         assert_eq!(
@@ -318,7 +311,7 @@ mod tests {
             std::slice::from_ref(&pkgs),
             NETSTANDARD_LIBRARY,
             "netstandard2.1",
-            Some("netstandard.library/2.0.3"),
+            Some("netstandard.library/2.0.3/build/netstandard2.0/ref"),
         )
         .expect("the targeting pack resolves");
         assert_eq!(dlls, vec![pack.join("netstandard.dll")]);

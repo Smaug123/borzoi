@@ -198,7 +198,7 @@ fn resolve_assemblies_impl(
                 Reference::Framework {
                     name,
                     tfm,
-                    package_path,
+                    package_ref_dir,
                 } => {
                     // Skip a framework we already resolved *successfully*. The
                     // dedup is recorded only on `Ok` below — not here — because
@@ -224,7 +224,7 @@ fn resolve_assemblies_impl(
                         &assets.package_folders,
                         &name,
                         &tfm,
-                        package_path.as_deref(),
+                        package_ref_dir.as_deref(),
                     ) {
                         Ok(dlls) => {
                             frameworks_resolved.insert((name, tfm));

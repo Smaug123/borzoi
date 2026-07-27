@@ -272,6 +272,7 @@ mod tests {
                     kind: row.kind.to_string(),
                     compile: None,
                     framework: row.framework.map(str::to_string),
+                    build: None,
                 },
             );
             libraries.insert(
@@ -594,6 +595,7 @@ mod tests {
                 kind: "project".to_string(),
                 compile: None,
                 framework: Some(".NETStandard,Version=v2.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -786,6 +788,7 @@ mod tests {
                 // Already-short, platform-qualified framework field —
                 // exactly the case the defensiveness handles.
                 framework: Some("net8.0-windows7.0".to_string()),
+                build: None,
             },
         );
         let mut targets = BTreeMap::new();
@@ -1087,6 +1090,7 @@ mod tests {
                         kind: "project".to_string(),
                         compile: None,
                         framework: Some(fw.clone()),
+                        build: None,
                     },
                 );
                 libraries.insert(
