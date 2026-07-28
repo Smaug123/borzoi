@@ -175,6 +175,11 @@ enum Answer {
     None,
 }
 
+/// The module the probe file's augmentations live in — the file's own module, so
+/// its members are in scope for everything after them. FCS names it as the
+/// declaring entity of an extension member it binds.
+const EXT_MODULE: &str = "Gen";
+
 /// The `SymbolKind`s FCS reports for a data member — the only answers that can
 /// confirm one of ours. Kept in step with `member_hiding_diff`'s.
 const DATA_MEMBER_KINDS: [&str; 2] = ["member", "field"];
@@ -275,6 +280,24 @@ fn run(kind: ExtKind) -> (Vec<Probe>, Vec<(Answer, Answer)>, HashSet<usize>) {
         }
         theirs.insert(line_at(&starts, use_.end), declaring_name(&use_));
     }
+
+    // The premise, checked rather than assumed: FCS must actually have an
+    // extension member of the name in scope. Without this every gate below
+    // survives an augmentation FCS silently rejected — the intrinsic probes still
+    // agree, the controls are skipped because *we* deferred, and the ratchet only
+    // reads our own answers. The controls are exactly the cells with no readable
+    // intrinsic, so a working extension is the only thing FCS can bind there.
+    let extension_bindings = probes
+        .iter()
+        .filter(|probe| !error_lines.contains(&probe.line))
+        .filter(|probe| theirs.get(&probe.line).is_some_and(|d| d == EXT_MODULE))
+        .count();
+    assert!(
+        extension_bindings > 0,
+        "no probe binds an {} — FCS has no extension member of `{PROBE}` in scope, \
+         so this sweep proves nothing about one\n{src}",
+        kind.tag(),
+    );
 
     let answers = probes
         .iter()
