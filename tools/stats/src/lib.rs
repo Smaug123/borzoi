@@ -170,15 +170,8 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
             &format!("that {} measured", previous.commit),
         )?;
     }
-    // The observation this one *replaces* is not its predecessor — same run, so
-    // the ordering excludes it — and re-recording deletes it outright, so a
-    // metric it carried and this one does not would leave no trace anywhere.
     if let Some(replaced) = stored_observation(&path)? {
-        refuse_dropped_metrics(
-            &replaced,
-            &observation,
-            "that an earlier attempt of the same run measured",
-        )?;
+        refuse_a_changed_rerun_namespace(&replaced, &observation)?;
     }
     create_dir_all(parent)?;
     write_json(&path, &observation)?;
@@ -647,6 +640,58 @@ fn refuse_dropped_metrics(
             "the metrics"
         },
         vanished.join(", ")
+    ))
+}
+
+/// Refuse a rerun whose metric namespace differs at all from the attempt it
+/// overwrites.
+///
+/// Equality in **both** directions, and deliberately blind to
+/// `retired_statistics`, because the pair is not a before-and-after: two
+/// attempts of one run measure the same commit with the same generator over the
+/// same corpus, so their namespaces must agree by construction. A metric that
+/// appears only on the second attempt is a namespace depending on something
+/// other than the code just as surely as one that disappears, and a retirement
+/// declared here would be a false claim — nothing changed to retire — that
+/// would turn the marker into a way to delete a recorded point.
+///
+/// This is the only place the contract's within-run rule can be *checked*
+/// rather than merely required of the generator, which is why it is the strict
+/// one.
+fn refuse_a_changed_rerun_namespace(
+    replaced: &Observation,
+    incoming: &Observation,
+) -> Result<(), StatsError> {
+    let before = metric_paths(&replaced.generator.statistics);
+    let after = metric_paths(&incoming.generator.statistics);
+    if before == after {
+        return Ok(());
+    }
+    let gone: Vec<&str> = before
+        .iter()
+        .filter(|metric| !after.contains(*metric))
+        .map(String::as_str)
+        .collect();
+    let new: Vec<&str> = after
+        .iter()
+        .filter(|metric| !before.contains(*metric))
+        .map(String::as_str)
+        .collect();
+    let mut difference = Vec::new();
+    if !gone.is_empty() {
+        difference.push(format!("no longer measures {}", gone.join(", ")));
+    }
+    if !new.is_empty() {
+        difference.push(format!("now also measures {}", new.join(", ")));
+    }
+    invalid(format!(
+        "attempt {} of run {} {} — but it measures the same commit with the same generator as the \
+         attempt it replaces, so its metrics can only differ if the namespace depends on \
+         something other than the code. That is the sparse map the contract forbids: emit every \
+         key every run, zeros included, rather than only the ones that occurred",
+        incoming.workflow.run_attempt,
+        incoming.workflow.run_id,
+        difference.join(" and ")
     ))
 }
 

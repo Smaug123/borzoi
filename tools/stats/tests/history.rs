@@ -899,6 +899,38 @@ fn a_rerun_may_not_quietly_drop_what_its_earlier_attempt_measured() {
     assert!(err.contains("seen_once"), "{err}");
     assert!(err.contains("attempt"), "{err}");
 
+    // A retirement cannot excuse it. Retiring is a claim that the *code* no
+    // longer emits the metric, and the code did not change between attempts of
+    // one run — so a declaration here would be false, and honouring it would
+    // make the marker a way to delete a recorded point.
+    let declared = write_full_summary(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+        json!(["seen_once"]),
+    );
+    let mut with_declaration = second_attempt.clone();
+    with_declaration.summary = declared;
+    let err = record_observation(&with_declaration)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("seen_once"), "{err}");
+
+    // The other direction is the same fault. A metric appearing only on the
+    // second attempt is a namespace that depends on something other than the
+    // code just as surely as one that disappears.
+    let widened = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "seen_once": 1, "appeared_late": 1 }),
+    );
+    let mut wider = second_attempt.clone();
+    wider.summary = widened;
+    let err = record_observation(&wider).unwrap_err().to_string();
+    assert!(err.contains("appeared_late"), "{err}");
+
     // The refused rerun leaves the recorded attempt untouched.
     let stored: Value = serde_json::from_str(
         &fs::read_to_string(

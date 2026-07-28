@@ -104,6 +104,16 @@ with `no_statistic_is_ever_null_however_empty_the_run`, which walks the whole
 rendered tree on a deliberately degenerate run rather than naming the fields it
 knows about — the field nobody thought to name is exactly the one that breaks.
 
+The resolution generator's two histograms are the worked example. `matches`
+is counted per bucket and `gap_b1` per `classify` sub-tag, and both are seeded
+with their whole closed key set so a bucket or sub-tag that stops occurring
+reads as `0`. Counting only what occurred would report the *closing* of a gap —
+the outcome the whole sweep is for — as a metric going missing. The sub-tag list
+is not hand-checked against the taxonomy beside it:
+`b1_tags_are_exactly_the_tags_classify_pairs_with_b1` enumerates `classify` over
+all 8,192 combinations of the inputs it reads and asserts the list is exactly
+what comes back, so it can be neither short nor long.
+
 *Across* runs it can, and does. Two consecutive observations of one series
 measure the same thing over the same corpus with the same toolchain, so a
 metric present in one and absent from the next is a change in what is
@@ -114,15 +124,17 @@ says so. It reads the statistics exactly as the dashboard does, one metric per
 nested *number*, so a field that starts serialising as `null` counts as dropped
 for the same reason the dashboard would stop plotting it.
 
-A rerun is checked against the observation it **replaces** as well. That pair is
-not covered by the predecessor rule — same run, so the ordering excludes it —
-and re-recording deletes the old file outright, so a metric only it carried
-would leave no trace. It is also the strictest check in the mechanism: two
-attempts of one run measure the same commit with the same generator over the
-same corpus, so their metric namespaces must agree by construction. A key set
-that differs between them is not a retirement, because nothing changed to
-retire; it is a namespace that depends on something other than the code, which
-is the sparse map this section forbids.
+A rerun is checked against the observation it **replaces** as well, and that
+check is the strict one: exact equality of the metric namespace, in both
+directions, ignoring `retired_statistics` entirely. Two attempts of one run
+measure the same commit with the same generator over the same corpus, so their
+namespaces must agree by construction — a metric appearing only on the second
+attempt is a namespace depending on something other than the code just as surely
+as one that disappears, and a retirement declared here would be a false claim,
+since nothing changed to retire. It is the one place the within-run rule above
+can be *checked* rather than merely required of the generator. It also matters
+because re-recording deletes the old file outright, so a metric only it carried
+would otherwise leave no trace anywhere.
 
 The comparison is otherwise against the **predecessor**, not the newest recorded
 observation, because runs finish out of order and observations are ordered by
@@ -176,11 +188,16 @@ A metric is retired by naming it in the observation's `retired_statistics`:
 {
   "schema_version": 1,
   "measurement": "project-corpus-diff",
-  "configuration": { },
-  "statistics": { },
+  "configuration": { "selection": { "source": "corpus" } },
+  "statistics": { "divergences": 0, "deferrals": { "total": 41 } },
   "retired_statistics": ["decline_census.project.by_cause.occupied"]
 }
 ```
+
+`statistics` must still contain at least one number, so the last metric of a
+measurement cannot be retired. That is deliberate: a measurement with nothing
+left to measure should be removed from the workflow, not published as an
+observation of nothing.
 
 Each entry is a dotted metric path in the spelling the dashboard names it by,
 and it must **not** also appear in `statistics` — a retirement says the metric
