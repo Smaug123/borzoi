@@ -31,10 +31,11 @@ impl<'a> Resolver<'a> {
     /// Compute — *without recording* — how a dotted path resolves into the
     /// referenced assemblies, under an opened-namespace `prefix` (empty for a
     /// directly fully-qualified path). Pure, so the caller can compare
-    /// candidates across several opens, and — crucially — distinguish a path F#
-    /// resolves *within the project* ([`AssemblyPath::ProjectShadowed`], which
-    /// must defer rather than fall through to another open) from a genuine
-    /// non-match ([`AssemblyPath::NoMatch`], which may try the next open).
+    /// candidates across several opens, and — crucially — distinguish a path
+    /// something already holds ([`AssemblyPath::Occupied`], whose payload names
+    /// the occupant, and which must defer rather than fall through to another
+    /// open) from a genuine non-match ([`AssemblyPath::NoMatch`], which may try
+    /// the next open).
     ///
     /// On a hit it records [`Resolution::Entity`] at the rooting type's segment
     /// (and each nested-type segment) and [`Resolution::Member`] at the
@@ -75,7 +76,7 @@ impl<'a> Resolver<'a> {
             //   user wrote, so it is asked of the source slice. The
             //   prefix-expanded `N.List.rev` for a written `List.rev` has head
             //   `N`, a namespace segment in no module chain, so asking it there
-            //   classifies the reading `ProjectShadowed` and preempts the very
+            //   classifies the reading `Occupied` and preempts the very
             //   opens the `module List` augmentation idiom falls through to.
             // - is *this reading's* shadow that same self module? Only then may
             //   the reading be held rather than deferred at. A prefixed reading
@@ -98,7 +99,7 @@ impl<'a> Resolver<'a> {
             return if shadow_is_the_self_module && self.self_module_shadow_only(source) {
                 AssemblyPath::SelfModuleShadowed
             } else {
-                AssemblyPath::ProjectShadowed
+                AssemblyPath::Occupied(DeclineCause::ProjectPathShadow)
             };
         }
 
@@ -495,11 +496,11 @@ impl<'a> Resolver<'a> {
                 .assemblies
                 .alias_has_companion_module(type_handle, None)
             {
-                return AssemblyPath::ProjectShadowed;
+                return AssemblyPath::Occupied(DeclineCause::AliasCompanionModule);
             }
             match self.assemblies.resolve_abbreviation_target(type_handle) {
                 Some(target) => target,
-                None => return AssemblyPath::ProjectShadowed,
+                None => return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable),
             }
         } else {
             type_handle
@@ -581,7 +582,7 @@ impl<'a> Resolver<'a> {
                         .assemblies
                         .alias_has_companion_module(child, Some(parent))
                     {
-                        return AssemblyPath::ProjectShadowed;
+                        return AssemblyPath::Occupied(DeclineCause::AliasCompanionModule);
                     }
                     match self.assemblies.resolve_abbreviation_target(child) {
                         Some(target) => {
@@ -598,7 +599,9 @@ impl<'a> Resolver<'a> {
                             via_alias = true;
                             target
                         }
-                        None => return AssemblyPath::ProjectShadowed,
+                        None => {
+                            return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable);
+                        }
                     }
                 } else {
                     child
@@ -639,7 +642,7 @@ impl<'a> Resolver<'a> {
                         // record/union target falls through, a class target keeps
                         // the module — so we can commit neither: defer the whole
                         // path (codex review 3). `AbbreviationOpaque` defers
-                        // *tier-locally* (unlike `ProjectShadowed` it does not
+                        // *tier-locally* (unlike `Occupied` it does not
                         // preempt a higher-priority open that resolves the path —
                         // codex review 4).
                         if self
@@ -667,7 +670,7 @@ impl<'a> Resolver<'a> {
                         // pre-resolve-through marker did, rather than cede the path
                         // to a lower reading and diverge from FCS.
                         if via_alias {
-                            return AssemblyPath::ProjectShadowed;
+                            return AssemblyPath::Occupied(DeclineCause::AliasOwnedTail);
                         }
                         owns_path = false;
                         break;
@@ -739,11 +742,14 @@ impl<'a> Resolver<'a> {
     /// Anything else named `type_name` here — a non-union type, an abbreviation,
     /// a union with an unknowable case list or one lacking this case, or a second
     /// union owning it (distinct arities; the pattern writes none) — makes the
-    /// reading [`AssemblyPath::ProjectShadowed`]: the walk decides at this prefix
-    /// and never falls through past it. A **cross-DLL** collision defers the same
-    /// way (FCS merges same-FQN roots by reference order, which sema does not
-    /// model); a same-DLL companion — a `type Shape` beside its `module Shape` —
-    /// is not a collision.
+    /// reading [`AssemblyPath::Occupied`]
+    /// ([`CasePatternHeadOccupied`](DeclineCause::CasePatternHeadOccupied)): the
+    /// walk decides at this prefix and never falls through past it. A
+    /// **cross-DLL** collision defers the same way but is a different occupant
+    /// ([`ContestedRooting`](DeclineCause::ContestedRooting) — FCS merges
+    /// same-FQN roots by reference order, which sema does not model); a
+    /// same-DLL companion — a `type Shape` beside its `module Shape` — is not a
+    /// collision.
     ///
     /// That is a **conservative** decline, not F#'s rule. F# keeps searching
     /// outward for something that declares the case, so a class or a caseless
@@ -772,7 +778,7 @@ impl<'a> Resolver<'a> {
         // with the rooting-collision counts, so the two cannot drift apart into
         // disagreeing about what a collision is.
         if self.assemblies.distinct_dlls(&here) > 1 {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::Occupied(DeclineCause::ContestedRooting);
         }
         let mut owning: Option<EntityHandle> = None;
         let mut binds = false;
@@ -785,7 +791,7 @@ impl<'a> Resolver<'a> {
             }
         }
         if binds {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::Occupied(DeclineCause::CasePatternHeadOccupied);
         }
         // Only plain modules here: a transparent prefix the walk reads past.
         let Some(union) = owning else {
@@ -1022,9 +1028,9 @@ impl<'a> Resolver<'a> {
         // `records` is pure, and the root reading is the common case's most
         // expensive one to duplicate.
         let mut root = as_written_vetoes_opens.then(|| records(&[]));
-        if matches!(root, Some(AssemblyPath::ProjectShadowed)) {
+        if let Some(AssemblyPath::Occupied(cause)) = root {
             return TieredResolution::ShadowDeferred(DeclineSite {
-                cause: DeclineCause::Occupied,
+                cause,
                 tier: DeclineTier::Root,
             });
         }
@@ -1071,14 +1077,14 @@ impl<'a> Resolver<'a> {
                 // A generic-abbreviation reading defers, like a project shadow —
                 // but only once *reached in priority order*. The preemptive
                 // as-written-root check above skips it (it is not
-                // `ProjectShadowed`), so a higher-priority `open` resolving the
+                // `Occupied`), so a higher-priority `open` resolving the
                 // path is tried first and wins; the abbreviation defers only if
                 // it is the highest reading left (codex review 4). A
                 // self-module-shadowed root reading is likewise skipped by the
                 // preemptive check and defers here — after every open has
                 // declined — so the current module's own name still shadows the
                 // same-named *root* namespace's assembly reading.
-                AssemblyPath::ProjectShadowed
+                AssemblyPath::Occupied(_)
                 | AssemblyPath::SelfModuleShadowed
                 | AssemblyPath::AbbreviationOpaque
                 | AssemblyPath::ContestedRooting => {
@@ -1130,7 +1136,7 @@ impl<'a> Resolver<'a> {
         // resolving to the assembly type), so it must not pull in the value-space
         // shadowing that the expression sibling's `path_is_project_shadowed` adds.
         if self.path_is_project_type_shadowed(&names) {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::Occupied(DeclineCause::ProjectTypePathShadow);
         }
 
         // Longest prefix `[..k]` (with `k >= base`, a source segment) whose
@@ -1275,7 +1281,7 @@ impl<'a> Resolver<'a> {
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
             match self.assemblies.resolve_abbreviation_tycon(type_handle) {
                 Some(terminal) => terminal,
-                None => return AssemblyPath::ProjectShadowed,
+                None => return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable),
             }
         } else {
             type_handle
@@ -1326,7 +1332,9 @@ impl<'a> Resolver<'a> {
                             via_alias = true;
                             terminal
                         }
-                        None => return AssemblyPath::ProjectShadowed,
+                        None => {
+                            return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable);
+                        }
                     }
                 } else {
                     child
@@ -1336,7 +1344,7 @@ impl<'a> Resolver<'a> {
                 parent = next;
                 i += 1;
             } else if via_alias {
-                return AssemblyPath::ProjectShadowed;
+                return AssemblyPath::Occupied(DeclineCause::AliasOwnedTail);
             } else {
                 owns_path = false;
                 break;

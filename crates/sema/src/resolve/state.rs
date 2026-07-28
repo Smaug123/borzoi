@@ -203,13 +203,21 @@ pub(super) enum AssemblyPath<R> {
     /// override it, even though the member itself deferred), whereas a partial one
     /// is only a fallback that a lower tier resolving the whole path supersedes.
     Resolved { payload: R, owns_path: bool },
-    /// A project value (member access on it), an *exact* project module path,
-    /// or a lexically-in-scope nested module shadows the path; F# resolves it
-    /// in-project, so the assembly index must not be consulted. A project module
-    /// that is only a *proper* prefix does **not** land here — it merges with the
-    /// assembly namespace and falls through (see
+    /// **Something holds this name here**, and it may satisfy the whole path
+    /// invisibly — so the walk decides at this reading and the as-written root
+    /// is vetoed preemptively (see
+    /// [`Resolver::resolve_assembly_path_tiered`]). Several occupants reach
+    /// this verdict: a project entity binding the path, an alias whose target
+    /// cannot be chased, an alias that owns its own tail, a case-pattern head
+    /// bound by a non-union. They are indistinguishable *to the resolver* —
+    /// each stops the walk identically — so the payload is what tells them
+    /// apart for the census, and naming it is what a decline site cannot be
+    /// constructed without.
+    ///
+    /// A project module that is only a *proper* prefix does **not** land here —
+    /// it merges with the assembly namespace and falls through (see
     /// [`Resolver::assembly_path_records`]).
-    ProjectShadowed,
+    Occupied(DeclineCause),
     /// The path is rooted at the **current module's own name**, used as a
     /// self-qualifier from within that module (`List.fold` inside
     /// `module List`), and nothing *else* project-side shadows it. FCS never
@@ -217,13 +225,13 @@ pub(super) enum AssemblyPath<R> {
     /// FS0039 — so the name falls through to whatever an `open` / implicit
     /// `[<AutoOpen>]` supplies (bare `List` → `Microsoft.FSharp.Collections.List`).
     ///
-    /// Distinct from [`Self::ProjectShadowed`] in exactly one way: it does **not**
+    /// Distinct from [`Self::Occupied`] in exactly one way: it does **not**
     /// trip the preemptive as-written-root veto in
     /// [`Resolver::resolve_assembly_path_tiered`] — a higher-priority open (the
     /// auto-open included) must be walked first, unlike a genuine project-bound
     /// head an open cannot redirect. Reached in priority order — i.e. at the
     /// **root** tier, once every open has declined — it defers like
-    /// `ProjectShadowed` (the module still shadows a same-named *root* namespace,
+    /// `Occupied` (the module still shadows a same-named *root* namespace,
     /// so the as-written assembly reading must not resolve: `Demo.Calc` inside
     /// `module Demo` beside a referenced-assembly `Demo.Calc` is FS0039, not the
     /// assembly type).
@@ -235,12 +243,12 @@ pub(super) enum AssemblyPath<R> {
     /// keeps the module), so this reading can neither resolve nor confidently
     /// disown the path — it **defers**.
     ///
-    /// Unlike [`Self::ProjectShadowed`] it is **tier-local**: it does *not* trip
+    /// Unlike [`Self::Occupied`] it is **tier-local**: it does *not* trip
     /// the preemptive as-written-root veto in
     /// [`Resolver::resolve_assembly_path_tiered`], because it is a lower-priority
     /// *assembly* reading, not a lexical project-bound head — a higher-priority
     /// `open` that resolves the whole path must still win over it (codex review
-    /// 4). Reached in priority order, it defers like `ProjectShadowed`.
+    /// 4). Reached in priority order, it defers like `Occupied`.
     AbbreviationOpaque,
     /// The reading's rooting top-level FQN is exported by **more than one
     /// loaded DLL**: FCS merges same-FQN roots across references and binds the
@@ -254,7 +262,7 @@ pub(super) enum AssemblyPath<R> {
     /// [`Resolver::resolve_assembly_path_tiered`] — a higher-priority `open`
     /// whose rooting is uncontested still wins over a contested root-tier
     /// reading (codex review on the contested-FQN guard). Reached in priority
-    /// order, it defers like [`Self::ProjectShadowed`]: FCS binds one of the
+    /// order, it defers like [`Self::Occupied`]: FCS binds one of the
     /// contestants at that tier, so no lower tier may re-root the path.
     ///
     /// Raised only when some contestant could actually *supply the tail*
@@ -296,7 +304,7 @@ impl<T> AssemblyPath<T> {
     /// cannot silently join the census without a cause of its own.
     pub(super) fn decline_cause(&self) -> Option<DeclineCause> {
         match self {
-            AssemblyPath::ProjectShadowed => Some(DeclineCause::Occupied),
+            AssemblyPath::Occupied(cause) => Some(*cause),
             AssemblyPath::SelfModuleShadowed => Some(DeclineCause::SelfModuleShadowed),
             AssemblyPath::AbbreviationOpaque => Some(DeclineCause::AbbreviationOpaque),
             AssemblyPath::ContestedRooting => Some(DeclineCause::ContestedRooting),

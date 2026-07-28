@@ -1971,19 +1971,43 @@ pub enum DeclineCause {
     /// The reading's namespace belongs to an assembly whose type abbreviations
     /// could not be decoded, so what it declares there is unknowable.
     UnknowableAbbreviationShadow,
-    /// Something **occupies** the name at the winning priority and may satisfy
-    /// the whole path invisibly, so no lower reading may be applied over it.
+    /// A project entity — a value with member access on it, an exact project
+    /// module path, or a lexically-in-scope nested module — binds this
+    /// **value** path, so F# resolves it in-project and the assembly index must
+    /// not be consulted.
     ///
-    /// **Coarse on purpose, for now.** It is read off
-    /// `AssemblyPath::ProjectShadowed`, and that variant is overloaded: a
-    /// project entity owning the path is its namesake case, but an unchaseable
-    /// abbreviation target, an alias with a companion module, a tail on an
-    /// alias-owned surface, a cross-DLL rooting collision and an occupied
-    /// case-pattern head all reach it too. The verdict is identical in each —
-    /// the walk stops here — so the resolver is right not to distinguish them;
-    /// the *census* would be more useful if it did, which is a change to the
-    /// variant rather than to this mapping.
-    Occupied,
+    /// The bucket that sizes the value walk's missing *per-member merge* model:
+    /// a project module and an assembly namespace of one name merge member by
+    /// member in FCS, and until that is modelled the whole path declines here.
+    ProjectPathShadow,
+    /// A project **type or module** of this name binds a *type* path. The
+    /// type-namespace sibling of [`Self::ProjectPathShadow`], and a strictly
+    /// narrower question: a project *value* of the name does not shadow a type
+    /// in type position, so the two walks ask different predicates and a census
+    /// that merged them could not tell which model to fix.
+    ProjectTypePathShadow,
+    /// The reading lands on a type abbreviation whose target cannot be chased —
+    /// structural, generic, unloaded, or ambiguous — so the path can neither
+    /// resolve through it nor confidently fall past it. One cause for both
+    /// walks: chasing an alias is the same question in either, with the same
+    /// fix.
+    AliasTargetUnchaseable,
+    /// The reading roots at an alias with a `ModuleSuffix` **companion module**,
+    /// whose members FCS routes `Alias.Member` to rather than the target's — a
+    /// module-over-target precedence sema does not model.
+    AliasCompanionModule,
+    /// The path roots (or descends) through a *chased* alias and a later
+    /// segment is absent from the target's modelled surface. FCS owns such a
+    /// reading, and the tail may live on a surface the walk does not enumerate
+    /// (a union case, an augmentation, a dropped member), so absence does not
+    /// prove absence: the reading keeps the path rather than ceding it.
+    AliasOwnedTail,
+    /// A `Type.Case` **pattern head** is bound by something that is not a union
+    /// declaring the case — a class, an abbreviation, a caseless union, or two
+    /// unions owning it at different arities. F# would keep searching outward
+    /// past some of these; telling "provably cannot supply this name" from
+    /// "occupies it" needs a whole member surface we do not always have.
+    CasePatternHeadOccupied,
     /// The current module's own name qualifies the path, which FCS does not
     /// bind as a self-qualifier.
     SelfModuleShadowed,
@@ -2074,7 +2098,12 @@ impl DeclineCause {
         DeclineCause::AssemblyAutoOpenShadow,
         DeclineCause::ProjectAutoOpenShadow,
         DeclineCause::UnknowableAbbreviationShadow,
-        DeclineCause::Occupied,
+        DeclineCause::ProjectPathShadow,
+        DeclineCause::ProjectTypePathShadow,
+        DeclineCause::AliasTargetUnchaseable,
+        DeclineCause::AliasCompanionModule,
+        DeclineCause::AliasOwnedTail,
+        DeclineCause::CasePatternHeadOccupied,
         DeclineCause::SelfModuleShadowed,
         DeclineCause::AbbreviationOpaque,
         DeclineCause::ContestedRooting,
@@ -2113,7 +2142,12 @@ impl DeclineCause {
             DeclineCause::AssemblyAutoOpenShadow => "assembly_auto_open_shadow",
             DeclineCause::ProjectAutoOpenShadow => "project_auto_open_shadow",
             DeclineCause::UnknowableAbbreviationShadow => "unknowable_abbreviation_shadow",
-            DeclineCause::Occupied => "occupied",
+            DeclineCause::ProjectPathShadow => "project_path_shadow",
+            DeclineCause::ProjectTypePathShadow => "project_type_path_shadow",
+            DeclineCause::AliasTargetUnchaseable => "alias_target_unchaseable",
+            DeclineCause::AliasCompanionModule => "alias_companion_module",
+            DeclineCause::AliasOwnedTail => "alias_owned_tail",
+            DeclineCause::CasePatternHeadOccupied => "case_pattern_head_occupied",
             DeclineCause::SelfModuleShadowed => "self_module_shadowed",
             DeclineCause::AbbreviationOpaque => "abbreviation_opaque",
             DeclineCause::ContestedRooting => "contested_rooting",

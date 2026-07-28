@@ -649,7 +649,7 @@ impl<'a> Resolver<'a> {
     /// later chained open keeps the relative reading higher **and** still
     /// reaches a root-only namespace. A project reading resolves no assembly
     /// path itself, but a name it *shadows* must be seen at its true priority
-    /// ([`AssemblyPath::ProjectShadowed`] → defer) before any lower assembly
+    /// ([`AssemblyPath::Occupied`] → defer) before any lower assembly
     /// reading can win.
     pub(super) fn open_interpretations(
         &self,
@@ -2868,7 +2868,7 @@ impl<'a> Resolver<'a> {
             // [`Self::assembly_prefixes_by_priority`] walk, so a tier added there
             // is seen here too — must be absent or read the path identically. If
             // one resolves it to a *different* target, or a **project entity
-            // captures it** (`ProjectShadowed` — it would win in F# exactly like a
+            // captures it** (`Occupied` — it would win in F# exactly like a
             // differing assembly reading), the root binding is unsafe, so we defer
             // rather than bind the wrong root — `namespace Demo; open type
             // Demo.Calc; Sub.Calc.Zero()` is `Demo.Sub.Calc.Zero` via the
@@ -2906,7 +2906,7 @@ impl<'a> Resolver<'a> {
                                         // A higher abbreviation-defer / self-module /
                                         // contested-rooting reading is uncertain, so the
                                         // root binding is unsafe.
-                                        AssemblyPath::ProjectShadowed
+                                        AssemblyPath::Occupied(_)
                                         | AssemblyPath::SelfModuleShadowed
                                         | AssemblyPath::AbbreviationOpaque
                                         | AssemblyPath::ContestedRooting => true,
@@ -2932,7 +2932,7 @@ impl<'a> Resolver<'a> {
                     // A no-match records nothing: the path resolves nowhere, so
                     // the open in scope is not what declined it. The other four
                     // do, at the root tier — the only reading this branch tried.
-                    declining @ (AssemblyPath::ProjectShadowed
+                    declining @ (AssemblyPath::Occupied(_)
                     | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
                     | AssemblyPath::ContestedRooting) => {
@@ -3208,7 +3208,7 @@ impl<'a> Resolver<'a> {
     ///   under `container_path ++ names`).
     ///
     /// Otherwise it stays a plain
-    /// [`ProjectShadowed`](super::state::AssemblyPath::ProjectShadowed) — a
+    /// [`Occupied`](super::state::AssemblyPath::Occupied) — a
     /// conservative deferral, never a wrong FSharp.Core commit.
     pub(super) fn self_module_shadow_only(&self, names: &[String]) -> bool {
         // In a `module rec` / `namespace rec`, FCS *does* put the module's own name

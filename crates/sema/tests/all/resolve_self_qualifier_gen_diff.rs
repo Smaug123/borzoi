@@ -54,7 +54,7 @@
 //! - `assembly_path_records` asks `self_module_shadow_only` about the **source**
 //!   path rather than the prefix-expanded one. `N.List.rev` for a written
 //!   `List.rev` has head `N`, a namespace segment in no module chain, so asking
-//!   there classifies the reading `ProjectShadowed` and preempts the opens.
+//!   there classifies the reading `Occupied` and preempts the opens.
 //! - `resolve_assembly_path_over` must stop returning `ShadowDeferred` at an
 //!   `AssemblyPath::SelfModuleShadowed` reading, so a lower one can answer.
 //!   **Not done, and not separable** — see the note on
