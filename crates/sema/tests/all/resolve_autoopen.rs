@@ -2528,6 +2528,33 @@ fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
     );
 }
 
+/// In a `module rec` block an `[<AutoOpen>]` module's value beats even a
+/// **later** explicit `open` of a colliding module — FCS makes every
+/// declaration in the block visible to every other, so nothing there is ordered
+/// by source position (fcs-dump probe `RecOpen`). The fold-back is positional,
+/// and `block_local_shadow`'s rec decline reaches only the *implicit*
+/// enclosing-namespace channel, so an explicit `open` still wins on our side.
+/// Task #47; pre-existing (nothing folded the module at all before the
+/// fold-back landed, so the same `open` won then too).
+#[test]
+#[ignore = "pre-existing wrong target: a rec block's auto-open module loses to a later explicit open"]
+fn a_rec_blocks_auto_open_module_outranks_a_later_open_of_the_same_name() {
+    let env = fixture_env();
+    let src = "module rec M\n[<AutoOpen>]\nmodule LocalAuto =\n    \
+               let extraValue () = 1\nopen Demo.Auto\nlet x = extraValue\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the rec block's `[<AutoOpen>] module LocalAuto` out-ranks the later open; got {res:?}"
+    );
+}
+
 #[test]
 fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value() {
     // A project `[<AutoOpen>]` module in the namespace holds a nested module,

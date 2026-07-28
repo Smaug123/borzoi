@@ -38,6 +38,11 @@
 
 use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
+/// A Compile-order-preceding project file whose namespace supplies a union case
+/// `PjMarker`, so an `open` of it can be contested by the probe file's own
+/// auto-open module in the **constructor** namespace.
+const PJ_CASE: &str = "namespace Demo.FbCase\ntype PjHolder =\n    | PjMarker\n";
+
 const CELLS: &[Cell] = &[
     // ===================== the fold happens at all =====================
     Cell {
@@ -283,6 +288,41 @@ const CELLS: &[Cell] = &[
             "[<AutoOpen>]",
             "module LocalAuto =",
             "    let (|Tag|_|) (x: int) = if x = 0 then Some () else None",
+        ],
+        after: &[],
+        probe: "Tag",
+        position: Position::Expr,
+    },
+    Cell {
+        // …and in *pattern* position it does contest, against a case an earlier
+        // open supplied. The fold cannot name the local recognizer's target, so
+        // the reference must DEFER — scanning past it to the earlier project
+        // case would be a wrong go-to-def.
+        container: Container::Module("Demo.FoldBack.HiddenCaseClash"),
+        decls: &[PJ_CASE],
+        label: "hidden / an active-pattern case declines an earlier open's case in pattern position",
+        body: &[
+            "open Demo.FbCase",
+            "[<AutoOpen>]",
+            "module LocalAuto =",
+            "    let (|PjMarker|_|) (x: int) = if x = 0 then Some () else None",
+        ],
+        after: &[],
+        probe: "PjMarker",
+        position: Position::PatternBare,
+    },
+    Cell {
+        // A `private` type is visible within its own module only, so it takes no
+        // slot in the enclosing scope and the assembly's value stands.
+        container: Container::Module("Demo.FoldBack.PrivateType"),
+        decls: &[],
+        label: "private / a private type in the auto-open module takes no enclosing slot",
+        body: &[
+            "open Demo.Auto",
+            "[<AutoOpen>]",
+            "module LocalAuto =",
+            "    type private Tag() =",
+            "        member _.Marker = 1",
         ],
         after: &[],
         probe: "Tag",

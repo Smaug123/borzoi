@@ -1287,12 +1287,21 @@ impl<'a> Resolver<'a> {
                 let entries: Vec<ScopeEntry> = ap_cases
                     .into_iter()
                     .map(|name| {
-                        ScopeEntry::opened_pattern_only(
+                        let mut entry = ScopeEntry::opened_pattern_only(
                             name,
                             Resolution::Deferred(DeferredReason::UnboundName),
                             generation,
                             pos,
-                        )
+                        );
+                        // [`ScopeEntry::opened_case`]: the name provably
+                        // occupies the constructor namespace, so the reference
+                        // stops here with no committed target. Without it
+                        // `case_reference_entry` classifies the `Deferred` as a
+                        // non-case and scans **past** it to whatever case an
+                        // earlier open supplied — a wrong go-to-def (codex
+                        // round 1).
+                        entry.opened_case = true;
+                        entry
                     })
                     .collect();
                 self.module_frame().entries.extend(entries);
