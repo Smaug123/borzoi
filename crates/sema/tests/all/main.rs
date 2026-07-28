@@ -24,6 +24,7 @@ mod infer_literals_diff;
 mod infer_member_access_diff;
 mod infer_static_call_diff;
 mod manifest_autoopen_surface_diff;
+mod member_hiding_diff;
 mod module_open_matrix;
 mod namespace_fold_matrix;
 mod open_shortening_matrix;

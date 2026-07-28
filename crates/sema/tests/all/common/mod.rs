@@ -14,6 +14,7 @@
 pub mod companion_corpus;
 pub mod fold_matrix;
 pub mod generator;
+pub mod member_hiding_corpus;
 pub mod overload_corpus;
 pub mod tier_corpus;
 
@@ -1064,6 +1065,33 @@ pub fn ensure_overload_corpus_built(csharp: &str) -> &'static Path {
         .as_path()
 }
 
+/// Build the **member-hiding** corpus (`tests/fixtures/member_hiding`) once per
+/// test binary and return its `.dll` path, writing `csharp` as its `Generated.cs`
+/// first.
+///
+/// One assembly, because the question it poses is about hiding *within* one
+/// reference: which level of a base chain a member access reaches when several
+/// declare the name. Contested names *across* assemblies are
+/// [`ensure_tier_corpus_built`]'s. The write holds [`BUILD_LOCK`] and is
+/// deterministic, like [`ensure_overload_corpus_built`]'s.
+pub fn ensure_member_hiding_corpus_built(csharp: &str) -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/member_hiding");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(project.join("Generated.cs"), csharp).expect("write Generated.cs");
+            dotnet_build(&project, "dotnet build member-hiding fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("MemberHiding.dll")
+        })
+        .as_path()
+}
+
 /// Build the **companion-head** corpus (`tests/fixtures/companion_env`) once per
 /// test binary and return its `.dll` path.
 ///
@@ -1820,6 +1848,12 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
 struct TypesDump {
     #[serde(rename = "Exprs")]
     exprs: Vec<RawTypedExpr>,
+    /// Every `Severity=Error` diagnostic of the check. FCS's typed tree omits an
+    /// expression it could not check, so a consumer asserting "every type we
+    /// produced, FCS confirms" can only read a *missing* node as a disagreement
+    /// on a line that checked cleanly.
+    #[serde(rename = "Errors", default)]
+    errors: Vec<RawError>,
 }
 
 #[derive(Deserialize)]
@@ -1840,16 +1874,41 @@ pub fn parse_fcs_types(
     json: &str,
     source: &str,
 ) -> std::collections::HashMap<(usize, usize), String> {
+    parse_fcs_types_with_errors(json, source).0
+}
+
+/// [`parse_fcs_types`] plus the errors FCS reported. A consumer that reads a
+/// *missing* node as a disagreement needs them: the typed tree omits the whole
+/// enclosing expression on a line that failed to check, so the absence is
+/// evidence only where the line checked cleanly.
+pub fn parse_fcs_types_with_errors(
+    json: &str,
+    source: &str,
+) -> (
+    std::collections::HashMap<(usize, usize), String>,
+    Vec<FcsCheckError>,
+) {
     let dump: TypesDump = serde_json::from_str(json).expect("fcs-dump types JSON shape");
     let idx = LineIndex::new(source);
-    dump.exprs
+    let types = dump
+        .exprs
         .into_iter()
         .map(|e| {
             let start = idx.offset(e.range.start.line, e.range.start.col);
             let end = idx.offset(e.range.end.line, e.range.end.col);
             ((start, end), e.type_canon)
         })
-        .collect()
+        .collect();
+    let errors = dump
+        .errors
+        .into_iter()
+        .map(|e| FcsCheckError {
+            line: e.line,
+            code: e.code,
+            message: e.message,
+        })
+        .collect();
+    (types, errors)
 }
 
 #[derive(Deserialize)]
