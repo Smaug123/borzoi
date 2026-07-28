@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The member-hiding matrix for the Stage 3.3a data-member wake.
+       `Generated.cs` is NOT checked in: it is emitted deterministically by the
+       generator (crates/sema/tests/all/common/member_hiding_corpus.rs) before
+       this project is built, so the C# universe and the Rust side's expectations
+       cannot drift apart. The default Compile glob picks it up.
+
+       C# — not F# — on purpose: name hiding across an inheritance level is a C#
+       construct (`new`), and the corpus needs the emitted IL to carry the
+       accessibility and `static`/`event`/indexer facts the wake reads. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MemberHiding</AssemblyName>
+    <RootNamespace>HideCorpus</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <!-- The matrix declares members it never reads and hides members with
+         members of another kind; both are the point, and both are noisy.
+         CS0067 unused event, CS0108/CS0109 hiding-modifier advice, CS0169/CS0414
+         unused/unassigned field, CS0649 never-assigned field, CS8632 nullable
+         annotation without a nullable context. -->
+    <NoWarn>$(NoWarn);CS0067;CS0108;CS0109;CS0169;CS0414;CS0649;CS8632</NoWarn>
+  </PropertyGroup>
+
+</Project>
