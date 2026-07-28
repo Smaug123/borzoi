@@ -6,7 +6,8 @@
 //! proof.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::hash_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
 use std::num::NonZeroUsize;
@@ -30,7 +31,10 @@ use borzoi_msbuild::{
 use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural,
 };
-use borzoi_sema::{AssemblyEnv, Def, OpenOpacity, Resolution, ResolvedProject};
+use borzoi_sema::{
+    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, OpenOpacity, Resolution,
+    ResolvedFile, ResolvedProject, infer_file,
+};
 
 // The oracle's structural naming of a declaration is shared with the LSP
 // crate's `resolve_real_project_diff`, which compares the same two sides on one
@@ -861,6 +865,20 @@ pub struct ProjectUse {
     pub declaring: Option<DeclaringEntity>,
     /// The used symbol's own generic-parameter count, when it is an entity.
     pub generic_arity: Option<usize>,
+    /// The oracle reported this record for the **constructor** the site invokes,
+    /// not for the name the author wrote.
+    ///
+    /// FCS emits both at one range wherever a written name both names a type and
+    /// calls it — `[<Alias>]`, `inherit Base(1)`, `Foo()`. Sema answers only the
+    /// first question: it resolves the written name, and models no separate
+    /// resolution for the constructor. So a constructor record is not a second
+    /// answer to compare against, and grading a type answer by it is a category
+    /// error that happens to pass whenever the constructor's declaration range
+    /// coincides with its type's. Carried here rather than inferred from the
+    /// spelling of `.ctor`, and independent of
+    /// [`DeclaringEntity::is_constructor`], which is present only for a record
+    /// that also carries a declaring path.
+    pub is_constructor: bool,
 }
 
 /// Where FCS says the used symbol is declared, classified by what the
@@ -1133,6 +1151,7 @@ pub fn parse_project_uses(
                         assembly: u.assembly,
                         full_name: u.full_name,
                         generic_arity: u.generic_arity,
+                        is_constructor: u.is_constructor.unwrap_or(false),
                         declaring: match u.declaring_path {
                             Some(path) if !path.is_empty() => Some(DeclaringEntity {
                                 // Absent is the **root** namespace, which the
@@ -1197,6 +1216,127 @@ pub fn write_json_report_line(path: &Path, summary: &CorpusSummary) -> std::io::
     std::fs::write(path, line)
 }
 
+/// Which guard declined, over a whole run — the census
+/// ([`borzoi_sema::ResolvedFile::decline_site`]) aggregated.
+///
+/// Closed by construction: `DeclineCause::ALL` and `DeclineTier::ALL` are
+/// iterated when rendering, so a cause that did not occur emits a zero rather
+/// than vanishing. A sparse map would mint a different metric set each run,
+/// which `docs/continuous-measurements.md` names as the way a series stops
+/// being comparable.
+///
+/// `unattributed` is not a residual to be inferred. A decline site is a claim
+/// and its absence is not, so the count of declines no guard accounted for is
+/// carried explicitly — it is the number that says how much of the census is
+/// actually working, and driving it down is empirical rather than a matter of
+/// finding uncovered call sites by inspection.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct DeclineCensus {
+    by_cause: BTreeMap<&'static str, usize>,
+    by_tier: BTreeMap<&'static str, usize>,
+    by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+    /// Declines with no recorded site.
+    pub unattributed: usize,
+    /// Declines with one — the denominator `unattributed` is read against.
+    pub attributed: usize,
+}
+
+impl DeclineCensus {
+    /// Record one decline, attributed or not.
+    pub fn observe(&mut self, site: Option<DeclineSite>) {
+        match site {
+            Some(site) => {
+                self.attributed += 1;
+                *self.by_cause.entry(site.cause.label()).or_default() += 1;
+                *self.by_tier.entry(site.tier.label()).or_default() += 1;
+                *self
+                    .by_pair
+                    .entry(site.cause.label())
+                    .or_default()
+                    .entry(site.tier.label())
+                    .or_default() += 1;
+            }
+            None => self.unattributed += 1,
+        }
+    }
+
+    fn add_assign(&mut self, other: &DeclineCensus) {
+        for (k, v) in &other.by_cause {
+            *self.by_cause.entry(k).or_default() += v;
+        }
+        for (k, v) in &other.by_tier {
+            *self.by_tier.entry(k).or_default() += v;
+        }
+        for (cause, tiers) in &other.by_pair {
+            let into = self.by_pair.entry(cause).or_default();
+            for (tier, v) in tiers {
+                *into.entry(tier).or_default() += v;
+            }
+        }
+        self.unattributed += other.unattributed;
+        self.attributed += other.attributed;
+    }
+
+    /// Every cause with its count, **including the zeros** — see the type docs.
+    pub fn causes(&self) -> BTreeMap<&'static str, usize> {
+        DeclineCause::ALL
+            .iter()
+            .map(|c| {
+                (
+                    c.label(),
+                    self.by_cause.get(c.label()).copied().unwrap_or(0),
+                )
+            })
+            .collect()
+    }
+
+    /// Every tier with its count, including the zeros.
+    pub fn tiers(&self) -> BTreeMap<&'static str, usize> {
+        DeclineTier::ALL
+            .iter()
+            .map(|t| (t.label(), self.by_tier.get(t.label()).copied().unwrap_or(0)))
+            .collect()
+    }
+
+    /// Every `(cause, tier)` pair with its count, as a cause-keyed map of
+    /// tier-keyed counts — including the zeros, on both axes.
+    ///
+    /// The marginals above cannot see an **exchange**: if a change to the
+    /// precedence ladder moves equal numbers of two causes between two tiers,
+    /// every `DeclineSite` in the corpus changed and both marginals read
+    /// identically. Since seeing which guard moved where is the census's whole
+    /// purpose, the pairs have to be published, not merely derivable.
+    ///
+    /// **Dense on purpose.** Most causes can only ever carry one tier — the
+    /// pre-walk guards are constructed with it fixed — so most of this map is
+    /// permanently rather than incidentally zero, and a table of each cause's
+    /// reachable tiers would emit a much smaller closed set. That table would
+    /// be a second source of truth about the resolver, correct only for as long
+    /// as someone maintains it, and wrong in the direction that silently drops
+    /// an observation. Emitting the full product is duller and cannot go stale.
+    pub fn pairs(&self) -> BTreeMap<&'static str, BTreeMap<&'static str, usize>> {
+        DeclineCause::ALL
+            .iter()
+            .map(|c| {
+                let tiers = DeclineTier::ALL
+                    .iter()
+                    .map(|t| {
+                        (
+                            t.label(),
+                            self.by_pair
+                                .get(c.label())
+                                .and_then(|tiers| tiers.get(t.label()))
+                                .copied()
+                                .unwrap_or(0),
+                        )
+                    })
+                    .collect();
+                (c.label(), tiers)
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Comparison {
     pub files_compared: usize,
@@ -1207,6 +1347,41 @@ pub struct Comparison {
     pub assembly_matches: usize,
     pub deferrals: usize,
     pub assembly_deferrals: usize,
+    /// Which guard declined each of the two deferral counts above, kept apart
+    /// on the same axis they are: a change that swaps a `(cause, tier)` between
+    /// a project deferral and an assembly one leaves every merged count
+    /// identical though both classifications moved.
+    pub project_decline_census: DeclineCensus,
+    pub assembly_decline_census: DeclineCensus,
+    /// How many of the considered uses were answered out of the **attribute**
+    /// commit map rather than the main one
+    /// ([`borzoi_sema::ResolvedFile::committed_resolution_at`]).
+    ///
+    /// Published because the alternative to publishing it is not noticing. An
+    /// attribute answer is invisible to `resolution_at`, so a differential that
+    /// reads one map counts every attribute use as a deferral — which is to say
+    /// it makes no claim about a surface the LSP does serve, and stays green
+    /// however wrong those answers are. Nothing else in this report moves when
+    /// that happens: the divergence gate holds at zero and the deferral counts
+    /// merely rise. This number going to zero on a corpus that contains
+    /// attributes is the signal.
+    pub attribute_commits_compared: usize,
+    /// How many of the considered uses were answered out of **inference's**
+    /// member table rather than by the resolver
+    /// ([`borzoi_sema::InferredFile::member_resolutions`]).
+    ///
+    /// Published for the same reason as
+    /// [`attribute_commits_compared`](Self::attribute_commits_compared): a
+    /// differential that reads only the resolver counts such a use as a
+    /// deferral, which is to say it makes no claim about a go-to-definition
+    /// target it serves, and stays green however wrong that target is.
+    ///
+    /// It reads **0** on the pinned corpus, and that is a measurement rather
+    /// than a defect: every member answer inference commits there is one the
+    /// resolver committed too (`Object.ReferenceEquals`, graded already), so
+    /// nothing is answered by inference alone. The fixtures in
+    /// `project_resolution.rs` are what exercise the grading meanwhile.
+    pub member_commits_compared: usize,
     pub skipped_uses: SkippedUses,
     /// Our *defining* occurrences at ranges FCS reports nothing about. The
     /// forward direction does not grade FCS's definitions either, and silence
@@ -1247,6 +1422,29 @@ pub struct SkippedUses {
     /// compare instead, so nothing can adjudicate the use.
     pub out_of_project_declarations: usize,
     pub no_oracle_declaration: usize,
+    /// FCS reported **two or more different declarations at one range**, so the
+    /// oracle does not say what the site resolves to and cannot adjudicate a
+    /// single answer.
+    ///
+    /// `[<Alias>]`, where `Alias` abbreviates an attribute class, is the shape:
+    /// the range carries a use of the abbreviation *and* a use naming the
+    /// constructed type, and both readings are correct — the author wrote one
+    /// name that both names a type and calls its constructor. Any single answer
+    /// contradicts one of them, so grading against either would report a right
+    /// answer as wrong half the time and, worse, would let a genuinely wrong
+    /// answer pass whenever it happened to match the other voice.
+    ///
+    /// Counted rather than silently dropped, and adjudicated on the oracle's
+    /// answers alone — never on whether ours agrees — so this can never become
+    /// the bucket a disagreement escapes into. It is the project-stream twin of
+    /// the attribute oracle's `ambiguous` record.
+    pub ambiguous_oracle_range: usize,
+    /// A **constructor** record at a range that also carries a record for the
+    /// name itself — see [`ProjectUse::is_constructor`]. The name's record is
+    /// the one this differential can grade, so the constructor's steps aside
+    /// rather than being compared against a resolution that never claimed to
+    /// answer it.
+    pub shadowed_constructor_use: usize,
 }
 
 impl SkippedUses {
@@ -1257,6 +1455,8 @@ impl SkippedUses {
             + self.non_project_declarations
             + self.out_of_project_declarations
             + self.no_oracle_declaration
+            + self.ambiguous_oracle_range
+            + self.shadowed_constructor_use
     }
 
     fn add_assign(&mut self, other: &Self) {
@@ -1266,6 +1466,8 @@ impl SkippedUses {
         self.non_project_declarations += other.non_project_declarations;
         self.out_of_project_declarations += other.out_of_project_declarations;
         self.no_oracle_declaration += other.no_oracle_declaration;
+        self.ambiguous_oracle_range += other.ambiguous_oracle_range;
+        self.shadowed_constructor_use += other.shadowed_constructor_use;
     }
 }
 
@@ -1301,6 +1503,16 @@ pub struct CorpusSummary {
     pub assembly_matches: usize,
     pub project_deferrals: usize,
     pub assembly_deferrals: usize,
+    /// Aggregate of [`Comparison::project_decline_census`] and its assembly
+    /// twin: which guard declined, and at which ladder tier. The deferral
+    /// totals above say *how much* we lost; these say *to what*, which is what
+    /// a change to the precedence ladder moves.
+    pub project_decline_census: DeclineCensus,
+    pub assembly_decline_census: DeclineCensus,
+    /// Aggregate of [`Comparison::attribute_commits_compared`].
+    pub attribute_commits_compared: usize,
+    /// Aggregate of [`Comparison::member_commits_compared`].
+    pub member_commits_compared: usize,
     pub skipped_uses: SkippedUses,
     /// Aggregate of [`Comparison::unoracled_definitions`].
     pub unoracled_definitions: usize,
@@ -1384,6 +1596,12 @@ impl CorpusSummary {
         self.assembly_matches += comparison.assembly_matches;
         self.project_deferrals += comparison.deferrals;
         self.assembly_deferrals += comparison.assembly_deferrals;
+        self.project_decline_census
+            .add_assign(&comparison.project_decline_census);
+        self.assembly_decline_census
+            .add_assign(&comparison.assembly_decline_census);
+        self.attribute_commits_compared += comparison.attribute_commits_compared;
+        self.member_commits_compared += comparison.member_commits_compared;
         self.skipped_uses.add_assign(&comparison.skipped_uses);
         self.project_divergences += comparison.divergences.len();
         self.assembly_divergences += comparison.assembly_divergences.len();
@@ -1491,12 +1709,40 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
+            "project-corpus-diff commits compared off the resolver's main map: {} attribute | {} \
+             member",
+            self.attribute_commits_compared, self.member_commits_compared
+        )
+        .expect("write String");
+        writeln!(
+            out,
             "project-corpus-diff deferrals: {} project | {} assembly | {} total",
             self.project_deferrals,
             self.assembly_deferrals,
             self.total_deferrals()
         )
         .expect("write String");
+        for (which, census) in [
+            ("project", &self.project_decline_census),
+            ("assembly", &self.assembly_decline_census),
+        ] {
+            let nonzero = |m: BTreeMap<&'static str, usize>| {
+                m.iter()
+                    .filter(|(_, n)| **n > 0)
+                    .map(|(k, n)| format!("{k}={n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            writeln!(
+                out,
+                "project-corpus-diff {which} declines: {} attributed | {} unattributed | {} | tiers {}",
+                census.attributed,
+                census.unattributed,
+                nonzero(census.causes()),
+                nonzero(census.tiers()),
+            )
+            .expect("write String");
+        }
         writeln!(
             out,
             "project-corpus-diff divergences: {} project | {} assembly | {} reverse | {} total",
@@ -1508,13 +1754,15 @@ impl CorpusSummary {
         .expect("write String");
         writeln!(
             out,
-            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
+            "project-corpus-diff skipped uses: {} definitions | {} zero-width | {} compiler-generated | {} non-project declarations | {} out-of-project declarations | {} no-oracle declarations | {} ambiguous oracle ranges | {} shadowed constructor uses | {} total ({} of our own defining occurrences and {} of our or-pattern aliases unoracled)",
             self.skipped_uses.definitions,
             self.skipped_uses.zero_width,
             self.skipped_uses.compiler_generated,
             self.skipped_uses.non_project_declarations,
             self.skipped_uses.out_of_project_declarations,
             self.skipped_uses.no_oracle_declaration,
+            self.skipped_uses.ambiguous_oracle_range,
+            self.skipped_uses.shadowed_constructor_use,
             self.skipped_uses.total(),
             self.unoracled_definitions,
             self.unoracled_or_pattern_aliases
@@ -1576,6 +1824,8 @@ impl CorpusSummary {
                 project_considered: self.project_uses_considered,
                 assembly_considered: self.assembly_uses_considered,
                 total_considered: self.total_uses_considered(),
+                attribute_commits_compared: self.attribute_commits_compared,
+                member_commits_compared: self.member_commits_compared,
             },
             matches: CorpusProjectAssemblyCount {
                 project: self.project_matches,
@@ -1586,6 +1836,10 @@ impl CorpusSummary {
                 project: self.project_deferrals,
                 assembly: self.assembly_deferrals,
                 total: self.total_deferrals(),
+            },
+            decline_census: CorpusDeclineCensusPair {
+                project: CorpusDeclineCensus::of(&self.project_decline_census),
+                assembly: CorpusDeclineCensus::of(&self.assembly_decline_census),
             },
             divergences: CorpusTieredCount {
                 project: self.project_divergences,
@@ -2068,6 +2322,8 @@ struct CorpusJsonReport<'a> {
     uses: CorpusUsesReport,
     matches: CorpusProjectAssemblyCount,
     deferrals: CorpusProjectAssemblyCount,
+    /// Which guard declined each deferral, and at which ladder tier.
+    decline_census: CorpusDeclineCensusPair,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageReport,
     project_assets: CorpusProjectAssetsReport<'a>,
@@ -2103,6 +2359,13 @@ struct CorpusUsesReport {
     project_considered: usize,
     assembly_considered: usize,
     total_considered: usize,
+    /// See [`Comparison::attribute_commits_compared`]. Sits beside the considered
+    /// counts because it says which commit map answered them, not how many
+    /// there were.
+    attribute_commits_compared: usize,
+    /// See [`Comparison::member_commits_compared`] — the same, for the answers
+    /// inference supplied where the resolver deferred.
+    member_commits_compared: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -2110,6 +2373,41 @@ struct CorpusProjectAssemblyCount {
     project: usize,
     assembly: usize,
     total: usize,
+}
+
+/// The decline census as the report and the generator summary render it: two
+/// closed maps plus the attributed/unattributed split. Both maps carry every
+/// variant including the zeros, so a metric never vanishes between runs.
+#[derive(Debug, Serialize)]
+struct CorpusDeclineCensus {
+    attributed: usize,
+    unattributed: usize,
+    by_cause: BTreeMap<&'static str, usize>,
+    by_tier: BTreeMap<&'static str, usize>,
+    /// The pairs the two marginals above cannot reconstruct — see
+    /// [`DeclineCensus::pairs`].
+    by_pair: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+}
+
+/// The census on the axis the deferral totals already have. A merged census
+/// cannot explain either headline bucket, and a swap between them moves nothing
+/// it reports.
+#[derive(Debug, Serialize)]
+struct CorpusDeclineCensusPair {
+    project: CorpusDeclineCensus,
+    assembly: CorpusDeclineCensus,
+}
+
+impl CorpusDeclineCensus {
+    fn of(census: &DeclineCensus) -> CorpusDeclineCensus {
+        CorpusDeclineCensus {
+            attributed: census.attributed,
+            unattributed: census.unattributed,
+            by_cause: census.causes(),
+            by_tier: census.tiers(),
+            by_pair: census.pairs(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -2198,6 +2496,11 @@ struct GeneratorStatistics {
     /// which is exactly why it needs plotting, since a change that makes us
     /// more timid is otherwise invisible.
     deferrals: CorpusProjectAssemblyCount,
+    /// What those deferrals were *to*: which guard declined and at which ladder
+    /// tier. The totals above move whenever the resolver gets more or less
+    /// timid; this says which model owns the move, which is the question every
+    /// change to the precedence ladder asks and which no aggregate can answer.
+    decline_census: CorpusDeclineCensusPair,
     divergences: CorpusTieredCount,
     coverage: CorpusCoverageBasisPoints,
     skipped_uses: CorpusSkippedUsesCounts,
@@ -2250,6 +2553,8 @@ struct CorpusSkippedUsesCounts {
     non_project_declarations: usize,
     out_of_project_declarations: usize,
     no_oracle_declaration: usize,
+    ambiguous_oracle_range: usize,
+    shadowed_constructor_use: usize,
     total: usize,
 }
 
@@ -2296,6 +2601,8 @@ pub fn render_generator_summary(
                 project_considered: summary.project_uses_considered,
                 assembly_considered: summary.assembly_uses_considered,
                 total_considered: summary.total_uses_considered(),
+                attribute_commits_compared: summary.attribute_commits_compared,
+                member_commits_compared: summary.member_commits_compared,
             },
             matches: CorpusProjectAssemblyCount {
                 project: summary.project_matches,
@@ -2306,6 +2613,10 @@ pub fn render_generator_summary(
                 project: summary.project_deferrals,
                 assembly: summary.assembly_deferrals,
                 total: summary.total_deferrals(),
+            },
+            decline_census: CorpusDeclineCensusPair {
+                project: CorpusDeclineCensus::of(&summary.project_decline_census),
+                assembly: CorpusDeclineCensus::of(&summary.assembly_decline_census),
             },
             divergences: CorpusTieredCount {
                 project: summary.project_divergences,
@@ -2323,6 +2634,8 @@ pub fn render_generator_summary(
                 non_project_declarations: summary.skipped_uses.non_project_declarations,
                 out_of_project_declarations: summary.skipped_uses.out_of_project_declarations,
                 no_oracle_declaration: summary.skipped_uses.no_oracle_declaration,
+                ambiguous_oracle_range: summary.skipped_uses.ambiguous_oracle_range,
+                shadowed_constructor_use: summary.skipped_uses.shadowed_constructor_use,
                 total: summary.skipped_uses.total(),
             },
             unoracled_definitions: summary.unoracled_definitions,
@@ -2478,6 +2791,153 @@ pub struct AssemblyDecl {
     pub structural: Option<StructuralName>,
 }
 
+/// Whether the answer at `range` is a **commit** the attribute map alone holds
+/// — the case that is compared here only because
+/// [`borzoi_sema::ResolvedFile::committed_resolution_at`] is what gets asked.
+///
+/// A deferral recorded in that map is excluded: it makes no claim, so counting
+/// it would inflate the number that is supposed to say how much was actually
+/// put to the oracle.
+fn attribute_commit(rf: &borzoi_sema::ResolvedFile, range: TextRange) -> bool {
+    rf.resolution_at(range).is_none()
+        && matches!(rf.attribute_resolution_at(range), Some(res) if !matches!(res, Resolution::Deferred(_)))
+}
+
+/// The member answers **inference** commits in one file
+/// ([`borzoi_sema::InferredFile::member_resolutions`]), indexed by where each
+/// member name *ends*.
+///
+/// `Object.ReferenceEquals (x, y)` is answered in two steps: the resolver
+/// declines the path, and inference — once the receiver's type is known — looks
+/// the member up and records what it found. `handlers/definition.rs` and
+/// `handlers/hover.rs` layer that table over the resolver's deferral, so an
+/// entry here *is* a go-to-definition target. Read through the resolver's maps
+/// alone the site still looks deferred, which claims nothing and so can never
+/// diverge, however wrong the answer served there is.
+///
+/// **The index is by end offset because that is what the oracle agrees on.**
+/// Inference keys the member *name* token (`ReferenceEquals`, so hover can scope
+/// its tooltip to it), while FCS reports one use spanning the whole long
+/// identifier (`Object.ReferenceEquals`) and names it by its **final** segment's
+/// symbol. The two spans share their end and nothing else, so a comparison keyed
+/// on the whole range compares nothing at all — which is the failure mode this
+/// index exists to rule out. An end offset identifies at most one entry: member
+/// ranges are single identifier tokens, so two cannot end together.
+#[derive(Debug, Default)]
+struct MemberCommits {
+    by_end: HashMap<rowan::TextSize, (TextRange, Resolution)>,
+}
+
+impl MemberCommits {
+    /// The member answers the LSP would actually **serve**, out of everything
+    /// inference recorded — the only ones a differential may grade, since an
+    /// answer no user is shown is not a claim.
+    ///
+    /// Two things are dropped, and both are dropped here rather than at each
+    /// use so that neither the grading nor the count can forget one:
+    ///
+    /// - **A deferred entry.** Inference's table is sealed wholesale to
+    ///   `Deferred(IncompleteAssemblies)` when the env's identity set is
+    ///   incomplete, and a deferral claims nothing.
+    /// - **An entry a concrete resolver answer contains.** The LSP takes the
+    ///   smallest *containing* resolver resolution first, so where the resolver
+    ///   answers `System.Object.ReferenceEquals` across the whole path, the
+    ///   member token inside it is never reached. Keeping it would let one
+    ///   served answer be graded twice — and reported twice, at two ranges, in
+    ///   the reverse direction.
+    fn served(
+        entries: impl IntoIterator<Item = (TextRange, Resolution)>,
+        concrete_resolver_ranges: &[TextRange],
+    ) -> Self {
+        MemberCommits {
+            by_end: entries
+                .into_iter()
+                .filter(|(_, res)| is_concrete_resolution(*res))
+                .filter(|(member, _)| {
+                    !concrete_resolver_ranges.iter().any(|answered| {
+                        answered.start() <= member.start() && member.end() <= answered.end()
+                    })
+                })
+                .map(|(range, res)| (range.end(), (range, res)))
+                .collect(),
+        }
+    }
+
+    /// Inference's answer for the symbol an oracle use at `range` names, if it
+    /// has one: the member whose name is that use's tail. Equality of ranges is
+    /// the common case (FCS reports a bare `x.Length` at `Length`); a qualified
+    /// path is the case the end-alignment is for.
+    fn answer_for(&self, range: TextRange) -> Option<Resolution> {
+        self.by_end
+            .get(&range.end())
+            .filter(|(member, _)| member.start() >= range.start())
+            .map(|(_, res)| *res)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (TextRange, Resolution)> {
+        self.by_end.values().copied()
+    }
+}
+
+/// Solve `file_idx` and collect the member answers it serves.
+///
+/// Empty for a `.fsi` Compile slot: a signature file has no implementation tree
+/// to infer over, which is why the LSP's enrichment is impl-only too.
+fn member_commits(loaded: &LoadedProject, file_idx: usize) -> MemberCommits {
+    let Some(impl_file) = loaded.parses.files[file_idx].file.as_impl() else {
+        return MemberCommits::default();
+    };
+    let rf = loaded.resolved.file(file_idx);
+    let inferred = infer_file(impl_file, rf, &loaded.assembly_env);
+    let answered: Vec<TextRange> = rf
+        .resolutions()
+        .iter()
+        .chain(rf.attribute_resolutions().iter())
+        .filter(|(_, res)| is_concrete_resolution(**res))
+        .map(|(range, _)| *range)
+        .collect();
+    MemberCommits::served(
+        inferred
+            .member_resolutions()
+            .iter()
+            .map(|(range, res)| (*range, *res)),
+        &answered,
+    )
+}
+
+/// The answer this file commits at `range` across **every** surface the LSP
+/// serves it from: the resolver's two commit maps
+/// ([`borzoi_sema::ResolvedFile::committed_resolution_at`]) and, where those
+/// defer, inference's member table.
+///
+/// The precedence is the LSP's own (`handlers/definition.rs`): a concrete
+/// resolver answer wins, otherwise the member answer stands in, otherwise the
+/// resolver's deferral is the verdict. Grading anything narrower would grade a
+/// verdict no user is ever shown.
+fn committed_answer(
+    rf: &ResolvedFile,
+    members: &MemberCommits,
+    range: TextRange,
+) -> Option<Resolution> {
+    match rf.committed_resolution_at(range) {
+        Some(res) if !matches!(res, Resolution::Deferred(_)) => Some(res),
+        deferred_or_none => members.answer_for(range).or(deferred_or_none),
+    }
+}
+
+/// Whether the answer at `range` is one **inference** supplied. Asked through
+/// the same lookup [`committed_answer`] grades by, over a table holding only
+/// what [`MemberCommits::served`] admits, so the count cannot drift from what
+/// was actually compared: an entry the resolver's own answer covers, or one
+/// deferred, is not in the table to be found.
+///
+/// Counted for the same reason [`attribute_commit`] is: it is the number that
+/// says how much of this surface the oracle was actually asked about. It going
+/// to zero is the signal that the differential has stopped reading the surface.
+fn member_commit(members: &MemberCommits, range: TextRange) -> bool {
+    members.answer_for(range).is_some()
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Divergence {
     pub file: PathBuf,
@@ -2548,8 +3008,9 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         };
         comparison.files_compared += 1;
         comparison.uses_reported += file_uses.uses.len();
-        comparable_fcs_files.push((file_idx, file_uses));
         let rf = loaded.resolved.file(file_idx);
+        let members = member_commits(loaded, file_idx);
+        let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
             if u.is_from_definition {
                 comparison.skipped_uses.definitions += 1;
@@ -2563,6 +3024,14 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 comparison.skipped_uses.compiler_generated += 1;
                 continue;
             }
+            if !shape.grades(u) {
+                comparison.skipped_uses.shadowed_constructor_use += 1;
+                continue;
+            }
+            if shape.is_ambiguous(u) {
+                comparison.skipped_uses.ambiguous_oracle_range += 1;
+                continue;
+            }
             let range = TextRange::new(
                 u32::try_from(u.start).expect("use start fits u32").into(),
                 u32::try_from(u.end).expect("use end fits u32").into(),
@@ -2571,9 +3040,18 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 match assembly_decl(u) {
                     Some(expected) => {
                         comparison.assembly_uses_considered += 1;
-                        match rf.resolution_at(range) {
+                        if attribute_commit(rf, range) {
+                            comparison.attribute_commits_compared += 1;
+                        }
+                        if member_commit(&members, range) {
+                            comparison.member_commits_compared += 1;
+                        }
+                        match committed_answer(rf, &members, range) {
                             None | Some(Resolution::Deferred(_)) => {
                                 comparison.assembly_deferrals += 1;
+                                comparison
+                                    .assembly_decline_census
+                                    .observe(rf.decline_site(range));
                             }
                             Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
@@ -2630,8 +3108,19 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 continue;
             };
             comparison.uses_considered += 1;
-            match rf.resolution_at(range) {
-                None | Some(Resolution::Deferred(_)) => comparison.deferrals += 1,
+            if attribute_commit(rf, range) {
+                comparison.attribute_commits_compared += 1;
+            }
+            if member_commit(&members, range) {
+                comparison.member_commits_compared += 1;
+            }
+            match committed_answer(rf, &members, range) {
+                None | Some(Resolution::Deferred(_)) => {
+                    comparison.deferrals += 1;
+                    comparison
+                        .project_decline_census
+                        .observe(rf.decline_site(range));
+                }
                 Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
                     match resolution_def(loaded, file_idx, res) {
                         Some((actual_file_idx, def))
@@ -2674,6 +3163,10 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 }),
             }
         }
+        // The reverse direction reads the same three surfaces, so it is handed
+        // the member table this file's forward pass already solved rather than
+        // inferring it a second time.
+        comparable_fcs_files.push((file_idx, file_uses, members));
     }
     add_reverse_divergences(loaded, &comparable_fcs_files, &mut comparison);
     comparison.reverse_divergences.sort_by(|a, b| {
@@ -2683,6 +3176,90 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             .then(a.actual.cmp(&b.actual))
     });
     comparison
+}
+
+/// How this file's oracle records are to be read where several land on one
+/// range: which are shadowed by a better answer, and which ranges stay
+/// [ambiguous](SkippedUses::ambiguous_oracle_range) even after that.
+///
+/// Only records the comparator would actually **grade** take part, which is
+/// exactly the ones that are answers about the site. Everything it sets aside is
+/// set aside because it says nothing this differential can read: a *defining*
+/// occurrence is not a use; the compiler-generated `_arg1` of a destructuring
+/// pattern spans the whole pattern and so shares its range with the union case
+/// the author actually wrote; and a record with neither an in-project
+/// declaration nor a complete assembly identity names no target at all. Letting
+/// any of those weigh in would rule on a site using a record that was never an
+/// answer to begin with.
+struct OracleShape {
+    /// Ranges carrying a non-constructor record, so a constructor record there
+    /// is answering a different question and steps aside.
+    named_at: HashSet<(usize, usize)>,
+    ambiguous: HashSet<(usize, usize)>,
+}
+
+impl OracleShape {
+    /// Whether this record is the one to grade its site by.
+    ///
+    /// A constructor record beside the type it constructs is not a rival answer
+    /// — it is the same site described at a level sema does not model. Grading a
+    /// type answer against it is a category error that passes only when the
+    /// constructor's declaration range happens to coincide with its type's.
+    fn grades(&self, u: &ProjectUse) -> bool {
+        !(u.is_constructor && self.named_at.contains(&(u.start, u.end)))
+    }
+
+    fn is_ambiguous(&self, u: &ProjectUse) -> bool {
+        self.ambiguous.contains(&(u.start, u.end))
+    }
+}
+
+fn oracle_shape(file_uses: &FileUses) -> OracleShape {
+    /// What the oracle said a use resolves to: its declaration, plus the
+    /// assembly identity that adjudicates a non-project one.
+    type OracleAnswer<'a> = (&'a UseDecl, Option<&'a str>, Option<&'a str>);
+
+    let gradable = |u: &&ProjectUse| {
+        !u.is_from_definition
+            && u.start != u.end
+            && !u.is_compiler_generated
+            // The same eligibility the comparator applies: an in-project
+            // declaration, or failing that an assembly identity to adjudicate by.
+            && (matches!(u.decl, UseDecl::InProject(_)) || assembly_decl(u).is_some())
+    };
+
+    let named_at: HashSet<(usize, usize)> = file_uses
+        .uses
+        .iter()
+        .filter(gradable)
+        .filter(|u| !u.is_constructor)
+        .map(|u| (u.start, u.end))
+        .collect();
+
+    let mut answer_at: HashMap<(usize, usize), OracleAnswer<'_>> = HashMap::new();
+    let mut ambiguous = HashSet::new();
+    for u in file_uses.uses.iter().filter(gradable) {
+        if u.is_constructor && named_at.contains(&(u.start, u.end)) {
+            continue;
+        }
+        let answer = (&u.decl, u.assembly.as_deref(), u.full_name.as_deref());
+        match answer_at.entry((u.start, u.end)) {
+            Entry::Vacant(slot) => {
+                slot.insert(answer);
+            }
+            Entry::Occupied(slot) => {
+                // Two records naming the *same* declaration are one answer said
+                // twice, which adjudicates fine.
+                if *slot.get() != answer {
+                    ambiguous.insert((u.start, u.end));
+                }
+            }
+        }
+    }
+    OracleShape {
+        named_at,
+        ambiguous,
+    }
 }
 
 fn assembly_decl(use_: &ProjectUse) -> Option<AssemblyDecl> {
@@ -2731,21 +3308,37 @@ fn assembly_resolution_decl(env: &AssemblyEnv, res: Resolution) -> AssemblyDecl 
 
 fn add_reverse_divergences(
     loaded: &LoadedProject,
-    fcs_files: &[(usize, &FileUses)],
+    fcs_files: &[(usize, &FileUses, MemberCommits)],
     comparison: &mut Comparison,
 ) {
-    for (file_idx, file_uses) in fcs_files {
+    for (file_idx, file_uses, members) in fcs_files {
         let rf = loaded.resolved.file(*file_idx);
-        let mut resolutions: Vec<_> = rf.resolutions().iter().collect();
-        resolutions.sort_by_key(|(range, _)| range_pair(**range));
-        for (range, &res) in resolutions {
-            if !is_concrete_resolution(res) {
-                continue;
-            }
-            let (start, end) = range_pair(*range);
+        // The same reading of the oracle the forward pass uses. A constructor
+        // record standing beside the name it constructs must not *confirm* one
+        // of our answers either: it names the constructed type, so it would
+        // silently accept a resolution to that type at a site whose written
+        // name is something else — a wrong answer, ratified.
+        let shape = oracle_shape(file_uses);
+        // Every answer any of the three surfaces commits, each at its own range:
+        // an attribute or member answer is a claim served to users, and a claim
+        // the oracle is never asked about is the one that can be wrong forever.
+        // The member table holds only what is served (`MemberCommits::served`),
+        // so an answer the resolver's own covers is not counted here twice.
+        let mut answers: Vec<(TextRange, Resolution)> = rf
+            .resolutions()
+            .iter()
+            .chain(rf.attribute_resolutions().iter())
+            .map(|(range, res)| (*range, *res))
+            .chain(members.iter())
+            .filter(|(_, res)| is_concrete_resolution(*res))
+            .collect();
+        answers.sort_by_key(|(range, _)| range_pair(*range));
+        for (range, res) in answers {
+            let (start, end) = range_pair(range);
             if file_uses
                 .uses
                 .iter()
+                .filter(|u| shape.grades(u))
                 .any(|u| fcs_use_confirms_resolution(loaded, *file_idx, u, start, end, res))
             {
                 continue;
@@ -2784,7 +3377,7 @@ fn add_reverse_divergences(
                     comparison.unoracled_definitions += 1;
                     continue;
                 }
-                if rf.is_or_pattern_alias(*range) {
+                if rf.is_or_pattern_alias(range) {
                     comparison.unoracled_or_pattern_aliases += 1;
                     continue;
                 }
@@ -3897,6 +4490,66 @@ mod tests {
             std::fs::create_dir_all(parent).expect("create parent dir");
         }
         std::fs::write(path, text).expect("write fixture file");
+    }
+
+    fn range(start: u32, end: u32) -> TextRange {
+        TextRange::new(start.into(), end.into())
+    }
+
+    /// A concrete answer to stand in for one of inference's. Which *kind* it is
+    /// does not matter to the filter under test — it admits or drops an entry on
+    /// concreteness and containment alone — so this takes the one the fixture env
+    /// can hand out.
+    fn concrete_answer(env: &AssemblyEnv) -> Resolution {
+        Resolution::Entity(fixture_handle(env, "Holder", 0, false))
+    }
+
+    /// A deferred member entry is not a commit.
+    ///
+    /// Inference's table is sealed wholesale to `Deferred(IncompleteAssemblies)`
+    /// when the env's identity set is incomplete. Counting one would report a
+    /// site as *compared* in the same breath as the comparison recorded it as a
+    /// deferral — a coverage number claiming an answer that was never put to the
+    /// oracle.
+    #[test]
+    fn a_deferred_member_entry_is_not_served() {
+        let env = marker_fixture_env();
+        let answer = concrete_answer(&env);
+        let served = MemberCommits::served(
+            [
+                (range(10, 16), answer),
+                (
+                    range(20, 26),
+                    Resolution::Deferred(borzoi_sema::DeferredReason::IncompleteAssemblies),
+                ),
+            ],
+            &[],
+        );
+
+        assert_eq!(served.answer_for(range(10, 16)), Some(answer));
+        assert_eq!(served.answer_for(range(20, 26)), None);
+    }
+
+    /// A member entry a concrete resolver answer *contains* is not served, so it
+    /// is not graded either.
+    ///
+    /// At `System.Object.ReferenceEquals` the resolver answers across the whole
+    /// path and inference also records the member token inside it. The LSP takes
+    /// the smallest containing resolver answer first, so the inner entry is
+    /// never reached; grading it too would compare one served answer twice and,
+    /// where the oracle says nothing, report it as two reverse divergences.
+    #[test]
+    fn a_member_entry_a_resolver_answer_covers_is_not_served() {
+        let env = marker_fixture_env();
+        let answer = concrete_answer(&env);
+        let covered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 58)]);
+        assert_eq!(covered.answer_for(range(43, 58)), None);
+        assert_eq!(covered.iter().count(), 0);
+
+        // Merely overlapping is not covering: a resolver answer that stops short
+        // of the member name leaves it served.
+        let uncovered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 42)]);
+        assert_eq!(uncovered.answer_for(range(43, 58)), Some(answer));
     }
 
     #[test]
@@ -5040,6 +5693,10 @@ mod tests {
             assembly_matches: 1,
             deferrals: 1,
             assembly_deferrals: 1,
+            project_decline_census: DeclineCensus::default(),
+            assembly_decline_census: DeclineCensus::default(),
+            attribute_commits_compared: 1,
+            member_commits_compared: 2,
             skipped_uses: SkippedUses {
                 definitions: 2,
                 zero_width: 1,
@@ -5047,6 +5704,8 @@ mod tests {
                 non_project_declarations: 3,
                 out_of_project_declarations: 0,
                 no_oracle_declaration: 4,
+                ambiguous_oracle_range: 2,
+                shadowed_constructor_use: 3,
             },
             unoracled_definitions: 0,
             unoracled_or_pattern_aliases: 0,
@@ -5107,7 +5766,7 @@ mod tests {
         assert_eq!(summary.total_matches(), 4);
         assert_eq!(summary.total_deferrals(), 2);
         assert_eq!(summary.total_divergences(), 3);
-        assert_eq!(summary.skipped_uses.total(), 15);
+        assert_eq!(summary.skipped_uses.total(), 20);
         assert_eq!(summary.coverage_percent_string(), "66.67");
         assert_eq!(summary.skipped_projects_percent_string(), "66.67");
 
@@ -5118,6 +5777,9 @@ mod tests {
             )
         );
         assert!(report.contains("project-corpus-diff skipped project rate: 66.67%"));
+        assert!(
+            report.contains("commits compared off the resolver's main map: 1 attribute | 2 member")
+        );
         assert!(report.contains("1 project | 1 assembly | 1 reverse | 3 total"));
         assert!(report.contains("project-corpus-diff discovery errors by operation:"));
         assert!(report.contains("1: read_dir"));
@@ -5149,6 +5811,8 @@ mod tests {
         );
         assert_eq!(report["uses"]["fcs_reported"], 8);
         assert_eq!(report["uses"]["total_considered"], 6);
+        assert_eq!(report["uses"]["attribute_commits_compared"], 1);
+        assert_eq!(report["uses"]["member_commits_compared"], 2);
         assert_eq!(report["matches"]["total"], 4);
         assert!(report["matches"].get("reverse").is_none());
         assert_eq!(report["deferrals"]["total"], 2);
@@ -5803,6 +6467,59 @@ mod tests {
 
         // A list and a walk are never the same series, whatever the knobs.
         assert_ne!(render(&listed), walked);
+    }
+
+    /// A cause that did not occur must still be a key. The null walker below
+    /// cannot catch this: a sparse map has no `null` in it, it simply has
+    /// fewer entries, so it reads to the dashboard as a measurement with fewer
+    /// metrics rather than as a metric that vanished. The only defence is a
+    /// census that iterates the variants, and the only check is to observe one
+    /// cause and demand every other still be reported as zero.
+    #[test]
+    fn a_cause_that_did_not_occur_is_still_a_key() {
+        let mut census = DeclineCensus::default();
+        census.observe(Some(DeclineSite {
+            cause: DeclineCause::OpaqueOpen,
+            tier: DeclineTier::PreWalk,
+        }));
+        census.observe(None);
+
+        let causes = census.causes();
+        assert_eq!(causes.len(), DeclineCause::ALL.len());
+        assert_eq!(causes[DeclineCause::OpaqueOpen.label()], 1);
+        assert_eq!(causes[DeclineCause::ContestedRooting.label()], 0);
+
+        let tiers = census.tiers();
+        assert_eq!(tiers.len(), DeclineTier::ALL.len());
+        assert_eq!(tiers[DeclineTier::PreWalk.label()], 1);
+        assert_eq!(tiers[DeclineTier::Root.label()], 0);
+
+        // Serialising is part of the contract, not an afterthought: this type
+        // is a field of the `Serialize`-derived summary, and a tuple-keyed map
+        // would fail at run time the moment any pair was recorded — after the
+        // measurement, which is the worst place to find out.
+        serde_json::to_value(&census).expect("a populated census serialises");
+
+        // The pairs are dense on both axes, so an exchange between two causes
+        // is visible where the marginals would read identically.
+        let pairs = census.pairs();
+        assert_eq!(pairs.len(), DeclineCause::ALL.len());
+        for tiers in pairs.values() {
+            assert_eq!(tiers.len(), DeclineTier::ALL.len());
+        }
+        assert_eq!(
+            pairs[DeclineCause::OpaqueOpen.label()][DeclineTier::PreWalk.label()],
+            1
+        );
+        assert_eq!(
+            pairs[DeclineCause::OpaqueOpen.label()][DeclineTier::Root.label()],
+            0
+        );
+
+        // The unattributed decline is carried, not silently dropped into the
+        // attributed maps — it is the number that says how much of the census
+        // is working.
+        assert_eq!((census.attributed, census.unattributed), (1, 1));
     }
 
     /// Every leaf of `statistics` must be a number, on every run, whatever the

@@ -229,6 +229,79 @@ precisely why a rise in them is otherwise invisible. Watch
 a deferral count only means something against the population it was drawn from,
 and all three travel together in every observation.
 
+`decline_census` says what those deferrals were *to*, on the same
+project/assembly axis the totals already have — a merged census could not
+explain either bucket, and a swap between them would move nothing it reports.
+Within each: `by_cause` names the guard that declined, `by_tier` the position in
+the referenced-assembly precedence ladder it spoke from, and `by_pair` the two
+together. The pairs are not
+redundant: if a ladder change moves equal numbers of two causes between two
+tiers, every decline in the corpus changed and both marginals read identically,
+so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
+timid; the census says which model owns the move, which is the question every
+change to that ladder asks and which no aggregate can answer. Both maps carry
+every variant including the zeros — a cause that stops occurring must read as
+`0`, not vanish, or the metric silently leaves the series.
+
+`decline_census.unattributed` is the census's own honesty check, and it is a
+count rather than a residual. A decline site is a claim and its absence is not:
+many deferrals have no causing guard at all — a dotted path's tail segments
+defer because member resolution is a later phase — so the census attributes
+what the ladder and its pre-walk gates do and reports the rest as unattributed.
+Read `unattributed` against `attributed`; a *rise* in the ratio means a new
+decline path appeared that no guard accounts for, which is worth looking at even
+though nothing failed.
+
+`uses.attribute_commits_compared` is a **coverage** number, not a quality one:
+how many of the compared uses were answered out of name resolution's attribute
+commit map rather than its main one. It is published because the failure it
+guards against is silent in every other number here. Attribute types are
+recorded separately (they answer FCS's suffix-first candidate walk) and are
+served to users like any other name, so a comparison that reads only the main
+map sees an attribute answer as *silence* — and silence is what this runner
+banks as a deferral, which claims nothing. Every headline would hold: the
+divergence gate stays at zero, and the deferral count merely rises, which is
+exactly the shape of ordinary timidity. So a fall in this number towards zero on
+a corpus that still contains attributes means a committed surface stopped being
+diffed, and nothing else would say so.
+
+`uses.member_commits_compared` is the same kind of number for the third surface
+the LSP answers from: the member table **inference** fills in
+(`InferredFile::member_resolutions`), which `handlers/definition.rs` layers over
+the resolver's `Deferred(QualifiedAccess)` at a member name. An entry there is a
+go-to-definition target, and read through the resolver alone the site still
+looks deferred, so a wrong member answer could stand forever without moving a
+number. It reads **0** on the pinned corpus today: every member answer inference
+commits there is one the resolver already committed itself, so nothing is
+answered by inference alone. That is the honest state of the surface, not a
+fault — the guard is in place for when inference starts answering where the
+resolver cannot, and the fixtures in `project_resolution.rs` are what exercise
+the grading meanwhile. The two sides key one answer at different spans (FCS
+reports the whole access, inference the member name), so the comparison aligns
+on the span's **end**; keying on whole ranges compares nothing while reporting a
+clean run.
+
+Two skip buckets travel with the attribute number, because asking the oracle
+about a range for the first time exposed that it can answer more than once.
+`skipped_uses.shadowed_constructor_use` counts the sites where FCS reported both
+the name the author wrote and the **constructor** that name invokes — `[<Alias>]`,
+`inherit Base(1)`, `Foo()`. Sema resolves the written name and models no separate
+resolution for the constructor, so the name's record grades the site and the
+constructor's steps aside. This is a coverage-preserving reading, not a decline:
+the site is still compared, just against the record that answers the question
+sema was asked. Grading against the constructor instead would pass only when its
+declaration range happened to coincide with its type's, and in the reverse
+direction would *ratify* a resolution to the constructed type at a site whose
+written name is something else.
+
+`skipped_uses.ambiguous_oracle_range` is what survives that: a range where two
+records still disagree about the declaration after the constructor has stepped
+aside, so the oracle genuinely does not say what the site resolves to. It is
+decided on the oracle's answers alone, never on whether ours agrees, so it cannot
+become the bucket a real disagreement escapes into. Watch it against
+`attribute_commits_compared`: a rise here alongside a fall there is coverage
+draining into "unadjudicable", which is the honest bucket but not a free one.
+
 ## Local validation
 
 ```sh

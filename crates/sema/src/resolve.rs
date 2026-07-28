@@ -71,8 +71,9 @@ mod state;
 mod types;
 
 pub use model::{
-    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace,
-    ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
+    ItemId, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
+    ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{
@@ -1882,6 +1883,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
     }
@@ -1997,17 +1999,88 @@ impl<'a> Resolver<'a> {
         if !self.assemblies.identities_incomplete() {
             return;
         }
-        for res in self
+        // The census follows the seal. A sealed occurrence is a decline the
+        // resolver *made* — it had an answer and withdrew it — so leaving it
+        // unattributed would report the one mode where nothing assembly-rooted
+        // may be trusted as the mode where nothing declined. The seal is
+        // wholesale, so the cause is too.
+        let sealed = model::DeclineSite::pre_walk(model::DeclineCause::IncompleteAssemblies);
+        for (range, res) in self
             .resolutions
-            .values_mut()
-            .chain(self.attribute_resolutions.values_mut())
+            .iter_mut()
+            .chain(self.attribute_resolutions.iter_mut())
         {
+            let before = *res;
             *res = res.sealed_under_incomplete_projection();
+            if *res != before {
+                self.decline_sites.entry(*range).or_insert(sealed);
+            }
+        }
+    }
+
+    /// The census invariant the type path *can* guarantee, checked rather than
+    /// argued: every [`DeferredReason::ShadowableType`] carries a
+    /// [`model::DeclineSite`].
+    ///
+    /// That reason is produced by exactly one recording shell
+    /// (`resolve_type_path`) over exactly one total decision enum
+    /// (`TypePathResolution`, whose `Deferred` cannot be constructed without a
+    /// cause), so the coverage is structural and the assertion only has to
+    /// notice if that structure is ever broken — a second producer, or a shell
+    /// that forgets to record.
+    ///
+    /// Deliberately **not** extended to `QualifiedAccess` / `UnboundName`. Most
+    /// of those are dotted-path *tail* segments deferred because member
+    /// resolution is a later phase, not because any guard declined them, and
+    /// asserting a cause there would force one to be invented. Their
+    /// unattributed share is a number to watch on real corpora
+    /// (`borzoi-corpus-diff`), not an invariant.
+    ///
+    /// Debug-only: it walks the whole map, and a release LSP should not pay for
+    /// a diagnostic cross-check. Every test in the workspace runs it.
+    fn debug_assert_shadowable_types_are_attributed(&self) {
+        if cfg!(debug_assertions) {
+            for (range, res) in &self.resolutions {
+                debug_assert!(
+                    *res != Resolution::Deferred(DeferredReason::ShadowableType)
+                        || self.decline_sites.contains_key(range),
+                    "type-position deferral at {range:?} names no guard;                      a second producer of ShadowableType has appeared, or the                      recording shell stopped recording"
+                );
+            }
+        }
+    }
+
+    /// The two commit maps answer at disjoint ranges, checked rather than
+    /// asserted in prose.
+    ///
+    /// Both consumers of the union rely on it: the LSP chains the maps to
+    /// navigate an attribute name, and `borzoi-corpus-diff` reads
+    /// [`ResolvedFile::committed_resolution_at`] to diff every answer this file
+    /// commits. A collision would make either one's verdict depend on which map
+    /// it happened to look in first — a wrong answer, arrived at silently.
+    ///
+    /// It holds because an attribute name's range is written where no other name
+    /// is: `resolve_attribute_type` keys on the attribute path's own
+    /// `rangeOfLid`, which no expression or type occurrence shares.
+    ///
+    /// Debug-only, like the census cross-check beside it; every test in the
+    /// workspace runs it.
+    fn debug_assert_commit_maps_are_disjoint(&self) {
+        if cfg!(debug_assertions) {
+            for range in self.attribute_resolutions.keys() {
+                debug_assert!(
+                    !self.resolutions.contains_key(range),
+                    "attribute and main resolutions both answer at {range:?}; \
+                     the union a consumer reads is no longer unambiguous"
+                );
+            }
         }
     }
 
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
+        self.debug_assert_shadowable_types_are_attributed();
+        self.debug_assert_commit_maps_are_disjoint();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
@@ -2037,6 +2110,7 @@ impl<'a> Resolver<'a> {
             resolution_trace: model::ResolutionTrace {
                 opens: self.trace_opens,
             },
+            decline_sites: self.decline_sites,
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),
@@ -2047,6 +2121,45 @@ impl<'a> Resolver<'a> {
         let id = DefId::new(self.defs.len());
         self.defs.push(def);
         id
+    }
+
+    /// Record **why** the occurrence at `range` declined, for the census
+    /// ([`ResolvedFile::decline_site`](model::ResolvedFile::decline_site)).
+    ///
+    /// First writer wins. A decline is often reached through several guards in
+    /// sequence — the tiered walk declines, then a downstream fallback declines
+    /// the same head again — and the *earliest* one is the specific answer
+    /// while the later ones are the general shape of "and so we deferred".
+    /// Last-write-wins would replace every precise cause with the broadest one.
+    fn record_decline(&mut self, range: TextRange, site: model::DeclineSite) {
+        self.decline_sites.entry(range).or_insert(site);
+    }
+
+    /// Record one decline against the one range that names **the path**: its
+    /// whole span, first segment through last.
+    ///
+    /// A consumer asks by range, and FCS names a dotted path by its full
+    /// `rangeOfLid` — so that is the range that must answer. For a single
+    /// segment it is the token itself, which is also what the resolution map is
+    /// keyed by.
+    ///
+    /// Deliberately **no individual segment**, not even the head. Every segment
+    /// of a dotted path defers on its own account whatever the guard did: sema
+    /// models neither module-as-def nor member access, and it defers a source
+    /// namespace qualifier even when the whole assembly lookup succeeds. Those
+    /// deferrals exist without the guard, so attributing them to it would price
+    /// the guard by the path's *length* and make a fully-qualified BCL path
+    /// look like several declines. The rule the census documents holds in both
+    /// directions this way: a decline the ladder caused is attributed, and one
+    /// waiting on a later phase is not.
+    fn record_path_decline(&mut self, segs: &[SyntaxToken], site: model::DeclineSite) {
+        let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
+            return;
+        };
+        self.record_decline(
+            TextRange::new(first.text_range().start(), last.text_range().end()),
+            site,
+        );
     }
 
     fn record(&mut self, range: TextRange, res: Resolution) {

@@ -50,6 +50,15 @@
 //! declined. Without it the only measurement of a veto's cost is a printed
 //! integer.
 //!
+//! That channel is the resolver's own
+//! [`DeclineSite`] — which guard spoke and the ladder tier it spoke from — not
+//! a label the table asserts by hand. It rides in the ratchet key, so a change
+//! that keeps a case deferring while moving *which* guard declined it fails
+//! here. That is exactly the shape of a reorder of the ladder, and it is the
+//! measurement the three attempts at one lacked: each was priced by disabling
+//! one guard at a time and re-running a whole-project differential, because the
+//! aggregate could not say which model owned which share of the loss.
+//!
 //! [`Risk`](crate::common::tier_corpus::Risk) is the dimension that makes that
 //! measurable at all. The walk's vetoes are keyed by the namespace prefix a
 //! risk lives in but ranked by where that prefix sits in the walk, and until a
@@ -76,7 +85,7 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, DeclineSite, ProjectItems, Resolution, resolve_file};
 use rowan::TextRange;
 
 /// Which assembly the probe references first. FCS imports references in this
@@ -433,9 +442,28 @@ mod decline {
 /// single-segment name, silence is the resolver's "no shadow is possible"
 /// claim, so it names a verdict just as a tier does.
 const DENIED: &str = "denied";
-/// The sentinel `ours` of a **decline**: we recorded a deferral, which is sound
-/// but is also the entire cost of every veto.
-const DEFERRED: &str = "deferred";
+/// The `ours` of a **decline**: we recorded a deferral, which is sound but is
+/// also the entire cost of every veto — spelled with the guard that declined
+/// and the ladder tier it spoke from, so the ratchet is two-sided on the reason
+/// and not merely on the fact.
+///
+/// A reorder of the ladder is precisely a change that keeps cases deferring
+/// while moving *which* guard does it. Keying on the bare word `deferred` would
+/// let every such move through; keying on the cause makes each one a row that
+/// has to be re-justified.
+fn deferred_verdict(site: Option<DeclineSite>) -> String {
+    match site {
+        Some(s) => format!("deferred:{}@{}", s.cause.label(), s.tier.label()),
+        // The census did not attribute this one. In this corpus that is
+        // always the same thing — the walk found nothing at the written arity,
+        // and on a *dotted* path recording nothing is not a claim (a bare one
+        // would be [`Ours::Denied`]) — and the `J` family is the only family
+        // that reaches it. `our_target` asserts the stronger half rather than
+        // leaving it to the reader: a *recorded* deferral always names a
+        // guard, so this can never be a threading gap in disguise.
+        None => "deferred:no-claim".to_string(),
+    }
+}
 /// The sentinel `fcs` of a divergence where FCS resolved the span to nothing.
 const NOTHING: &str = "nothing";
 
@@ -452,7 +480,13 @@ const NOTHING: &str = "nothing";
 ///
 /// A decline where FCS *also* binds nothing is not here: nothing is lost, so
 /// there is nothing to commit to.
-const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
+///
+/// Columns: the case key, the **verdict** ([`deferred_verdict`] — the guard
+/// that declined and the ladder tier it spoke from, read off the resolver
+/// rather than asserted by hand), the tier FCS binds, and the channel's
+/// standing reason. The verdict is what makes the row two-sided on the
+/// *reason*: `deferred` alone would let every guard-moving change through.
+const KNOWN_DEFERRALS: &[(&str, &str, &str, &str)] = &[
     // The blocker's own signature: the hidden entity sits at the
     // implicit-open tier, below the plant FCS binds, and the unranked veto
     // ends the walk from there. Every one is a bare/dotted pair of the same
@@ -460,242 +494,294 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     // one. 6 cases.
     (
         "SEnYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
         "SEnYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
         "SRoYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
         "VEnMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
         "VEnMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
         "VRoMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::RISK_BELOW_THE_PLANT,
     ),
     // Risk and plant share the root tier and FCS binds the plant. 2 cases.
     (
         "SRoYRo/contributor-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Root",
         decline::RISK_LOSES_AT_ROOT,
     ),
-    ("SRoYRo/decoy-first", "Root", decline::RISK_LOSES_AT_ROOT),
+    (
+        "SRoYRo/decoy-first",
+        "deferred:assembly_auto_open_shadow@root",
+        "Root",
+        decline::RISK_LOSES_AT_ROOT,
+    ),
     // The name is really declared; what wears it cannot bind the probe's
     // form. Exactly the two off-diagonal cells of the Risk x Form square,
     // in every order and at every risk tier the walk reaches before the
     // plant's own. 40 cases.
     (
         "SEnMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SEnMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SEnMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SEnMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SEnMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SEnMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SExMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Explicit",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SExMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Explicit",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SNsMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SNsMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SNsMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SNsMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMRo/contributor-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "SRoMRo/decoy-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VEnYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VExYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Explicit",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VExYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Explicit",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VNsYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VNsYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VNsYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VNsYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "NsAuto",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYRo/contributor-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
     (
         "VRoYRo/decoy-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Root",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
@@ -706,81 +792,97 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     // (the other two dotted tiers are the `V…Q` rows of `KNOWN_DIVERGENCES`).
     (
         "VEnQ/contributor-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "VEnQ/decoy-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "VRoQ/contributor-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "VRoQ/decoy-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SCoQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SCoQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SEnQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SEnQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SExQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SExQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SMoQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SMoQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SNsQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SNsQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SRoQ/contributor-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
     (
         "SRoQ/decoy-first",
+        "deferred:same_file_auto_open_type@pre_walk",
         "Hidden@Project",
         decline::PROJECT_HIDDEN_WINS,
     ),
@@ -789,21 +891,25 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     // nothing about it either way.
     (
         "VCoQ/contributor-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoQ/decoy-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VMoQ/contributor-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::MANIFEST_SURFACE,
     ),
     (
         "VMoQ/decoy-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
         "Hidden@Project",
         decline::MANIFEST_SURFACE,
     ),
@@ -815,170 +921,246 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     // claim (the non-vacuity floor).
     (
         "SCoR/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("SCoR/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "SCoR/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "SMoR/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoR/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoR/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VCoR/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("VCoR/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "VCoR/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "VMoR/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoR/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoR/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     // Correct declines: FCS really does bind the hidden entity. Recorded so
     // that a change which starts committing here has to say so. 32 cases.
     (
         "SEnYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "SEnYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "SEnYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SEnYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SExYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SExYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SNsYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SNsYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SNsYNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Hidden@NsAuto",
         decline::HIDDEN_WINS,
     ),
-    ("SNsYNs/decoy-first", "Hidden@NsAuto", decline::HIDDEN_WINS),
+    (
+        "SNsYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
+        "Hidden@NsAuto",
+        decline::HIDDEN_WINS,
+    ),
     (
         "SRoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "SRoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "SRoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "SRoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
-    ("SRoYNs/decoy-first", "Hidden@NsAuto", decline::HIDDEN_WINS),
+    (
+        "SRoYNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
+        "Hidden@NsAuto",
+        decline::HIDDEN_WINS,
+    ),
     (
         "VEnMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "VEnMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "VEnMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VEnMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VExMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VExMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VNsMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VNsMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VNsMNs/contributor-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
         "Hidden@NsAuto",
         decline::HIDDEN_WINS,
     ),
-    ("VNsMNs/decoy-first", "Hidden@NsAuto", decline::HIDDEN_WINS),
+    (
+        "VNsMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
+        "Hidden@NsAuto",
+        decline::HIDDEN_WINS,
+    ),
     (
         "VRoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "VRoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::HIDDEN_WINS,
     ),
     (
         "VRoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
     (
         "VRoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::HIDDEN_WINS,
     ),
-    ("VRoMNs/decoy-first", "Hidden@NsAuto", decline::HIDDEN_WINS),
+    (
+        "VRoMNs/decoy-first",
+        "deferred:assembly_auto_open_shadow@implicit_open",
+        "Hidden@NsAuto",
+        decline::HIDDEN_WINS,
+    ),
     (
         "VRoMRo/contributor-first",
+        "deferred:assembly_auto_open_shadow@root",
         "Hidden@Root",
         decline::HIDDEN_WINS,
     ),
-    ("VRoMRo/decoy-first", "Hidden@Root", decline::HIDDEN_WINS),
+    (
+        "VRoMRo/decoy-first",
+        "deferred:assembly_auto_open_shadow@root",
+        "Hidden@Root",
+        decline::HIDDEN_WINS,
+    ),
     // The arity fallback, in both forms — the `W` (bare) and `J` (dotted)
     // families. No tier holds the written arity, so the arity-keyed walk finds
     // nothing, and FCS binds a wrong-arity occupant instead. Both decline, and
@@ -990,806 +1172,1566 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str)] = &[
     // claim would be false.
     (
         "WEn/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("WEn/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "WEn/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "WEnNs/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("WEnNs/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "WEnNs/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "WEnRo/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("WEnRo/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
-    ("WEx/contributor-first", "Explicit", decline::ARITY_FALLBACK),
-    ("WEx/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WEnRo/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WEx/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WEx/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "WExEn/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("WExEn/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WExEn/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "WExNs/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("WExNs/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "WExNs/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "WExRo/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("WExRo/decoy-first", "Explicit", decline::ARITY_FALLBACK),
-    ("WNs/contributor-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("WNs/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("WNsRo/contributor-first", "Root", decline::ARITY_FALLBACK),
-    ("WNsRo/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("WRo/contributor-first", "Root", decline::ARITY_FALLBACK),
-    ("WRo/decoy-first", "Root", decline::ARITY_FALLBACK),
+    (
+        "WExRo/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WNs/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WNs/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WNsRo/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WNsRo/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WRo/contributor-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "WRo/decoy-first",
+        "deferred:wrong_arity_occupant@whole_walk",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JEn/contributor-first",
+        "deferred:no-claim",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("JEn/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "JEn/decoy-first",
+        "deferred:no-claim",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JEnNs/contributor-first",
+        "deferred:no-claim",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("JEnNs/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
+    (
+        "JEnNs/decoy-first",
+        "deferred:no-claim",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JEnRo/contributor-first",
+        "deferred:no-claim",
         "Enclosing",
         decline::ARITY_FALLBACK,
     ),
-    ("JEnRo/decoy-first", "Enclosing", decline::ARITY_FALLBACK),
-    ("JEx/contributor-first", "Explicit", decline::ARITY_FALLBACK),
-    ("JEx/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "JEnRo/decoy-first",
+        "deferred:no-claim",
+        "Enclosing",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JEx/contributor-first",
+        "deferred:no-claim",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JEx/decoy-first",
+        "deferred:no-claim",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JExEn/contributor-first",
+        "deferred:no-claim",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("JExEn/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "JExEn/decoy-first",
+        "deferred:no-claim",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JExNs/contributor-first",
+        "deferred:no-claim",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("JExNs/decoy-first", "Explicit", decline::ARITY_FALLBACK),
+    (
+        "JExNs/decoy-first",
+        "deferred:no-claim",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
     (
         "JExRo/contributor-first",
+        "deferred:no-claim",
         "Explicit",
         decline::ARITY_FALLBACK,
     ),
-    ("JExRo/decoy-first", "Explicit", decline::ARITY_FALLBACK),
-    ("JNs/contributor-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("JNs/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("JNsRo/contributor-first", "Root", decline::ARITY_FALLBACK),
-    ("JNsRo/decoy-first", "NsAuto", decline::ARITY_FALLBACK),
-    ("JRo/contributor-first", "Root", decline::ARITY_FALLBACK),
-    ("JRo/decoy-first", "Root", decline::ARITY_FALLBACK),
+    (
+        "JExRo/decoy-first",
+        "deferred:no-claim",
+        "Explicit",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JNs/contributor-first",
+        "deferred:no-claim",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JNs/decoy-first",
+        "deferred:no-claim",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JNsRo/contributor-first",
+        "deferred:no-claim",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JNsRo/decoy-first",
+        "deferred:no-claim",
+        "NsAuto",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JRo/contributor-first",
+        "deferred:no-claim",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
+    (
+        "JRo/decoy-first",
+        "deferred:no-claim",
+        "Root",
+        decline::ARITY_FALLBACK,
+    ),
     // A module-shaped manifest auto-open is among the contenders. 100 cases.
     (
         "DMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("DMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("DMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("DMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "DMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "DMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "DMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "DNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("DNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "DNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "FEnMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("FEnMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "FEnMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "FExMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("FExMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "FExMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "FNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("FNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "FNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "GMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("GMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("GMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("GMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "GMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "GMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "GMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "GNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("GNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "GNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "HMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("HMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("HMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("HMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "HMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "HMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "HMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "HNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("HNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "HNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "JEnMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Enclosing",
         decline::MANIFEST_SURFACE,
     ),
-    ("JEnMo/decoy-first", "Enclosing", decline::MANIFEST_SURFACE),
+    (
+        "JEnMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Enclosing",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "JExMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Explicit",
         decline::MANIFEST_SURFACE,
     ),
-    ("JExMo/decoy-first", "Explicit", decline::MANIFEST_SURFACE),
+    (
+        "JExMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Explicit",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "JMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("JMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("JMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("JMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "JMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "JMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "JMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "JNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("JNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "JNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "KEnMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("KEnMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "KEnMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "KExMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("KExMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("KMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("KMoRo/decoy-first", "Root", decline::MANIFEST_SURFACE),
+    (
+        "KExMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "KMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "KMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "KNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("KNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "KNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "LMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("LMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "LMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "LNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "NsAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("LNsMo/decoy-first", "NsAuto", decline::MANIFEST_SURFACE),
+    (
+        "LNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "NsAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "RMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("RMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "RMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoMEn/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoMEx/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoMNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoMNs/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoMNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoMRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoMRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoMRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoP/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoP/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoP/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::MANIFEST_SURFACE,
     ),
     (
         "SMoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::MANIFEST_SURFACE,
     ),
     (
         "SMoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::MANIFEST_SURFACE,
     ),
     (
         "SMoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::MANIFEST_SURFACE,
     ),
     (
         "SMoYNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoYNs/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoYNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "SMoYRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Hidden@Root",
         decline::MANIFEST_SURFACE,
     ),
-    ("SMoYRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "SMoYRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "TMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("TMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("TMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("TMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "TMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "TMoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "TMoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "TNsMo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("TNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "TNsMo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::MANIFEST_SURFACE,
     ),
     (
         "VMoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::MANIFEST_SURFACE,
     ),
     (
         "VMoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::MANIFEST_SURFACE,
     ),
     (
         "VMoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::MANIFEST_SURFACE,
     ),
     (
         "VMoMNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoMNs/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoMNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoMRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Hidden@Root",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoMRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoMRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoP/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoP/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoP/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoYEn/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoYEx/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoYNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoYNs/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoYNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "VMoYRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("VMoYRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "VMoYRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "WEnMo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Enclosing",
         decline::MANIFEST_SURFACE,
     ),
-    ("WEnMo/decoy-first", "Enclosing", decline::MANIFEST_SURFACE),
+    (
+        "WEnMo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Enclosing",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "WExMo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Explicit",
         decline::MANIFEST_SURFACE,
     ),
-    ("WExMo/decoy-first", "Explicit", decline::MANIFEST_SURFACE),
+    (
+        "WExMo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Explicit",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "WMo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("WMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
-    ("WMoRo/contributor-first", "Root", decline::MANIFEST_SURFACE),
-    ("WMoRo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "WMo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "WMoRo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Root",
+        decline::MANIFEST_SURFACE,
+    ),
+    (
+        "WMoRo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     (
         "WNsMo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "ModAuto",
         decline::MANIFEST_SURFACE,
     ),
-    ("WNsMo/decoy-first", "ModAuto", decline::MANIFEST_SURFACE),
+    (
+        "WNsMo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "ModAuto",
+        decline::MANIFEST_SURFACE,
+    ),
     // A contested manifest auto-open is among the contenders. 120 cases.
     (
         "DCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("DCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "DCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "DCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("DCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "DCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "DMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("DMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "DMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "DNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("DNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "DNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "FEnCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("FEnCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "FEnCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "FExCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("FExCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "FExCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "FMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("FMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "FMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "FNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("FNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "FNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "GCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("GCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "GCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "GCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("GCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "GCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "GMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("GMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "GMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "GNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("GNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "GNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "HCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("HCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "HCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "HCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("HCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "HCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "HMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("HMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "HMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "HNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("HNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "HNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("JCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "JCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("JCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "JCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JEnCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Enclosing",
         decline::CONTESTED_DROPPED,
     ),
-    ("JEnCo/decoy-first", "Enclosing", decline::CONTESTED_DROPPED),
+    (
+        "JEnCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Enclosing",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JExCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Explicit",
         decline::CONTESTED_DROPPED,
     ),
-    ("JExCo/decoy-first", "Explicit", decline::CONTESTED_DROPPED),
+    (
+        "JExCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Explicit",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("JMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "JMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "JNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("JNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "JNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "KCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("KCoRo/decoy-first", "Root", decline::CONTESTED_DROPPED),
+    (
+        "KCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Root",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "KEnCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("KEnCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "KEnCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "KExCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("KExCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "KExCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "KMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("KMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "KMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "KNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("KNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "KNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "LCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("LCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "LCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "LMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::CONTESTED_DROPPED,
     ),
-    ("LMoCo/decoy-first", "ModAuto", decline::CONTESTED_DROPPED),
+    (
+        "LMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "LNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "NsAuto",
         decline::CONTESTED_DROPPED,
     ),
-    ("LNsCo/decoy-first", "NsAuto", decline::CONTESTED_DROPPED),
+    (
+        "LNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "NsAuto",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "RCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("RCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "RCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "RMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "ModAuto",
         decline::CONTESTED_DROPPED,
     ),
-    ("RMoCo/decoy-first", "ModAuto", decline::CONTESTED_DROPPED),
+    (
+        "RMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "ModAuto",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "SCoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoMRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoP/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("SCoP/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "SCoP/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "SCoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Hidden@Root",
         decline::CONTESTED_DROPPED,
     ),
     (
         "SCoYRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "TCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("TCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "TCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "TCoRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("TCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "TCoRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "TMoCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("TMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "TMoCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "TNsCo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("TNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "TNsCo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "VCoMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Hidden@Enclosing",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Hidden@Explicit",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Hidden@Root",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoMRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoP/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("VCoP/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "VCoP/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "VCoYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYEx/contributor-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYEx/decoy-first",
+        "deferred:assembly_auto_open_shadow@explicit_open",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYNs/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYNs/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYRo/contributor-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "VCoYRo/decoy-first",
+        "deferred:manifest_surface_contest@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
     (
         "WCo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("WCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "WCo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "WCoRo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Root",
         decline::CONTESTED_DROPPED,
     ),
-    ("WCoRo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "WCoRo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "WEnCo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Enclosing",
         decline::CONTESTED_DROPPED,
     ),
-    ("WEnCo/decoy-first", "Enclosing", decline::CONTESTED_DROPPED),
+    (
+        "WEnCo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Enclosing",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "WExCo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Explicit",
         decline::CONTESTED_DROPPED,
     ),
-    ("WExCo/decoy-first", "Explicit", decline::CONTESTED_DROPPED),
+    (
+        "WExCo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Explicit",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "WMoCo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("WMoCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "WMoCo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
     (
         "WNsCo/contributor-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
         "Contested",
         decline::CONTESTED_DROPPED,
     ),
-    ("WNsCo/decoy-first", "Contested", decline::CONTESTED_DROPPED),
+    (
+        "WNsCo/decoy-first",
+        "deferred:manifest_surface_arity_fallback@whole_walk",
+        "Contested",
+        decline::CONTESTED_DROPPED,
+    ),
 ];
 
 /// Every recorded divergence and decline, keyed by its **whole identity** —
@@ -1816,7 +2758,7 @@ fn known_records() -> BTreeMap<(String, String, String), &'static str> {
         .chain(
             KNOWN_DEFERRALS
                 .iter()
-                .map(|&(case, fcs, why)| ((case.into(), DEFERRED.into(), fcs.into()), why)),
+                .map(|&(case, verdict, fcs, why)| ((case.into(), verdict.into(), fcs.into()), why)),
         )
         .collect()
 }
@@ -1881,7 +2823,15 @@ enum Ours {
     /// needs a table of its own ([`KNOWN_DEFERRALS`]) rather than a counter: a
     /// sound answer is still a lost binding, and nothing else here can tell one
     /// deferral from a thousand.
-    Deferred,
+    ///
+    /// The payload is **which guard** declined and the ladder tier it spoke
+    /// from ([`ResolvedFile::decline_site`]), and it rides in the ratchet key.
+    /// That is what makes the table two-sided on the *reason*: without it, a
+    /// change that keeps a case deferring while moving the guard that did it —
+    /// exactly what reordering the ladder does — passes unremarked. `None`
+    /// where the resolver declined without naming a guard, which is itself
+    /// worth seeing in the table.
+    Deferred(Option<DeclineSite>),
     /// We denied that anything can bind. For a single-segment name, recording
     /// nothing is not an absence of opinion but an opinion — the resolver's
     /// "no shadow is possible" signal — and [`Resolution::Unresolved`] is the
@@ -1908,6 +2858,10 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
     let file = ImplFile::cast(parsed.root).expect("probe is an impl file");
     let rf = resolve_file(&file, &ProjectItems::default(), env);
     let (start, end) = tier_corpus::probe_use_span(src, plant);
+    // The census keys a path decline at the **whole written path**, which for a
+    // dotted probe is not the leaf both oracles report the use at.
+    let (path_start, path_end) = tier_corpus::probe_path_span(src, plant);
+    let site = rf.decline_site(span(path_start, path_end));
     match rf.resolution_at(span(start, end)) {
         // `entity_full_name` is the currency `fcs-dump` was taught to report
         // in: nesting-aware, and named from `source_name` so a generic's
@@ -1915,12 +2869,23 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
         Some(Resolution::Entity(h)) => {
             Ours::Entity((env.entity(h).assembly.name.clone(), env.entity_full_name(h)))
         }
-        Some(Resolution::Deferred(_)) => Ours::Deferred,
+        // A recorded deferral is a guard's doing, so it always names one.
+        // Asserting it here — rather than trusting the threading — is what
+        // keeps `deferred:no-claim` meaning "nothing declined this" instead of
+        // silently absorbing a census gap.
+        Some(Resolution::Deferred(_)) => {
+            assert!(
+                site.is_some(),
+                "tier probe {}: recorded a deferral with no decline site",
+                plant.name
+            );
+            Ours::Deferred(site)
+        }
         // A recorded no-match is a claim only where the resolver makes one.
         Some(Resolution::Unresolved) | None if plant.form == tier_corpus::Form::Bare => {
             Ours::Denied
         }
-        Some(Resolution::Unresolved) | None => Ours::Deferred,
+        Some(Resolution::Unresolved) | None => Ours::Deferred(site),
         // Nothing else is reachable from this corpus, and each would be a
         // distinct bug rather than a deferral: the probe declares no type of
         // the plant's name, is resolved against an empty `ProjectItems`, and
@@ -2007,10 +2972,10 @@ fn tier_ladder_is_sound_against_fcs() {
         match (ours, fcs) {
             // Neither side binds: our silence costs nothing, so there is
             // nothing to commit to.
-            (Ours::Deferred | Ours::Denied, None) => silent += 1,
-            (Ours::Deferred, Some(f)) => {
+            (Ours::Deferred(_) | Ours::Denied, None) => silent += 1,
+            (Ours::Deferred(site), Some(f)) => {
                 cost.insert(
-                    (key.clone(), DEFERRED.into(), describe(plant, f)),
+                    (key.clone(), deferred_verdict(*site), describe(plant, f)),
                     "we decline where FCS binds".to_string(),
                 );
             }
@@ -2163,7 +3128,7 @@ fn report_tier_ladder() {
         };
         let show_ours = match &ours {
             Ours::Entity(t) => describe(plant, t),
-            Ours::Deferred => "(defer)".to_string(),
+            Ours::Deferred(site) => format!("({})", deferred_verdict(*site)),
             Ours::Denied => "(denied)".to_string(),
         };
         println!(

@@ -7,7 +7,7 @@ use rowan::TextRange;
 use crate::assembly_env::{EntityHandle, StaticLookup};
 
 use super::id_text;
-use super::model::{DeferredReason, Resolution};
+use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
 
 /// One candidate that **owns** a path at one rooting position — the unit
@@ -825,11 +825,26 @@ impl<'a> Resolver<'a> {
     /// root — see [`OpenGroup`](super::state::OpenGroup)). The one walk order for
     /// every consumer of [`imports`](Self::imports), so a consumer cannot invert
     /// the precedence.
-    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
+    ///
+    /// Each reading is tagged with the [`DeclineTier`] it belongs to. The
+    /// explicit/implicit split is `implicit_import_count` — the implicit seed is
+    /// pushed first, so every index below it is an implicit open — and it is the
+    /// same boundary [`Self::explicit_open_reading_prefixes`] cuts at. Tagging
+    /// here rather than at the consumers is what keeps the two from drifting.
+    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        let implicit = self.implicit_import_count;
         self.imports
             .iter()
+            .enumerate()
             .rev()
-            .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+            .flat_map(move |(i, open)| {
+                let tier = if i < implicit {
+                    DeclineTier::ImplicitOpen
+                } else {
+                    DeclineTier::ExplicitOpen
+                };
+                open.readings.iter().map(move |r| (tier, r.as_slice()))
+            })
     }
 
     /// The [`Self::open_reading_prefixes`] contributed by **explicit source
@@ -840,11 +855,17 @@ impl<'a> Resolver<'a> {
     /// that surface is opened at file start, so every explicit open is later
     /// and wins — see [`Self::prefixes_outranking_the_manifest_surface`] for
     /// the whole stratum.
-    pub(super) fn explicit_open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
+    pub(super) fn explicit_open_reading_prefixes(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
         self.imports[self.implicit_import_count..]
             .iter()
             .rev()
-            .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+            .flat_map(|open| {
+                open.readings
+                    .iter()
+                    .map(|r| (DeclineTier::ExplicitOpen, r.as_slice()))
+            })
     }
 
     /// Every reading that out-ranks a **module-shaped manifest auto-open's**
@@ -867,9 +888,12 @@ impl<'a> Resolver<'a> {
     /// enclosing-namespace one.
     pub(super) fn prefixes_outranking_the_manifest_surface(
         &self,
-    ) -> impl Iterator<Item = &[String]> {
-        self.explicit_open_reading_prefixes()
-            .chain(Some(self.enclosing_namespace()).filter(|e| !e.is_empty()))
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        self.explicit_open_reading_prefixes().chain(
+            Some(self.enclosing_namespace())
+                .filter(|e| !e.is_empty())
+                .map(|e| (DeclineTier::EnclosingNamespace, e)),
+        )
     }
 
     /// Every prefix a dotted path may be read under, in strict F# precedence
@@ -882,11 +906,17 @@ impl<'a> Resolver<'a> {
     ///
     /// `pub(super)` so the unmodelled-open guard in `lookup.rs` iterates the
     /// same sequence — a tier added here must be visible to that guard too.
-    pub(super) fn assembly_prefixes_by_priority(&self) -> impl Iterator<Item = &[String]> {
+    pub(super) fn assembly_prefixes_by_priority(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
         const ROOT: &[String] = &[];
         self.open_reading_prefixes()
-            .chain(Some(self.enclosing_namespace()).filter(|e| !e.is_empty()))
-            .chain(std::iter::once(ROOT))
+            .chain(
+                Some(self.enclosing_namespace())
+                    .filter(|e| !e.is_empty())
+                    .map(|e| (DeclineTier::EnclosingNamespace, e)),
+            )
+            .chain(std::iter::once((DeclineTier::Root, ROOT)))
     }
 
     /// Walk F#'s referenced-assembly name-lookup precedence — every reading in
@@ -982,7 +1012,7 @@ impl<'a> Resolver<'a> {
     /// tier ordering the verdicts assume does not hold.
     pub(super) fn resolve_assembly_path_over<'p, R>(
         &self,
-        prefixes: impl Iterator<Item = &'p [String]>,
+        prefixes: impl Iterator<Item = (DeclineTier, &'p [String])>,
         records: impl Fn(&[String]) -> AssemblyPath<R>,
         as_written_vetoes_opens: bool,
         shadow_at: impl Fn(&[String]) -> ShadowVeto,
@@ -993,7 +1023,10 @@ impl<'a> Resolver<'a> {
         // expensive one to duplicate.
         let mut root = as_written_vetoes_opens.then(|| records(&[]));
         if matches!(root, Some(AssemblyPath::ProjectShadowed)) {
-            return TieredResolution::ShadowDeferred;
+            return TieredResolution::ShadowDeferred(DeclineSite {
+                cause: DeclineCause::Occupied,
+                tier: DeclineTier::Root,
+            });
         }
 
         // The highest-priority partial reading seen so far; the result only if
@@ -1004,16 +1037,16 @@ impl<'a> Resolver<'a> {
         // set, a held fallback already outranks anything at or below the
         // current tier — shadow risk included — so the verdict is not
         // consulted once a fallback has been seen.
-        let mut fallback: Option<R> = None;
+        let mut fallback: Option<(R, DeclineTier)> = None;
 
-        for prefix in prefixes {
+        for (tier, prefix) in prefixes {
             let veto = if fallback.is_none() {
                 shadow_at(prefix)
             } else {
                 ShadowVeto::None
             };
-            if veto == ShadowVeto::Preemptive {
-                return TieredResolution::ShadowDeferred;
+            if let ShadowVeto::Vetoed(cause) = veto {
+                return TieredResolution::ShadowDeferred(DeclineSite { cause, tier });
             }
             let reading = match root.take() {
                 // Only the ROOT tier has an empty prefix (a reading/namespace
@@ -1025,12 +1058,15 @@ impl<'a> Resolver<'a> {
                     records(prefix)
                 }
             };
+            // Read before the match consumes the reading; `None` for the two
+            // variants that are not declines.
+            let declining = reading.decline_cause();
             match reading {
                 AssemblyPath::Resolved { payload, owns_path } => {
                     if owns_path {
-                        return TieredResolution::Resolved(payload);
+                        return TieredResolution::Resolved { payload, tier };
                     }
-                    fallback.get_or_insert(payload);
+                    fallback.get_or_insert((payload, tier));
                 }
                 // A generic-abbreviation reading defers, like a project shadow —
                 // but only once *reached in priority order*. The preemptive
@@ -1046,13 +1082,14 @@ impl<'a> Resolver<'a> {
                 | AssemblyPath::SelfModuleShadowed
                 | AssemblyPath::AbbreviationOpaque
                 | AssemblyPath::ContestedRooting => {
-                    return TieredResolution::ShadowDeferred;
+                    let cause = declining.expect("a declining reading names its cause");
+                    return TieredResolution::ShadowDeferred(DeclineSite { cause, tier });
                 }
                 AssemblyPath::NoMatch => {}
             }
         }
         match fallback {
-            Some(payload) => TieredResolution::Resolved(payload),
+            Some((payload, tier)) => TieredResolution::Resolved { payload, tier },
             None => TieredResolution::NoMatch,
         }
     }
@@ -1480,7 +1517,7 @@ impl<'a> Resolver<'a> {
             // wrongly go opaque and suppress later opened statics — while a
             // colliding name takes the relative `Demo.Sub`. The latest open with a
             // match wins.
-            for prefix in self.open_reading_prefixes() {
+            for (_, prefix) in self.open_reading_prefixes() {
                 let mut full = prefix.to_vec();
                 full.extend_from_slice(path);
                 if self.path_is_project_type_shadowed(&full) {

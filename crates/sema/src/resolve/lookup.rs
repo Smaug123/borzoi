@@ -11,7 +11,9 @@ use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFold
 use crate::def::{DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
+use super::model::{
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -2602,6 +2604,12 @@ impl<'a> Resolver<'a> {
                             first.text_range(),
                             Resolution::Deferred(DeferredReason::QualifiedAccess),
                         );
+                        // An unorderable contest between the head's two slots,
+                        // reached before the fallback that usually names it.
+                        self.record_path_decline(
+                            segments,
+                            DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
+                        );
                         return;
                     }
                 }
@@ -2869,31 +2877,50 @@ impl<'a> Resolver<'a> {
             // Sub.Calc.Zero()` is `Demo.Sub.Calc.Zero` via the explicit open —
             // neither the root `Sub.Calc.Zero`. (The root prefix walks too and
             // self-compares equal — a no-op.)
+            // The census site for whichever guard declines below, recorded at
+            // the head — the segment a reading contests. Diagnostic only; it
+            // never feeds back into `resolved`.
+            let mut declined_at: Option<DeclineSite> = None;
             let resolved = if value_evicted {
                 // The assembly tiers are type-side too — the evicting type
                 // shadows them the same way (see the M20t/M20u note above).
+                declined_at = Some(DeclineSite::pre_walk(DeclineCause::ValueEvicted));
                 None
             } else if self.unmodelled_open_active {
                 match self.assembly_path_records(&[], segments) {
                     AssemblyPath::Resolved {
                         payload: root_recs, ..
                     } => {
+                        // The *tier* of the first reading that differs, not
+                        // merely that one does: this is a ladder fact, and a
+                        // census that flattened it could not see the
+                        // conflicting reading move between tiers.
                         let higher_reading_differs =
-                            self.assembly_prefixes_by_priority().any(|prefix| {
-                                match self.assembly_path_records(prefix, segments) {
-                                    AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    // A higher abbreviation-defer / self-module /
-                                    // contested-rooting reading is uncertain, so the
-                                    // root binding is unsafe.
-                                    AssemblyPath::ProjectShadowed
-                                    | AssemblyPath::SelfModuleShadowed
-                                    | AssemblyPath::AbbreviationOpaque
-                                    | AssemblyPath::ContestedRooting => true,
-                                    AssemblyPath::NoMatch => false,
-                                }
+                            self.assembly_prefixes_by_priority()
+                                .find_map(|(tier, prefix)| {
+                                    let differs = match self.assembly_path_records(prefix, segments)
+                                    {
+                                        AssemblyPath::Resolved { payload, .. } => {
+                                            payload != root_recs
+                                        }
+                                        // A higher abbreviation-defer / self-module /
+                                        // contested-rooting reading is uncertain, so the
+                                        // root binding is unsafe.
+                                        AssemblyPath::ProjectShadowed
+                                        | AssemblyPath::SelfModuleShadowed
+                                        | AssemblyPath::AbbreviationOpaque
+                                        | AssemblyPath::ContestedRooting => true,
+                                        AssemblyPath::NoMatch => false,
+                                    };
+                                    differs.then_some(tier)
+                                });
+                        if let Some(tier) = higher_reading_differs {
+                            // a higher-precedence reading would win, but is unsafe → defer
+                            declined_at = Some(DeclineSite {
+                                cause: DeclineCause::UnmodelledOpenRoot,
+                                tier,
                             });
-                        if higher_reading_differs {
-                            None // a higher-precedence reading would win, but is unsafe → defer
+                            None
                         } else {
                             Some(root_recs)
                         }
@@ -2902,11 +2929,20 @@ impl<'a> Resolver<'a> {
                     // open in scope could supply the current module's own name
                     // (which FCS does not bind as a self-qualifier), so — unlike the
                     // opens-modelled `else` arm — we cannot safely resolve it.
-                    AssemblyPath::ProjectShadowed
+                    // A no-match records nothing: the path resolves nowhere, so
+                    // the open in scope is not what declined it. The other four
+                    // do, at the root tier — the only reading this branch tried.
+                    declining @ (AssemblyPath::ProjectShadowed
                     | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
-                    | AssemblyPath::ContestedRooting
-                    | AssemblyPath::NoMatch => None,
+                    | AssemblyPath::ContestedRooting) => {
+                        declined_at = declining.decline_cause().map(|cause| DeclineSite {
+                            cause,
+                            tier: DeclineTier::Root,
+                        });
+                        None
+                    }
+                    AssemblyPath::NoMatch => None,
                 }
             } else {
                 // Value/member path: a project-bound head (nested module, local,
@@ -2919,10 +2955,17 @@ impl<'a> Resolver<'a> {
                     true,
                     |_| ShadowVeto::None,
                 ) {
-                    TieredResolution::Resolved(recs) => Some(recs),
-                    TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                    TieredResolution::Resolved { payload, .. } => Some(payload),
+                    TieredResolution::ShadowDeferred(site) => {
+                        declined_at = Some(site);
+                        None
+                    }
+                    TieredResolution::NoMatch => None,
                 }
             };
+            if let Some(site) = declined_at {
+                self.record_path_decline(segments, site);
+            }
             if let Some(recs) = resolved {
                 self.apply(recs);
                 return;
@@ -2958,12 +3001,43 @@ impl<'a> Resolver<'a> {
                 first.text_range(),
                 Resolution::Deferred(DeferredReason::QualifiedAccess),
             );
+            // Name the guard, so the census does not read a guarded decline as
+            // a clean miss. An opaque head is checked first because it is what
+            // kept the assembly walk from running at all; the other three are
+            // reached with the walk already declined, and `record_decline`
+            // keeps whichever cause spoke first.
+            let cause = if self.opaque_value_open || self.opaque_dotted_open || head_staled {
+                DeclineCause::OpaqueValueHead
+            } else if head_is_case {
+                DeclineCause::CaseQualifierHead
+            } else if first.text() == "global" {
+                DeclineCause::GlobalMarkerHead
+            } else {
+                DeclineCause::HeadSlotUnordered
+            };
+            self.record_path_decline(segments, DeclineSite::pre_walk(cause));
         } else {
             // The head is member access on a *value*; a type-as-qualifier was
             // already handled by the assembly-path resolution above. Forbid the
             // opened-type constructor fallback so a declined type-qualifier does
             // not re-resolve the head to a colliding opened assembly type.
             self.resolve_name_use(first, false);
+            // An opaque `open` kept the assembly walk from running at all, and
+            // the head found nothing in scope either: the binding the walk
+            // might have made is lost, so the census names the guard rather
+            // than reading it as a clean miss.
+            if !rest.is_empty()
+                && (self.opaque_value_open || self.opaque_dotted_open || head_staled)
+                && matches!(
+                    self.resolutions.get(&first.text_range()),
+                    Some(Resolution::Deferred(_)) | None
+                )
+            {
+                self.record_path_decline(
+                    segments,
+                    DeclineSite::pre_walk(DeclineCause::OpaqueValueHead),
+                );
+            }
         }
         for seg in rest {
             self.record(
@@ -3213,7 +3287,7 @@ impl<'a> Resolver<'a> {
             }
         };
         screened(written)
-            || self.assembly_prefixes_by_priority().any(|prefix| {
+            || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 let full: Vec<String> = prefix
                     .iter()
                     .cloned()
@@ -3893,6 +3967,8 @@ impl<'a> Resolver<'a> {
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
         if self.opaque_value_open || self.opaque_dotted_open || self.unmodelled_open_active {
+            // A definite decline by a named gate, so the census says so.
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
             return;
         }
         // A `global.`-rooted head (now parseable — see `pat.rs`) is the
@@ -3906,6 +3982,7 @@ impl<'a> Resolver<'a> {
         // threading rooting through these helpers as the module path does in
         // `decls.rs`.
         if segs.first().is_some_and(|t| t.text() == "global") {
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::GlobalMarkerHead));
             return;
         }
         if let [type_seg, case_seg] = segs
@@ -3929,12 +4006,20 @@ impl<'a> Resolver<'a> {
             // case-flavour exemption, since this site commits exactly the
             // type-qualified case the signature exports.
             if self.sig_screens_case_reading_of(&written) {
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SignatureScreened),
+                );
                 return;
             }
             // A same-file type owning this exact case roots the reference in
             // this file, so the cross-file index must not commit an earlier
             // file's same-written-path case (the expression path's twin).
             if self.cross_file_case_shadowed_same_file(&written) {
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SameFileCaseShadow),
+                );
                 return;
             }
             let project = self.cross_file_type_case_tiered(&written, false);
@@ -3957,6 +4042,9 @@ impl<'a> Resolver<'a> {
             // cross-DLL collision, a type whose surface we cannot enumerate) is
             // still something FCS may bind the head to, so it must veto the
             // project reading just the same.
+            // The guard that declined the assembly reading, when one did —
+            // recorded after the match, which needs `&mut self`.
+            let mut pattern_decline: Option<DeclineSite> = None;
             let winner = match project {
                 Some((CaseTier::Alias, id)) => Some(Ok(id)),
                 Some((_, id)) => match segs {
@@ -3964,6 +4052,14 @@ impl<'a> Resolver<'a> {
                         if self
                             .assembly_case_head_contends_at_an_open(id_text(type_seg.text())) =>
                     {
+                        // A ladder guard rejected the project reading: an
+                        // explicit `open` puts an assembly entity of the head's
+                        // name in scope above it. Always that tier, since the
+                        // helper walks the explicit opens alone.
+                        pattern_decline = Some(DeclineSite {
+                            cause: DeclineCause::AssemblyCaseHeadContends,
+                            tier: DeclineTier::ExplicitOpen,
+                        });
                         None
                     }
                     _ => Some(Ok(id)),
@@ -3971,15 +4067,26 @@ impl<'a> Resolver<'a> {
                 // Nothing project-side reads the path: the assembly walk decides,
                 // subject to the project-simple-name guard.
                 None => match segs {
-                    [type_seg, case_seg]
-                        if !self.project_binds_type_simple_name(id_text(type_seg.text())) =>
+                    // A project type of the head's simple name shadows every
+                    // assembly reading, so the walk is skipped — a deliberate
+                    // pre-walk decline, and the census names it as one.
+                    [type_seg, _]
+                        if self.project_binds_type_simple_name(id_text(type_seg.text())) =>
                     {
-                        self.assembly_case_pattern_reading(type_seg, case_seg)
-                            .map(Err)
+                        pattern_decline =
+                            Some(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow));
+                        None
+                    }
+                    [type_seg, case_seg] => {
+                        let (reading, site) =
+                            self.assembly_case_pattern_reading(type_seg, case_seg);
+                        pattern_decline = site;
+                        reading.map(Err)
                     }
                     _ => None,
                 },
             };
+            let nothing_bound = winner.is_none();
             match winner {
                 Some(Ok(id)) => {
                     let (first, last) = (
@@ -4001,6 +4108,12 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 None => {}
+            }
+            // Only when nothing bound: a guard that declined the *assembly*
+            // reading while a project one won is not what decided the pattern,
+            // and recording it would attribute a decline that never happened.
+            if nothing_bound && let Some(site) = pattern_decline {
+                self.record_path_decline(segs, site);
             }
         }
     }
@@ -4042,7 +4155,7 @@ impl<'a> Resolver<'a> {
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
-        self.explicit_open_reading_prefixes().any(|prefix| {
+        self.explicit_open_reading_prefixes().any(|(_, prefix)| {
             !self
                 .assemblies
                 .public_entities_named(prefix, type_name)
@@ -4092,11 +4205,15 @@ impl<'a> Resolver<'a> {
     /// [`Self::project_binds_type_simple_name`] can still stop it committing, and
     /// its caller applies that at commit time so a contender the project cannot
     /// bind still gets to out-rank — and so veto — a lower-tier project reading.
+    /// The second element is the guard that declined, when one did — the
+    /// census's share of this walk. Returned rather than recorded because the
+    /// reading is computed with `&self`; the caller owns the recording, keyed
+    /// at the type head.
     fn assembly_case_pattern_reading(
         &self,
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
-    ) -> Option<Vec<(TextRange, Resolution)>> {
+    ) -> (Option<Vec<(TextRange, Resolution)>>, Option<DeclineSite>) {
         let type_name = id_text(type_seg.text());
         let case_name = id_text(case_seg.text());
         // The head is the whole source path this walk looks up — the `Case` is a
@@ -4109,7 +4226,10 @@ impl<'a> Resolver<'a> {
         // pre-walk, see [`Self::dropped_type_could_root_this_path`]. Ahead of
         // both branches below, since each commits a reading of its own.
         if self.dropped_type_could_root_this_path(&head_path) {
-            return None;
+            return (
+                None,
+                Some(DeclineSite::pre_walk(DeclineCause::DroppedTypeCouldRoot)),
+            );
         }
         let leaf = |prefix: &[String]| {
             self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
@@ -4151,7 +4271,12 @@ impl<'a> Resolver<'a> {
             // the risks left here: the pre-walk gate above has already declined
             // for it, on this branch and the full walk alike.
             if self.assemblies.retained_auto_open_is_uncertain() {
-                return None;
+                return (
+                    None,
+                    Some(DeclineSite::pre_walk(
+                        DeclineCause::ManifestSurfaceUncertain,
+                    )),
+                );
             }
             return match self.resolve_assembly_path_over(
                 self.prefixes_outranking_the_manifest_surface(),
@@ -4159,13 +4284,24 @@ impl<'a> Resolver<'a> {
                 false,
                 shadow_at,
             ) {
-                TieredResolution::Resolved(recs) => Some(recs),
-                TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                TieredResolution::Resolved { payload, .. } => (Some(payload), None),
+                TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+                // A no-match here is the surface's contest: the tiers above it
+                // declined, and the surface itself is unwalkable.
+                TieredResolution::NoMatch => (
+                    None,
+                    Some(DeclineSite {
+                        cause: DeclineCause::ManifestSurfaceContest,
+                        tier: DeclineTier::WholeWalk,
+                    }),
+                ),
             };
         }
         match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
-            TieredResolution::Resolved(reading) => Some(reading),
-            TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+            TieredResolution::Resolved { payload, .. } => (Some(payload), None),
+            TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+            // Nothing resolves or shadows the head: no guard declined it.
+            TieredResolution::NoMatch => (None, None),
         }
     }
 

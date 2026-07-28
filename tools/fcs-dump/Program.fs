@@ -6203,16 +6203,26 @@ let private checkScriptImplFileWithDiags
         failwithf "fcs-dump %s: no implementation file (keepAssemblyContents not honoured?)" label
 
 /// [`checkScriptImplFileWithDiags`] without the diagnostics — the shape the
-/// `types` / `binder-types` oracles want.
+/// `binder-types` oracle wants.
 let private checkScriptImplFile (label: string) (absolute: string) : FSharpImplementationFileContents =
     fst (checkScriptImplFileWithDiags label absolute)
 
 /// Dump every typed expression node FCS produces for a single file, as the
 /// oracle for the `sema` type-inference layer (Phase 3) and the type census.
 let private dumpTypes (absolute: string) =
-    let impl = checkScriptImplFile "types" absolute
+    let impl, diags = checkScriptImplFileWithDiags "types" absolute
     let exprs = collectExprTypes true impl
-    let payload = {| File = absolute; Exprs = exprs |}
+    // The typed tree omits an expression FCS could not check, so a consumer
+    // asserting "every type we produced, FCS confirms" needs to know which lines
+    // errored before it can read a missing node as a disagreement.
+    let errors =
+        diags
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d ->
+            {| Line = d.StartLine
+               Code = d.ErrorNumber
+               Message = d.Message |})
+    let payload = {| File = absolute; Exprs = exprs; Errors = errors |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -6554,7 +6564,8 @@ let private fileBatchCore () =
                 JsonSerializer.Serialize({| Attrs = attrs; Errors = errorLines () |}, compact)
             | "types" ->
                 let exprs = collectExprTypes true (implFile ())
-                JsonSerializer.Serialize({| File = absolute; Exprs = exprs |}, compact)
+                JsonSerializer.Serialize(
+                    {| File = absolute; Exprs = exprs; Errors = errorLines () |}, compact)
             | "binder-types" ->
                 let binders = collectBinderTypes (implFile ())
                 JsonSerializer.Serialize({| File = absolute; Binders = binders |}, compact)

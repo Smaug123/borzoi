@@ -14,7 +14,8 @@ use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::model::{
-    ExportDecl, ExportedItem, ItemId, OpenTrace, ProjectItems, Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId, OpenTrace,
+    ProjectItems, Resolution, SlotClass,
 };
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
@@ -286,6 +287,22 @@ impl<T> AssemblyPath<T> {
                 }
         )
     }
+
+    /// The census cause this reading declines with, or `None` for the two
+    /// variants that are not declines ([`Self::Resolved`] — partial or owning —
+    /// and [`Self::NoMatch`], neither of which stops the walk).
+    ///
+    /// Exhaustive rather than a wildcard, so a reading variant added later
+    /// cannot silently join the census without a cause of its own.
+    pub(super) fn decline_cause(&self) -> Option<DeclineCause> {
+        match self {
+            AssemblyPath::ProjectShadowed => Some(DeclineCause::Occupied),
+            AssemblyPath::SelfModuleShadowed => Some(DeclineCause::SelfModuleShadowed),
+            AssemblyPath::AbbreviationOpaque => Some(DeclineCause::AbbreviationOpaque),
+            AssemblyPath::ContestedRooting => Some(DeclineCause::ContestedRooting),
+            AssemblyPath::Resolved { .. } | AssemblyPath::NoMatch => None,
+        }
+    }
 }
 
 /// The token-free decision for one reading of a **type** path — the payload
@@ -346,7 +363,12 @@ pub(super) enum ShadowVeto {
     /// FCS-probed, an auto-open module's contents outrank the same
     /// namespace's own direct members, and a visible entity is no evidence
     /// that an invisible same-named one is absent.
-    Preemptive,
+    ///
+    /// The payload names *which* of those it was, for the decline census
+    /// ([`ResolvedFile::decline_site`](super::model::ResolvedFile::decline_site)).
+    /// It is diagnostic only: the walk branches on `Vetoed` versus
+    /// [`None`](Self::None) and never on the cause.
+    Vetoed(DeclineCause),
 }
 
 /// One [`Resolver::auto_open_type_shadow_names`] entry — see the field docs.
@@ -372,12 +394,24 @@ pub(super) enum TieredResolution<R> {
     /// that resolves the **whole** path, or (when none does and no project
     /// shadow intervened) the highest-priority *partial* reading (rooting type
     /// resolved, tail deferred).
-    Resolved(R),
+    ///
+    /// `tier` is where in the ladder that reading came from. A caller that
+    /// post-filters a resolved reading into a decline — a module leaf is not a
+    /// type — needs it: the decline happened at a *specific* tier, and
+    /// recording [`DeclineTier::WholeWalk`] there would hide the winner moving
+    /// between tiers, which is the one thing the census exists to see.
+    Resolved { payload: R, tier: DeclineTier },
     /// Some reading at winning priority is project-shadowed: a project entity
     /// owns the name there and may satisfy the whole path invisibly (sema does
     /// not model project types / nested-module members), so no assembly reading
     /// — complete or partial — may be applied. Defer.
-    ShadowDeferred,
+    ///
+    /// The payload names which guard spoke and the tier it spoke from, for the
+    /// decline census
+    /// ([`ResolvedFile::decline_site`](super::model::ResolvedFile::decline_site)).
+    /// Diagnostic only — every caller branches on the variant, never on the
+    /// site.
+    ShadowDeferred(DeclineSite),
     /// No reading matched at all: nothing in the referenced assemblies resolves
     /// *or shadows* this path.
     NoMatch,
@@ -1369,6 +1403,12 @@ pub(super) struct Resolver<'a> {
     /// [`ResolvedFile::resolution_trace`](super::model::ResolvedFile). Purely
     /// diagnostic — nothing the walk consumes reads it.
     pub(super) trace_opens: Vec<OpenTrace>,
+    /// The decline census — which guard declined each declined occurrence, keyed
+    /// by its source range, moved into
+    /// [`ResolvedFile::decline_sites`](super::model::ResolvedFile). Purely
+    /// diagnostic on the same terms as [`Self::trace_opens`]: nothing the walk
+    /// consumes reads it.
+    pub(super) decline_sites: HashMap<TextRange, DeclineSite>,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`](super::model::ProjectItems::extend_with) folds
     /// (`docs/export-decl-model-plan.md` Stage 2). Every cross-file index derives
