@@ -1119,7 +1119,10 @@ pub(super) struct Resolver<'a> {
     /// filters the `private` ones out, since F# does not bring
     /// a `private` module into scope for another file's `open` of its
     /// namespace.
-    pub(super) auto_open_module_paths: Vec<(Vec<String>, bool)>,
+    /// The third element is the declaration's own text range — the *fragment*
+    /// identity a fold needs when one file declares the same module path in
+    /// several blocks and only one carries `[<AutoOpen>]`.
+    pub(super) auto_open_module_paths: Vec<(Vec<String>, bool, rowan::TextRange)>,
     /// EX-2 (`docs/extension-scope-enumeration-plan.md`): the **assembly**
     /// namespace paths an explicit `open <namespace>` brings into scope, unioned
     /// across every `open` in the file. The overload engine's extension-absence

@@ -2666,3 +2666,37 @@ fn the_type_eviction_override_is_scoped_to_the_folded_fragment() {
         "the other fragment's type evicts nothing here; got {res:?}"
     );
 }
+
+/// The **implicit namespace fold** must keep the same fragment identity the
+/// fold-back does: a plain `module M` fragment is not folded by a later
+/// `[<AutoOpen>] module M` at the same path, so a third block in the namespace
+/// binds only the attributed fragment's members (fcs-dump probe `NsFrag`, which
+/// reports no use for `plainOnly` at all).
+#[test]
+fn the_namespace_fold_brings_in_only_the_attributed_same_file_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.NsFrag\n\nmodule M =\n    let plainOnly = 1\n\n\
+               namespace Demo.NsFrag\n\n[<AutoOpen>]\nmodule M =\n    let autoOnly = 2\n\n\
+               namespace Demo.NsFrag\n\nmodule User =\n    let a = autoOnly\n    let b = plainOnly\n";
+    let rf = resolve(src, &env);
+    let at_use = |needle: &str| {
+        let start = src.rfind(needle).expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    assert!(
+        matches!(
+            rf.resolution_at(at_use("autoOnly")),
+            Some(Resolution::Item(_))
+        ),
+        "the attributed fragment folds: got {:?}",
+        rf.resolution_at(at_use("autoOnly"))
+    );
+    let plain = rf.resolution_at(at_use("plainOnly"));
+    assert!(
+        matches!(plain, None | Some(Resolution::Deferred(_))),
+        "the plain fragment at the same path does not fold; got {plain:?}"
+    );
+}

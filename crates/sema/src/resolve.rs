@@ -421,7 +421,11 @@ pub fn resolve_file(
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
             if header_auto_open && !r.anonymous_root {
-                r.record_auto_open_module(path.clone(), header_private);
+                r.record_auto_open_module(
+                    path.clone(),
+                    header_private,
+                    module.syntax().text_range(),
+                );
             }
             // The export-decl-list twin of the two lines above: one top-level
             // header decl carrying its `[<AutoOpen>]`/`private` bits, so
@@ -2027,7 +2031,7 @@ impl<'a> Resolver<'a> {
     /// `N.Auto.Foo`. The earlier-file half arrives already privacy-filtered by
     /// `finish()`.
     fn project_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
-        self.auto_open_module_paths.iter().any(|(p, private)| {
+        self.auto_open_module_paths.iter().any(|(p, private, _)| {
             model::is_directly_in(p, namespace)
                 && (!private || self.container_path.starts_with(namespace))
         }) || self.preceding.has_auto_open_module_in_namespace(namespace)
@@ -2037,8 +2041,13 @@ impl<'a> Resolver<'a> {
     /// [`Self::auto_open_module_paths`], so the same-file view and the
     /// cross-file export (the `finish()` privacy filter) can never disagree
     /// on what was declared.
-    pub(super) fn record_auto_open_module(&mut self, path: Vec<String>, is_private: bool) {
-        self.auto_open_module_paths.push((path, is_private));
+    pub(super) fn record_auto_open_module(
+        &mut self,
+        path: Vec<String>,
+        is_private: bool,
+        range: TextRange,
+    ) {
+        self.auto_open_module_paths.push((path, is_private, range));
     }
 
     /// Demote every **assembly-rooted** resolution this file recorded to

@@ -1671,7 +1671,11 @@ impl<'a> Resolver<'a> {
         // The same real-root guard as the shadow's cross-file half.
         if !self.anonymous_root {
             if nm_auto_open {
-                self.record_auto_open_module(qualified.clone(), nm_private);
+                self.record_auto_open_module(
+                    qualified.clone(),
+                    nm_private,
+                    nm.syntax().text_range(),
+                );
             }
             self.real_nested_module_exports.push(qualified.clone());
         }

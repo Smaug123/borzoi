@@ -945,8 +945,8 @@ impl<'a> Resolver<'a> {
     pub(super) fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
         self.auto_open_module_paths
             .iter()
-            .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
-            .map(|(p, _)| p.clone())
+            .filter(|(p, _, _)| p.len() == container.len() + 1 && p.starts_with(container))
+            .map(|(p, _, _)| p.clone())
             .collect()
     }
 

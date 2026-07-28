@@ -1134,33 +1134,47 @@ impl<'a> Resolver<'a> {
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private)| {
+                .filter(|(p, private, _)| {
                     super::model::is_directly_in(p, container)
                         && (!private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _)| p.clone()),
+                .map(|(p, _, _)| p.clone()),
         );
         out
     }
 
     /// The `[<AutoOpen>]` **fragments** declared *directly* in `container`, as
-    /// `(path, file)` pairs — the same-file half (this file, at
+    /// `(path, file, range)` triples — the same-file half (this file, at
     /// [`ProjectItems::num_files`](super::model::ProjectItems::num_files), privacy-filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`]) plus the already-filtered
     /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`](super::model::ProjectItems::auto_open_fragments_directly_in)). A
     /// module with fragments in several files appears once per fragment — the
     /// per-fragment provenance the file-ordered fold reads (Stage 5).
-    fn auto_open_fragments_directly_in(&self, container: &[String]) -> Vec<(Vec<String>, usize)> {
-        let mut out = self.preceding.auto_open_fragments_directly_in(container);
+    ///
+    /// `range` is `Some` only for a same-file fragment, where it is the
+    /// declaration's own text range: one file can declare the same module path
+    /// in a plain block and an `[<AutoOpen>]` one, and only the attributed one
+    /// folds, so the file index alone is too coarse an identity there. An
+    /// earlier file's fragments are already per-fragment by construction.
+    fn auto_open_fragments_directly_in(
+        &self,
+        container: &[String],
+    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
+        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = self
+            .preceding
+            .auto_open_fragments_directly_in(container)
+            .into_iter()
+            .map(|(p, f)| (p, f, None))
+            .collect();
         let current = self.preceding.num_files();
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private)| {
+                .filter(|(p, private, _)| {
                     super::model::is_directly_in(p, container)
                         && (!private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _)| (p.clone(), current)),
+                .map(|(p, _, range)| (p.clone(), current, Some(*range))),
         );
         out
     }
@@ -1182,27 +1196,31 @@ impl<'a> Resolver<'a> {
     /// fragments at any file. The final sort is stable, so within a file the
     /// recursion's parent-before-child order (a child folds after its parent)
     /// survives.
-    fn auto_open_fragments_reachable(&self, namespace: &[String]) -> Vec<(Vec<String>, usize)> {
+    fn auto_open_fragments_reachable(
+        &self,
+        namespace: &[String],
+    ) -> Vec<(Vec<String>, usize, Option<TextRange>)> {
         fn collect(
             resolver: &Resolver<'_>,
             path: &[String],
             file: usize,
-            out: &mut Vec<(Vec<String>, usize)>,
+            range: Option<TextRange>,
+            out: &mut Vec<(Vec<String>, usize, Option<TextRange>)>,
         ) {
-            out.push((path.to_vec(), file));
+            out.push((path.to_vec(), file, range));
             // Children of *this* block: fragments directly in `path` at the SAME
             // file `file` (a nested module lives in its parent block's file).
-            for (child, cf) in resolver.auto_open_fragments_directly_in(path) {
+            for (child, cf, crange) in resolver.auto_open_fragments_directly_in(path) {
                 if cf == file {
-                    collect(resolver, &child, file, out);
+                    collect(resolver, &child, file, crange, out);
                 }
             }
         }
-        let mut out: Vec<(Vec<String>, usize)> = Vec::new();
-        for (path, file) in self.auto_open_fragments_directly_in(namespace) {
-            collect(self, &path, file, &mut out);
+        let mut out: Vec<(Vec<String>, usize, Option<TextRange>)> = Vec::new();
+        for (path, file, range) in self.auto_open_fragments_directly_in(namespace) {
+            collect(self, &path, file, range, &mut out);
         }
-        out.sort_by_key(|(_, file)| *file);
+        out.sort_by_key(|(_, file, _)| *file);
         out
     }
 
@@ -1264,8 +1282,8 @@ impl<'a> Resolver<'a> {
         fragments.extend(
             self.auto_open_fragments_reachable(path)
                 .into_iter()
-                .filter(|(_, file)| *file == current_file)
-                .map(|(p, _)| p),
+                .filter(|(_, file, _)| *file == current_file)
+                .map(|(p, _, _)| p),
         );
         for frag in fragments {
             // A constructible type in this fragment takes FCS's unqualified
@@ -1586,7 +1604,7 @@ impl<'a> Resolver<'a> {
         let site = self.container_path.clone();
         let mut out: HashMap<String, SubmoduleFold> = HashMap::new();
         let current = self.preceding.num_files();
-        for (sub, file) in self.auto_open_fragments_reachable(path) {
+        for (sub, file, range) in self.auto_open_fragments_reachable(path) {
             // The names this fragment declares in *its* file (ids unused here —
             // only the fold position matters): earlier files from the per-file
             // cross-file queries, the current file from `self.items`.
@@ -1616,9 +1634,17 @@ impl<'a> Resolver<'a> {
                 value_names = Vec::new();
                 case_names = Vec::new();
                 for item in &self.items {
+                    // Same fragment identity the fold itself uses: a plain block's
+                    // members at this path are not part of the `[<AutoOpen>]`
+                    // fragment, so they must not enter its straddle provenance
+                    // either (codex round 6).
                     if let Some(q) = &item.qualified
                         && q.len() == sub.len() + 1
                         && q.starts_with(sub.as_slice())
+                        && range.is_none_or(|r| match item.def {
+                            ExportDef::Own(id) => r.contains_range(self.defs[id.index()].range),
+                            ExportDef::Sig { .. } => false,
+                        })
                         && super::model::accessible_from(item.access_root_len, q, &site)
                     {
                         let name = q.last().expect("non-empty qualified path").clone();
@@ -2412,7 +2438,7 @@ impl<'a> Resolver<'a> {
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None, None);
-        for (frag_path, frag_file) in self.auto_open_fragments_reachable(namespace) {
+        for (frag_path, frag_file, frag_range) in self.auto_open_fragments_reachable(namespace) {
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2439,7 +2465,12 @@ impl<'a> Resolver<'a> {
             if self.module_has_hidden_values(&frag_path) {
                 self.open_generation += 1;
             }
-            count += self.open_module_values(&frag_path, open_pos, Some(frag_file), None);
+            // A same-file fragment carries its own declaration range: one file
+            // can declare the same module path in a plain block and an
+            // `[<AutoOpen>]` one, and only the attributed one folds, so the file
+            // index alone would import the plain fragment's members too (codex
+            // round 6).
+            count += self.open_module_values(&frag_path, open_pos, Some(frag_file), frag_range);
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when
