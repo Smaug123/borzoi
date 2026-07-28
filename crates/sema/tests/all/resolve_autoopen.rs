@@ -2642,3 +2642,27 @@ fn the_fold_back_brings_in_only_the_attributed_fragment() {
         "the plain fragment at the same path does not fold; got {earlier:?}"
     );
 }
+
+/// The fold's **type-eviction** override is fragment-scoped too. A plain
+/// fragment's constructible type at the same module path is not folded by the
+/// `[<AutoOpen>]` fragment, so it evicts nothing in the enclosing scope: FCS
+/// keeps the opened value (fcs-dump probe `FragType`, which binds `Src.Tag`,
+/// not the plain fragment's `M.Tag` type).
+#[test]
+fn the_type_eviction_override_is_scoped_to_the_folded_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.FragTy\n\nmodule M =\n    type Tag() =\n        member _.Marker = 1\n\n\
+               namespace Demo.FragTy\n\nopen Demo.Auto\n\n[<AutoOpen>]\nmodule M =\n    \
+               let unrelated = 1\n\nmodule User =\n    let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, Some(Resolution::Member { .. })),
+        "the other fragment's type evicts nothing here; got {res:?}"
+    );
+}

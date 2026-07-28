@@ -1271,7 +1271,7 @@ impl<'a> Resolver<'a> {
             // A constructible type in this fragment takes FCS's unqualified
             // slot from an EARLIER-folded same-named value; sema models no
             // project type constructor, so the override only declines.
-            let evicting_types = self.direct_project_type_contestants(&frag);
+            let evicting_types = self.fragment_type_contestants(&frag, range);
             if !evicting_types.is_empty() {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = evicting_types
@@ -1339,6 +1339,36 @@ impl<'a> Resolver<'a> {
                 self.module_frame().entries.extend(entries);
             }
         }
+    }
+
+    /// The constructible type names `container` declares **inside this
+    /// fragment** — the fold's type-eviction override.
+    ///
+    /// Not [`Self::direct_project_type_contestants`], which aggregates every
+    /// same-path fragment and every earlier Compile-order file: a plain
+    /// fragment's type at the same module path is not folded by the
+    /// `[<AutoOpen>]` one, so it evicts nothing here and FCS keeps the opened
+    /// value (fcs-dump probe `FragType`, codex round 5).
+    ///
+    /// Accessibility needs no separate filter: `export_type_path` already
+    /// downgrades a `type private` to [`SlotClass::Keeps`], which the slot test
+    /// below excludes — FCS does not import a private type at an `open` from
+    /// outside its declaration group.
+    fn fragment_type_contestants(&self, container: &[String], range: TextRange) -> Vec<String> {
+        self.export_decls
+            .iter()
+            .filter(|decl| range.contains(decl.pos))
+            .filter_map(|decl| match &decl.kind {
+                ExportDeclKind::Type {
+                    info: Some((_, slot)),
+                    ..
+                } if *slot != SlotClass::Keeps => {
+                    let (name, parent) = decl.path.split_last()?;
+                    (parent == container).then(|| name.clone())
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// The names `open_module_values` cannot enumerate for `container`, each
