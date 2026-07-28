@@ -1155,6 +1155,34 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
+    /// Whether this file declares **any** `[<AutoOpen>]` container — a module
+    /// or a type — whose bare-visible surface therefore folds into the rest of
+    /// its enclosing scope.
+    ///
+    /// A flag rather than a name set on purpose. That surface is open-ended:
+    /// values, union and exception cases, `extern` prototypes, active-pattern
+    /// tags, a single-case union spelled exactly like an abbreviation, an
+    /// auto-open type's statics, statics borrowed through an abbreviation —
+    /// each invisible to a different part of the parse, and each discoverable
+    /// only by someone thinking of it. Enumerating them is a list that grows
+    /// under review; this is one closed question whose soundness argument fits
+    /// in a sentence, and it costs commits only in the files that declare such
+    /// a container.
+    ///
+    /// Read by [`Resolver::open_own_enclosing_namespace`], which folds at
+    /// position 0 — before the block's walk — and so can see none of it.
+    pub(super) own_auto_open_container: bool,
+    /// The simple names of this file's type definitions that can **take FCS's
+    /// unqualified value slot** — the [`SlotClass`](super::model::SlotClass)`
+    /// != Keeps` subset of [`Self::own_type_simple_names`], pre-scanned
+    /// file-globally.
+    ///
+    /// A plain union, record or explicit interface provably never enters that
+    /// slot (probes M20k/M20l/M20o), so it shadows nothing and a same-named
+    /// opened value must still resolve — fcs-dump-verified: with `type Tag = A |
+    /// B` in the block, bare `Tag` is still the assembly's `Demo.Auto.Extra.Tag`.
+    /// Screening on every type name instead cost exactly those uses.
+    pub(super) own_value_slot_type_names: HashSet<String>,
     /// `true` when some attribute in the file has no resolvable *name shape*
     /// — a nameless `[<>]` or an ident-less path — so the gate cannot key it
     /// and must keep the presence defer (EX-3 §2(d) stage 5).

@@ -103,6 +103,56 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   gaps (the `$W` filter was measured durable, not bridge code, and kept — with it
   removed FSharp.Core records 153 skipped members, poisoning the overload
   extension-absence gate).
+- **The block's own enclosing namespace** — a file that declares `namespace N`
+  sees the `[<AutoOpen>]` modules a *referenced assembly* declares in `N`, with
+  no `open` written. FCS does this as one implicit open of the **full**
+  enclosing path per top-level block, before any of its declarations
+  (`ImplicitlyOpenOwnNamespace`, `CheckDeclarations.fs`); a `module A.B.M`
+  header encloses in `A.B`. Never a prefix: from inside `namespace A.B`, an
+  auto-open module of `A` is out of scope (fcs-dump-verified, both directions).
+  It is the **same fold** an explicit `open` of that path performs, and
+  `Resolver::open_own_enclosing_namespace` shares the machinery
+  (`Resolver::assembly_fold_group`) rather than reimplementing it — FCS resolves
+  the path with `ResolveLongIdentAsModuleOrNamespace`, which yields *every*
+  modref at the FQN, so which halves a path has, and what each half's residue
+  costs, is a property of the path and not of how it came to be opened. Three
+  consequences, each a cell of `implicit_namespace_matrix`:
+  - **cross-assembly** — `eModulesAndNamespaces` holds one modref per CCU
+    declaring the namespace and FCS opens all of them (the opposite of the
+    manifest channel above, where `ApplyAssemblyLevelAutoOpenAttribute` builds a
+    modref into the declaring CCU alone), so a name two assemblies both supply
+    is a reference-order contest that defers;
+  - **cross-kind** — a path that is a namespace in one reference and a top-level
+    module in another merges both halves, so the module half's unique values are
+    in scope and a name both supply defers;
+  - **the project's own half folds last** (Q14), pushed after the assembly
+    halves at position 0, so a project union case out-ranks a colliding assembly
+    auto-open value. This is why the *explicit* path skips a literal self-open
+    of the current namespace: position 0 is FCS's real fold position for the
+    project half, and re-running it at a later `open`'s text position would
+    wrongly override a binding declared in between.
+
+  Folding at position 0 means the fold runs *before* the block's walk, so it
+  cannot see what the block declares. Two shadowings the resolver does not model
+  anywhere then become reachable — a later constructible type taking the value
+  slot, and a same-block `[<AutoOpen>]` container folding above it — so the fold
+  **declines** rather than committing a target FCS shadows
+  (`screen_block_local_shadows`). The auto-open arm is a single closed flag
+  rather than a name set on purpose: that surface is open-ended (values, union
+  and exception cases, `extern`s, active-pattern tags, a single-case union
+  spelled like an abbreviation, an auto-open type's statics, statics borrowed
+  through an abbreviation), so an enumeration is a list that grows under review
+  and can only be audited by inspection. Both shadowings reproduce through an
+  explicit `open` too and have their own tasks; the screen goes when they land.
+
+  The project half lends no **shortening prefix** (task #30), which is the one
+  place this channel still gives ground. Where a project `[<AutoOpen>]` module
+  in the namespace nests a module, `open Inner` reaches it in FCS and not in us,
+  so the fold declines that half's entries — affordable because such modules are
+  overwhelmingly flat, and measured at zero cost across the corpus. Where the
+  contest is with an *assembly* auto-open module nesting the same short name,
+  no affordable decline exists; #30 records both levers tried and why they were
+  rejected.
 
 ## Still to do
 

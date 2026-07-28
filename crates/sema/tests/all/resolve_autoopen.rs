@@ -187,6 +187,96 @@ fn explicit_open_brings_in_auto_open_module() {
     }
 }
 
+/// The `[<AutoOpen>]` modules a referenced assembly declares in a file's **own
+/// enclosing namespace** are in scope with no `open` at all.
+///
+/// FCS opens the enclosing namespace path implicitly, once per top-level block
+/// (`ImplicitlyOpenOwnNamespace`, `CheckDeclarations.fs`), and opening a
+/// namespace also opens the auto-open modules it declares. Every case below is
+/// `fcs-dump`-verified against this fixture's assembly.
+mod enclosing_namespace {
+    use super::*;
+
+    #[test]
+    fn its_assembly_auto_open_module_is_in_scope() {
+        // FCS: `extraValue` -> SemaAutoOpenFixture!Demo.Auto.Extra.extraValue,
+        // with no diagnostics.
+        let env = fixture_env();
+        let src = "namespace Demo.Auto\n\nmodule Client =\n    let test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        match rf.resolution_at(at(src, "extraValue")) {
+            Some(Resolution::Member { parent, idx }) => {
+                let extra = env
+                    .lookup_type(&["Demo".into(), "Auto".into()], "Extra", 0)
+                    .expect("fixture must declare Demo.Auto.Extra");
+                assert_eq!(parent, extra, "parent module");
+                assert_eq!(il_name(env.member_at(parent, idx)), "extraValue");
+            }
+            other => panic!("expected Member for bare `extraValue`, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_module_header_opens_the_namespace_above_its_own_name() {
+        // `module Demo.Auto.ClientC` encloses in `Demo.Auto`, not `Demo.Auto.ClientC`.
+        // FCS: resolves, no diagnostics.
+        let env = fixture_env();
+        let src = "module Demo.Auto.Client\n\nlet test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        assert!(
+            matches!(
+                rf.resolution_at(at(src, "extraValue")),
+                Some(Resolution::Member { .. })
+            ),
+            "expected a Member, got {:?}",
+            rf.resolution_at(at(src, "extraValue")),
+        );
+    }
+
+    #[test]
+    fn an_unrelated_namespace_does_not_reach_it() {
+        // The *full* path is opened, never a prefix and never a sibling. FCS:
+        // FS0039 "The value or constructor 'relOnlyMarker' is not defined."
+        let env = fixture_env();
+        let src = "namespace Other.Deep\n\nmodule Client =\n    let test () = relOnlyMarker\n";
+        let rf = resolve(src, &env);
+        assert!(
+            matches!(
+                rf.resolution_at(at(src, "relOnlyMarker")),
+                None | Some(Resolution::Deferred(_)) | Some(Resolution::Unresolved)
+            ),
+            "a name only an unrelated namespace's auto-open module declares must \
+             not resolve; got {:?}",
+            rf.resolution_at(at(src, "relOnlyMarker")),
+        );
+    }
+
+    #[test]
+    fn a_local_binding_of_the_same_name_wins() {
+        // The implicit open sits at the bottom of the block's environment, so
+        // anything the file declares beats it. FCS: the use binds
+        // `Demo.Auto.ClientD.extraValue`, the local one.
+        let env = fixture_env();
+        let src = "namespace Demo.Auto\n\nmodule Client =\n    let extraValue () = 999\n    \
+                   let test () = extraValue ()\n";
+        let rf = resolve(src, &env);
+        // The *use*, not the binder: the name occurs twice, and `at` wants one.
+        let start = src.rfind("extraValue").expect("the use");
+        let use_at = TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + "extraValue".len()).unwrap().into(),
+        );
+        assert!(
+            matches!(
+                rf.resolution_at(use_at),
+                Some(Resolution::Local(_)) | Some(Resolution::Item(_))
+            ),
+            "the file's own `extraValue` must win over the assembly's; got {:?}",
+            rf.resolution_at(use_at),
+        );
+    }
+}
+
 #[test]
 fn auto_open_module_nested_type_marks_bare_annotation_shadowable() {
     let env = fixture_env();
@@ -2256,5 +2346,204 @@ fn an_auto_open_module_shadows_a_dotted_paths_head_at_an_explicit_open() {
     // verdict rather than to any one tier's own logic.
     assert_dotted_head_shadow_defers(
         "module M\nopen DottedShadow\nlet f (x : DottedHead.Leaf) = x\n",
+    );
+}
+
+#[test]
+fn implicit_enclosing_namespace_does_not_outrank_a_project_case() {
+    // The implicit self-open sibling of
+    // `project_namespace_case_outranks_assembly_auto_open`: with no `open`
+    // written at all, a file in `namespace Demo.Auto` sees BOTH the project's
+    // own union case `Tag` (file 0, same namespace) and the referenced
+    // assembly's auto-open `Extra.Tag`. fcs-dump-verified: bare `Tag` is
+    // `Demo.Auto.Color.Tag` — the project fragment folds last.
+    let env = fixture_env();
+    let src0 = "namespace Demo.Auto\ntype Color = Tag | Other\n";
+    let src1 = "namespace Demo.Auto\n\nmodule Client =\n    let x = Tag\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    let (file_idx, def) = res.and_then(|r| proj.item_def(r)).unwrap_or_else(|| {
+        panic!("bare `Tag` must bind the project's own union case; got {res:?}")
+    });
+    assert_eq!(
+        file_idx, 0,
+        "the project union case in file 0, not the assembly `Extra.Tag`"
+    );
+    assert_eq!(def.range, at(src0, "Tag"));
+}
+
+#[test]
+fn implicit_enclosing_namespace_merges_a_same_fqn_assembly_module_half() {
+    // The implicit self-open sibling of
+    // `a_name_supplied_by_both_the_module_and_namespace_halves_of_a_path_defers`.
+    // `Demo.ModuleOpen.Merged` is a **module** in the autoopen fixture and a
+    // **namespace** (with an `[<AutoOpen>]` submodule) in the abbrev one, and
+    // both supply `fromModuleHalf`. FCS's `ImplicitlyOpenOwnNamespace` resolves
+    // the enclosing path with `ResolveLongIdentAsModuleOrNamespace`, which
+    // returns **every** modref at the FQN — modules and namespaces alike — and
+    // folds them together in reference order. We do not model reference order,
+    // so a name both halves supply must DEFER; collecting only the namespace
+    // half would commit its member instead.
+    let env = two_fsharp_assembly_env();
+    let src =
+        "namespace Demo.ModuleOpen.Merged\n\nmodule Client =\n    let t () = fromModuleHalf 1\n";
+    let rf = resolve(src, &env);
+    assert!(
+        !matches!(
+            rf.resolution_at(at(src, "fromModuleHalf")),
+            Some(Resolution::Member { .. })
+        ),
+        "both halves of the enclosing path supply `fromModuleHalf`; FCS orders them \
+         by reference, which we do not model — defer, got {:?}",
+        rf.resolution_at(at(src, "fromModuleHalf"))
+    );
+
+    // A name only ONE half supplies is uncontested and still resolves — the merge
+    // must not blanket-decline (Q13, `docs/assembly-module-open-plan.md` §4c).
+    let src = "namespace Demo.ModuleOpen.Merged\n\nmodule Client =\n    \
+               let t () = onlyInNamespaceHalf ()\n";
+    let rf = resolve(src, &env);
+    assert!(
+        matches!(
+            rf.resolution_at(at(src, "onlyInNamespaceHalf")),
+            Some(Resolution::Member { .. })
+        ),
+        "a name unique to the namespace half is uncontested by the module half; got {:?}",
+        rf.resolution_at(at(src, "onlyInNamespaceHalf"))
+    );
+}
+
+#[test]
+fn implicit_enclosing_namespace_folds_a_project_module_half() {
+    // `ImplicitlyOpenOwnNamespace` resolves the enclosing path with
+    // `ResolveLongIdentAsModuleOrNamespace`, which returns an in-project
+    // top-level **module** at the FQN too — so a file that declares `namespace
+    // N` sees the values of an earlier file's `module N`, with no `open`.
+    // fcs-dump-verified on the real article (`module Demo.HiddenOwn` with an
+    // `extern`, then `namespace Demo.HiddenOwn` using it bare: FCS binds
+    // `Demo.HiddenOwn.plainCore`, diagnostics-clean).
+    //
+    // `plainCore` deliberately collides with the fixture assembly's
+    // `Microsoft.FSharp.Core` value, so a project module half we fail to fold is
+    // a **wrong target** — we would commit the assembly member — not a gap.
+    let env = fixture_env();
+    let src0 = "module Demo.HiddenOwn\n\nlet plainCore (x: int) = x\n";
+    let src1 = "namespace Demo.HiddenOwn\n\nmodule Client =\n    let t () = plainCore 1\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let res = proj.file(1).resolution_at(at(src1, "plainCore"));
+    let (file_idx, def) = res.and_then(|r| proj.item_def(r)).unwrap_or_else(|| {
+        panic!("bare `plainCore` must bind the project module's value; got {res:?}")
+    });
+    assert_eq!(
+        file_idx, 0,
+        "the project module in file 0, not the assembly"
+    );
+    assert_eq!(def.range, at(src0, "plainCore"));
+}
+
+#[test]
+fn implicit_enclosing_namespace_project_module_hidden_values_shadow_the_assembly() {
+    // The unenumerable half of the same channel. An `extern` is a value binder
+    // no export walk sees, so the project module half may supply a name we
+    // cannot list; it still shadows the assembly-level implicit auto-opens
+    // folded before it, so a colliding assembly member must NOT stay committed.
+    // FCS binds the `extern` (fcs-dump-verified); we cannot name it, so the
+    // requirement is exactly "do not commit the assembly's".
+    let env = fixture_env();
+    let src0 = "module Demo.HiddenOwn\n\n[<System.Runtime.InteropServices.DllImport(\"libc\")>]\n\
+                extern int plainCore(int x)\n";
+    let src1 = "namespace Demo.HiddenOwn\n\nmodule Client =\n    let t () = plainCore 1\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let res = proj.file(1).resolution_at(at(src1, "plainCore"));
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "an unenumerable project module half shadows the assembly's colliding \
+         `plainCore`; got {res:?}"
+    );
+}
+
+/// A constructible type declared *later in the same block* must take the value
+/// slot of a same-named value an `open` folded in. Reproduced through an
+/// explicit `open`, which is what places the defect in the slot-eviction
+/// machinery rather than in any one open channel — the implicit
+/// enclosing-namespace fold hits it identically, and widened its reach.
+#[test]
+#[ignore = "pre-existing wrong target on main: a later type does not evict an opened value"]
+fn a_later_type_declaration_evicts_an_opened_value_of_the_same_name() {
+    // FCS binds the local `Tag` type's constructor; we bind the assembly's
+    // `Demo.Auto.Extra.Tag` value.
+    let env = fixture_env();
+    let src = "module M\nopen Demo.Auto\ntype Tag() =\n    member _.Marker = 1\nlet x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the block's own `type Tag()` takes the slot; got {res:?}"
+    );
+}
+
+/// An `[<AutoOpen>] module` declared *later in the same block* must fold its
+/// values into the enclosing frame, out-ranking a same-named value an earlier
+/// `open` brought in. Reproduced through an explicit `open` for the same reason
+/// as the test above.
+#[test]
+#[ignore = "pre-existing wrong target on main: a same-block auto-open module does not fold back"]
+fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
+    // FCS binds `LocalAuto.extraValue`; we bind the assembly's
+    // `Demo.Auto.Extra.extraValue`.
+    let env = fixture_env();
+    let src = "module M\nopen Demo.Auto\n[<AutoOpen>]\nmodule LocalAuto =\n    \
+               let extraValue () = 1\nlet x = extraValue\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the block's own `[<AutoOpen>] module LocalAuto` out-ranks the assembly's; got {res:?}"
+    );
+}
+
+#[test]
+fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value() {
+    // A project `[<AutoOpen>]` module in the namespace holds a nested module,
+    // which FCS enters under its short name — so `open Inner` reaches it and its
+    // `shortTarget` out-ranks `ProjectAuto`'s own, which the implicit fold
+    // pushed at position 0. We lend no project shortening prefix (task #30), so
+    // the `open` does nothing on our side and the outer value would stand: a
+    // wrong target. The fold declines instead.
+    let env = fixture_env();
+    let src0 = "namespace Demo.Auto\n\n[<AutoOpen>]\nmodule ProjectAuto =\n    \
+                let shortTarget () = 1\n    module Inner =\n        let shortTarget () = 2\n";
+    let src1 = "namespace Demo.Auto\n\nmodule Client =\n    open Inner\n    \
+                let t () = shortTarget ()\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("shortTarget").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "shortTarget".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    let outer = proj
+        .file(0)
+        .resolution_at(at(src0, "shortTarget"))
+        .and_then(|r| proj.item_def(r));
+    assert!(
+        res.and_then(|r| proj.item_def(r)) != outer || outer.is_none(),
+        "the outer `ProjectAuto.shortTarget` must not win over the shortened \
+         `Inner.shortTarget`; got {res:?}"
     );
 }

@@ -26,7 +26,7 @@
 //! cell's decl files, so "the project half wins" is a positive value on both
 //! sides, not a blind `None`.
 
-use crate::common::fold_matrix::{Cell, Position, run_matrix};
+use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
 const PJ_EXN: &str = "namespace Demo.PjFold.Exn\nexception PjExn of int\n";
 const PJ_UNION: &str =
@@ -39,6 +39,7 @@ const PJ_MIX_MOD: &str = "module Demo.PjMix.NsOnly\n\nlet pjModVal () = 10\n";
 const CELLS: &[Cell] = &[
     // ---- project namespace half carries an exception ----
     Cell {
+        container: Container::Anon,
         decls: &[PJ_EXN],
         label: "pj-exn / assembly module-half value, expression",
         body: &["open Demo.PjFold.Exn"],
@@ -46,6 +47,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_EXN],
         label: "pj-exn / project exception, expression",
         body: &["open Demo.PjFold.Exn"],
@@ -53,6 +55,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_EXN],
         label: "pj-exn / project exception, pattern",
         body: &["open Demo.PjFold.Exn"],
@@ -61,6 +64,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- project namespace half carries a union ----
     Cell {
+        container: Container::Anon,
         decls: &[PJ_UNION],
         label: "pj-union / assembly module-half value, expression",
         body: &["open Demo.PjFold.Union"],
@@ -68,6 +72,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_UNION],
         label: "pj-union / project case, expression",
         body: &["open Demo.PjFold.Union"],
@@ -75,6 +80,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_UNION],
         label: "pj-union / project case, pattern",
         body: &["open Demo.PjFold.Union"],
@@ -84,6 +90,7 @@ const CELLS: &[Cell] = &[
     // ---- project namespace half carries an [<AutoOpen>] module; one value
     // collides with the assembly module half ----
     Cell {
+        container: Container::Anon,
         decls: &[PJ_AUTOMOD],
         label: "pj-auto / assembly module-half value, expression",
         body: &["open Demo.PjFold.AutoMod"],
@@ -91,6 +98,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_AUTOMOD],
         label: "pj-auto / project auto-open value, expression",
         body: &["open Demo.PjFold.AutoMod"],
@@ -98,6 +106,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         // The project half applies LAST (Q14), so FCS binds the project
         // auto-open value over the assembly module-half value.
         decls: &[PJ_AUTOMOD],
@@ -108,6 +117,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- project namespace half carries a class ----
     Cell {
+        container: Container::Anon,
         decls: &[PJ_CLASS],
         label: "pj-class / assembly module-half value, expression",
         body: &["open Demo.PjFold.ClassShape"],
@@ -115,6 +125,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_CLASS],
         label: "pj-class-dotted / static under the project type head, expression",
         body: &["open Demo.PjFold.ClassShape"],
@@ -123,6 +134,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- the reverse flavor: PROJECT module half + assembly namespace half ----
     Cell {
+        container: Container::Anon,
         decls: &[PJ_MIX_MOD],
         label: "pj-mix / project module value, expression",
         body: &["open Demo.PjMix.NsOnly"],
@@ -130,6 +142,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_MIX_MOD],
         label: "pj-mix / assembly namespace exception, expression",
         body: &["open Demo.PjMix.NsOnly"],
@@ -137,6 +150,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[PJ_MIX_MOD],
         label: "pj-mix-dotted / assembly namespace type static, expression",
         body: &["open Demo.PjMix.NsOnly"],

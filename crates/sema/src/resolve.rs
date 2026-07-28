@@ -232,6 +232,38 @@ pub fn resolve_file(
                 _ => {}
             }
         }
+        // …and the fact that it EXISTS. Its contents are not enumerated: a
+        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
+        // values, union and exception cases, `extern` prototypes,
+        // active-pattern tags, a single-case union spelled like an
+        // abbreviation, an auto-open *type*'s statics, statics borrowed through
+        // an abbreviation — and each is invisible to a different part of the
+        // parse. Enumerating them is a list that keeps growing and can only be
+        // audited by inspection; the flag is one closed question with a
+        // one-line soundness argument, and it costs commits only in files that
+        // actually declare such a container. Read by the implicit
+        // enclosing-namespace fold, which runs before the block's walk and so
+        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
+        r.own_auto_open_container = true;
+    }
+    // An `[<AutoOpen>]` **type** is the other container whose surface folds into
+    // the rest of its enclosing scope — its statics, and (fsi-verified) the
+    // statics of an abbreviation's target. Same closed flag, same reason.
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        // `CanAutoOpenTyconRef` (`NameResolution.fs`) ends `tcref.Typars(m) |>
+        // List.isEmpty`, so a GENERIC `[<AutoOpen>]` type auto-opens nothing at
+        // all — flagging it would defer every name the enclosing namespace
+        // supplies for a container that contributes none (fcs-dump-verified).
+        if attrs_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
+            r.own_auto_open_container = true;
+        }
+        // The value-slot subset of the type-name pre-scan above.
+        if let Some(name) = defn.long_id().and_then(|li| li.idents().last())
+            && decls::type_slot_class(&defn) != model::SlotClass::Keeps
+        {
+            r.own_value_slot_type_names
+                .insert(id_text(name.text()).to_string());
+        }
     }
     // Every value-binder simple name in the file — the constructor fallback's
     // "not-a-value" oracle ([`Resolver::own_binder_simple_names`]). Walk every
@@ -463,6 +495,13 @@ pub fn resolve_file(
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
+        // …then the block's **own** enclosing namespace, which FCS opens
+        // implicitly as well (`ImplicitlyOpenOwnNamespace`) — that is how a
+        // referenced assembly's `[<AutoOpen>]` module in `namespace N` is in
+        // scope from a file that declares `namespace N` and opens nothing.
+        // After the implicit auto-opens, matching FCS's order: those are
+        // applied when the CCU is added, before any block env exists.
+        r.open_own_enclosing_namespace();
         // EX-3 §2(d): the block header's own attributes (`[<AutoOpen>] module
         // Test`) resolve in the block's opening scope — the implicit auto-opens
         // just seeded, no explicit `open` yet — which is FCS's env for them.
@@ -1821,6 +1860,8 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
+            own_auto_open_container: false,
+            own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),
