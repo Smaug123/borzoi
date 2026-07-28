@@ -25,7 +25,7 @@
 //! A nullary single-segment `LongIdent` pattern head — `None` in `match x with
 //! None -> …`, `let (x, None) = …`, `fun None -> …` — is constructor-shaped (the
 //! parser routes lower-case idents to `Named`, so these are always upper-case)
-//! and [`pattern_names`](crate::pattern_names) flags it
+//! and [`pattern_names`] flags it
 //! [`provisional`](crate::Def::provisional).
 //! Whether it is a real binder or a constructor reference depends on whether the
 //! name resolves to a nullary constructor / literal: FCS binds an upper-case
@@ -34,7 +34,7 @@
 //!
 //! An in-file **union case** in scope *is* now resolved: a provisional head is
 //! looked up via [`Resolver::case_reference`], and if it names a
-//! [`DefKind`](crate::DefKind)`::UnionCase` the head records that resolution (a
+//! [`DefKind`]`::UnionCase` the head records that resolution (a
 //! case reference, not a binder) — so `Red` in `match c with Red -> …`, given an
 //! in-file `type Color = Red | Green`, points at the case. Anything else still
 //! declines to bind and records nothing, so the name falls through to
@@ -1415,7 +1415,7 @@ struct ExtThreading {
 /// Advance the Compile-order threaded state past `rf` (the resolution of
 /// `file`), exactly as the fold does: fold this file's exports into `preceding`
 /// and its own extension-source contribution into `ext`. The single writer
-/// of the forward threading — shared by the cold ([`resolve_project_impl`]) and
+/// of the forward threading — shared by the cold ([`resolve_project_files_impl`]) and
 /// incremental ([`resolve_project_incremental`]) folds so the two can never
 /// disagree on what a file contributes downstream.
 ///
@@ -1888,7 +1888,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Append one [`ExportDecl`] to the file's source-ordered declaration list,
+    /// Append one [`ExportDecl`](model::ExportDecl) to the file's source-ordered declaration list,
     /// stamping it with the current [`Self::anonymous_root`]. The single
     /// append point (`docs/export-decl-model-plan.md` Stage 2): a decl is added
     /// wherever a legacy export writer fires, so the cross-file derivations in
@@ -1909,7 +1909,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Attach a case's type-qualified path to the most recently appended
-    /// [`ExportDecl`], which must be the [`model::ExportDeclKind::Item`] just
+    /// [`ExportDecl`](model::ExportDecl), which must be the [`model::ExportDeclKind::Item`] just
     /// pushed for this case (both
     /// [`export_type_qualified_case`](Self::export_type_qualified_case) call sites
     /// invoke it immediately after the item's decl append — no other decl can

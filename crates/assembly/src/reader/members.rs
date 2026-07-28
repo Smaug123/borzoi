@@ -88,7 +88,7 @@ const ALLOWS_REF_STRUCT: u16 = 0x0020;
 /// Fold the §II.23.1.10 member-visibility field (the low 3 bits of a method's or
 /// field's flags) onto [`MemberAccess`]. Value 0 is `CompilerControlled`
 /// (privatescope) and value 7 is reserved; neither has a variant, so both are
-/// stored as a per-member [`AccessDefect`] (mirroring [`SigError`] handling —
+/// stored as a per-member [`AccessDefect`] (mirroring [`SigError`](super::signature::SigError) handling —
 /// one such member is dropped and recorded at projection, never sinking the
 /// image) rather than mapped onto `Private`.
 fn fold_member_access(flags: u32) -> Result<MemberAccess, AccessDefect> {
@@ -675,8 +675,8 @@ const MAX_CLOSURE_FRAMES: usize = 256;
 ///
 /// Each walk frame carries the instantiation its definition was reached
 /// under, and the definition's own `InterfaceImpl`/`Extends` signatures are
-/// [`substitute`]d through it: `C : IDerived<int32>` walking `IDerived`1 :
-/// IBase<!0>` contributes the *constructed* `IBase<int32>`, matching the
+/// [`substitute`]d through it: `C : IDerived<int32>` walking ``IDerived`1 :
+/// IBase<!0>`` contributes the *constructed* `IBase<int32>`, matching the
 /// constructed declaration real F# emits (`interface IDerived<int> with
 /// member _.M()` declares against `IBase<int32>` while listing only
 /// `IDerived<int32>`). The implementing type's own frame is the identity —

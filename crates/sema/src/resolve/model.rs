@@ -47,7 +47,7 @@ pub(super) struct ExportRecord {
     /// so it inherits the constructor namespace's Compile-order provenance and
     /// accessibility recovery (a plain union case does the same), but a bare use in
     /// *expression* position is FS0039, so every value-namespace query excludes it
-    /// ([`Self::latest_accessible_value`] et al.). `false` for a value or a
+    /// ([`ProjectItems::latest_accessible_value`] et al.). `false` for a value or a
     /// value-live union/exception case.
     pattern_only: bool,
 }
@@ -318,9 +318,9 @@ pub struct ProjectItems {
     /// module `A` may have `[<AutoOpen>]` fragments in several files and *plain*
     /// (un-attributed) augmentations in others. Only a member declared in an
     /// `[<AutoOpen>]`-attributed fragment is auto-opened, and it folds at *that
-    /// fragment's* file, so [`Self::is_auto_open_fragment`] answers "is `(A,
-    /// file)` an auto-open fragment?" per member. The same path can therefore
-    /// appear more than once here, once per declaring file.
+    /// fragment's* file, so an entry here answers "is `(A, file)` an auto-open
+    /// fragment?" per member. The same path can therefore appear more than once
+    /// here, once per declaring file.
     ///
     /// A `Vec`, not a `HashSet` (codex review of §7's machinery slice): when
     /// two PRECEDING files each declare a same-named-clashing auto-open
@@ -496,7 +496,7 @@ impl ProjectItems {
     /// The names of earlier-file types declared **directly** under `container`
     /// whose [`SlotClass`] is not [`SlotClass::Keeps`] — a class/struct/enum
     /// (`Evicts`) or an abbreviation/delegate/undecidable-kind (`Unknown`), the
-    /// same construction-capable set [`super::lookup::type_name_is_value_slot_contestant`]'s
+    /// same construction-capable set `type_name_is_value_slot_contestant`'s
     /// referenced-assembly mirror tests. `Keeps` types (unions, records,
     /// interfaces) never enter FCS's unqualified constructor slot, so they are
     /// never contestants. Feeds
@@ -1045,7 +1045,7 @@ impl ProjectItems {
     /// machine check on the coupling.
     ///
     /// Every index is derived from the file's source-ordered
-    /// [`ExportDecl`](super::model::ExportDecl) list
+    /// [`ExportDecl`] list
     /// ([`FileExportIndices::from_decls`]); the derivation reproduces the legacy
     /// per-feature export fields exactly (`docs/export-decl-model-plan.md` Stage 2).
     ///
@@ -1231,7 +1231,7 @@ impl ProjectItems {
 
     /// The qualified paths of earlier-file **non-`private`** `[<AutoOpen>]`
     /// modules directly under `container` (see [`is_directly_in`]) — the
-    /// cross-file half of [`Resolver::project_auto_open_submodules_in`]
+    /// cross-file half of [`Resolver::project_auto_open_submodules_in`](super::Resolver::project_auto_open_submodules_in)
     /// (`resolve/lookup.rs`), which also collects the same-file half and
     /// recurses to fold a project namespace's auto-open descendants like the
     /// assembly namespace half's `[<AutoOpen>]` recursion
@@ -1787,7 +1787,7 @@ pub(super) enum ExportDeclKind {
     /// name. AP cases are **pattern-namespace-only** — a bare use in expression
     /// position is FS0039 — so, unlike a value-namespace case, they never enter
     /// [`value_exports`](ProjectItems::value_exports); they enter the dedicated
-    /// [`active_pattern_case_exports`](ProjectItems::active_pattern_case_exports)
+    /// [`active_pattern_shapes`](ProjectItems::active_pattern_shapes)
     /// index (carrying the recognizer `shape`, so a cross-file *parameterized* use
     /// splits its arguments exactly as a same-file one does) and
     /// [`case_item_ids`](ProjectItems::case_item_ids).

@@ -6,7 +6,7 @@
 //! table-stream layout (II.24.2) — but it carries a different set of tables: the
 //! portable-PDB debug tables `0x30..=0x37` (`Document`, `MethodDebugInformation`,
 //! `LocalScope`, …) instead of the type-system tables. The PE-coupled
-//! [`crate::reader::metadata`]/[`crate::reader::tables`] can't be pointed at it
+//! PE-coupled `reader::metadata`/`reader::tables` can't be pointed at it
 //! directly (it has no PE, and a portable PDB sizes some of its indexes from
 //! *referenced* type-system tables that live in the partner assembly, not in the
 //! PDB — their row counts come from the `#Pdb` stream), so this is a small

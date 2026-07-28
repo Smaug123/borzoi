@@ -38,7 +38,7 @@ use crate::workspace::{ServedTfm, Workspace};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReferencedAssemblyProjection {
     entities: Vec<Entity>,
-    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`] for this
+    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_abbreviations_unknowable) for this
     /// DLL, carried through the on-disk cache so a hit reproduces the same
     /// [`AbbreviationVisibility`] a fresh enumeration would compute.
     fsharp_abbreviations_unknowable: bool,
@@ -53,14 +53,14 @@ struct ReferencedAssemblyProjection {
     /// so an old cache entry (a successful read) deserialises as `false`.
     #[serde(default)]
     auto_opens_unreadable: bool,
-    /// [`AssemblyProjectionSkips::fsharp_extension_index_unknowable`] for this DLL —
+    /// [`AssemblyProjectionSkips::fsharp_extension_index_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_extension_index_unknowable) for this DLL —
     /// its F#-native extension-member index could not be built (absent/undecodable
     /// pickle). Folded into the env's per-assembly extension-knowability so a broken
     /// FSharp.Core pickle (abbreviation-exempt but extension-blind) still defers the
     /// name-keyed gate. `#[serde(default)]` for old cache entries.
     #[serde(default)]
     fsharp_extension_index_unknowable: bool,
-    /// [`AssemblyProjectionSkips::fsharp_signature_non_authoritative`] for this DLL —
+    /// [`AssemblyProjectionSkips::fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative) for this DLL —
     /// its host F# pickle was not authoritative (absent/undecodable, or a
     /// `--standalone` image with foreign CCUs), so its `EntityKind::Module` markers
     /// are IL heuristics FCS does not share. Folded into the env so semantic-token
@@ -2032,7 +2032,8 @@ fn csharp_project_ref_edges(
 /// flattens `<ProjectReference>` transitively) with its base `framework`
 /// field, and `pick_producer_tfm` recovers each producer's platform-qualified
 /// TFM from the producer's declared list. Keys are canonicalised to match
-/// [`ResolvedAssemblies::project_refs`] / `project_ref_tfms`.
+/// [`ResolvedAssemblies::project_ref_tfms`](crate::project_assets::ResolvedAssemblies::project_ref_tfms)
+/// / `project_ref_assembly_names`.
 ///
 /// Best-effort: empty when the entry's TFM is unknown (no `chosen_tfm`) or
 /// the resolve fails (partial restore, stale assets) — the caller falls back
@@ -2124,7 +2125,7 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
 /// name ([`FsharpRefTarget::output_name`] — the trusted `$(TargetName)`,
 /// which is what MSBuild actually writes to `bin/`), else the entry assets
 /// file's recorded producer name
-/// ([`ResolvedAssemblies::project_ref_assembly_names`]). The assets name
+/// ([`ResolvedAssemblies::project_ref_assembly_names`](crate::project_assets::ResolvedAssemblies::project_ref_assembly_names)). The assets name
 /// is only a fallback because it records the **AssemblyName**, not the
 /// file name: probed (dotnet 10.0.301, 2026-07-10), a `TargetName`-renamed
 /// producer's assets say `bin/placeholder/<AssemblyName>.dll` while the
@@ -2210,7 +2211,7 @@ fn fsharp_project_ref_outcome(
 ///
 /// `output_name` is the producer's resolved output name — the caller
 /// recovers it from the entry's assets file or the graph node's own
-/// evaluation ([`fsharp_project_ref_dlls`] documents the precedence) and
+/// evaluation ([`fsharp_project_ref_outcome`] documents the precedence) and
 /// never guesses: a producer whose real output name doesn't match simply
 /// isn't located, degrading to under-resolution rather than pulling in an
 /// unrelated DLL.

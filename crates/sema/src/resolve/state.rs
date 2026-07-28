@@ -49,7 +49,7 @@ pub(super) struct ScopeEntry {
     /// block-scoped open's scope ends.
     pub(super) generation: usize,
     /// `true` if this entry is in the **constructor namespace only** — a
-    /// value-shadowed cross-file case brought in by [`open_module_values`] so a
+    /// value-shadowed cross-file case brought in by [`open_module_values`](Resolver::open_module_values) so a
     /// *pattern* head resolves to it, even though the value index at its path holds
     /// a same-named `let`. [`lookup`](Resolver::lookup) (expression position) skips
     /// it; [`case_reference`](Resolver::case_reference) (pattern position) includes
@@ -71,7 +71,7 @@ pub(super) struct ScopeEntry {
     /// active-pattern tag ([`OpenFoldName::is_case`](crate::OpenFoldName::is_case)).
     /// [`case_reference`](Resolver::case_reference) accepts such an entry where
     /// it skips plain values; project-side cases are instead classified through
-    /// their [`DefKind`] (an opened assembly case has no def to classify).
+    /// their [`DefKind`](crate::DefKind) (an opened assembly case has no def to classify).
     pub(super) opened_case: bool,
     /// For an opened **assembly active-pattern tag**
     /// ([`OpenFoldName::ap_shape`](crate::OpenFoldName::ap_shape)), the recognizer
@@ -687,7 +687,7 @@ pub(super) struct Resolver<'a> {
     /// The **type-parameter** scope: a stack of frames, one per generic
     /// definition currently open (a `type` header, a generic `let`/function, a
     /// generic `member`). Each frame maps a typar's `idText` name (the bare `T`
-    /// of `'T`/`^T`) to its [`DefKind::TypeParam`] binder. A `'T` *use* in a type
+    /// of `'T`/`^T`) to its [`DefKind::TypeParam`](crate::DefKind::TypeParam) binder. A `'T` *use* in a type
     /// position ([`resolve_type`](Self::resolve_type)'s `Type::Var` arm) or a
     /// `'T.Member` expression looks the name up here, innermost frame first, so a
     /// member's own `<'T>` shadows an enclosing type's.
@@ -859,7 +859,8 @@ pub(super) struct Resolver<'a> {
     /// `container_path`), so it stays valid as the walk goes deeper.
     pub(super) access_floor: Option<usize>,
     /// Every declared named-module path in the file, accumulated as the walk
-    /// enters each module (see [`ResolvedFile::module_paths`](super::model::ResolvedFile::module_paths)).
+    /// enters each module (read back by
+    /// [`is_project_module_path`](Resolver::is_project_module_path)).
     pub(super) module_paths: Vec<Vec<String>>,
     /// Every declared project namespace path in the file (see
     /// [`ResolvedFile::namespace_paths`](super::model::ResolvedFile::namespace_paths)).
@@ -911,7 +912,7 @@ pub(super) struct Resolver<'a> {
     /// Every **type definition**'s qualified export path (`["A", "Pal", "Color"]`
     /// = container + type name) paired with whether its **case set is fully
     /// indexed** in the type-qualified case exports (the `type_qualified` paths on
-    /// the case `Item` [`ExportDecl`](super::model::ExportDecl)s) — `true` for a genuine
+    /// the case `Item` [`ExportDecl`]s) — `true` for a genuine
     /// non-abbreviation repr (a union/enum's cases are all exported; a
     /// record/object-model/delegate owns none), `false` for an abbreviation
     /// (whose cases live on its target, which sema does not chase cross-file) or
@@ -959,7 +960,7 @@ pub(super) struct Resolver<'a> {
     /// across nested modules).
     pub(super) open_shortening_prefixes: Vec<ShorteningPrefix>,
     /// Opened **assembly module** paths whose bare-name surface is *not provably
-    /// complete* ([`AssemblyEnv::module_open_is_fully_enumerable`] — projection dropped
+    /// complete* ([`AssemblyEnv::open_fold_surface`](crate::AssemblyEnv::open_fold_surface)'s residue — projection dropped
     /// a nested type, the pickle is unknowable, a member is undecodable, …).
     ///
     /// A later `open Sub` shortens through such a prefix (`Parent.Sub`), and the module
@@ -1052,7 +1053,7 @@ pub(super) struct Resolver<'a> {
     /// shadow walk consults every entry (a `private` module is still visible
     /// within its own file); the cross-file export
     /// ([`ProjectItems::auto_open_module_paths`](super::model::ProjectItems), derived
-    /// from the non-`private` `Module` [`ExportDecl`](super::model::ExportDecl)s)
+    /// from the non-`private` `Module` [`ExportDecl`]s)
     /// filters the `private` ones out, since F# does not bring
     /// a `private` module into scope for another file's `open` of its
     /// namespace.
@@ -1173,7 +1174,7 @@ pub(super) struct Resolver<'a> {
     /// position 0 — before the block's walk — and so can see none of it.
     pub(super) own_auto_open_container: bool,
     /// The simple names of this file's type definitions that can **take FCS's
-    /// unqualified value slot** — the [`SlotClass`](super::model::SlotClass)`
+    /// unqualified value slot** — the [`SlotClass`]`
     /// != Keeps` subset of [`Self::own_type_simple_names`], pre-scanned
     /// file-globally.
     ///

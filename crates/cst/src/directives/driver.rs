@@ -357,7 +357,7 @@ struct LexerState<'a> {
     next_pos: usize,
     /// Interp-aware wrapper around the raw Logos lexer. Active interp-string
     /// frames live inside this driver; they are snapshotted into
-    /// [`Driver::pending_interp_frames`] when the directive layer
+    /// [`DriverCore::pending_interp_frames`] when the directive layer
     /// invalidates the lexer, then restored to the next `InterpDriver` on
     /// recreation so a fill straddling `#if`/`#endif` keeps its frame
     /// stack intact.

@@ -3161,7 +3161,7 @@ fn resolve_string_metadata(
 /// same way Include attributes and `<PropertyGroup>` children do:
 /// emit a diagnostic and drop the value, rather than silently
 /// exposing unevaluated MSBuild syntax in
-/// [`ResolvedItem`](super::ResolvedItem) fields.
+/// [`ResolvedItem`] fields.
 fn finalize_metadata_value(
     value: Escaped,
     span: Range<usize>,

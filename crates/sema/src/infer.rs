@@ -344,7 +344,7 @@
 //!   methods defer.
 //! - **Well-formedness gate.** The return type is the call's type only when the
 //!   argument list is well-formed: the wake gates on the call's positional
-//!   `arg_count` ([`method_arg_count`]) being `Some(param_count)` exactly. FCS does
+//!   `arg_count` ([`Gen::method_arg_vids`]) being `Some(param_count)` exactly. FCS does
 //!   *not* type an ill-formed call as the method return — it falls back to `obj`
 //!   (`call:function`) — so each of these defers fully (no type, no recorded
 //!   resolution): a wrong **arity** (`s.ToLowerInvariant(1)`, `s.Insert()`), a
@@ -2290,7 +2290,7 @@ impl<'a> Gen<'a> {
     ///   fully-qualified static path (`System.Console.WriteLine`) or an unresolved
     ///   name, left for the catch-all so the static-member resolution is untouched;
     /// - an active-pattern segment in the path (`Foo.(|Bar|_|)`), which
-    ///   [`LongIdent::idents`] does not surface as a plain token.
+    ///   [`LongIdent::idents`](borzoi_cst::syntax::LongIdent::idents) does not surface as a plain token.
     ///
     /// The receiver's own value node is emitted at the head token's range (FCS
     /// emits a value node there), coercion-free (synth) — a member access never

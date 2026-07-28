@@ -1936,7 +1936,7 @@ fn attrib_pat_swallowed_rparen_not_stolen() {
 /// attribute outside (`match v with { X = } [<A>] y -> 1`), the filtered cursor
 /// lands on the outside `[<` while the raw cursor is still on `}`. The shared
 /// `at_attribute_list_start` both-cursors gate declines, so the `}` is reclaimed
-/// by `bump_swallowed_rbrace` rather than drained into an `ATTRIB_PAT`.
+/// by `bump_swallowed_closer` rather than drained into an `ATTRIB_PAT`.
 #[test]
 fn attrib_pat_swallowed_rbrace_not_stolen() {
     let source = "match v with { X = } [<A>] y -> 1\n";

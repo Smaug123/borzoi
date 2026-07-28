@@ -199,7 +199,7 @@ impl<'a> Resolver<'a> {
     /// position, but choosing among overloads is the type checker's job, not name
     /// resolution.
     ///
-    /// [`AssemblyEnv::open_static_entries`] supplies the pair, and with it the one
+    /// [`AssemblyEnv::open_static_entries`](crate::AssemblyEnv::open_static_entries) supplies the pair, and with it the one
     /// exclusion this level owes FCS: **extension members never enter the
     /// unqualified environment** — not F#-native augmentations (bare `Force` out of
     /// FSharp.Core's auto-open `LazyExtensions`), not C#-style `[<Extension>]`
@@ -208,7 +208,7 @@ impl<'a> Resolver<'a> {
     ///
     /// The entries are [`ScopeEntry::opened`], so [`lookup`](Self::lookup) drops
     /// them while an [`opaque_value_open`](Self::opaque_value_open) is in scope and
-    /// [`resolve_file`] does not leak them across same-named top-level blocks.
+    /// [`resolve_file`](super::resolve_file) does not leak them across same-named top-level blocks.
     /// `certain` withholds the definite target while keeping the name in scope (it still
     /// shadows by position). Callers pass `false` when something they cannot see could
     /// outrank what they can: the namespace half of a cross-kind path does so when the
@@ -616,7 +616,7 @@ impl<'a> Resolver<'a> {
 
     /// Whether `np` is a declared project **namespace** path — same file
     /// ([`Self::namespace_paths`]) or an earlier Compile-order one
-    /// ([`ProjectItems::is_namespace`]).
+    /// ([`ProjectItems::is_namespace`](super::model::ProjectItems::is_namespace)).
     pub(super) fn is_project_namespace_path(&self, np: &[String]) -> bool {
         self.namespace_paths.iter().any(|p| p == np) || self.preceding.is_namespace(np)
     }
@@ -1100,7 +1100,7 @@ impl<'a> Resolver<'a> {
 
     /// The qualified paths of `[<AutoOpen>]` modules directly under `container`
     /// (see [`super::model::is_directly_in`]) — the **distinct paths**, from
-    /// earlier files' non-`private` ones ([`ProjectItems::auto_open_modules_directly_in`],
+    /// earlier files' non-`private` ones ([`ProjectItems::auto_open_modules_directly_in`](super::model::ProjectItems::auto_open_modules_directly_in),
     /// privacy-filtered at the export boundary) plus this file's own
     /// **accessible** ones. Path-level and *file-blind*: it answers "is there an
     /// auto-open submodule of this name here?", which is what the
@@ -1138,9 +1138,9 @@ impl<'a> Resolver<'a> {
 
     /// The `[<AutoOpen>]` **fragments** declared *directly* in `container`, as
     /// `(path, file)` pairs — the same-file half (this file, at
-    /// [`ProjectItems::num_files`], privacy-filtered against the site exactly as
+    /// [`ProjectItems::num_files`](super::model::ProjectItems::num_files), privacy-filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`]) plus the already-filtered
-    /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`]). A
+    /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`](super::model::ProjectItems::auto_open_fragments_directly_in)). A
     /// module with fragments in several files appears once per fragment — the
     /// per-fragment provenance the file-ordered fold reads (Stage 5).
     fn auto_open_fragments_directly_in(&self, container: &[String]) -> Vec<(Vec<String>, usize)> {
@@ -1282,10 +1282,10 @@ impl<'a> Resolver<'a> {
     /// The winning **direct-tier** contribution [`Self::open_module_values`]
     /// pushes for each name declared directly under `path` (a project
     /// namespace): its project-global [`ItemId`] and declaring Compile-order file
-    /// ([`ProjectItems::file_of`]). The value index wins the id where a name is
+    /// ([`ProjectItems::file_of`](super::model::ProjectItems::file_of)). The value index wins the id where a name is
     /// both a value and a case (expression-latest); the constructor index fills
     /// only names the value index missed. Same-file contributions fold last (the
-    /// current file's index, [`ProjectItems::num_files`]), overriding earlier
+    /// current file's index, [`ProjectItems::num_files`](super::model::ProjectItems::num_files)), overriding earlier
     /// files. Accessibility (own-/inherited-`private`) is filtered exactly as the
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
@@ -1531,7 +1531,7 @@ impl<'a> Resolver<'a> {
     /// The handle of the **ordinary value** (not a case constructor) exported at
     /// exactly `path` — this file's (the source-latest) or an earlier Compile-order
     /// one. The same-file/cross-file counterpart of
-    /// [`ProjectItems::ordinary_value_at`], used to detect a value that shadows a
+    /// [`ProjectItems::ordinary_value_at`](super::model::ProjectItems::ordinary_value_at), used to detect a value that shadows a
     /// type-qualified case for the qualifier.
     pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
         self.items
@@ -1593,7 +1593,7 @@ impl<'a> Resolver<'a> {
     /// [`resolved_project_module`](Self::resolved_project_module) (explicit opens
     /// latest-first, enclosing namespace/module nesting innermost-first, then the
     /// root as written), checking the cross-file
-    /// [`ProjectItems::type_qualified_cases`] index at each — so `Color.Red` resolves
+    /// [`ProjectItems::type_qualified_cases`](super::model::ProjectItems::type_qualified_cases) index at each — so `Color.Red` resolves
     /// relative to an `open Lib` or the enclosing `namespace Lib`, and the
     /// fully-qualified form resolves at the root. Self-validating: only an exact
     /// earlier-file `[…, Type, Case]` path hits, so an unintended shortening simply
@@ -1684,12 +1684,12 @@ impl<'a> Resolver<'a> {
     /// bare names an `open M` makes resolvable (substep 3). Same-file values come
     /// from [`Self::items`] (a value whose qualified export path is
     /// `[module_path…, name]`, exactly one segment beyond), earlier-file values
-    /// from [`ProjectItems::direct_value_children`]; a value nested deeper (in a
+    /// from [`ProjectItems::direct_value_children`](super::model::ProjectItems::direct_value_children); a value nested deeper (in a
     /// submodule) has a longer path and is excluded. A name found in *this* file
     /// wins over a same-named cross-file one (this file augments the earlier
     /// module); both are [`Resolution::Item`]. The entries are
     /// [`ScopeEntry::opened`], so [`lookup`](Self::lookup) gives correct
-    /// latest-wins shadowing against locals and [`resolve_file`] does not leak them
+    /// latest-wins shadowing against locals and [`resolve_file`](super::resolve_file) does not leak them
     /// across same-named top-level blocks. The module may also hold submodules /
     /// types we do not model, so the caller sets
     /// [`opaque_dotted_open`](Self::opaque_dotted_open) to keep dotted heads
@@ -1951,7 +1951,7 @@ impl<'a> Resolver<'a> {
     /// direct tier's file is later, when the direct winner is re-pushed at the END
     /// to out-position the submodule pushes. [`Self::direct_tier_ids_at`] /
     /// [`Self::submodule_contributions_at`] carry each contribution's file
-    /// ([`ProjectItems::file_of`]); the decision is per FCS environment (value /
+    /// ([`ProjectItems::file_of`](super::model::ProjectItems::file_of)); the decision is per FCS environment (value /
     /// constructor / type-eviction, folded independently).
     ///
     /// With [`Self::submodule_contributions_at`] now **per-fragment exact** (Stage
@@ -2208,7 +2208,7 @@ impl<'a> Resolver<'a> {
     /// The [`ItemId`] of the value `value` exported **directly** by project module
     /// `module_path` (its qualified export path is exactly `[module_path…,
     /// value]`), or `None`. Searches this file's [`Self::items`] first, then
-    /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`]) — the
+    /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`](super::model::ProjectItems::lookup_qualified_path)) — the
     /// value an already-name-shortened `Mod.value` resolves to. Only `let` values
     /// are recorded with qualified paths, so a `value` that is actually a nested
     /// module / type yields `None` (the path then defers, never a wrong member).
@@ -2411,7 +2411,7 @@ impl<'a> Resolver<'a> {
     /// case, `Some(false)` for a definite non-case (an ordinary value / opened
     /// static member), `None` when it cannot be classified here. A
     /// [`Resolution::Local`], a [`Resolution::Item`] (same-file via the def arena,
-    /// cross-file via [`ProjectItems::is_case_item`]), and an opened static
+    /// cross-file via [`ProjectItems::is_case_item`](super::model::ProjectItems::is_case_item)), and an opened static
     /// ([`Resolution::Member`] / overloaded-static [`Resolution::Deferred`]) are all
     /// classifiable. `None` only for an out-of-range / unmapped handle.
     pub(super) fn case_classification(&self, res: Resolution) -> Option<bool> {
@@ -2442,7 +2442,7 @@ impl<'a> Resolver<'a> {
     /// maybe-literal constant-pattern contestant
     /// ([`ExportedItem::attributed`](super::model::ExportedItem)): same-file via
     /// this file's export arena, cross-file via
-    /// [`ProjectItems::is_attributed_item`].
+    /// [`ProjectItems::is_attributed_item`](super::model::ProjectItems::is_attributed_item).
     fn item_is_attributed(&self, id: ItemId) -> bool {
         match id.index().checked_sub(self.item_base as usize) {
             Some(local) => self.items.get(local).is_some_and(|it| it.attributed),
@@ -3087,7 +3087,7 @@ impl<'a> Resolver<'a> {
     /// headerless-file `module Demo`). Kept for the full-path shadow in
     /// [`Self::path_is_project_type_shadowed`]; the *namespace-relative* self
     /// reference (`List.fold` inside `namespace N` / `module List`) is
-    /// [`Self::path_rooted_at_self_or_ancestor_module`].
+    /// [`Self::self_qualified_member_path`].
     pub(super) fn rooted_at_current_module(&self, names: &[String]) -> bool {
         self.module_path.as_ref().is_some_and(|mp| {
             !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp.as_slice())
@@ -3189,7 +3189,7 @@ impl<'a> Resolver<'a> {
     /// fully-qualified [`Self::rooted_at_current_module`] reference) with **no
     /// reachable project binding** at the path — the one project shadow an `open`
     /// can still redirect (see
-    /// [`AssemblyPath::SelfModuleShadowed`](super::state::AssemblyPath::SelfModuleShadowed)).
+    /// [`AssemblyPath::SelfModuleShadowed`]).
     ///
     /// A module can be **split across files**: FCS merges `module N.List` over a
     /// namespace's files, and an *earlier* fragment's member is reachable through
@@ -3256,7 +3256,7 @@ impl<'a> Resolver<'a> {
     /// `x`: inside `namespace A`, `M.x` binds the `.fsi`, not the root
     /// module), so every lower-priority binding — a project `Item` as much
     /// as an assembly member — must be withheld. The assembly tier repeats
-    /// the veto internally ([`ProjectItems::sig_screened_path`] via
+    /// the veto internally ([`ProjectItems::sig_screened_path`](super::model::ProjectItems::sig_screened_path) via
     /// [`Self::path_is_project_type_shadowed`]); this is the check the
     /// *project*-side commit sites run before binding.
     pub(super) fn sig_screens_reading_of(&self, written: &[String]) -> bool {
@@ -3266,7 +3266,7 @@ impl<'a> Resolver<'a> {
     /// The **case-lookup** flavour of [`Self::sig_screens_reading_of`], for
     /// the type-qualified case commit sites only: also exempt on an
     /// exactly-exported type-qualified case path
-    /// ([`ProjectItems::sig_screened_case_path`]) — the case lookup then
+    /// ([`ProjectItems::sig_screened_case_path`](super::model::ProjectItems::sig_screened_case_path)) — the case lookup then
     /// commits the signature's own case, which is what FCS binds there. The
     /// value-namespace lookups must keep the plain flavour: on such a path
     /// FCS resolves the signature's case ahead of a same-path
@@ -3365,14 +3365,14 @@ impl<'a> Resolver<'a> {
     ///
     /// 1. **Head** `Pal` → a **candidate loop** over the same-file containers that
     ///    declare it in a namespace that can own a dotted head
-    ///    ([`DeclKinds::stops_dotted_head`]: the module namespace — module / alias —
+    ///    ([`DeclKinds::stops_dotted_head`](super::state::DeclKinds::stops_dotted_head): the module namespace — module / alias —
     ///    plus, in expression position, a `let` value; a type / union-case ctor /
     ///    active pattern / exception ctor never hides a farther module, so those
     ///    containers are *skipped*, FCS-probed both positions). The walk spans the
     ///    current namespace and enclosing modules within it (`k >= namespace_depth`,
     ///    innermost first; plus the **root** only in a *headerless* file) — **no
     ///    opens tier** (F# prefers the lexically-enclosing module over an
-    ///    `open`-supplied one). A non-clean stop ([`DeclKinds::is_clean_module_head`],
+    ///    `open`-supplied one). A non-clean stop ([`DeclKinds::is_clean_module_head`](super::state::DeclKinds::is_clean_module_head),
     ///    position-aware: a co-declared value disqualifies only in expression
     ///    position) → [`Miss`](SameFileQualified::Miss) (the head is committed /
     ///    redirected — a cross-file branch may try). A clean candidate that is the
@@ -4478,7 +4478,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Any declaration of `member` in the module blocks transparency, in either
     /// position. FCS does backtrack past a plain `let` value in *pattern*
-    /// position (a value is no pattern constructor), but [`DeclKinds`] does not
+    /// position (a value is no pattern constructor), but [`DeclKinds`](super::state::DeclKinds) does not
     /// record `[<Literal>]`-ness and a literal **is** a constant pattern, so
     /// that refinement is not available here; the cell stays an availability
     /// gap in `companion_module_case_matrix`.
@@ -4520,7 +4520,7 @@ impl<'a> Resolver<'a> {
     /// A referenced module or static class at the same path merges with the
     /// local fragment, and FCS's modules-first search finds the member in the
     /// assembly half — so a local fragment's silence proves nothing unless this
-    /// says so (codex [P2], FCS-probed: a project `module Collide` beside the
+    /// says so (codex \[P2\], FCS-probed: a project `module Collide` beside the
     /// qualifier fixture's `QP.ModHalf.Collide` binds the assembly's
     /// `fromModule`, not a co-named local union case).
     ///
@@ -4533,13 +4533,13 @@ impl<'a> Resolver<'a> {
     ///   "no such module". Two DLLs can encode `A.B` differently — a top-level
     ///   `module A.B` in one, a nested `B` under root module `A` in the other —
     ///   and FCS merges both, so every split and every root has to be searched
-    ///   (codex round 2 [P2]).
+    ///   (codex round 2 \[P2\]).
     /// - `opened_assembly_type` still runs, for a *non-module* static class at
     ///   `mp` that `opened_assembly_modules` filters out.
     /// - [`any_split_of_a_module_path_has_a_dropped_type`](crate::AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type):
     ///   a type the projector could not decode is invisible to both lookups and
     ///   may *be* the module here, so an undecodable type anywhere along the
-    ///   path leaves absence unproven (codex round 2 [P2]).
+    ///   path leaves absence unproven (codex round 2 \[P2\]).
     fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
         !self.assemblies.has_namespace(mp)
             && self.opened_assembly_modules(mp).is_empty()

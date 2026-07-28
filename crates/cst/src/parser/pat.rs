@@ -2445,7 +2445,7 @@ impl<'src> Parser<'src> {
     /// The `{` is emitted normally, but the closing `}` is **swallowed** by
     /// LexFilter (like `)`; see `lexfilter`), so it never reaches the filtered
     /// stream — the close-detection peeks the *raw* stream and the close token
-    /// is reclaimed via [`Self::bump_swallowed_rbrace`]. The field separator
+    /// is reclaimed via [`Self::bump_swallowed_closer`]. The field separator
     /// is `;`, **not** `,`: a `,` is folded into one field's value as a tuple
     /// by [`Self::wrap_pat_tail`] (`{ X = a, b }` ⇒ one field `X = Tuple[a,b]`).
     ///
@@ -2463,7 +2463,7 @@ impl<'src> Parser<'src> {
         // and reaches an empty `SynPat.Record` only via its `LBRACE error
         // rbrace` recovery rule (unlike `[]`/`[||]`, which are valid). Diagnose
         // it against the `}`'s span. A missing `}` instead (EOF) is reported by
-        // `bump_swallowed_rbrace`, so gate on the `}` actually being present.
+        // `bump_swallowed_closer`, so gate on the `}` actually being present.
         if let Some((Token::RBrace, brace_span)) = self.next_non_trivia_raw_at_pos_with_span() {
             self.errors.push(ParseError {
                 message: "record pattern requires at least one field".to_string(),
