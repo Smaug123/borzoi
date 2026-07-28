@@ -206,6 +206,9 @@ pub struct Site {
     /// The receiver's static type — the class, struct or interface the access is
     /// on.
     pub receiver_ty: String,
+    /// The `HideCorpus.Make` factory that produces the receiver, so another
+    /// harness can build its own F# matrix over the same universe.
+    pub factory: String,
     /// The member name this cell reads. [`PROBE`] for everything the corpus
     /// declares itself; the cross-assembly family probes a **BCL** member name
     /// instead, since its point is a base chain that leaves this assembly.
@@ -513,6 +516,7 @@ fn render_fsharp(cells: &[Cell]) -> (String, Vec<Site>) {
             line,
             label: cell.label.clone(),
             receiver_ty: cell.receiver_ty.clone(),
+            factory: cell.factory.clone(),
             probe: cell.probe.clone(),
             access: (start, start + access.len()),
             text,

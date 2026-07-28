@@ -16,6 +16,7 @@ mod commit_surface;
 mod companion_head_diff;
 mod companion_module_case_matrix;
 mod decline_cause;
+mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
 mod infer_annotation_entity_diff;
