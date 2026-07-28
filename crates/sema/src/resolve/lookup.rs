@@ -1211,7 +1211,15 @@ impl<'a> Resolver<'a> {
             // Children of *this* block: fragments directly in `path` at the SAME
             // file `file` (a nested module lives in its parent block's file).
             for (child, cf, crange) in resolver.auto_open_fragments_directly_in(path) {
-                if cf == file {
+                // A child belongs to the parent FRAGMENT that lexically declares
+                // it, not merely to the parent path in this file: one file can
+                // hold two fragments of `path`, and only one of them declares
+                // this child (codex round 8).
+                let same_fragment = match (range, crange) {
+                    (Some(parent), Some(child_range)) => parent.contains_range(child_range),
+                    _ => true,
+                };
+                if cf == file && same_fragment {
                     collect(resolver, &child, file, crange, out);
                 }
             }
@@ -1278,18 +1286,25 @@ impl<'a> Resolver<'a> {
         // frontier as well only re-opens the gap that guard was built to close
         // (codex round 3).
         let current_file = self.preceding.num_files();
-        let mut fragments: Vec<Vec<String>> = vec![path.to_vec()];
+        // Each descendant keeps its OWN range, and only descendants declared
+        // *inside* this fragment come along: an earlier plain `Parent` fragment
+        // can hold an `[<AutoOpen>] Child` whose members belong to that parent,
+        // not to this one (codex round 8).
+        let mut fragments: Vec<(Vec<String>, TextRange)> = vec![(path.to_vec(), range)];
         fragments.extend(
             self.auto_open_fragments_reachable(path)
                 .into_iter()
-                .filter(|(_, file, _)| *file == current_file)
-                .map(|(p, _, _)| p),
+                .filter_map(|(p, file, frag_range)| {
+                    let frag_range = frag_range?;
+                    (file == current_file && range.contains_range(frag_range))
+                        .then_some((p, frag_range))
+                }),
         );
-        for frag in fragments {
+        for (frag, frag_range) in fragments {
             // A constructible type in this fragment takes FCS's unqualified
             // slot from an EARLIER-folded same-named value; sema models no
             // project type constructor, so the override only declines.
-            let evicting_types = self.fragment_type_contestants(&frag, range);
+            let evicting_types = self.fragment_type_contestants(&frag, frag_range);
             if !evicting_types.is_empty() {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = evicting_types
@@ -1310,17 +1325,17 @@ impl<'a> Resolver<'a> {
             // marked hidden — could be a value in expression position: raise the
             // barrier before folding, so the unenumerable name shadows
             // everything folded earlier.
-            if self.fold_back_needs_barrier(&frag, range) {
+            if self.fold_back_needs_barrier(&frag, frag_range) {
                 self.open_generation += 1;
             }
-            self.open_module_values(&frag, pos, Some(current_file), Some(range));
+            self.open_module_values(&frag, pos, Some(current_file), Some(frag_range));
             // …and the rest is declined **by name**, after the fold rather than
             // before it. `open_module_values` enumerates only what it can point
             // at, so a name it does push must still lose to a same-named member
             // it cannot — within one module FCS's own source order decides, and
             // an `extern` written after a same-named case takes the name (codex
             // round 3). Declining last is the sound side of that ordering.
-            let unnameable = self.unenumerated_member_names_in(&frag, range);
+            let unnameable = self.unenumerated_member_names_in(&frag, frag_range);
             if !unnameable.is_empty() {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = unnameable

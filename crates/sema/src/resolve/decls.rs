@@ -1881,6 +1881,16 @@ impl<'a> Resolver<'a> {
         if segs.is_empty() {
             return;
         }
+        if self.recursive_module_active {
+            // Inside a `rec` container FCS orders nothing by source position —
+            // every declaration is visible to every other — so appending this
+            // module's entries last would win contests the enclosing block's own
+            // bindings take (fcs-dump probe `RecFold`). The implicit
+            // enclosing-namespace fold is declined there by
+            // `Resolver::own_auto_open_container`; this is the fold-back's half
+            // of the same decline (codex round 8).
+            return;
+        }
         if self.anonymous_root {
             // A header-less file's nested module has no modelled `module_path`,
             // so its members carry no qualified path and the fold would

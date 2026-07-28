@@ -2723,3 +2723,58 @@ fn a_self_recursive_auto_open_module_still_declines_the_implicit_fold() {
         "the module's own later `extraValue` is forward-visible; got {res:?}"
     );
 }
+
+/// Inside a `rec` container the fold-back must not run at all: FCS orders
+/// nothing there by source position, so appending the module's entries last
+/// makes them win a contest the enclosing block's own binding takes (fcs-dump
+/// probe `RecFold` binds `M.marker`, not `Auto.marker`).
+#[test]
+fn the_fold_back_declines_inside_a_rec_container() {
+    let env = fixture_env();
+    let src = "module rec M\n\nlet marker = 2\n\n[<AutoOpen>]\nmodule Auto =\n    \
+               let marker = 1\n\nmodule User =\n    let x = marker\n";
+    let rf = resolve(src, &env);
+    let span = |needle: &str, from_end: bool| {
+        let start = if from_end {
+            src.rfind(needle).expect("the use")
+        } else {
+            src.find(needle).expect("the def")
+        };
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    let at_def = rf.resolution_at(span("marker", false));
+    let at_use = rf.resolution_at(span("marker", true));
+    assert!(at_def.is_some(), "the block's own `marker` is a binder");
+    assert_eq!(
+        at_use, at_def,
+        "the rec block's own `marker` binds, not the auto-open module's"
+    );
+}
+
+/// A nested `[<AutoOpen>]` fragment belongs to the **parent fragment that
+/// declares it**. An earlier plain `Parent` fragment holding an auto-open
+/// `Child` must not attach that child to a later `[<AutoOpen>] Parent`
+/// fragment, whose own `Child` is plain — FCS leaves the later child's members
+/// unbound (fcs-dump probe `NestFrag` reports no use for `bad`).
+#[test]
+fn a_nested_auto_open_fragment_belongs_to_its_declaring_parent_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.NestFrag\n\nmodule Parent =\n    [<AutoOpen>]\n    \
+               module Child =\n        let good = 1\n\nnamespace Demo.NestFrag\n\n\
+               [<AutoOpen>]\nmodule Parent =\n    module Child =\n        let bad = 2\n\n\
+               module User =\n    let x = bad\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("bad").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "bad".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later fragment's `Child` is plain, so `bad` is unbound; got {res:?}"
+    );
+}
