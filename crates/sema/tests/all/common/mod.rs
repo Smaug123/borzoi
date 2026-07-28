@@ -1852,8 +1852,15 @@ struct TypesDump {
     /// expression it could not check, so a consumer asserting "every type we
     /// produced, FCS confirms" can only read a *missing* node as a disagreement
     /// on a line that checked cleanly.
-    #[serde(rename = "Errors", default)]
-    errors: Vec<RawError>,
+    ///
+    /// `Option`, not a defaulted `Vec`: absent and empty must stay
+    /// distinguishable. A `BORZOI_FCS_DUMP` override pointing at a binary that
+    /// predates the field would otherwise report *no errors* for every check, and
+    /// a consumer whose soundness argument rests on "the line checked cleanly"
+    /// would silently lose it. [`parse_fcs_types_with_errors`] refuses absence;
+    /// [`parse_fcs_types`], which makes no such claim, ignores it.
+    #[serde(rename = "Errors")]
+    errors: Option<Vec<RawError>>,
 }
 
 #[derive(Deserialize)]
@@ -1870,24 +1877,30 @@ struct RawTypedExpr {
 /// byte range `(start, end)` to FCS's canonical inferred type at that span.
 /// `source` must be the exact text of the checked file (offsets index into it).
 /// fcs-dump de-duplicates nodes by range, so each range appears at most once.
-pub fn parse_fcs_types(
-    json: &str,
-    source: &str,
-) -> std::collections::HashMap<(usize, usize), String> {
-    parse_fcs_types_with_errors(json, source).0
+pub fn parse_fcs_types(json: &str, source: &str) -> FcsTypeMap {
+    parse_types_dump(json, source).0
 }
 
 /// [`parse_fcs_types`] plus the errors FCS reported. A consumer that reads a
 /// *missing* node as a disagreement needs them: the typed tree omits the whole
 /// enclosing expression on a line that failed to check, so the absence is
 /// evidence only where the line checked cleanly.
-pub fn parse_fcs_types_with_errors(
-    json: &str,
-    source: &str,
-) -> (
-    std::collections::HashMap<(usize, usize), String>,
-    Vec<FcsCheckError>,
-) {
+pub fn parse_fcs_types_with_errors(json: &str, source: &str) -> (FcsTypeMap, Vec<FcsCheckError>) {
+    let (types, errors) = parse_types_dump(json, source);
+    let errors = errors.expect(
+        "the `types` payload carries no `Errors` field — the oracle predates it \
+         (check BORZOI_FCS_DUMP), and a caller reading a missing node as a \
+         disagreement cannot tell a clean check from an unreported one",
+    );
+    (types, errors)
+}
+
+/// The `types` map: an expression's half-open byte range to FCS's canonical type.
+pub type FcsTypeMap = std::collections::HashMap<(usize, usize), String>;
+
+/// The shared body: the type map, and the errors *if the oracle reported the
+/// field at all*.
+fn parse_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsCheckError>>) {
     let dump: TypesDump = serde_json::from_str(json).expect("fcs-dump types JSON shape");
     let idx = LineIndex::new(source);
     let types = dump
@@ -1899,15 +1912,16 @@ pub fn parse_fcs_types_with_errors(
             ((start, end), e.type_canon)
         })
         .collect();
-    let errors = dump
-        .errors
-        .into_iter()
-        .map(|e| FcsCheckError {
-            line: e.line,
-            code: e.code,
-            message: e.message,
-        })
-        .collect();
+    let errors = dump.errors.map(|errors| {
+        errors
+            .into_iter()
+            .map(|e| FcsCheckError {
+                line: e.line,
+                code: e.code,
+                message: e.message,
+            })
+            .collect()
+    });
     (types, errors)
 }
 

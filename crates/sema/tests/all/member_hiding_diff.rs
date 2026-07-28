@@ -242,6 +242,15 @@ fn run() -> Run {
     let types_json = invoke_fcs_dump_with_refs("types", &path, &[dll]);
     let _ = std::fs::remove_file(&path);
     let (fcs_types, type_errors) = parse_fcs_types_with_errors(&types_json, &corpus.fsharp);
+    // Most of this corpus is deliberately ill-typed — reading a method group, an
+    // event, a `static` through a value receiver. An empty diagnostic list is
+    // therefore not "the corpus is clean" but "the oracle is not reporting", and
+    // the clause that stops an *error* ratifying a commit would be silently off.
+    assert!(
+        !type_errors.is_empty(),
+        "the `types` oracle reported no errors for a corpus whose cells mostly do \
+         not type-check — the diagnostics are not arriving",
+    );
     let error_lines: HashSet<usize> = type_errors.iter().map(|e| e.line as usize).collect();
 
     // Every site's probe name, so a use of one is recognisable without knowing
