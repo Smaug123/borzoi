@@ -79,6 +79,24 @@ struct GeneratorSummary {
     measurement: String,
     configuration: Value,
     statistics: Value,
+    /// The metric paths this generator deliberately stopped emitting, in the
+    /// dotted spelling the dashboard names them by.
+    ///
+    /// This is how the contract says "the metric namespace evolved". Without
+    /// it, a key that disappears because it was renamed and a key that
+    /// disappears because a generator regressed are the same event to every
+    /// reader: see [`metrics_that_vanished`].
+    ///
+    /// It is deliberately *not* part of [`series_key`]. Retiring one metric
+    /// must not restart the trend of the metrics beside it, which are still
+    /// measuring exactly what they measured before — that is the whole reason
+    /// this exists rather than a schema bump.
+    ///
+    /// A declaration is needed exactly once, in the observation where the key
+    /// first goes missing; by the next run the predecessor already lacks it, so
+    /// leaving the entry in place is harmless and dropping it costs nothing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    retired_statistics: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,6 +163,25 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
     let path = observation_path(&input.history, &observation);
     reject_symlinked_components(&input.history, &path)?;
     let parent = path.parent().expect("observation path has a parent");
+    if let Some(previous) = recorded_predecessor(parent, &observation)? {
+        let vanished = metrics_that_vanished(&previous.generator, &observation.generator);
+        if !vanished.is_empty() {
+            return invalid(format!(
+                "observation for {} drops {} that {} measured: {}. The dashboard would keep \
+                 offering each of them with the older commit's value reading as \"Latest\", which \
+                 is indistinguishable from a run that failed to measure them. If the generator \
+                 meant to stop emitting them, list them in its `retired_statistics`",
+                observation.commit,
+                if vanished.len() == 1 {
+                    "the metric"
+                } else {
+                    "the metrics"
+                },
+                previous.commit,
+                vanished.join(", ")
+            ));
+        }
+    }
     create_dir_all(parent)?;
     write_json(&path, &observation)?;
     Ok(path)
@@ -489,7 +526,117 @@ fn validate_generator(generator: &GeneratorSummary) -> Result<(), StatsError> {
     if !contains_number(&generator.statistics) {
         return invalid("generator statistics must contain at least one number");
     }
+    if let Some(key) = dotted_statistic_key(&generator.statistics) {
+        return invalid(format!(
+            "generator statistics key {key:?} contains a dot, which is how a metric path spells \
+             nesting: it would name the same metric as the nested spelling of it, so a retirement \
+             could not tell the two apart"
+        ));
+    }
+    let emitted = metric_paths(&generator.statistics);
+    let mut declared = std::collections::BTreeSet::new();
+    for retired in &generator.retired_statistics {
+        if !valid_metric_path(retired) {
+            return invalid(format!(
+                "retired statistic must be a dotted metric path with non-empty segments, got {retired:?}"
+            ));
+        }
+        if !declared.insert(retired.as_str()) {
+            return invalid(format!(
+                "retired statistic {retired:?} is listed more than once"
+            ));
+        }
+        if emitted.contains(retired.as_str()) {
+            return invalid(format!(
+                "generator retires {retired:?} but also emits it; a retirement says the metric is \
+                 gone, and one that is still measured would licence dropping it later unannounced"
+            ));
+        }
+    }
     Ok(())
+}
+
+/// Every metric the dashboard can plot from these statistics, in the dotted
+/// spelling it names them by.
+///
+/// This mirrors the site's `numbers()` walk, and the mirroring is the point:
+/// the dashboard plots one metric per nested **number**, so a `null` is not a
+/// metric here either. A field that starts serialising as `null` has therefore
+/// dropped its metric exactly as surely as one deleted from the type, and
+/// [`metrics_that_vanished`] sees both.
+fn metric_paths(statistics: &Value) -> std::collections::BTreeSet<String> {
+    fn walk(value: &Value, prefix: &str, output: &mut std::collections::BTreeSet<String>) {
+        match value {
+            Value::Number(_) => {
+                output.insert(prefix.to_string());
+            }
+            Value::Object(fields) => {
+                for (key, child) in fields {
+                    let path = if prefix.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{prefix}.{key}")
+                    };
+                    walk(child, &path, output);
+                }
+            }
+            Value::Null | Value::Bool(_) | Value::Array(_) | Value::String(_) => {}
+        }
+    }
+    let mut output = std::collections::BTreeSet::new();
+    walk(statistics, "", &mut output);
+    output
+}
+
+fn valid_metric_path(value: &str) -> bool {
+    !value.is_empty() && value.split('.').all(|segment| !segment.is_empty())
+}
+
+/// A statistics key that spells nesting inside itself, if there is one.
+///
+/// The dot is the metric path's separator, so `{"a.b": 1}` and
+/// `{"a": {"b": 1}}` are one metric name for two different shapes. That was
+/// merely untidy while a metric path was something only the dashboard built;
+/// it is a hazard now that [`GeneratorSummary::retired_statistics`] names
+/// metrics by it, because re-nesting a key would be invisible to
+/// [`metrics_that_vanished`] — nothing vanished, by name — while every reader
+/// of the old shape sees a different key.
+fn dotted_statistic_key(statistics: &Value) -> Option<&str> {
+    match statistics {
+        Value::Object(fields) => fields.iter().find_map(|(key, child)| {
+            if key.contains('.') {
+                Some(key.as_str())
+            } else {
+                dotted_statistic_key(child)
+            }
+        }),
+        _ => None,
+    }
+}
+
+/// The metrics `previous` measured that `incoming` neither measures nor
+/// declares retired.
+///
+/// This is the across-run half of the contract's "every key, every run, always
+/// a number". The within-run half is the generator's own exhaustiveness — emit
+/// zeros for a closed enumeration, never `collect()` over the observed variants
+/// — and no recorder can check it, because a summary with one fewer key is
+/// indistinguishable from a measurement that genuinely has fewer metrics. Two
+/// consecutive observations of one series are a different matter: they measure
+/// the same thing over the same corpus with the same toolchain, so a key
+/// present in one and absent from the next is a change in what is measured, and
+/// the generator is the only thing that knows whether it meant it.
+fn metrics_that_vanished(previous: &GeneratorSummary, incoming: &GeneratorSummary) -> Vec<String> {
+    let still_emitted = metric_paths(&incoming.statistics);
+    let retired: std::collections::BTreeSet<&str> = incoming
+        .retired_statistics
+        .iter()
+        .map(String::as_str)
+        .collect();
+    metric_paths(&previous.statistics)
+        .into_iter()
+        .filter(|metric| !still_emitted.contains(metric) && !retired.contains(metric.as_str()))
+        .collect()
 }
 
 fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
@@ -535,6 +682,46 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
         ));
     }
     Ok(())
+}
+
+/// The observation `incoming` will *follow* on the dashboard: the greatest one
+/// already recorded in its series directory that orders strictly before it,
+/// under the very ordering [`build_site`] renders by.
+///
+/// Predecessor rather than "the newest recorded" because runs finish out of
+/// order, and the ordering is by workflow creation, not completion. A slow run
+/// that lands after a later one has a smaller metric namespace *because the
+/// later commit widened it*, and comparing it against the newest would refuse
+/// it for a drop that never happened. Strictly-before also excludes the
+/// observation's own file, so a rerun is not compared against itself.
+///
+/// Reading the whole directory is cheap — a series is tens of small files — and
+/// the alternative, tracking a per-series head, would be a second source of
+/// truth about an ordering `build_site` already derives from the files.
+fn recorded_predecessor(
+    series: &Path,
+    incoming: &Observation,
+) -> Result<Option<Observation>, StatsError> {
+    if !series.is_dir() {
+        return Ok(None);
+    }
+    let mut paths = Vec::new();
+    collect_json_files(series, &mut paths)?;
+    paths.sort();
+    let mut best: Option<Observation> = None;
+    for path in paths {
+        let stored: Observation = read_json(&path)?;
+        if observation_order(&stored, incoming) != std::cmp::Ordering::Less {
+            continue;
+        }
+        if best
+            .as_ref()
+            .is_none_or(|previous| observation_order(previous, &stored) == std::cmp::Ordering::Less)
+        {
+            best = Some(stored);
+        }
+    }
+    Ok(best)
 }
 
 fn observation_order(a: &Observation, b: &Observation) -> std::cmp::Ordering {

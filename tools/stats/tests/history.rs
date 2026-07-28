@@ -540,6 +540,277 @@ fn the_checked_in_project_corpus_is_valid() {
     );
 }
 
+/// A metric that stops being emitted is indistinguishable, on the dashboard,
+/// from a metric a run failed to measure: both leave the previous point reading
+/// as "Latest". The generator's within-run exhaustiveness cannot see this — the
+/// key is gone from the type, not merely absent from one run — so the recorder
+/// compares each observation against the one it follows and makes the deliberate
+/// case say so.
+#[test]
+fn a_metric_that_vanishes_must_be_declared_retired() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "occupied": 3, "kept": 1 } }),
+    );
+    record_observation(&input(temp.path(), first)).expect("record the first observation");
+
+    let dropped = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "kept": 1 } }),
+    );
+    let mut second = input(temp.path(), dropped);
+    second.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    second.run_number = 43;
+    let err = record_observation(&second).unwrap_err().to_string();
+    assert!(err.contains("census.occupied"), "{err}");
+    assert!(err.contains("retired_statistics"), "{err}");
+
+    let declared = write_full_summary(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "kept": 1 } }),
+        json!(["census.occupied"]),
+    );
+    let mut declared_input = second.clone();
+    declared_input.summary = declared;
+    record_observation(&declared_input).expect("a declared retirement records");
+
+    // The declaration is needed exactly once, at the transition: the next
+    // observation's predecessor already lacks the key, so nothing vanishes.
+    let after = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "kept": 1 } }),
+    );
+    let mut third = input(temp.path(), after);
+    third.commit = "2123456789abcdef0123456789abcdef01234567".into();
+    third.run_number = 44;
+    record_observation(&third).expect("the declaration does not have to be carried forward");
+}
+
+/// The whole point of a retirement marker rather than a series split: the
+/// metrics that *are* still comparable must keep their history. A digest that
+/// moved would discard every other metric's trend to explain one dead key.
+#[test]
+fn retiring_a_metric_does_not_start_a_new_series() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({ "mode": "all" }),
+        json!({ "matches": 7, "occupied": 3 }),
+    );
+    let first_path = record_observation(&input(temp.path(), first)).unwrap();
+
+    let declared = write_full_summary(
+        temp.path(),
+        "parser-divergence",
+        json!({ "mode": "all" }),
+        json!({ "matches": 7 }),
+        json!(["occupied"]),
+    );
+    let mut second = input(temp.path(), declared);
+    second.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    second.run_number = 43;
+    let second_path = record_observation(&second).unwrap();
+
+    assert_eq!(
+        first_path.parent().unwrap(),
+        second_path.parent().unwrap(),
+        "a retirement must leave the series it was measured in intact"
+    );
+}
+
+/// A retirement is a claim that the key is gone. Emitting it anyway would make
+/// the declaration a licence to drop the key at any later run without notice.
+#[test]
+fn a_retirement_must_be_well_formed_and_not_contradict_the_statistics() {
+    let temp = tempfile::tempdir().unwrap();
+    for (expected, retired, statistics) in [
+        (
+            "also emits",
+            json!(["matches"]),
+            json!({ "matches": 7, "divergences": 1 }),
+        ),
+        (
+            "also emits",
+            json!(["census.kept"]),
+            json!({ "census": { "kept": 1 } }),
+        ),
+        ("metric path", json!([""]), json!({ "matches": 7 })),
+        ("metric path", json!(["census."]), json!({ "matches": 7 })),
+        ("metric path", json!([".census"]), json!({ "matches": 7 })),
+        ("metric path", json!(["a..b"]), json!({ "matches": 7 })),
+        (
+            "more than once",
+            json!(["gone", "gone"]),
+            json!({ "matches": 7 }),
+        ),
+        // A dot is how a metric path spells nesting, so this key names the same
+        // metric as `{"census": {"kept": 1}}`. Re-nesting it would then be
+        // invisible to the drop check while every reader sees a new key.
+        ("contains a dot", json!([]), json!({ "census.kept": 1 })),
+        (
+            "contains a dot",
+            json!([]),
+            json!({ "census": { "by.cause": 1 } }),
+        ),
+    ] {
+        let summary = write_full_summary(
+            temp.path(),
+            "parser-divergence",
+            json!({}),
+            statistics,
+            retired,
+        );
+        let err = record_observation(&input(temp.path(), summary))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(expected), "expected {expected:?}, got {err}");
+    }
+}
+
+/// The dashboard plots one point per nested *number* and skips a `null` exactly
+/// as it skips an absent key, so a field that starts serialising as `null` has
+/// dropped its metric. The recorder reads the statistics the same way, which is
+/// what makes this check the across-run half of "every key, every run".
+#[test]
+fn a_metric_that_becomes_null_has_dropped() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "ratio_basis_points": 4200 }),
+    );
+    record_observation(&input(temp.path(), first)).unwrap();
+
+    let nulled = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "ratio_basis_points": Value::Null }),
+    );
+    let mut second = input(temp.path(), nulled);
+    second.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    second.run_number = 43;
+    let err = record_observation(&second).unwrap_err().to_string();
+    assert!(err.contains("ratio_basis_points"), "{err}");
+}
+
+/// Runs finish out of order — the doc's ordering rules exist because they do —
+/// so the comparison is against the observation this one will *follow* on the
+/// dashboard, never against whatever happens to be newest. Comparing against
+/// the newest would refuse an older observation for lacking a metric that was
+/// introduced after it, which is not a drop at all.
+#[test]
+fn the_drop_check_compares_against_the_observation_it_follows() {
+    let temp = tempfile::tempdir().unwrap();
+    let oldest = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+    );
+    let mut first = input(temp.path(), oldest);
+    first.run_number = 10;
+    record_observation(&first).unwrap();
+
+    let widened = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "introduced_later": 1 }),
+    );
+    let mut newest = input(temp.path(), widened);
+    newest.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    newest.run_number = 30;
+    record_observation(&newest).expect("a widened metric namespace records");
+
+    // A slow run from between the two arrives last. It never carried
+    // `introduced_later`, and its own predecessor did not either.
+    let late = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+    );
+    let mut middle = input(temp.path(), late);
+    middle.commit = "2123456789abcdef0123456789abcdef01234567".into();
+    middle.run_number = 20;
+    record_observation(&middle).expect("a late-arriving older observation is not a drop");
+
+    // A rerun replaces its own observation, so it must not be compared against
+    // itself — nor against anything newer than itself.
+    let rerun = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+    );
+    let mut again = middle.clone();
+    again.summary = rerun;
+    again.run_attempt = 2;
+    record_observation(&again).expect("a rerun compares against its own predecessor");
+}
+
+/// A configuration change starts a new series, and a new series has no
+/// predecessor to have dropped anything: the old points are not comparable, so
+/// nothing about them constrains the shape of the new ones.
+#[test]
+fn a_new_series_carries_no_obligation_from_the_old_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let first = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({ "mode": "all" }),
+        json!({ "matches": 7, "occupied": 3 }),
+    );
+    record_observation(&input(temp.path(), first)).unwrap();
+
+    let reconfigured = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({ "mode": "sampled" }),
+        json!({ "matches": 7 }),
+    );
+    let mut second = input(temp.path(), reconfigured);
+    second.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    second.run_number = 43;
+    record_observation(&second).expect("a new series starts clean");
+}
+
+/// The rendering half. A retired metric still has to be *readable* as retired:
+/// its last point is not the latest measurement, and a card that says "Latest"
+/// over a value from ten commits ago is the same lie the recorder now refuses
+/// to create. Liveness is decided by the newest observation of the selected
+/// series, which is where the metric namespace currently in force lives.
+#[test]
+fn the_dashboard_reads_liveness_off_the_newest_observation() {
+    let temp = tempfile::tempdir().unwrap();
+    let summary = write_summary(temp.path(), "parser-divergence", json!({}));
+    record_observation(&input(temp.path(), summary)).unwrap();
+    let output = temp.path().join("site");
+    build_site(&temp.path().join("history"), &output).unwrap();
+
+    let html = fs::read_to_string(output.join("index.html")).unwrap();
+    assert!(
+        html.contains("items.at(-1).generator.statistics"),
+        "liveness must be read off the newest observation of the series"
+    );
+    assert!(
+        html.contains("retired"),
+        "a retired metric must be labelled"
+    );
+}
+
 fn input(root: &Path, summary: PathBuf) -> RecordInput {
     RecordInput {
         summary,
@@ -581,17 +852,29 @@ fn write_summary_with_statistics(
     configuration: Value,
     statistics: Value,
 ) -> PathBuf {
+    write_full_summary(root, measurement, configuration, statistics, json!([]))
+}
+
+fn write_full_summary(
+    root: &Path,
+    measurement: &str,
+    configuration: Value,
+    statistics: Value,
+    retired: Value,
+) -> PathBuf {
     let path = root.join(format!("{measurement}-summary.json"));
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&json!({
-            "schema_version": 1,
-            "measurement": measurement,
-            "configuration": configuration,
-            "statistics": statistics
-        }))
-        .unwrap(),
-    )
-    .unwrap();
+    let mut summary = json!({
+        "schema_version": 1,
+        "measurement": measurement,
+        "configuration": configuration,
+        "statistics": statistics
+    });
+    if retired != json!([]) {
+        summary
+            .as_object_mut()
+            .unwrap()
+            .insert("retired_statistics".into(), retired);
+    }
+    fs::write(&path, serde_json::to_vec_pretty(&summary).unwrap()).unwrap();
     path
 }

@@ -57,11 +57,15 @@ A measurement generator writes this shape:
 `measurement` is a lowercase kebab-case path segment. `configuration` and
 `statistics` are JSON objects. `statistics` must contain at least one number
 and cannot contain arrays; use nested objects for structured metric families.
+An optional `retired_statistics` array names metrics the generator deliberately
+stopped emitting — see [Retiring a metric] below.
 The series identity is a deterministic digest of the generator schema,
 measurement name, pinned corpus revision, `flake.lock` hash, and complete
 configuration. Changing the corpus, toolchain inputs, stride, scope, defines,
 or another configuration field therefore starts a new comparable series rather
 than silently joining unlike points.
+
+[Retiring a metric]: #retiring-a-metric
 
 Nested numeric statistics are discovered automatically by the dashboard. A
 future typed-AST census only needs to emit this contract and add its report
@@ -92,12 +96,81 @@ ways to breach it, and they are the same bug:
   because the denominator is emitted beside it, so "0 of 0" stays
   distinguishable from "0 of many".
 
-Nothing in the recorder can enforce this: a summary with a missing key is
-indistinguishable from a measurement that genuinely has fewer metrics, so the
-generator has to be exhaustive by construction. `borzoi-corpus-diff` guards it
+Nothing in the recorder can enforce this *within* a run: a summary with a
+missing key is indistinguishable from a measurement that genuinely has fewer
+metrics, so the generator has to be exhaustive by construction.
+`borzoi-corpus-diff` guards it
 with `no_statistic_is_ever_null_however_empty_the_run`, which walks the whole
 rendered tree on a deliberately degenerate run rather than naming the fields it
 knows about — the field nobody thought to name is exactly the one that breaks.
+
+*Across* runs it can, and does. Two consecutive observations of one series
+measure the same thing over the same corpus with the same toolchain, so a
+metric present in one and absent from the next is a change in what is
+measured — and only the generator knows whether it meant it. `record` therefore
+compares each observation against the one it will follow on the dashboard and
+refuses to publish one that drops a metric its predecessor carried, unless it
+says so. It reads the statistics exactly as the dashboard does, one metric per
+nested *number*, so a field that starts serialising as `null` counts as dropped
+for the same reason the dashboard would stop plotting it.
+
+The comparison is against the **predecessor**, not the newest recorded
+observation, because runs finish out of order and observations are ordered by
+workflow creation. An older run landing late has a smaller metric namespace
+because a *later* commit widened it, which is not a drop; comparing against the
+newest would refuse it for one. The residual is narrow and one-sided: the check
+can only fail to fire, never fire wrongly, and it does so only if a retirement
+lands in the very first observation of a series that later receives an
+out-of-order older one.
+
+### Retiring a metric
+
+A metric is retired by naming it in the observation's `retired_statistics`:
+
+```json
+{
+  "schema_version": 1,
+  "measurement": "project-corpus-diff",
+  "configuration": { },
+  "statistics": { },
+  "retired_statistics": ["decline_census.project.by_cause.occupied"]
+}
+```
+
+Each entry is a dotted metric path in the spelling the dashboard names it by,
+and it must **not** also appear in `statistics` — a retirement says the metric
+is gone, and one that is still measured would licence dropping it later without
+notice.
+
+The declaration is needed exactly once, in the observation where the key first
+goes missing: by the next run the predecessor already lacks it, so carrying the
+entry forward is harmless and dropping it costs nothing. It is deliberately not
+part of the series digest, and that is the whole reason it exists rather than a
+schema bump: retiring one metric must not restart the trend of the metrics
+beside it, which are still measuring exactly what they measured before. The
+`schema_version` is global to every generator, so bumping it would restart the
+parser, resolution and find-references series too; and `configuration` is
+all-or-nothing, so splitting there would discard the divergence and deferral
+history that the PR gate and the tier-reorder plan both read.
+
+Because the workflow runs on push to `main`, forgetting the declaration fails
+*after* the merge: the record step exits non-zero, so that commit's observation
+— along with any the same step would have recorded after it — is not published,
+and the run goes red. So add the declaration in the same commit that removes the
+key. A lost point in a forty-point series costs little; a metric that silently
+freezes at a stale value costs the thing this workflow exists for.
+
+Renaming is retirement plus introduction, and the halves are not symmetrical.
+The new key starts mid-series, which the dashboard shows honestly — the chart
+begins where the metric does. The old key is the half that needs saying out
+loud.
+
+The dashboard labels a metric the newest observation of the selected series
+does not carry as `(retired)`, and its "Latest" card reads "Last measured".
+That covers the retirements predating this check as well as the declared ones:
+liveness is read off the observations themselves, so it needs no declaration to
+be right. The label and the check are two halves of one fact — the label makes
+an absence legible, the check makes it deliberate.
 
 ## Two corpora
 

@@ -41,7 +41,7 @@
     <label>Statistic<select id="metric"></select></label>
   </section>
   <section class="cards">
-    <div class="card"><span class="muted">Latest</span><strong id="latest">—</strong></div>
+    <div class="card"><span class="muted" id="latest-label">Latest</span><strong id="latest">—</strong></div>
     <div class="card"><span class="muted">Change from first</span><strong id="delta">—</strong></div>
     <div class="card"><span class="muted">Observations</span><strong id="count">—</strong></div>
   </section>
@@ -51,7 +51,7 @@
 </main>
 <script>
 const ns = 'http://www.w3.org/2000/svg';
-const state = { observations: [] };
+const state = { observations: [], retired: new Set() };
 const byId = id => document.getElementById(id);
 const unique = values => [...new Set(values)];
 const option = (value, label = value) => { const node = document.createElement('option'); node.value = value; node.textContent = label; return node; };
@@ -63,9 +63,9 @@ function numbers(value, prefix = '', output = {}) {
     for (const [key, child] of Object.entries(value)) numbers(child, prefix ? `${prefix}.${key}` : key, output);
   return output;
 }
-function selectValues(select, values) {
+function selectValues(select, values, label = value => value) {
   const previous = select.value;
-  select.replaceChildren(...values.map(value => option(value)));
+  select.replaceChildren(...values.map(value => option(value, label(value))));
   if (values.includes(previous)) select.value = previous;
 }
 function filtered() {
@@ -77,10 +77,17 @@ function refreshSeries() {
   selectValues(byId('series'), values);
   refreshMetrics();
 }
+// A metric the newest observation of the series does not carry is no longer
+// measured, so its last point is not the latest measurement. Left unmarked it
+// would read as a live metric whose value happens to be several commits old —
+// the same reading a run that failed to measure produces, which is what the
+// recorder now refuses to publish undeclared.
 function refreshMetrics() {
   const items = filtered();
   const values = unique(items.flatMap(item => Object.keys(numbers(item.generator.statistics)))).sort();
-  selectValues(byId('metric'), values);
+  const live = new Set(items.length ? Object.keys(numbers(items.at(-1).generator.statistics)) : []);
+  state.retired = new Set(values.filter(value => !live.has(value)));
+  selectValues(byId('metric'), values, value => state.retired.has(value) ? `${value} (retired)` : value);
   render();
 }
 function svg(name, attrs = {}) {
@@ -90,6 +97,7 @@ function svg(name, attrs = {}) {
 }
 function render() {
   const metric = byId('metric').value;
+  byId('latest-label').textContent = state.retired.has(metric) ? 'Last measured — retired' : 'Latest';
   const points = filtered().map(item => ({ item, value: numbers(item.generator.statistics)[metric] })).filter(point => Number.isFinite(point.value));
   const chart = byId('chart'); chart.replaceChildren();
   if (!points.length) { byId('latest').textContent = byId('delta').textContent = byId('count').textContent = '—'; return; }
