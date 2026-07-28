@@ -2585,3 +2585,26 @@ fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value()
          `Inner.shortTarget`; got {res:?}"
     );
 }
+
+/// Within one `[<AutoOpen>]` module an unenumerated `extern` declared *after* a
+/// same-named case takes the name in FCS — the module's own source order
+/// decides. The fold-back enumerates the case, so its decline for the extern
+/// must land *after* that push, or the case wins and the enclosing use gets a
+/// wrong go-to-definition (codex round 3).
+#[test]
+fn an_extern_after_a_same_named_case_declines_the_folded_case() {
+    let env = fixture_env();
+    let src = "module M\n[<AutoOpen>]\nmodule LocalAuto =\n    type Holder =\n        | Marker\n    \
+               extern int Marker()\nlet x = Marker\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Marker").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Marker".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `extern Marker` takes the name and we cannot name it; got {res:?}"
+    );
+}

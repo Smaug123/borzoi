@@ -747,7 +747,9 @@ impl<'a> Resolver<'a> {
                     // wrong go-to-def, not a gap. Declining by position is the
                     // same concession the fold's other unnameable surfaces make
                     // (codex round 2 on the fold-back, which removed the blanket
-                    // screen that had been covering this).
+                    // screen that had been covering this). Outside the module,
+                    // the fold-back declines the same name
+                    // ([`Resolver::unenumerated_member_names_in`]).
                     let generation = self.open_generation;
                     let name = ext_name.last().expect("non-empty").clone();
                     self.module_frame().entries.push(ScopeEntry::binding(
@@ -765,8 +767,11 @@ impl<'a> Resolver<'a> {
                 // review of the straddle slice). A sound over-defer: `extern` is
                 // rare (P/Invoke), and every other unenumerable value producer
                 // (union cases / exception ctors / active patterns / aliases)
-                // already marks its module hidden.
-                self.note_hidden_value_module(self.container_path.clone());
+                // already marks its module hidden. The fold-back of the file's
+                // own `[<AutoOpen>]` module can *name* it, though, so it
+                // declines it per name rather than raising the blanket barrier
+                // ([`Resolver::unenumerated_member_names_in`]).
+                self.note_hidden_nameable_value_module(self.container_path.clone());
                 // The export-decl-list twin: `path` = the container (its
                 // hidden-value path, recorded unconditionally as above); `name`
                 // carries the function segments (empty for a nameless recovery

@@ -333,6 +333,24 @@ const CELLS: &[Cell] = &[
         position: Position::PatternBare,
     },
     Cell {
+        // A `private` recognizer is invisible outside its own module, so it
+        // contests nothing in the enclosing scope and the case an earlier open
+        // supplied still wins. The decline must therefore be filtered by
+        // accessibility, not driven by the name alone (codex round 3).
+        container: Container::Module("Demo.FoldBack.PrivateAp"),
+        decls: &[PJ_CASE],
+        label: "private / a private active-pattern case does not decline an earlier open's case",
+        body: &[
+            "open Demo.FbCase",
+            "[<AutoOpen>]",
+            "module LocalAuto =",
+            "    let private (|PjMarker|_|) (x: int) = if x = 0 then Some () else None",
+        ],
+        after: &[],
+        probe: "PjMarker",
+        position: Position::PatternBare,
+    },
+    Cell {
         // A `private` type is visible within its own module only, so it takes no
         // slot in the enclosing scope and the assembly's value stands.
         container: Container::Module("Demo.FoldBack.PrivateType"),

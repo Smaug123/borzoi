@@ -12,7 +12,8 @@ use crate::def::{DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ItemId, Resolution,
+    SlotClass,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
@@ -1244,8 +1245,15 @@ impl<'a> Resolver<'a> {
     /// Lending the module's short name as a shortening prefix is task #30,
     /// declined for the implicit fold on the same terms.
     pub(super) fn fold_own_auto_open_module(&mut self, path: &[String], pos: u32) {
-        // Every open bumps the latest-open position (EX-3 §2(d)).
-        self.latest_open_pos = self.latest_open_pos.max(pos);
+        // [`Self::latest_open_pos`] is deliberately NOT advanced. Its single
+        // consumer is the attribute-candidate guard, which distrusts an in-file
+        // definition preceding the latest open because that open might supply a
+        // higher-priority candidate — a presence-wide frontier an ordinary
+        // `open` needs because its contents are not in view. The auto-open
+        // attribute hazard already has a name-keyed guard covering exactly this
+        // shape ([`Resolver::own_auto_open_type_names`], AO-2), so advancing the
+        // frontier as well only re-opens the gap that guard was built to close
+        // (codex round 3).
         let current_file = self.preceding.num_files();
         let mut fragments: Vec<Vec<String>> = vec![path.to_vec()];
         fragments.extend(
@@ -1274,66 +1282,118 @@ impl<'a> Resolver<'a> {
                     .collect();
                 self.module_frame().entries.extend(entries);
             }
-            // A fragment's **active-pattern cases** are value-space names
-            // `open_module_values` does not enumerate, but they live in the
-            // pattern namespace alone — so they are declined by name there
-            // rather than by the generation barrier, which would take the
-            // expression namespace down with them. Their names are readable
-            // here because this is the file's own module
-            // ([`Self::container_decls`] records each as it is declared).
-            let ap_cases = self.active_pattern_case_names_in(&frag);
-            if !ap_cases.is_empty() {
+            // Anything it hides that we cannot *name* — a module alias, a
+            // case-opaque type repr, or a path an earlier Compile-order file
+            // marked hidden — could be a value in expression position: raise the
+            // barrier before folding, so the unenumerable name shadows
+            // everything folded earlier.
+            if self.fold_back_needs_barrier(&frag) {
+                self.open_generation += 1;
+            }
+            self.open_module_values(&frag, pos, Some(current_file));
+            // …and the rest is declined **by name**, after the fold rather than
+            // before it. `open_module_values` enumerates only what it can point
+            // at, so a name it does push must still lose to a same-named member
+            // it cannot — within one module FCS's own source order decides, and
+            // an `extern` written after a same-named case takes the name (codex
+            // round 3). Declining last is the sound side of that ordering.
+            let unnameable = self.unenumerated_member_names_in(&frag);
+            if !unnameable.is_empty() {
                 let generation = self.open_generation;
-                let entries: Vec<ScopeEntry> = ap_cases
+                let entries: Vec<ScopeEntry> = unnameable
                     .into_iter()
-                    .map(|name| {
-                        let mut entry = ScopeEntry::opened_pattern_only(
-                            name,
-                            Resolution::Deferred(DeferredReason::UnboundName),
-                            generation,
-                            pos,
-                        );
-                        // [`ScopeEntry::opened_case`]: the name provably
-                        // occupies the constructor namespace, so the reference
-                        // stops here with no committed target. Without it
-                        // `case_reference_entry` classifies the `Deferred` as a
-                        // non-case and scans **past** it to whatever case an
-                        // earlier open supplied — a wrong go-to-def (codex
-                        // round 1).
-                        entry.opened_case = true;
+                    .map(|(name, pattern_only)| {
+                        let mut entry = if pattern_only {
+                            let mut e = ScopeEntry::opened_pattern_only(
+                                name,
+                                Resolution::Deferred(DeferredReason::UnboundName),
+                                generation,
+                                pos,
+                            );
+                            // [`ScopeEntry::opened_case`]: the name provably
+                            // occupies the constructor namespace, so the
+                            // reference stops here with no committed target.
+                            // Without it `case_reference_entry` classifies the
+                            // `Deferred` as a non-case and scans **past** it to
+                            // whatever case an earlier open supplied — a wrong
+                            // go-to-def (codex round 1).
+                            e.opened_case = true;
+                            e
+                        } else {
+                            ScopeEntry::opened(
+                                name,
+                                Resolution::Deferred(DeferredReason::UnboundName),
+                                generation,
+                                pos,
+                            )
+                        };
+                        entry.from_open = true;
                         entry
                     })
                     .collect();
                 self.module_frame().entries.extend(entries);
             }
-            // Anything else it hides — a module alias, an `extern`, a
-            // case-opaque type repr — could be a value in expression position
-            // too, and we cannot name it: raise the barrier before folding, so
-            // the unenumerable name shadows everything folded earlier.
-            if self.fold_back_needs_barrier(&frag) {
-                self.open_generation += 1;
-            }
-            self.open_module_values(&frag, pos, Some(current_file));
         }
     }
 
-    /// The **active-pattern case** names declared directly in `container`, read
-    /// off the per-container declared-name view
-    /// ([`Resolver::container_decls`](super::Resolver)) that
-    /// `define_active_pattern` populates. Only meaningful for a container in
-    /// *this* file; an earlier Compile-order file's cases are not in that view,
-    /// which is why [`Self::fold_back_needs_barrier`] still barriers for one.
-    fn active_pattern_case_names_in(&self, container: &[String]) -> Vec<String> {
-        self.container_decls
-            .get(container)
-            .map(|decls| {
-                decls
-                    .iter()
-                    .filter(|(_, kinds)| kinds.active_pattern)
-                    .map(|(name, _)| name.clone())
-                    .collect()
-            })
-            .unwrap_or_default()
+    /// The names `open_module_values` cannot enumerate for `container`, each
+    /// flagged `pattern_only` — the namespace it occupies, which decides how the
+    /// fold declines it:
+    ///
+    /// - a module-level **active-pattern case** (`true`): FCS does not admit one
+    ///   as a value at all (`let v = Even` is FS0039), so it contests the
+    ///   constructor namespace alone;
+    /// - an **`extern`** prototype (`false`): an ordinary value-namespace name
+    ///   that sema does not intern as a binder.
+    ///
+    /// Read off this file's [`Resolver::export_decls`](super::Resolver), which
+    /// carries each declaration's path — and, for an active-pattern case, the
+    /// [`ExportedItem`] whose `access_root_len` decides accessibility. A
+    /// `let private (|Case|_|)` is invisible outside its own module, so it
+    /// contests nothing in the enclosing scope and must not decline the case an
+    /// earlier open supplied there (codex round 3).
+    ///
+    /// This file only: an earlier Compile-order file's members are not in
+    /// `export_decls`, which is why [`Self::fold_back_needs_barrier`] still
+    /// raises the blanket barrier for a path one of them marked hidden.
+    fn unenumerated_member_names_in(&self, container: &[String]) -> Vec<(String, bool)> {
+        let mut out: Vec<(String, bool)> = Vec::new();
+        for decl in &self.export_decls {
+            match &decl.kind {
+                // `path` = container + case name.
+                ExportDeclKind::ActivePatternCase { item, .. } => {
+                    let Some((name, parent)) = decl.path.split_last() else {
+                        continue;
+                    };
+                    if parent != container {
+                        continue;
+                    }
+                    // An anonymous-root case has no `ExportedItem` to key
+                    // accessibility on; the fold declines an anonymous root
+                    // wholesale, so it never reaches here.
+                    let accessible = item.is_some_and(|idx| {
+                        super::model::accessible_from(
+                            self.items[idx].access_root_len,
+                            &decl.path,
+                            &self.container_path,
+                        )
+                    });
+                    if accessible {
+                        out.push((name.clone(), true));
+                    }
+                }
+                // `path` = the container itself; `name` = the function segments.
+                ExportDeclKind::Extern { name } => {
+                    if decl.path == container
+                        && let Some(last) = name.last()
+                    {
+                        out.push((last.clone(), false));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Whether [`Self::fold_own_auto_open_module`] must raise the
@@ -1609,12 +1669,15 @@ impl<'a> Resolver<'a> {
         self.modules_with_hidden_expression_values.insert(path);
     }
 
-    /// [`Self::note_hidden_value_module`] for a hidden name that lives in the
-    /// **pattern namespace only** — an active-pattern case, which FCS does not
-    /// admit as a value (`let v = Even` is FS0039). It shadows an earlier open
-    /// in pattern position and must not in expression position, so it joins
-    /// [`Self::modules_with_hidden_values`] alone.
-    pub(super) fn note_hidden_pattern_value_module(&mut self, path: Vec<String>) {
+    /// [`Self::note_hidden_value_module`] for a hidden name the auto-open
+    /// fold-back can **name** — an active-pattern case or an `extern`
+    /// prototype. Both are declined per name by
+    /// [`Self::unenumerated_member_names_in`], so the fold needs no blanket
+    /// generation barrier for them and they join
+    /// [`Self::modules_with_hidden_values`] alone. Every other consumer — an
+    /// explicit `open`, which cannot see the module's contents — still treats
+    /// the container as hidden.
+    pub(super) fn note_hidden_nameable_value_module(&mut self, path: Vec<String>) {
         self.modules_with_hidden_values.insert(path);
     }
 
