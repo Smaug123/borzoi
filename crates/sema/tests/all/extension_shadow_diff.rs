@@ -121,6 +121,15 @@ impl ExtKind {
     }
 }
 
+/// One augmentation the probe file declares: which type it extends, and where.
+struct Augmentation {
+    receiver_ty: String,
+    /// 1-based line of the `type X with` header.
+    header_line: usize,
+    /// 1-based line of the `member this.P …` declaration.
+    member_line: usize,
+}
+
 /// One probe: a cell of the hiding corpus, read with an extension in scope.
 struct Probe {
     label: String,
@@ -131,9 +140,10 @@ struct Probe {
 
 /// Render the probe file for `kind`: an `Ext` module extending each probed cell's
 /// receiver type under the probed name, then one access per cell.
-fn probe_source(sites: &[&Site], kind: ExtKind) -> (String, Vec<Probe>) {
+fn probe_source(sites: &[&Site], kind: ExtKind) -> (String, Vec<Probe>, Vec<Augmentation>) {
     let mut src = String::from("module Gen\n");
     let mut line = 1usize;
+    let mut augmentations = Vec::new();
     // The augmentations sit in the file's own module, so they are in scope for
     // everything after them without an `open`. One per *distinct* receiver type:
     // two cells can share one (the corpus does not, today, but the rendering must
@@ -147,6 +157,11 @@ fn probe_source(sites: &[&Site], kind: ExtKind) -> (String, Vec<Probe>) {
         src.push_str(&kind.declaration());
         src.push('\n');
         line += 2;
+        augmentations.push(Augmentation {
+            receiver_ty: site.receiver_ty.clone(),
+            header_line: line - 1,
+            member_line: line,
+        });
     }
 
     let mut probes = Vec::new();
@@ -164,7 +179,7 @@ fn probe_source(sites: &[&Site], kind: ExtKind) -> (String, Vec<Probe>) {
             text,
         });
     }
-    (src, probes)
+    (src, probes, augmentations)
 }
 
 /// What one side answered at a probe: the declaring entity's compiled name, or
@@ -230,7 +245,7 @@ fn run(kind: ExtKind) -> (Vec<Probe>, Vec<(Answer, Answer)>, HashSet<usize>) {
                 .unwrap_or_else(|| panic!("no hiding-corpus cell labelled {label:?}"))
         })
         .collect();
-    let (src, probes) = probe_source(&sites, kind);
+    let (src, probes, augmentations) = probe_source(&sites, kind);
 
     let bcl_bytes = std::fs::read(&system_runtime).expect("read System.Runtime.dll");
     let corpus_bytes = std::fs::read(dll).expect("read MemberHiding.dll");
@@ -281,21 +296,48 @@ fn run(kind: ExtKind) -> (Vec<Probe>, Vec<(Answer, Answer)>, HashSet<usize>) {
         theirs.insert(line_at(&starts, use_.end), declaring_name(&use_));
     }
 
-    // The premise, checked rather than assumed: FCS must actually have an
-    // extension member of the name in scope. Without this every gate below
-    // survives an augmentation FCS silently rejected — the intrinsic probes still
-    // agree, the controls are skipped because *we* deferred, and the ratchet only
-    // reads our own answers. The controls are exactly the cells with no readable
-    // intrinsic, so a working extension is the only thing FCS can bind there.
-    let extension_bindings = probes
+    // The premise, checked rather than assumed, and checked **per receiver**.
+    // Every gate below survives an augmentation FCS silently rejected: the
+    // intrinsic probes still agree with the intrinsic, the no-intrinsic controls
+    // are skipped because *we* deferred, and the ratchet only reads our own
+    // answers. A global "some extension exists" check is not enough either — FCS
+    // rejecting exactly the *contested* augmentations (the ones whose name
+    // collides with an intrinsic, which is the interesting case) leaves the
+    // controls standing and the sweep proving nothing about the cells it commits
+    // on. So each augmentation must be one FCS accepted: a definition of `P`
+    // declared in this file's module, on a line it reported no error for.
+    let defined_extensions: HashSet<usize> = parse_fcs_uses(&uses_json, &src)
         .iter()
-        .filter(|probe| !error_lines.contains(&probe.line))
-        .filter(|probe| theirs.get(&probe.line).is_some_and(|d| d == EXT_MODULE))
-        .count();
+        .filter(|use_| use_.name == PROBE && use_.is_from_definition)
+        .filter(|use_| declaring_name(use_) == EXT_MODULE)
+        .map(|use_| line_at(&starts, use_.start))
+        .collect();
+    for aug in &augmentations {
+        assert!(
+            !error_lines.contains(&aug.header_line) && !error_lines.contains(&aug.member_line),
+            "FCS rejected the {} on `{}` — this sweep would then compare the intrinsic \
+             against nothing\n{src}",
+            kind.tag(),
+            aug.receiver_ty,
+        );
+        assert!(
+            defined_extensions.contains(&aug.member_line),
+            "FCS reports no definition of `{PROBE}` in `{EXT_MODULE}` at line {} — the {} \
+             on `{}` is not an extension member it accepted\n{src}",
+            aug.member_line,
+            kind.tag(),
+            aug.receiver_ty,
+        );
+    }
+    // And at least one probe must *bind* an extension, so the members are not
+    // merely accepted but reachable from a use site.
     assert!(
-        extension_bindings > 0,
-        "no probe binds an {} — FCS has no extension member of `{PROBE}` in scope, \
-         so this sweep proves nothing about one\n{src}",
+        probes
+            .iter()
+            .filter(|probe| !error_lines.contains(&probe.line))
+            .any(|probe| theirs.get(&probe.line).is_some_and(|d| d == EXT_MODULE)),
+        "no probe binds an {} — the extension members are accepted but not in scope \
+         at any access\n{src}",
         kind.tag(),
     );
 
