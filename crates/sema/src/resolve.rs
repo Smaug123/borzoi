@@ -235,19 +235,29 @@ pub fn resolve_file(
                 _ => {}
             }
         }
-        // …and the fact that it EXISTS. Its contents are not enumerated: a
-        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
-        // values, union and exception cases, `extern` prototypes,
-        // active-pattern tags, a single-case union spelled like an
-        // abbreviation, an auto-open *type*'s statics, statics borrowed through
-        // an abbreviation — and each is invisible to a different part of the
-        // parse. Enumerating them is a list that keeps growing and can only be
-        // audited by inspection; the flag is one closed question with a
-        // one-line soundness argument, and it costs commits only in files that
-        // actually declare such a container. Read by the implicit
-        // enclosing-namespace fold, which runs before the block's walk and so
-        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
-        r.own_auto_open_container = true;
+        // …and, in a `rec` block only, the fact that it EXISTS. Everywhere else
+        // the module's surface folds into the enclosing frame at its own
+        // declaration position (`Resolver::fold_own_auto_open_module`), so
+        // ordinary source-position shadowing decides the contest and no
+        // file-global flag is needed. A `module rec` block is different in kind:
+        // FCS makes every declaration visible to every other, so a use
+        // *preceding* the module binds it — and it beats even a LATER `open` of
+        // a colliding module (fcs-dump probes `Rec`/`RecOpen`). Neither is a
+        // position rule, so the fold is declined there rather than modelled
+        // wrong, and the flag is what carries that decline to the implicit
+        // enclosing-namespace fold — which runs before the block's walk and so
+        // cannot see any of this (`Resolver::block_local_shadow_unknowable`).
+        // Strict ancestors only: `[<AutoOpen>] module rec Inner` is mutually
+        // recursive *within itself*, which changes nothing about how its
+        // surface folds into the enclosing block.
+        if nm
+            .syntax()
+            .ancestors()
+            .skip(1)
+            .any(|a| encloses_recursively(&a))
+        {
+            r.own_auto_open_container = true;
+        }
     }
     // An `[<AutoOpen>]` **type** is the other container whose surface folds into
     // the rest of its enclosing scope — its statics, and (fsi-verified) the
@@ -1826,6 +1836,14 @@ fn module_header_pos(module: &ModuleOrNamespace) -> rowan::TextSize {
         .unwrap_or_else(|| module.syntax().text_range().start())
 }
 
+/// Whether `node` is a `rec` container — a `module rec`/`namespace rec` header
+/// or a nested `module rec`. Inside one, FCS makes every declaration visible to
+/// every other, so nothing in it can be ordered by source position.
+fn encloses_recursively(node: &SyntaxNode) -> bool {
+    ModuleOrNamespace::cast(node.clone()).is_some_and(|m| m.is_rec())
+        || NestedModuleDecl::cast(node.clone()).is_some_and(|m| m.is_rec())
+}
+
 /// The module-path prefix that qualifies a file's exports, or `None` for an
 /// anonymous (header-less) module. A `namespace` carries no directly-bound
 /// values (only modules/types live under it), so only a `NamedModule`
@@ -1885,6 +1903,7 @@ impl<'a> Resolver<'a> {
             open_generation: 0,
             pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
+            modules_with_hidden_expression_values: HashSet::new(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,

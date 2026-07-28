@@ -1621,6 +1621,9 @@ impl<'a> Resolver<'a> {
             }
             self.real_nested_module_exports.push(qualified.clone());
         }
+        // The fold-back below needs the module's full path after the walk has
+        // restored `container_path` to the enclosing one.
+        let qualified_auto_open = qualified.clone();
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
         // filters `!anonymous_root`, so an anonymous-root nested module records an
@@ -1803,6 +1806,25 @@ impl<'a> Resolver<'a> {
         }
         self.nested_module_locals = saved_nested_locals;
         self.augmentation_head_locals = saved_augmentation_locals;
+        // …and its *values* fold into the enclosing frame at this position —
+        // the same fold an `open` of it here would perform
+        // ([`Resolver::fold_own_auto_open_module`]). This runs after the body
+        // frame is popped and every saved field restored, so the fold's
+        // accessibility site and target frame are the enclosing ones.
+        if nm_auto_open {
+            let pos = u32::from(nm.syntax().text_range().end());
+            if self.anonymous_root {
+                // A header-less file's nested module has no modelled
+                // `module_path`, so its members carry no qualified path and the
+                // fold would enumerate *nothing* — leaving an earlier open's
+                // same-named value standing where FCS binds this module's. The
+                // generation barrier declines instead: it stales every earlier
+                // opened entry, which is exactly "we cannot say".
+                self.open_generation += 1;
+            } else {
+                self.fold_own_auto_open_module(&qualified_auto_open, pos);
+            }
+        }
     }
 
     /// Record a project-introduced *name* — a nested module

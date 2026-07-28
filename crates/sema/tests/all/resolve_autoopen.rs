@@ -2509,7 +2509,6 @@ fn a_later_type_declaration_evicts_an_opened_value_of_the_same_name() {
 /// `open` brought in. Reproduced through an explicit `open` for the same reason
 /// as the test above.
 #[test]
-#[ignore = "pre-existing wrong target on main: a same-block auto-open module does not fold back"]
 fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
     // FCS binds `LocalAuto.extraValue`; we bind the assembly's
     // `Demo.Auto.Extra.extraValue`.

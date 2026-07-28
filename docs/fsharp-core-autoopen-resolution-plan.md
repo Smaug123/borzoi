@@ -137,13 +137,38 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   anywhere then become reachable — a later constructible type taking the value
   slot, and a same-block `[<AutoOpen>]` container folding above it — so the fold
   **declines** rather than committing a target FCS shadows
-  (`screen_block_local_shadows`). The auto-open arm is a single closed flag
-  rather than a name set on purpose: that surface is open-ended (values, union
-  and exception cases, `extern`s, active-pattern tags, a single-case union
-  spelled like an abbreviation, an auto-open type's statics, statics borrowed
-  through an abbreviation), so an enumeration is a list that grows under review
-  and can only be audited by inspection. Both shadowings reproduce through an
-  explicit `open` too and have their own tasks; the screen goes when they land.
+  (`screen_block_local_shadows`).
+
+  The auto-open arm has since narrowed to what position ordering genuinely
+  cannot express. A `[<AutoOpen>]` **module** now folds its own surface into the
+  enclosing frame at its declaration position (`fold_own_auto_open_module`) —
+  the same fold an `open` of it there would perform — and fcs-dump probes
+  (`OrderAfter`/`OrderBefore`) confirm that which of the two wins is decided
+  purely by which comes later. What is left on the flag is an `[<AutoOpen>]`
+  **type**, whose statics sema does not model at all, and any auto-open module
+  inside a `rec` block, where FCS makes every declaration visible to every other
+  — a use *preceding* the module binds it, and it beats even a later `open` of a
+  colliding module (probes `Rec`/`RecOpen`) — so nothing there can be ordered by
+  position. Those two keep the closed flag rather than a name set, for the
+  original reason: that surface is open-ended (values, union and exception
+  cases, `extern`s, active-pattern tags, a single-case union spelled like an
+  abbreviation, an auto-open type's statics, statics borrowed through an
+  abbreviation), so an enumeration is a list that grows under review and can
+  only be audited by inspection. The type arm reproduces through an explicit
+  `open` too and has its own task.
+
+  The fold-back is *values only*: no shortening prefix, and no blanket
+  dotted-head conservatism. An explicit `open M` must set `opaque_dotted_open`
+  because M's contents are not in view at the `open`; here the declaration-side
+  machinery has already recorded them name-keyed. Its one barrier is the
+  `open_generation` bump for names it cannot enumerate — and even that is
+  narrowed, because an **active-pattern case** lives in the pattern namespace
+  alone (`let v = Even` is FS0039). Folding this file's own module can read those
+  case names off `container_decls`, so they are declined by name in pattern
+  position instead of taking the expression namespace down with them
+  (`modules_with_hidden_expression_values`); a module alias, an `extern`, or a
+  case-opaque repr still raises the barrier, as does any path an earlier
+  Compile-order file marked hidden, where the reason is unclassified.
 
   The project half lends no **shortening prefix** (task #30), which is the one
   place this channel still gives ground. Where a project `[<AutoOpen>]` module

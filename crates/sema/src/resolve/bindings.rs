@@ -66,7 +66,7 @@ impl<'a> Resolver<'a> {
         // scope but `open_module_values` does not enumerate, so opening this module
         // may shadow earlier opens (see [`Self::modules_with_hidden_values`]).
         if prepared.iter().any(|p| !p.eager_entries.is_empty()) {
-            self.note_hidden_value_module(self.container_path.clone());
+            self.note_hidden_pattern_value_module(self.container_path.clone());
         }
 
         // Active-pattern cases follow the same `rec` discipline as ordinary value

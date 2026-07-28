@@ -1083,6 +1083,19 @@ pub(super) struct Resolver<'a> {
     /// earlier Compile-order file via [`Preceding`](super::model::ProjectItems)); merged across files like
     /// [`Self::nested_module_exports`].
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// The subset of [`Self::modules_with_hidden_values`] whose hidden names can
+    /// appear in **expression** position — everything except an active-pattern
+    /// case, which FCS admits in pattern position only (`let v = Even` is
+    /// FS0039). The blunt [`Self::open_generation`] barrier serves both
+    /// namespaces at once, so it over-declines for a module whose only
+    /// unenumerable names are active-pattern cases; a fold that can enumerate
+    /// those cases by name
+    /// ([`fold_own_auto_open_module`](Resolver::fold_own_auto_open_module),
+    /// folding *this file's* own module) declines them name-keyed in pattern
+    /// position and reads this set for whether it must raise the barrier as
+    /// well. **This file only** — an earlier Compile-order file's hidden-ness is
+    /// unclassified, so it still raises the barrier.
+    pub(super) modules_with_hidden_expression_values: HashSet<Vec<String>>,
     /// Qualified paths of `[<AutoOpen>]` modules declared in this file,
     /// each with its `module private` bit — one record per module, written by
     /// [`Resolver::record_auto_open_module`](super::Resolver) from both
@@ -1193,9 +1206,20 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
-    /// Whether this file declares **any** `[<AutoOpen>]` container — a module
-    /// or a type — whose bare-visible surface therefore folds into the rest of
-    /// its enclosing scope.
+    /// Whether this file declares an `[<AutoOpen>]` container whose
+    /// bare-visible surface folds into the rest of its enclosing scope in a way
+    /// source position does not express — an `[<AutoOpen>]` **type** (whose
+    /// statics sema does not model at all), or an `[<AutoOpen>]` module inside a
+    /// `rec` block.
+    ///
+    /// A `[<AutoOpen>]` module outside a `rec` block is *not* one of these: its
+    /// surface folds into the enclosing frame at its own declaration position
+    /// ([`Resolver::fold_own_auto_open_module`]), which is exactly FCS's rule
+    /// there (fcs-dump probes `OrderAfter`/`OrderBefore`). Inside a `rec` block
+    /// FCS makes every declaration visible to every other — a use *preceding*
+    /// the module binds it, and it beats even a later `open` of a colliding
+    /// module — so nothing there can be ordered by position and the fold is
+    /// declined wholesale instead.
     ///
     /// A flag rather than a name set on purpose. That surface is open-ended:
     /// values, union and exception cases, `extern` prototypes, active-pattern

@@ -376,15 +376,21 @@ impl<'a> Resolver<'a> {
     ///   [`Resolver::own_value_slot_type_names`], which is a *closed* set — the
     ///   file's type definitions that can enter the slot, and nothing else can;
     /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
-    ///   scope above anything opened before it. Here the whole group is demoted
-    ///   rather than screened per name, because that surface is open-ended:
-    ///   values, union and exception cases, `extern` prototypes, active-pattern
-    ///   tags, a single-case union spelled exactly like an abbreviation, an
-    ///   auto-open type's statics, statics borrowed through an abbreviation.
-    ///   Enumerating them is a list that grows under review and can only be
-    ///   audited by inspection; [`Resolver::own_auto_open_container`] is one
-    ///   closed question, and it costs commits only in files that declare such
-    ///   a container.
+    ///   scope above anything opened before it, in a way position-0 ordering
+    ///   cannot express. A `[<AutoOpen>]` *module* is no longer one of these —
+    ///   its surface folds at its own declaration position
+    ///   ([`Self::fold_own_auto_open_module`]), so ordinary source-position
+    ///   shadowing decides it — leaving an `[<AutoOpen>]` **type** (whose
+    ///   statics sema does not model) and any auto-open module inside a `rec`
+    ///   block (where FCS orders nothing by position). Here the whole group is
+    ///   demoted rather than screened per name, because that surface is
+    ///   open-ended: values, union and exception cases, `extern` prototypes,
+    ///   active-pattern tags, a single-case union spelled exactly like an
+    ///   abbreviation, an auto-open type's statics, statics borrowed through an
+    ///   abbreviation. Enumerating them is a list that grows under review and
+    ///   can only be audited by inspection;
+    ///   [`Resolver::own_auto_open_container`] is one closed question, and it
+    ///   costs commits only in files that declare such a container.
     ///
     /// `Opaque` rather than removal keeps an entry in scope shadowing by
     /// position, so an earlier open's same-named value cannot wrongly win.
@@ -1199,6 +1205,138 @@ impl<'a> Resolver<'a> {
         out
     }
 
+    /// Fold a *just-declared* `[<AutoOpen>]` nested module's surface into the
+    /// enclosing frame: the same fold an `open` of that module, written at
+    /// `pos`, would perform. Called from
+    /// [`nested_module`](super::Resolver::nested_module) once the body frame is
+    /// popped and every saved field restored, so `container_path` — hence
+    /// `open_module_values`'s accessibility site and
+    /// [`Self::module_frame`] — is the enclosing one.
+    ///
+    /// Which of a same-named `open` and an `[<AutoOpen>]` module wins is decided
+    /// purely by source position (fcs-dump probes `OrderAfter`/`OrderBefore`),
+    /// and `latest_entry` walks a frame's entries in push order — so pushing
+    /// here, at the module's closing position, *is* the ordering rule. A use
+    /// preceding the module sees nothing of it, which is FCS's answer too (it
+    /// reports the name unbound).
+    ///
+    /// `path`'s own members fold first, then its **own-file** `[<AutoOpen>]`
+    /// descendants ([`Self::auto_open_fragments_reachable`]): FCS propagates a
+    /// nested auto-open module's surface outward through its auto-open parent,
+    /// which `open_module_values` — direct children only — would miss.
+    /// `fragment_file = Some(current_file)` is exact rather than conservative:
+    /// FCS folds the module type *as accumulated at this point in this file*, an
+    /// earlier file's same-path fragment is already folded by the implicit
+    /// enclosing-namespace open at position 0, and a later file's does not exist
+    /// yet.
+    ///
+    /// **Values only** — no dotted-head conservatism, and no shortening prefix.
+    /// An explicit `open M` sets the blanket
+    /// [`opaque_dotted_open`](Self::opaque_dotted_open) because M's submodules
+    /// and types are not in view at the `open`; here they are already accounted
+    /// for by the *declaration*-side machinery, which is name-keyed and
+    /// oracle-pinned: a submodule of an auto-open module is a project module
+    /// name (`project_auto_open_module_in_namespace`, reached through
+    /// `auto_open_modules_directly_in`), while a *type* or an *abbreviation*
+    /// there deliberately shadows no dotted head at all
+    /// (`a_fully_qualified_path_still_commits_beside_a_project_auto_open_module`,
+    /// `a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow`).
+    /// Lending the module's short name as a shortening prefix is task #30,
+    /// declined for the implicit fold on the same terms.
+    pub(super) fn fold_own_auto_open_module(&mut self, path: &[String], pos: u32) {
+        // Every open bumps the latest-open position (EX-3 §2(d)).
+        self.latest_open_pos = self.latest_open_pos.max(pos);
+        let current_file = self.preceding.num_files();
+        let mut fragments: Vec<Vec<String>> = vec![path.to_vec()];
+        fragments.extend(
+            self.auto_open_fragments_reachable(path)
+                .into_iter()
+                .filter(|(_, file)| *file == current_file)
+                .map(|(p, _)| p),
+        );
+        for frag in fragments {
+            // A constructible type in this fragment takes FCS's unqualified
+            // slot from an EARLIER-folded same-named value; sema models no
+            // project type constructor, so the override only declines.
+            let evicting_types = self.direct_project_type_contestants(&frag);
+            if !evicting_types.is_empty() {
+                let generation = self.open_generation;
+                let entries: Vec<ScopeEntry> = evicting_types
+                    .into_iter()
+                    .map(|name| {
+                        ScopeEntry::opened(
+                            name,
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            generation,
+                            pos,
+                        )
+                    })
+                    .collect();
+                self.module_frame().entries.extend(entries);
+            }
+            // A fragment's **active-pattern cases** are value-space names
+            // `open_module_values` does not enumerate, but they live in the
+            // pattern namespace alone — so they are declined by name there
+            // rather than by the generation barrier, which would take the
+            // expression namespace down with them. Their names are readable
+            // here because this is the file's own module
+            // ([`Self::container_decls`] records each as it is declared).
+            let ap_cases = self.active_pattern_case_names_in(&frag);
+            if !ap_cases.is_empty() {
+                let generation = self.open_generation;
+                let entries: Vec<ScopeEntry> = ap_cases
+                    .into_iter()
+                    .map(|name| {
+                        ScopeEntry::opened_pattern_only(
+                            name,
+                            Resolution::Deferred(DeferredReason::UnboundName),
+                            generation,
+                            pos,
+                        )
+                    })
+                    .collect();
+                self.module_frame().entries.extend(entries);
+            }
+            // Anything else it hides — a module alias, an `extern`, a
+            // case-opaque type repr — could be a value in expression position
+            // too, and we cannot name it: raise the barrier before folding, so
+            // the unenumerable name shadows everything folded earlier.
+            if self.fold_back_needs_barrier(&frag) {
+                self.open_generation += 1;
+            }
+            self.open_module_values(&frag, pos, Some(current_file));
+        }
+    }
+
+    /// The **active-pattern case** names declared directly in `container`, read
+    /// off the per-container declared-name view
+    /// ([`Resolver::container_decls`](super::Resolver)) that
+    /// `define_active_pattern` populates. Only meaningful for a container in
+    /// *this* file; an earlier Compile-order file's cases are not in that view,
+    /// which is why [`Self::fold_back_needs_barrier`] still barriers for one.
+    fn active_pattern_case_names_in(&self, container: &[String]) -> Vec<String> {
+        self.container_decls
+            .get(container)
+            .map(|decls| {
+                decls
+                    .iter()
+                    .filter(|(_, kinds)| kinds.active_pattern)
+                    .map(|(name, _)| name.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether [`Self::fold_own_auto_open_module`] must raise the
+    /// [`open_generation`](Self::open_generation) barrier for `frag` — it hides
+    /// a value-space name that could appear in *expression* position, or it is a
+    /// path an **earlier Compile-order file** also marked hidden, where the
+    /// reason is unclassified and the case names are out of view.
+    fn fold_back_needs_barrier(&self, frag: &[String]) -> bool {
+        self.modules_with_hidden_expression_values.contains(frag)
+            || self.preceding.modules_with_hidden_values.contains(frag)
+    }
+
     /// Whether opening project namespace/module `container` may bring
     /// value-space names we cannot enumerate — [`Self::module_has_hidden_values`]
     /// of its own direct cases, **or** (recursively) of any `[<AutoOpen>]`
@@ -1452,10 +1590,22 @@ impl<'a> Resolver<'a> {
     }
 
     /// Record the **current container** as a module that brings value-space names
-    /// we cannot enumerate (a union case / exception constructor / active pattern,
-    /// or — at the caller's discretion — a module alias). See
-    /// [`Self::modules_with_hidden_values`].
+    /// we cannot enumerate (a union case / exception constructor, or — at the
+    /// caller's discretion — a module alias). See
+    /// [`Self::modules_with_hidden_values`]; the name may appear in *expression*
+    /// position, so it also joins
+    /// [`Self::modules_with_hidden_expression_values`].
     pub(super) fn note_hidden_value_module(&mut self, path: Vec<String>) {
+        self.modules_with_hidden_values.insert(path.clone());
+        self.modules_with_hidden_expression_values.insert(path);
+    }
+
+    /// [`Self::note_hidden_value_module`] for a hidden name that lives in the
+    /// **pattern namespace only** — an active-pattern case, which FCS does not
+    /// admit as a value (`let v = Even` is FS0039). It shadows an earlier open
+    /// in pattern position and must not in expression position, so it joins
+    /// [`Self::modules_with_hidden_values`] alone.
+    pub(super) fn note_hidden_pattern_value_module(&mut self, path: Vec<String>) {
         self.modules_with_hidden_values.insert(path);
     }
 
