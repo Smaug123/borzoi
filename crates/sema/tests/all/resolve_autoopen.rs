@@ -2667,6 +2667,34 @@ fn the_type_eviction_override_is_scoped_to_the_folded_fragment() {
     );
 }
 
+/// An **inaccessible** member does not rank in the fold, so it cannot decide
+/// where the type-eviction override lands. A fragment holding an earlier public
+/// union case `Tag`, a later `type Tag()`, and a `let private Tag` that never
+/// escapes the module: FCS filters the private value and binds the *type*
+/// (fcs-dump-probed, with and without the private line — the answer is the same
+/// either way), so the case must not stand. Counting the private value as an
+/// outranking member put the override before the fold and let the case win —
+/// a wrong go-to-definition, and one the pairwise member sweep cannot reach
+/// because it takes three members to build (codex review of #49).
+#[test]
+fn an_inaccessible_member_does_not_rank_in_the_fold() {
+    let env = fixture_env();
+    let src = "module Review\n[<AutoOpen>]\nmodule Fold =\n    type Holder =\n        | Tag\n    \
+               type Tag() = class end\n    let private Tag = 42\nlet probe = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `type Tag()` takes the name and sema cannot name a project \
+         type constructor; got {res:?}"
+    );
+}
+
 /// The **implicit namespace fold** must keep the same fragment identity the
 /// fold-back does: a plain `module M` fragment is not folded by a later
 /// `[<AutoOpen>] module M` at the same path, so a third block in the namespace

@@ -1454,12 +1454,20 @@ impl<'a> Resolver<'a> {
     /// before it or after it, and "after" is right exactly when nothing in the
     /// fragment outranks the class: a same-named value always does, and a
     /// same-named case does when it is written later.
+    ///
+    /// Ranked over exactly the members [`Self::open_module_values`] folds —
+    /// same accessibility test, same reference site. A member that one omits
+    /// and the other counts is a member deciding an ordering it is not present
+    /// for: a `let private` never in scope here would push the override to the
+    /// wrong side of the fold and let a public case stand where FCS binds the
+    /// type (codex review of #49).
     fn fragment_member_ranks(
         &self,
         container: &[String],
         range: TextRange,
         name: &str,
     ) -> Vec<(u8, TextSize)> {
+        let site = self.container_path.clone();
         self.items
             .iter()
             .filter(|item| {
@@ -1467,6 +1475,7 @@ impl<'a> Resolver<'a> {
                     q.len() == container.len() + 1
                         && q.starts_with(container)
                         && q.last().is_some_and(|last| last == name)
+                        && super::model::accessible_from(item.access_root_len, q, &site)
                 })
             })
             .filter_map(|item| match item.def {

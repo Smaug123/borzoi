@@ -41,7 +41,7 @@ use std::path::PathBuf;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
-use rowan::TextRange;
+use rowan::{TextRange, TextSize};
 
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
 
@@ -201,6 +201,18 @@ struct Cell {
     /// The two probe spans, in [`Probe`] order.
     probes: Vec<(Probe, TextRange)>,
 }
+
+/// The inaccessible members the metamorphic property perturbs each cell with.
+/// Each is `private` at the fragment's own level, so none of them is in scope
+/// where the probe sits — and a member that is not in scope must not change
+/// what the probe resolves to.
+const INVISIBLE: &[&str] = &[
+    "let private Nn = 42",
+    "let private (|Nn|_|) x = Some x",
+    "extern int private Nn()",
+    "type private Nn() = class end",
+    "type private NnHolderX =\n        | Nn",
+];
 
 /// Build the whole grid: each shape alone, then every ordered pair.
 fn cells() -> Vec<Cell> {
@@ -748,4 +760,136 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
         "FCS adjudicated only {adjudicated} probes across {} cells",
         cells.len()
     );
+}
+
+/// **A member that is not in scope cannot change what is.**
+///
+/// Append an inaccessible declaration to each cell's fragment and the probe must
+/// resolve exactly as before — same variant, same target range. `private` at the
+/// fragment's own level means the member never reaches the enclosing block, so
+/// its only possible effect is on machinery that scans the fragment *without*
+/// applying the accessibility test the fold itself applies.
+///
+/// This is the sweep's answer to its own arity. The grid above is pairwise, and
+/// the first defect of exactly this shape took **three** members to build — an
+/// earlier public case, a later class, and a `let private` that decided which
+/// side of the fold the type-eviction override landed on (codex review). Adding
+/// a third member to the grid would multiply it by fourteen and cost an FCS
+/// round-trip per cell; this needs no oracle at all, because the invariant is
+/// stated against our own resolver, and it covers every cell for the price of a
+/// few hundred local resolutions.
+#[test]
+fn an_inaccessible_member_does_not_change_any_cell() {
+    let mut mismatches: Vec<String> = Vec::new();
+    let mut losses: Vec<String> = Vec::new();
+
+    for cell in cells() {
+        let base = resolutions(&cell.src, &cell.probes);
+        for invisible in INVISIBLE {
+            // Into the fragment, after its members: the fold's own block, at the
+            // indent its declarations use.
+            let Some(blank) = cell.src.find("\n\nlet probeExpr") else {
+                panic!("cell {:?} has no probe tail", cell.label);
+            };
+            let mut perturbed = cell.src.clone();
+            perturbed.insert_str(blank, &format!("\n    {invisible}"));
+
+            // The probes moved by exactly the inserted text.
+            let shift = u32::try_from(perturbed.len() - cell.src.len()).expect("fits");
+            let moved: Vec<(Probe, TextRange)> = cell
+                .probes
+                .iter()
+                .map(|(probe, span)| (*probe, *span + TextSize::from(shift)))
+                .collect();
+            for ((probe, _), (before, after)) in cell
+                .probes
+                .iter()
+                .zip(base.iter().zip(resolutions(&perturbed, &moved)))
+            {
+                if *before == after {
+                    continue;
+                }
+                // Losing a target to a deferral is an availability cost: the
+                // invisible member is over-counted somewhere, but nothing wrong
+                // is claimed. Those are ratcheted below by shape and size.
+                if after == NOTHING && *before != NOTHING {
+                    losses.push(format!("{}/{} + {invisible:?}", cell.label, probe.tag()));
+                    continue;
+                }
+                // Anything else is a target we would not otherwise name — the
+                // grade codex's finding was, where an out-of-scope `let private`
+                // moved the type-eviction override and let a case stand.
+                mismatches.push(format!(
+                    "  {}/{} + {:?}\n    was {before:?}\n    now {after:?}\n{perturbed}",
+                    cell.label,
+                    probe.tag(),
+                    invisible,
+                ));
+            }
+        }
+    }
+
+    assert!(
+        mismatches.is_empty(),
+        "{} probes name a different target when an out-of-scope member is added:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
+    );
+
+    // The availability ratchet, pinned by **shape and size** so a fix and a
+    // fresh defect cannot cancel out in a bare count. Every loss today is an
+    // inaccessible member of the *value* namespace — a `private` recognizer or
+    // `extern` — deferring a case in *pattern* position, because
+    // `open_module_values` derives its `hidden` flag module-wide and without an
+    // accessibility test (task #51). When that lands this number goes down; it
+    // must never go up.
+    let unexpected: Vec<&String> = losses
+        .iter()
+        .filter(|l| {
+            !l.contains("/pattern + \"let private (|Nn|_|)")
+                && !l.contains("/pattern + \"extern int private Nn()")
+        })
+        .collect();
+    assert!(
+        unexpected.is_empty(),
+        "{} availability losses of an unratcheted shape:\n  {}",
+        unexpected.len(),
+        unexpected
+            .iter()
+            .map(|l| l.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+    assert_eq!(
+        losses.len(),
+        62,
+        "the count of #51 availability losses moved; down is a fix (update this \
+         number), up is a new defect:\n  {}",
+        losses.join("\n  ")
+    );
+}
+
+/// How [`resolutions`] renders "we named nothing" — a deferral and a silence
+/// alike, since neither claims a target.
+const NOTHING: &str = "None";
+
+/// Each probe's resolution, rendered so two runs over different source text are
+/// comparable: a target becomes its declaration range, everything else its
+/// variant name.
+fn resolutions(src: &str, probes: &[(Probe, TextRange)]) -> Vec<String> {
+    let parsed = parse(src);
+    assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    probes
+        .iter()
+        .map(|(_, span)| match rf.resolution_at(*span) {
+            Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => rf
+                .resolved_def(res)
+                .map_or_else(|| "no-def".to_string(), |d| format!("def {:?}", d.range)),
+            None => NOTHING.to_string(),
+            Some(Resolution::Deferred(_)) => NOTHING.to_string(),
+            Some(other) => format!("{other:?}"),
+        })
+        .collect()
 }
