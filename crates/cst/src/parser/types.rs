@@ -62,7 +62,7 @@ impl<'src> Parser<'src> {
             // phase 10.9) — the no-numerator measure tuple `float</s>` / bare
             // `(x : /s)` → `Tuple([Slash, Type(s)])`, which the atomic-level
             // `peek_starts_type_or_anon_recd` (correctly) rejects but
-            // [`Parser::parse_tuple_type`] owns. (A leading `*` stays an error: FCS
+            // [`Parser::parse_tuple_type_impl`] owns. (A leading `*` stays an error: FCS
             // reports "Expecting type" and recovers with a `FromParseError`, phase
             // 11.)
             //
@@ -173,7 +173,7 @@ impl<'src> Parser<'src> {
     }
 
     /// The `( STAR | SLASH ) topAppType` separator loop shared by the flat
-    /// [`Self::parse_tuple_type`] and the parenthesised
+    /// [`Self::parse_tuple_type_impl`] and the parenthesised
     /// [`Self::parse_struct_tuple_type`]: bumps each `*` / `/` separator and the
     /// element after it into the *currently open* `TUPLE_TYPE` node, returning
     /// the number of separators consumed (so the struct form can enforce its
@@ -453,7 +453,7 @@ impl<'src> Parser<'src> {
     /// Nullable-type layer (`appTypeCanBeNullable` in `pars.fsy:6357`):
     /// `appTypeWithoutNull BAR_JUST_BEFORE_NULL NULL`, projecting to
     /// `SynType.WithNull(inner, ambivalent: false, range, { BarRange })`.
-    /// Sits between [`Parser::parse_tuple_type`] (the `*` layer above) and
+    /// Sits between [`Parser::parse_tuple_type_impl`] (the `*` layer above) and
     /// [`Parser::parse_app_type`] (postfix array/app below), so the inner
     /// type binds the whole postfix run: `int list | null` parses as
     /// `WithNull(App(list, [int]))`, and `string | null * int` as
@@ -2442,7 +2442,7 @@ impl<'src> Parser<'src> {
     /// raw cursor must be `Op("/")` (guarding a LexFilter-swallowed `)`) and the
     /// filtered cursor the same `/`.
     ///
-    /// This is a `typ`-*level* start (consumed by [`Parser::parse_tuple_type`]),
+    /// This is a `typ`-*level* start (consumed by [`Parser::parse_tuple_type_impl`]),
     /// **not** an `atomType` start — so it is deliberately kept out of
     /// [`Parser::peek_starts_type_or_anon_recd`], whose post-separator caller in
     /// `parse_tuple_type` recurses into the atomic-level

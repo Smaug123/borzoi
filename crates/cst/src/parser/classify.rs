@@ -880,7 +880,7 @@ pub(super) fn int32_exponent_is_zero(tok: &Token<'_>) -> bool {
 /// or without a lowercase-`l` Int32 suffix or `_` separators. Drives the
 /// unit-of-measure `measureTypePower: INT32` arm (`pars.fsy:6732`), where FCS
 /// compares the *decoded* `INT32` value against `1` (so `0x1`, `0o1`, `1l` are
-/// all the dimensionless [`SyntaxKind::MEASURE_ONE`](crate::syntax::SyntaxKind::MEASURE_ONE)
+/// all the dimensionless [`SyntaxKind::MEASURE_ONE`]
 /// with no error; only a different value is the "unexpected integer literal"
 /// error). Decoding mirrors [`int32_exponent_is_zero`]'s prefix/suffix
 /// stripping, then parses the body in its radix.

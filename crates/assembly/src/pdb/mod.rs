@@ -132,7 +132,7 @@ struct PeDebug {
 
 /// Parse just enough of the PE container to reach the debug directory: DOS
 /// stub → PE signature → COFF header → optional header (data directory 6) →
-/// section headers. Mirrors the prefix of [`crate::reader::metadata`] but stops
+/// section headers. Mirrors the prefix of `reader::metadata` but stops
 /// at the debug directory rather than the CLI header.
 fn parse_pe_debug(image: &[u8]) -> Result<PeDebug, PdbError> {
     // `PdbError` isn't `Copy` (the `Decompress` variant wraps `io::Error`), so

@@ -286,9 +286,13 @@ is a pre-push gate, not an inner loop. A change to `cst` cascades to `sema` and
 
 Then commit to a non-`main` branch and run the full gate: `cargo fmt`,
 `cargo clippy`, `cargo test`, and
-`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features` (each runs on
-the whole workspace by default; CI gates on doc warnings, so doc-link breakages
-must be caught locally).
+`RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items`
+(each runs on the whole workspace by default; CI gates on doc warnings, so
+doc-link breakages must be caught locally).
+
+`--document-private-items` is load-bearing: nearly every doc comment here hangs
+off a private item, so without it rustdoc never resolves their intra-doc links
+and a link to a since-renamed function stays green forever.
 
 Note `oracle-harness`'s `batch_recovers_from_a_transient_wedge` hardcodes a
 300 ms child deadline and flakes on a loaded machine (e.g. sibling worktrees

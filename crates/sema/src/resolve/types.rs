@@ -383,7 +383,7 @@ impl<'a> Resolver<'a> {
     /// resolved by [`resolve_long_ident`](Self::resolve_long_ident) via that
     /// index. A non-enum definition contributes no cases. The binder is a
     /// [`Resolution::Local`]; cross-file `A.Color.Red` is resolved through the
-    /// [`ProjectItems`] type-qualified-case index. The caller clears any prior
+    /// [`ProjectItems`](super::model::ProjectItems) type-qualified-case index. The caller clears any prior
     /// cases at `type_name` (last-wins on redefinition) before this runs.
     pub(super) fn define_enum_cases(&mut self, defn: &TypeDefn, type_name: &SyntaxToken) {
         let type_key = id_text(type_name.text()).to_string();
@@ -506,7 +506,8 @@ impl<'a> Resolver<'a> {
     ///   result-case construction (FCS `ActivePatternCase`) and a fresh uppercase
     ///   pattern rebinding (FCS a fresh local), which this pass cannot tell apart,
     ///   so the caller pushes a decline *barrier* around the RHS
-    ///   ([`ScopeEntry::ap_case_barrier`], see [`resolve_rhss`](Self::resolve_rhss))
+    ///   ([`enter_ap_body`](Self::enter_ap_body), see
+    ///   [`resolve_local_let_rhss`](Self::resolve_local_let_rhss))
     ///   that only stops the body use committing an outer same-named value. A
     ///   sound coverage gap, never a wrong answer.
     ///
@@ -518,7 +519,7 @@ impl<'a> Resolver<'a> {
     /// *parameterized* active pattern's arguments in a use (`match n with DivBy
     /// divisor`) are a mix of expression *parameters* (FCS resolves `divisor` to an
     /// outer value) and a result *sub-pattern* (`Parse v`, where `v` binds). The
-    /// resolution-independent [`pattern_names`](crate::pattern_names) walk cannot tell them
+    /// resolution-independent [`pattern_names`] walk cannot tell them
     /// apart — it has no recognizer shape — so it fabricates a binder for every
     /// applied-head *name* argument (a literal like `DivBy 3` binds nothing and is
     /// already correct). For a **same-file** recognizer this is now resolved: this
@@ -1221,7 +1222,7 @@ impl<'a> Resolver<'a> {
     /// [`Resolution::Local`] — the in-file def shadows any same-named assembly
     /// type. Otherwise the path may name a **referenced-assembly type**, either
     /// fully-qualified (`Demo.Thing`) or shortened by a namespace `open`
-    /// (`open Demo; Thing`): resolved arity-aware against the [`AssemblyEnv`] —
+    /// (`open Demo; Thing`): resolved arity-aware against the [`AssemblyEnv`](crate::AssemblyEnv) —
     /// the type-position counterpart of how [`Self::resolve_long_ident`] resolves
     /// a value/member path — recording [`Resolution::Entity`] at the rooting (and
     /// each nested) type segment.
@@ -2106,7 +2107,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Whether `prefix` is a namespace declared into by an assembly whose
-    /// abbreviations are [unknowable](borzoi_sema::AbbreviationVisibility) —
+    /// abbreviations are [unknowable](crate::AbbreviationVisibility) —
     /// its signature pickle failed to decode, so its metadata-invisible
     /// abbreviations (V3) could hold *any* name. Genuinely **name-blind**:
     /// there is no index of what a failed pickle contained, which is why its
@@ -2119,7 +2120,7 @@ impl<'a> Resolver<'a> {
     /// excluded from this pair because they have exact, name-keyed
     /// representations instead: the **assembly**-side auto-open channel (exact
     /// metadata, checked *precisely and pre-emptively* — the
-    /// [`ShadowVeto::Preemptive`] verdict of
+    /// [`ShadowVeto::Vetoed`] verdict of
     /// [`Self::resolve_assembly_path_tiered`]'s caller here), and a *decodable*
     /// assembly's abbreviations (synthesised `EntityKind::Abbreviation` markers
     /// in the entity tree, matched by the tier's own lookup like any type and
@@ -2168,8 +2169,8 @@ impl<'a> Resolver<'a> {
     ///
     /// 1. An in-scope assembly `[<AutoOpen>]` module with an accessible nested
     ///    type/module of exactly the head's name
-    ///    ([`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`]):
-    ///    exact metadata, so [`ShadowVeto::Preemptive`] — it outranks even a
+    ///    ([`AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named`](crate::AssemblyEnv::auto_open_modules_in_namespace_shadow_type_named)):
+    ///    exact metadata, so [`ShadowVeto::Vetoed`] — it outranks even a
     ///    same-tier real match (FCS-probe-confirmed, review round 6 on
     ///    `docs/completed/r2-annotation-typing-plan.md`).
     ///
@@ -2202,7 +2203,7 @@ impl<'a> Resolver<'a> {
     ///    ([`Self::project_shadow_at`]), and a namespace an assembly with
     ///    unknowable abbreviations declares into
     ///    ([`Self::unknowable_abbreviation_shadow_at`]). Also
-    ///    [`ShadowVeto::Preemptive`], for the same reason as (1) even though the
+    ///    [`ShadowVeto::Vetoed`], for the same reason as (1) even though the
     ///    evidence is weaker: what these hide is a type at *some* unmodelled
     ///    position in this reading, and a tier that binds `Foo` visibly is no
     ///    evidence that an unmodelled `Foo` is not also there — the project
@@ -2268,7 +2269,7 @@ impl<'a> Resolver<'a> {
     ///
     /// - **Path-scoped, not prefix-scoped.** The question is asked of every
     ///   split of `prefix ++ names`
-    ///   ([`AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type`]), not
+    ///   ([`AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type`](crate::AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type)), not
     ///   of the reading prefix alone. `(x : Demo.Sub.T)` is looked up in
     ///   namespace `Demo.Sub` even when the *reading* is the root `[]`, so a
     ///   drop in `Demo.Sub` is invisible to a check keyed on `[]`.
@@ -2311,7 +2312,7 @@ impl<'a> Resolver<'a> {
     /// so a type reference through it must defer (D5). Covers this file's nested
     /// modules (relative [`Self::nested_module_locals`] and qualified
     /// [`Self::nested_module_exports`] forms) and earlier Compile-order ones
-    /// ([`ProjectItems::is_rooted_at_nested_module`]).
+    /// ([`ProjectItems::is_rooted_at_nested_module`](super::model::ProjectItems::is_rooted_at_nested_module)).
     ///
     /// Two cases are deliberately **excluded** (both resolve to the assembly type):
     /// a **top-level** project module (it merges with the assembly namespace), and
@@ -2362,13 +2363,13 @@ impl<'a> Resolver<'a> {
     }
 
     /// Resolve the non-binder *references* a pattern mentions — the ones the
-    /// [`binders`] walk (correctly) drops — recursively through every structural
+    /// [`binders`](crate::binders) walk (correctly) drops — recursively through every structural
     /// sub-pattern: type names in annotations (`x : T`, `:? T`), and the head of
     /// an *applied* constructor pattern (`B n`, `Some x`), which names a value (a
     /// reference, not a binder). A *nullary* head (`Red`) is a provisional binder
     /// instead, resolved in the binders loop via
     /// [`case_reference`](Self::case_reference), so only applied heads are
-    /// resolved here. Binders themselves are interned by [`binders`]. A
+    /// resolved here. Binders themselves are interned by [`binders`](crate::binders). A
     /// quotation pattern (`<@ … @>`) additionally carries an *expression* body,
     /// resolved via [`Self::resolve_expr`] against the enclosing scope.
     pub(super) fn resolve_pat_types(&mut self, pat: &Pat) {
@@ -2589,7 +2590,7 @@ impl<'a> Resolver<'a> {
     /// name. So the head must not be resolved as a case reference, and its
     /// arguments must not be split as active-pattern parameters (which would
     /// wrongly exclude the genuine parameter `x`, dropping its binder). This
-    /// mirrors [`pattern_names`](crate::pattern_names)' `Ctx::LetHead`: the head binds, and
+    /// mirrors [`pattern_names`]' `Ctx::LetHead`: the head binds, and
     /// each argument is an ordinary param pattern, so it recurses through
     /// [`Self::resolve_applied_arg_patterns`] — where a *nested* applied AP use in
     /// a parameter (`let f (Scale x) = …`) still splits correctly, having
@@ -2631,7 +2632,7 @@ impl<'a> Resolver<'a> {
     /// `TcPatLongIdentActivePatternCase`
     /// (`../fsharp/src/Compiler/Checking/Expressions/CheckExpressions.fs`). Each
     /// parameter argument has its would-be binder ranges excluded (so the
-    /// [`pattern_names`](crate::pattern_names) walk does not fabricate a local for it) and is
+    /// [`pattern_names`] walk does not fabricate a local for it) and is
     /// resolved as an expression ([`Self::resolve_pattern_arg_as_expr`]); the
     /// result sub-pattern is recursed through [`Self::resolve_pat_types`] as usual,
     /// so it binds and a nested applied head re-enters this same logic.
@@ -2652,7 +2653,7 @@ impl<'a> Resolver<'a> {
     ///   through this file's `items`;
     /// - a **cross-file** case resolves to [`Resolution::Item`] whose handle is
     ///   out of this file's range — its shape comes from
-    ///   [`ProjectItems::active_pattern_shape_of`].
+    ///   [`ProjectItems::active_pattern_shape_of`](super::model::ProjectItems::active_pattern_shape_of).
     ///
     /// `None` for any other resolution — an ordinary value, a union/exception case,
     /// a referenced-assembly tag, a deferred/qualified head — which keeps today's
@@ -2731,7 +2732,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Exclude the would-be binders of a *parameter* argument of an applied
-    /// active-pattern head: run the [`pattern_names`](crate::pattern_names) walk and
+    /// active-pattern head: run the [`pattern_names`] walk and
     /// insert each returned occurrence's **ident-token** range into
     /// [`Self::excluded_param_ranges`], so the three binder-interning loops drop
     /// them (see that field). Or-pattern aliases are excluded alongside the
@@ -3104,7 +3105,7 @@ impl<'a> Resolver<'a> {
     /// - **Suppressing** — `inherit` (base statics resolve through the derived
     ///   name, probe M6, and shadowing is unprobed) or any member whose name
     ///   the walker cannot extract (an operator/active-pattern head, a dotted
-    ///   property path): sets [`TypeMemberSet::emit_suppressed`].
+    ///   property path): sets [`TypeMemberSet::emit_suppressed`](super::state::TypeMemberSet::emit_suppressed).
     /// - **Ignored** — class-local `let`/`do` (lexically private, never
     ///   `Type.x`-reachable) and interface implementations (explicit impls are
     ///   unreachable via the type's own name); constructors (`new`, implicit)

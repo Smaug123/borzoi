@@ -2904,7 +2904,7 @@ impl<'src> Parser<'src> {
     /// A `.[` indexer (`arr.[0]`, phase 10.16a) is *not* part of the path: a
     /// dot followed by `[` ends the long-ident here (the head stays a single
     /// `SynExpr.Ident` / the shorter `LongIdent`), leaving the `.[…]` for the
-    /// postfix tail ([`Self::parse_postfix_dot_tail`]) to fold into a
+    /// postfix tail ([`Self::parse_postfix_tail`]) to fold into a
     /// `DotIndexedGet`. This matches FCS, where `arr.[0]` is
     /// `DotIndexedGet(Ident "arr", …)`, not a one-segment long-ident.
     pub(super) fn parse_ident_expr(&mut self) {
@@ -2924,7 +2924,7 @@ impl<'src> Parser<'src> {
         // gone from the filtered stream, so `y` would otherwise look long;
         // keeping it a single `SynExpr.Ident` lets `.Bar` attach to the paren.
         // A `.[` indexer is left for the postfix tail
-        // ([`Self::parse_postfix_dot_tail`]). A `.( :: ).<int>` cons-field
+        // ([`Self::parse_postfix_tail`]). A `.( :: ).<int>` cons-field
         // qualification is likewise *not* a path extension (it folds the head
         // into a `LIBRARY_ONLY_FIELD_GET_EXPR` in the postfix tail), so the head
         // stays a single `SynExpr.Ident` — `cons.( :: ).1` is
@@ -3636,7 +3636,7 @@ impl<'src> Parser<'src> {
     /// in `((f y).Bar).Baz` the inner `DotGet` is parenthesised, so a swallowed
     /// `)` sits between `.Bar` and the outer `.Baz` — without the guard the
     /// inner chain would swallow `.Baz` and drain the `)` as an `ERROR`. Same
-    /// raw-adjacency check as [`Self::parse_postfix_dot_tail`] /
+    /// raw-adjacency check as [`Self::parse_postfix_tail`] /
     /// [`Self::parse_ident_expr`].
     fn parse_dot_get_tail(&mut self, cp: rowan::Checkpoint) {
         self.builder
@@ -3647,7 +3647,7 @@ impl<'src> Parser<'src> {
         // followed by an ident or an operator-value `( op )` / `(*)` / `( * )`.
         // A `.[` indexer (excluded by `at_long_ident_segment`) or any other
         // trailing dot ends the chain, left for the outer
-        // `parse_postfix_dot_tail` loop.
+        // `parse_postfix_tail` loop.
         self.consume_long_ident_qualification_segments();
         self.builder.finish_node(); // LONG_IDENT
         self.builder.finish_node(); // DOT_GET_EXPR

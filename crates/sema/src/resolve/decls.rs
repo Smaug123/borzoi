@@ -224,8 +224,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// Attach a case's **type-qualified** export path (`[container.., type, case]`)
-    /// to the case's trailing `Item` [`ExportDecl`], so a later file's
-    /// `Lib.Color.Red` resolves it ([`ProjectItems::type_qualified_cases`]).
+    /// to the case's trailing `Item` [`ExportDecl`](super::model::ExportDecl), so a later file's
+    /// `Lib.Color.Red` resolves it ([`ProjectItems::type_qualified_cases`](super::model::ProjectItems::type_qualified_cases)).
     /// Skipped in an anonymous-root file, which has no real cross-file container
     /// path (like [`Self::export_case`]) and pushed no `Item { item: Some(_) }`
     /// decl to attach to. Called immediately after the case's `Item` decl at both
@@ -242,7 +242,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Record a type definition's **qualified path** (`[container.., name]`) for
-    /// the cross-file type index ([`ProjectItems::type_paths`]).
+    /// the cross-file type index ([`ProjectItems::type_paths`](super::model::ProjectItems::type_paths)).
     /// `cases_enumerable` is `true` when every case the type owns is in the
     /// type-qualified case index — any genuine non-abbreviation repr (a
     /// union/enum's cases are all exported alongside it; other reprs own none) —
@@ -264,7 +264,7 @@ impl<'a> Resolver<'a> {
     /// `Lib.Color.Red` resolves to it, register its type-qualified path, and return
     /// the handle. Unlike [`Self::export_case`] the item carries **no** `qualified`
     /// value path — a require-qualified case is not in the value namespace (no bare /
-    /// `Mod.Case` access), so it must not enter [`ProjectItems::by_qualified_path`];
+    /// `Mod.Case` access), so it must not enter [`ProjectItems::value_exports`](super::model::ProjectItems::value_exports);
     /// only the type-qualified index reaches it. The caller uses the returned
     /// [`ItemId`] as the case's resolution **everywhere** (declaration and same-file
     /// `Color.Red`), so it has one identity for find-references / rename, just like a

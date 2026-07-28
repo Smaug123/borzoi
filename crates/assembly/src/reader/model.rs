@@ -2,7 +2,7 @@
 //!
 //! Plain immutable data — no borrows of the input buffer, no lifetimes, every
 //! cross-reference a resolved handle (see [`super::ids`]). Signature-typed
-//! fields reuse the stage-2 [`TypeSig`]/[`SigError`] core and are stored as
+//! fields reuse the stage-2 [`TypeSig`](super::signature::TypeSig)/[`SigError`] core and are stored as
 //! `Result`, so one unreadable signature is localized rather than sinking the
 //! whole type.
 //!
@@ -247,7 +247,7 @@ pub(crate) struct Param {
     /// unnamed one).
     pub(crate) name: Option<String>,
     /// The parameter type, with the custom-modifier run its position carries; a
-    /// byref parameter is preserved as [`TypeSig::ByRef`].
+    /// byref parameter is preserved as [`TypeSig::ByRef`](super::signature::TypeSig::ByRef).
     pub(crate) ty: ModifiedType,
     /// `[In]` (`Param` flag 0x0001).
     pub(crate) is_in: bool,
@@ -346,7 +346,8 @@ pub(crate) struct Method {
     /// always wired through `MethodImpl`) — expanded per declaration *owner*
     /// when the declaration is an accessor several properties/events claim.
     /// Each entry carries the implemented interface (the `MethodDeclaration`'s
-    /// parent, decoded to a [`TypeSig`], or a stored [`SigError`] if its
+    /// parent, decoded to a [`TypeSig`](super::signature::TypeSig), or a
+    /// stored [`SigError`] if its
     /// `TypeSpec` blob is unreadable) and the bare interface-member name. One
     /// body may satisfy several interface members (one `MethodImpl` row each —
     /// VB's `Implements IFoo.M, IBar.M`), hence a list, in `MethodImpl`-table

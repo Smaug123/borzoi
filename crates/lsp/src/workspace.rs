@@ -831,7 +831,7 @@ fn all_fsproj_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The node's effective output-file base name from one evaluation
-/// ([`ProjectNode::output_name`]): the trusted evaluated `$(TargetName)`
+/// ([`ProjectNode::output_name`](crate::project_graph::ProjectNode::output_name)): the trusted evaluated `$(TargetName)`
 /// (defaulting to `$(AssemblyName)` —
 /// [`borzoi_msbuild::ParsedProject::target_name`]), else the
 /// project-file stem (MSBuild's default, `$(MSBuildProjectName)`). `None`
@@ -1100,7 +1100,7 @@ fn resolve_node_uncached(
 /// Whether [`edges_of`] *suppressed* this evaluation's `<ProjectReference>`
 /// list rather than finding it empty — the condition the emptying is gated on,
 /// read back so the node can carry it
-/// ([`ProjectNode::references_uncertain`]).
+/// ([`ProjectNode::references_uncertain`](crate::project_graph::ProjectNode::references_uncertain)).
 ///
 /// Kept beside `edges_of` because it must stay the same condition: a walk that
 /// drops edges without marking them leaves the env fold counting a set those

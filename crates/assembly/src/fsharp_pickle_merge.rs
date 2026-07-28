@@ -129,7 +129,7 @@ const ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE: i64 = 0b1;
 /// descent — never repeats. A corrupt or crafted pickle can nevertheless link
 /// an ancestor's stamp as one of its own descendants: an *idempotent* OSGN
 /// re-link of a byte-identical body, which
-/// [`OsgnTable::link`](crate::fsharp_pickle::osgn) accepts as a no-op, so the
+/// `OsgnTable::link` accepts as a no-op, so the
 /// conflicting-relink guard never sees it. That back-edge would send an
 /// unguarded walk into unbounded recursion — and because these overlays run on
 /// the caller's normal stack (not the 64 MB
@@ -411,8 +411,8 @@ fn entity_source_name(entity: &PickledEntity) -> Option<String> {
 /// Compare` joins `System.String.Compare 1` as `call:extension`). Name
 /// *resolution* asks a different question — no augmentation of
 /// either kind is bare- or qualified-resolvable — and reads the per-member
-/// [`MethodLike::is_fsharp_extension_member`](crate::MethodLike::is_fsharp_extension_member)
-/// flag, which is exact per projected member rather than keyed by name (a module
+/// [`MethodLike::augmentation`](crate::MethodLike::augmentation)
+/// fact, which is exact per projected member rather than keyed by name (a module
 /// may hold both a `let M` and an augmentation `M`; only the latter is hidden).
 ///
 /// Scoped to the declaring module exactly as the other overlays are: the

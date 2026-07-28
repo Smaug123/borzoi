@@ -16,7 +16,7 @@
 //! equality. That branch is in fact never reached: every call here resolves
 //! both operands to a *root* before unioning, so the table only ever merges an
 //! unbound (`None`) root with something — structural unification of two bound
-//! terms is our job, done by [`Self::unify`], not `ena`'s. This is the standard
+//! terms is our job, done by [`InferTable::unify`], not `ena`'s. This is the standard
 //! way `rustc` (whence `ena` comes) layers an HM unifier over the union-find.
 //!
 //! [`type-checker-plan`]: ../../../docs/type-checker-plan.md
@@ -143,7 +143,7 @@ impl InferTable {
     }
 
     /// Whether `v`'s equivalence class occurs anywhere within `ty` (after
-    /// resolution). The occurs check that keeps [`Self::unify`] from binding a
+    /// resolution). The occurs check that keeps [`InferTable::unify`] from binding a
     /// variable to a term containing itself.
     fn occurs(&mut self, v: TyVid, ty: &Ty) -> bool {
         match self.shallow_resolve(ty) {
@@ -159,7 +159,7 @@ impl InferTable {
 
     /// Unify `a` and `b` atomically: on success the table reflects the merge; on
     /// failure it is rolled back to exactly its prior state. The plain
-    /// [`Self::unify`] may leave *partial* bindings when a compound mismatches
+    /// [`InferTable::unify`] may leave *partial* bindings when a compound mismatches
     /// after an earlier sub-term unified (e.g. `'a * string` vs `int * bool`
     /// binds `'a := int` before the second element fails) — and since
     /// [`crate::infer`]'s solver discharges constraints best-effort, *ignoring*

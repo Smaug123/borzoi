@@ -303,7 +303,7 @@ impl<'src> Parser<'src> {
     /// As [`Self::next_non_trivia_filtered_after_pos`] but scanning the
     /// filtered stream after an arbitrary index `idx` rather than the cursor.
     /// Used by the parenthesised-operator head lookahead
-    /// ([`Parser::paren_op_head_has_args`]), whose head spans *two* filtered
+    /// ([`Parser::operator_head_after`]), whose head spans *two* filtered
     /// tokens (`(` then the operator), so the "what follows the head" probe
     /// must start past `idx = self.pos + 1`, not the cursor.
     pub(super) fn next_non_trivia_filtered_after_index(

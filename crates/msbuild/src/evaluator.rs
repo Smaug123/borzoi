@@ -1342,7 +1342,7 @@ struct State<'r> {
     /// gated package is in the set. Scoped save/restore by the callers.
     package_context: bool,
     /// `true` while walking a file that physically lives inside the entry
-    /// SDK's installation tree (see [`Self::sdk_tolerance_root`]). The .NET
+    /// SDK's installation tree (see [`Self::sdk_tolerance_roots`]). The .NET
     /// SDK's own targets/props are full of conditional Compile machinery
     /// (`<ItemGroup Condition="'$(EnableDefaultItems)' == 'true'">…`, the
     /// link-metadata `<Compile Update=…>` group) gated on properties we can't
@@ -1438,7 +1438,7 @@ struct State<'r> {
     /// sat behind a gate we couldn't evaluate. The stored value is our best
     /// evaluation, but a real build can diverge, so every read — a `$(…)`
     /// expansion ([`State::expand`]) or a condition
-    /// ([`evaluate_condition_inner`]) — re-surfaces the root as a
+    /// ([`evaluate_condition_with_exemptions`]) — re-surfaces the root as a
     /// diagnostic under the active contexts, degrading compile/package
     /// certainty exactly like a direct undefined reference. A later clean
     /// overwrite re-pins the property. Mutated only via
@@ -5776,7 +5776,7 @@ fn contains_metadata_reference(s: &str) -> bool {
 /// [`Node::text`] only exposes the first text child — so a value of the
 /// form `A<!-- … -->B` would silently lose the `B` half. Iterating every
 /// text child preserves the whole value. CDATA sections are exposed by
-/// roxmltree as [`NodeType::Text`], so this loop captures them too.
+/// roxmltree as [`roxmltree::NodeType::Text`], so this loop captures them too.
 ///
 /// A text child that is *literally* nothing but XML whitespace in the source is
 /// **insignificant** and contributes nothing, matching MSBuild's XML layer.

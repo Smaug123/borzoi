@@ -331,7 +331,7 @@ impl<'a> Resolver<'a> {
     /// rather than the terminal segment, so this recognises only a bare entity.
     /// A **non-authoritative** module is deliberately not treated as one: there
     /// its `Module` kind is an IL heuristic FCS does not share, and it imports
-    /// the type as a plain class, so [`AssemblyEnv::terminal_expression_value`]
+    /// the type as a plain class, so [`AssemblyEnv::terminal_expression_value`](crate::AssemblyEnv::terminal_expression_value)
     /// answers for the shape FCS actually sees.
     fn reading_stops_on_a_non_value(
         &self,
@@ -689,7 +689,7 @@ impl<'a> Resolver<'a> {
     /// How a path segment that names a **union case** of `parent` resolves, or
     /// `None` when `parent` is not a union that declares it.
     ///
-    /// The case must be *provable* — [`AssemblyEnv::authoritative_union_case`],
+    /// The case must be *provable* — [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case),
     /// so neither an unknowable case list nor a non-authoritative assembly's
     /// IL-heuristic union can make a reading own a path FCS would re-root.
     ///
@@ -699,7 +699,7 @@ impl<'a> Resolver<'a> {
     /// F#-entity projection drops), so it defers: the reading owns the path (the
     /// case is certainly there) while naming no target.
     ///
-    /// [`AssemblyEnv::authoritative_union_case`]: crate::AssemblyEnv::authoritative_union_case
+    /// [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case): crate::AssemblyEnv::authoritative_union_case
     fn union_case_tail(&self, parent: EntityHandle, name: &str) -> Option<Resolution> {
         if !self.assemblies.authoritative_union_case(parent, name) {
             return None;
@@ -975,7 +975,7 @@ impl<'a> Resolver<'a> {
     /// which is what lets a higher-priority shadow risk win over a
     /// lower-priority real match, and a real match at equal-or-higher
     /// priority than any shadow risk win over it in turn. A
-    /// [`ShadowVeto::Preemptive`] verdict (exact metadata) vetoes even a
+    /// [`ShadowVeto::Vetoed`] verdict (exact metadata) vetoes even a
     /// same-tier real match — FCS-probed: `namespace Ns; type Foo = …;
     /// [<AutoOpen>] module Auto = type Foo = …` then `open Ns; (x : Foo)`
     /// binds `Ns.Auto.Foo`, not the direct `Ns.Foo` (found by review, round
@@ -1432,7 +1432,7 @@ impl<'a> Resolver<'a> {
     /// the walk would be a *wrong target*, not a deferral: with `open Prefix` in scope,
     /// `open M` where `Prefix.M` is RQA and a root `M` exists would bind the root `M`'s
     /// values where FCS binds `Prefix.M`'s. Reporting FS0892 is a Phase-4 concern
-    /// ([`AssemblyEnv::is_require_qualified_access`] is the signal).
+    /// ([`AssemblyEnv::is_require_qualified_access`](crate::AssemblyEnv::is_require_qualified_access) is the signal).
     pub(super) fn opened_assembly_module(&self, path: &[String]) -> Option<EntityHandle> {
         self.opened_assembly_modules(path).into_iter().next()
     }
@@ -1445,7 +1445,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Same walk as [`Self::opened_assembly_type`] — longest top-level
     /// `(namespace, name)` prefix, then nested types — but branching over *all* roots
-    /// at that prefix ([`AssemblyEnv::public_entities_named`]) rather than the
+    /// at that prefix ([`AssemblyEnv::public_entities_named`](crate::AssemblyEnv::public_entities_named)) rather than the
     /// first-wins index.
     pub(super) fn opened_assembly_modules(&self, path: &[String]) -> Vec<EntityHandle> {
         let n = path.len();
@@ -1574,7 +1574,7 @@ impl<'a> Resolver<'a> {
     /// `module_paths` stays an *exact* match because it also holds the file's
     /// `namespace` headers, which must not make an `open <namespace>` opaque.)
     ///
-    /// [`Preceding`]: ProjectItems
+    /// [`Preceding`]: super::model::ProjectItems
     pub(super) fn open_imports_project_values(&self, path: &[String]) -> bool {
         let under_any = |paths: &[Vec<String>]| {
             paths

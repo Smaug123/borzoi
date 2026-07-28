@@ -873,7 +873,7 @@ impl<'a> Resolver<'a> {
     ///   adjudicates every declaration form against FCS, so a binder form that
     ///   escapes both channels is caught by the machine, not by review;
     /// - the leaf must be a bare-expression-constructible class
-    ///   ([`AssemblyEnv::bare_expr_constructible`]): a static class, union, record,
+    ///   ([`AssemblyEnv::bare_expr_constructible`](crate::AssemblyEnv::bare_expr_constructible)): a static class, union, record,
     ///   abbreviation, or generic type is not, so it defers.
     ///
     /// Delegating to `decide_type_path` rather than reimplementing a bare-name
@@ -892,7 +892,7 @@ impl<'a> Resolver<'a> {
     /// a value never shadows a type, so type position is right to ignore values,
     /// while expression position is precisely where a value wins. The manifest
     /// veto above therefore has a value-keyed twin that only this caller needs
-    /// ([`AssemblyEnv::manifest_auto_open_module_could_supply_value_named`]) — a
+    /// ([`AssemblyEnv::assembly_bare_value_surface_could_supply`](crate::AssemblyEnv::assembly_bare_value_surface_could_supply)) — a
     /// module-shaped auto-open's `let` bindings are imported into bare expression
     /// scope and land in no value frame, so `lookup` misses them exactly as it
     /// misses an `extern`. Any *further* shadow channel that binds values rather

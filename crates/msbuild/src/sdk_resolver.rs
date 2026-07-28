@@ -21,8 +21,8 @@
 //! ## Scope
 //!
 //! - Look under both roots for `Sdk.props` *and* `Sdk.targets` —
-//!   [`SdkPaths`](crate::SdkPaths) requires both.
-//! - Apply an optional [`VersionSpec`](version_spec::VersionSpec)
+//!   [`SdkPaths`] requires both.
+//! - Apply an optional [`VersionSpec`]
 //!   (typically derived from `global.json` by [`global_json`]) to the
 //!   `$DOTNET_ROOT` candidate set only — `global.json`'s `sdk.version`
 //!   constrains the host .NET SDK install, not third-party NuGet
@@ -746,9 +746,10 @@ impl PartialOrd for SdkVersion {
 // `VersionSpec` values to hand to `locate_dotnet_sdk`.
 pub mod version_spec;
 
-/// `global.json` upward discovery + JSONC parsing. The output
-/// [`global_json::GlobalJsonSettings`] feeds [`version_spec::VersionSpec`]
-/// via [`global_json::GlobalJsonSettings::into_spec`].
+// `global.json` upward discovery + JSONC parsing; the module's own header
+// documents it. An outer `///` here would merge with that header and resolve
+// the whole merged doc — including the header's unqualified links — in *this*
+// module's scope.
 pub mod global_json;
 
 /// Workload locator SDK resolution (Stage B of
