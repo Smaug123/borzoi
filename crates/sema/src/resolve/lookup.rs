@@ -3047,7 +3047,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether `names` is a path F# resolves *within the project* — searched
+    /// Whether — and how — `names` is a path F# resolves *within the project*, searched
     /// before referenced assemblies, so it must not fall through to a colliding
     /// assembly type/member (and an `open type` of it must not model the
     /// assembly's statics). Declines a path that is:
@@ -3065,20 +3065,32 @@ impl<'a> Resolver<'a> {
     /// the assembly when the module does not provide the tail (FCS-verified). The
     /// fall-through is sound only while the project value index is complete — true
     /// today (a module holds only `let` values).
-    pub(super) fn path_is_project_shadowed(&self, names: &[String]) -> bool {
+    /// `Some` is the decline, and its payload is *which guard said so* — the
+    /// form the assembly walk needs, so the census names the model to fix
+    /// rather than the predicate that happened to be asked.
+    ///
+    /// The **signature screen** is asked first because it is a different guard
+    /// sharing this verdict: the project-side commit sites already report it as
+    /// [`DeclineCause::SignatureScreened`], and filing it under a project shadow
+    /// here would move signature work into the project-merge bucket.
+    pub(super) fn project_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+        if self.preceding.sig_screened_path(names) {
+            return Some(DeclineCause::SignatureScreened);
+        }
         // A project *value* prefix (`Demo.Calc.x` where `Demo.Calc` is a `let`)
         // shadows only in the *value/expression* namespace; the type-namespace
-        // part is shared with [`Self::path_is_project_type_shadowed`]. A bare ref
+        // part is shared with [`Self::project_type_shadow_cause`]. A bare ref
         // that *is* a declared top-level project module exactly shadows only here
         // too: a **module is not a type**, so it does not occupy the type name —
         // `(x: Calc)` with a top-level `module Calc` and `open Demo` is the
         // assembly type `Demo.Calc`, never the module (FCS-verified), so it must
         // not gate the type path.
-        self.path_is_project_type_shadowed(names)
+        let shadowed = self.path_is_project_type_shadowed(names)
             || self.preceding.is_exact_project_module(names)
             || self
                 .preceding
-                .is_project_value_prefixed(names, &self.container_path)
+                .is_project_value_prefixed(names, &self.container_path);
+        shadowed.then_some(DeclineCause::ProjectPathShadow)
     }
 
     /// Whether `names` is rooted at the **current module's own path** — the head
@@ -3297,7 +3309,7 @@ impl<'a> Resolver<'a> {
             })
     }
 
-    /// The *type-namespace* subset of [`Self::path_is_project_shadowed`]: whether
+    /// The *type-namespace* subset of [`Self::project_shadow_cause`]: whether
     /// `names` is a path F# resolves to a project **type** (a `type`/nested
     /// module rooting a type, not a *value* nor a bare top-level *module*) ahead
     /// of the referenced assemblies. Used to resolve an `open type` target, which
@@ -3306,7 +3318,25 @@ impl<'a> Resolver<'a> {
     /// even when an earlier `module Demo` has a `let Calc`), and neither does a
     /// bare top-level *module* of the same name (a module is not a type).
     pub(super) fn path_is_project_type_shadowed(&self, names: &[String]) -> bool {
-        self.rooted_at_current_module(names)
+        self.project_type_shadow_cause(names).is_some()
+    }
+
+    /// [`Self::path_is_project_type_shadowed`], *and which guard said so* — the
+    /// type walk's sibling of [`Self::project_shadow_cause`], including its
+    /// signature-screen-first rule and for the same reason.
+    pub(super) fn project_type_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+        // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
+        // a path under a signatured module root whose residual the
+        // signature *may* expose must not commit to a merged assembly
+        // member in ANY namespace — FCS binds the `.fsi` (probe:
+        // sig-exposed `Shared.shown` with a colliding `RefLib` → the
+        // `.fsi`), and Stage 1 has no signature identity to commit, so
+        // it defers. A residual absent from the signature text falls
+        // through to the assembly exactly as FCS does.
+        if self.preceding.sig_screened_path(names) {
+            return Some(DeclineCause::SignatureScreened);
+        }
+        let shadowed = self.rooted_at_current_module(names)
             || self
                 .nested_module_locals
                 .iter()
@@ -3324,18 +3354,10 @@ impl<'a> Resolver<'a> {
             // ([`ProjectItems::is_exact_project_module`]) is **not** a type
             // shadow — a module is not a type, so it never shadows a same-named
             // assembly type in type position (FCS); it lives in the value-only
-            // [`Self::path_is_project_shadowed`]. A *nested* module still defers
+            // [`Self::project_shadow_cause`]. A *nested* module still defers
             // here (its qualified path may root a project type we model later).
-            || self.preceding.is_rooted_at_nested_module(names)
-            // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
-            // a path under a signatured module root whose residual the
-            // signature *may* expose must not commit to a merged assembly
-            // member in ANY namespace — FCS binds the `.fsi` (probe:
-            // sig-exposed `Shared.shown` with a colliding `RefLib` → the
-            // `.fsi`), and Stage 1 has no signature identity to commit, so
-            // it defers. A residual absent from the signature text falls
-            // through to the assembly exactly as FCS does.
-            || self.preceding.sig_screened_path(names)
+            || self.preceding.is_rooted_at_nested_module(names);
+        shadowed.then_some(DeclineCause::ProjectTypePathShadow)
     }
 
     /// Record a qualified in-file enum-case path `Color.Red` (`type_seg`,

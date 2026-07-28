@@ -63,13 +63,13 @@ impl<'a> Resolver<'a> {
         let n = names.len();
 
         // Decline a path F# resolves within the project (see
-        // [`Self::path_is_project_shadowed`]), searched before referenced
+        // [`Self::project_shadow_cause`]), searched before referenced
         // assemblies. A path shadowed *only* by the current module's own name is
         // a self-qualifier FCS does not bind into the current module (`M.x` inside
         // `M` is FS0039), so an `open` / implicit `[<AutoOpen>]` may still supply
         // it (`List.fold` inside `module List` → `Microsoft.FSharp.Collections`):
         // it defers at the *root* but must not preempt the opens tier.
-        if self.path_is_project_shadowed(&names) {
+        if let Some(cause) = self.project_shadow_cause(&names) {
             // Two questions, and they are not the same one:
             //
             // - is the **written** path a self-qualifier? A fact about what the
@@ -99,7 +99,7 @@ impl<'a> Resolver<'a> {
             return if shadow_is_the_self_module && self.self_module_shadow_only(source) {
                 AssemblyPath::SelfModuleShadowed
             } else {
-                AssemblyPath::Occupied(DeclineCause::ProjectPathShadow)
+                AssemblyPath::Occupied(cause)
             };
         }
 
@@ -1134,9 +1134,9 @@ impl<'a> Resolver<'a> {
         // *value* of the same name does NOT shadow a type in type position
         // (`module Demo; let Thing = 1` elsewhere does not stop `x : Demo.Thing`
         // resolving to the assembly type), so it must not pull in the value-space
-        // shadowing that the expression sibling's `path_is_project_shadowed` adds.
-        if self.path_is_project_type_shadowed(&names) {
-            return AssemblyPath::Occupied(DeclineCause::ProjectTypePathShadow);
+        // shadowing that the expression sibling's `project_shadow_cause` adds.
+        if let Some(cause) = self.project_type_shadow_cause(&names) {
+            return AssemblyPath::Occupied(cause);
         }
 
         // Longest prefix `[..k]` (with `k >= base`, a source segment) whose
