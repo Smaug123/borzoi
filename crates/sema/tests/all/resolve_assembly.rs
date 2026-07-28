@@ -2578,7 +2578,7 @@ fn contested_same_fqn_type_defers_a_static_member_path() {
 fn contested_global_root_does_not_preempt_an_open_reading() {
     // Codex review of the contested-rooting guard: the value/member walk
     // pre-probes the as-written ROOT reading before walking opens, and a
-    // `ProjectShadowed` there vetoes the whole walk. A contested rooting is an
+    // `Occupied` there vetoes the whole walk. A contested rooting is an
     // *assembly* reading, not a lexical project-bound head — it must be
     // tier-local (like an opaque abbreviation reading), so a higher-priority
     // `open` whose rooting is uncontested still wins: with a *global* `Color`
@@ -2896,7 +2896,7 @@ fn a_root_tier_contest_does_not_preempt_an_open() {
     // Codex review round 5. The global `Color` is contested between a class
     // that lacks `StaticCount` and another DLL's **unchaseable abbreviation**.
     // Exactly one candidate survives the supplier test (the alias — we cannot
-    // prove it lacks the member), and its walk is a `ProjectShadowed` defer.
+    // prove it lacks the member), and its walk is an `Occupied` defer.
     // Returned verbatim that trips the preemptive as-written-root veto, which
     // skips the opens entirely — so `open Demo; Color.StaticCount` would defer
     // even though FCS binds `Demo.Color.StaticCount`. A sole *deferring*

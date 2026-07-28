@@ -166,7 +166,7 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // out not to be separable. Its *recognition* half is settled:
     // `assembly_path_records` asks `self_module_shadow_only` about the source
     // path, so `N.List.rev` for a written `List.rev` is no longer classified
-    // `ProjectShadowed` on account of a head the walk itself supplied.
+    // `Occupied` on account of a head the walk itself supplied.
     //
     // Its other half — letting a lower reading answer once a self shadow is
     // seen, instead of deferring at it — folds into (1). A `SelfModuleShadowed`

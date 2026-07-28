@@ -2286,3 +2286,147 @@ fn a_cross_file_project_auto_open_module_defers_a_dotted_head_it_declares_a_modu
         "no project file declares a module `Demo`, so the head is unclaimed"
     );
 }
+
+// ===== The decline census: what *occupies* the name, not merely that it is =====
+//
+// Every shape below stops the assembly walk for a different reason — an alias
+// whose target cannot be chased, an alias that owns its tail, a project entity
+// holding the path, a case-pattern head bound by a non-union, a rooting two
+// DLLs contest. The resolver is right to give them one verdict (the walk stops
+// here), but a census that also gave them one *cause* could not price a change
+// to any of them: the aggregate moves and nothing says which model owned the
+// move. So each names its own occupant, and this table is the two-sided ratchet
+// on that — a decline that changes which guard produced it fails here.
+
+/// Every `(cause, tier)` label pair `src` records against `env`, deduplicated:
+/// the census's whole view of a snippet, keyed by nothing positional so a case
+/// asserts on the guards that fired rather than on the range they were filed
+/// under.
+fn decline_causes(src: &str, env: &AssemblyEnv) -> Vec<String> {
+    let rf = resolve(src, env);
+    let mut seen: Vec<String> = rf
+        .decline_sites()
+        .map(|(_, site)| format!("{}@{}", site.cause.label(), site.tier.label()))
+        .collect();
+    seen.sort();
+    seen.dedup();
+    seen
+}
+
+/// The synthetic env of `absent_child_past_a_chased_alias_defers_instead_of_ceding`:
+/// a chased alias in the later (higher-priority) open whose target lacks the
+/// written child, against a lower open's same-named type that does declare it.
+fn alias_owned_tail_env() -> AssemblyEnv {
+    use borzoi_assembly::EntityKind;
+    let widget = synth_entity("A", &["AliasNs"], "Widget", EntityKind::Class);
+    let alias = synth_marker("A", &["AliasNs"], "Alias", &["AliasNs", "Widget"]);
+    let inner = {
+        let mut e = synth_entity("B", &[], "Inner", EntityKind::Class);
+        e.namespace = Vec::new();
+        e
+    };
+    let mut other_alias = synth_entity("B", &["OtherNs"], "Alias", EntityKind::Class);
+    other_alias.nested_types = vec![inner];
+    two_dll_env(vec![widget, alias], vec![other_alias])
+}
+
+#[test]
+fn each_occupied_name_decline_names_the_thing_that_occupies_it() {
+    // `Lib.Str = System.String` with no `System.Runtime` in the env: the alias
+    // binds the name and its target cannot be chased, in either walk.
+    let unchaseable_value = "module M\nlet _ = Lib.Str.Format()\n";
+    let unchaseable_type = "module M\nlet f (v : Lib.Str) = v\n";
+    // A file that augments `Lib.Widget` holds that name project-side, so the
+    // annotation below it is a project-shadowed *type* path.
+    let augmented =
+        "module M\ntype Lib.Widget with\n    member this.Zz = 1\nlet f (v : Lib.Widget) = v\n";
+    // A project `module Lib` holds the head of a value path.
+    let project_module = "module M\nmodule Lib =\n    let x = 1\nlet _ = Lib.Widget.Make()\n";
+    // `Lib.UAlias` aliases the union that owns `UCase`; the case-pattern head
+    // walk binds the alias and does not chase it.
+    let case_head = "namespace Consumer\nopen Lib\nmodule M =\n    let f x =\n        match x with\n        | UAlias.UCase -> 0\n        | _ -> 1\n";
+    // The same union's FQN exported by two loaded DLLs.
+    let case_contested = "namespace Consumer\nopen Demo.CasePat\nmodule M =\n    let f x =\n        match x with\n        | Shape.Circle r -> r\n        | _ -> 0\n";
+    // A chased alias owns the path, so its absent child defers rather than
+    // ceding to the lower open's same-named type.
+    let alias_tail = "module M\nopen OtherNs\nopen AliasNs\nlet f (x : Alias.Inner) = x\n";
+
+    let env = fixture_env();
+    let doubled = fixture_env_doubled();
+    let synthetic = alias_owned_tail_env();
+    let cases: [(&str, &str, &AssemblyEnv, &str); 7] = [
+        (
+            "an unchaseable alias target in the value walk",
+            unchaseable_value,
+            &env,
+            "alias_target_unchaseable@root",
+        ),
+        (
+            "an unchaseable alias target in the type walk",
+            unchaseable_type,
+            &env,
+            "alias_target_unchaseable@root",
+        ),
+        (
+            "a project type augmentation holding the annotated name",
+            augmented,
+            &env,
+            "project_type_path_shadow@root",
+        ),
+        (
+            "a project module holding a value path's head",
+            project_module,
+            &env,
+            "project_path_shadow@root",
+        ),
+        (
+            "an assembly abbreviation on a case-pattern head",
+            case_head,
+            &env,
+            "case_pattern_head_occupied@explicit_open",
+        ),
+        (
+            "a case-pattern head two DLLs contest",
+            case_contested,
+            &doubled,
+            "contested_rooting@explicit_open",
+        ),
+        (
+            "an absent child past a chased alias",
+            alias_tail,
+            &synthetic,
+            "alias_owned_tail@explicit_open",
+        ),
+    ];
+
+    for (what, src, case_env, expected) in cases {
+        assert!(
+            decline_causes(src, case_env).contains(&expected.to_string()),
+            "{what}: expected the census to record {expected:?}, got {:?}",
+            decline_causes(src, case_env),
+        );
+    }
+
+    // The property the table exists for, stated separately from the labels: no
+    // two of these shapes may share a cause. A split that later re-merged two
+    // of them would keep every `contains` above passing only by making this
+    // fail.
+    let mut causes: Vec<&str> = cases
+        .iter()
+        .map(|(_, _, _, expected)| expected.split('@').next().expect("a cause label"))
+        .collect();
+    causes.sort_unstable();
+    let distinct = {
+        let mut c = causes.clone();
+        c.dedup();
+        c
+    };
+    assert_eq!(
+        distinct.len(),
+        // The two alias-target rows are the one deliberate sharing: chasing an
+        // alias is the same question in either walk, and the fix is the same
+        // model.
+        cases.len() - 1,
+        "these shapes must not collapse into one cause: {causes:?}"
+    );
+}

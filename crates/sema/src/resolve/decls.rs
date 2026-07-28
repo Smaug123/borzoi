@@ -1035,7 +1035,7 @@ impl<'a> Resolver<'a> {
                     // In the first two cases the surviving *project*-namespace
                     // readings bind no assembly path themselves, but a name they
                     // shadow must veto a lower-tier assembly binding
-                    // (`ProjectShadowed` → defer) at its true priority — so the
+                    // (`Occupied` → defer) at its true priority — so the
                     // (filtered) group always enters `imports`. (For a project
                     // module that veto is currently redundant — the module
                     // interpretation sets `opaque_dotted_open` over the same
