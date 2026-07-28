@@ -2695,6 +2695,80 @@ fn an_inaccessible_member_does_not_rank_in_the_fold() {
     );
 }
 
+/// A constructible type the **enclosing** block declares *after* the fold takes
+/// the name from a folded value, so the fold must not leave one standing there.
+/// fcs-dump-probed both ways: with `type Tag()` below the module FCS binds the
+/// type's constructor, and with it above, the folded `Tag`. Sema models no
+/// project type constructor, so the sound answer to the first is a deferral
+/// (codex review of #49; the explicit-`open` arm of the same shape is #45 and
+/// resolves the same wrong way on `main`).
+#[test]
+fn a_later_enclosing_type_takes_a_folded_name() {
+    let env = fixture_env();
+    let src = "module M\n[<AutoOpen>]\nmodule Local =\n    let Tag = 1\ntype Tag() = class end\n\
+               let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `type Tag()` takes the name; got {res:?}"
+    );
+}
+
+/// …and a type declared *before* the module does not, so the decline is keyed
+/// on position rather than on the name being a type anywhere in the block.
+#[test]
+fn an_earlier_enclosing_type_does_not_take_a_folded_name() {
+    let env = fixture_env();
+    let src = "module M\ntype Tag() = class end\n[<AutoOpen>]\nmodule Local =\n    let Tag = 1\n\
+               let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let want = src.find("Tag = 1").expect("the folded binder");
+    assert_eq!(
+        def.map(|r| usize::from(r.start())),
+        Some(want),
+        "the folded value still wins over an earlier type; got {res:?}"
+    );
+}
+
+/// A file declaring its own `AutoOpenAttribute` shadows FSharp.Core's, and FCS
+/// then treats `[<AutoOpen>]` as an ordinary attribute that opens nothing — so
+/// the enclosing `marker` keeps its earlier binding (fcs-dump-probed). Folding
+/// on the attribute's *spelling* committed this module's `marker` instead
+/// (codex review of #49).
+#[test]
+fn a_shadowed_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module M\ntype AutoOpenAttribute() =\n    inherit System.Attribute()\n\
+               let marker = 1\n[<AutoOpen>]\nmodule Local =\n    let marker = 2\nlet x = marker\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("marker").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "marker".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let want = src.find("marker = 1").expect("the enclosing binder");
+    assert_eq!(
+        def.map(|r| usize::from(r.start())),
+        Some(want),
+        "the shadowed attribute opens nothing, so the enclosing `marker` stands; got {res:?}"
+    );
+}
+
 /// The **implicit namespace fold** must keep the same fragment identity the
 /// fold-back does: a plain `module M` fragment is not folded by a later
 /// `[<AutoOpen>] module M` at the same path, so a third block in the namespace

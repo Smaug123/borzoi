@@ -527,6 +527,17 @@ impl<'a> Resolver<'a> {
                             );
                         }
                         let slot = type_slot_class(defn);
+                        // A constructible type takes the unqualified slot from
+                        // a same-named name an `[<AutoOpen>]` module folded in
+                        // above it (fcs-dump-probed both ways round). Pushed
+                        // here, at the type's own position, so a use written
+                        // between the module and the type still binds the fold.
+                        if slot != SlotClass::Keeps {
+                            self.decline_folded_name_taken_by_type(
+                                id_text(name.text()),
+                                u32::from(defn.syntax().text_range().start()),
+                            );
+                        }
                         // The type's access-root (own `private` plus any enclosing
                         // `private` module) — a same-file module-qualified `A.Foo.Red`
                         // from an inaccessible site does not resolve the type's
@@ -1863,6 +1874,40 @@ impl<'a> Resolver<'a> {
         self.augmentation_head_locals = saved_augmentation_locals;
     }
 
+    /// Whether `nm`'s `[<AutoOpen>]` header attribute provably names something
+    /// other than FSharp.Core's — a project type of that name, in this file or
+    /// a preceding one, which shadows it.
+    ///
+    /// Only a *committed project* verdict counts. The attribute resolver
+    /// records `Resolution::Local` / `Item` exactly when the candidate reached
+    /// a project type; an `Entity` is an assembly's (FSharp.Core's, in every
+    /// real build), and a deferral or a silence is no claim — declining on
+    /// those would decline every fold in a unit test with an empty
+    /// `AssemblyEnv`, where nothing resolves at all.
+    fn auto_open_attribute_is_shadowed(&self, nm: &NestedModuleDecl) -> bool {
+        nm.attributes()
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .filter_map(|attr| attr.type_name())
+            .filter(|name| {
+                name.idents().last().is_some_and(|t| {
+                    let text = id_text(t.text());
+                    text == "AutoOpen" || text == "AutoOpenAttribute"
+                })
+            })
+            .any(|name| {
+                let toks: Vec<_> = name.idents().collect();
+                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                    return false;
+                };
+                let range =
+                    rowan::TextRange::new(first.text_range().start(), last.text_range().end());
+                matches!(
+                    self.attribute_resolutions.get(&range),
+                    Some(Resolution::Local(_) | Resolution::Item(_))
+                )
+            })
+    }
+
     /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame
     /// at its declaration position — the same fold an `open` of it there would
     /// perform ([`Resolver::fold_own_auto_open_module`]).
@@ -1874,6 +1919,16 @@ impl<'a> Resolver<'a> {
     /// resolved (FCS checks those before adding the module's contents).
     pub(super) fn fold_back_auto_open_module(&mut self, nm: &NestedModuleDecl) {
         if !attrs_auto_open(nm.attributes()) {
+            return;
+        }
+        // `attrs_auto_open` reads the *spelling*. A file declaring its own
+        // `type AutoOpenAttribute` shadows FSharp.Core's, and FCS then treats
+        // `[<AutoOpen>]` as an ordinary attribute that opens nothing — so
+        // folding on the spelling alone commits this module's members where
+        // FCS keeps whatever was in scope before (fcs-dump-probed). The header
+        // attributes have already resolved by here, so use the verdict: a
+        // candidate that reached a project type is provably not FSharp.Core's.
+        if self.auto_open_attribute_is_shadowed(nm) {
             return;
         }
         let Some(li) = nm.long_id() else { return };

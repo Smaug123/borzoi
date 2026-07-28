@@ -1944,6 +1944,7 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
+            fold_back_names: HashMap::new(),
         }
     }
 

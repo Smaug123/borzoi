@@ -178,6 +178,13 @@ impl Shape {
 enum Probe {
     /// `let probeExpr = Nn` — expression position.
     Expr,
+    /// `let probeAfterType = Nn`, below an enclosing `type Nn() = class end`
+    /// declared after the fragment. A constructible type the *enclosing* block
+    /// declares below the fold takes the name from anything folded — probed
+    /// both ways round, and the mirror shape with the type above the module
+    /// leaves the folded value standing. FCS names the type; sema models no
+    /// project type constructor, so the only sound answer is to name nothing.
+    AfterEnclosingType,
     /// `match x with | Nn -> 1` — pattern position. A name that is neither a
     /// case nor an exception is a *fresh binder* here, which FCS reports as a
     /// definition at the occurrence itself; that is a checkable answer too, so
@@ -189,6 +196,7 @@ impl Probe {
     fn tag(self) -> &'static str {
         match self {
             Probe::Expr => "expr",
+            Probe::AfterEnclosingType => "after-enclosing-type",
             Probe::Pattern => "pattern",
         }
     }
@@ -198,8 +206,11 @@ impl Probe {
 struct Cell {
     label: String,
     src: String,
-    /// The two probe spans, in [`Probe`] order.
+    /// The probe spans, in [`Probe`] order.
     probes: Vec<(Probe, TextRange)>,
+    /// The span of the enclosing `type Nn()` declaration's name — what FCS must
+    /// pick for [`Probe::AfterEnclosingType`].
+    enclosing_type: TextRange,
 }
 
 /// The inaccessible members the metamorphic property perturbs each cell with.
@@ -278,7 +289,22 @@ fn build_cell(n: usize, members: &[Shape]) -> Cell {
     probes.push((Probe::Pattern, push_probe(&mut src)));
     src.push_str(" -> 1\n");
 
-    Cell { label, src, probes }
+    // The enclosing block's own constructible type, *after* the fragment, and a
+    // probe below it. Both probes above sit before this declaration, so they
+    // cannot see it and their answers are unchanged.
+    src.push_str("\ntype ");
+    let enclosing_type = push_probe(&mut src);
+    src.push_str("() = class end\n");
+    src.push_str("\nlet probeAfterType = ");
+    probes.push((Probe::AfterEnclosingType, push_probe(&mut src)));
+    src.push('\n');
+
+    Cell {
+        label,
+        src,
+        probes,
+        enclosing_type,
+    }
 }
 
 /// A declaration range rendered as the source line that holds it — a bare byte
@@ -632,6 +658,10 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
 
     let mut mismatches: Vec<String> = Vec::new();
     let mut adjudicated = 0usize;
+    // Cells whose `after-enclosing-type` probe names the enclosing *local*
+    // binding — task #52, a defect no fold is involved in. Pinned by shape
+    // above and by count below; down is a fix, up is a new defect.
+    let mut local_eviction_gaps = 0usize;
     let mut seen_gaps: BTreeSet<String> = BTreeSet::new();
 
     for (cell, (path, _)) in cells.iter().zip(files.iter()) {
@@ -687,6 +717,49 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
                         cell.src
                     ));
                 }
+                continue;
+            }
+
+            // The enclosing type's probe needs no ratchet: FCS's answer is
+            // known by construction (the type is the last declaration and takes
+            // the name), and ours can only ever be "nothing", since sema models
+            // no project type constructor. Assert both — a change on either
+            // side is news, not a gap to record.
+            if *probe == Probe::AfterEnclosingType {
+                let want = (
+                    usize::from(cell.enclosing_type.start()),
+                    usize::from(cell.enclosing_type.end()),
+                );
+                if fcs_decl != Some(want) {
+                    mismatches.push(format!(
+                        "  {key}\n    the enclosing `type {NAME}()` should take the name, but \
+                         FCS picks {}\n{}",
+                        at(&cell.src, fcs_decl),
+                        cell.src
+                    ));
+                } else if our_def.is_some() {
+                    // Naming the enclosing `let Nn = 99` is task #52 — the same
+                    // eviction against a plain local binding, which no fold
+                    // touches (`let Nn = 99; type Nn(); Nn` reproduces it with
+                    // no `[<AutoOpen>]` in the source at all). Ratcheted by
+                    // shape, so a *folded* member standing here — the door this
+                    // branch opens and closes — still fails.
+                    let enclosing_binding = cell.src.find(&format!("let {NAME} = 99")).map(|i| {
+                        let at = i + "let ".len();
+                        (at, at + NAME.len())
+                    });
+                    if our_def == enclosing_binding {
+                        local_eviction_gaps += 1;
+                    } else {
+                        mismatches.push(format!(
+                            "  {key}\n    FCS picks the enclosing type, we pick {} (resolution \
+                             {ours:?})\n{}",
+                            at(&cell.src, our_def),
+                            cell.src
+                        ));
+                    }
+                }
+                adjudicated += 1;
                 continue;
             }
 
@@ -749,9 +822,14 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
         mismatches.is_empty(),
         "{} of {} probes across {} cells disagree with FCS ({adjudicated} adjudicated):\n{}",
         mismatches.len(),
-        cells.len() * 2,
+        cells.len() * 3,
         cells.len(),
         mismatches.join("\n")
+    );
+
+    assert_eq!(
+        local_eviction_gaps, 60,
+        "the count of #52 cells moved; down is a fix (update this number), up is a new defect"
     );
 
     // Vacuity: the grid proves nothing if FCS declined to adjudicate it.

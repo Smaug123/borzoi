@@ -1365,6 +1365,13 @@ impl<'a> Resolver<'a> {
             }
             self.open_module_values(&frag, pos, Some(current_file), Some(frag_range));
             self.push_eviction_overrides(late_evictions, pos);
+            // Record what this fragment contributed, so a constructible type
+            // the enclosing container declares *below* can take the name back
+            // when the walk reaches it ([`Self::decline_folded_name_taken_by_type`]).
+            // Per fragment, not once for the module: a nested `[<AutoOpen>]`
+            // submodule's members reach the same container through a deeper
+            // path.
+            self.note_fold_back_names(&frag, frag_range);
             // …and the rest is declined **by name**, after the fold rather than
             // before it. `open_module_values` enumerates only what it can point
             // at, so a name it does push must still lose to a same-named member
@@ -1408,6 +1415,66 @@ impl<'a> Resolver<'a> {
                 self.module_frame().entries.extend(entries);
             }
         }
+    }
+
+    /// Decline every name the **enclosing container** goes on to declare as a
+    /// constructible type *after* this fold — `names` read off the fold site's
+    /// following siblings by [`Resolver::later_sibling_type_names`].
+    ///
+    /// The fold runs at the module's closing position and leaves ordinary
+    /// entries behind; nothing in the enclosing walk then evicts them, so a
+    /// `type Tag()` written below would be shadowed by the folded `Tag` where
+    /// FCS binds the type's constructor. fcs-dump-probed both ways round: a
+    /// type *before* the fold loses to the folded value, one *after* it wins,
+    /// so position is the whole rule.
+    ///
+    /// This is [`Resolver::fragment_type_contestants`]'s question one level
+    /// out, and it declines rather than commits for the same reason — sema
+    /// models no project type constructor. It closes the door the fold-back
+    /// opens onto task #45 (whose explicit-`open` arm resolves the same shape
+    /// the same wrong way, on `main` too); it does not fix #45.
+    fn note_fold_back_names(&mut self, module_path: &[String], range: TextRange) {
+        let container = self.container_path.clone();
+        let names: Vec<String> = self
+            .items
+            .iter()
+            .filter_map(|item| {
+                let q = item.qualified.as_ref()?;
+                let in_fragment = match item.def {
+                    ExportDef::Own(id) => range.contains_range(self.defs[id.index()].range),
+                    ExportDef::Sig { .. } => false,
+                };
+                (q.len() == module_path.len() + 1
+                    && q.starts_with(module_path)
+                    && in_fragment
+                    && super::model::accessible_from(item.access_root_len, q, &container))
+                .then(|| q.last().expect("non-empty qualified path").clone())
+            })
+            .collect();
+        self.fold_back_names
+            .entry(container)
+            .or_default()
+            .extend(names);
+    }
+
+    /// Decline a folded name a constructible type in the same container now
+    /// takes — called from the type-declaration walk, so it lands at the type's
+    /// own position and a use written *above* the type still binds the fold.
+    ///
+    /// It declines rather than commits for [`Self::fragment_type_contestants`]'s
+    /// reason: sema models no project type constructor. Scoped to names a fold
+    /// supplied, because the same contest against an ordinary `open`'s value is
+    /// task #45 — wrong on `main` too, and its fix belongs with the general
+    /// eviction machinery rather than here.
+    pub(super) fn decline_folded_name_taken_by_type(&mut self, name: &str, pos: u32) {
+        if !self
+            .fold_back_names
+            .get(&self.container_path)
+            .is_some_and(|names| names.contains(name))
+        {
+            return;
+        }
+        self.push_eviction_overrides(vec![name.to_string()], pos);
     }
 
     /// The constructible type names `container` declares **inside this

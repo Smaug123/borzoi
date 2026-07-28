@@ -1498,6 +1498,16 @@ pub(super) struct Resolver<'a> {
     /// [`SyntaxRecovery::Unretained`] until then, which is the reading that
     /// claims nothing.
     pub(super) recovery: SyntaxRecovery,
+    /// Names an `[<AutoOpen>]` fold-back has pushed into the container that
+    /// declares the module, keyed by that container's path.
+    ///
+    /// A constructible type the container declares **after** the fold takes the
+    /// name from anything folded (fcs-dump-probed; a type *above* the module
+    /// does not). The scope frame is push-ordered rather than position-gated,
+    /// so the decline has to be pushed when the walk reaches the type — and
+    /// only for names a fold actually supplied, since the same contest through
+    /// an ordinary `open` is task #45 and is wrong on `main` too.
+    pub(super) fold_back_names: HashMap<Vec<String>, HashSet<String>>,
 }
 
 /// What the binders interned so far in **one** pattern walk resolved to, so an
