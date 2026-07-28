@@ -118,10 +118,35 @@ The comparison is against the **predecessor**, not the newest recorded
 observation, because runs finish out of order and observations are ordered by
 workflow creation. An older run landing late has a smaller metric namespace
 because a *later* commit widened it, which is not a drop; comparing against the
-newest would refuse it for one. The residual is narrow and one-sided: the check
-can only fail to fire, never fire wrongly, and it does so only if a retirement
-lands in the very first observation of a series that later receives an
-out-of-order older one.
+newest would refuse it for one.
+
+What the check therefore claims is narrow, and worth stating exactly: an
+observation is compared against the greatest **already recorded** observation
+below it. A drop escapes whenever the observations carrying the metric have not
+been recorded yet, and once the first post-drop observation escapes so does
+every later one, because each is then compared against an already-gapped
+predecessor. That is not confined to the start of a series — a sufficiently
+reordered arrival escapes at any depth — though in practice a live series has
+its whole prefix long since published, so a new commit's run always has a
+carrying predecessor to be measured against. The check firing is a claim; its
+not firing is not.
+
+Closing that gap by validating the **successor** too is a trap, and the reason
+is worth recording. The observation such a check would refuse is the innocent
+one: in the mirror case — a metric added and removed across two commits, the
+adding run landing late — the late run emitted a strict superset of both its
+neighbours, and the drop it would be refused for belongs to an observation that
+is already published and immutable. Nothing anyone could change would discharge
+the refusal, so a correct observation would be permanently unpublishable and its
+run permanently red. The gap is accepted instead, and
+`a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it` pins it so it
+is not later "fixed" into that trap.
+
+Accepting it costs nothing a reader can see, because retirement is rendered from
+presence rather than from the declaration: a metric absent from the newest
+observation is labelled retired whether or not anyone said so. What escapes is
+the record of intent, and the chance to catch a generator regression at the
+moment it happened.
 
 ### Retiring a metric
 
@@ -313,8 +338,11 @@ tiers, every decline in the corpus changed and both marginals read identically,
 so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
 timid; the census says which model owns the move, which is the question every
 change to that ladder asks and which no aggregate can answer. Both maps carry
-every variant including the zeros — a cause that stops occurring must read as
-`0`, not vanish, or the metric silently leaves the series.
+every variant including the zeros — a cause that stops *occurring* must read as
+`0`, not vanish, because a zero and an absence say opposite things and only one
+of them is a measurement. A cause that stops *existing* is a different event and
+has to be declared: see [Retiring a metric]. Narrowing either map — dropping the
+tiers a cause can never speak from, say — retires every pair it removes.
 
 `decline_census.unattributed` is the census's own honesty check, and it is a
 count rather than a residual. A decline site is a claim and its absence is not:

@@ -526,14 +526,20 @@ fn validate_generator(generator: &GeneratorSummary) -> Result<(), StatsError> {
     if !contains_number(&generator.statistics) {
         return invalid("generator statistics must contain at least one number");
     }
-    if let Some(key) = dotted_statistic_key(&generator.statistics) {
+    if let Some(key) = key_that_cannot_name_a_metric(&generator.statistics) {
         return invalid(format!(
-            "generator statistics key {key:?} contains a dot, which is how a metric path spells \
-             nesting: it would name the same metric as the nested spelling of it, so a retirement \
-             could not tell the two apart"
+            "generator statistics key {key:?} cannot name a metric: a key is one segment of a \
+             metric path, so it must be non-empty and free of the dot that spells nesting. An \
+             empty key yields a path no retirement can be written for, and a dotted one names the \
+             same metric as the nested spelling of it — either way the metric could never be \
+             retired, and the series would wedge the moment it was dropped"
         ));
     }
     let emitted = metric_paths(&generator.statistics);
+    debug_assert!(
+        emitted.iter().all(|path| valid_metric_path(path)),
+        "a statistics tree whose keys are all valid segments names only retirable metrics"
+    );
     let mut declared = std::collections::BTreeSet::new();
     for retired in &generator.retired_statistics {
         if !valid_metric_path(retired) {
@@ -592,22 +598,27 @@ fn valid_metric_path(value: &str) -> bool {
     !value.is_empty() && value.split('.').all(|segment| !segment.is_empty())
 }
 
-/// A statistics key that spells nesting inside itself, if there is one.
+/// A statistics key that cannot stand as one segment of a metric path, if
+/// there is one.
 ///
-/// The dot is the metric path's separator, so `{"a.b": 1}` and
-/// `{"a": {"b": 1}}` are one metric name for two different shapes. That was
-/// merely untidy while a metric path was something only the dashboard built;
-/// it is a hazard now that [`GeneratorSummary::retired_statistics`] names
-/// metrics by it, because re-nesting a key would be invisible to
-/// [`metrics_that_vanished`] — nothing vanished, by name — while every reader
-/// of the old shape sees a different key.
-fn dotted_statistic_key(statistics: &Value) -> Option<&str> {
+/// Both refusals exist so that every metric an accepted observation names can
+/// be *retired* — an observation recording a metric no declaration can spell
+/// wedges its series permanently the moment that metric is dropped, since the
+/// drop can then neither be published nor declared.
+///
+/// - A **dotted** key collides with nesting: `{"a.b": 1}` and `{"a": {"b": 1}}`
+///   are one metric name for two shapes, so re-nesting a key would be invisible
+///   to [`metrics_that_vanished`] — nothing vanished, by name — while every
+///   reader of the old shape sees a different key.
+/// - An **empty** key yields the path `""` at the root, or a trailing-dot path
+///   when nested. Neither is a metric path [`valid_metric_path`] accepts.
+fn key_that_cannot_name_a_metric(statistics: &Value) -> Option<&str> {
     match statistics {
         Value::Object(fields) => fields.iter().find_map(|(key, child)| {
-            if key.contains('.') {
+            if key.is_empty() || key.contains('.') {
                 Some(key.as_str())
             } else {
-                dotted_statistic_key(child)
+                key_that_cannot_name_a_metric(child)
             }
         }),
         _ => None,
@@ -698,6 +709,14 @@ fn validate_observation(observation: &Observation) -> Result<(), StatsError> {
 /// Reading the whole directory is cheap — a series is tens of small files — and
 /// the alternative, tracking a per-series head, would be a second source of
 /// truth about an ordering `build_site` already derives from the files.
+///
+/// "Already recorded" bounds what the check can claim, and the bound is real
+/// rather than theoretical: an arrival order that lands a drop before the runs
+/// that carried the metric leaves that adjacent pair unexamined for good, since
+/// every later observation then compares against the gapped one. See
+/// `a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it`, which pins
+/// the shape, and "Retiring a metric" in `docs/continuous-measurements.md` for
+/// why validating the successor instead would refuse the innocent observation.
 fn recorded_predecessor(
     series: &Path,
     incoming: &Observation,

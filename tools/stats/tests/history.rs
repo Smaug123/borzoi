@@ -653,15 +653,24 @@ fn a_retirement_must_be_well_formed_and_not_contradict_the_statistics() {
             json!(["gone", "gone"]),
             json!({ "matches": 7 }),
         ),
-        // A dot is how a metric path spells nesting, so this key names the same
-        // metric as `{"census": {"kept": 1}}`. Re-nesting it would then be
-        // invisible to the drop check while every reader sees a new key.
-        ("contains a dot", json!([]), json!({ "census.kept": 1 })),
+        // A statistics key has to stand as one segment of a metric path, or the
+        // metric it names cannot be written in a retirement — and an
+        // observation that records a metric nobody can retire wedges the
+        // series the moment that metric is dropped.
+        //
+        // A dot is how a path spells nesting, so this names the same metric as
+        // `{"census": {"kept": 1}}`; re-nesting it would be invisible to the
+        // drop check while every reader sees a new key.
+        ("name a metric", json!([]), json!({ "census.kept": 1 })),
         (
-            "contains a dot",
+            "name a metric",
             json!([]),
             json!({ "census": { "by.cause": 1 } }),
         ),
+        // An empty key produces the path `""` at the root and `census.` when
+        // nested. Neither is a metric path, so neither can be retired.
+        ("name a metric", json!([]), json!({ "": 1 })),
+        ("name a metric", json!([]), json!({ "census": { "": 1 } })),
     ] {
         let summary = write_full_summary(
             temp.path(),
@@ -759,6 +768,86 @@ fn the_drop_check_compares_against_the_observation_it_follows() {
     again.summary = rerun;
     again.run_attempt = 2;
     record_observation(&again).expect("a rerun compares against its own predecessor");
+}
+
+/// The check's residual, pinned deliberately rather than left to be
+/// rediscovered as a bug.
+///
+/// Each observation is compared against the greatest *already recorded* one
+/// below it, so a drop escapes when the observations carrying the metric are
+/// recorded after the drop itself — and once the first post-drop observation
+/// escapes, every later one does too, because each is then compared against an
+/// already-gapped predecessor. Here `temporary` is carried by runs 10 and 15
+/// and gone from 20 onwards, but the runs are recorded 25, 20, 10, 15: nothing
+/// below 25 or 20 exists when they land, and 15's predecessor is 10, which
+/// still carries it. The 15 → 20 pair is never anyone's predecessor pair.
+///
+/// It is tempting to close this by checking the *successor* too, and that is
+/// the trap: the observation such a check would refuse is the innocent one. In
+/// the mirror case — a metric added and removed within two commits, then the
+/// adding run lands late — the late run emitted a strict superset of both its
+/// neighbours, and the drop it would be refused for belongs to an observation
+/// that is already published and immutable. There would be nothing anyone could
+/// change to discharge the refusal, so that observation would be permanently
+/// unpublishable and the run permanently red.
+///
+/// Accepting the gap costs nothing a reader can see, because the dashboard
+/// decides retirement from presence, not from the declaration: a metric absent
+/// from the newest observation is labelled retired whether or not anyone said
+/// so. What escapes is the record of intent, and the chance to notice a
+/// generator regression at the moment it happened — not the reading.
+#[test]
+fn a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let commits = [
+        "0123456789abcdef0123456789abcdef01234567",
+        "1123456789abcdef0123456789abcdef01234567",
+        "2123456789abcdef0123456789abcdef01234567",
+        "3123456789abcdef0123456789abcdef01234567",
+    ];
+    // (run number, commit, does it carry `temporary`?), in recording order.
+    for (run_number, commit, carries) in [
+        (25, commits[3], false),
+        (20, commits[2], false),
+        (10, commits[0], true),
+        (15, commits[1], true),
+    ] {
+        let statistics = if carries {
+            json!({ "matches": 7, "temporary": 1 })
+        } else {
+            json!({ "matches": 7 })
+        };
+        let summary =
+            write_summary_with_statistics(temp.path(), "parser-divergence", json!({}), statistics);
+        let mut observation = input(temp.path(), summary);
+        observation.commit = commit.into();
+        observation.run_number = run_number;
+        record_observation(&observation)
+            .unwrap_or_else(|error| panic!("run {run_number} records: {error}"));
+    }
+
+    let output = temp.path().join("site");
+    build_site(&temp.path().join("history"), &output).expect("the history is well formed");
+    let data: Value =
+        serde_json::from_str(&fs::read_to_string(output.join("data.json")).unwrap()).unwrap();
+    let observations = data.as_array().unwrap();
+    assert_eq!(observations.len(), 4);
+    // The dashboard's ordering restores the true one, so the unchecked pair is
+    // adjacent in the rendered history …
+    let order: Vec<&str> = observations
+        .iter()
+        .map(|item| item["commit"].as_str().unwrap())
+        .collect();
+    assert_eq!(order, commits);
+    // … and the newest observation does not carry the metric, which is what
+    // makes the dashboard label it retired without needing the declaration.
+    assert!(
+        observations
+            .last()
+            .unwrap()
+            .pointer("/generator/statistics/temporary")
+            .is_none()
+    );
 }
 
 /// A configuration change starts a new series, and a new series has no
