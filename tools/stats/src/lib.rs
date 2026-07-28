@@ -164,23 +164,21 @@ pub fn record_observation(input: &RecordInput) -> Result<PathBuf, StatsError> {
     reject_symlinked_components(&input.history, &path)?;
     let parent = path.parent().expect("observation path has a parent");
     if let Some(previous) = recorded_predecessor(parent, &observation)? {
-        let vanished = metrics_that_vanished(&previous.generator, &observation.generator);
-        if !vanished.is_empty() {
-            return invalid(format!(
-                "observation for {} drops {} that {} measured: {}. The dashboard would keep \
-                 offering each of them with the older commit's value reading as \"Latest\", which \
-                 is indistinguishable from a run that failed to measure them. If the generator \
-                 meant to stop emitting them, list them in its `retired_statistics`",
-                observation.commit,
-                if vanished.len() == 1 {
-                    "the metric"
-                } else {
-                    "the metrics"
-                },
-                previous.commit,
-                vanished.join(", ")
-            ));
-        }
+        refuse_dropped_metrics(
+            &previous,
+            &observation,
+            &format!("that {} measured", previous.commit),
+        )?;
+    }
+    // The observation this one *replaces* is not its predecessor — same run, so
+    // the ordering excludes it — and re-recording deletes it outright, so a
+    // metric it carried and this one does not would leave no trace anywhere.
+    if let Some(replaced) = stored_observation(&path)? {
+        refuse_dropped_metrics(
+            &replaced,
+            &observation,
+            "that an earlier attempt of the same run measured",
+        )?;
     }
     create_dir_all(parent)?;
     write_json(&path, &observation)?;
@@ -623,6 +621,50 @@ fn key_that_cannot_name_a_metric(statistics: &Value) -> Option<&str> {
         }),
         _ => None,
     }
+}
+
+/// Refuse `incoming` if it silently drops a metric `previous` measured.
+/// `relation` says how the two are connected, in a clause that follows "drops
+/// the metrics".
+fn refuse_dropped_metrics(
+    previous: &Observation,
+    incoming: &Observation,
+    relation: &str,
+) -> Result<(), StatsError> {
+    let vanished = metrics_that_vanished(&previous.generator, &incoming.generator);
+    if vanished.is_empty() {
+        return Ok(());
+    }
+    invalid(format!(
+        "observation for {} drops {} {relation}: {}. The dashboard would keep offering each of \
+         them with the older value reading as \"Latest\", which is indistinguishable from a run \
+         that failed to measure them. If the generator meant to stop emitting them, list them in \
+         its `retired_statistics`",
+        incoming.commit,
+        if vanished.len() == 1 {
+            "the metric"
+        } else {
+            "the metrics"
+        },
+        vanished.join(", ")
+    ))
+}
+
+/// The observation already filed at `path`, if this record replaces one.
+///
+/// A rerun of the same workflow run writes to the same path, so this is the
+/// only observation a record can *destroy*. It is deliberately read even though
+/// it is not a predecessor: two attempts of one run measure the same commit
+/// with the same generator, so they are the one pair in the whole history whose
+/// metric namespaces must agree by construction. A difference between them is
+/// not a retirement — nothing changed to retire — but a namespace that depends
+/// on something other than the code, which is the sparse-map breach the
+/// contract forbids and which nothing else here can see.
+fn stored_observation(path: &Path) -> Result<Option<Observation>, StatsError> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    read_json(path).map(Some)
 }
 
 /// The metrics `previous` measured that `incoming` neither measures nor

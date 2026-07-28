@@ -850,6 +850,80 @@ fn a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it() {
     );
 }
 
+/// A rerun overwrites its own observation, so a metric the first attempt
+/// measured and the second does not is deleted outright — the only point
+/// carrying it is gone, and no predecessor comparison would ever notice.
+///
+/// It is also the sharpest determinism check there is. A rerun measures the
+/// same commit with the same generator over the same corpus, so it is the one
+/// place two observations of *identical* code meet. A key set that differs
+/// between them is not a retirement — nothing changed to retire — but a metric
+/// namespace that depends on something other than the code, which is exactly
+/// the sparse-map breach the contract forbids.
+#[test]
+fn a_rerun_may_not_quietly_drop_what_its_earlier_attempt_measured() {
+    let temp = tempfile::tempdir().unwrap();
+    // A chronological predecessor that never carried the metric, so only the
+    // observation being replaced can catch its loss.
+    let earlier = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+    );
+    let mut first = input(temp.path(), earlier);
+    first.run_number = 10;
+    record_observation(&first).unwrap();
+
+    let attempt_one = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "seen_once": 1 }),
+    );
+    let mut rerun = input(temp.path(), attempt_one);
+    rerun.commit = "1123456789abcdef0123456789abcdef01234567".into();
+    rerun.run_number = 20;
+    record_observation(&rerun).expect("the first attempt records");
+
+    let attempt_two = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7 }),
+    );
+    let mut second_attempt = rerun.clone();
+    second_attempt.summary = attempt_two;
+    second_attempt.run_attempt = 2;
+    let err = record_observation(&second_attempt).unwrap_err().to_string();
+    assert!(err.contains("seen_once"), "{err}");
+    assert!(err.contains("attempt"), "{err}");
+
+    // The refused rerun leaves the recorded attempt untouched.
+    let stored: Value = serde_json::from_str(
+        &fs::read_to_string(
+            temp.path()
+                .join("history/observations/parser-divergence")
+                .join("v1-c3c01c991d17-ee961db1637c")
+                .join(format!("{}.json", rerun.commit)),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(stored["generator"]["statistics"]["seen_once"], 1);
+
+    // Re-recording identical statistics is the ordinary rerun, and must pass.
+    let identical = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "seen_once": 1 }),
+    );
+    let mut faithful = second_attempt.clone();
+    faithful.summary = identical;
+    record_observation(&faithful).expect("a rerun that measures the same thing records");
+}
+
 /// What the check guarantees, established by enumeration rather than by
 /// argument.
 ///

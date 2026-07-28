@@ -114,7 +114,17 @@ says so. It reads the statistics exactly as the dashboard does, one metric per
 nested *number*, so a field that starts serialising as `null` counts as dropped
 for the same reason the dashboard would stop plotting it.
 
-The comparison is against the **predecessor**, not the newest recorded
+A rerun is checked against the observation it **replaces** as well. That pair is
+not covered by the predecessor rule — same run, so the ordering excludes it —
+and re-recording deletes the old file outright, so a metric only it carried
+would leave no trace. It is also the strictest check in the mechanism: two
+attempts of one run measure the same commit with the same generator over the
+same corpus, so their metric namespaces must agree by construction. A key set
+that differs between them is not a retirement, because nothing changed to
+retire; it is a namespace that depends on something other than the code, which
+is the sparse map this section forbids.
+
+The comparison is otherwise against the **predecessor**, not the newest recorded
 observation, because runs finish out of order and observations are ordered by
 workflow creation. An older run landing late has a smaller metric namespace
 because a *later* commit widened it, which is not a drop; comparing against the
