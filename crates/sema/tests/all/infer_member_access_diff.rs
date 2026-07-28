@@ -1530,6 +1530,144 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
     );
 }
 
+/// The **receiver door**. A per-type drop in the *receiver type's own* namespace
+/// means a same-`(namespace, name)` sibling may have been dropped, so the
+/// surviving entry `AssemblyEnv::lookup_type` hands back is not provably the type
+/// FCS binds the member on — its members could be another type's entirely.
+///
+/// This is a different axis from `dropped_type_uncertainty_is_namespace_scoped`
+/// below, which is about a drop in the **file's** in-scope namespaces (an
+/// invisible extension joining the method group). Here the file is a root
+/// `module M`, whose only in-scope namespace is the root — so the extension gate
+/// is untouched and each case isolates the receiver's identity alone. The data
+/// accesses (`s.Length`, `"hi".Length`) do not consult the extension gate at all.
+///
+/// Every shape here reaches `AssemblyEnv::lookup_type` through the **literal**
+/// receiver route, which nothing else vets: an annotated receiver keys on an
+/// `Entity` the resolver's type-path walk already declined to produce under a
+/// drop (pinned by `annotated_receiver_door_is_sealed_by_the_resolver`).
+#[test]
+fn dropped_type_in_the_receiver_namespace_defers_the_member() {
+    // (source, binder, member ident, the type committed when nothing is dropped)
+    let shapes = [
+        // 3.3a data member, receiver bound to a string literal.
+        (
+            "module M\nlet s = \"hi\"\nlet n = s.Length\n",
+            "n",
+            "Length",
+            "System.Int32",
+        ),
+        // 3.3a data member, `DotGet` directly on the literal.
+        (
+            "module M\nlet n = \"hi\".Length\n",
+            "n",
+            "Length",
+            "System.Int32",
+        ),
+        // 3.3d single-candidate method call.
+        (
+            "module M\nlet s = \"hi\"\nlet n = s.Substring(1)\n",
+            "n",
+            "Substring",
+            "System.String",
+        ),
+    ];
+    // `System` owns the receiver `System.String`; `Demo` is an unrelated namespace
+    // the BCL env does not even declare, and must leave every shape committing.
+    for (marked, expected) in [
+        (vec!["System".to_string()], None),
+        (vec!["Demo".to_string()], Some(())),
+    ] {
+        for (src, binder, member, committed) in shapes {
+            let mut env = bcl_env();
+            env.mark_namespace_dropped_type(marked.clone());
+            let parsed = parse(src);
+            assert!(
+                parsed.errors.is_empty(),
+                "parse errors: {:?}",
+                parsed.errors
+            );
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+            let inferred = infer_file(&file, &resolved, &env);
+            let def_types: HashMap<String, String> = inferred
+                .def_types()
+                .iter()
+                .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+                .collect();
+            let member_res = inferred.member_resolution_at(ident_range(src, member));
+            match expected {
+                None => {
+                    assert_eq!(
+                        def_types.get(binder),
+                        None,
+                        "a drop in the receiver's namespace {marked:?} must leave `{binder}` \
+                         untyped in {src:?}"
+                    );
+                    assert_eq!(
+                        member_res, None,
+                        "a drop in the receiver's namespace {marked:?} must record no member \
+                         resolution at `{member}` in {src:?}"
+                    );
+                }
+                Some(()) => {
+                    assert_eq!(
+                        def_types.get(binder).map(String::as_str),
+                        Some(committed),
+                        "a drop in the unrelated namespace {marked:?} must not disturb {src:?}"
+                    );
+                    assert!(
+                        matches!(member_res, Some(Resolution::Member { .. })),
+                        "a drop in the unrelated namespace {marked:?} must not disturb the member \
+                         resolution at `{member}` in {src:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The **annotation door** (`Gen::entity_annotation_ty`) is sealed one layer up:
+/// it keys on the `Entity` the resolver recorded for the annotation head, and the
+/// resolver's type-path walk already declines under a drop in that namespace. So
+/// the receiver-door guard is not what saves this shape — this test pins that it
+/// is saved at all, so a future change to either layer cannot silently open it.
+#[test]
+fn annotated_receiver_door_is_sealed_by_the_resolver() {
+    let src = "module M\nlet s : System.String = \"hi\"\nlet n = s.Length\n";
+    let clean = bcl_env();
+    let mut dropped = bcl_env();
+    dropped.mark_namespace_dropped_type(vec!["System".to_string()]);
+
+    let typed = |env: &AssemblyEnv| -> Option<String> {
+        let parsed = parse(src);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == "n")
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        typed(&clean).as_deref(),
+        Some("System.Int32"),
+        "the annotated receiver types its member with no drop in the env"
+    );
+    assert_eq!(
+        typed(&dropped),
+        None,
+        "a drop in the annotation head's namespace must leave the member untyped"
+    );
+}
+
 #[test]
 fn unknowable_auto_opens_defer_the_overload_gate() {
     // OV-6 review (GPT-5.6): when a referenced assembly's assembly-level `[<AutoOpen>]`

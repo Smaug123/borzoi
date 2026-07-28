@@ -2882,7 +2882,17 @@ impl<'a> Gen<'a> {
         // silence. The member lookup below walks this entity's base chain (Stage
         // 3.x-inh), so an inherited member is found and returned under its declaring
         // base's handle.
-        let Some(handle) = self.env.lookup_type(namespace, type_name, 0) else {
+        //
+        // This is the one place inference itself names an assembly type — a
+        // literal's receiver type (`"hi".Length`) is a path this phase writes down,
+        // vetted by nothing. So it reads through the drop-marker
+        // pairing ([`AssemblyEnv::lookup_type_if_certain`]) rather than the raw
+        // index: a dropped same-FQN sibling would leave us committing the
+        // survivor's members where FCS binds the dropped type's. The other two
+        // doors ([`Self::entity_annotation_ty`], [`Self::static_callee`]) key on an
+        // `Entity` the resolver's type-path walk already vetted, and reach this
+        // lookup only through the path they reconstruct from it.
+        let Some(handle) = self.env.lookup_type_if_certain(namespace, type_name, 0) else {
             return true;
         };
         let looked_up = match kind {

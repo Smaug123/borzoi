@@ -1973,6 +1973,35 @@ impl AssemblyEnv {
         self.indexed_type(namespace, name, arity)
     }
 
+    /// [`Self::lookup_type`], **paired with the namespace's drop marker** — the
+    /// sanctioned read for a caller that will commit to the returned entity's
+    /// *identity* (its members, its base chain) rather than merely its presence.
+    ///
+    /// A raw index read answers from the entities that survived projection, so it
+    /// cannot see that a same-`(namespace, name)` sibling in another DLL was
+    /// **dropped** ([`Self::mark_namespace_dropped_type`]). FCS reads every DLL and
+    /// may bind the dropped one; committing the survivor's members would then be a
+    /// definite answer decided against a half we could not see. So a drop anywhere
+    /// in `namespace` declines the whole read — a name-keyed surface answer alone
+    /// is never evidence that the surviving entry is the only occupant.
+    ///
+    /// Exactly `namespace` is asked, not its prefix splits: a *type* has one
+    /// encoding, so the only same-FQN threat is a dropped top-level type in the
+    /// same namespace. (The prefix-split question,
+    /// [`Self::any_split_of_a_module_path_has_a_dropped_type`], exists because a
+    /// **module** path is merged across encodings; and nested types are absent from
+    /// `Self::types_by_namespace` altogether, so this read never returns one.)
+    pub(crate) fn lookup_type_if_certain(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        (!self.namespace_has_dropped_type(namespace))
+            .then(|| self.lookup_type(namespace, name, arity))
+            .flatten()
+    }
+
     /// The first-wins top-level type-position slot at
     /// `(namespace, source name, generic arity)`. Every lookup is borrowed: the
     /// construction-owned namespace/name keys are never recreated on this path.
@@ -5454,10 +5483,12 @@ impl AssemblyEnv {
         // has no base edge to Object. The genuine root is the unique **base-less
         // class** — any impostor `System.Object` extends the real one (so carries a
         // `base_type`), and an interface / struct / enum / delegate / module of the
-        // name is the wrong `kind`. When the slot is absent or unprovable, cap
-        // ([`InterfaceChain::ObjectCapped`]): `Object`'s members defer, but the
+        // name is the wrong `kind`. A **dropped** type in `System` beats both tests,
+        // since the impostor they would have to reject is the one we no longer hold
+        // — hence the drop-marker pairing. When the slot is absent or unprovable,
+        // cap ([`InterfaceChain::ObjectCapped`]): `Object`'s members defer, but the
         // interface's own and inherited members still resolve.
-        match self.lookup_type(&[String::from("System")], "Object", 0) {
+        match self.lookup_type_if_certain(&[String::from("System")], "Object", 0) {
             Some(obj)
                 if self.entity(obj).kind == EntityKind::Class
                     && self.entity(obj).base_type.is_none() =>
@@ -5486,6 +5517,23 @@ impl AssemblyEnv {
     /// against a possibly-different *version* than the one loaded, and the compiler
     /// binds by name with version redirection; matching the full identity would
     /// wrongly defer that ordinary case.
+    ///
+    /// The assembly-name match is not on its own enough, which is why the read goes
+    /// through [`Self::lookup_type_if_certain`]: a **dropped** same-FQN type from an
+    /// equally-named assembly leaves a survivor that passes the name match while
+    /// being the wrong type, and every member the walk then attributes to this level
+    /// is attributed to it wrongly. A drop in the base's namespace therefore declines
+    /// the edge, and the callers grade that as they grade any other unresolvable
+    /// base: [`Self::base_chain`] caps at `System.Object` and sinks on anything else.
+    /// So a drop in `System` — the common shape, since nearly every base edge ends
+    /// there — costs a receiver its *inherited* members and leaves its own standing.
+    ///
+    /// The applicability matcher's exemption for CLR-unique primitives
+    /// (`Overloads::ty_named_unprovable`, which lets `System.Object` affirm under a
+    /// drop) does not extend here, and the difference is the stake: there a wrong
+    /// identity mis-ranks candidates whose types a literal already pinned, while
+    /// here the level's **whole member list** becomes a member list of the
+    /// receiver.
     pub(crate) fn resolve_base(
         &self,
         base: &TypeRef,
@@ -5502,7 +5550,7 @@ impl AssemblyEnv {
                 && segment_arities.iter().all(|&a| a == 0)
                 && !name.contains('/') =>
             {
-                let candidate = self.indexed_type(namespace, name, 0)?;
+                let candidate = self.lookup_type_if_certain(namespace, name, 0)?;
                 let expected = assembly
                     .as_ref()
                     .map_or(declaring_assembly, |a| a.name.as_str());
