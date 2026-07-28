@@ -174,13 +174,33 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
     namespace; FCS does not admit one as a value, `let v = Even` is FS0039) and
     `extern` prototypes (value namespace) — and declines each by name, filtered
     by accessibility, so a `let private (|Case|_|)` contests nothing outside its
-    own module. The declines land **after** the value push: within one module
-    FCS's own source order decides, and an `extern` written after a same-named
-    case takes the name;
+    own module. The declines land **after** the value push, the top of the
+    ladder below, so a member the fold cannot point at still takes the name
+    from one it can;
   - the `open_generation` barrier is left for what remains unnameable — a module
     alias, a case-opaque repr, or any path an earlier Compile-order file marked
     hidden, where the reason is unclassified
     (`modules_with_hidden_expression_values`).
+
+  What the fold pushes is ordered by a **kind ladder, not source position**
+  (`fold_rank`): FCS folds a module's exception definitions, then its tycons and
+  their union cases, then its values
+  (`AddModuleOrNamespaceContentsToNameEnv`), so a name several members share is
+  decided by kind first and position only within a kind. fcs-dump-probed over
+  every well-formed same-named pair a module can declare — a value beats a case,
+  an exception or a class either way round; a case beats an exception either way
+  round; a case and a class are one rank, so between those two the later wins.
+  (A same-name pair *within* any other rank is `FS0037`, so no order is
+  claimed.) The type-eviction override therefore lands before the fold when the
+  fragment's own case or value outranks the class, and after it otherwise.
+
+  That ladder is what `auto_open_member_sweep` exists to hold: every ordered
+  pair of same-named members a fragment can declare, generated and diffed
+  against FCS by **in-file binder identity**. The fold matrices cannot express
+  it — their currency is assembly reach, in which a deferral and a correct
+  local answer both render as "nothing", so an ordering defect reads as
+  agreement. Against `main` that grid gives 182 disagreements, 114 of them
+  wrong targets; with the fold and the ladder, 70 disagreements and none.
 
   The project half lends no **shortening prefix** (task #30), which is the one
   place this channel still gives ground. Where a project `[<AutoOpen>]` module
