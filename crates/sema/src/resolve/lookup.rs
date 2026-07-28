@@ -12,8 +12,8 @@ use crate::def::{DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ItemId, Resolution,
-    SlotClass,
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportDef,
+    ExportedItem, ItemId, Resolution, SlotClass,
 };
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
@@ -1244,7 +1244,12 @@ impl<'a> Resolver<'a> {
     /// `a_module_abbreviation_in_an_auto_open_module_is_not_a_dotted_head_shadow`).
     /// Lending the module's short name as a shortening prefix is task #30,
     /// declined for the implicit fold on the same terms.
-    pub(super) fn fold_own_auto_open_module(&mut self, path: &[String], pos: u32) {
+    pub(super) fn fold_own_auto_open_module(
+        &mut self,
+        path: &[String],
+        pos: u32,
+        range: TextRange,
+    ) {
         // [`Self::latest_open_pos`] is deliberately NOT advanced. Its single
         // consumer is the attribute-candidate guard, which distrusts an in-file
         // definition preceding the latest open because that open might supply a
@@ -1287,17 +1292,17 @@ impl<'a> Resolver<'a> {
             // marked hidden — could be a value in expression position: raise the
             // barrier before folding, so the unenumerable name shadows
             // everything folded earlier.
-            if self.fold_back_needs_barrier(&frag) {
+            if self.fold_back_needs_barrier(&frag, range) {
                 self.open_generation += 1;
             }
-            self.open_module_values(&frag, pos, Some(current_file));
+            self.open_module_values(&frag, pos, Some(current_file), Some(range));
             // …and the rest is declined **by name**, after the fold rather than
             // before it. `open_module_values` enumerates only what it can point
             // at, so a name it does push must still lose to a same-named member
             // it cannot — within one module FCS's own source order decides, and
             // an `extern` written after a same-named case takes the name (codex
             // round 3). Declining last is the sound side of that ordering.
-            let unnameable = self.unenumerated_member_names_in(&frag);
+            let unnameable = self.unenumerated_member_names_in(&frag, range);
             if !unnameable.is_empty() {
                 let generation = self.open_generation;
                 let entries: Vec<ScopeEntry> = unnameable
@@ -1356,9 +1361,13 @@ impl<'a> Resolver<'a> {
     /// This file only: an earlier Compile-order file's members are not in
     /// `export_decls`, which is why [`Self::fold_back_needs_barrier`] still
     /// raises the blanket barrier for a path one of them marked hidden.
-    fn unenumerated_member_names_in(&self, container: &[String]) -> Vec<(String, bool)> {
+    fn unenumerated_member_names_in(
+        &self,
+        container: &[String],
+        range: TextRange,
+    ) -> Vec<(String, bool)> {
         let mut out: Vec<(String, bool)> = Vec::new();
-        for decl in &self.export_decls {
+        for decl in self.export_decls.iter().filter(|d| range.contains(d.pos)) {
             match &decl.kind {
                 // `path` = container + case name.
                 ExportDeclKind::ActivePatternCase { item, .. } => {
@@ -1383,8 +1392,11 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 // `path` = the container itself; `name` = the function segments.
-                ExportDeclKind::Extern { name } => {
+                ExportDeclKind::Extern { name, private } => {
+                    // A `private` prototype stops at its own module, exactly as a
+                    // `private` recognizer does, so it contests nothing here.
                     if decl.path == container
+                        && !private
                         && let Some(last) = name.last()
                     {
                         out.push((last.clone(), false));
@@ -1401,9 +1413,10 @@ impl<'a> Resolver<'a> {
     /// a value-space name that could appear in *expression* position, or it is a
     /// path an **earlier Compile-order file** also marked hidden, where the
     /// reason is unclassified and the case names are out of view.
-    fn fold_back_needs_barrier(&self, frag: &[String]) -> bool {
-        self.modules_with_hidden_expression_values.contains(frag)
-            || self.preceding.modules_with_hidden_values.contains(frag)
+    fn fold_back_needs_barrier(&self, frag: &[String], range: TextRange) -> bool {
+        self.hidden_expression_value_sites
+            .iter()
+            .any(|(path, pos)| path == frag && range.contains(*pos))
     }
 
     /// Whether opening project namespace/module `container` may bring
@@ -1664,9 +1677,24 @@ impl<'a> Resolver<'a> {
     /// [`Self::modules_with_hidden_values`]; the name may appear in *expression*
     /// position, so it also joins
     /// [`Self::modules_with_hidden_expression_values`].
-    pub(super) fn note_hidden_value_module(&mut self, path: Vec<String>) {
-        self.modules_with_hidden_values.insert(path.clone());
-        self.modules_with_hidden_expression_values.insert(path);
+    /// `fold_site` is the declaring position, which
+    /// [`fold_own_auto_open_module`](Self::fold_own_auto_open_module) needs to
+    /// decide whether the hidden member is inside the fragment it is folding —
+    /// one file can declare the same module path in several blocks, and only the
+    /// `[<AutoOpen>]` one folds. `None` says the surface is inert for a *parent*
+    /// fold (a generic `[<AutoOpen>]` type auto-opens nothing at all —
+    /// `CanAutoOpenTyconRef` — and a `private` one's statics stop at its
+    /// container), so no barrier is owed there; every blunter consumer still
+    /// sees it through [`Self::modules_with_hidden_values`].
+    pub(super) fn note_hidden_value_module(
+        &mut self,
+        path: Vec<String>,
+        fold_site: Option<TextSize>,
+    ) {
+        if let Some(pos) = fold_site {
+            self.hidden_expression_value_sites.push((path.clone(), pos));
+        }
+        self.modules_with_hidden_values.insert(path);
     }
 
     /// [`Self::note_hidden_value_module`] for a hidden name the auto-open
@@ -1931,6 +1959,7 @@ impl<'a> Resolver<'a> {
         module_path: &[String],
         open_pos: u32,
         fragment_file: Option<usize>,
+        fragment_range: Option<TextRange>,
     ) -> usize {
         // Collect first — the scans borrow `self.items` / `self.preceding`
         // immutably, while the push below borrows `self.scopes` mutably.
@@ -1946,6 +1975,21 @@ impl<'a> Resolver<'a> {
         // members are gated per id by their own `file_of`.
         let current_file = self.preceding.num_files();
         let same_file_folds = fragment_file.is_none_or(|f| f == current_file);
+        // A same-file member belongs to this fragment when its binder sits
+        // inside the declaration's own text range. One file can hold several
+        // blocks declaring the SAME module path — a plain `module M` and a later
+        // `[<AutoOpen>] module M` — and only the attributed one folds, so the
+        // file alone is too coarse a fragment identity (codex round 4).
+        let in_fragment = |item: &ExportedItem| match fragment_range {
+            None => true,
+            Some(range) => match item.def {
+                ExportDef::Own(id) => range.contains_range(self.defs[id.index()].range),
+                // A signature-paired binder lives in the `.fsi`'s arena, so it
+                // has no position in this range to test; the fragment fold is an
+                // impl-file walk, so this cannot arise.
+                ExportDef::Sig { .. } => false,
+            },
+        };
         // A module whose `open` brings value-space names we cannot enumerate (an
         // active pattern, an alias, …) is **hidden**: its own exported cases cannot
         // be *trusted in pattern position*, because a hidden constructor of the same
@@ -1985,6 +2029,7 @@ impl<'a> Resolver<'a> {
                 && q.len() == module_path.len() + 1
                 && q.starts_with(module_path)
                 && same_file_folds
+                && in_fragment(item)
                 && super::model::accessible_from(item.access_root_len, q, &site)
             {
                 constant_names.insert(q.last().expect("non-empty qualified path").clone());
@@ -2001,6 +2046,7 @@ impl<'a> Resolver<'a> {
                 && q.len() == module_path.len() + 1
                 && q.starts_with(module_path)
                 && same_file_folds
+                && in_fragment(item)
                 && super::model::accessible_from(item.access_root_len, q, &site)
             {
                 let name = q.last().expect("non-empty qualified path").clone();
@@ -2335,7 +2381,7 @@ impl<'a> Resolver<'a> {
         // matching FCS's latest-file rule without any per-path re-push. (The old
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
-        let mut count = self.open_module_values(namespace, open_pos, None);
+        let mut count = self.open_module_values(namespace, open_pos, None, None);
         for (frag_path, frag_file) in self.auto_open_fragments_reachable(namespace) {
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
@@ -2363,7 +2409,7 @@ impl<'a> Resolver<'a> {
             if self.module_has_hidden_values(&frag_path) {
                 self.open_generation += 1;
             }
-            count += self.open_module_values(&frag_path, open_pos, Some(frag_file));
+            count += self.open_module_values(&frag_path, open_pos, Some(frag_file), None);
         }
         // The straddle winners, re-pushed last so they out-position the submodule
         // pushes. `value_winners` / `ctor_winners` are non-empty only when

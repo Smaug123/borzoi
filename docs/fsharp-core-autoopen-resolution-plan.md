@@ -157,18 +157,30 @@ Stage IDs (A = `borzoi-assembly`, S = `borzoi-sema`) are cited from
   only be audited by inspection. The type arm reproduces through an explicit
   `open` too and has its own task.
 
-  The fold-back is *values only*: no shortening prefix, and no blanket
-  dotted-head conservatism. An explicit `open M` must set `opaque_dotted_open`
-  because M's contents are not in view at the `open`; here the declaration-side
-  machinery has already recorded them name-keyed. Its one barrier is the
-  `open_generation` bump for names it cannot enumerate — and even that is
-  narrowed, because an **active-pattern case** lives in the pattern namespace
-  alone (`let v = Even` is FS0039). Folding this file's own module can read those
-  case names off `container_decls`, so they are declined by name in pattern
-  position instead of taking the expression namespace down with them
-  (`modules_with_hidden_expression_values`); a module alias, an `extern`, or a
-  case-opaque repr still raises the barrier, as does any path an earlier
-  Compile-order file marked hidden, where the reason is unclassified.
+  The fold-back is *values only*, and its conservatism is one rule: **decline
+  by name everything it can name, and raise the blanket barrier only for the
+  residue.** Folding the file's *own* module is what makes that possible — an
+  explicit `open M` cannot see M's contents and must be blunt about all of it.
+  Concretely:
+
+  - no `opaque_dotted_open`, because the declaration-side machinery has already
+    recorded M's submodules and types name-keyed;
+  - no `latest_open_pos` bump, because that frontier's only consumer is the
+    attribute-candidate guard and the auto-open attribute hazard already has a
+    name-keyed guard (`own_auto_open_type_names`, AO-2) — advancing it too just
+    re-opens the gap that guard closed;
+  - `unenumerated_member_names_in` reads `export_decls` for the members
+    `open_module_values` cannot point at — active-pattern cases (constructor
+    namespace; FCS does not admit one as a value, `let v = Even` is FS0039) and
+    `extern` prototypes (value namespace) — and declines each by name, filtered
+    by accessibility, so a `let private (|Case|_|)` contests nothing outside its
+    own module. The declines land **after** the value push: within one module
+    FCS's own source order decides, and an `extern` written after a same-named
+    case takes the name;
+  - the `open_generation` barrier is left for what remains unnameable — a module
+    alias, a case-opaque repr, or any path an earlier Compile-order file marked
+    hidden, where the reason is unclassified
+    (`modules_with_hidden_expression_values`).
 
   The project half lends no **shortening prefix** (task #30), which is the one
   place this channel still gives ground. Where a project `[<AutoOpen>]` module

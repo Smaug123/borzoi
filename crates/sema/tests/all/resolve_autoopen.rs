@@ -2608,3 +2608,37 @@ fn an_extern_after_a_same_named_case_declines_the_folded_case() {
         "the later `extern Marker` takes the name and we cannot name it; got {res:?}"
     );
 }
+
+/// The fold-back brings in the members of the `[<AutoOpen>]` **fragment**, not
+/// every same-file member at that module path. Two blocks of one file can
+/// declare the same module, one plain and one auto-open; FCS folds only the
+/// attributed one, so the plain fragment's `earlier` stays unbound after it
+/// (fcs-dump probe `Frag` reports no use for it at all) while `current` binds.
+#[test]
+fn the_fold_back_brings_in_only_the_attributed_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.Frag\n\nmodule M =\n    let earlier = 1\n\n\
+               namespace Demo.Frag\n\n[<AutoOpen>]\nmodule M =\n    let current = 2\n\n\
+               module User =\n    let a = current\n    let b = earlier\n";
+    let rf = resolve(src, &env);
+    let at_use = |needle: &str| {
+        let start = src.rfind(needle).expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    assert!(
+        matches!(
+            rf.resolution_at(at_use("current")),
+            Some(Resolution::Item(_))
+        ),
+        "the attributed fragment folds: got {:?}",
+        rf.resolution_at(at_use("current"))
+    );
+    let earlier = rf.resolution_at(at_use("earlier"));
+    assert!(
+        matches!(earlier, None | Some(Resolution::Deferred(_))),
+        "the plain fragment at the same path does not fold; got {earlier:?}"
+    );
+}

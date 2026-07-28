@@ -1903,7 +1903,7 @@ impl<'a> Resolver<'a> {
             open_generation: 0,
             pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
-            modules_with_hidden_expression_values: HashSet::new(),
+            hidden_expression_value_sites: Vec::new(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,

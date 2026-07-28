@@ -1559,7 +1559,7 @@ impl FileExportIndices {
                         fi.nested_module_paths.push(decl.path.clone());
                     }
                 }
-                ExportDeclKind::Extern { name } => {
+                ExportDeclKind::Extern { name, .. } => {
                     if !anon && !name.is_empty() {
                         let mut shadow = decl.path.clone();
                         shadow.extend(name.iter().cloned());
@@ -1822,7 +1822,13 @@ pub(super) enum ExportDeclKind {
     /// nameless recovery node); `path` + `name` is the nested-module shadow path,
     /// recorded only when `name` is non-empty (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
-    Extern { name: Vec<String> },
+    ///
+    /// `private` carries the prototype's own accessibility (`extern int private
+    /// Marker()` — an `ACCESS_TOK` child of the `EXTERN_DECL`, valid F# and
+    /// fcs-dump-clean). It is visible inside its own module only, so the
+    /// auto-open fold-back must not decline its name in the enclosing scope
+    /// ([`unenumerated_member_names_in`](super::Resolver::unenumerated_member_names_in)).
+    Extern { name: Vec<String>, private: bool },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case

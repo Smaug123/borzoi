@@ -1083,19 +1083,31 @@ pub(super) struct Resolver<'a> {
     /// earlier Compile-order file via [`Preceding`](super::model::ProjectItems)); merged across files like
     /// [`Self::nested_module_exports`].
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
-    /// The subset of [`Self::modules_with_hidden_values`] whose hidden names can
-    /// appear in **expression** position — everything except an active-pattern
-    /// case, which FCS admits in pattern position only (`let v = Even` is
-    /// FS0039). The blunt [`Self::open_generation`] barrier serves both
-    /// namespaces at once, so it over-declines for a module whose only
-    /// unenumerable names are active-pattern cases; a fold that can enumerate
-    /// those cases by name
-    /// ([`fold_own_auto_open_module`](Resolver::fold_own_auto_open_module),
-    /// folding *this file's* own module) declines them name-keyed in pattern
-    /// position and reads this set for whether it must raise the barrier as
-    /// well. **This file only** — an earlier Compile-order file's hidden-ness is
-    /// unclassified, so it still raises the barrier.
-    pub(super) modules_with_hidden_expression_values: HashSet<Vec<String>>,
+    /// The hidden members of [`Self::modules_with_hidden_values`] that the
+    /// auto-open fold-back can neither **name** nor prove inert — a module
+    /// alias, a case-opaque type repr, a non-generic public `[<AutoOpen>]` type
+    /// — each with the position that declared it.
+    ///
+    /// Excluded are an active-pattern case and an `extern` prototype, which
+    /// [`unenumerated_member_names_in`](Resolver::unenumerated_member_names_in)
+    /// reads off `export_decls` and declines per name, and a generic or
+    /// `private` `[<AutoOpen>]` type, which contributes nothing to a *parent*
+    /// fold.
+    ///
+    /// [`fold_own_auto_open_module`](Resolver::fold_own_auto_open_module) reads
+    /// it for whether it must ALSO raise the blunt [`Self::open_generation`]
+    /// barrier, which serves the expression and pattern namespaces at once and
+    /// so over-declines whenever a name-keyed decline would do. The position is
+    /// what makes the answer per-*fragment*: one file can declare the same
+    /// module path in a plain block and an `[<AutoOpen>]` one, and only the
+    /// latter folds, so a marker outside the folded range owes no barrier.
+    /// Every other consumer — an explicit `open`, which cannot see the opened
+    /// module's contents — keeps reading
+    /// [`Self::modules_with_hidden_values`] and stays blunt.
+    ///
+    /// A `Vec` rather than a set: markers are few (one per hidden declaration)
+    /// and every read is a scan filtered by path *and* range.
+    pub(super) hidden_expression_value_sites: Vec<(Vec<String>, rowan::TextSize)>,
     /// Qualified paths of `[<AutoOpen>]` modules declared in this file,
     /// each with its `module private` bit — one record per module, written by
     /// [`Resolver::record_auto_open_module`](super::Resolver) from both

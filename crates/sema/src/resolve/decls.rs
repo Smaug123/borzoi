@@ -393,7 +393,10 @@ impl<'a> Resolver<'a> {
                         // file). Same-file, the mapping below canonicalises `X` →
                         // `Target` *before* any hidden-check, so this marker is not
                         // consulted there.
-                        self.note_hidden_value_module(alias_path.clone());
+                        self.note_hidden_value_module(
+                            alias_path.clone(),
+                            Some(a.syntax().text_range().start()),
+                        );
                         // Resolvable in-project target: record the mapping so
                         // same-file resolution canonicalises `X` → `Target`. An
                         // unresolvable target (an assembly module) records no
@@ -509,7 +512,19 @@ impl<'a> Resolver<'a> {
                         // wiring reads it via `project_ns_hidden` below).
                         let type_auto_open = attrs_auto_open(defn.attributes());
                         if type_auto_open {
-                            self.note_hidden_value_module(self.container_path.clone());
+                            // A GENERIC `[<AutoOpen>]` type auto-opens nothing
+                            // (`CanAutoOpenTyconRef` ends `tcref.Typars(m) |>
+                            // List.isEmpty`), and a `private` one's statics stop
+                            // at its own container — so neither owes a parent
+                            // fold a barrier, though both stay hidden to a
+                            // blunter `open` (codex round 4).
+                            let inert_to_a_parent_fold =
+                                defn.typar_decls().is_some() || type_header_is_private(defn);
+                            self.note_hidden_value_module(
+                                self.container_path.clone(),
+                                (!inert_to_a_parent_fold)
+                                    .then(|| defn.syntax().text_range().start()),
+                            );
                         }
                         let slot = type_slot_class(defn);
                         // The type's access-root (own `private` plus any enclosing
@@ -780,7 +795,10 @@ impl<'a> Resolver<'a> {
                 self.push_export_decl(
                     self.container_path.clone(),
                     ext.syntax().text_range().start(),
-                    ExportDeclKind::Extern { name: ext_name },
+                    ExportDeclKind::Extern {
+                        name: ext_name,
+                        private: header_is_private(ext.syntax()),
+                    },
                 );
             }
             ModuleDecl::Open(open) => {
@@ -1523,7 +1541,7 @@ impl<'a> Resolver<'a> {
                             // M (every fragment, every file) into scope, so no
                             // per-fragment restriction — that is only for a fragment
                             // reached implicitly by opening its enclosing namespace.
-                            self.open_module_values(gp, pos, None);
+                            self.open_module_values(gp, pos, None, None);
                             self.module_open_prefixes.push((pos, gp.clone()));
                             // A PROJECT module: neither assembly half applies, and
                             // the project half lends no prefix (task #30). Where an
@@ -1872,7 +1890,7 @@ impl<'a> Resolver<'a> {
         let mut qualified = self.container_path.clone();
         qualified.extend(segs);
         let pos = u32::from(nm.syntax().text_range().end());
-        self.fold_own_auto_open_module(&qualified, pos);
+        self.fold_own_auto_open_module(&qualified, pos, nm.syntax().text_range());
     }
 
     /// Record a project-introduced *name* — a nested module

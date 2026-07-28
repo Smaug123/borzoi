@@ -351,6 +351,24 @@ const CELLS: &[Cell] = &[
         position: Position::PatternBare,
     },
     Cell {
+        // A `private` prototype is visible within its own module only, so it
+        // takes no slot in the enclosing scope either — the name-keyed decline
+        // must be filtered by accessibility exactly as the recognizer's is
+        // (codex round 4).
+        container: Container::Module("Demo.FoldBack.PrivateExtern"),
+        decls: &[],
+        label: "private / a private extern prototype takes no enclosing slot",
+        body: &[
+            "open Demo.Auto",
+            "[<AutoOpen>]",
+            "module LocalAuto =",
+            "    extern int private Tag()",
+        ],
+        after: &[],
+        probe: "Tag",
+        position: Position::Expr,
+    },
+    Cell {
         // A `private` type is visible within its own module only, so it takes no
         // slot in the enclosing scope and the assembly's value stands.
         container: Container::Module("Demo.FoldBack.PrivateType"),
