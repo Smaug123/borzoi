@@ -993,6 +993,105 @@ fn env_with_substring_extension_in(namespace: &[&str]) -> AssemblyEnv {
     AssemblyEnv::from_entities(entities)
 }
 
+/// An `AssemblyEnv` over the real BCL plus a synthetic `Demo.D` whose base edge is
+/// spelled `System.Object` and which declares its own nullary `Blah() : int`.
+fn env_with_object_derived_demo_type() -> AssemblyEnv {
+    use borzoi_assembly::{Access, Entity, Member, Primitive, TypeRef};
+    let bytes = std::fs::read(ensure_system_runtime_dll()).expect("read System.Runtime.dll");
+    let asm = Ecma335Assembly::parse(&bytes).expect("parse System.Runtime.dll");
+    let mut entities = asm
+        .enumerate_type_defs()
+        .expect("enumerate System.Runtime types");
+    let string = entities
+        .iter()
+        .find(|e| e.namespace == ["System"] && e.name == "String")
+        .expect("System.String template")
+        .clone();
+    // `System.String`'s own base edge *is* `System.Object`, spelled exactly as the
+    // metadata spells it — so borrowing it avoids hand-writing an assembly identity.
+    let object_base = string.base_type.clone().expect("String has a base type");
+    let mut blah = string
+        .members
+        .iter()
+        .find_map(|m| match m {
+            Member::Method(mm) if !mm.is_static && mm.access == Access::Public => Some(mm.clone()),
+            _ => None,
+        })
+        .expect("a public instance method on String to clone");
+    blah.name = "Blah".to_string();
+    blah.source_name = None;
+    blah.is_static = false;
+    blah.is_extension_method = false;
+    blah.is_constructor = false;
+    blah.generic_parameters = vec![];
+    blah.signature.parameters = vec![];
+    blah.signature.return_type = TypeRef::Primitive(Primitive::I4);
+    entities.push(Entity {
+        namespace: vec!["Demo".to_string()],
+        name: "D".to_string(),
+        members: vec![Member::Method(blah)],
+        nested_types: vec![],
+        base_type: Some(object_base),
+        interfaces: vec![],
+        extension_member_names: vec![],
+        union_case_names: None,
+        static_extension_member_names: Vec::new(),
+        is_extension_container: false,
+        ..string
+    });
+    AssemblyEnv::from_entities(entities)
+}
+
+/// An `System.Object` base edge we could not **prove** must sink the chain, not cap
+/// it (GPT-5.6 review of this change).
+///
+/// [`BaseChain::ObjectCapped`] is not merely "one level short" — it asserts the
+/// missing level *is* the universal root, whose member set the consumers account
+/// for, and so licenses treating the remaining group as complete. Under a drop in
+/// `System` that assertion is exactly what we cannot make: the level we can no
+/// longer see may be a base-bearing impostor with members of its own, which would
+/// join the group and could win it. Capping would then commit `D`'s own member
+/// where FCS selects the inherited one.
+///
+/// Observable as the receiver's **own** nullary method: capped, it is a complete
+/// single-candidate group and commits; sunk, the whole call defers.
+#[test]
+fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
+    let src = "module M\nlet f (d : Demo.D) = d.Blah()\n";
+    let typed = |env: &AssemblyEnv| -> Option<String> {
+        let parsed = parse(src);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == "f")
+            .map(|(_, ty)| ty.render())
+    };
+
+    let clean = env_with_object_derived_demo_type();
+    assert_eq!(
+        typed(&clean).as_deref(),
+        Some("Demo.D -> System.Int32"),
+        "with the base edge provable, the receiver's own nullary method commits"
+    );
+
+    let mut dropped = env_with_object_derived_demo_type();
+    dropped.mark_namespace_dropped_type(vec!["System".to_string()]);
+    assert_eq!(
+        typed(&dropped),
+        None,
+        "an unprovable `System.Object` base edge must sink the chain — capping there \
+         would call a possibly-incomplete method group complete"
+    );
+}
+
 #[test]
 fn enclosing_namespace_extension_defers_the_overload_gate() {
     // OV-6 review (GPT-5.6): F# treats the file's enclosing namespace as an

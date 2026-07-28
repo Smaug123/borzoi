@@ -33,6 +33,17 @@
 //! property is universally quantified but the check is not, so a door no snippet
 //! walks through is untested. Widening it means adding a snippet, and the
 //! coverage floor below refuses one that publishes nothing.
+//!
+//! **And there is a whole failure mode it cannot see**, which is worth knowing
+//! before trusting a green run. Perturbing by *deletion* proves the marked
+//! namespace's survivors were never **read**. It says nothing about the phase
+//! *concluding* something from their absence — because to this oracle "deleted"
+//! and "present but unprovable" are the same input, so a decision keyed on the
+//! difference reads identically on both sides. That is exactly the shape of the
+//! bug `unproven_object_base_edge_sinks_the_chain_rather_than_capping` pins (an
+//! unprovable `System.Object` edge graded as the universal-root cap): both sides
+//! capped, both published the same, and this oracle passed. Catching that class
+//! needs a reference that reads everything — FCS — not a self-perturbation.
 
 use std::collections::HashMap;
 
@@ -212,9 +223,10 @@ fn a_marked_namespace_contributes_nothing_we_publish() {
         // The second floor, and the one that would notice a *regression into
         // silence*: a row where the marked side publishes nothing compares nothing,
         // and passes. The counts today are 16 / 44 / 37 / 48 / 51 in the order
-        // above — `System` is the low one because marking it caps every base chain
-        // at `Object`, which is what makes the surviving 16 the interesting fact:
-        // a drop costs the *inherited* members, not the receiver's own.
+        // above — `System` is the low one because nearly every base edge ends
+        // there, so marking it sinks nearly every chain and the member results go
+        // with them. What survives is what owes the assemblies nothing: a literal's
+        // own type, and an annotation head outside the marked namespace.
         assert!(
             checked > 0,
             "marking {namespace:?} deferred every fact in every source, so this row \
