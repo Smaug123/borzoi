@@ -92,9 +92,16 @@ struct GeneratorSummary {
     /// measuring exactly what they measured before — that is the whole reason
     /// this exists rather than a schema bump.
     ///
-    /// A declaration is needed exactly once, in the observation where the key
-    /// first goes missing; by the next run the predecessor already lacks it, so
-    /// leaving the entry in place is harmless and dropping it costs nothing.
+    /// **Leave a declaration in place once written.** It is only *consulted* at
+    /// the transition — by the next run the predecessor already lacks the key —
+    /// but the run that publishes the transition can fail, and then the next
+    /// observation's predecessor is still the one from before the retirement.
+    /// A generator that dropped the marker on the strength of "needed once"
+    /// would be refused, and so would every observation after it, until someone
+    /// put the marker back. Keeping it costs a line;
+    /// [`validate_generator`] refuses a name that is retired *and* emitted, so a
+    /// stale entry cannot quietly license a future drop of a metric that came
+    /// back.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     retired_statistics: Vec<String>,
 }
@@ -632,7 +639,8 @@ fn refuse_dropped_metrics(
         "observation for {} drops {} {relation}: {}. The dashboard would keep offering each of \
          them with the older value reading as \"Latest\", which is indistinguishable from a run \
          that failed to measure them. If the generator meant to stop emitting them, list them in \
-         its `retired_statistics`",
+         its `retired_statistics` — and leave them listed, since the retirement may have been \
+         made in an earlier commit whose own observation never published",
         incoming.commit,
         if vanished.len() == 1 {
             "the metric"

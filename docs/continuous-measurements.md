@@ -204,9 +204,18 @@ and it must **not** also appear in `statistics` — a retirement says the metric
 is gone, and one that is still measured would licence dropping it later without
 notice.
 
-The declaration is needed exactly once, in the observation where the key first
-goes missing: by the next run the predecessor already lacks it, so carrying the
-entry forward is harmless and dropping it costs nothing. It is deliberately not
+**Leave the declaration in place once written.** It is only *consulted* at the
+transition, since by the next run the predecessor already lacks the key — but
+the run that publishes the transition can fail, and this job fails for reasons
+that say nothing about Borzoi. If that happens, the next observation's
+predecessor is still the one from before the retirement, and a generator that
+dropped the marker on the strength of "needed once" is refused, as is every
+observation after it, until someone puts the marker back. Keeping it costs a
+line, and a stale entry cannot quietly license anything: a name that is retired
+*and* emitted is refused outright, so a metric that comes back forces the marker
+to be removed deliberately.
+
+The declaration is deliberately not
 part of the series digest, and that is the whole reason it exists rather than a
 schema bump: retiring one metric must not restart the trend of the metrics
 beside it, which are still measuring exactly what they measured before. The

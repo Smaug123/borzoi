@@ -581,18 +581,44 @@ fn a_metric_that_vanishes_must_be_declared_retired() {
     declared_input.summary = declared;
     record_observation(&declared_input).expect("a declared retirement records");
 
-    // The declaration is needed exactly once, at the transition: the next
-    // observation's predecessor already lacks the key, so nothing vanishes.
-    let after = write_summary_with_statistics(
+    // A declaration that is left in place stays valid once the metric is long
+    // gone, which is what makes "leave it there" safe advice: the run that
+    // publishes the transition can fail, and a later observation that dropped
+    // the marker would then find a predecessor still carrying the metric.
+    let still_declared = write_full_summary(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "kept": 1 } }),
+        json!(["census.occupied"]),
+    );
+    let mut third = input(temp.path(), still_declared);
+    third.commit = "2123456789abcdef0123456789abcdef01234567".into();
+    third.run_number = 44;
+    record_observation(&third).expect("a declaration outlives the transition it was written for");
+
+    // And the transition observation going missing entirely is the case that
+    // advice exists for: this observation's predecessor is the one from before
+    // the retirement, so without the marker it is refused.
+    let temp = tempfile::tempdir().unwrap();
+    let before = write_summary_with_statistics(
+        temp.path(),
+        "parser-divergence",
+        json!({}),
+        json!({ "matches": 7, "census": { "occupied": 3, "kept": 1 } }),
+    );
+    record_observation(&input(temp.path(), before)).unwrap();
+    let undeclared = write_summary_with_statistics(
         temp.path(),
         "parser-divergence",
         json!({}),
         json!({ "matches": 7, "census": { "kept": 1 } }),
     );
-    let mut third = input(temp.path(), after);
-    third.commit = "2123456789abcdef0123456789abcdef01234567".into();
-    third.run_number = 44;
-    record_observation(&third).expect("the declaration does not have to be carried forward");
+    let mut later = input(temp.path(), undeclared);
+    later.commit = "3123456789abcdef0123456789abcdef01234567".into();
+    later.run_number = 60;
+    let err = record_observation(&later).unwrap_err().to_string();
+    assert!(err.contains("census.occupied"), "{err}");
 }
 
 /// The whole point of a retirement marker rather than a series split: the
