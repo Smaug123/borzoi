@@ -561,6 +561,105 @@ pub fn classify(u: &CensusUse) -> (Option<Bucket>, &'static str) {
     }
 }
 
+/// Every sub-tag [`classify`] pairs with [`Bucket::B1`].
+///
+/// The resolution generator publishes a `gap_b1_by_tag` histogram, and a
+/// histogram in `statistics` is a *metric namespace*: the dashboard offers one
+/// plottable metric per key, so every key has to be there every run, zeros
+/// included (see `docs/continuous-measurements.md`). Counting only the tags
+/// that *occurred* would retire a metric the moment a construct stopped
+/// appearing in the corpus — which is the good news of a gap being closed
+/// reported as a measurement going missing.
+///
+/// Emitting zeros needs the whole list up front, and a hand-copied list beside
+/// the taxonomy is exactly the kind of thing that drifts silently.
+/// [`b1_tags_are_exactly_the_tags_classify_pairs_with_b1`] proves it is neither
+/// short nor long by enumerating `classify` over every combination of the flags
+/// it reads.
+pub const B1_TAGS: [&str; 13] = [
+    "active-pattern-case",
+    "active-pattern-fn",
+    "constructor",
+    "entity:module",
+    "entity:namespace",
+    "entity:type",
+    "parameter",
+    "static-member",
+    "static-member:overloaded(group)",
+    "type-parameter",
+    "union-case",
+    "value:local-or-param",
+    "value:module-or-import",
+];
+
+/// [`B1_TAGS`] is the whole of what [`classify`] can produce for
+/// [`Bucket::B1`], established by enumeration rather than by reading the match.
+///
+/// `classify` reads eleven inputs — the symbol class and ten flags — so the
+/// space is 8,192 shapes and searching it exhaustively is cheaper than
+/// arguing about which arms are reachable.
+#[test]
+fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
+    const CLASSES: [&str; 8] = [
+        "Entity",
+        "GenericParameter",
+        "UnionCase",
+        "ActivePatternCase",
+        "Field",
+        "Parameter",
+        "Mfv",
+        "AClassTheTaxonomyDoesNotPlace",
+    ];
+    const FLAGS: [&str; 10] = [
+        "IsFromDefinition",
+        "IsNamespace",
+        "IsModule",
+        "IsMember",
+        "IsInstance",
+        "IsExtension",
+        "IsConstructor",
+        "IsModuleValueOrMember",
+        "IsActivePattern",
+        "IsOverloaded",
+    ];
+
+    let mut produced = std::collections::BTreeSet::new();
+    for class in CLASSES {
+        for bits in 0..(1u32 << FLAGS.len()) {
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                "Range".into(),
+                serde_json::json!({
+                    "File": "probe.fs",
+                    "Start": { "Line": 1, "Col": 0 },
+                    "End": { "Line": 1, "Col": 1 }
+                }),
+            );
+            fields.insert("DeclRange".into(), serde_json::Value::Null);
+            fields.insert("Class".into(), serde_json::json!(class));
+            for (index, flag) in FLAGS.iter().enumerate() {
+                fields.insert((*flag).into(), serde_json::json!((bits >> index) & 1 == 1));
+            }
+            // Read by other consumers of the census, never by `classify`.
+            for flag in ["IsProperty", "IsValue", "IsFunction"] {
+                fields.insert(flag.into(), serde_json::json!(false));
+            }
+            let probe: CensusUse = serde_json::from_value(serde_json::Value::Object(fields))
+                .expect("the probe carries every field the census use needs");
+            if let (Some(Bucket::B1), tag) = classify(&probe) {
+                produced.insert(tag);
+            }
+        }
+    }
+
+    assert_eq!(
+        produced,
+        B1_TAGS
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
 // ============================================================================
 // Resolution corpus-diff projection — the name-resolution sweep currency
 // ============================================================================

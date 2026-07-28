@@ -2485,6 +2485,16 @@ enum GeneratorSelection {
     },
 }
 
+/// The metric namespace this measurement publishes: one plottable metric per
+/// nested number, named by its dotted path.
+///
+/// **Removing or renaming a field here retires a metric**, and the recorder
+/// refuses the next observation unless the generator declares it — a key that
+/// vanishes silently leaves the dashboard offering it with a stale value
+/// reading as "Latest", which is indistinguishable from a run that failed to
+/// measure. Adding one is free; the chart simply starts where the metric does.
+/// See "Retiring a metric" in `docs/continuous-measurements.md` for the
+/// `retired_statistics` declaration to add in the same commit.
 #[derive(Debug, Serialize)]
 struct GeneratorStatistics {
     projects: CorpusProjectCounts,
