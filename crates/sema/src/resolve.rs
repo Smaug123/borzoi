@@ -247,15 +247,14 @@ pub fn resolve_file(
         // wrong, and the flag is what carries that decline to the implicit
         // enclosing-namespace fold — which runs before the block's walk and so
         // cannot see any of this (`Resolver::block_local_shadow_unknowable`).
-        // Strict ancestors only: `[<AutoOpen>] module rec Inner` is mutually
-        // recursive *within itself*, which changes nothing about how its
-        // surface folds into the enclosing block.
-        if nm
-            .syntax()
-            .ancestors()
-            .skip(1)
-            .any(|a| encloses_recursively(&a))
-        {
+        // The module ITSELF counts, not only its ancestors: `[<AutoOpen>]
+        // module rec Inner` is forward-visible within its own body, so a use
+        // inside it sees its own later declarations and is no more
+        // position-ordered than one in an enclosing rec block. (Its rec-ness
+        // genuinely changes nothing about how its surface folds *outward* —
+        // that is the fold-back's concern, and a different question from this
+        // flag's — codex round 7.)
+        if nm.syntax().ancestors().any(|a| encloses_recursively(&a)) {
             r.own_auto_open_container = true;
         }
     }

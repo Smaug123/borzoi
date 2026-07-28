@@ -2700,3 +2700,26 @@ fn the_namespace_fold_brings_in_only_the_attributed_same_file_fragment() {
         "the plain fragment at the same path does not fold; got {plain:?}"
     );
 }
+
+/// A `[<AutoOpen>] module rec` is *itself* a rec container, so a use inside it
+/// sees its own later declarations and cannot be ordered by position — the same
+/// reason an enclosing `rec` block declines the implicit namespace fold. The
+/// fold-back's own reasoning ("its rec-ness changes nothing about how its
+/// surface folds *outward*") does not carry to uses *inside* it (codex round 7).
+#[test]
+fn a_self_recursive_auto_open_module_still_declines_the_implicit_fold() {
+    let env = fixture_env();
+    let src = "namespace Demo.Auto\n\n[<AutoOpen>]\nmodule rec Inner =\n    \
+               let y = extraValue\n    let extraValue () = 1\n";
+    let rf = resolve(src, &env);
+    let start = src.find("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the module's own later `extraValue` is forward-visible; got {res:?}"
+    );
+}
