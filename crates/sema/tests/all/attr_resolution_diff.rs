@@ -1193,3 +1193,20 @@ fn cross_file_auto_open_defers_only_its_names() {
         at("Literal")
     );
 }
+
+/// A nested module's **own header** attributes are resolved in the enclosing
+/// env — FCS checks them before adding the module's contents to it — so an
+/// `[<AutoOpen>]` module's fold-back must not have happened yet when they run.
+/// It advances `latest_open_pos` to the module's end, and an in-file attribute
+/// candidate whose definition precedes the latest open defers; folding before
+/// the attributes therefore deferred a candidate FCS commits (codex round 2).
+#[test]
+fn diff_an_auto_open_modules_own_header_attribute_still_commits() {
+    let env = fsharp_core_env();
+    let src = "module Test\ntype FooAttribute() =\n    inherit System.Attribute()\n\
+               [<Foo>]\n[<AutoOpen>]\nmodule Local =\n    let v = 1\n";
+    // Both `Foo` and `AutoOpen` must commit; folding first dropped the floor to
+    // one. (`verdict_at` cannot be used here — it spans the first `Foo` in the
+    // source, which is the `FooAttribute` definition, not the attribute use.)
+    assert_attrs_match_fcs(src, &env, 2);
+}

@@ -93,6 +93,27 @@ const CELLS: &[Cell] = &[
         probe: "extraValue",
         position: Position::Expr,
     },
+    Cell {
+        // Inside the module, an `extern` prototype's name is a value binder we
+        // do not intern, so a use of it must decline rather than fall through to
+        // the assembly value the enclosing namespace supplies. The blanket
+        // screen used to hide this by declining the whole fold for the file
+        // (codex round 2).
+        //
+        // The probe name is `extraShortenTarget`, not `extraValue`: this cell's
+        // probe module is itself `[<AutoOpen>]` under `namespace Demo.Auto`, so
+        // whatever it declares joins that namespace's project fragment for
+        // **every other cell in the batch** — naming it `extraValue` silently
+        // turned four other cells' FCS side from the assembly value to this
+        // file's.
+        container: Container::NamespaceAutoOpen("Demo.Auto"),
+        decls: &[],
+        label: "inside / an extern prototype shadows the namespace fold's value",
+        body: &["extern int extraShortenTarget()"],
+        after: &[],
+        probe: "extraShortenTarget",
+        position: Position::Expr,
+    },
     // ===================== position bounds the fold =====================
     Cell {
         // A use preceding the module does not see it: FCS reports the

@@ -7,10 +7,12 @@ use borzoi_cst::syntax::{
 use crate::def::DefId;
 
 use super::model::{
-    CaseKind, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace, Resolution, SlotClass,
+    CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace,
+    Resolution, SlotClass,
 };
 use super::state::{
-    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ShorteningPrefix,
+    AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ScopeEntry,
+    ShorteningPrefix,
 };
 use super::{
     attrs_auto_open, attrs_mark_struct, attrs_require_qualified_access, id_text,
@@ -735,6 +737,24 @@ impl<'a> Resolver<'a> {
                     .unwrap_or_default();
                 if !ext_name.is_empty() {
                     self.record_project_name_shadow(ext_name.clone());
+                    // …and, in the *frame*, a decline for the bare name from
+                    // here on. The prototype occupies the value namespace of
+                    // this module, so an unqualified use of it binds the
+                    // prototype in FCS — but we have no binder to name, and
+                    // without an entry the walk falls straight through to
+                    // whatever an earlier `open` (or the implicit
+                    // enclosing-namespace fold) supplied under that name: a
+                    // wrong go-to-def, not a gap. Declining by position is the
+                    // same concession the fold's other unnameable surfaces make
+                    // (codex round 2 on the fold-back, which removed the blanket
+                    // screen that had been covering this).
+                    let generation = self.open_generation;
+                    let name = ext_name.last().expect("non-empty").clone();
+                    self.module_frame().entries.push(ScopeEntry::binding(
+                        name,
+                        Resolution::Deferred(DeferredReason::UnboundName),
+                        generation,
+                    ));
                 }
                 // An `extern` introduces a value-namespace name we do NOT intern
                 // (interning it is a later slice), so it is invisible to the
@@ -1557,7 +1577,18 @@ impl<'a> Resolver<'a> {
         // cannot contain a nested module, so its whole subtree shares this
         // scope (type resolution does not see expression-level binders).
         match decl {
-            ModuleDecl::NestedModule(nm) => self.resolve_attribute_lists(nm.attributes()),
+            ModuleDecl::NestedModule(nm) => {
+                self.resolve_attribute_lists(nm.attributes());
+                // …and only THEN does an `[<AutoOpen>]` module's surface join the
+                // enclosing scope. FCS checks a module's own header attributes
+                // before adding its contents to the environment, so the fold must
+                // not be in force for them — it advances `latest_open_pos` to the
+                // module's end, and an in-file attribute candidate defined before
+                // the latest open defers (EX-3 §2(d)), which turned
+                // `[<Foo>] [<AutoOpen>] module Local` into a deferral where FCS
+                // commits (codex round 2).
+                self.fold_back_auto_open_module(nm);
+            }
             other => self.resolve_attributes_under(other.syntax()),
         }
     }
@@ -1621,9 +1652,6 @@ impl<'a> Resolver<'a> {
             }
             self.real_nested_module_exports.push(qualified.clone());
         }
-        // The fold-back below needs the module's full path after the walk has
-        // restored `container_path` to the enclosing one.
-        let qualified_auto_open = qualified.clone();
         // The export-decl-list twin: one nested-module decl (`header: false`)
         // carrying its `[<AutoOpen>]`/`private` bits. Every derivation off it
         // filters `!anonymous_root`, so an anonymous-root nested module records an
@@ -1806,25 +1834,40 @@ impl<'a> Resolver<'a> {
         }
         self.nested_module_locals = saved_nested_locals;
         self.augmentation_head_locals = saved_augmentation_locals;
-        // …and its *values* fold into the enclosing frame at this position —
-        // the same fold an `open` of it here would perform
-        // ([`Resolver::fold_own_auto_open_module`]). This runs after the body
-        // frame is popped and every saved field restored, so the fold's
-        // accessibility site and target frame are the enclosing ones.
-        if nm_auto_open {
-            let pos = u32::from(nm.syntax().text_range().end());
-            if self.anonymous_root {
-                // A header-less file's nested module has no modelled
-                // `module_path`, so its members carry no qualified path and the
-                // fold would enumerate *nothing* — leaving an earlier open's
-                // same-named value standing where FCS binds this module's. The
-                // generation barrier declines instead: it stales every earlier
-                // opened entry, which is exactly "we cannot say".
-                self.open_generation += 1;
-            } else {
-                self.fold_own_auto_open_module(&qualified_auto_open, pos);
-            }
+    }
+
+    /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame
+    /// at its declaration position — the same fold an `open` of it there would
+    /// perform ([`Resolver::fold_own_auto_open_module`]).
+    ///
+    /// Called from [`Self::module_decl`] **after**
+    /// [`Self::nested_module`] has popped the body frame and restored every
+    /// saved field (so the fold's accessibility site and target frame are the
+    /// enclosing ones) *and* after the module's own header attributes have
+    /// resolved (FCS checks those before adding the module's contents).
+    pub(super) fn fold_back_auto_open_module(&mut self, nm: &NestedModuleDecl) {
+        if !attrs_auto_open(nm.attributes()) {
+            return;
         }
+        let Some(li) = nm.long_id() else { return };
+        let segs: Vec<String> = li.idents().map(|t| id_text(t.text()).to_string()).collect();
+        if segs.is_empty() {
+            return;
+        }
+        if self.anonymous_root {
+            // A header-less file's nested module has no modelled `module_path`,
+            // so its members carry no qualified path and the fold would
+            // enumerate *nothing* — leaving an earlier open's same-named value
+            // standing where FCS binds this module's. The generation barrier
+            // declines instead: it stales every earlier opened entry, which is
+            // exactly "we cannot say".
+            self.open_generation += 1;
+            return;
+        }
+        let mut qualified = self.container_path.clone();
+        qualified.extend(segs);
+        let pos = u32::from(nm.syntax().text_range().end());
+        self.fold_own_auto_open_module(&qualified, pos);
     }
 
     /// Record a project-introduced *name* — a nested module
