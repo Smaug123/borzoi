@@ -11,6 +11,7 @@ mod assembly_env;
 mod attr_resolution_diff;
 mod attr_resolution_sweep;
 mod auto_open_foldback_matrix;
+mod auto_open_member_sweep;
 mod classify_assembly_diff;
 mod classify_diff;
 mod commit_surface;

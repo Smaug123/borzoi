@@ -12,9 +12,37 @@ use crate::def::{DefId, DefKind};
 
 use super::id_text;
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportDef,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportDeclKind, ExportDef,
     ExportedItem, ItemId, Resolution, SlotClass,
 };
+
+/// Where a member sits in the ladder by which a module's contents enter an
+/// enclosing scope. **Not source order**: FCS folds a module's exception
+/// definitions, then its tycons (and their union cases), then its values
+/// (`AddModuleOrNamespaceContentsToNameEnv`), so a name several members share
+/// is decided by *kind* first and position only within a kind.
+///
+/// fcs-dump-probed over every well-formed pair of same-named members a module
+/// can declare — the two orders always agree except between a union case and a
+/// class, which are one rank and so keep source order:
+///
+/// | pair | winner |
+/// | --- | --- |
+/// | value vs case / exception / class | the value, either order |
+/// | case vs exception | the case, either order |
+/// | case vs class | the later of the two |
+///
+/// A same-name pair *within* a rank other than case-vs-class does not compile
+/// (`FS0037`), so no ordering is claimed for it.
+fn fold_rank(case: Option<CaseKind>) -> u8 {
+    match case {
+        Some(CaseKind::Exception) => 0,
+        Some(CaseKind::Union { .. } | CaseKind::Enum) => 1,
+        // An ordinary value — folded last, so it takes the name from any
+        // same-named tycon-tier member regardless of which came first.
+        None => 2,
+    }
+}
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -1304,22 +1332,29 @@ impl<'a> Resolver<'a> {
             // A constructible type in this fragment takes FCS's unqualified
             // slot from an EARLIER-folded same-named value; sema models no
             // project type constructor, so the override only declines.
-            let evicting_types = self.fragment_type_contestants(&frag, frag_range);
-            if !evicting_types.is_empty() {
-                let generation = self.open_generation;
-                let entries: Vec<ScopeEntry> = evicting_types
+            //
+            // Where it lands relative to the fold is [`fold_rank`]'s question.
+            // A class and a union case share one rank, so between *those* two
+            // source order decides and the override must sit on the matching
+            // side of the fold; against anything else the class's rank settles
+            // it, and a same-named value would not compile.
+            let mut late_evictions: Vec<String> = Vec::new();
+            let mut early_evictions: Vec<String> = Vec::new();
+            for (name, type_pos) in self.fragment_type_contestants(&frag, frag_range) {
+                // A class ranks below the fragment's own same-named value and
+                // below a case written after it; against anything else it wins,
+                // so the override goes after the fold.
+                let outranked = self
+                    .fragment_member_ranks(&frag, frag_range, &name)
                     .into_iter()
-                    .map(|name| {
-                        ScopeEntry::opened(
-                            name,
-                            Resolution::Deferred(DeferredReason::UnboundName),
-                            generation,
-                            pos,
-                        )
-                    })
-                    .collect();
-                self.module_frame().entries.extend(entries);
+                    .any(|(rank, member_pos)| rank > 1 || (rank == 1 && member_pos > type_pos));
+                if !outranked {
+                    late_evictions.push(name);
+                } else {
+                    early_evictions.push(name);
+                }
             }
+            self.push_eviction_overrides(early_evictions, pos);
             // Anything it hides that we cannot *name* — a module alias, a
             // case-opaque type repr, or a path an earlier Compile-order file
             // marked hidden — could be a value in expression position: raise the
@@ -1329,6 +1364,7 @@ impl<'a> Resolver<'a> {
                 self.open_generation += 1;
             }
             self.open_module_values(&frag, pos, Some(current_file), Some(frag_range));
+            self.push_eviction_overrides(late_evictions, pos);
             // …and the rest is declined **by name**, after the fold rather than
             // before it. `open_module_values` enumerates only what it can point
             // at, so a name it does push must still lose to a same-named member
@@ -1387,7 +1423,14 @@ impl<'a> Resolver<'a> {
     /// downgrades a `type private` to [`SlotClass::Keeps`], which the slot test
     /// below excludes — FCS does not import a private type at an `open` from
     /// outside its declaration group.
-    fn fragment_type_contestants(&self, container: &[String], range: TextRange) -> Vec<String> {
+    /// Each carries its declaration position, because a class and a union case
+    /// are one [`fold_rank`] and so are ordered by source position against each
+    /// other — see [`Self::fragment_case_positions`].
+    fn fragment_type_contestants(
+        &self,
+        container: &[String],
+        range: TextRange,
+    ) -> Vec<(String, TextSize)> {
         self.export_decls
             .iter()
             .filter(|decl| range.contains(decl.pos))
@@ -1397,11 +1440,67 @@ impl<'a> Resolver<'a> {
                     ..
                 } if *slot != SlotClass::Keeps => {
                     let (name, parent) = decl.path.split_last()?;
-                    (parent == container).then(|| name.clone())
+                    (parent == container).then(|| (name.clone(), decl.pos))
                 }
                 _ => None,
             })
             .collect()
+    }
+
+    /// Every member `container` declares under `name` inside this fragment, as
+    /// its [`fold_rank`] and declaration position — what decides which side of
+    /// the fold the type-eviction override belongs on. `open_module_values`
+    /// pushes the fragment as one ranked block, so the override can only go
+    /// before it or after it, and "after" is right exactly when nothing in the
+    /// fragment outranks the class: a same-named value always does, and a
+    /// same-named case does when it is written later.
+    fn fragment_member_ranks(
+        &self,
+        container: &[String],
+        range: TextRange,
+        name: &str,
+    ) -> Vec<(u8, TextSize)> {
+        self.items
+            .iter()
+            .filter(|item| {
+                item.qualified.as_ref().is_some_and(|q| {
+                    q.len() == container.len() + 1
+                        && q.starts_with(container)
+                        && q.last().is_some_and(|last| last == name)
+                })
+            })
+            .filter_map(|item| match item.def {
+                ExportDef::Own(id) => Some((
+                    fold_rank(item.case_kind()),
+                    self.defs[id.index()].range.start(),
+                )),
+                ExportDef::Sig { .. } => None,
+            })
+            .filter(|(_, pos)| range.contains(*pos))
+            .collect()
+    }
+
+    /// Push a `Deferred` override for each name a constructible type takes
+    /// FCS's unqualified slot for. Sema models no project type constructor, so
+    /// the override never claims a target — it only stops a same-named value
+    /// on the losing side of the fold from standing.
+    fn push_eviction_overrides(&mut self, names: Vec<String>, pos: u32) {
+        if names.is_empty() {
+            return;
+        }
+        let generation = self.open_generation;
+        let entries: Vec<ScopeEntry> = names
+            .into_iter()
+            .map(|name| {
+                ScopeEntry::opened(
+                    name,
+                    Resolution::Deferred(DeferredReason::UnboundName),
+                    generation,
+                    pos,
+                )
+            })
+            .collect();
+        self.module_frame().entries.extend(entries);
     }
 
     /// The names `open_module_values` cannot enumerate for `container`, each
@@ -2111,7 +2210,8 @@ impl<'a> Resolver<'a> {
         // too). Record value names in `seen_values`, same-file case names in
         // `seen_ctors`. No same-file dedup: a name exported twice at a path (a case
         // and a later same-named `let`) keeps both, so latest-wins `lookup` picks
-        // the later one in expression position (mirroring the in-file frame).
+        // the later one — but by [`fold_rank`], not by source order.
+        let mut same_file: Vec<(u8, ScopeEntry)> = Vec::new();
         for item in &self.items {
             if let Some(q) = &item.qualified
                 && q.len() == module_path.len() + 1
@@ -2137,9 +2237,13 @@ impl<'a> Resolver<'a> {
                 let mut entry =
                     ScopeEntry::opened(name, Resolution::Item(item.id), generation, open_pos);
                 entry.maybe_constant_pattern = item.attributed;
-                entries.push(entry);
+                same_file.push((fold_rank(item.case_kind()), entry));
             }
         }
+        // A **stable** sort by rank alone: within one rank the members keep their
+        // source order, so a later same-named value still shadows an earlier one.
+        same_file.sort_by_key(|(rank, _)| *rank);
+        entries.extend(same_file.into_iter().map(|(_, entry)| entry));
         // The cross-file member sets. A plain `open M` (`fragment_file == None`)
         // takes the latest **accessible** export per path across every earlier
         // file ([`direct_value_children`] — an inaccessible `private` value
