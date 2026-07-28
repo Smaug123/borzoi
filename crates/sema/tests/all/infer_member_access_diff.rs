@@ -993,6 +993,105 @@ fn env_with_substring_extension_in(namespace: &[&str]) -> AssemblyEnv {
     AssemblyEnv::from_entities(entities)
 }
 
+/// An `AssemblyEnv` over the real BCL plus a synthetic `Demo.D` whose base edge is
+/// spelled `System.Object` and which declares its own nullary `Blah() : int`.
+fn env_with_object_derived_demo_type() -> AssemblyEnv {
+    use borzoi_assembly::{Access, Entity, Member, Primitive, TypeRef};
+    let bytes = std::fs::read(ensure_system_runtime_dll()).expect("read System.Runtime.dll");
+    let asm = Ecma335Assembly::parse(&bytes).expect("parse System.Runtime.dll");
+    let mut entities = asm
+        .enumerate_type_defs()
+        .expect("enumerate System.Runtime types");
+    let string = entities
+        .iter()
+        .find(|e| e.namespace == ["System"] && e.name == "String")
+        .expect("System.String template")
+        .clone();
+    // `System.String`'s own base edge *is* `System.Object`, spelled exactly as the
+    // metadata spells it — so borrowing it avoids hand-writing an assembly identity.
+    let object_base = string.base_type.clone().expect("String has a base type");
+    let mut blah = string
+        .members
+        .iter()
+        .find_map(|m| match m {
+            Member::Method(mm) if !mm.is_static && mm.access == Access::Public => Some(mm.clone()),
+            _ => None,
+        })
+        .expect("a public instance method on String to clone");
+    blah.name = "Blah".to_string();
+    blah.source_name = None;
+    blah.is_static = false;
+    blah.is_extension_method = false;
+    blah.is_constructor = false;
+    blah.generic_parameters = vec![];
+    blah.signature.parameters = vec![];
+    blah.signature.return_type = TypeRef::Primitive(Primitive::I4);
+    entities.push(Entity {
+        namespace: vec!["Demo".to_string()],
+        name: "D".to_string(),
+        members: vec![Member::Method(blah)],
+        nested_types: vec![],
+        base_type: Some(object_base),
+        interfaces: vec![],
+        extension_member_names: vec![],
+        union_case_names: None,
+        static_extension_member_names: Vec::new(),
+        is_extension_container: false,
+        ..string
+    });
+    AssemblyEnv::from_entities(entities)
+}
+
+/// An `System.Object` base edge we could not **prove** must sink the chain, not cap
+/// it (GPT-5.6 review of this change).
+///
+/// [`BaseChain::ObjectCapped`] is not merely "one level short" — it asserts the
+/// missing level *is* the universal root, whose member set the consumers account
+/// for, and so licenses treating the remaining group as complete. Under a drop in
+/// `System` that assertion is exactly what we cannot make: the level we can no
+/// longer see may be a base-bearing impostor with members of its own, which would
+/// join the group and could win it. Capping would then commit `D`'s own member
+/// where FCS selects the inherited one.
+///
+/// Observable as the receiver's **own** nullary method: capped, it is a complete
+/// single-candidate group and commits; sunk, the whole call defers.
+#[test]
+fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
+    let src = "module M\nlet f (d : Demo.D) = d.Blah()\n";
+    let typed = |env: &AssemblyEnv| -> Option<String> {
+        let parsed = parse(src);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == "f")
+            .map(|(_, ty)| ty.render())
+    };
+
+    let clean = env_with_object_derived_demo_type();
+    assert_eq!(
+        typed(&clean).as_deref(),
+        Some("Demo.D -> System.Int32"),
+        "with the base edge provable, the receiver's own nullary method commits"
+    );
+
+    let mut dropped = env_with_object_derived_demo_type();
+    dropped.mark_namespace_dropped_type(vec!["System".to_string()]);
+    assert_eq!(
+        typed(&dropped),
+        None,
+        "an unprovable `System.Object` base edge must sink the chain — capping there \
+         would call a possibly-incomplete method group complete"
+    );
+}
+
 #[test]
 fn enclosing_namespace_extension_defers_the_overload_gate() {
     // OV-6 review (GPT-5.6): F# treats the file's enclosing namespace as an
@@ -1527,6 +1626,144 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
         commit(&env, "module M\nlet s = \"hi\"\nlet n = s.Substring(1)\n").as_deref(),
         Some("System.String"),
         "a drop in an unrelated namespace does not defer a root-namespace file"
+    );
+}
+
+/// The **receiver door**. A per-type drop in the *receiver type's own* namespace
+/// means a same-`(namespace, name)` sibling may have been dropped, so the
+/// surviving entry `AssemblyEnv::lookup_type` hands back is not provably the type
+/// FCS binds the member on — its members could be another type's entirely.
+///
+/// This is a different axis from `dropped_type_uncertainty_is_namespace_scoped`
+/// below, which is about a drop in the **file's** in-scope namespaces (an
+/// invisible extension joining the method group). Here the file is a root
+/// `module M`, whose only in-scope namespace is the root — so the extension gate
+/// is untouched and each case isolates the receiver's identity alone. The data
+/// accesses (`s.Length`, `"hi".Length`) do not consult the extension gate at all.
+///
+/// Every shape here reaches `AssemblyEnv::lookup_type` through the **literal**
+/// receiver route, which nothing else vets: an annotated receiver keys on an
+/// `Entity` the resolver's type-path walk already declined to produce under a
+/// drop (pinned by `annotated_receiver_door_is_sealed_by_the_resolver`).
+#[test]
+fn dropped_type_in_the_receiver_namespace_defers_the_member() {
+    // (source, binder, member ident, the type committed when nothing is dropped)
+    let shapes = [
+        // 3.3a data member, receiver bound to a string literal.
+        (
+            "module M\nlet s = \"hi\"\nlet n = s.Length\n",
+            "n",
+            "Length",
+            "System.Int32",
+        ),
+        // 3.3a data member, `DotGet` directly on the literal.
+        (
+            "module M\nlet n = \"hi\".Length\n",
+            "n",
+            "Length",
+            "System.Int32",
+        ),
+        // 3.3d single-candidate method call.
+        (
+            "module M\nlet s = \"hi\"\nlet n = s.Substring(1)\n",
+            "n",
+            "Substring",
+            "System.String",
+        ),
+    ];
+    // `System` owns the receiver `System.String`; `Demo` is an unrelated namespace
+    // the BCL env does not even declare, and must leave every shape committing.
+    for (marked, expected) in [
+        (vec!["System".to_string()], None),
+        (vec!["Demo".to_string()], Some(())),
+    ] {
+        for (src, binder, member, committed) in shapes {
+            let mut env = bcl_env();
+            env.mark_namespace_dropped_type(marked.clone());
+            let parsed = parse(src);
+            assert!(
+                parsed.errors.is_empty(),
+                "parse errors: {:?}",
+                parsed.errors
+            );
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+            let inferred = infer_file(&file, &resolved, &env);
+            let def_types: HashMap<String, String> = inferred
+                .def_types()
+                .iter()
+                .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+                .collect();
+            let member_res = inferred.member_resolution_at(ident_range(src, member));
+            match expected {
+                None => {
+                    assert_eq!(
+                        def_types.get(binder),
+                        None,
+                        "a drop in the receiver's namespace {marked:?} must leave `{binder}` \
+                         untyped in {src:?}"
+                    );
+                    assert_eq!(
+                        member_res, None,
+                        "a drop in the receiver's namespace {marked:?} must record no member \
+                         resolution at `{member}` in {src:?}"
+                    );
+                }
+                Some(()) => {
+                    assert_eq!(
+                        def_types.get(binder).map(String::as_str),
+                        Some(committed),
+                        "a drop in the unrelated namespace {marked:?} must not disturb {src:?}"
+                    );
+                    assert!(
+                        matches!(member_res, Some(Resolution::Member { .. })),
+                        "a drop in the unrelated namespace {marked:?} must not disturb the member \
+                         resolution at `{member}` in {src:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The **annotation door** (`Gen::entity_annotation_ty`) is sealed one layer up:
+/// it keys on the `Entity` the resolver recorded for the annotation head, and the
+/// resolver's type-path walk already declines under a drop in that namespace. So
+/// the receiver-door guard is not what saves this shape — this test pins that it
+/// is saved at all, so a future change to either layer cannot silently open it.
+#[test]
+fn annotated_receiver_door_is_sealed_by_the_resolver() {
+    let src = "module M\nlet s : System.String = \"hi\"\nlet n = s.Length\n";
+    let clean = bcl_env();
+    let mut dropped = bcl_env();
+    dropped.mark_namespace_dropped_type(vec!["System".to_string()]);
+
+    let typed = |env: &AssemblyEnv| -> Option<String> {
+        let parsed = parse(src);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == "n")
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        typed(&clean).as_deref(),
+        Some("System.Int32"),
+        "the annotated receiver types its member with no drop in the env"
+    );
+    assert_eq!(
+        typed(&dropped),
+        None,
+        "a drop in the annotation head's namespace must leave the member untyped"
     );
 }
 
