@@ -142,6 +142,16 @@ run permanently red. The gap is accepted instead, and
 `a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it` pins it so it
 is not later "fixed" into that trap.
 
+The boundary is established by enumeration rather than by the argument above,
+because arrival order is precisely what replaying the real history cannot vary —
+it only ever exercises the order that happened.
+`every_arrival_order_that_records_a_carrier_first_catches_the_drop` runs all 24
+orders of a four-observation series and asserts the rule directly: every order
+that records a carrying observation before the first dropping one is refused,
+and the eight that escape all begin with a dropping observation. That count is
+pinned, not as a target but as the size of the accepted gap — a change that
+moves it in either direction has changed what the recorder claims.
+
 Accepting it costs nothing a reader can see, because retirement is rendered from
 presence rather than from the declaration: a metric absent from the newest
 observation is labelled retired whether or not anyone said so. What escapes is

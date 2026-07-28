@@ -850,6 +850,106 @@ fn a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it() {
     );
 }
 
+/// What the check guarantees, established by enumeration rather than by
+/// argument.
+///
+/// The residual above is a statement about *arrival orders*, and arrival order
+/// is exactly what a replay of the real history cannot vary — it only ever
+/// exercises the one order that happened. So every order of one small series is
+/// run instead, and the boundary between caught and escaped is asserted
+/// directly: whenever any observation carrying the metric is recorded before
+/// the first one that drops it, the drop is refused. That is the guarantee a
+/// live series relies on, since its whole prefix is published long before a new
+/// commit's run records.
+///
+/// The escape count is pinned too. It is not a target — it is the size of the
+/// accepted gap, and a change that moves it has changed what the recorder
+/// claims, whichever direction it moved in.
+#[test]
+fn every_arrival_order_that_records_a_carrier_first_catches_the_drop() {
+    const CARRIERS: [u64; 2] = [10, 15];
+    let commits = [
+        "0123456789abcdef0123456789abcdef01234567",
+        "1123456789abcdef0123456789abcdef01234567",
+        "2123456789abcdef0123456789abcdef01234567",
+        "3123456789abcdef0123456789abcdef01234567",
+    ];
+    let runs = [10_u64, 15, 20, 25];
+
+    let mut escaped = Vec::new();
+    for order in permutations(&[0, 1, 2, 3]) {
+        let temp = tempfile::tempdir().unwrap();
+        let mut refused = false;
+        for &index in &order {
+            let carries = CARRIERS.contains(&runs[index]);
+            let statistics = if carries {
+                json!({ "matches": 7, "temporary": 1 })
+            } else {
+                json!({ "matches": 7 })
+            };
+            let summary = write_summary_with_statistics(
+                temp.path(),
+                "parser-divergence",
+                json!({}),
+                statistics,
+            );
+            let mut observation = input(temp.path(), summary);
+            observation.commit = commits[index].into();
+            observation.run_number = runs[index];
+            if record_observation(&observation).is_err() {
+                refused = true;
+            }
+        }
+        // Did any observation carrying the metric reach the history before the
+        // first one that lacks it?
+        let first_dropper = order
+            .iter()
+            .position(|&index| !CARRIERS.contains(&runs[index]))
+            .expect("the series contains a dropping observation");
+        let carrier_first = order[..first_dropper]
+            .iter()
+            .any(|&index| CARRIERS.contains(&runs[index]));
+
+        if carrier_first {
+            assert!(
+                refused,
+                "a drop recorded after a carrier must be refused: {:?}",
+                order.iter().map(|&index| runs[index]).collect::<Vec<_>>()
+            );
+        } else if !refused {
+            escaped.push(order.iter().map(|&index| runs[index]).collect::<Vec<_>>());
+        }
+    }
+
+    assert_eq!(
+        escaped.len(),
+        8,
+        "the accepted gap changed size; escapes were {escaped:?}"
+    );
+    // Every escape starts with a dropping observation, which is the shape the
+    // residual describes: nothing carrying the metric is on disk yet.
+    assert!(
+        escaped.iter().all(|order| !CARRIERS.contains(&order[0])),
+        "{escaped:?}"
+    );
+}
+
+fn permutations(items: &[usize]) -> Vec<Vec<usize>> {
+    if items.len() <= 1 {
+        return vec![items.to_vec()];
+    }
+    let mut output = Vec::new();
+    for (index, &item) in items.iter().enumerate() {
+        let mut rest = items.to_vec();
+        rest.remove(index);
+        for mut tail in permutations(&rest) {
+            tail.insert(0, item);
+            output.push(tail);
+        }
+    }
+    output
+}
+
 /// A configuration change starts a new series, and a new series has no
 /// predecessor to have dropped anything: the old points are not comparable, so
 /// nothing about them constrains the shape of the new ones.
