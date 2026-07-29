@@ -132,14 +132,20 @@ const CASES: &[Case] = &[
         files: &[],
         pins: &[("Out", "Debug")],
     },
-    // The SDK's own idiom: fill in a default only when the caller did not
-    // supply one. The committed value depends on the global's *presence*, not
-    // just its text.
+    // The SDK's own idiom, written against a name the sweep actually supplies
+    // (`<Configuration Condition="'$(Configuration)' == ''">…`). This is the
+    // *read-only defaulting* rule, and it splits the sweep three ways where a
+    // gate on an unsupplied name could not split it at all: with no
+    // `Configuration` global the write fires; with `Configuration=Debug` MSBuild
+    // discards the write unevaluated and the global stands; and with
+    // `Configuration=""` the global is **empty but still read-only**, so the
+    // write is discarded there too and the value stays empty — the one row that
+    // distinguishes "absent" from "supplied empty".
     Case {
         name: "default-write",
-        xml: "<Project>\n  <PropertyGroup>\n    <Out Condition=\"'$(Out)' == ''\">$(Configuration)-$(Platform)</Out>\n  </PropertyGroup>\n</Project>\n",
+        xml: "<Project>\n  <PropertyGroup>\n    <Configuration Condition=\"'$(Configuration)' == ''\">DefaultedInDocument</Configuration>\n    <Out>[$(Configuration)]-[$(Platform)]</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
-        pins: &[("Out", "Debug-AnyCPU")],
+        pins: &[("Out", "[Debug]-[AnyCPU]"), ("Configuration", "Debug")],
     },
     // A gate on the *group*, so the walk must decide whether to visit the writes
     // at all — the shape a property-walk that only inspects visited groups gets
@@ -254,14 +260,21 @@ const CASES: &[Case] = &[
         files: &[],
         pins: &[("Out", "other")],
     },
-    // A global the document never mentions by name, reached through the one it
-    // does — the shape where "which globals matter" is not readable off the
-    // document's `$(...)` references.
+    // A global the entry document never names — only a file it imports does. So
+    // "which globals can move this project's answers" is not readable off the
+    // entry document's own `$(...)` references, which is exactly how the SDK's
+    // props consume the caller-settable knobs.
+    //
+    // (MSBuild has no property-*name* indirection to test instead: `$($(Helper))`
+    // is rejected outright with MSB4184, so an import is the real shape.)
     Case {
         name: "unmentioned-global",
-        xml: "<Project>\n  <PropertyGroup>\n    <Helper>BorzoiProbe</Helper>\n    <Out>[$(BorzoiProbe)]</Out>\n  </PropertyGroup>\n</Project>\n",
-        files: &[],
-        pins: &[("Out", "[]"), ("Helper", "BorzoiProbe")],
+        xml: "<Project>\n  <Import Project=\"probe.props\" />\n</Project>\n",
+        files: &[(
+            "probe.props",
+            "<Project><PropertyGroup><Out>[$(BorzoiProbe)]</Out></PropertyGroup></Project>\n",
+        )],
+        pins: &[("Out", "[]")],
     },
 ];
 
@@ -477,8 +490,15 @@ impl CaseCensus {
     /// The rest: sound (nothing wrong was published), but the dependence cost us
     /// a value. This is the number that says what a "depends on a caller-supplied
     /// global" provenance dimension would buy.
+    ///
+    /// Over the **derived** domain, like its two siblings. Counting the swept
+    /// names here would inflate it with something that is not a decline at all: a
+    /// caller global is deliberately absent from `ParsedProject::properties`
+    /// unless the document writes it, so `Configuration` and `Platform` would
+    /// read as declined in almost every case and the census would report more
+    /// pairs declined than moving.
     fn declined(&self) -> usize {
-        self.moving_in_msbuild().count() - self.tracked().count()
+        self.derived_moving() - self.derived_tracked()
     }
 
     /// One entry per global-dependent name, for the report: how many distinct
