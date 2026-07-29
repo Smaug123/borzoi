@@ -208,6 +208,17 @@ pub fn resolve_file(
     // nested auto-open module is itself a `NestedModuleDecl` this descendants
     // walk visits. Like every pre-scan above, file-global and
     // order-independent by design.
+    // Types carrying `[<AutoOpen>]` themselves: their statics fold into the
+    // enclosing frame, and sema names none of them (task #48). The fold reads
+    // the positions to stop an *earlier* same-named case standing where FCS
+    // binds a static it cannot see.
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        if attrs_auto_open(defn.attributes()) {
+            r.own_auto_open_type_positions
+                .push(defn.syntax().text_range().start());
+        }
+    }
+
     for nm in file
         .syntax()
         .descendants()
@@ -1918,6 +1929,7 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
+            own_auto_open_type_positions: Vec::new(),
             own_auto_open_container: false,
             own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,

@@ -1221,6 +1221,20 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
+    /// Where this file declares a type carrying `[<AutoOpen>]` *itself* — the
+    /// declaration's start position, one entry per type.
+    ///
+    /// Such a type folds its **statics** into the enclosing frame, and sema
+    /// models none of them (task #48). They are a value-namespace surface we
+    /// cannot enumerate, sitting at a known position: FCS ranks it with the
+    /// tycon tier, so a union case or exception of the same name declared
+    /// *earlier* in the fragment loses to it, while a `let` value wins from
+    /// either side (fcs-dump-probed both orders, both kinds).
+    ///
+    /// Distinct from [`Self::own_auto_open_type_names`], which is the types
+    /// declared *inside* an `[<AutoOpen>]` module — a type-namespace question.
+    /// This one is the value namespace, and only the fold reads it.
+    pub(super) own_auto_open_type_positions: Vec<rowan::TextSize>,
     /// Whether this file declares an `[<AutoOpen>]` container whose
     /// bare-visible surface folds into the rest of its enclosing scope in a way
     /// source position does not express — an `[<AutoOpen>]` **type** (whose

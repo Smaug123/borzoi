@@ -2880,3 +2880,59 @@ fn a_nested_auto_open_fragment_belongs_to_its_declaring_parent_fragment() {
         "the later fragment's `Child` is plain, so `bad` is unbound; got {res:?}"
     );
 }
+
+/// A custom `AutoOpenAttribute` an **earlier Compile-order file** declares, in
+/// scope at the fold site through an `open`, shadows FSharp.Core's — so
+/// `[<AutoOpen>]` is an ordinary attribute there and the module folds nothing.
+/// FCS reports `FS0039 The value or constructor 'target' is not defined` for
+/// the bare use (fcs-dump `uses-project` probe).
+///
+/// The same-file arm of this is
+/// [`a_shadowed_auto_open_attribute_folds_nothing`]; the shadow is equally real
+/// when it arrives from another file, where the attribute's own resolution need
+/// not be a same-file `Item`.
+#[test]
+fn a_cross_file_custom_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src0 = "namespace Custom\n\ntype AutoOpenAttribute() =\n    inherit System.Attribute()\n";
+    let src1 = "module Use\n\nopen Custom\n\n[<AutoOpen>]\nmodule A =\n    let target = 1\n\n\
+                let y = target\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "`Custom.AutoOpenAttribute` shadows FSharp.Core's, so `A` folds nothing \
+         and `target` is unbound; got {res:?}"
+    );
+}
+
+/// An `[<AutoOpen>]` **type**'s static shares one rank with a union case of the
+/// same fragment, so the two order by source position: with the case first, the
+/// later static wins. fcs-dump-probed both ways round — case-then-static binds
+/// `Frag.Holder.Target`, static-then-case binds `Frag.U.Target`.
+///
+/// We model no auto-open type statics (task #48), so the static is unnameable
+/// here; the requirement is exactly "do not commit the case it outranks".
+#[test]
+fn an_auto_open_type_static_outranks_an_earlier_union_case() {
+    let env = fixture_env();
+    let src = "module M\n\n[<AutoOpen>]\nmodule Frag =\n    type U =\n        | Target\n    \
+               [<AutoOpen>]\n    type Holder() =\n        static member Target = 42\n\n\
+               let y = Target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later auto-open type's static outranks the case; got {res:?}"
+    );
+}

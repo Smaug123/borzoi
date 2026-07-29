@@ -1878,12 +1878,26 @@ impl<'a> Resolver<'a> {
     /// other than FSharp.Core's — a project type of that name, in this file or
     /// a preceding one, which shadows it.
     ///
-    /// Only a *committed project* verdict counts. The attribute resolver
-    /// records `Resolution::Local` / `Item` exactly when the candidate reached
-    /// a project type; an `Entity` is an assembly's (FSharp.Core's, in every
-    /// real build), and a deferral or a silence is no claim — declining on
-    /// those would decline every fold in a unit test with an empty
-    /// `AssemblyEnv`, where nothing resolves at all.
+    /// A committed project verdict — `Resolution::Local` / `Item` — settles it:
+    /// the candidate reached a project type, so the attribute is not
+    /// FSharp.Core's.
+    ///
+    /// A **deferral is not** the complement of that. The attribute resolver
+    /// defers `ShadowableType` in the ordinary case too (an opaque `open` could
+    /// supply a type of this name), so the cause cannot tell "a custom
+    /// `AutoOpenAttribute` is in play" from "nothing here shadows anything" —
+    /// declining on it would decline nearly every fold. Nor can it be ignored:
+    /// a custom `AutoOpenAttribute` declared in a *preceding* file and reached
+    /// through an `open` defers rather than committing, and FCS then treats
+    /// `[<AutoOpen>]` as an ordinary attribute (`FS0039` for the bare use,
+    /// fcs-dump `uses-project`-probed).
+    ///
+    /// So an uncommitted verdict asks the project directly, by name: if any
+    /// file declares a type that could *be* this attribute, the fold has no
+    /// proof of FSharp.Core's and declines. Name-keyed and scope-blind, so it
+    /// over-declines for a project that declares such a type but does not open
+    /// it — a deferral rather than a wrong target, on a shape no real project
+    /// has.
     fn auto_open_attribute_is_shadowed(&self, nm: &NestedModuleDecl) -> bool {
         nm.attributes()
             .flat_map(|list| list.attributes().collect::<Vec<_>>())
@@ -1901,10 +1915,13 @@ impl<'a> Resolver<'a> {
                 };
                 let range =
                     rowan::TextRange::new(first.text_range().start(), last.text_range().end());
-                matches!(
-                    self.attribute_resolutions.get(&range),
-                    Some(Resolution::Local(_) | Resolution::Item(_))
-                )
+                match self.attribute_resolutions.get(&range) {
+                    Some(Resolution::Local(_) | Resolution::Item(_)) => true,
+                    _ => {
+                        self.project_type_named("AutoOpenAttribute")
+                            || self.project_type_named("AutoOpen")
+                    }
+                }
             })
     }
 

@@ -1354,6 +1354,22 @@ impl<'a> Resolver<'a> {
                     early_evictions.push(name);
                 }
             }
+            // An `[<AutoOpen>]` **type** in this fragment folds its statics in
+            // too, and sema names none of them (task #48). They rank with the
+            // tycon tier, so an earlier same-named case loses to one — and
+            // since the static is unnameable, every such case must decline
+            // rather than stand. A `let` value wins from either side, so it is
+            // untouched (fcs-dump-probed both orders, both kinds).
+            let static_positions: Vec<TextSize> = self
+                .own_auto_open_type_positions
+                .iter()
+                .copied()
+                .filter(|p| frag_range.contains(*p))
+                .collect();
+            for static_pos in static_positions {
+                late_evictions
+                    .extend(self.fragment_case_names_before(&frag, frag_range, static_pos));
+            }
             self.push_eviction_overrides(early_evictions, pos);
             // Anything it hides that we cannot *name* — a module alias, a
             // case-opaque type repr, or a path an earlier Compile-order file
@@ -1554,6 +1570,47 @@ impl<'a> Resolver<'a> {
                 ExportDef::Sig { .. } => None,
             })
             .filter(|(_, pos)| range.contains(*pos))
+            .collect()
+    }
+
+    /// The fragment's own **tycon-tier** member names — union cases and
+    /// exception constructors — declared before `pos`, which an `[<AutoOpen>]`
+    /// type there could take with a static of the same name.
+    ///
+    /// Ranked and filtered exactly as [`Self::fragment_member_ranks`] is, for
+    /// the same reason: a member the fold does not bring in decides no ordering.
+    /// Rank 2 (a `let` value) is excluded because it wins against such a static
+    /// from either side, so it is not in contest at all.
+    ///
+    /// Name-blind in one direction only: the static's *own* name is unknown, so
+    /// every earlier tycon-tier name in the fragment declines. That
+    /// over-declines when the static happens to be named something else — a
+    /// deferral, never a wrong target — on a shape (a case and an auto-open
+    /// type in one auto-open module) that is already vanishingly rare.
+    fn fragment_case_names_before(
+        &self,
+        container: &[String],
+        range: TextRange,
+        pos: TextSize,
+    ) -> Vec<String> {
+        let site = self.container_path.clone();
+        self.items
+            .iter()
+            .filter_map(|item| {
+                let q = item.qualified.as_ref()?;
+                if q.len() != container.len() + 1
+                    || !q.starts_with(container)
+                    || !super::model::accessible_from(item.access_root_len, q, &site)
+                {
+                    return None;
+                }
+                let ExportDef::Own(id) = item.def else {
+                    return None;
+                };
+                let member_pos = self.defs[id.index()].range.start();
+                (range.contains(member_pos) && member_pos < pos && fold_rank(item.case_kind()) <= 1)
+                    .then(|| q.last().expect("non-empty qualified path").clone())
+            })
             .collect()
     }
 
