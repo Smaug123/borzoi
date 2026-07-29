@@ -74,6 +74,12 @@ enum Member {
     /// An `[<AutoOpen>]` submodule holding `let Nn`, so the name arrives through
     /// two folds rather than one.
     NestedAuto,
+    /// An `[<AutoOpen>]` **type** holding `static member Nn`. Its statics fold
+    /// into the enclosing frame like a module's values, but sema names none of
+    /// them (task #48), so every cell it wins is a decline for us. It ranks
+    /// with the tycon tier, which is why it is ordered against a union case by
+    /// source position but beats an exception from either side.
+    AutoOpenStatic,
 }
 
 /// What a [`Member`] *declares* under [`NAME`], as opposed to what it
@@ -104,6 +110,7 @@ impl Member {
         Member::Extern,
         Member::TypeCtor,
         Member::NestedAuto,
+        Member::AutoOpenStatic,
     ];
 
     fn slot(self) -> Slot {
@@ -111,7 +118,7 @@ impl Member {
             Member::Value | Member::Extern => Slot::Value,
             Member::Exception | Member::TypeCtor => Slot::TypeName,
             Member::ActivePattern => Slot::Recognizer,
-            Member::UnionCase | Member::NestedAuto => Slot::Indirect,
+            Member::UnionCase | Member::NestedAuto | Member::AutoOpenStatic => Slot::Indirect,
         }
     }
 
@@ -124,6 +131,7 @@ impl Member {
             Member::Extern => "extern",
             Member::TypeCtor => "type",
             Member::NestedAuto => "nested-auto",
+            Member::AutoOpenStatic => "auto-open-static",
         }
     }
 
@@ -151,6 +159,11 @@ impl Member {
                 "[<AutoOpen>]".to_string(),
                 format!("module {acc}NnInner{uniq} ="),
                 format!("    let {NAME} = 2"),
+            ],
+            Member::AutoOpenStatic => vec![
+                "[<AutoOpen>]".to_string(),
+                format!("type {acc}NnHost{uniq} ="),
+                format!("    static member {NAME} = 3"),
             ],
         }
     }
@@ -616,6 +629,178 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
         "private nested-auto ; type/expr",
         "sema models no project type constructor (#45), so the eviction override declines",
     ),
+    (
+        "auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private value ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "case ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "case ; auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "case ; private auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private case ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "exn ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "exn ; auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "exn ; private auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private exn ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "ap ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "ap ; auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "ap ; private auto-open-static/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private ap ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "extern ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "extern ; private auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private extern ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "type ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "type ; private auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private type ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private nested-auto ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private value/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; case/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private case/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; exn/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; exn/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private exn/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; ap/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; ap/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private ap/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; extern/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private extern/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; type/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private type/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private nested-auto/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "auto-open-static ; private auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; case/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; exn/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; ap/pattern",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; extern/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; type/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
+    (
+        "private auto-open-static ; auto-open-static/expr",
+        "sema models no `[<AutoOpen>]` type statics (#48), so the fold declines the name it takes",
+    ),
 ];
 
 #[test]
@@ -828,7 +1013,7 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
     );
 
     assert_eq!(
-        local_eviction_gaps, 60,
+        local_eviction_gaps, 78,
         "the count of #52 cells moved; down is a fix (update this number), up is a new defect"
     );
 

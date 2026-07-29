@@ -1608,7 +1608,13 @@ impl<'a> Resolver<'a> {
                     return None;
                 };
                 let member_pos = self.defs[id.index()].range.start();
-                (range.contains(member_pos) && member_pos < pos && fold_rank(item.case_kind()) <= 1)
+                // Rank 0 — an exception — folds before *every* tycon, so the
+                // static beats it from either side and position does not enter.
+                // Rank 1 shares the tycon tier with the static, so there source
+                // order decides. Rank 2 (a value) wins outright and is absent.
+                let rank = fold_rank(item.case_kind());
+                let contested = rank == 0 || (rank == 1 && member_pos < pos);
+                (range.contains(member_pos) && contested)
                     .then(|| q.last().expect("non-empty qualified path").clone())
             })
             .collect()

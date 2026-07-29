@@ -31,7 +31,7 @@ use super::{
 /// repr's modifier nests inside its own node and never appears as a direct
 /// child here. `internal` types stay visible within the project (one
 /// assembly), so only `private` downgrades.
-fn type_header_is_private(defn: &TypeDefn) -> bool {
+pub(super) fn type_header_is_private(defn: &TypeDefn) -> bool {
     header_is_private(defn.syntax())
 }
 

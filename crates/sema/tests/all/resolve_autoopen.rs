@@ -2936,3 +2936,28 @@ fn an_auto_open_type_static_outranks_an_earlier_union_case() {
         "the later auto-open type's static outranks the case; got {res:?}"
     );
 }
+
+/// An `[<AutoOpen>]` type's static beats a same-named **exception** from
+/// *either* side. An exception folds at [`fold_rank`] 0 — before every tycon —
+/// so unlike a union case it is not ordered against the static by source
+/// position. fcs-dump-probed both ways round: both bind `Root.M.T.Clash`.
+///
+/// The static is unnameable (task #48), so the requirement is exactly "do not
+/// commit the exception".
+#[test]
+fn an_auto_open_type_static_outranks_an_exception_declared_after_it() {
+    let env = fixture_env();
+    let src = "module Root\n\n[<AutoOpen>]\nmodule M =\n    [<AutoOpen>]\n    type T =\n        \
+               static member Clash = 42\n    exception Clash\n\nlet x = Clash\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Clash").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Clash".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "an exception loses to the auto-open type's static from either side; got {res:?}"
+    );
+}
