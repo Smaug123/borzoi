@@ -43,6 +43,28 @@ fn fold_rank(case: Option<CaseKind>) -> u8 {
         None => 2,
     }
 }
+
+/// The [`fold_rank`] of a **tycon**: a project type's constructor, and an
+/// `[<AutoOpen>]` type's statics. Neither reaches [`fold_rank`], which reads a
+/// folded member's `CaseKind`, but both fold at the tycon tier — so naming the
+/// rank once here keeps them on the same ladder rather than beside it.
+const TYCON_RANK: u8 = 1;
+
+/// One thing a fragment contributes under a single name, at the point in FCS's
+/// fold order where it lands: the [`fold_rank`] ladder first, source position
+/// within a rank. Sorted, **the last contribution wins** — which is the single
+/// rule every eviction question in the fold reduces to.
+///
+/// `nameable` is whether sema can say *what* won. A folded member can be named;
+/// a project type's constructor and an `[<AutoOpen>]` type's static cannot
+/// (tasks #45 and #48), so when one of those wins, the name declines rather
+/// than standing. See [`Resolver::fragment_contributions`].
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Contribution {
+    rank: u8,
+    pos: TextSize,
+    nameable: bool,
+}
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -1329,46 +1351,41 @@ impl<'a> Resolver<'a> {
                 }),
         );
         for (frag, frag_range) in fragments {
-            // A constructible type in this fragment takes FCS's unqualified
-            // slot from an EARLIER-folded same-named value; sema models no
-            // project type constructor, so the override only declines.
+            // What this fragment contributes under each contested name, in
+            // FCS's fold order — see [`Self::fragment_contributions`]. The last
+            // contribution wins, and a contribution sema cannot *name* (a type
+            // constructor, an `[<AutoOpen>]` type's static) can therefore only
+            // decline.
             //
-            // Where it lands relative to the fold is [`fold_rank`]'s question.
-            // A class and a union case share one rank, so between *those* two
-            // source order decides and the override must sit on the matching
-            // side of the fold; against anything else the class's rank settles
-            // it, and a same-named value would not compile.
+            // Two pushes, because the fold block sits between them. The early
+            // one evicts a same-named value an EARLIER open left in the frame,
+            // which an unnameable contributor takes the slot from whatever the
+            // fragment itself declares. The late one fires only when the
+            // unnameable contributor also beats the fragment's own member, and
+            // so must survive the fold's own push.
             let mut late_evictions: Vec<String> = Vec::new();
             let mut early_evictions: Vec<String> = Vec::new();
-            for (name, type_pos) in self.fragment_type_contestants(&frag, frag_range) {
-                // A class ranks below the fragment's own same-named value and
-                // below a case written after it; against anything else it wins,
-                // so the override goes after the fold.
-                let outranked = self
-                    .fragment_member_ranks(&frag, frag_range, &name)
-                    .into_iter()
-                    .any(|(rank, member_pos)| rank > 1 || (rank == 1 && member_pos > type_pos));
-                if !outranked {
-                    late_evictions.push(name);
-                } else {
-                    early_evictions.push(name);
-                }
-            }
-            // An `[<AutoOpen>]` **type** in this fragment folds its statics in
-            // too, and sema names none of them (task #48). They rank with the
-            // tycon tier, so an earlier same-named case loses to one — and
-            // since the static is unnameable, every such case must decline
-            // rather than stand. A `let` value wins from either side, so it is
-            // untouched (fcs-dump-probed both orders, both kinds).
-            let static_positions: Vec<TextSize> = self
-                .own_auto_open_type_positions
-                .iter()
-                .copied()
-                .filter(|p| frag_range.contains(*p))
+            let type_names: Vec<String> = self
+                .fragment_type_contestants(&frag, frag_range)
+                .into_iter()
+                .map(|(name, _)| name)
                 .collect();
-            for static_pos in static_positions {
-                late_evictions
-                    .extend(self.fragment_case_names_before(&frag, frag_range, static_pos));
+            for name in self.fragment_contested_names(&frag, frag_range) {
+                let unnameable_wins = self
+                    .fragment_contributions(&frag, frag_range, &name)
+                    .last()
+                    .is_some_and(|last| !last.nameable);
+                // A type contestant evicts the outer binding whichever way the
+                // fragment-internal contest goes — it takes the slot from an
+                // earlier open's value either way. A name contested only by an
+                // unnameable static does not: the static's own name is unknown,
+                // so the outer binding may well keep it.
+                if type_names.contains(&name) {
+                    early_evictions.push(name.clone());
+                }
+                if unnameable_wins {
+                    late_evictions.push(name);
+                }
             }
             self.push_eviction_overrides(early_evictions, pos);
             // Anything it hides that we cannot *name* — a module alias, a
@@ -1573,26 +1590,49 @@ impl<'a> Resolver<'a> {
             .collect()
     }
 
-    /// The fragment's own **tycon-tier** member names — union cases and
-    /// exception constructors — declared before `pos`, which an `[<AutoOpen>]`
-    /// type there could take with a static of the same name.
+    /// Every name this fragment contests — the names an unnameable contributor
+    /// could take. A constructible type contests the one name it declares; an
+    /// `[<AutoOpen>]` type's static has an unknown name, so while one is in the
+    /// fragment every member name is contested and the order decides.
     ///
-    /// Ranked and filtered exactly as [`Self::fragment_member_ranks`] is, for
-    /// the same reason: a member the fold does not bring in decides no ordering.
-    /// Rank 2 (a `let` value) is excluded because it wins against such a static
-    /// from either side, so it is not in contest at all.
-    ///
-    /// Name-blind in one direction only: the static's *own* name is unknown, so
-    /// every earlier tycon-tier name in the fragment declines. That
-    /// over-declines when the static happens to be named something else — a
-    /// deferral, never a wrong target — on a shape (a case and an auto-open
-    /// type in one auto-open module) that is already vanishingly rare.
-    fn fragment_case_names_before(
-        &self,
-        container: &[String],
-        range: TextRange,
-        pos: TextSize,
-    ) -> Vec<String> {
+    /// Over-inclusive by exactly that name-blindness: a static named something
+    /// else costs the fragment's other names a deferral, never a wrong target,
+    /// on a shape (a case and an auto-open type in one auto-open module) that
+    /// is already vanishingly rare.
+    fn fragment_contested_names(&self, container: &[String], range: TextRange) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .fragment_type_contestants(container, range)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        if self.fragment_static_positions(range).is_empty() {
+            names.sort();
+            names.dedup();
+            return names;
+        }
+        names.extend(self.fragment_member_names(container, range));
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    /// The positions of `[<AutoOpen>]` types inside this fragment — an
+    /// unnameable value surface at the tycon tier
+    /// ([`Resolver::own_auto_open_type_positions`](super::state::Resolver),
+    /// which already excludes the generic and `private` ones that contribute
+    /// nothing).
+    fn fragment_static_positions(&self, range: TextRange) -> Vec<TextSize> {
+        self.own_auto_open_type_positions
+            .iter()
+            .copied()
+            .filter(|p| range.contains(*p))
+            .collect()
+    }
+
+    /// Every name this fragment folds in, deduplicated. Same accessibility test
+    /// and reference site as [`Self::fragment_member_ranks`], for the same
+    /// reason: a member the fold does not bring in contests nothing.
+    fn fragment_member_names(&self, container: &[String], range: TextRange) -> Vec<String> {
         let site = self.container_path.clone();
         self.items
             .iter()
@@ -1607,17 +1647,59 @@ impl<'a> Resolver<'a> {
                 let ExportDef::Own(id) = item.def else {
                     return None;
                 };
-                let member_pos = self.defs[id.index()].range.start();
-                // Rank 0 — an exception — folds before *every* tycon, so the
-                // static beats it from either side and position does not enter.
-                // Rank 1 shares the tycon tier with the static, so there source
-                // order decides. Rank 2 (a value) wins outright and is absent.
-                let rank = fold_rank(item.case_kind());
-                let contested = rank == 0 || (rank == 1 && member_pos < pos);
-                (range.contains(member_pos) && contested)
+                range
+                    .contains(self.defs[id.index()].range.start())
                     .then(|| q.last().expect("non-empty qualified path").clone())
             })
             .collect()
+    }
+
+    /// Everything this fragment contributes under `name`, sorted into FCS's
+    /// fold order so the **last** element is the winner. One ordering, from
+    /// which every eviction question follows — an exception (rank 0) losing to
+    /// a static (rank 1) at any position, a union case (rank 1) beating one
+    /// written above it, a value (rank 2) beating both from either side — none
+    /// of which is restated as a predicate here.
+    fn fragment_contributions(
+        &self,
+        container: &[String],
+        range: TextRange,
+        name: &str,
+    ) -> Vec<Contribution> {
+        let mut out: Vec<Contribution> = self
+            .fragment_member_ranks(container, range, name)
+            .into_iter()
+            .map(|(rank, pos)| Contribution {
+                rank,
+                pos,
+                nameable: true,
+            })
+            .collect();
+        // A constructible type of exactly this name: the tycon tier, unnameable
+        // because sema models no project type constructor (#45).
+        out.extend(
+            self.fragment_type_contestants(container, range)
+                .into_iter()
+                .filter(|(n, _)| n == name)
+                .map(|(_, pos)| Contribution {
+                    rank: TYCON_RANK,
+                    pos,
+                    nameable: false,
+                }),
+        );
+        // An `[<AutoOpen>]` type's statics: the same tier, and unnameable both
+        // in target and in name, so each one contributes to every name.
+        out.extend(
+            self.fragment_static_positions(range)
+                .into_iter()
+                .map(|pos| Contribution {
+                    rank: TYCON_RANK,
+                    pos,
+                    nameable: false,
+                }),
+        );
+        out.sort_by_key(|c| (c.rank, c.pos));
+        out
     }
 
     /// Push a `Deferred` override for each name a constructible type takes
