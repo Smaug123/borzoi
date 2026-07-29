@@ -5,9 +5,10 @@
 > this one covers **consuming that output inside the LSP**.
 >
 > **Status.** All three consumers' LSP-side wiring has landed (see "Landed"
-> below). The only fsproj-consumption work this doc still *owns* is the
-> non-ancestor linked-file tail (flagged, shelved — see
-> [Workspace index tail](#workspace-index-tail)); consumer #2's remaining
+> below). Two tails remain, both parked with post-mortems: the non-ancestor
+> linked-file case ([Workspace index tail](#workspace-index-tail)) and
+> redirected project-reference producers
+> ([below](#redirected-project-reference-producers--abandoned)). Consumer #2's remaining
 > resolution coverage is sema-crate work tracked in its own plans, and consumer
 > #3's detail lives in
 > [`fsproj-project-graph-plan.md`](completed/fsproj-project-graph-plan.md).
@@ -97,6 +98,17 @@ current msbuild diagnostics (skipped conditions / `<Choose>` / imports can hide 
 `<Compile Remove>`, so admitting them over-claims ownership while excluding them
 makes the index inert on real SDK projects). Post-mortem and what would unblock a
 future attempt: [`workspace-index-plan.md`](workspace-index-plan.md).
+
+### Redirected project-reference producers — abandoned
+
+A `<ProjectReference>` producer that redirects its output (`<OutDir>`,
+`<BaseOutputPath>`, `<UseArtifactsOutput>`) has an empty `bin` tree, so
+`locate_fsharp_output_dll` ([`semantic.rs`](../crates/lsp/src/semantic.rs))
+finds nothing and the reference is reported unbuilt. Two attempts to close this
+by evaluating the producer's output directory out of its `.fsproj` were
+abandoned; post-mortem, and what a third attempt should do instead (ask
+`dotnet msbuild -getProperty:OutDir` rather than model the SDK), in
+[`output-dir-verdict-plan.md`](output-dir-verdict-plan.md).
 
 ## Risks / residuals
 
