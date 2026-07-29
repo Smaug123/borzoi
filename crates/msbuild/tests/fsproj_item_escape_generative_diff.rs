@@ -229,7 +229,7 @@ fn check_with(oracle: &mut Oracle, fixture: &Fixture, with_resolver: bool) -> bo
         .map(|i| norm(&i.include.to_string_lossy()))
         .collect();
     let theirs: Vec<String> = oracle
-        .items(&xml, &proj, "Compile")
+        .items(&xml, &proj, "Compile", &[])
         .expect("MSBuild evaluates these documents")
         .iter()
         .map(|p| norm(p))

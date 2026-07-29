@@ -399,12 +399,24 @@ impl Oracle {
     /// rather than once per case.
     ///
     /// `None` when MSBuild rejects the project.
-    pub fn items(&mut self, xml: &str, path: &Path, item_type: &str) -> Option<Vec<String>> {
+    ///
+    /// `globals` is MSBuild's **global property** set for the evaluation — what
+    /// `-p:` supplies on a command line and what the LSP injects
+    /// (`Configuration`, `Platform`). See [`Self::project`] for why it is a
+    /// parameter rather than a property-group write.
+    pub fn items(
+        &mut self,
+        xml: &str,
+        path: &Path,
+        item_type: &str,
+        globals: &[(String, String)],
+    ) -> Option<Vec<String>> {
         let resp = self.request(&serde_json::json!({
             "op": "items",
             "xml": xml,
             "path": path.to_string_lossy().into_owned(),
             "itemType": item_type,
+            "globals": globals_object(globals),
         }));
         if resp["ok"].as_bool() != Some(true) {
             return None;
@@ -471,17 +483,31 @@ impl Oracle {
         )
     }
 
+    /// `globals` is MSBuild's **global property** set for the evaluation: the
+    /// `-p:` command line, and what an IDE-style consumer injects (the LSP sends
+    /// `Configuration` and `Platform`). It is handed to the `Project`
+    /// constructor, not written into the document, because the two are not the
+    /// same thing — a global is read-only to the body it evaluates, outranking
+    /// every write of that name unless `TreatAsLocalProperty` opts out.
+    ///
+    /// Sweeping it is the only way a differential can tell a value that is a
+    /// fixed fact from one that is an artefact of the globals the caller
+    /// guessed: every other harness here evaluates both sides under the *same*
+    /// globals, so a global-dependence bug agrees with MSBuild exactly and
+    /// passes.
     pub fn project(
         &mut self,
         xml: &str,
         names: &[String],
         path: Option<&Path>,
+        globals: &[(String, String)],
     ) -> Option<HashMap<String, String>> {
         let resp = self.request(&serde_json::json!({
             "op": "project",
             "xml": xml,
             "names": names,
             "path": path.map(|p| p.to_string_lossy().into_owned()),
+            "globals": globals_object(globals),
         }));
         if resp["ok"].as_bool() != Some(true) {
             return None;
@@ -503,6 +529,55 @@ impl Oracle {
                 .collect(),
         )
     }
+}
+
+/// The dotnet installation the tests resolve SDKs from.
+///
+/// Panics when unset: an SDK-chain differential that silently fell back to some
+/// other installation would be comparing two different chains.
+pub fn dotnet_root_from_env() -> PathBuf {
+    std::env::var_os("DOTNET_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("DOTNET_ROOT is not set; run under nix develop"))
+}
+
+/// The workload context of the test process — the same environment the
+/// `dotnet msbuild` oracle child inherits, so both sides consult the same
+/// user-local workload roots.
+pub fn workload_env_from_process() -> (Option<PathBuf>, bool) {
+    // Empty home-ish values count as unset (`string.IsNullOrEmpty` in .NET's
+    // CliFolderPathCalculatorCore) — match what the oracle child's dotnet host
+    // does.
+    let non_empty = |var: &str| std::env::var_os(var).filter(|value| !value.is_empty());
+    let user_dotnet_root = non_empty("DOTNET_CLI_HOME")
+        .or_else(|| non_empty("HOME"))
+        .map(|home| PathBuf::from(home).join(".dotnet"));
+    // Per-variable effective-value semantics, mirroring the LSP's
+    // `SdkDiscoveryEnv::from_process_env` (PACK_ROOTS goes through IsNullOrEmpty
+    // upstream; the other two are presence checks).
+    let overrides_present = std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_ROOTS").is_some()
+        || std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_IGNORE_DEFAULT_ROOTS").is_some()
+        || non_empty("DOTNETSDK_WORKLOAD_PACK_ROOTS").is_some();
+    (user_dotnet_root, overrides_present)
+}
+
+/// The `globals` field of an oracle request. An *empty* set sends `null` rather
+/// than `{}`, which is MSBuild's own spelling for "no global properties" — so a
+/// caller that passes no globals gets bit-for-bit the evaluation the op
+/// performed before the field existed, with no appeal to whether MSBuild treats
+/// an empty dictionary the same way.
+fn globals_object(
+    globals: &[(String, String)],
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    if globals.is_empty() {
+        return None;
+    }
+    Some(
+        globals
+            .iter()
+            .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+            .collect(),
+    )
 }
 
 /// Which branch of the certain-implies-exact contract a case exercised — used
