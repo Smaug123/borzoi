@@ -46,7 +46,14 @@
 //! values, so the exactness check above was genuinely exercised on this axis),
 //! declined it as untrusted, or never reached it at all. The floors are on
 //! *tracked*, since that is the only one of the three that proves anything was
-//! checked.
+//! checked — and over the names the *document derives*, never over
+//! `Configuration`/`Platform` themselves, which move because they are what the
+//! sweep varies (see [`swept_global_names`]).
+//!
+//! Each case additionally **pins** what MSBuild must evaluate its names to under
+//! the LSP's own globals. Without that, a case's comment is a claim nothing
+//! checks: the sweep asserts only that we agree with MSBuild, which a fixture
+//! demonstrating the exact opposite of its stated route satisfies perfectly.
 //!
 //! That census is the measurement. It says how much of the evaluator's committed
 //! surface is actually global-dependent, and — more usefully — where the
@@ -95,7 +102,21 @@ struct Case {
     name: &'static str,
     xml: &'static str,
     files: &'static [(&'static str, &'static str)],
+    /// What **MSBuild** must evaluate these names to under [`PIN_GLOBALS`].
+    ///
+    /// Without this, a case's comment is a claim nothing checks: the sweep only
+    /// asserts that *we* agree with MSBuild, which a fixture demonstrating the
+    /// opposite of its stated route satisfies perfectly. (That is not
+    /// hypothetical — `treat-as-local-in-import` was written asserting the
+    /// import's opt-out was inert, and passed, because MSBuild honours it and so
+    /// do we.) The pins are asserted against the oracle, never against our side:
+    /// an expectation I reasoned out is exactly as untrustworthy as the code I
+    /// reasoned out.
+    pins: &'static [(&'static str, &'static str)],
 }
+
+/// The global set the [`Case::pins`] are stated under: what the LSP injects.
+const PIN_GLOBALS: &[(&str, &str)] = &[("Configuration", "Debug"), ("Platform", "AnyCPU")];
 
 const IMPORT_SETS_OUT: &str =
     r#"<Project><PropertyGroup><Out>from-import</Out></PropertyGroup></Project>"#;
@@ -109,6 +130,7 @@ const CASES: &[Case] = &[
         name: "direct",
         xml: "<Project>\n  <PropertyGroup>\n    <Out>$(Configuration)</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "Debug")],
     },
     // The SDK's own idiom: fill in a default only when the caller did not
     // supply one. The committed value depends on the global's *presence*, not
@@ -117,6 +139,7 @@ const CASES: &[Case] = &[
         name: "default-write",
         xml: "<Project>\n  <PropertyGroup>\n    <Out Condition=\"'$(Out)' == ''\">$(Configuration)-$(Platform)</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "Debug-AnyCPU")],
     },
     // A gate on the *group*, so the walk must decide whether to visit the writes
     // at all — the shape a property-walk that only inspects visited groups gets
@@ -125,12 +148,14 @@ const CASES: &[Case] = &[
         name: "group-condition",
         xml: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Out>optimised</Out>\n  </PropertyGroup>\n  <PropertyGroup Condition=\"'$(Configuration)' != 'Release'\">\n    <Out>plain</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "plain")],
     },
     // A gate on the individual write.
     Case {
         name: "property-condition",
         xml: "<Project>\n  <PropertyGroup>\n    <Out Condition=\"'$(Platform)' == 'x64'\">wide</Out>\n    <Out Condition=\"'$(Platform)' != 'x64'\">narrow</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "narrow")],
     },
     // `<Choose>`: the unselected arm is never walked, so a value can depend on a
     // global through a branch the property walk does not visit.
@@ -138,6 +163,7 @@ const CASES: &[Case] = &[
         name: "choose",
         xml: "<Project>\n  <Choose>\n    <When Condition=\"'$(Platform)' == 'x64'\">\n      <PropertyGroup><Out>wide</Out></PropertyGroup>\n    </When>\n    <Otherwise>\n      <PropertyGroup><Out>narrow</Out></PropertyGroup>\n    </Otherwise>\n  </Choose>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "narrow")],
     },
     // Nested arms, and a `When` whose selection depends on a *different* global
     // from the outer one.
@@ -145,6 +171,7 @@ const CASES: &[Case] = &[
         name: "choose-nested",
         xml: "<Project>\n  <Choose>\n    <When Condition=\"'$(Configuration)' == 'Release'\">\n      <Choose>\n        <When Condition=\"'$(Platform)' == 'x64'\">\n          <PropertyGroup><Out>rel-x64</Out></PropertyGroup>\n        </When>\n        <Otherwise>\n          <PropertyGroup><Out>rel-other</Out></PropertyGroup>\n        </Otherwise>\n      </Choose>\n    </When>\n    <Otherwise>\n      <PropertyGroup><Out>dbg</Out></PropertyGroup>\n    </Otherwise>\n  </Choose>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "dbg")],
     },
     // A `When` with no `Otherwise`, so with the arm unselected the later
     // default-write decides.
@@ -152,6 +179,7 @@ const CASES: &[Case] = &[
         name: "choose-no-otherwise",
         xml: "<Project>\n  <Choose>\n    <When Condition=\"'$(Platform)' == 'x64'\">\n      <PropertyGroup><Out>wide</Out></PropertyGroup>\n    </When>\n  </Choose>\n  <PropertyGroup>\n    <Out Condition=\"'$(Out)' == ''\">narrow</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "narrow")],
     },
     // A global outranks a document write of the same name. Committing
     // `FromDocument` here would be a wrong commit under every non-empty
@@ -160,15 +188,20 @@ const CASES: &[Case] = &[
         name: "global-beats-write",
         xml: "<Project>\n  <PropertyGroup>\n    <Configuration>FromDocument</Configuration>\n    <Out>$(Configuration)</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "Debug"), ("Configuration", "Debug")],
     },
     // …unless the entry project opts out, which flips the answer.
     Case {
         name: "treat-as-local",
         xml: "<Project TreatAsLocalProperty=\"Configuration\">\n  <PropertyGroup>\n    <Configuration>FromDocument</Configuration>\n    <Out>$(Configuration)</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "FromDocument"), ("Configuration", "FromDocument")],
     },
-    // `TreatAsLocalProperty` on an *imported* root is inert — MSBuild honours it
-    // only on the entry project — so the global still wins.
+    // `TreatAsLocalProperty` on an *imported* root also opts the name out — the
+    // unprotection is not confined to the entry project, so a write in the
+    // imported file beats the global, and everything downstream of it reads the
+    // imported value. Pinned, because it is the opposite of what this case was
+    // first written to claim.
     Case {
         name: "treat-as-local-in-import",
         xml: "<Project>\n  <Import Project=\"local.props\" />\n  <PropertyGroup>\n    <Out>$(Configuration)</Out>\n  </PropertyGroup>\n</Project>\n",
@@ -176,12 +209,14 @@ const CASES: &[Case] = &[
             "local.props",
             "<Project TreatAsLocalProperty=\"Configuration\">\n  <PropertyGroup><Configuration>FromImport</Configuration></PropertyGroup>\n</Project>\n",
         )],
+        pins: &[("Out", "FromImport"), ("Configuration", "FromImport")],
     },
     // A gated import: which *document* arrives depends on a global.
     Case {
         name: "import-condition",
         xml: "<Project>\n  <Import Project=\"rel.props\" Condition=\"'$(Configuration)' == 'Release'\" />\n  <PropertyGroup>\n    <Out Condition=\"'$(Out)' == ''\">default</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[("rel.props", IMPORT_SETS_OUT)],
+        pins: &[("Out", "default")],
     },
     // A *property-selected* import: the same, but through the `Project`
     // attribute's expansion rather than a `Condition`.
@@ -198,6 +233,7 @@ const CASES: &[Case] = &[
                 "<Project><PropertyGroup><Out>release-import</Out></PropertyGroup></Project>\n",
             ),
         ],
+        pins: &[("Out", "debug-import")],
     },
     // Laundered through a helper property, so the dependence is one hop away
     // from the read.
@@ -205,6 +241,7 @@ const CASES: &[Case] = &[
         name: "indirect-helper",
         xml: "<Project>\n  <PropertyGroup>\n    <Helper>$(Configuration)-x</Helper>\n    <Out>[$(Helper)]</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "[Debug-x]"), ("Helper", "Debug-x")],
     },
     // The dependence runs through a property *function* on the global, not a
     // comparison. The `!= ''` guard is load-bearing: a method call on an unset
@@ -215,6 +252,7 @@ const CASES: &[Case] = &[
         name: "condition-via-function",
         xml: "<Project>\n  <PropertyGroup>\n    <Out Condition=\"'$(Configuration)' != '' AND $(Configuration.StartsWith('Rel'))\">release-ish</Out>\n    <Out Condition=\"'$(Out)' == ''\">other</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "other")],
     },
     // A global the document never mentions by name, reached through the one it
     // does — the shape where "which globals matter" is not readable off the
@@ -223,6 +261,7 @@ const CASES: &[Case] = &[
         name: "unmentioned-global",
         xml: "<Project>\n  <PropertyGroup>\n    <Helper>BorzoiProbe</Helper>\n    <Out>[$(BorzoiProbe)]</Out>\n  </PropertyGroup>\n</Project>\n",
         files: &[],
+        pins: &[("Out", "[]"), ("Helper", "BorzoiProbe")],
     },
 ];
 
@@ -388,10 +427,40 @@ struct NameCensus {
     their_values: usize,
 }
 
+/// The property names some global set in [`global_sets`] assigns.
+///
+/// These move across the sweep **by construction** — they are the input being
+/// varied. Counting them as evidence that a document derives anything from a
+/// global is circular, so every anti-vacuity floor here is computed over the
+/// complement. (Left in the census's *report*, though: whether a document write
+/// of one of these names wins is precisely the `TreatAsLocalProperty` question.)
+fn swept_global_names() -> BTreeSet<String> {
+    global_sets()
+        .into_iter()
+        .flatten()
+        .map(|(name, _)| name)
+        .collect()
+}
+
 impl CaseCensus {
     /// Names MSBuild moves across the sweep — the global-dependent ones.
     fn moving_in_msbuild(&self) -> impl Iterator<Item = (&String, &NameCensus)> {
         self.by_name.iter().filter(|(_, c)| c.their_values >= 2)
+    }
+
+    /// [`Self::moving_in_msbuild`] minus the swept inputs themselves: names the
+    /// *document* derives from a global. The floors are on these.
+    fn derived_moving(&self) -> usize {
+        let swept = swept_global_names();
+        self.moving_in_msbuild()
+            .filter(|(name, _)| !swept.contains(*name))
+            .count()
+    }
+
+    /// [`Self::tracked`] minus the swept inputs themselves.
+    fn derived_tracked(&self) -> usize {
+        let swept = swept_global_names();
+        self.tracked().filter(|name| !swept.contains(*name)).count()
     }
 
     /// Moving names we committed at least two distinct values for: we tracked
@@ -436,6 +505,7 @@ fn sweep_case(
     dir: &Path,
     xml: &str,
     read_names: &[&str],
+    pins: &[(&str, &str)],
     with_sdk: bool,
 ) -> CaseCensus {
     let project_path = dir.join("Demo.fsproj");
@@ -462,6 +532,32 @@ fn sweep_case(
         }
         ours_by_set.push(ours);
         theirs_by_set.push(theirs);
+    }
+
+    // The case's own claim about what it demonstrates, checked against MSBuild
+    // under the globals the LSP injects. `PIN_GLOBALS` is one of the swept sets,
+    // so this costs no extra evaluation — it reads the answer already collected.
+    if !pins.is_empty() {
+        let pin_index = sets
+            .iter()
+            .position(|set| {
+                set.iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .eq(PIN_GLOBALS.iter().copied())
+            })
+            .expect("PIN_GLOBALS is one of the swept global sets");
+        let theirs = theirs_by_set[pin_index]
+            .as_ref()
+            .expect("MSBuild evaluates a pinned case under the LSP's own globals");
+        for (name, want) in pins {
+            assert_eq!(
+                theirs.get(*name).map(String::as_str),
+                Some(*want),
+                "the pinned MSBuild value for ${{{name}}} under {PIN_GLOBALS:?} is \
+                 wrong — this case does not demonstrate the route its comment \
+                 claims\n--- xml ---\n{xml}"
+            );
+        }
     }
 
     let mut census = CaseCensus::default();
@@ -518,7 +614,7 @@ fn every_route_from_a_global_is_exact_or_declined() {
         for (name, contents) in case.files {
             std::fs::write(dir.join(name), contents).unwrap();
         }
-        let census = sweep_case(&mut oracle, &dir, case.xml, READ_NAMES, false);
+        let census = sweep_case(&mut oracle, &dir, case.xml, READ_NAMES, case.pins, false);
         eprintln!(
             "  {:<28} committed {:>3}  {}",
             case.name,
@@ -526,8 +622,8 @@ fn every_route_from_a_global_is_exact_or_declined() {
             census.render()
         );
         committed += census.committed;
-        moving += census.moving_in_msbuild().count();
-        tracked += census.tracked().count();
+        moving += census.derived_moving();
+        tracked += census.derived_tracked();
         declined += census.declined();
     }
 
@@ -749,10 +845,10 @@ fn fixed_seed_composed_documents_are_exact_or_declined() {
             std::fs::write(dir.join("rel.props"), IMPORT_SETS_OUT).unwrap();
         }
 
-        let census = sweep_case(&mut oracle, &dir, &xml, READ_NAMES, false);
+        let census = sweep_case(&mut oracle, &dir, &xml, READ_NAMES, &[], false);
         committed += census.committed;
-        moving += census.moving_in_msbuild().count();
-        tracked += census.tracked().count();
+        moving += census.derived_moving();
+        tracked += census.derived_tracked();
     }
 
     eprintln!(
@@ -816,6 +912,7 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             name: "sdk-plain",
             xml: "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
             files: &[],
+            pins: &[],
         },
         // The user redirects output through `OutputPath`, interpolating the
         // configuration — the shape the blocked feature had to answer for.
@@ -823,6 +920,7 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             name: "sdk-outputpath",
             xml: "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <OutputPath>artifacts/$(Configuration)/</OutputPath>\n  </PropertyGroup>\n</Project>\n",
             files: &[],
+            pins: &[],
         },
         // …and through `BaseOutputPath`, which the SDK then composes with the
         // configuration itself.
@@ -830,6 +928,7 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             name: "sdk-baseoutputpath",
             xml: "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <BaseOutputPath>build/</BaseOutputPath>\n  </PropertyGroup>\n</Project>\n",
             files: &[],
+            pins: &[],
         },
         // A `Directory.Build.props` above the project, itself gated on a global:
         // the file the walker must find *and* condition correctly.
@@ -840,6 +939,11 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
                 "Directory.Build.props",
                 "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <BaseOutputPath>shipping/</BaseOutputPath>\n  </PropertyGroup>\n</Project>\n",
             )],
+            // The SDK's derived paths are installation- and separator-dependent,
+            // so nothing here is pinned to a literal. That the sidecar file is
+            // genuinely reached is asserted instead by the `BaseOutputPath`
+            // movement floor below, which only this case can satisfy.
+            pins: &[],
         },
         // `DefineConstants` is a value the LSP feeds straight into the lexer's
         // `#if` handling, and the SDK derives it from the configuration.
@@ -847,19 +951,21 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             name: "sdk-define-constants",
             xml: "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net10.0</TargetFramework>\n    <DefineConstants>$(DefineConstants);MINE</DefineConstants>\n  </PropertyGroup>\n</Project>\n",
             files: &[],
+            pins: &[],
         },
     ];
 
     let mut committed = 0usize;
     let mut moving = 0usize;
     let mut tracked = 0usize;
+    let mut sidecar_route_live = false;
     for case in cases {
         let dir = tmp.path().join(case.name);
         std::fs::create_dir_all(&dir).unwrap();
         for (name, contents) in case.files {
             std::fs::write(dir.join(name), contents).unwrap();
         }
-        let census = sweep_case(&mut oracle, &dir, case.xml, SDK_NAMES, true);
+        let census = sweep_case(&mut oracle, &dir, case.xml, SDK_NAMES, case.pins, true);
         eprintln!(
             "  {:<28} committed {:>3}  {}",
             case.name,
@@ -867,8 +973,17 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
             census.render()
         );
         committed += census.committed;
-        moving += census.moving_in_msbuild().count();
-        tracked += census.tracked().count();
+        moving += census.derived_moving();
+        tracked += census.derived_tracked();
+        // `BaseOutputPath` moves only where a `Directory.Build.props` gated on
+        // the configuration wrote it, so this is the named proof that the sidecar
+        // was found and conditioned — the one SDK route whose liveness a
+        // literal pin cannot state.
+        if case.name == "sdk-directory-build-props" {
+            sidecar_route_live = census
+                .moving_in_msbuild()
+                .any(|(name, _)| name == "BaseOutputPath");
+        }
     }
 
     eprintln!(
@@ -887,10 +1002,21 @@ fn sdk_chain_properties_are_exact_or_declined_under_every_global_set() {
     // is the *input*: an SDK whose properties stopped depending on the
     // configuration would make this whole test vacuous, and that is worth being
     // told about.
+    //
+    // `derived_moving` excludes `Configuration`/`Platform` themselves. They move
+    // by construction — they *are* what the sweep varies — so counting them here
+    // would let this floor stay green on five projects that had stopped reaching
+    // the SDK chain entirely.
     assert!(
         moving >= 5,
-        "the real SDK chain moved only {moving} (case, name) pairs across the \
-         global sweep — either the SDK stopped deriving these from the \
+        "the real SDK chain moved only {moving} SDK-derived (case, name) pairs \
+         across the global sweep — either the SDK stopped deriving these from the \
          configuration, or the sweep is no longer reaching it"
+    );
+    assert!(
+        sidecar_route_live,
+        "`BaseOutputPath` did not move for `sdk-directory-build-props`, so its \
+         configuration-gated `Directory.Build.props` is no longer being found and \
+         conditioned — that case is testing nothing"
     );
 }
