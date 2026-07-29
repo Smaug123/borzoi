@@ -12,13 +12,13 @@ use borzoi_assembly::{
     Version,
 };
 use borzoi_corpus_diff::{
-    CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses, LoadLimits,
-    LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses, UseDecl,
-    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
-    fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project, load_lsp_project_with_limits,
-    load_lsp_project_with_options, parse_project_uses, project_candidates_from_env,
-    project_corpus_run_options_from_env, render_project_corpus_run_report,
-    run_project_corpus_diff_with_options, write_json_report_line,
+    Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
+    LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses,
+    UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
+    explain_token, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
+    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
+    project_candidates_from_env, project_corpus_run_options_from_env,
+    render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
@@ -2074,4 +2074,249 @@ fn select_explain_file(paths: &[PathBuf], file_arg: &str) -> usize {
             names(many)
         ),
     }
+}
+
+/// One generated cell of the attribute sweep: a whole single-file project.
+struct AttrCell {
+    label: String,
+    src: String,
+}
+
+/// A declaration template: the declared name to the declaration text.
+type AttrDeclTemplate = fn(&str) -> String;
+
+/// The generated attribute-shape matrix, adjudicated against the **general**
+/// symbol-use stream.
+///
+/// Every declaration is in-file and every attribute type is project-declared, so
+/// a cell is graded on declaration ranges and needs no reference set. That is
+/// deliberate: threading an exclusive reference set would make each cell's
+/// verdict depend on which DLLs the ref pack happens to hold, and the question
+/// here is not which assembly an attribute came from — it is *how many answers
+/// the oracle reports at the written name's range*, which is a property of the
+/// shape alone.
+///
+/// The axes are the ones that make a range crowded, since that is the shape the
+/// attribute-specific oracle cannot express:
+///
+/// - **declaration kind** — a plain class, a *generic* class, a class with two
+///   constructors, an abbreviation of a class, and an `exception` (which
+///   declares a type in the same namespace without being one an attribute may
+///   name). An abbreviation and a multi-constructor class are the two shapes
+///   where the entity record and the constructor record at one range carry
+///   *different* declarations.
+/// - **declared name** vs **written form** — `Mark` against `MarkAttribute`,
+///   crossed, which is F#'s suffix-first candidate walk. Both spellings are
+///   declared in-file rather than contested against `FSharp.Core`, so the
+///   contest is exercised without a reference set deciding it.
+fn attribute_matrix() -> Vec<AttrCell> {
+    let decl_kinds: [(&str, AttrDeclTemplate); 5] = [
+        ("class", |n| {
+            format!("type {n}() =\n    inherit System.Attribute()\n")
+        }),
+        ("generic", |n| {
+            format!("type {n}<'T>() =\n    inherit System.Attribute()\n")
+        }),
+        // Two constructors: the constructor record at the attribute's range
+        // cannot name a unique declaration, so the entity record must be the
+        // one that grades the site.
+        ("multi-ctor", |n| {
+            format!("type {n}(x: int) =\n    inherit System.Attribute()\n    new () = {n}(0)\n")
+        }),
+        // The #226 shape: the written name is an abbreviation, so the entity
+        // record names the abbreviation and the constructor record names the
+        // target — two records, two declarations, one range.
+        ("abbrev", |n| {
+            format!("type {n}Base() =\n    inherit System.Attribute()\n\ntype {n} = {n}Base\n")
+        }),
+        ("exception", |n| format!("exception {n} of string\n")),
+    ];
+    let names = ["Mark", "MarkAttribute"];
+    let writtens = ["Mark", "MarkAttribute"];
+
+    let mut cells = Vec::new();
+    for (kind, template) in &decl_kinds {
+        for name in &names {
+            for written in &writtens {
+                let mut src = String::from("module Test\n\n");
+                src.push_str(&template(name));
+                src.push('\n');
+                src.push_str(&format!("[<{written}>]\nlet x = 5\n"));
+                cells.push(AttrCell {
+                    label: format!("{kind}-decl{name}-written{written}"),
+                    src,
+                });
+            }
+        }
+    }
+    cells
+}
+
+/// Run one generated cell as its own single-file project.
+///
+/// One project per cell, not one project of many files: a cell may declare its
+/// attribute inside a module that later cells would see, and an
+/// `[<AutoOpen>]`-shaped declaration leaks to every later file in the same
+/// Compile order — so sharing a project would let one cell decide another's
+/// verdict.
+fn run_attribute_cell(cell: &AttrCell) -> (Comparison, Vec<FcsErrorFile>) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("AttrCell.fsproj");
+    write(
+        &project,
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"A.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    write(&tmp.path().join("A.fs"), &cell.src);
+    let loaded = load_lsp_project(&project)
+        .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
+    let json = invoke_fcs_uses_project(&loaded)
+        .unwrap_or_else(|e| panic!("cell {}: fcs-dump uses-project: {e}", cell.label));
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(&json, &sources)
+        .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
+    let comparison = compare_project_uses(&loaded, &fcs);
+    let errors = comparison.fcs_error_files.clone();
+    (comparison, errors)
+}
+
+/// The sweep: every generated attribute shape graded through the same
+/// comparison the corpus runner uses.
+///
+/// `attr_resolution_sweep` in `borzoi-sema` already enumerates a larger
+/// *semantic* matrix, but it rides on `fcs-dump attrs`, which emits one record
+/// per attribute — it filters the sink to entity uses and groups by range, so
+/// the constructor record is dropped before the harness ever sees it. That is a
+/// sound projection for the question that oracle answers, and it makes the
+/// oracle structurally unable to disagree with itself about how many answers a
+/// site has. The corpus runner grades attributes through `uses-project`, where
+/// both records survive and `oracle_shape` decides between them, so a shape
+/// where the two streams part company can pass the sema sweep and diverge on a
+/// real project — which is exactly what happened to the abbreviation-aliased
+/// attribute, found by review rather than by any test.
+///
+/// This sweep is therefore not a second copy of that one. It asks the narrower
+/// question the other cannot: for each shape, does the crowded range still
+/// resolve to one adjudicable answer, and is it ours?
+///
+/// What it adds over [`alias_attribute_project_matches_fcs`] is **breadth, not
+/// power against the known case** — measured, not assumed. Folding the
+/// constructor-shadowing rule out of `oracle_shape` fails that fixture too, so
+/// this does not catch the #226 defect any better; it catches the *next* shape
+/// in that class. The mutation lands here on `multi-ctor`, a shape neither the
+/// fixture (an abbreviation) nor the sema matrix (no multi-constructor axis)
+/// contains, which is the whole argument for generating the population rather
+/// than hand-picking a representative of it.
+///
+/// Certain-implies-exact per cell — our commit names FCS's resolution or we
+/// decline — plus two floors that stop the sweep decaying into wholesale
+/// silence: some cell must put an attribute commit to the oracle, and some cell
+/// must exercise the constructor-shadowing rule this is here to test.
+///
+/// **A cell whose check errors is kept, not dropped.** Only three of the four
+/// name-against-written combinations resolve — F# tries `XAttribute` then `X`
+/// and never strips a suffix, so a written `MarkAttribute` against a declared
+/// `Mark` names neither — and an `exception` is not an `Attribute` subclass at
+/// all. About half the matrix therefore type-checks with errors, currently
+/// including *every* generic cell, so that axis tests only the negative
+/// direction here.
+///
+/// What those cells are worth is narrow and worth stating exactly: they pin
+/// that we do not commit an answer FCS's own resolution contradicts. A resolver
+/// that helpfully stripped the `Attribute` suffix would bind
+/// `[<MarkAttribute>]` to a declared `Mark`, and only a cell where FCS binds
+/// *nothing* can catch that — a matrix of legal shapes alone cannot, because
+/// there the wrong rule and the right one agree. They are graded **forward
+/// only**: an erroring check under-reports its sink, so a record it never
+/// emitted is no evidence against a resolution of ours, but a record it did
+/// emit still has to be what we say. Which cells those are is read off FCS
+/// rather than listed here — a hand-kept legality table would be one more thing
+/// to get wrong, and it would go stale the moment a language version changed
+/// which shapes compile.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn generated_attribute_shapes_agree_with_the_project_use_stream() {
+    let cells = attribute_matrix();
+    eprintln!("attribute uses-project sweep: {} cells", cells.len());
+
+    let mut attribute_commits = 0usize;
+    let mut shadowed_constructors = 0usize;
+    let mut ambiguous_ranges: Vec<&str> = Vec::new();
+    let mut errored: Vec<&str> = Vec::new();
+
+    for cell in &cells {
+        let (comparison, errors) = run_attribute_cell(cell);
+        let checked_clean = errors.is_empty();
+        if !checked_clean {
+            errored.push(&cell.label);
+        }
+        assert_eq!(
+            comparison.divergences,
+            Vec::new(),
+            "cell {}: project-declaration divergence",
+            cell.label
+        );
+        assert_eq!(
+            comparison.assembly_divergences,
+            Vec::new(),
+            "cell {}: assembly-identity divergence",
+            cell.label
+        );
+        if checked_clean {
+            assert_eq!(
+                comparison.reverse_divergences,
+                Vec::new(),
+                "cell {}: reverse divergence",
+                cell.label
+            );
+            attribute_commits += comparison.attribute_commits_compared;
+            shadowed_constructors += comparison.skipped_uses.shadowed_constructor_use;
+        }
+        if comparison.skipped_uses.ambiguous_oracle_range > 0 {
+            ambiguous_ranges.push(&cell.label);
+        }
+    }
+
+    assert!(
+        errored.len() < cells.len(),
+        "every cell's check errored, so the floors below are vacuous and the \
+         sweep measures nothing: {errored:?}"
+    );
+
+    assert!(
+        attribute_commits > 0,
+        "no cell put an attribute answer to the oracle: the sweep would pass \
+         however wrong every attribute resolution became"
+    );
+    assert!(
+        shadowed_constructors > 0,
+        "no cell exercised the constructor-shadowing rule, which is the one \
+         thing the attribute-specific oracle cannot express and so the whole \
+         reason this sweep is not a copy of the sema one"
+    );
+    // Not a failure: a range the oracle cannot adjudicate is decided on its own
+    // answers alone and never on whether ours agrees, so it cannot hide a
+    // disagreement. Reported because it is the population the two oracles
+    // disagree about, and a rise in it is the signal that a new shape has joined
+    // that population.
+    eprintln!(
+        "attribute uses-project sweep: {} cells checked clean, {} errored, \
+         {attribute_commits} attribute commits compared, \
+         {shadowed_constructors} constructor records stepped aside, \
+         {} cells with an unadjudicable range{}",
+        cells.len() - errored.len(),
+        errored.len(),
+        ambiguous_ranges.len(),
+        if ambiguous_ranges.is_empty() {
+            String::new()
+        } else {
+            format!(": {ambiguous_ranges:?}")
+        }
+    );
+    eprintln!("attribute uses-project sweep: erroring cells {errored:?}");
 }
