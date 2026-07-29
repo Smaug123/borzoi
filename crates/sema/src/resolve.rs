@@ -483,6 +483,10 @@ pub fn resolve_file(
             .top_level_nested_locals
             .remove(&r.container_path)
             .unwrap_or_default();
+        r.augmentation_head_locals = r
+            .top_level_augmentation_locals
+            .remove(&r.container_path)
+            .unwrap_or_default();
         let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
         r.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
@@ -533,6 +537,9 @@ pub fn resolve_file(
         let locals = std::mem::take(&mut r.nested_module_locals);
         r.top_level_nested_locals
             .insert(r.container_path.clone(), locals);
+        let augmentation_locals = std::mem::take(&mut r.augmentation_head_locals);
+        r.top_level_augmentation_locals
+            .insert(r.container_path.clone(), augmentation_locals);
     }
     #[cfg(feature = "otel")]
     drop(_phase);
@@ -1837,6 +1844,9 @@ impl<'a> Resolver<'a> {
             nested_module_locals: Vec::new(),
             top_level_nested_locals: HashMap::new(),
             nested_module_exports: Vec::new(),
+            augmentation_head_locals: Vec::new(),
+            top_level_augmentation_locals: HashMap::new(),
+            augmentation_head_exports: Vec::new(),
             real_nested_module_exports: Vec::new(),
             type_path_exports: Vec::new(),
             imports: implicit_open_groups(assemblies),

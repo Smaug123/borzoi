@@ -1503,9 +1503,10 @@ impl<'a> Resolver<'a> {
     /// `Demo.Sub.Calc` (the open), not `Demo.Calc`; and `open Demo; open type
     /// Calc` binds `Demo.Calc`, not a root `Calc`.
     ///
-    /// Shadowing uses the *type-namespace* check
-    /// ([`Self::path_is_project_type_shadowed`]) — a project value of the same
-    /// name does not shadow a type. `None` (an *opaque* open: bare-name resolution
+    /// Shadowing uses [`Self::open_type_target_shadowed`] — the type-namespace
+    /// check (a project value of the same name does not shadow a type), widened
+    /// by the augmentation head that gates the *statics* this open enumerates.
+    /// `None` (an *opaque* open: bare-name resolution
     /// stays conservative) when the target is project-shadowed, names no
     /// accessible assembly type, or is ambiguous across distinct opens (F# breaks
     /// that by latest-open precedence, which we do not model, so we decline rather
@@ -1528,7 +1529,7 @@ impl<'a> Resolver<'a> {
             for (_, prefix) in self.open_reading_prefixes() {
                 let mut full = prefix.to_vec();
                 full.extend_from_slice(path);
-                if self.path_is_project_type_shadowed(&full) {
+                if self.open_type_target_shadowed(&full) {
                     return None; // an open routes it into project territory
                 }
                 if let Some(handle) = self.opened_assembly_type(&full) {
@@ -1545,7 +1546,7 @@ impl<'a> Resolver<'a> {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(path);
                 if let Some(handle) = self.opened_assembly_type(&full) {
-                    return (!self.path_is_project_type_shadowed(&full)).then_some(handle);
+                    return (!self.open_type_target_shadowed(&full)).then_some(handle);
                 }
             }
         }
@@ -1560,9 +1561,26 @@ impl<'a> Resolver<'a> {
         // root type could therefore be wrong — decline (defer) rather than guess.
         let bare_in_namespace = path.len() == 1 && !self.container_path.is_empty();
         if !bare_in_namespace && let Some(handle) = self.opened_assembly_type(path) {
-            return (!self.path_is_project_type_shadowed(path)).then_some(handle);
+            return (!self.open_type_target_shadowed(path)).then_some(handle);
         }
         None
+    }
+
+    /// The `open type` flavour of [`Self::path_is_project_type_shadowed`]: also
+    /// declines when project source **augments** the target
+    /// ([`Self::path_is_augmentation_head_shadowed`]).
+    ///
+    /// The type *name* an augmentation head writes is unshadowed — the head
+    /// declares no type — but this predicate does not gate the name. It gates
+    /// enumerating the type's **statics** into unqualified scope, and an
+    /// augmentation contributes statics to exactly that surface. fsi, with
+    /// `type Demo.Calc with static member Zero (x: int) = x + 1000 / static
+    /// member Fresh = 7` ahead of `open type Demo.Calc`: bare `Zero 5` is 1005
+    /// (the extension wins the group) and bare `Fresh` binds only through it.
+    /// Committing the assembly's statics there is a wrong target, so the open
+    /// goes opaque.
+    fn open_type_target_shadowed(&self, names: &[String]) -> bool {
+        self.path_is_project_type_shadowed(names) || self.path_is_augmentation_head_shadowed(names)
     }
 
     /// Whether `path` names (or sits under) an in-project **module** — an F#

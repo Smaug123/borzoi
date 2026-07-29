@@ -241,6 +241,14 @@ pub struct ProjectItems {
     /// is sound (over-defers an unrelated assembly path that happens to share
     /// the prefix — availability, never a wrong resolution).
     pub(super) nested_module_paths: HashSet<Vec<String>>,
+    /// Paths named by an earlier file's `type … with` **augmentation head**
+    /// ([`ExportDeclKind::TypeAugmentation`]) — the value-namespace-only
+    /// sibling of [`Self::nested_module_paths`]. See
+    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals):
+    /// the head declares no type, so a *type* path rooted at one must resolve
+    /// normally, while a *value* path must still defer (the extension's members
+    /// join the augmented type's method groups).
+    pub(super) augmentation_head_paths: HashSet<Vec<String>>,
     /// Every earlier-file project **type**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_type_simple_names`]). The attribute resolution's
@@ -593,6 +601,15 @@ impl ProjectItems {
             .any(|p| names.starts_with(p.as_slice()))
     }
 
+    /// Whether `names` is rooted at (equal to, or a path under) a path an
+    /// earlier file's augmentation head names — see
+    /// [`Self::augmentation_head_paths`]. **Value namespace only.**
+    pub(super) fn is_rooted_at_augmentation_head(&self, names: &[String]) -> bool {
+        self.augmentation_head_paths
+            .iter()
+            .any(|p| names.starts_with(p.as_slice()))
+    }
+
     /// Whether `names` is *exactly* a declared *nested* project module from an
     /// earlier file (not merely a path under one). The cross-file half of the
     /// enumerable-module predicate ([`Resolver::is_project_module_path`](super::state::Resolver::is_project_module_path)).
@@ -624,6 +641,10 @@ impl ProjectItems {
         let exact = value_at(path)
             || self.module_headers.contains(path)
             || self.nested_module_paths.contains(path)
+            // An augmentation head binds *members* along its path even though it
+            // declares no type, and this predicate only ever withholds the
+            // self-qualifier relaxation, so it counts here.
+            || self.augmentation_head_paths.contains(path)
             || self.type_paths.contains_key(path)
             || self.type_qualified_cases.contains_key(path);
         exact
@@ -1093,6 +1114,9 @@ impl ProjectItems {
         for nested in idx.nested_module_paths {
             self.nested_module_paths.insert(nested);
         }
+        for head in idx.augmentation_head_paths {
+            self.augmentation_head_paths.insert(head);
+        }
         for nested in idx.real_nested_modules {
             self.real_nested_modules.insert(nested);
         }
@@ -1295,6 +1319,7 @@ struct FileExportIndices {
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
+    augmentation_head_paths: Vec<Vec<String>>,
     real_nested_modules: Vec<Vec<String>>,
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
@@ -1477,6 +1502,11 @@ impl FileExportIndices {
                         // backstop against a gap in that collection — the class
                         // that produced two findings in this slice's review.
                         push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
+                    }
+                }
+                ExportDeclKind::TypeAugmentation => {
+                    if !anon {
+                        fi.augmentation_head_paths.push(decl.path.clone());
                     }
                 }
                 ExportDeclKind::Module {
@@ -1750,15 +1780,26 @@ pub(super) enum ExportDeclKind {
     },
     /// A `type` name. `path` = container + name segment(s).
     ///
-    /// `info` is `Some((cases_enumerable, slot))` for a genuine (single-ident,
-    /// non-augmentation) type definition — which feeds `type_paths`, keyed by
-    /// `path`; it is `None` for an augmentation (`type A.B with …`) or a dotted
-    /// abbreviation head, which records only the conflated nested-module shadow.
-    /// `auto_open` marks a `[<AutoOpen>]` type, whose container is hidden.
+    /// `info` is `Some((cases_enumerable, slot))` for a genuine (single-ident)
+    /// type definition — which feeds `type_paths`, keyed by `path`; it is `None`
+    /// for a dotted abbreviation head, which records only the conflated
+    /// nested-module shadow. `auto_open` marks a `[<AutoOpen>]` type, whose
+    /// container is hidden.
     Type {
         info: Option<(bool, SlotClass)>,
         auto_open: bool,
     },
+    /// A `type … with` **augmentation** head. `path` = container + the head's
+    /// name segment(s) — the same conflated form [`Self::Type`] records, and for
+    /// a namespace-rooted bare head (`namespace Demo` ▸ `type Calc with …`) it is
+    /// exactly the augmented type's own path.
+    ///
+    /// Feeds [`ProjectItems::augmentation_head_paths`] rather than
+    /// `nested_module_paths`, because an augmentation head declares no type: see
+    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals)
+    /// for why the value namespace still has to honour it and the type namespace
+    /// must not.
+    TypeAugmentation,
     /// A module. `path` = the module's full path. `header` distinguishes a
     /// top-level `module`/`namespace`-rooted header (feeds `module_headers`) from a
     /// nested `module X = …` (feeds `real_nested_modules`). `auto_open` / `private`

@@ -2336,10 +2336,10 @@ fn each_occupied_name_decline_names_the_thing_that_occupies_it() {
     // binds the name and its target cannot be chased, in either walk.
     let unchaseable_value = "module M\nlet _ = Lib.Str.Format()\n";
     let unchaseable_type = "module M\nlet f (v : Lib.Str) = v\n";
-    // A file that augments `Lib.Widget` holds that name project-side, so the
-    // annotation below it is a project-shadowed *type* path.
-    let augmented =
-        "module M\ntype Lib.Widget with\n    member this.Zz = 1\nlet f (v : Lib.Widget) = v\n";
+    // A same-file `namespace Lib` declaring `Widget` exports that *type* path,
+    // so a sibling module's qualified annotation is project-shadowed.
+    let project_type_path =
+        "namespace Lib\n\ntype Widget = int\n\nmodule M =\n    let f (v : Lib.Widget) = v\n";
     // A project `module Lib` holds the head of a value path.
     let project_module = "module M\nmodule Lib =\n    let x = 1\nlet _ = Lib.Widget.Make()\n";
     // `Lib.UAlias` aliases the union that owns `UCase`; the case-pattern head
@@ -2368,8 +2368,8 @@ fn each_occupied_name_decline_names_the_thing_that_occupies_it() {
             "alias_target_unchaseable@root",
         ),
         (
-            "a project type augmentation holding the annotated name",
-            augmented,
+            "a project type exported at the annotated type path",
+            project_type_path,
             &env,
             "project_type_path_shadow@root",
         ),

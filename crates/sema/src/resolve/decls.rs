@@ -424,8 +424,10 @@ impl<'a> Resolver<'a> {
                 //    rooted at it (`Demo.T`) defers rather than falling through
                 //    to a colliding referenced-assembly type — the same
                 //    `assembly_path_records` soundness tripwire the nested-module
-                //    and module-abbreviation arms guard. (This is unconditional,
-                //    including for augmentations, exactly as before.)
+                //    and module-abbreviation arms guard. An **augmentation** head
+                //    names an existing type rather than declaring one, so it
+                //    records the value-namespace-only shadow instead
+                //    (`Resolver::augmentation_head_locals`).
                 //
                 // 2. A genuine new type definition is *interned* as a
                 //    first-class [`DefKind::Type`] binder and entered in
@@ -441,22 +443,27 @@ impl<'a> Resolver<'a> {
                 // is mutually recursive (`type R1 = { x : R2 } and R2 = …`).
                 let defns: Vec<TypeDefn> = types.defns().collect();
                 for defn in &defns {
+                    let augmentation = is_type_augmentation(defn);
                     // A genuine single-ident, non-augmentation definition carries a
-                    // full `Type` decl below (at the `export_type_path` site); an
-                    // augmentation (`type A.B with …`) or a dotted head records only
-                    // the conflated nested-module shadow, so it gets a `Type` decl
-                    // with `info: None` here.
-                    let genuine = !is_type_augmentation(defn)
-                        && defn.long_id().and_then(single_ident).is_some();
+                    // full `Type` decl below (at the `export_type_path` site); a
+                    // dotted head that is not an augmentation records only the
+                    // conflated nested-module shadow, so it gets a `Type` decl with
+                    // `info: None` here. An augmentation records the
+                    // value-namespace-only `TypeAugmentation` decl instead.
+                    let genuine = !augmentation && defn.long_id().and_then(single_ident).is_some();
                     if let Some(li) = defn.long_id() {
                         let segs: Vec<String> =
                             li.idents().map(|t| id_text(t.text()).to_string()).collect();
-                        self.record_project_name_shadow(segs.clone());
+                        if augmentation {
+                            self.record_augmentation_head_shadow(segs.clone());
+                        } else {
+                            self.record_project_name_shadow(segs.clone());
+                        }
                         // A nameless recovered type (`type = int`, `type exception`)
-                        // has empty `segs`, which `record_project_name_shadow` skips;
-                        // the shadow decl must skip it too, or folding would add the
-                        // *container* to `nested_module_paths` and spuriously defer
-                        // later-file assembly references rooted there (codex fuzz find).
+                        // has empty `segs`, which the recorders skip; the shadow decl
+                        // must skip it too, or folding would add the *container* to
+                        // `nested_module_paths` and spuriously defer later-file
+                        // assembly references rooted there (codex fuzz find).
                         if !genuine && !segs.is_empty() {
                             let mut path = self.container_path.clone();
                             path.extend(segs);
@@ -465,19 +472,18 @@ impl<'a> Resolver<'a> {
                                 .next()
                                 .map(|t| t.text_range().start())
                                 .unwrap_or_else(|| defn.syntax().text_range().start());
-                            self.push_export_decl(
-                                path,
-                                pos,
+                            let kind = if augmentation {
+                                ExportDeclKind::TypeAugmentation
+                            } else {
                                 ExportDeclKind::Type {
                                     info: None,
                                     auto_open: false,
-                                },
-                            );
+                                }
+                            };
+                            self.push_export_decl(path, pos, kind);
                         }
                     }
-                    if !is_type_augmentation(defn)
-                        && let Some(name) = defn.long_id().and_then(single_ident)
-                    {
+                    if !augmentation && let Some(name) = defn.long_id().and_then(single_ident) {
                         // `[<AutoOpen>]` on a TYPE (not just a module) is real F#:
                         // its public static members enter bare scope wherever the
                         // enclosing namespace/module is opened, exactly like an
@@ -1659,6 +1665,7 @@ impl<'a> Resolver<'a> {
         let saved_recursive_module = self.recursive_module_active;
         let saved_auto_open_type_shadow_names = self.auto_open_type_shadow_names.clone();
         let saved_nested_locals = self.nested_module_locals.clone();
+        let saved_augmentation_locals = self.augmentation_head_locals.clone();
         let saved_access_floor = self.access_floor;
 
         // The nested module's full path = enclosing container + its own name(s)
@@ -1795,6 +1802,7 @@ impl<'a> Resolver<'a> {
             self.auto_open_type_shadow_names = saved_auto_open_type_shadow_names;
         }
         self.nested_module_locals = saved_nested_locals;
+        self.augmentation_head_locals = saved_augmentation_locals;
     }
 
     /// Record a project-introduced *name* — a nested module
@@ -1834,6 +1842,29 @@ impl<'a> Resolver<'a> {
             self.nested_module_exports.push(qualified);
         }
         self.nested_module_locals.push(segs);
+    }
+
+    /// The **augmentation-head** counterpart of [`Self::record_project_name_shadow`]:
+    /// same two forms, recorded under the same `anonymous_root` condition, into
+    /// the value-namespace-only sets ([`Self::augmentation_head_locals`], which
+    /// explains why they are separate).
+    ///
+    /// The qualified form is `container_path` + the head as written, which is the
+    /// augmented type's real path exactly when the container is its namespace
+    /// (`namespace Demo` ▸ `type Calc with …` → `Demo.Calc` — the shape that
+    /// carries the shadow to *later files*). Under any other container it is a
+    /// conflation (`module M` ▸ `type Demo.Calc with …` → `M.Demo.Calc`) that
+    /// matches nothing written; the local form is what fires there.
+    pub(super) fn record_augmentation_head_shadow(&mut self, segs: Vec<String>) {
+        if segs.is_empty() {
+            return;
+        }
+        if !self.anonymous_root {
+            let mut qualified = self.container_path.clone();
+            qualified.extend(segs.iter().cloned());
+            self.augmentation_head_exports.push(qualified);
+        }
+        self.augmentation_head_locals.push(segs);
     }
 
     /// Note `name` as a *module-like* declaration (nested module / abbreviation)
