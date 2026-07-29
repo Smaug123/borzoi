@@ -1417,9 +1417,10 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Decline every name the **enclosing container** goes on to declare as a
-    /// constructible type *after* this fold — `names` read off the fold site's
-    /// following siblings by [`Resolver::later_sibling_type_names`].
+    /// Record the names this fragment folds into the **enclosing container**, so
+    /// that a constructible type the container declares *after* the fold can take
+    /// them back — [`Self::decline_folded_name_taken_by_type`], called from the
+    /// type-declaration walk so the decline lands at the type's own position.
     ///
     /// The fold runs at the module's closing position and leaves ordinary
     /// entries behind; nothing in the enclosing walk then evicts them, so a
@@ -1492,7 +1493,7 @@ impl<'a> Resolver<'a> {
     /// outside its declaration group.
     /// Each carries its declaration position, because a class and a union case
     /// are one [`fold_rank`] and so are ordered by source position against each
-    /// other — see [`Self::fragment_case_positions`].
+    /// other — see [`Self::fragment_member_ranks`].
     fn fragment_type_contestants(
         &self,
         container: &[String],
@@ -1922,7 +1923,7 @@ impl<'a> Resolver<'a> {
     /// caller's discretion — a module alias). See
     /// [`Self::modules_with_hidden_values`]; the name may appear in *expression*
     /// position, so it also joins
-    /// [`Self::modules_with_hidden_expression_values`].
+    /// [`Self::hidden_expression_value_sites`].
     /// `fold_site` is the declaring position, which
     /// [`fold_own_auto_open_module`](Self::fold_own_auto_open_module) needs to
     /// decide whether the hidden member is inside the fragment it is folding —
