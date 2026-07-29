@@ -619,36 +619,30 @@ impl<'a> Resolver<'a> {
                         // (arity-agnostically, via `lookup_type_def`), otherwise
                         // into the referenced assemblies.
                         //
-                        // The arity comes from the **type-defn header**, not from
-                        // the long-ident: `type Demo.Pair<'T> with …` carries its
-                        // `<'T>` beside the head rather than on it, and keying the
-                        // assembly lookup at 0 would name the wrong same-named
-                        // entity where a `Pair` / `Pair<'T>` / `Pair<'T, 'U>` family
-                        // exists (fsi: it augments the arity-1 one).
+                        // Only a **non-generic** head is served. The walk is
+                        // arity-keyed, and a generic head's arity lives on the
+                        // *type-defn header* rather than on its long-ident
+                        // (`type Demo.Pair<'T> with …`), where a list the parser
+                        // recovered reports an arity nobody wrote:
+                        // FCS-probed, `type Pair<'T,> with`, `type Pair<'T with` and
+                        // `type Pair<'T> when with` all bind *nothing*, while
+                        // `type Pair<> with` binds a *project* `M.Pair` — and each
+                        // needs a different structural tell. A primary constructor is
+                        // the same problem one level up: `with` alone does not make
+                        // an augmentation
+                        // (`TypeDefnObjectModel::is_augmentation` reads exactly that
+                        // token), so `type Pair<'T>(x) with member …` is a class
+                        // *definition*, which FCS binds to a project `M.Pair`.
                         //
-                        // Only a header the parser did *not* have to recover may
-                        // key that lookup. A `with` token alone does not make an
-                        // augmentation — `TypeDefnObjectModel::is_augmentation`
-                        // reads exactly that token, and `type Pair<'T>(x) with
-                        // member …` is a **class definition** whose members follow
-                        // `with` — and a recovered typar list (`<'T,>`, `<>`)
-                        // reports an arity nobody wrote. FCS-probed against the
-                        // fixture's `Demo.Pair` family: `type Pair with` /
-                        // `<'T>` / `<'T, 'U>` bind the assembly `Demo.Pair`;
-                        // `<'T,>` binds nothing; `<>`, `<'T>(x)` and `(x)` bind a
-                        // *project* `M.Pair`. Committing an assembly entity for
-                        // any of the last four is a wrong target, so they keep the
-                        // in-file-only reading.
-                        let typar_list_is_complete = defn.typar_decls().is_none_or(|decls| {
-                            let mut typars = decls.typars().peekable();
-                            decls.is_closed()
-                                && typars.peek().is_some()
-                                && typars.all(|t| t.ident().is_some())
-                        });
-                        if defn.implicit_ctor().is_none() && typar_list_is_complete {
-                            let head_arity =
-                                defn.typar_decls().map_or(0, |decls| decls.typars().count());
-                            self.resolve_type_path(&segs, head_arity);
+                        // So the head keys the walk only where there is no arity to
+                        // get wrong and no constructor to mistake. That leaves the
+                        // generic head — including the valid prefix form `type 'T
+                        // Pair with` — deliberately unresolved rather than guessed;
+                        // `only_an_unrecovered_augmentation_header_keys_an_assembly_lookup`
+                        // records FCS's verdict for every probed spelling, so closing
+                        // that gap is a matter of flipping its `we_resolve` column.
+                        if defn.implicit_ctor().is_none() && defn.typar_decls().is_none() {
+                            self.resolve_type_path(&segs, 0);
                         } else {
                             self.resolve_in_file_type_path(&segs);
                         }

@@ -6330,28 +6330,25 @@ fn an_augmentation_head_resolves_the_assembly_type_it_names() {
 }
 
 #[test]
-fn a_generic_augmentation_head_resolves_at_its_declared_arity() {
-    // The head's typars sit on the type-defn header, not on its long-ident, so
-    // an arity-keyed lookup off the long-ident alone would key `Demo.Pair<'T>`
-    // to arity 0 and name the wrong same-named entity — the fixture declares
-    // `Pair`, `Pair<T>` and `Pair<T, U>` as three distinct handles. fsi confirms
-    // `type Demo.Pair<'T> with` augments the arity-1 one.
+fn a_generic_augmentation_head_is_left_unresolved() {
+    // The head walk is arity-keyed and a generic head's arity lives on the
+    // type-defn header, where the parser may have recovered it — so the arity is
+    // not derived at all and the head keeps the in-file-only reading. FCS binds
+    // the arity-1 `Demo.Pair` here; recording *nothing* is an under-resolution,
+    // and recording any `Pair` would be a guess. The full spelling table is
+    // `an_augmentation_header_never_names_a_type_fcs_does_not`.
     let env = fixture_env();
-    let src = "module M\ntype Demo.Pair<'T> with\n    member this.Zz = 1\n";
+    let src = "module M\nopen Demo\ntype Pair<'T> with\n    member this.Zz = 1\n";
     let rf = resolve(src, &env);
     let demo = ["Demo".to_string()];
-    let pair1 = env.lookup_type(&demo, "Pair", 1).expect("Demo.Pair<'T>");
-    let pair0 = env.lookup_type(&demo, "Pair", 0).expect("Demo.Pair");
-    assert_eq!(
-        rf.resolution_at(at(src, "Pair")),
-        Some(Resolution::Entity(pair1)),
-        "a generic augmentation head resolves at its own arity",
-    );
-    assert_ne!(
-        rf.resolution_at(at(src, "Pair")),
-        Some(Resolution::Entity(pair0)),
-        "…and must not fall to the arity-0 sibling",
-    );
+    for arity in 0..=2 {
+        let handle = env.lookup_type(&demo, "Pair", arity).expect("Demo.Pair");
+        assert_ne!(
+            rf.resolution_at(at(src, "Pair")),
+            Some(Resolution::Entity(handle)),
+            "a generic augmentation head must not guess an arity (tried {arity})",
+        );
+    }
 }
 
 #[test]
@@ -6596,86 +6593,98 @@ fn a_query_join_binder_defers_the_constructor_fallback() {
 }
 
 #[test]
-fn only_an_unrecovered_augmentation_header_keys_an_assembly_lookup() {
-    // A `with` token alone does not make an augmentation, and a recovered typar
-    // list reports an arity nobody wrote — so the head is not always a
-    // trustworthy assembly key. FCS-probed 2026-07-29 against the fixture's
-    // `Demo.Pair` family (arities 0, 1, 2), each header followed by `member
-    // this.Zz = 1`:
+fn an_augmentation_header_never_names_a_type_fcs_does_not() {
+    // Certain-implies-exact over augmentation-header spellings: whatever we
+    // record at the head must be what FCS binds there, and where FCS binds no
+    // assembly type we must record none. `we_resolve` is the *completeness*
+    // column — which spellings we additionally promise to answer.
     //
-    // | header | FCS binds |
-    // |---|---|
-    // | `type Pair with` | the assembly `Demo.Pair` |
-    // | `type Pair<'T> with` | the assembly `Demo.Pair` |
-    // | `type Pair<'T, 'U> with` | the assembly `Demo.Pair` |
-    // | `type Pair<'T,> with` | **nothing** (recovered trailing comma) |
-    // | `type Pair<> with` | a **project** `M.Pair` |
-    // | `type Pair<'T>(x) with` | a **project** `M.Pair` (a class definition) |
-    // | `type Pair(x) with` | a **project** `M.Pair` |
-    // | `type Pair<'T with` | **nothing** (unterminated list) |
-    // | `type Pair<'T when 'T : comparison> with` | the assembly `Demo.Pair` |
-    // | `type Pair<'T, 'U when 'T : comparison> with` | the assembly `Demo.Pair` |
-    //
-    // FCS binds the assembly for every other spelling probed — `<^T>`,
-    // `<[<Measure>] 'T>`, an outside-`<>` `when`, `type private`, and inner
-    // spaces — and those are in the table as the converse guard: a rule that
-    // declined anything unusual inside `<…>` would over-decline all of them.
-    // What the arity may be read from is a **complete list** — opened,
-    // non-empty, all members named, and closed by its `>`.
-    //
-    // For the first three the arity is the whole answer, so each is checked
-    // against its own handle; for the rest, naming any assembly entity is a
-    // wrong target.
+    // Only the non-generic, constructor-free head is promised. A generic head's
+    // arity comes from a typar list that may be recovered, and each recovered
+    // shape has a different tell, so the arity is not derived at all; a primary
+    // constructor means the header is a class *definition*, not an augmentation
+    // (`is_augmentation` is only "has a `with` token"). FCS's verdicts are
+    // recorded for all of them so closing the generic gap is a matter of
+    // flipping `we_resolve` — every row below was probed against FCS with the
+    // fixture referenced, 2026-07-29.
     let env = fixture_env();
     let demo = ["Demo".to_string()];
-    let handles: Vec<EntityHandle> = (0..=2)
+    let pair: Vec<EntityHandle> = (0..=2)
         .map(|a| {
             env.lookup_type(&demo, "Pair", a)
                 .unwrap_or_else(|| panic!("Demo.Pair at arity {a}"))
         })
         .collect();
+    let calc = env.lookup_type(&demo, "Calc", 0).expect("Demo.Calc");
 
-    // (header, the arity FCS binds — `None` when it binds no assembly type)
-    let cases: [(&str, Option<usize>); 15] = [
-        ("type Pair with", Some(0)),
-        ("type Pair<'T> with", Some(1)),
-        ("type Pair<'T, 'U> with", Some(2)),
-        ("type Pair<'T when 'T : comparison> with", Some(1)),
-        ("type Pair<'T, 'U when 'T : comparison> with", Some(2)),
-        ("type Pair<^T> with", Some(1)),
-        ("type Pair<[<Measure>] 'T> with", Some(1)),
-        ("type Pair<'T> when 'T : comparison with", Some(1)),
-        ("type private Pair<'T> with", Some(1)),
-        ("type Pair< 'T > with", Some(1)),
-        ("type Pair<'T,> with", None),
-        ("type Pair<> with", None),
-        ("type Pair<'T with", None),
-        ("type Pair<'T>(x) with", None),
-        ("type Pair(x) with", None),
+    // (header, the entity FCS binds — `None` when it binds no assembly type,
+    //  whether it binds nothing at all or a *project* type; do we resolve it)
+    let cases: [(&str, Option<EntityHandle>, bool); 16] = [
+        // Non-generic: served.
+        ("type Calc with", Some(calc), true),
+        ("type Demo.Calc with", Some(calc), true),
+        ("type Pair with", Some(pair[0]), true),
+        // Malformed but still non-generic — FCS recovers the name.
+        ("type Calc. with", Some(calc), true),
+        // Generic, well-formed: FCS binds, we decline (the completeness gap).
+        ("type Pair<'T> with", Some(pair[1]), false),
+        ("type Pair<'T, 'U> with", Some(pair[2]), false),
+        ("type Pair<^T> with", Some(pair[1]), false),
+        ("type Pair<[<Measure>] 'T> with", Some(pair[1]), false),
+        (
+            "type Pair<'T when 'T : comparison> with",
+            Some(pair[1]),
+            false,
+        ),
+        (
+            "type Pair<'T> when 'T : comparison with",
+            Some(pair[1]),
+            false,
+        ),
+        ("type private Pair<'T> with", Some(pair[1]), false),
+        ("type 'T Pair with", Some(pair[1]), false),
+        // Generic and recovered: FCS binds nothing at all.
+        ("type Pair<'T,> with", None, false),
+        ("type Pair<'T with", None, false),
+        ("type Pair<'T> when with", None, false),
+        // A primary constructor: a class *definition*; FCS binds a project
+        // `M.Pair`, so any assembly entity here is a wrong target.
+        ("type Pair<'T>(x) with", None, false),
     ];
-    for (header, expected) in cases {
+    let all: Vec<EntityHandle> = pair.iter().copied().chain([calc]).collect();
+    for (header, fcs, we_resolve) in cases {
         let src = format!("module M\nopen Demo\n{header}\n    member this.Zz = 1\n");
         // Recovered headers are the point of the table, so parse errors are
-        // tolerated here — the LSP resolves whatever the parser recovered.
+        // tolerated — the LSP resolves whatever the parser recovered.
         let file = ImplFile::cast(parse(&src).root).expect("impl file");
         let rf = resolve_file(&file, &ProjectItems::default(), &env);
         let head = {
-            let at = src.find("Pair").expect("the head");
-            span(at, "Pair".len())
+            let name = if header.contains("Calc") {
+                "Calc"
+            } else {
+                "Pair"
+            };
+            let at = src.find(name).expect("the head");
+            span(at, name.len())
         };
-        match expected {
-            Some(arity) => assert_eq!(
-                rf.resolution_at(head),
-                Some(Resolution::Entity(handles[arity])),
-                "{header:?}: expected the arity-{arity} `Demo.Pair`",
-            ),
-            None => assert!(
-                !handles
-                    .iter()
-                    .any(|h| rf.resolution_at(head) == Some(Resolution::Entity(*h))),
-                "{header:?}: a recovered header must not name an assembly type; got {:?}",
-                rf.resolution_at(head),
-            ),
+        let ours = rf.resolution_at(head);
+        // Soundness, every row: never name an entity FCS does not bind here.
+        if let Some(res @ Resolution::Entity(h)) = ours
+            && all.contains(&h)
+        {
+            assert_eq!(
+                Some(res),
+                fcs.map(Resolution::Entity),
+                "{header:?}: named an assembly type FCS does not bind here",
+            );
+        }
+        // Completeness, only where promised.
+        if we_resolve {
+            assert_eq!(
+                ours,
+                fcs.map(Resolution::Entity),
+                "{header:?}: promised to resolve this head",
+            );
         }
     }
 }
