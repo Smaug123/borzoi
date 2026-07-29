@@ -26,7 +26,7 @@
 ///     the differential harness generates names from a controlled set disjoint
 ///     from it, exactly as for `eval`.
 ///
-///   {"op":"items","xml":s,"path":s,"itemType":s}
+///   {"op":"items","xml":s,"path":s,"itemType":s,"globals":{name:value, ..}?}
 ///     -> {"ok":true,"items":[fullPath, ..]}     // MSBuild evaluated the items
 ///      | {"ok":false}                           // MSBuild rejects the project
 ///     The `project` op's item-side twin: the document is written to `path` and
@@ -48,7 +48,7 @@
 ///     `<PackageReference>` `Include`+`Update` collapse — identity matching and
 ///     per-key metadata merge — against the real evaluator, resident.
 ///
-///   {"op":"project","xml":s,"names":[..]}
+///   {"op":"project","xml":s,"names":[..],"globals":{name:value, ..}?}
 ///     -> {"ok":true,"values":{name:value, ..}}  // MSBuild evaluated the project
 ///      | {"ok":false}                           // MSBuild rejects the project
 ///     The caller's project XML is evaluated *verbatim*, so both sides read the
@@ -57,6 +57,16 @@
 ///     before expansion (insignificant whitespace, entity decoding, CDATA,
 ///     comment-split text) — this op is what lets a differential see that
 ///     layer at all.
+///
+/// `globals` — on `project` and `items` — is MSBuild's **global property** set:
+/// the `-p:` command line, and what an IDE-style consumer injects. It is not a
+/// property group write. A global outranks every document write of the same
+/// name (unless the document's `TreatAsLocalProperty` opts out), gates
+/// conditions, selects `<Choose>` arms, and can steer an `<Import>`. Sweeping it
+/// is the only way a differential can see whether a value we commit is a fixed
+/// fact or an artefact of the globals the caller happened to guess: every other
+/// op evaluates both sides under the *same* globals, so a global-dependence bug
+/// agrees with MSBuild exactly and passes unnoticed.
 ///
 /// `properties` is optional; each entry becomes a `<name>value</name>` in the
 /// stub project's property group. Property names MUST be valid MSBuild/XML
@@ -245,10 +255,16 @@ let private respondExpand (root: JsonElement) : string =
 /// passes to its own parser. That is the only way to diff anything those
 /// properties feed — including the one case where a `%XX` is *not* an escape,
 /// because it came from the project's own directory name.
+///
+/// `globals` is MSBuild's global property set (`null` for none), handed to the
+/// `Project` constructor rather than written into the document: a global is
+/// read-only to the body it evaluates, which is precisely the behaviour a
+/// property-group write could not reproduce.
 let private evalProject
     (path: string option)
     (xml: string)
     (names: string seq)
+    (globals: Collections.Generic.IDictionary<string, string>)
     : Map<string, string> option =
     use collection = new ProjectCollection()
 
@@ -258,11 +274,11 @@ let private evalProject
             | Some path ->
                 Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
                 File.WriteAllText(path, xml)
-                Some(Project(path, null, null, collection))
+                Some(Project(path, globals, null, collection))
             | None ->
                 use reader = XmlReader.Create(new StringReader(xml))
                 let root = Microsoft.Build.Construction.ProjectRootElement.Create(reader, collection)
-                Some(Project(root, null, null, collection))
+                Some(Project(root, globals, null, collection))
         with :? InvalidProjectFileException ->
             None
 
@@ -275,13 +291,18 @@ let private evalProject
 /// The `project` op's item-side twin: evaluate the document *as a file at
 /// `path`* and read back the `FullPath` of every `itemType` item, in evaluation
 /// order. `None` when MSBuild rejects the project.
-let private evalItems (path: string) (xml: string) (itemType: string) : string list option =
+let private evalItems
+    (path: string)
+    (xml: string)
+    (itemType: string)
+    (globals: Collections.Generic.IDictionary<string, string>)
+    : string list option =
     use collection = new ProjectCollection()
 
     try
         Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
         File.WriteAllText(path, xml)
-        let project = Project(path, null, null, collection)
+        let project = Project(path, globals, null, collection)
 
         project.GetItems itemType
         |> Seq.map (fun item -> item.GetMetadataValue "FullPath")
@@ -290,12 +311,27 @@ let private evalItems (path: string) (xml: string) (itemType: string) : string l
     with :? InvalidProjectFileException ->
         None
 
+/// The request's optional `globals` object as MSBuild's global property set.
+/// Absent (or not an object) reads back as `null` — MSBuild's own spelling for
+/// "no globals" — so an op that never sends the field evaluates exactly as it
+/// did before the field existed.
+let private readGlobals (root: JsonElement) : Collections.Generic.IDictionary<string, string> =
+    match root.TryGetProperty "globals" with
+    | true, g when g.ValueKind = JsonValueKind.Object ->
+        let table = Collections.Generic.Dictionary<string, string>()
+
+        for entry in g.EnumerateObject() do
+            table[entry.Name] <- entry.Value.GetString()
+
+        table :> Collections.Generic.IDictionary<string, string>
+    | _ -> null
+
 let private respondItems (root: JsonElement) : string =
     let xml = root.GetProperty("xml").GetString()
     let path = root.GetProperty("path").GetString()
     let itemType = root.GetProperty("itemType").GetString()
 
-    match evalItems path xml itemType with
+    match evalItems path xml itemType (readGlobals root) with
     | Some items -> JsonSerializer.Serialize {| ok = true; items = items |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 
@@ -363,7 +399,7 @@ let private respondProject (root: JsonElement) : string =
         |> Seq.map (fun n -> n.GetString())
         |> Seq.toArray
 
-    match evalProject path xml names with
+    match evalProject path xml names (readGlobals root) with
     | Some values ->
         JsonSerializer.Serialize
             {| ok = true

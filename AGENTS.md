@@ -31,15 +31,38 @@ This is a Cargo workspace with nine members:
   CDATA, comment-split text); `items` is `project`'s item-side twin, reading
   back an item type's evaluated `FullPath`s (what `-getItem:` reports, but
   resident — a per-case `dotnet msbuild` pays .NET startup every time, which a
-  generative sweep cannot afford). The four differentials that ride on them:
+  generative sweep cannot afford). `project` and `items` also carry the
+  evaluation's **global properties** — the `-p:` set, which is *not* a
+  property-group write: it is read-only to the document, outranking every write
+  of that name unless `TreatAsLocalProperty` opts out. The five differentials
+  that ride on these ops:
   `condition_diff.rs`, `property_expr_diff.rs`,
-  `fsproj_property_table_diff.rs`, and
+  `fsproj_property_table_diff.rs`,
   `fsproj_item_escape_generative_diff.rs` (item specs over an escape-bearing
   alphabet — the harness that guards MSBuild's escaped-value domain, where the
   rule is *scan and split before you decode; trim in the domain; decode at the
-  leaf*; see `docs/msbuild-escaped-value-plan.md`). All assert
+  leaf*; see `docs/msbuild-escaped-value-plan.md`), and
+  `fsproj_global_perturbation_diff.rs`. All assert
   *certain-implies-exact*: when we commit a value, MSBuild must agree exactly;
   a decline makes no claim.
+  The last one exists because the other four are structurally blind to one
+  defect class. They evaluate both sides under the *same* globals, so a value
+  whose evaluation depends on a global the caller supplied — through a route we
+  do not model — agrees with MSBuild exactly and passes every one of them. The
+  LSP injects `Configuration=Debug, Platform=AnyCPU` as a guess and publishes
+  what comes back as fixed fact, so that class is live. Sweeping the global set
+  turns it back into an ordinary certain-implies-exact violation; no new
+  contract was needed, only a harness that varies what the others hold fixed.
+  It runs the corner list of routes (gates, `<Choose>` arms, property-selected
+  imports, `TreatAsLocalProperty`), a generated sweep, the Compile item set, and
+  the **real SDK chain**, and prints a movement census — how many values MSBuild
+  moves across the sweep, and for each whether we tracked it, declined it as
+  untrusted, or never reached it. Read that census before investing in a
+  "depends on a caller-supplied global" provenance dimension: today the
+  evaluator is sound on this axis and pays for it in declines
+  (`OutDir`/`OutputPath`/`DefineConstants` are untrusted under every global set
+  on a real SDK project), which makes such a dimension a coverage investment,
+  not a soundness fix.
 - `crates/assembly/` — `borzoi-assembly`. F#-flavoured reader for
   ECMA-335 assemblies: owned `Entity`/`Member`/`TypeRef` model, the
   `EcmaView` trait, and a projector over an *in-crate* ECMA-335 reader

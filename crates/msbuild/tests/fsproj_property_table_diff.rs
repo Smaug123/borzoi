@@ -174,7 +174,7 @@ fn check_at_path(oracle: &mut Oracle, xml: &str, dir: Option<&Path>) -> usize {
         .filter_map(|n| parsed.properties.get(n).map(|v| (n.clone(), v.clone())))
         .collect();
 
-    let Some(theirs) = oracle.project(xml, &names, dir.map(|_| project_path)) else {
+    let Some(theirs) = oracle.project(xml, &names, dir.map(|_| project_path), &[]) else {
         assert!(
             ours.is_empty(),
             "certain-implies-exact violated: MSBuild rejects this project, but we \
@@ -422,7 +422,7 @@ fn reserved_path_shapes_commit_or_degrade_as_pinned() {
         .expect("well-formed");
         let names = vec!["Beta".to_string()];
         let theirs = oracle
-            .project(&xml, &names, Some(&project_path))
+            .project(&xml, &names, Some(&project_path), &[])
             .expect("MSBuild evaluates these documents");
         let theirs = theirs.get("Beta").expect("oracle answers for Beta");
 
@@ -584,7 +584,7 @@ fn duplicate_imports_are_skipped_exactly() {
         .expect("well-formed");
         let names = vec!["R".to_string()];
         let theirs = oracle
-            .project(xml, &names, Some(&project_path))
+            .project(xml, &names, Some(&project_path), &[])
             .expect("MSBuild evaluates every duplicate-import cluster (the skip is a warning)");
         let theirs = theirs.get("R").expect("oracle answers for R");
 
