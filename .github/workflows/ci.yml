@@ -96,7 +96,7 @@ jobs:
 
       - name: Run cargo doc
         run: |
-          nix develop --command env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+          nix develop --command env RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --document-private-items
 
       - name: Test change detection
         run: bash tools/ci/detect-changes.test.sh

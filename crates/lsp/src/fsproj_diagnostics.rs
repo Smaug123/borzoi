@@ -1665,6 +1665,7 @@ mod tests {
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
             output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+            references_uncertain: false,
             references: targets
                 .iter()
                 .map(|t| Edge {
@@ -1698,6 +1699,7 @@ mod tests {
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
                 output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: span.clone(),
@@ -1734,6 +1736,7 @@ mod tests {
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
                 output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: project_ref_span(text),
@@ -1758,6 +1761,7 @@ mod tests {
             tfm: NodeTfm::NotEvaluated,
             output_name: None,
             output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+            references_uncertain: false,
             references: vec![Edge {
                 target: pb("/p/A.fsproj"),
                 span: span.clone(),
@@ -1786,6 +1790,7 @@ mod tests {
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
                 output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+                references_uncertain: false,
                 references: vec![
                     Edge {
                         target: pb("/p/X.fsproj"),
@@ -1825,6 +1830,7 @@ mod tests {
                 tfm: NodeTfm::NotEvaluated,
                 output_name: None,
                 output_dir: borzoi_msbuild::OutputDirVerdict::Unknown,
+                references_uncertain: false,
                 references: vec![Edge {
                     target: pb("/p/B.fsproj"),
                     span: 2..9,

@@ -2578,7 +2578,7 @@ fn contested_same_fqn_type_defers_a_static_member_path() {
 fn contested_global_root_does_not_preempt_an_open_reading() {
     // Codex review of the contested-rooting guard: the value/member walk
     // pre-probes the as-written ROOT reading before walking opens, and a
-    // `ProjectShadowed` there vetoes the whole walk. A contested rooting is an
+    // `Occupied` there vetoes the whole walk. A contested rooting is an
     // *assembly* reading, not a lexical project-bound head — it must be
     // tier-local (like an opaque abbreviation reading), so a higher-priority
     // `open` whose rooting is uncontested still wins: with a *global* `Color`
@@ -2896,7 +2896,7 @@ fn a_root_tier_contest_does_not_preempt_an_open() {
     // Codex review round 5. The global `Color` is contested between a class
     // that lacks `StaticCount` and another DLL's **unchaseable abbreviation**.
     // Exactly one candidate survives the supplier test (the alias — we cannot
-    // prove it lacks the member), and its walk is a `ProjectShadowed` defer.
+    // prove it lacks the member), and its walk is an `Occupied` defer.
     // Returned verbatim that trips the preemptive as-written-root veto, which
     // skips the opens entirely — so `open Demo; Color.StaticCount` would defer
     // even though FCS binds `Demo.Color.StaticCount`. A sole *deferring*
@@ -6222,6 +6222,255 @@ fn an_auto_open_descendants_hidden_values_defer_the_constructor_fallback() {
         rf.resolution_at(at(src, "Thing")),
         Some(Resolution::Entity(thing)),
         "an auto-open descendant's borrowed statics must keep the fallback off the class"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A `type … with` augmentation head is a *use* of an existing type, never a
+// declaration of one. It therefore occupies nothing in the **type** namespace
+// (a later annotation naming the augmented type must still resolve), while in
+// the **value** namespace it really does change what a path means: its members
+// join the augmented type's method groups.
+//
+// Both halves are fsi-probed against a throwaway assembly with a
+// `Demo.Calc` carrying `static member Answer = 42` and `static member Zero() =
+// 0`, augmented by `type Demo.Calc with static member Answer = 99 / static
+// member Zero (x: int) = x + 1000`:
+//
+// - `Demo.Calc.Answer` is **42** — an intrinsic member beats a same-named
+//   extension outright, so committing the assembly member is right;
+// - `Demo.Calc.Zero 5` is **1005** — a *differently-shaped* extension joins
+//   the group and is selectable, so committing the assembly's `Zero()` there
+//   would be a wrong target;
+// - `let f (v : Demo.Calc) = v` compiles — the type name is untouched.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_qualified_augmentation_head_does_not_shadow_the_type_it_augments() {
+    // The reported bug: a file that augments `Demo.Calc` lost the resolution of
+    // every later annotation naming `Demo.Calc`.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Calc with\n    member this.Zz = 1\nlet f (v : Demo.Calc) = v\n";
+    let rf = resolve(src, &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let annotation = {
+        let s = src.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_eq!(
+        rf.resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "augmenting `Demo.Calc` must leave a later `(v : Demo.Calc)` resolving to it",
+    );
+}
+
+#[test]
+fn a_bare_augmentation_head_does_not_shadow_the_opened_type_it_augments() {
+    // The same, with the head written unqualified under `open Demo` — the
+    // shadow is recorded in the as-written (`["Calc"]`) form, so this is the
+    // shape that also blocks the *opened* reading.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\ntype Calc with\n    member this.Zz = 1\nlet f (v : Calc) = v\n";
+    let rf = resolve(src, &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let annotation = {
+        let s = src.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_eq!(
+        rf.resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "a bare augmentation head must leave a later `(v : Calc)` resolving to `Demo.Calc`",
+    );
+}
+
+#[test]
+fn an_earlier_files_augmentation_head_does_not_shadow_the_type_it_augments() {
+    // The cross-file half: the augmentation's shadow is exported, so a *later*
+    // file's annotation lost its resolution too.
+    let env = fixture_env();
+    let file1 = impl_file("module M\ntype Demo.Calc with\n    member this.Zz = 1\n");
+    let file2 = impl_file("module N\nlet f (v : Demo.Calc) = v\n");
+    let proj = resolve_project(&[file1, file2], &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let src2 = "module N\nlet f (v : Demo.Calc) = v\n";
+    let annotation = {
+        let s = src2.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_eq!(
+        proj.file(1).resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "an earlier file's augmentation must not shadow the augmented type's name",
+    );
+}
+
+#[test]
+fn an_augmentation_head_does_not_shadow_a_nested_type_under_it() {
+    // The *prefix* dimension: the shadow matches every path rooted at the head,
+    // so augmenting `Demo.Thing` also blocked the nested `Demo.Thing.Inner`. An
+    // augmentation adds members, never nested types, so the whole subtree stays
+    // the assembly's in type position.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Thing with\n    member this.Zz = 1\nlet f (x : Demo.Thing.Inner) = x\n";
+    let rf = resolve(src, &env);
+    let thing = env.lookup_type(&["Demo".to_string()], "Thing", 0).unwrap();
+    let inner = env.nested(thing, "Inner", 0).expect("Thing.Inner");
+    let annotation = {
+        let s = src.rfind("Inner").expect("annotation use of Inner");
+        span(s, "Inner".len())
+    };
+    assert_eq!(
+        rf.resolution_at(annotation),
+        Some(Resolution::Entity(inner)),
+        "augmenting `Demo.Thing` must leave its nested `Inner` resolving",
+    );
+}
+
+#[test]
+fn a_namespace_rooted_augmentation_head_does_not_shadow_the_type_it_augments() {
+    // The shape where the *exported* shadow lands on the augmented type's own
+    // path: under `namespace Demo`, a bare `type Calc with …` exports
+    // `Demo.Calc`. It is also the shape that carries the value-namespace
+    // protection (`an_earlier_files_augmentation_overload_…`), so one entry is
+    // wrong for the type namespace and load-bearing for the value one.
+    let env = fixture_env();
+    let file1 = impl_file("namespace Demo\n\ntype Calc with\n    member this.Zz = 1\n");
+    let src2 = "module M\nlet f (v : Demo.Calc) = v\n";
+    let proj = resolve_project(&[file1, impl_file(src2)], &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let annotation = {
+        let s = src2.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_eq!(
+        proj.file(1).resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "a namespace-rooted augmentation must not shadow the augmented type's name",
+    );
+}
+
+#[test]
+fn a_project_type_still_shadows_the_assembly_when_it_is_also_augmented() {
+    // The over-narrowing guard, same file: the *declaration* records the type
+    // shadow, so an augmentation beside it changes nothing. The annotation must
+    // still not reach the assembly's `Demo.Calc`.
+    let env = fixture_env();
+    let src = "module M\nopen Demo\ntype Calc = { X : int }\ntype Calc with\n    member this.Zz = 1\nlet f (v : Calc) = v\n";
+    let rf = resolve(src, &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let annotation = {
+        let s = src.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_ne!(
+        rf.resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "the same-file project `Calc` must keep shadowing the assembly type",
+    );
+}
+
+#[test]
+fn an_earlier_files_project_type_still_shadows_the_assembly_when_augmented() {
+    // The over-narrowing guard, cross-file: file1 declares `Demo.Calc`, file2
+    // augments it. Committing the assembly's `Demo.Calc` in file2 would be a
+    // wrong target — the *declaration*'s exported shadow, not the augmentation
+    // head's, is what has to carry that.
+    let env = fixture_env();
+    let file1 = impl_file("namespace Demo\n\ntype Calc = { X : int }\n");
+    let src2 = "module M\ntype Demo.Calc with\n    member this.Zz = 1\nlet f (v : Demo.Calc) = v\n";
+    let proj = resolve_project(&[file1, impl_file(src2)], &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let annotation = {
+        let s = src2.rfind("Calc").expect("annotation use of Calc");
+        span(s, "Calc".len())
+    };
+    assert_ne!(
+        proj.file(1).resolution_at(annotation),
+        Some(Resolution::Entity(calc)),
+        "an earlier file's project `Demo.Calc` must keep shadowing the assembly type",
+    );
+}
+
+#[test]
+fn an_augmentation_overload_keeps_a_static_call_off_the_intrinsic_member() {
+    // The value-namespace half, which the type-namespace narrowing must not
+    // touch. `static member Zero (x: int)` joins `Demo.Calc.Zero`'s method
+    // group and `Demo.Calc.Zero 5` binds the *extension* (fsi: 1005), so
+    // committing the assembly's `Zero()` is a wrong target. Deferring is sound.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Calc with\n    static member Zero (x : int) = x\nlet a = Demo.Calc.Zero 5\n";
+    let rf = resolve(src, &env);
+    let call = {
+        let s = src.rfind("Demo.Calc.Zero").expect("the static call");
+        span(s, "Demo.Calc.Zero".len())
+    };
+    assert!(
+        !matches!(rf.resolution_at(call), Some(Resolution::Member { .. })),
+        "an augmentation overload must keep the static call off the intrinsic member; got {:?}",
+        rf.resolution_at(call),
+    );
+}
+
+#[test]
+fn an_augmentation_keeps_open_type_statics_conservative() {
+    // `open type` enumerates the target's statics into *unqualified* scope, and
+    // an augmentation contributes statics to that same surface. fsi, with
+    // `type Demo.Calc with static member Zero (x: int) = x + 1000 / static
+    // member Fresh = 7` followed by `open type Demo.Calc`: bare `Zero 5` is
+    // 1005 (the extension) and bare `Fresh` binds at all only through it.
+    // Enumerating the assembly's statics into bare scope wrong-targets both, so
+    // the open must go opaque — the type *name* being unshadowed does not make
+    // its static surface knowable.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Calc with\n    static member Zero (x : int) = x\nopen type Demo.Calc\nlet a = Zero 5\n";
+    let rf = resolve(src, &env);
+    let bare = {
+        let s = src.rfind("Zero 5").expect("the bare call");
+        span(s, "Zero".len())
+    };
+    assert!(
+        !matches!(rf.resolution_at(bare), Some(Resolution::Member { .. })),
+        "an augmentation must make `open type` opaque; got {:?}",
+        rf.resolution_at(bare),
+    );
+}
+
+#[test]
+fn an_earlier_files_augmentation_overload_keeps_a_static_call_off_the_intrinsic() {
+    // The cross-file twin, in the shape where the augmentation's exported
+    // shadow is the augmented type's own path: a `namespace Demo` file
+    // augmenting `Calc` exports `Demo.Calc`, so a later file's
+    // `Demo.Calc.Zero 5` is in reach of the extension and must defer.
+    let env = fixture_env();
+    let file1 =
+        impl_file("namespace Demo\n\ntype Calc with\n    static member Zero (x : int) = x\n");
+    let src2 = "module M\nopen Demo\nlet a = Demo.Calc.Zero 5\n";
+    let proj = resolve_project(&[file1, impl_file(src2)], &env);
+    let call = {
+        let s = src2.rfind("Demo.Calc.Zero").expect("the static call");
+        span(s, "Demo.Calc.Zero".len())
+    };
+    assert!(
+        !matches!(
+            proj.file(1).resolution_at(call),
+            Some(Resolution::Member { .. })
+        ),
+        "an earlier file's augmentation overload must keep the static call off the intrinsic; \
+         got {:?}",
+        proj.file(1).resolution_at(call),
     );
 }
 

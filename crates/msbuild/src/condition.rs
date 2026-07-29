@@ -37,7 +37,7 @@
 //! produce wrong output" promise.
 //!
 //! Property substitution inside condition strings reuses the main
-//! [`properties::substitute`] function. Undefined references become
+//! [`crate::properties::substitute`] function. Undefined references become
 //! `""` (matching MSBuild's "unset property → empty string" rule) so
 //! we can still compute a truth value, but the names of every
 //! undefined reference are returned alongside the outcome so the

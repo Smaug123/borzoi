@@ -92,7 +92,7 @@ pub(super) enum ObjectModelItem {
     StaticClassLet,
     /// A class-body `do <expr>` binding (phase 9.8d) — a `MEMBER_DO`. FCS's
     /// `do`-binding `classDefnBindings` arm (`SynMemberDefn.LetBindings([Do …])`).
-    /// The reused [`Self::parse_do_expr`] self-consumes the `do`'s offside block
+    /// The reused [`Parser::parse_do_expr`] self-consumes the `do`'s offside block
     /// and trailing `ODECLEND`, so it takes the no-RHS-block terminator.
     Do,
     /// A class-body `static do <expr>` binding (phase 9.8d) — the same `MEMBER_DO`
@@ -481,7 +481,7 @@ fn langversion_diagnostics(
 /// Parallel to [`langversion_diagnostics`], which gates *trivia* features
 /// (`#elif`) via a span side-channel; a typed-node feature instead *is* a node in
 /// the tree, so the gate walks the green tree against the shared
-/// [`kind_interval`](crate::syntax::kind_interval) table. This makes "the tree
+/// [`kind_interval`] table. This makes "the tree
 /// holds a node out of surface at `lang`" the same fact as "the `vN` projection
 /// is not total here" (`docs/ast-versioning-plan.md` P2). Like FCS's
 /// `CheckLanguageFeatureAndRecover` the report leaves the tree unchanged — and

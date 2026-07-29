@@ -684,7 +684,7 @@ fn a_module_value_wins_over_its_own_same_named_abbreviation() {
 /// `RootHolder.Aliased` is an abbreviation; `open QP.HighNs` brings a real
 /// `QP.HighNs.RootHolder.Aliased` val at higher priority, and FCS binds it. Our
 /// root abbreviation defers *tier-locally* (`AbbreviationOpaque`, not the
-/// preemptive `ProjectShadowed`), so the open is tried first and wins (codex
+/// preemptive `Occupied`), so the open is tried first and wins (codex
 /// review 4).
 #[test]
 fn a_higher_open_outranks_a_root_abbreviation() {

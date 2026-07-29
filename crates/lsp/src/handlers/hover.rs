@@ -392,7 +392,7 @@ fn append_defined_in(body: &mut String, document: Option<DefinitionDocument>) {
     }
 }
 
-/// `Defined in `<file>`, line <n>` — the source origin of a referenced-assembly
+/// ``Defined in `<file>`, line <n>`` — the source origin of a referenced-assembly
 /// symbol, for when we know *where* it is but can't open it (no embedded source
 /// / SourceLink). Only the document's file name is shown: the recorded path is
 /// the build machine's absolute path ([`file_name_of`]), useless on this host.

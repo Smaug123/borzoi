@@ -209,21 +209,27 @@ fn declared_output_dirs_agree_with_msbuild() {
         let path = tmp.path().join("P.fsproj");
         std::fs::write(&path, xml).expect("write project");
 
-        let globals = HashMap::from([
+        // The globals the LSP injects, given to **both** sides. Ours alone would
+        // be asking the two a different question: the SDK computes `OutputPath`
+        // — which its own `OutDir` write reads — only once `Configuration` is
+        // defined, so an oracle evaluated without it answers about a project
+        // configuration nobody builds.
+        let globals: Vec<(String, String)> = vec![
             ("Configuration".to_owned(), "Debug".to_owned()),
             ("Platform".to_owned(), "AnyCPU".to_owned()),
-        ]);
+        ];
+        let global_map: HashMap<String, String> = globals.iter().cloned().collect();
         let parsed = parse_fsproj_with_imports(
             xml,
             &path,
-            &globals,
+            &global_map,
             &common::oracle_environment(),
             Some(&sdk),
             None,
         )
         .expect("well-formed");
 
-        let Some(theirs) = oracle.project(xml, &names, Some(&path)) else {
+        let Some(theirs) = oracle.project(xml, &names, Some(&path), &globals) else {
             // MSBuild rejected the document; we must not have committed a
             // directory for it.
             assert!(
@@ -401,14 +407,20 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
             std::fs::write(&at, contents).expect("write sidecar");
         }
 
-        let globals = HashMap::from([
+        // The globals the LSP injects, given to **both** sides. Ours alone would
+        // be asking the two a different question: the SDK computes `OutputPath`
+        // — which its own `OutDir` write reads — only once `Configuration` is
+        // defined, so an oracle evaluated without it answers about a project
+        // configuration nobody builds.
+        let globals: Vec<(String, String)> = vec![
             ("Configuration".to_owned(), "Debug".to_owned()),
             ("Platform".to_owned(), "AnyCPU".to_owned()),
-        ]);
+        ];
+        let global_map: HashMap<String, String> = globals.iter().cloned().collect();
         let parsed = parse_fsproj_with_imports(
             &xml,
             &path,
-            &globals,
+            &global_map,
             &common::oracle_environment(),
             Some(&sdk),
             None,
@@ -416,7 +428,7 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
         .expect("well-formed");
 
         let theirs = oracle
-            .project(&xml, &names, Some(&path))
+            .project(&xml, &names, Some(&path), &globals)
             .expect("MSBuild evaluates these documents");
         let real = as_directory(theirs.get("OutDir").map(String::as_str).unwrap_or_default());
         eprintln!(

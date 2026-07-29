@@ -831,7 +831,7 @@ fn all_fsproj_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// The node's effective output-file base name from one evaluation
-/// ([`ProjectNode::output_name`]): the trusted evaluated `$(TargetName)`
+/// ([`ProjectNode::output_name`](crate::project_graph::ProjectNode::output_name)): the trusted evaluated `$(TargetName)`
 /// (defaulting to `$(AssemblyName)` —
 /// [`borzoi_msbuild::ParsedProject::target_name`]), else the
 /// project-file stem (MSBuild's default, `$(MSBuildProjectName)`). `None`
@@ -937,6 +937,7 @@ fn resolve_node_uncached(
     // Read from the outer (seedless) pass: an inner build sees `TargetFramework`
     // as a global and no longer declares the plural it was selected from.
     let multi_targeted = outer.declared_tfms.len() > 1;
+    let outer_suppressed = references_suppressed(&outer, purpose);
     if caller_owns_target_framework(extra_build_properties) {
         return NodeResult::Resolved {
             edges: outer_edges,
@@ -946,6 +947,7 @@ fn resolve_node_uncached(
             },
             output_name: evaluated_output_name(path, &outer),
             output_dir: evaluated_output_dir(&outer, multi_targeted),
+            references_uncertain: outer_suppressed,
         };
     }
     if outer.tfm_untrusted {
@@ -965,6 +967,7 @@ fn resolve_node_uncached(
             tfm: NodeTfm::Unresolved,
             output_name: None,
             output_dir: OutputDirVerdict::Unknown,
+            references_uncertain: outer_suppressed,
         };
     }
     if let Some(body) = &outer.body_target_framework {
@@ -975,6 +978,7 @@ fn resolve_node_uncached(
             tfm: NodeTfm::Known(body.clone()),
             output_name: evaluated_output_name(path, &outer),
             output_dir: evaluated_output_dir(&outer, multi_targeted),
+            references_uncertain: outer_suppressed,
         };
     }
     let declared = &outer.declared_tfms;
@@ -989,6 +993,7 @@ fn resolve_node_uncached(
             },
             output_name: evaluated_output_name(path, &outer),
             output_dir: evaluated_output_dir(&outer, multi_targeted),
+            references_uncertain: outer_suppressed,
         };
     }
     if let Some(seed) = seed_tfm {
@@ -1005,6 +1010,7 @@ fn resolve_node_uncached(
                     tfm: NodeTfm::Known(current.clone()),
                     output_name: evaluated_output_name(path, &outer),
                     output_dir: evaluated_output_dir(&outer, multi_targeted),
+                    references_uncertain: outer_suppressed,
                 };
             }
             let mut map = extra_build_properties.clone();
@@ -1017,6 +1023,9 @@ fn resolve_node_uncached(
                     // the edges: `<AssemblyName>` may itself be TFM-gated.
                     output_name: evaluated_output_name(path, &inner),
                     output_dir: evaluated_output_dir(&inner, multi_targeted),
+                    // The inner evaluation is where these edges came from,
+                    // so it is the one whose suppression applies.
+                    references_uncertain: references_suppressed(&inner, purpose),
                 },
                 None => NodeResult::resolved(Vec::new()),
             };
@@ -1039,6 +1048,7 @@ fn resolve_node_uncached(
             tfm: NodeTfm::Unresolved,
             output_name: None,
             output_dir: OutputDirVerdict::Unknown,
+            references_uncertain: outer_suppressed,
         },
         GraphWalkPurpose::CompileClosure => {
             // `outer` is the first-declared inner pass; re-evaluate under
@@ -1051,6 +1061,9 @@ fn resolve_node_uncached(
             // so a target that any branch demotes to OutputOnly (e.g. a
             // TFM-conditioned `ExcludeAssets`) survives as OutputOnly.
             let mut surviving = outer_edges;
+            // Any branch whose list was suppressed leaves the intersection
+            // short of edges the real build may take, whichever TFM it picks.
+            let mut any_suppressed = outer_suppressed;
             for tfm in declared.iter().skip(1) {
                 let mut map = extra_build_properties.clone();
                 seed_target_framework_global(&mut map, tfm);
@@ -1060,8 +1073,14 @@ fn resolve_node_uncached(
                         tfm: NodeTfm::Unresolved,
                         output_name: None,
                         output_dir: OutputDirVerdict::Unknown,
+                        // A branch we could not evaluate takes the whole
+                        // intersection with it, so the emptied list is a
+                        // suppression like any other — not a project that
+                        // references nothing.
+                        references_uncertain: true,
                     };
                 };
+                any_suppressed |= references_suppressed(&branch, purpose);
                 let mut branch_kinds: HashMap<PathBuf, EdgeKind> = HashMap::new();
                 for e in edges_of(&branch, purpose, is_entry) {
                     branch_kinds
@@ -1084,15 +1103,20 @@ fn resolve_node_uncached(
                         true
                     }
                 });
-                if surviving.is_empty() {
-                    break;
-                }
+                // Deliberately no early exit once `surviving` empties. The
+                // loop is no longer collecting edges by then, but it is still
+                // collecting the *suppression* signal, and a later branch
+                // whose list the evaluator could not trust — or which fails to
+                // evaluate at all — is exactly what must not be missed. The
+                // retain below is a no-op on an empty vector, so the only cost
+                // is the remaining evaluations.
             }
             NodeResult::Resolved {
                 edges: surviving,
                 tfm: NodeTfm::Unresolved,
                 output_name: None,
                 output_dir: OutputDirVerdict::Unknown,
+                references_uncertain: any_suppressed,
             }
         }
     }
@@ -1104,6 +1128,18 @@ fn resolve_node_uncached(
 /// by [`compile_edge_kind`]; the declared-structure walk keeps everything as
 /// [`EdgeKind::Full`] (a build-only dependency still has existence and cycle
 /// semantics).
+/// Whether [`edges_of`] *suppressed* this evaluation's `<ProjectReference>`
+/// list rather than finding it empty — the condition the emptying is gated on,
+/// read back so the node can carry it
+/// ([`ProjectNode::references_uncertain`](crate::project_graph::ProjectNode::references_uncertain)).
+///
+/// Kept beside `edges_of` because it must stay the same condition: a walk that
+/// drops edges without marking them leaves the env fold counting a set those
+/// references were already filtered out of, so it sees no shortfall to report.
+fn references_suppressed(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose) -> bool {
+    purpose == GraphWalkPurpose::CompileClosure && evaluated.parsed.project_references_uncertain
+}
+
 fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: bool) -> Vec<Edge> {
     // The captured list may claim references the real build strips — an
     // unmodelled `<ProjectReference Update/Remove>` that may run (behind
@@ -1114,8 +1150,7 @@ fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: b
     // catalogue. Folding from it would fabricate. The node becomes one we
     // can't see past (E4; D5: under-resolve, never wrong). The
     // declared-structure walk keeps reporting on the declared elements.
-    if purpose == GraphWalkPurpose::CompileClosure && evaluated.parsed.project_references_uncertain
-    {
+    if references_suppressed(evaluated, purpose) {
         return Vec::new();
     }
     evaluated
@@ -2986,6 +3021,109 @@ mod tests {
             .find(|n| n.path == lexically_normalize(&multi))
             .expect("the producer is in the graph");
         assert_eq!(node.output_dir, OutputDirVerdict::Unknown);
+    }
+
+    /// A project whose `<ProjectReference>` list the evaluator could not trust
+    /// has that list **emptied** by the compile walk. The node must record
+    /// that, because an emptied list is otherwise indistinguishable from a
+    /// project that genuinely references nothing — and the env fold's
+    /// conservation count would then agree with itself over a set those
+    /// references had already been filtered out of, leaving the env claiming
+    /// completeness while an unknown number of assemblies is missing.
+    ///
+    /// `Update` on a `<ProjectReference>` is the probed catalogue's simplest
+    /// entry: unmodelled, so the captured list may claim references the real
+    /// build strips.
+    #[test]
+    fn a_node_records_that_its_reference_list_was_suppressed() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/A.fsproj");
+        let b = tmp.path().join("B/B.fsproj");
+        let c = tmp.path().join("C/C.fsproj");
+        write_file(&a, &fsproj_with_refs(&["../B/B.fsproj"]));
+        write_file(
+            &b,
+            r#"<Project>
+              <ItemGroup>
+                <ProjectReference Include="../C/C.fsproj" />
+                <ProjectReference Update="../C/C.fsproj" Private="false" />
+              </ItemGroup>
+            </Project>"#,
+        );
+        write_file(&c, &fsproj_with_refs(&[]));
+
+        let ws = Workspace::default();
+        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let node = |p: &Path| {
+            graph
+                .nodes
+                .iter()
+                .find(|n| n.path == lexically_normalize(p))
+                .unwrap_or_else(|| panic!("{} is in the graph", p.display()))
+        };
+        let b_node = node(&b);
+        assert!(
+            b_node.references_uncertain,
+            "B's reference list was suppressed and the node must say so"
+        );
+        assert!(
+            b_node.references.is_empty(),
+            "the suppression is what the mark exists to record"
+        );
+        assert!(
+            !node(&a).references_uncertain,
+            "A's own list is trustworthy; the mark is per-node"
+        );
+    }
+
+    /// The suppression signal is collected from **every** declared TFM, not
+    /// just the ones reached before the invariant-edge intersection empties.
+    /// Here the first two branches share no reference, so `surviving` is empty
+    /// by the time the third — whose list the evaluator cannot trust — is
+    /// reached; stopping there would report the node's references as
+    /// trustworthy and drop the incompleteness the consumer needs.
+    #[test]
+    fn suppression_is_collected_from_every_declared_tfm() {
+        let tmp = TempDir::new().unwrap();
+        let a = tmp.path().join("A/A.fsproj");
+        let b = tmp.path().join("B/B.fsproj");
+        write_file(&a, &fsproj_with_refs(&["../B/B.fsproj"]));
+        // Disjoint references under the first two TFMs empty the intersection;
+        // the third adds an unmodelled `Update`, which suppresses the list.
+        write_file(
+            &b,
+            r#"<Project>
+              <PropertyGroup>
+                <TargetFrameworks>net10.0;net9.0;net8.0</TargetFrameworks>
+              </PropertyGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+                <ProjectReference Include="../Ten/Ten.fsproj" />
+              </ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+                <ProjectReference Include="../Nine/Nine.fsproj" />
+              </ItemGroup>
+              <ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+                <ProjectReference Include="../Eight/Eight.fsproj" />
+                <ProjectReference Update="../Eight/Eight.fsproj" Private="false" />
+              </ItemGroup>
+            </Project>"#,
+        );
+
+        let ws = Workspace::default();
+        let graph = ws.project_graph_with_producer_tfms(&a, &BTreeMap::new());
+        let b_node = graph
+            .nodes
+            .iter()
+            .find(|n| n.path == lexically_normalize(&b))
+            .expect("B is in the graph");
+        assert!(
+            b_node.references.is_empty(),
+            "no reference survives every TFM, which is what empties the intersection"
+        );
+        assert!(
+            b_node.references_uncertain,
+            "the last TFM's list was suppressed and the walk must still have seen it"
+        );
     }
 
     /// A body `TargetFramework` whose write sits behind an untrusted gate is

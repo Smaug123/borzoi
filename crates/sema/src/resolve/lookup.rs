@@ -11,7 +11,9 @@ use crate::assembly_env::{EntityHandle, OpenFoldSpace, OpenFoldSurface, OpenFold
 use crate::def::{DefId, DefKind};
 
 use super::id_text;
-use super::model::{DeferredReason, ItemId, Resolution, SlotClass};
+use super::model::{
+    DeclineCause, DeclineSite, DeclineTier, DeferredReason, ItemId, Resolution, SlotClass,
+};
 use super::state::{
     ActivePatternShape, AssemblyPath, CaseTier, OpenInterpretation, Resolver, SameFileQualified,
     ScopeEntry, ShadowVeto, ShorteningPrefix, TieredResolution,
@@ -130,6 +132,63 @@ struct SubmoduleFold {
     has_type: bool,
 }
 
+/// One open-fold **group**'s assembly-side surfaces and the residue verdicts
+/// that decide how its names may be committed — see
+/// [`Resolver::assembly_fold_group`], which is the only thing that builds one.
+///
+/// Carries the verdicts rather than re-deriving them per caller: `demote` and
+/// `below_vals` feed [`Resolver::open_assembly_module_fold`], while `barrier`
+/// and `hides_names` decide the generation bump and the dotted-head blanket.
+/// A caller that recomputed any of these from `surfaces` alone would miss
+/// `path_dropped` (a same-FQN module half with no surface at all).
+pub(super) struct AssemblyFoldGroup {
+    /// The fold surfaces, in FCS fold order: the assembly module half(s), then
+    /// the assembly namespace half, then the project half's contestant names.
+    pub(super) surfaces: Vec<OpenFoldSurface>,
+    /// The group's fold order is not decidable — every one of its names defers.
+    pub(super) demote: bool,
+    /// Tycon-tier-confined residue: the group's **case** entries defer, its vals
+    /// stay definite.
+    pub(super) below_vals: bool,
+    /// A type was dropped at some split of the path, so a same-FQN module half
+    /// may exist that contributes no surface at all.
+    path_dropped: bool,
+    /// A namespace half's constructor-slot type name may evict an earlier open's
+    /// same-named value, with no collision entry to demote.
+    cross_kind_ns_type: bool,
+    /// Whether the path is also an in-project namespace — the caller's cue to
+    /// fold the project half's own values after this group.
+    pub(super) project_ns: bool,
+}
+
+impl AssemblyFoldGroup {
+    /// Whether this group must **shadow everything folded before it**: any
+    /// unseen or unordered name, or a cross-kind namespace type that evicts an
+    /// earlier value.
+    ///
+    /// A risen barrier stales every earlier name — an earlier open's value AND a
+    /// local binding. A *dotted head* through such a staled entry (`X.Zero`
+    /// after `let X = …`) must then DEFER rather than fall through to a
+    /// qualified path an earlier open can still see: FCS binds the local the
+    /// bump staled. Every caller gets that from the per-head `head_entry_staled`
+    /// veto in the qualified channels (codex round 10).
+    pub(super) fn barrier(&self) -> bool {
+        (!self.surfaces.is_empty() || self.path_dropped)
+            && (self.demote || self.below_vals || self.cross_kind_ns_type)
+    }
+
+    /// Whether the group hides names it cannot LIST — which needs more than the
+    /// per-head staleness veto, because the hidden name could itself be a dotted
+    /// HEAD with no earlier entry to go stale (`X.Red` where the residue conceals
+    /// a value `X` — codex round 7). The KNOWN-names arm alone
+    /// (`cross_kind_ns_type` — every name it contests is an entry or a
+    /// contestant) hides nothing, so a group with only that keeps its dotted
+    /// resolution.
+    pub(super) fn hides_names(&self) -> bool {
+        self.demote || self.below_vals
+    }
+}
+
 impl<'a> Resolver<'a> {
     /// Push one source-ordered *opened* value entry per distinct bare name of
     /// `handle` into the current frame — the names an `open type T` (or the
@@ -140,7 +199,7 @@ impl<'a> Resolver<'a> {
     /// position, but choosing among overloads is the type checker's job, not name
     /// resolution.
     ///
-    /// [`AssemblyEnv::open_static_entries`] supplies the pair, and with it the one
+    /// [`AssemblyEnv::open_static_entries`](crate::AssemblyEnv::open_static_entries) supplies the pair, and with it the one
     /// exclusion this level owes FCS: **extension members never enter the
     /// unqualified environment** — not F#-native augmentations (bare `Force` out of
     /// FSharp.Core's auto-open `LazyExtensions`), not C#-style `[<Extension>]`
@@ -149,7 +208,7 @@ impl<'a> Resolver<'a> {
     ///
     /// The entries are [`ScopeEntry::opened`], so [`lookup`](Self::lookup) drops
     /// them while an [`opaque_value_open`](Self::opaque_value_open) is in scope and
-    /// [`resolve_file`] does not leak them across same-named top-level blocks.
+    /// [`resolve_file`](super::resolve_file) does not leak them across same-named top-level blocks.
     /// `certain` withholds the definite target while keeping the name in scope (it still
     /// shadows by position). Callers pass `false` when something they cannot see could
     /// outrank what they can: the namespace half of a cross-kind path does so when the
@@ -177,6 +236,251 @@ impl<'a> Resolver<'a> {
             })
             .collect();
         self.module_frame().entries.extend(entries);
+    }
+
+    /// Collect one open-fold **group**'s assembly-side surfaces at path `gp`,
+    /// and the residue verdicts that decide how its names may be committed.
+    ///
+    /// The group is FCS's unit of folding: its environment maps a head to the
+    /// LIST of every same-named module/namespace — across every tier and every
+    /// assembly — and an open folds them ALL together
+    /// (`AddModuleOrNamespaceRefsContentsToNameEnv`, a `foldBack`). So the
+    /// halves sharing one path form ONE unit whose barrier and demotion
+    /// decisions span exactly its members. Both channels that fold a path go
+    /// through here — an `open` the source wrote ([`super::decls`]'s
+    /// `ModuleDecl::Open` arm) and the implicit open of a block's own enclosing
+    /// namespace ([`Self::open_own_enclosing_namespace`]) — because the halves
+    /// a path has, and what their residue costs, are properties of the *path*,
+    /// not of how it came to be opened. Splitting them was exactly how the
+    /// implicit channel first shipped able to commit an assembly member over a
+    /// contesting half that the explicit channel already deferred.
+    ///
+    /// The caller supplies the assembly **module** half's handles (which it
+    /// needs separately for the dotted-head bookkeeping) and says whether the
+    /// assembly **namespace** half applies; the project namespace half's
+    /// constructor-slot type names join as a contestant-only surface. What the
+    /// caller still owns is *ordering*: where the generation barrier lands
+    /// relative to its own other pushes, and where the project half's values go
+    /// (after this group, so they out-rank it by position — Q14).
+    pub(super) fn assembly_fold_group(
+        &mut self,
+        gp: &[String],
+        handles: &[EntityHandle],
+        assembly_ns_applies: bool,
+    ) -> AssemblyFoldGroup {
+        let mut surfaces: Vec<OpenFoldSurface> = handles
+            .iter()
+            .map(|&h| self.assemblies.open_fold_surface(h))
+            .collect();
+        // The **assembly namespace half** joins the fold as one more surface
+        // (`docs/assembly-module-open-plan.md`, "the namespace half joins the
+        // fold"): its direct tycon tier (exceptions, non-RQA union cases) and its
+        // `[<AutoOpen>]` submodules' contents. Folding it here is what lets the
+        // cross-kind demote below stay per-name: a name the namespace half
+        // supplies collides per-name with the module half inside the fold writer,
+        // and its name-unknown residue feeds the group verdict, instead of the
+        // whole module half deferring wholesale.
+        if assembly_ns_applies {
+            surfaces.extend(self.assemblies.open_namespace_fold_surfaces(gp));
+        }
+        // The **project namespace half**'s own constructible type names join the
+        // fold as a contestant-only surface (codex review of §7's machinery
+        // slice): a project type at this FQN takes FCS's unqualified constructor
+        // slot exactly like an assembly namespace's constructible types do, so it
+        // can evict a same-named *value* from a DIFFERENT surface (a colocated
+        // assembly module) — `collisions()` in [`Self::open_assembly_module_fold`]
+        // demotes the colliding name once it sees both. Not entries (sema does not
+        // model project type members), so the contested name itself still defers —
+        // sound, just unavailable, like the assembly-side analogue.
+        let project_ns = self.is_project_namespace_path(gp);
+        if project_ns {
+            let contestants = self.project_namespace_contestant_names(gp);
+            if !contestants.is_empty() {
+                surfaces.push(OpenFoldSurface {
+                    contestant_names: contestants,
+                    ..Default::default()
+                });
+            }
+        }
+        // Name-unknown residue of the fold group — full tier: a surface that
+        // cannot list all its names, or a dropped type at ANY split of the path,
+        // which may be a same-FQN module half we cannot see at all (round 16 — the
+        // check must span the same splits as the lookup). Ungated on the module
+        // half existing: a dropped type at a split can be a same-FQN module half of
+        // a READING-only or project-only group too (codex round 23) — its hidden
+        // contents shadow earlier opens and contest the group's assembly-side names
+        // either way.
+        let path_dropped = self
+            .assemblies
+            .any_split_of_a_module_path_has_a_dropped_type(gp);
+        // The **project namespace half**'s own name-unknown residue — an
+        // `[<AutoOpen>]` type (or any other construct `open_project_namespace_values`
+        // cannot enumerate the names of) directly in `gp` or one of its
+        // `[<AutoOpen>]` submodules (codex review round 5, fcs-dump-verified: sema
+        // has no project-side `open_type_statics` equivalent, so such a type's
+        // statics are invisible to every enumeration this fold does). Folds into
+        // `full_residue` exactly like an assembly surface's own residue does — a
+        // colliding assembly value must defer, not stay wrongly definite, when the
+        // project half might supply a name we cannot see.
+        let project_ns_hidden = project_ns && self.namespace_fold_has_hidden_values(gp);
+        let full_residue = surfaces.iter().any(|s| s.residue) || path_dropped || project_ns_hidden;
+        // Tycon-tier-confined residue (a case-nameless union): hidden names that
+        // FCS folds *before* the vals. They shadow earlier opens (barrier) and
+        // contest the group's own case entries, but never its vals (round 10) — in
+        // ONE surface. Across a merge (module half + namespace half, or two
+        // assemblies) the tiers interleave in reference order, so with more than
+        // one surface it escalates to the full demote.
+        let below_vals = surfaces.iter().any(|s| s.residue_below_vals);
+        // A cross-kind path where the FQN is ALSO a **project** namespace needs no
+        // blanket demote (§7's "machinery" slice): unlike two assemblies
+        // (unknowable reference order, `collisions()`'s reason to defer), the
+        // project half's fold position relative to every assembly half is FIXED —
+        // it is pushed strictly after this group's assembly fold
+        // (`open_project_namespace_values`, Q14: the project's own fragment always
+        // folds last) — so a name it supplies simply out-ranks the module half's by
+        // **position**, whether or not the module half's own entry stays definite.
+        let demote = full_residue || (below_vals && surfaces.len() > 1);
+        // A namespace half's constructor-slot **type** name enters FCS's unqualified
+        // slot and **evicts** a same-named value from an EARLIER open — even when
+        // nothing in this group supplies that name, so no collision entry is emitted
+        // for it. The type is not a fold entry (it takes its slot via the
+        // eviction/type channel, which also serves qualified `Type.Member`), so the
+        // only lever left is the generation barrier. Gated on the **module half**: a
+        // pure namespace open needs no barrier — its own entries shadow by position,
+        // and the head-slot eviction machinery already handles a local value vs a
+        // namespace type, so bumping there would stale that local and mis-resolve
+        // the eviction probes.
+        let cross_kind_ns_type =
+            !handles.is_empty() && surfaces.iter().any(|s| !s.contestant_names.is_empty());
+        AssemblyFoldGroup {
+            surfaces,
+            demote,
+            below_vals,
+            path_dropped,
+            cross_kind_ns_type,
+            project_ns,
+        }
+    }
+
+    /// Demote every fold entry this block may shadow in a way that position-0
+    /// ordering does not express.
+    ///
+    /// Two shadowings the resolver does not model anywhere — they reproduce
+    /// through an explicit `open` too, and their fixes are their own slices. But
+    /// this channel meets them far more often, since it brings a whole
+    /// namespace's names in at position 0, before the block's walk has seen
+    /// anything; so rather than commit a target FCS shadows, it declines:
+    ///
+    /// - a **constructible type** the block declares takes FCS's unqualified
+    ///   value slot from a same-named opened value. Screened per name against
+    ///   [`Resolver::own_value_slot_type_names`], which is a *closed* set — the
+    ///   file's type definitions that can enter the slot, and nothing else can;
+    /// - an **`[<AutoOpen>]` container**'s surface folds into the enclosing
+    ///   scope above anything opened before it. Here the whole group is demoted
+    ///   rather than screened per name, because that surface is open-ended:
+    ///   values, union and exception cases, `extern` prototypes, active-pattern
+    ///   tags, a single-case union spelled exactly like an abbreviation, an
+    ///   auto-open type's statics, statics borrowed through an abbreviation.
+    ///   Enumerating them is a list that grows under review and can only be
+    ///   audited by inspection; [`Resolver::own_auto_open_container`] is one
+    ///   closed question, and it costs commits only in files that declare such
+    ///   a container.
+    ///
+    /// `Opaque` rather than removal keeps an entry in scope shadowing by
+    /// position, so an earlier open's same-named value cannot wrongly win.
+    /// Position-blind, so it also declines uses the shadower provably cannot
+    /// reach — availability, in the direction the pre-scans already accept.
+    fn screen_block_local_shadows(&self, group: &mut AssemblyFoldGroup) {
+        for surface in &mut group.surfaces {
+            for entry in &mut surface.entries {
+                if self.block_local_shadow(&entry.name) {
+                    entry.target = OpenFoldTarget::Opaque;
+                }
+            }
+        }
+    }
+
+    /// Whether the block may shadow `name` in one of the two ways
+    /// [`Self::screen_block_local_shadows`] describes.
+    fn block_local_shadow(&self, name: &str) -> bool {
+        self.own_auto_open_container || self.own_value_slot_type_names.contains(name)
+    }
+
+    /// Whether a project `[<AutoOpen>]` module directly in `namespace` — this
+    /// file's or an earlier Compile-order one's — holds a **nested module**.
+    ///
+    /// Such a submodule is enterable by its short name (FCS enters every nested
+    /// module of a folded container into `eModulesAndNamespaces`), so `open
+    /// Inner` reaches it and its values out-rank the auto-open module's own. We
+    /// lend no project shortening prefix (task #30), so that `open` does nothing
+    /// on our side — which makes the outer value's entry unsafe to commit.
+    fn project_auto_open_here_nests_a_module(&self, namespace: &[String]) -> bool {
+        let mut auto_opens = self.auto_open_modules_directly_in(namespace);
+        auto_opens.extend(self.preceding.auto_open_modules_directly_in(namespace));
+        auto_opens.iter().any(|ao| {
+            let under = |p: &Vec<String>| p.len() > ao.len() && p.starts_with(ao.as_slice());
+            self.nested_module_exports.iter().any(under)
+                || self.preceding.nested_module_paths.iter().any(under)
+        })
+    }
+
+    /// The [`Self::screen_block_local_shadows`] screen applied to entries
+    /// already pushed into the frame, from `from` onwards — the project half's,
+    /// which [`Self::open_project_namespace_values`] writes directly rather than
+    /// through an [`AssemblyFoldGroup`].
+    ///
+    /// The project half is folded at position 0 for the same reason the assembly
+    /// halves are, so the same shadowers reach it: an earlier file's auto-open
+    /// module value at this namespace loses its slot to a later local type just
+    /// as an assembly member does. `Deferred` here is what `Opaque` is there.
+    fn demote_block_local_shadowed_entries(&mut self, from: usize) {
+        let names: Vec<String> = self.module_frame().entries[from..]
+            .iter()
+            .map(|e| e.name.clone())
+            .collect();
+        let shadowed: Vec<usize> = names
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| self.block_local_shadow(n))
+            .map(|(i, _)| from + i)
+            .collect();
+        for i in shadowed {
+            self.module_frame().entries[i].resolution =
+                Resolution::Deferred(DeferredReason::UnboundName);
+        }
+    }
+
+    /// Apply one [`AssemblyFoldGroup`]: the Stage-1 signature screen, then the
+    /// fold itself at `open_pos`.
+    ///
+    /// The screen (`docs/fsi-signature-restriction-plan.md`): a bare name this
+    /// open would commit to an assembly member, at a path a signatured project
+    /// module *may* expose, must defer instead — FCS binds the `.fsi` (probe:
+    /// bare `shown` after `open ProbeNs.Shared` with a colliding `RefLib` → the
+    /// `.fsi`). The entry is demoted to [`OpenFoldTarget::Opaque`] (in scope,
+    /// shadowing by position, naming nothing) rather than removed, so an
+    /// earlier open's same-named value cannot wrongly win. Names the signature
+    /// provably cannot expose keep their assembly target (probe: bare `bar` →
+    /// the assembly). Runs on the *complete* surface list — the namespace half's
+    /// auto-open contents included.
+    pub(super) fn apply_assembly_fold_group(
+        &mut self,
+        gp: &[String],
+        mut group: AssemblyFoldGroup,
+        open_pos: u32,
+    ) {
+        if group.surfaces.is_empty() {
+            return;
+        }
+        let implicit_screened = self.preceding.implicit_module_open_screened(gp);
+        for surface in &mut group.surfaces {
+            for entry in &mut surface.entries {
+                if implicit_screened || self.preceding.sig_screened_open_name(gp, &entry.name) {
+                    entry.target = OpenFoldTarget::Opaque;
+                }
+            }
+        }
+        self.open_assembly_module_fold(group.surfaces, open_pos, group.demote, group.below_vals);
     }
 
     /// Push the complete-or-opaque **fold surfaces** of the assembly module(s)
@@ -312,7 +616,7 @@ impl<'a> Resolver<'a> {
 
     /// Whether `np` is a declared project **namespace** path — same file
     /// ([`Self::namespace_paths`]) or an earlier Compile-order one
-    /// ([`ProjectItems::is_namespace`]).
+    /// ([`ProjectItems::is_namespace`](super::model::ProjectItems::is_namespace)).
     pub(super) fn is_project_namespace_path(&self, np: &[String]) -> bool {
         self.namespace_paths.iter().any(|p| p == np) || self.preceding.is_namespace(np)
     }
@@ -345,7 +649,7 @@ impl<'a> Resolver<'a> {
     /// later chained open keeps the relative reading higher **and** still
     /// reaches a root-only namespace. A project reading resolves no assembly
     /// path itself, but a name it *shadows* must be seen at its true priority
-    /// ([`AssemblyPath::ProjectShadowed`] → defer) before any lower assembly
+    /// ([`AssemblyPath::Occupied`] → defer) before any lower assembly
     /// reading can win.
     pub(super) fn open_interpretations(
         &self,
@@ -567,6 +871,223 @@ impl<'a> Resolver<'a> {
         &self.container_path[..self.namespace_depth.min(self.container_path.len())]
     }
 
+    /// Bring this block's own enclosing namespace into scope, with no `open`
+    /// written.
+    ///
+    /// FCS opens the enclosing namespace path implicitly, once per top-level
+    /// block and before any of its declarations
+    /// (`ImplicitlyOpenOwnNamespace` — "Inside `namespace X.Y.Z` there is an
+    /// implicit open of `X.Y.Z`"), and opening a namespace also opens the
+    /// `[<AutoOpen>]` modules it declares
+    /// (`AddModuleOrNamespaceRefsToNameEnv` recurses into them). The
+    /// **full** path, never a prefix: from inside `namespace A.B`, an
+    /// auto-open module of `A` is not in scope. A `module A.B.M` header
+    /// encloses in `A.B`, which is what `namespace_depth` already measures.
+    ///
+    /// It is the SAME fold an explicit `open` of that path performs, so it goes
+    /// through the same [`AssemblyFoldGroup`] — every half the path has, and
+    /// each half's residue cost, is a property of the path rather than of how
+    /// it came to be opened. FCS says so directly: the implicit open resolves
+    /// the path with `ResolveLongIdentAsModuleOrNamespace`, which yields
+    /// **every** modref at the FQN — this project's own fragment, each
+    /// referenced assembly's namespace, and a same-FQN top-level *module* in
+    /// any of them — and `OpenModuleOrNamespaceRefs` folds them together. So:
+    ///
+    /// - **cross-assembly**: a name two assemblies both supply is a
+    ///   reference-order contest we cannot decide, and
+    ///   [`Self::open_assembly_module_fold`] defers it;
+    /// - **cross-kind**: a path that is a namespace in one reference and a
+    ///   module in another merges both halves, so a name they both supply
+    ///   defers rather than committing the namespace half's;
+    /// - **the project's own half folds last** (Q14), pushed after the assembly
+    ///   halves so a project union case out-ranks a colliding assembly
+    ///   auto-open value by position (fcs-dump-verified: with `type Color = Tag
+    ///   | Other` in an earlier file of the namespace, bare `Tag` is
+    ///   `Demo.Auto.Color.Tag`, not the assembly's `Extra.Tag`).
+    ///
+    /// Position 0: this precedes every declaration in the block, so anything
+    /// the file writes — a `let`, a later `open`, a type it defines — outranks
+    /// it, which is FCS's last-write-wins env. That is also why the project
+    /// half is folded *here* but skipped by an explicit self-`open` of the same
+    /// namespace (see the `open` arm in `decls.rs`): position 0 is FCS's real
+    /// fold position for it, while re-running it at a later `open`'s text
+    /// position would wrongly override a binding declared in between.
+    pub(super) fn open_own_enclosing_namespace(&mut self) {
+        let namespace = self.enclosing_namespace().to_vec();
+        if namespace.is_empty() {
+            return;
+        }
+        // The same-FQN assembly **module** half — `ResolveLongIdentAsModuleOrNamespace`
+        // returns modules and namespaces alike, so a top-level `module A.B` in
+        // one reference merges with `namespace A.B` in another.
+        let handles = self.opened_assembly_modules(&namespace);
+        let mut group = self.assembly_fold_group(&namespace, &handles, true);
+        if group.barrier() {
+            self.open_generation += 1;
+        }
+        if group.hides_names() {
+            self.opaque_dotted_open = true;
+        }
+        let project_ns = group.project_ns;
+        // The **project module** half. `ResolveLongIdentAsModuleOrNamespace`
+        // returns an in-project top-level module at the FQN too, so an earlier
+        // file's `module N` is folded into a later file's `namespace N`
+        // (fcs-dump-verified: `module Demo.HiddenOwn` with an `extern`, then
+        // `namespace Demo.HiddenOwn` using it bare, binds the `extern`).
+        //
+        // Its *enumerable* values already reach here — a project module's
+        // exports are visible at its own FQN — so what this adds is the
+        // **barrier**: when the module may bring value-space names we cannot
+        // enumerate (an `extern`, an alias, union cases or active patterns we do
+        // not export), those names shadow everything folded before it, so a
+        // colliding assembly member from the implicit auto-opens must not stay
+        // committed. Without it the assembly's `plainCore` wins where FCS binds
+        // the project's `extern` — a wrong target, and one the *enumerable* case
+        // does not expose, since there the project value simply out-positions it.
+        //
+        // The bump's position splits on marker provenance exactly as the
+        // explicit-`open` path's does (`docs/fsi-signature-restriction-plan.md`):
+        // when every hidden marker for the path is sig-screened, the names the
+        // barrier fears are bounded by the signature text and
+        // `apply_assembly_fold_group`'s per-name screen already defers them, so
+        // bump BEFORE the fold and let the rest fall through to the assembly. A
+        // borrowed-name marker keeps the bump after.
+        let project_module_bump =
+            self.is_project_module_path(&namespace) && self.module_has_hidden_values(&namespace);
+        let bump_covered_by_screen = project_module_bump
+            && !self
+                .modules_with_hidden_values
+                .iter()
+                .any(|path| path.starts_with(namespace.as_slice()))
+            && !self.preceding.opaque_hidden_value_module(&namespace);
+        if bump_covered_by_screen {
+            self.open_generation += 1;
+        }
+        // The reading's **shortening prefix**. Opening a container enters every
+        // nested module of it under its short name and then recurses into the
+        // `[<AutoOpen>]` ones, so the implicit open makes an auto-open module's
+        // submodules openable bare — `open ExtraShorten` from inside `namespace
+        // Demo.Auto` reaches `Demo.Auto.Extra.ExtraShorten`
+        // (fcs-dump-verified). Omitting it is a **wrong target**, not a missed
+        // one: `extraShortenTarget` exists in `Extra` too, so the unshortened
+        // enclosing value is left standing rather than nothing — the same shape
+        // as the unchecked `Operators.int64` beating `Operators.Checked.int64`
+        // that `open_shortening_matrix` exists for.
+        //
+        // Pushed here, after the block reset seeded the assembly-level implicit
+        // auto-opens and before any `open` the file writes, so it ranks between
+        // them exactly as FCS's fold order puts it. `module_reading` follows the
+        // module half, whose own auto-open descendants shorten the same way.
+        //
+        // Gated on the **assemblies** declaring the path: a project-only
+        // namespace lends no prefix, because a project `[<AutoOpen>]` module
+        // lends none either — FCS auto-opens one *fragment*, and deciding which
+        // nested modules belong to the attributed fragment needs each one's
+        // declaring file (`Self::auto_open_shortening_prefixes`, and the
+        // "**Project** auto-open modules lend no shortening prefix" note on
+        // `open_shortening_matrix`). Pushing one there is not a no-op: the
+        // prefix reroutes a dotted head through tier 1, which cost the
+        // companion-module grid a committed cell.
+        //
+        if !handles.is_empty() || self.assemblies.has_namespace(&namespace) {
+            self.open_shortening_prefixes.push(ShorteningPrefix {
+                path: namespace.clone(),
+                namespace_reading: true,
+                module_reading: !handles.is_empty(),
+            });
+        }
+        // NOTE: a project `[<AutoOpen>]` module in this namespace nests short
+        // names too, and FCS folds the project fragment last, so `open <short>`
+        // binds the project's where both sides nest that name — while the
+        // project half lends no shortening prefix of its own (task #30), so we
+        // bind the assembly's. Neither lever available here fixes it:
+        // withholding the assembly prefix leaves the *enclosing* auto-open value
+        // standing (a wrong target of its own — the reason
+        // `open_shortening_matrix` exists), and recording the namespace in
+        // `incomplete_open_prefixes` — whose veto is exactly "a prefix may hide
+        // a nested module" — is unusable here because that veto fires on the
+        // presence of ANY incomplete prefix for EVERY relative open: measured,
+        // it took `WoofWare.PawPrint.Domain` from 2348 imported-symbol matches
+        // to 44. Task #30 is the fix; the shape needs a project and an assembly
+        // auto-open module in one namespace nesting the SAME short name.
+        // The assembly **module** half's dotted-head bookkeeping, keyed on the
+        // handles rather than the merged surface list — the explicit-`open`
+        // path's, for the same reasons, because the reachability it describes is
+        // the path's and not the open's.
+        if !handles.is_empty() {
+            // A prefix that could hide a whole nested *module* (a dropped type,
+            // an unknowable pickle) can make a later `open Sub` name something
+            // we cannot see, so it must not commit a lower root's `Sub`. The
+            // dropped-type ask spans every split of the path.
+            if handles
+                .iter()
+                .any(|&h| self.assemblies.module_may_hide_nested_modules(h))
+                || self
+                    .assemblies
+                    .any_split_of_a_module_path_has_a_dropped_type(&namespace)
+            {
+                self.incomplete_open_prefixes.push(namespace.clone());
+            }
+            // A dotted head through an assembly module is not modelled yet, so
+            // it stays conservative while such a module is in scope — but only
+            // when the module could actually seed one: it has an **accessible**
+            // nested member. The accessibility filter is load-bearing, since an
+            // F# module's `let`s compile to non-public closure classes that
+            // surface as children and can never be a dotted-head prefix.
+            if handles.iter().any(|&h| {
+                self.assemblies
+                    .children(h)
+                    .iter()
+                    .any(|&c| self.assemblies.is_public(c))
+            }) {
+                self.opaque_dotted_open = true;
+            }
+        }
+        self.screen_block_local_shadows(&mut group);
+        self.apply_assembly_fold_group(&namespace, group, 0);
+        // The project namespace half's own cases/exceptions and its
+        // `[<AutoOpen>]` submodules' contents, pushed AFTER the assembly halves
+        // so that on a shared name the project entry wins by position.
+        if project_ns {
+            let before = self.module_frame().entries.len();
+            self.open_project_namespace_values(&namespace, 0);
+            self.demote_block_local_shadowed_entries(before);
+            // A project `[<AutoOpen>]` module here that holds a **nested module**
+            // can be shortened through: FCS enters that submodule under its short
+            // name, so `open Inner` reaches it and its `target` out-ranks the
+            // auto-open module's own `target` this fold just pushed. The project
+            // half lends no shortening prefix (task #30), so the `open` does
+            // nothing on our side and the outer entry would stand — a wrong
+            // target. Nothing here can weigh the two, so the entries decline.
+            //
+            // Gated on a nested module actually existing: an auto-open module of
+            // plain values shortens to nothing and keeps its entries. That is
+            // what makes this affordable — the `[<AutoOpen>]` modules real
+            // projects put in their own namespace are overwhelmingly flat.
+            if self.project_auto_open_here_nests_a_module(&namespace) {
+                let count = self.module_frame().entries.len();
+                for i in before..count {
+                    self.module_frame().entries[i].resolution =
+                        Resolution::Deferred(DeferredReason::UnboundName);
+                }
+            }
+        }
+        // The project module half's opaque-marker bump: hidden names no
+        // signature screen bounds must stale this fold's own assembly entries
+        // too, so they go after it.
+        if project_module_bump && !bump_covered_by_screen {
+            self.open_generation += 1;
+        }
+        // A project module may hold submodules and types we do not model, so a
+        // dotted head through it stays conservative. No shortening prefix: the
+        // project half lends none (task #30), and the path is this block's own
+        // enclosing namespace, which `open_tier_candidates` already offers at
+        // tier 2 — an extra tier-1 copy of the same path would decide nothing.
+        if self.is_project_module_path(&namespace) {
+            self.opaque_dotted_open = true;
+        }
+    }
+
     /// Whether opening module `mp` may bring **value-space names we cannot
     /// enumerate** — a module alias, or union cases / exception constructors /
     /// active patterns ([`Self::modules_with_hidden_values`], same file or an
@@ -579,7 +1100,7 @@ impl<'a> Resolver<'a> {
 
     /// The qualified paths of `[<AutoOpen>]` modules directly under `container`
     /// (see [`super::model::is_directly_in`]) — the **distinct paths**, from
-    /// earlier files' non-`private` ones ([`ProjectItems::auto_open_modules_directly_in`],
+    /// earlier files' non-`private` ones ([`ProjectItems::auto_open_modules_directly_in`](super::model::ProjectItems::auto_open_modules_directly_in),
     /// privacy-filtered at the export boundary) plus this file's own
     /// **accessible** ones. Path-level and *file-blind*: it answers "is there an
     /// auto-open submodule of this name here?", which is what the
@@ -617,9 +1138,9 @@ impl<'a> Resolver<'a> {
 
     /// The `[<AutoOpen>]` **fragments** declared *directly* in `container`, as
     /// `(path, file)` pairs — the same-file half (this file, at
-    /// [`ProjectItems::num_files`], privacy-filtered against the site exactly as
+    /// [`ProjectItems::num_files`](super::model::ProjectItems::num_files), privacy-filtered against the site exactly as
     /// [`Self::project_auto_open_submodules_in`]) plus the already-filtered
-    /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`]). A
+    /// earlier-file half ([`ProjectItems::auto_open_fragments_directly_in`](super::model::ProjectItems::auto_open_fragments_directly_in)). A
     /// module with fragments in several files appears once per fragment — the
     /// per-fragment provenance the file-ordered fold reads (Stage 5).
     fn auto_open_fragments_directly_in(&self, container: &[String]) -> Vec<(Vec<String>, usize)> {
@@ -761,10 +1282,10 @@ impl<'a> Resolver<'a> {
     /// The winning **direct-tier** contribution [`Self::open_module_values`]
     /// pushes for each name declared directly under `path` (a project
     /// namespace): its project-global [`ItemId`] and declaring Compile-order file
-    /// ([`ProjectItems::file_of`]). The value index wins the id where a name is
+    /// ([`ProjectItems::file_of`](super::model::ProjectItems::file_of)). The value index wins the id where a name is
     /// both a value and a case (expression-latest); the constructor index fills
     /// only names the value index missed. Same-file contributions fold last (the
-    /// current file's index, [`ProjectItems::num_files`]), overriding earlier
+    /// current file's index, [`ProjectItems::num_files`](super::model::ProjectItems::num_files)), overriding earlier
     /// files. Accessibility (own-/inherited-`private`) is filtered exactly as the
     /// open-fold does, so an inaccessible name never enters the straddle contest.
     fn direct_tier_ids_at(&self, path: &[String]) -> HashMap<String, (ItemId, usize)> {
@@ -1010,7 +1531,7 @@ impl<'a> Resolver<'a> {
     /// The handle of the **ordinary value** (not a case constructor) exported at
     /// exactly `path` — this file's (the source-latest) or an earlier Compile-order
     /// one. The same-file/cross-file counterpart of
-    /// [`ProjectItems::ordinary_value_at`], used to detect a value that shadows a
+    /// [`ProjectItems::ordinary_value_at`](super::model::ProjectItems::ordinary_value_at), used to detect a value that shadows a
     /// type-qualified case for the qualifier.
     pub(super) fn ordinary_value_at(&self, path: &[String]) -> Option<ItemId> {
         self.items
@@ -1072,7 +1593,7 @@ impl<'a> Resolver<'a> {
     /// [`resolved_project_module`](Self::resolved_project_module) (explicit opens
     /// latest-first, enclosing namespace/module nesting innermost-first, then the
     /// root as written), checking the cross-file
-    /// [`ProjectItems::type_qualified_cases`] index at each — so `Color.Red` resolves
+    /// [`ProjectItems::type_qualified_cases`](super::model::ProjectItems::type_qualified_cases) index at each — so `Color.Red` resolves
     /// relative to an `open Lib` or the enclosing `namespace Lib`, and the
     /// fully-qualified form resolves at the root. Self-validating: only an exact
     /// earlier-file `[…, Type, Case]` path hits, so an unintended shortening simply
@@ -1163,12 +1684,12 @@ impl<'a> Resolver<'a> {
     /// bare names an `open M` makes resolvable (substep 3). Same-file values come
     /// from [`Self::items`] (a value whose qualified export path is
     /// `[module_path…, name]`, exactly one segment beyond), earlier-file values
-    /// from [`ProjectItems::direct_value_children`]; a value nested deeper (in a
+    /// from [`ProjectItems::direct_value_children`](super::model::ProjectItems::direct_value_children); a value nested deeper (in a
     /// submodule) has a longer path and is excluded. A name found in *this* file
     /// wins over a same-named cross-file one (this file augments the earlier
     /// module); both are [`Resolution::Item`]. The entries are
     /// [`ScopeEntry::opened`], so [`lookup`](Self::lookup) gives correct
-    /// latest-wins shadowing against locals and [`resolve_file`] does not leak them
+    /// latest-wins shadowing against locals and [`resolve_file`](super::resolve_file) does not leak them
     /// across same-named top-level blocks. The module may also hold submodules /
     /// types we do not model, so the caller sets
     /// [`opaque_dotted_open`](Self::opaque_dotted_open) to keep dotted heads
@@ -1430,7 +1951,7 @@ impl<'a> Resolver<'a> {
     /// direct tier's file is later, when the direct winner is re-pushed at the END
     /// to out-position the submodule pushes. [`Self::direct_tier_ids_at`] /
     /// [`Self::submodule_contributions_at`] carry each contribution's file
-    /// ([`ProjectItems::file_of`]); the decision is per FCS environment (value /
+    /// ([`ProjectItems::file_of`](super::model::ProjectItems::file_of)); the decision is per FCS environment (value /
     /// constructor / type-eviction, folded independently).
     ///
     /// With [`Self::submodule_contributions_at`] now **per-fragment exact** (Stage
@@ -1687,7 +2208,7 @@ impl<'a> Resolver<'a> {
     /// The [`ItemId`] of the value `value` exported **directly** by project module
     /// `module_path` (its qualified export path is exactly `[module_path…,
     /// value]`), or `None`. Searches this file's [`Self::items`] first, then
-    /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`]) — the
+    /// earlier Compile-order files ([`ProjectItems::lookup_qualified_path`](super::model::ProjectItems::lookup_qualified_path)) — the
     /// value an already-name-shortened `Mod.value` resolves to. Only `let` values
     /// are recorded with qualified paths, so a `value` that is actually a nested
     /// module / type yields `None` (the path then defers, never a wrong member).
@@ -1890,7 +2411,7 @@ impl<'a> Resolver<'a> {
     /// case, `Some(false)` for a definite non-case (an ordinary value / opened
     /// static member), `None` when it cannot be classified here. A
     /// [`Resolution::Local`], a [`Resolution::Item`] (same-file via the def arena,
-    /// cross-file via [`ProjectItems::is_case_item`]), and an opened static
+    /// cross-file via [`ProjectItems::is_case_item`](super::model::ProjectItems::is_case_item)), and an opened static
     /// ([`Resolution::Member`] / overloaded-static [`Resolution::Deferred`]) are all
     /// classifiable. `None` only for an out-of-range / unmapped handle.
     pub(super) fn case_classification(&self, res: Resolution) -> Option<bool> {
@@ -1921,7 +2442,7 @@ impl<'a> Resolver<'a> {
     /// maybe-literal constant-pattern contestant
     /// ([`ExportedItem::attributed`](super::model::ExportedItem)): same-file via
     /// this file's export arena, cross-file via
-    /// [`ProjectItems::is_attributed_item`].
+    /// [`ProjectItems::is_attributed_item`](super::model::ProjectItems::is_attributed_item).
     fn item_is_attributed(&self, id: ItemId) -> bool {
         match id.index().checked_sub(self.item_base as usize) {
             Some(local) => self.items.get(local).is_some_and(|it| it.attributed),
@@ -2082,6 +2603,12 @@ impl<'a> Resolver<'a> {
                         self.record(
                             first.text_range(),
                             Resolution::Deferred(DeferredReason::QualifiedAccess),
+                        );
+                        // An unorderable contest between the head's two slots,
+                        // reached before the fallback that usually names it.
+                        self.record_path_decline(
+                            segments,
+                            DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
                         );
                         return;
                     }
@@ -2341,7 +2868,7 @@ impl<'a> Resolver<'a> {
             // [`Self::assembly_prefixes_by_priority`] walk, so a tier added there
             // is seen here too — must be absent or read the path identically. If
             // one resolves it to a *different* target, or a **project entity
-            // captures it** (`ProjectShadowed` — it would win in F# exactly like a
+            // captures it** (`Occupied` — it would win in F# exactly like a
             // differing assembly reading), the root binding is unsafe, so we defer
             // rather than bind the wrong root — `namespace Demo; open type
             // Demo.Calc; Sub.Calc.Zero()` is `Demo.Sub.Calc.Zero` via the
@@ -2350,31 +2877,50 @@ impl<'a> Resolver<'a> {
             // Sub.Calc.Zero()` is `Demo.Sub.Calc.Zero` via the explicit open —
             // neither the root `Sub.Calc.Zero`. (The root prefix walks too and
             // self-compares equal — a no-op.)
+            // The census site for whichever guard declines below, recorded at
+            // the head — the segment a reading contests. Diagnostic only; it
+            // never feeds back into `resolved`.
+            let mut declined_at: Option<DeclineSite> = None;
             let resolved = if value_evicted {
                 // The assembly tiers are type-side too — the evicting type
                 // shadows them the same way (see the M20t/M20u note above).
+                declined_at = Some(DeclineSite::pre_walk(DeclineCause::ValueEvicted));
                 None
             } else if self.unmodelled_open_active {
                 match self.assembly_path_records(&[], segments) {
                     AssemblyPath::Resolved {
                         payload: root_recs, ..
                     } => {
+                        // The *tier* of the first reading that differs, not
+                        // merely that one does: this is a ladder fact, and a
+                        // census that flattened it could not see the
+                        // conflicting reading move between tiers.
                         let higher_reading_differs =
-                            self.assembly_prefixes_by_priority().any(|prefix| {
-                                match self.assembly_path_records(prefix, segments) {
-                                    AssemblyPath::Resolved { payload, .. } => payload != root_recs,
-                                    // A higher abbreviation-defer / self-module /
-                                    // contested-rooting reading is uncertain, so the
-                                    // root binding is unsafe.
-                                    AssemblyPath::ProjectShadowed
-                                    | AssemblyPath::SelfModuleShadowed
-                                    | AssemblyPath::AbbreviationOpaque
-                                    | AssemblyPath::ContestedRooting => true,
-                                    AssemblyPath::NoMatch => false,
-                                }
+                            self.assembly_prefixes_by_priority()
+                                .find_map(|(tier, prefix)| {
+                                    let differs = match self.assembly_path_records(prefix, segments)
+                                    {
+                                        AssemblyPath::Resolved { payload, .. } => {
+                                            payload != root_recs
+                                        }
+                                        // A higher abbreviation-defer / self-module /
+                                        // contested-rooting reading is uncertain, so the
+                                        // root binding is unsafe.
+                                        AssemblyPath::Occupied(_)
+                                        | AssemblyPath::SelfModuleShadowed
+                                        | AssemblyPath::AbbreviationOpaque
+                                        | AssemblyPath::ContestedRooting => true,
+                                        AssemblyPath::NoMatch => false,
+                                    };
+                                    differs.then_some(tier)
+                                });
+                        if let Some(tier) = higher_reading_differs {
+                            // a higher-precedence reading would win, but is unsafe → defer
+                            declined_at = Some(DeclineSite {
+                                cause: DeclineCause::UnmodelledOpenRoot,
+                                tier,
                             });
-                        if higher_reading_differs {
-                            None // a higher-precedence reading would win, but is unsafe → defer
+                            None
                         } else {
                             Some(root_recs)
                         }
@@ -2383,11 +2929,20 @@ impl<'a> Resolver<'a> {
                     // open in scope could supply the current module's own name
                     // (which FCS does not bind as a self-qualifier), so — unlike the
                     // opens-modelled `else` arm — we cannot safely resolve it.
-                    AssemblyPath::ProjectShadowed
+                    // A no-match records nothing: the path resolves nowhere, so
+                    // the open in scope is not what declined it. The other four
+                    // do, at the root tier — the only reading this branch tried.
+                    declining @ (AssemblyPath::Occupied(_)
                     | AssemblyPath::SelfModuleShadowed
                     | AssemblyPath::AbbreviationOpaque
-                    | AssemblyPath::ContestedRooting
-                    | AssemblyPath::NoMatch => None,
+                    | AssemblyPath::ContestedRooting) => {
+                        declined_at = declining.decline_cause().map(|cause| DeclineSite {
+                            cause,
+                            tier: DeclineTier::Root,
+                        });
+                        None
+                    }
+                    AssemblyPath::NoMatch => None,
                 }
             } else {
                 // Value/member path: a project-bound head (nested module, local,
@@ -2400,10 +2955,17 @@ impl<'a> Resolver<'a> {
                     true,
                     |_| ShadowVeto::None,
                 ) {
-                    TieredResolution::Resolved(recs) => Some(recs),
-                    TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                    TieredResolution::Resolved { payload, .. } => Some(payload),
+                    TieredResolution::ShadowDeferred(site) => {
+                        declined_at = Some(site);
+                        None
+                    }
+                    TieredResolution::NoMatch => None,
                 }
             };
+            if let Some(site) = declined_at {
+                self.record_path_decline(segments, site);
+            }
             if let Some(recs) = resolved {
                 self.apply(recs);
                 return;
@@ -2439,12 +3001,43 @@ impl<'a> Resolver<'a> {
                 first.text_range(),
                 Resolution::Deferred(DeferredReason::QualifiedAccess),
             );
+            // Name the guard, so the census does not read a guarded decline as
+            // a clean miss. An opaque head is checked first because it is what
+            // kept the assembly walk from running at all; the other three are
+            // reached with the walk already declined, and `record_decline`
+            // keeps whichever cause spoke first.
+            let cause = if self.opaque_value_open || self.opaque_dotted_open || head_staled {
+                DeclineCause::OpaqueValueHead
+            } else if head_is_case {
+                DeclineCause::CaseQualifierHead
+            } else if first.text() == "global" {
+                DeclineCause::GlobalMarkerHead
+            } else {
+                DeclineCause::HeadSlotUnordered
+            };
+            self.record_path_decline(segments, DeclineSite::pre_walk(cause));
         } else {
             // The head is member access on a *value*; a type-as-qualifier was
             // already handled by the assembly-path resolution above. Forbid the
             // opened-type constructor fallback so a declined type-qualifier does
             // not re-resolve the head to a colliding opened assembly type.
             self.resolve_name_use(first, false);
+            // An opaque `open` kept the assembly walk from running at all, and
+            // the head found nothing in scope either: the binding the walk
+            // might have made is lost, so the census names the guard rather
+            // than reading it as a clean miss.
+            if !rest.is_empty()
+                && (self.opaque_value_open || self.opaque_dotted_open || head_staled)
+                && matches!(
+                    self.resolutions.get(&first.text_range()),
+                    Some(Resolution::Deferred(_)) | None
+                )
+            {
+                self.record_path_decline(
+                    segments,
+                    DeclineSite::pre_walk(DeclineCause::OpaqueValueHead),
+                );
+            }
         }
         for seg in rest {
             self.record(
@@ -2454,7 +3047,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Whether `names` is a path F# resolves *within the project* — searched
+    /// Whether — and how — `names` is a path F# resolves *within the project*, searched
     /// before referenced assemblies, so it must not fall through to a colliding
     /// assembly type/member (and an `open type` of it must not model the
     /// assembly's statics). Declines a path that is:
@@ -2472,20 +3065,33 @@ impl<'a> Resolver<'a> {
     /// the assembly when the module does not provide the tail (FCS-verified). The
     /// fall-through is sound only while the project value index is complete — true
     /// today (a module holds only `let` values).
-    pub(super) fn path_is_project_shadowed(&self, names: &[String]) -> bool {
+    /// `Some` is the decline, and its payload is *which guard said so* — the
+    /// form the assembly walk needs, so the census names the model to fix
+    /// rather than the predicate that happened to be asked.
+    ///
+    /// The **signature screen** is asked first because it is a different guard
+    /// sharing this verdict: the project-side commit sites already report it as
+    /// [`DeclineCause::SignatureScreened`], and filing it under a project shadow
+    /// here would move signature work into the project-merge bucket.
+    pub(super) fn project_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+        if self.preceding.sig_screened_path(names) {
+            return Some(DeclineCause::SignatureScreened);
+        }
         // A project *value* prefix (`Demo.Calc.x` where `Demo.Calc` is a `let`)
         // shadows only in the *value/expression* namespace; the type-namespace
-        // part is shared with [`Self::path_is_project_type_shadowed`]. A bare ref
+        // part is shared with [`Self::project_type_shadow_cause`]. A bare ref
         // that *is* a declared top-level project module exactly shadows only here
         // too: a **module is not a type**, so it does not occupy the type name —
         // `(x: Calc)` with a top-level `module Calc` and `open Demo` is the
         // assembly type `Demo.Calc`, never the module (FCS-verified), so it must
         // not gate the type path.
-        self.path_is_project_type_shadowed(names)
+        let shadowed = self.path_is_project_type_shadowed(names)
+            || self.path_is_augmentation_head_shadowed(names)
             || self.preceding.is_exact_project_module(names)
             || self
                 .preceding
-                .is_project_value_prefixed(names, &self.container_path)
+                .is_project_value_prefixed(names, &self.container_path);
+        shadowed.then_some(DeclineCause::ProjectPathShadow)
     }
 
     /// Whether `names` is rooted at the **current module's own path** — the head
@@ -2494,7 +3100,7 @@ impl<'a> Resolver<'a> {
     /// headerless-file `module Demo`). Kept for the full-path shadow in
     /// [`Self::path_is_project_type_shadowed`]; the *namespace-relative* self
     /// reference (`List.fold` inside `namespace N` / `module List`) is
-    /// [`Self::path_rooted_at_self_or_ancestor_module`].
+    /// [`Self::self_qualified_member_path`].
     pub(super) fn rooted_at_current_module(&self, names: &[String]) -> bool {
         self.module_path.as_ref().is_some_and(|mp| {
             !mp.is_empty() && mp.len() <= names.len() && names.starts_with(mp.as_slice())
@@ -2596,7 +3202,7 @@ impl<'a> Resolver<'a> {
     /// fully-qualified [`Self::rooted_at_current_module`] reference) with **no
     /// reachable project binding** at the path — the one project shadow an `open`
     /// can still redirect (see
-    /// [`AssemblyPath::SelfModuleShadowed`](super::state::AssemblyPath::SelfModuleShadowed)).
+    /// [`AssemblyPath::SelfModuleShadowed`]).
     ///
     /// A module can be **split across files**: FCS merges `module N.List` over a
     /// namespace's files, and an *earlier* fragment's member is reachable through
@@ -2615,7 +3221,7 @@ impl<'a> Resolver<'a> {
     ///   under `container_path ++ names`).
     ///
     /// Otherwise it stays a plain
-    /// [`ProjectShadowed`](super::state::AssemblyPath::ProjectShadowed) — a
+    /// [`Occupied`](super::state::AssemblyPath::Occupied) — a
     /// conservative deferral, never a wrong FSharp.Core commit.
     pub(super) fn self_module_shadow_only(&self, names: &[String]) -> bool {
         // In a `module rec` / `namespace rec`, FCS *does* put the module's own name
@@ -2663,7 +3269,7 @@ impl<'a> Resolver<'a> {
     /// `x`: inside `namespace A`, `M.x` binds the `.fsi`, not the root
     /// module), so every lower-priority binding — a project `Item` as much
     /// as an assembly member — must be withheld. The assembly tier repeats
-    /// the veto internally ([`ProjectItems::sig_screened_path`] via
+    /// the veto internally ([`ProjectItems::sig_screened_path`](super::model::ProjectItems::sig_screened_path) via
     /// [`Self::path_is_project_type_shadowed`]); this is the check the
     /// *project*-side commit sites run before binding.
     pub(super) fn sig_screens_reading_of(&self, written: &[String]) -> bool {
@@ -2673,7 +3279,7 @@ impl<'a> Resolver<'a> {
     /// The **case-lookup** flavour of [`Self::sig_screens_reading_of`], for
     /// the type-qualified case commit sites only: also exempt on an
     /// exactly-exported type-qualified case path
-    /// ([`ProjectItems::sig_screened_case_path`]) — the case lookup then
+    /// ([`ProjectItems::sig_screened_case_path`](super::model::ProjectItems::sig_screened_case_path)) — the case lookup then
     /// commits the signature's own case, which is what FCS binds there. The
     /// value-namespace lookups must keep the plain flavour: on such a path
     /// FCS resolves the signature's case ahead of a same-path
@@ -2694,7 +3300,7 @@ impl<'a> Resolver<'a> {
             }
         };
         screened(written)
-            || self.assembly_prefixes_by_priority().any(|prefix| {
+            || self.assembly_prefixes_by_priority().any(|(_, prefix)| {
                 let full: Vec<String> = prefix
                     .iter()
                     .cloned()
@@ -2704,7 +3310,7 @@ impl<'a> Resolver<'a> {
             })
     }
 
-    /// The *type-namespace* subset of [`Self::path_is_project_shadowed`]: whether
+    /// The *type-namespace* subset of [`Self::project_shadow_cause`]: whether
     /// `names` is a path F# resolves to a project **type** (a `type`/nested
     /// module rooting a type, not a *value* nor a bare top-level *module*) ahead
     /// of the referenced assemblies. Used to resolve an `open type` target, which
@@ -2713,7 +3319,40 @@ impl<'a> Resolver<'a> {
     /// even when an earlier `module Demo` has a `let Calc`), and neither does a
     /// bare top-level *module* of the same name (a module is not a type).
     pub(super) fn path_is_project_type_shadowed(&self, names: &[String]) -> bool {
-        self.rooted_at_current_module(names)
+        self.project_type_shadow_cause(names).is_some()
+    }
+
+    /// Whether `names` is rooted at a `type … with` **augmentation head** — this
+    /// file's ([`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals),
+    /// which explains the rule) or an earlier Compile-order one's
+    /// ([`ProjectItems::is_rooted_at_augmentation_head`](super::model::ProjectItems::is_rooted_at_augmentation_head)).
+    ///
+    /// **Value namespace only**, and deliberately absent from
+    /// [`Self::project_type_shadow_cause`]: the head names an existing type
+    /// rather than declaring one, so it cannot occupy a type path.
+    pub(super) fn path_is_augmentation_head_shadowed(&self, names: &[String]) -> bool {
+        let rooted_at = |p: &Vec<String>| names.starts_with(p.as_slice());
+        self.augmentation_head_locals.iter().any(rooted_at)
+            || self.augmentation_head_exports.iter().any(rooted_at)
+            || self.preceding.is_rooted_at_augmentation_head(names)
+    }
+
+    /// [`Self::path_is_project_type_shadowed`], *and which guard said so* — the
+    /// type walk's sibling of [`Self::project_shadow_cause`], including its
+    /// signature-screen-first rule and for the same reason.
+    pub(super) fn project_type_shadow_cause(&self, names: &[String]) -> Option<DeclineCause> {
+        // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
+        // a path under a signatured module root whose residual the
+        // signature *may* expose must not commit to a merged assembly
+        // member in ANY namespace — FCS binds the `.fsi` (probe:
+        // sig-exposed `Shared.shown` with a colliding `RefLib` → the
+        // `.fsi`), and Stage 1 has no signature identity to commit, so
+        // it defers. A residual absent from the signature text falls
+        // through to the assembly exactly as FCS does.
+        if self.preceding.sig_screened_path(names) {
+            return Some(DeclineCause::SignatureScreened);
+        }
+        let shadowed = self.rooted_at_current_module(names)
             || self
                 .nested_module_locals
                 .iter()
@@ -2731,18 +3370,10 @@ impl<'a> Resolver<'a> {
             // ([`ProjectItems::is_exact_project_module`]) is **not** a type
             // shadow — a module is not a type, so it never shadows a same-named
             // assembly type in type position (FCS); it lives in the value-only
-            // [`Self::path_is_project_shadowed`]. A *nested* module still defers
+            // [`Self::project_shadow_cause`]. A *nested* module still defers
             // here (its qualified path may root a project type we model later).
-            || self.preceding.is_rooted_at_nested_module(names)
-            // Stage-1 signature screen (`docs/fsi-signature-restriction-plan.md`):
-            // a path under a signatured module root whose residual the
-            // signature *may* expose must not commit to a merged assembly
-            // member in ANY namespace — FCS binds the `.fsi` (probe:
-            // sig-exposed `Shared.shown` with a colliding `RefLib` → the
-            // `.fsi`), and Stage 1 has no signature identity to commit, so
-            // it defers. A residual absent from the signature text falls
-            // through to the assembly exactly as FCS does.
-            || self.preceding.sig_screened_path(names)
+            || self.preceding.is_rooted_at_nested_module(names);
+        shadowed.then_some(DeclineCause::ProjectTypePathShadow)
     }
 
     /// Record a qualified in-file enum-case path `Color.Red` (`type_seg`,
@@ -2772,14 +3403,14 @@ impl<'a> Resolver<'a> {
     ///
     /// 1. **Head** `Pal` → a **candidate loop** over the same-file containers that
     ///    declare it in a namespace that can own a dotted head
-    ///    ([`DeclKinds::stops_dotted_head`]: the module namespace — module / alias —
+    ///    ([`DeclKinds::stops_dotted_head`](super::state::DeclKinds::stops_dotted_head): the module namespace — module / alias —
     ///    plus, in expression position, a `let` value; a type / union-case ctor /
     ///    active pattern / exception ctor never hides a farther module, so those
     ///    containers are *skipped*, FCS-probed both positions). The walk spans the
     ///    current namespace and enclosing modules within it (`k >= namespace_depth`,
     ///    innermost first; plus the **root** only in a *headerless* file) — **no
     ///    opens tier** (F# prefers the lexically-enclosing module over an
-    ///    `open`-supplied one). A non-clean stop ([`DeclKinds::is_clean_module_head`],
+    ///    `open`-supplied one). A non-clean stop ([`DeclKinds::is_clean_module_head`](super::state::DeclKinds::is_clean_module_head),
     ///    position-aware: a co-declared value disqualifies only in expression
     ///    position) → [`Miss`](SameFileQualified::Miss) (the head is committed /
     ///    redirected — a cross-file branch may try). A clean candidate that is the
@@ -3374,6 +4005,8 @@ impl<'a> Resolver<'a> {
     /// one is in scope.
     pub(super) fn record_qualified_case_pattern(&mut self, segs: &[SyntaxToken]) {
         if self.opaque_value_open || self.opaque_dotted_open || self.unmodelled_open_active {
+            // A definite decline by a named gate, so the census says so.
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::OpaqueOpen));
             return;
         }
         // A `global.`-rooted head (now parseable — see `pat.rs`) is the
@@ -3387,6 +4020,7 @@ impl<'a> Resolver<'a> {
         // threading rooting through these helpers as the module path does in
         // `decls.rs`.
         if segs.first().is_some_and(|t| t.text() == "global") {
+            self.record_path_decline(segs, DeclineSite::pre_walk(DeclineCause::GlobalMarkerHead));
             return;
         }
         if let [type_seg, case_seg] = segs
@@ -3410,12 +4044,20 @@ impl<'a> Resolver<'a> {
             // case-flavour exemption, since this site commits exactly the
             // type-qualified case the signature exports.
             if self.sig_screens_case_reading_of(&written) {
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SignatureScreened),
+                );
                 return;
             }
             // A same-file type owning this exact case roots the reference in
             // this file, so the cross-file index must not commit an earlier
             // file's same-written-path case (the expression path's twin).
             if self.cross_file_case_shadowed_same_file(&written) {
+                self.record_path_decline(
+                    segs,
+                    DeclineSite::pre_walk(DeclineCause::SameFileCaseShadow),
+                );
                 return;
             }
             let project = self.cross_file_type_case_tiered(&written, false);
@@ -3438,6 +4080,9 @@ impl<'a> Resolver<'a> {
             // cross-DLL collision, a type whose surface we cannot enumerate) is
             // still something FCS may bind the head to, so it must veto the
             // project reading just the same.
+            // The guard that declined the assembly reading, when one did —
+            // recorded after the match, which needs `&mut self`.
+            let mut pattern_decline: Option<DeclineSite> = None;
             let winner = match project {
                 Some((CaseTier::Alias, id)) => Some(Ok(id)),
                 Some((_, id)) => match segs {
@@ -3445,6 +4090,14 @@ impl<'a> Resolver<'a> {
                         if self
                             .assembly_case_head_contends_at_an_open(id_text(type_seg.text())) =>
                     {
+                        // A ladder guard rejected the project reading: an
+                        // explicit `open` puts an assembly entity of the head's
+                        // name in scope above it. Always that tier, since the
+                        // helper walks the explicit opens alone.
+                        pattern_decline = Some(DeclineSite {
+                            cause: DeclineCause::AssemblyCaseHeadContends,
+                            tier: DeclineTier::ExplicitOpen,
+                        });
                         None
                     }
                     _ => Some(Ok(id)),
@@ -3452,15 +4105,26 @@ impl<'a> Resolver<'a> {
                 // Nothing project-side reads the path: the assembly walk decides,
                 // subject to the project-simple-name guard.
                 None => match segs {
-                    [type_seg, case_seg]
-                        if !self.project_binds_type_simple_name(id_text(type_seg.text())) =>
+                    // A project type of the head's simple name shadows every
+                    // assembly reading, so the walk is skipped — a deliberate
+                    // pre-walk decline, and the census names it as one.
+                    [type_seg, _]
+                        if self.project_binds_type_simple_name(id_text(type_seg.text())) =>
                     {
-                        self.assembly_case_pattern_reading(type_seg, case_seg)
-                            .map(Err)
+                        pattern_decline =
+                            Some(DeclineSite::pre_walk(DeclineCause::ProjectTypeShadow));
+                        None
+                    }
+                    [type_seg, case_seg] => {
+                        let (reading, site) =
+                            self.assembly_case_pattern_reading(type_seg, case_seg);
+                        pattern_decline = site;
+                        reading.map(Err)
                     }
                     _ => None,
                 },
             };
+            let nothing_bound = winner.is_none();
             match winner {
                 Some(Ok(id)) => {
                     let (first, last) = (
@@ -3482,6 +4146,12 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 None => {}
+            }
+            // Only when nothing bound: a guard that declined the *assembly*
+            // reading while a project one won is not what decided the pattern,
+            // and recording it would attribute a decline that never happened.
+            if nothing_bound && let Some(site) = pattern_decline {
+                self.record_path_decline(segs, site);
             }
         }
     }
@@ -3523,7 +4193,7 @@ impl<'a> Resolver<'a> {
     /// no evidence about *this* name at all. All of these stay documented
     /// completeness gaps, the same status the type path gives them.
     fn assembly_case_head_contends_at_an_open(&self, type_name: &str) -> bool {
-        self.explicit_open_reading_prefixes().any(|prefix| {
+        self.explicit_open_reading_prefixes().any(|(_, prefix)| {
             !self
                 .assemblies
                 .public_entities_named(prefix, type_name)
@@ -3573,11 +4243,15 @@ impl<'a> Resolver<'a> {
     /// [`Self::project_binds_type_simple_name`] can still stop it committing, and
     /// its caller applies that at commit time so a contender the project cannot
     /// bind still gets to out-rank — and so veto — a lower-tier project reading.
+    /// The second element is the guard that declined, when one did — the
+    /// census's share of this walk. Returned rather than recorded because the
+    /// reading is computed with `&self`; the caller owns the recording, keyed
+    /// at the type head.
     fn assembly_case_pattern_reading(
         &self,
         type_seg: &SyntaxToken,
         case_seg: &SyntaxToken,
-    ) -> Option<Vec<(TextRange, Resolution)>> {
+    ) -> (Option<Vec<(TextRange, Resolution)>>, Option<DeclineSite>) {
         let type_name = id_text(type_seg.text());
         let case_name = id_text(case_seg.text());
         // The head is the whole source path this walk looks up — the `Case` is a
@@ -3590,7 +4264,10 @@ impl<'a> Resolver<'a> {
         // pre-walk, see [`Self::dropped_type_could_root_this_path`]. Ahead of
         // both branches below, since each commits a reading of its own.
         if self.dropped_type_could_root_this_path(&head_path) {
-            return None;
+            return (
+                None,
+                Some(DeclineSite::pre_walk(DeclineCause::DroppedTypeCouldRoot)),
+            );
         }
         let leaf = |prefix: &[String]| {
             self.assembly_case_pattern_records(prefix, type_name, case_name, type_seg, case_seg)
@@ -3632,7 +4309,12 @@ impl<'a> Resolver<'a> {
             // the risks left here: the pre-walk gate above has already declined
             // for it, on this branch and the full walk alike.
             if self.assemblies.retained_auto_open_is_uncertain() {
-                return None;
+                return (
+                    None,
+                    Some(DeclineSite::pre_walk(
+                        DeclineCause::ManifestSurfaceUncertain,
+                    )),
+                );
             }
             return match self.resolve_assembly_path_over(
                 self.prefixes_outranking_the_manifest_surface(),
@@ -3640,13 +4322,24 @@ impl<'a> Resolver<'a> {
                 false,
                 shadow_at,
             ) {
-                TieredResolution::Resolved(recs) => Some(recs),
-                TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+                TieredResolution::Resolved { payload, .. } => (Some(payload), None),
+                TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+                // A no-match here is the surface's contest: the tiers above it
+                // declined, and the surface itself is unwalkable.
+                TieredResolution::NoMatch => (
+                    None,
+                    Some(DeclineSite {
+                        cause: DeclineCause::ManifestSurfaceContest,
+                        tier: DeclineTier::WholeWalk,
+                    }),
+                ),
             };
         }
         match self.resolve_assembly_path_tiered(leaf, false, shadow_at) {
-            TieredResolution::Resolved(reading) => Some(reading),
-            TieredResolution::ShadowDeferred | TieredResolution::NoMatch => None,
+            TieredResolution::Resolved { payload, .. } => (Some(payload), None),
+            TieredResolution::ShadowDeferred(site) => (None, Some(site)),
+            // Nothing resolves or shadows the head: no guard declined it.
+            TieredResolution::NoMatch => (None, None),
         }
     }
 
@@ -3823,7 +4516,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Any declaration of `member` in the module blocks transparency, in either
     /// position. FCS does backtrack past a plain `let` value in *pattern*
-    /// position (a value is no pattern constructor), but [`DeclKinds`] does not
+    /// position (a value is no pattern constructor), but [`DeclKinds`](super::state::DeclKinds) does not
     /// record `[<Literal>]`-ness and a literal **is** a constant pattern, so
     /// that refinement is not available here; the cell stays an availability
     /// gap in `companion_module_case_matrix`.
@@ -3865,7 +4558,7 @@ impl<'a> Resolver<'a> {
     /// A referenced module or static class at the same path merges with the
     /// local fragment, and FCS's modules-first search finds the member in the
     /// assembly half — so a local fragment's silence proves nothing unless this
-    /// says so (codex [P2], FCS-probed: a project `module Collide` beside the
+    /// says so (codex \[P2\], FCS-probed: a project `module Collide` beside the
     /// qualifier fixture's `QP.ModHalf.Collide` binds the assembly's
     /// `fromModule`, not a co-named local union case).
     ///
@@ -3878,13 +4571,13 @@ impl<'a> Resolver<'a> {
     ///   "no such module". Two DLLs can encode `A.B` differently — a top-level
     ///   `module A.B` in one, a nested `B` under root module `A` in the other —
     ///   and FCS merges both, so every split and every root has to be searched
-    ///   (codex round 2 [P2]).
+    ///   (codex round 2 \[P2\]).
     /// - `opened_assembly_type` still runs, for a *non-module* static class at
     ///   `mp` that `opened_assembly_modules` filters out.
     /// - [`any_split_of_a_module_path_has_a_dropped_type`](crate::AssemblyEnv::any_split_of_a_module_path_has_a_dropped_type):
     ///   a type the projector could not decode is invisible to both lookups and
     ///   may *be* the module here, so an undecodable type anywhere along the
-    ///   path leaves absence unproven (codex round 2 [P2]).
+    ///   path leaves absence unproven (codex round 2 \[P2\]).
     fn assemblies_provably_lack_module_path(&self, mp: &[String]) -> bool {
         !self.assemblies.has_namespace(mp)
             && self.opened_assembly_modules(mp).is_empty()

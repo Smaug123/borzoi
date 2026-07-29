@@ -571,7 +571,18 @@ fn assembly_resolution_agrees_with_fcs() {
 /// range covers our segment with the same (arity-stripped) full name.
 /// `needle` is the type-name segment; `expected_full` its entity's full name.
 fn assert_type_use_complete(src: &str, needle: &str, expected_full: &str) {
-    assert_use_complete(src, needle, expected_full, false);
+    assert_use_complete(src, needle, expected_full, false, 0);
+}
+
+/// [`assert_type_use_complete`] against the `skip`-th *later* occurrence FCS
+/// resolves to `expected_full`, for a snippet that names the same type twice
+/// and asks about the second: `type Demo.Calc with …` followed by an annotation
+/// of `Demo.Calc`. FCS resolves the augmentation head as well, but that head is
+/// a shape we do not resolve into an assembly at all (its typars sit on the
+/// type-defn header rather than its long-ident, so the arity-keyed lookup has
+/// nothing to key on) — a separate completeness gap from the annotation's.
+fn assert_later_type_use_complete(src: &str, needle: &str, expected_full: &str, skip: usize) {
+    assert_use_complete(src, needle, expected_full, false, skip);
 }
 
 /// Value/member-position counterpart of [`assert_type_use_complete`]: a use FCS
@@ -579,10 +590,16 @@ fn assert_type_use_complete(src: &str, needle: &str, expected_full: &str) {
 /// side too (the value path's rooting type is an `Entity` at its segment; the
 /// whole path a `Member`). Matched by containment + (arity-stripped) full name.
 fn assert_value_use_complete(src: &str, needle: &str, expected_full: &str) {
-    assert_use_complete(src, needle, expected_full, true);
+    assert_use_complete(src, needle, expected_full, true, 0);
 }
 
-fn assert_use_complete(src: &str, needle: &str, expected_full: &str, allow_member: bool) {
+fn assert_use_complete(
+    src: &str,
+    needle: &str,
+    expected_full: &str,
+    allow_member: bool,
+    skip: usize,
+) {
     let fixture = ensure_assembly_fixture_built();
 
     let bytes = std::fs::read(fixture).expect("read fixture dll");
@@ -608,7 +625,7 @@ fn assert_use_complete(src: &str, needle: &str, expected_full: &str, allow_membe
     let start = src
         .match_indices(needle)
         .map(|(i, _)| i)
-        .find(|&start| {
+        .filter(|&start| {
             let end = start + needle.len();
             uses.iter()
                 .filter(|u| u.start <= start && end <= u.end)
@@ -620,8 +637,16 @@ fn assert_use_complete(src: &str, needle: &str, expected_full: &str, allow_membe
                         == Some(expected_full)
                 })
         })
+        .nth(skip)
         .unwrap_or_else(|| {
-            panic!("oracle: FCS does not resolve any {needle:?} → {expected_full} in {src:?}")
+            panic!(
+                "oracle: FCS does not resolve a {}{needle:?} → {expected_full} in {src:?}",
+                if skip == 0 {
+                    String::new()
+                } else {
+                    format!("{skip}-skipped ")
+                }
+            )
         });
     let end = start + needle.len();
 
@@ -711,6 +736,32 @@ fn type_position_resolution_is_complete_in_the_assembly_envelope() {
         "namespace Demo\n\nmodule M =\n    let f (x : Sub.Thing) = x\n",
         "Thing",
         "Demo.Sub.Thing",
+    );
+    // A `type … with` augmentation names an existing type, so it occupies
+    // nothing in the type namespace: a later annotation of the augmented type
+    // still resolves, in both the qualified and the opened spelling.
+    assert_later_type_use_complete(
+        "module M\ntype Demo.Calc with\n    member this.Zz = 1\nlet f (x : Demo.Calc) = x\n",
+        "Calc",
+        "Demo.Calc",
+        1,
+    );
+    assert_later_type_use_complete(
+        "module M\nopen Demo\ntype Calc with\n    member this.Zz = 1\nlet f (x : Calc) = x\n",
+        "Calc",
+        "Demo.Calc",
+        1,
+    );
+    // …and where the augmented name reaches the assembly only through a *chained*
+    // open: `open Demo; open Sub` shortens to `Demo.Sub`, but `RootOnly` exists
+    // only in the root `Sub`, so both the head and the annotation are the root
+    // reading. An augmentation must not collapse that to the relative one either.
+    assert_later_type_use_complete(
+        "module M\nopen Demo\nopen Sub\ntype RootOnly with\n    member this.Zz = 1\n\
+         let f (x : RootOnly) = x\n",
+        "RootOnly",
+        "Sub.RootOnly",
+        1,
     );
     // Chained open: `open Demo; open Sub` shortens the second open through the
     // first (→ `Demo.Sub`), so `Deep` (only in `Demo.Sub`) is `Demo.Sub.Deep`.

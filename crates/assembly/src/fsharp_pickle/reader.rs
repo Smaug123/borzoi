@@ -544,7 +544,7 @@ impl<'a> PickleReader<'a> {
     }
 
     /// Assert the B cursor is at end of input (or absent). Mirrors
-    /// [`expect_eof`] for the sibling phase-1 B stream — D5 says we
+    /// [`Self::expect_eof`] for the sibling phase-1 B stream — D5 says we
     /// fail loud on any wire content we don't understand, so trailing
     /// B bytes after the walker finishes have to surface as an error
     /// rather than be silently dropped.

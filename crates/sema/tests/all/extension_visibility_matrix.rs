@@ -32,6 +32,15 @@
 //! Access channels: bare after `open`, bare after auto-open, module-qualified, bare
 //! after `open type`, type-qualified.
 //!
+//! A third axis, [`Cell::decls`], puts the declaration in the **file under test**
+//! instead: `type Demo.Calc with …` augmenting an assembly type from project
+//! source. Those two are not the same shape — the fixture's augmentations are
+//! compiled in and merely read, while a project one changes what this file's own
+//! names mean, and only the second can be narrowed by a resolver change. Its
+//! winner is a *project* symbol, which the fixture-assembly filter reads as
+//! "nothing", so such a cell expects `None` and naming the assembly's member
+//! there is a wrong target rather than a deferral.
+//!
 //! The cells are *generated*, not hand-picked, and the expectation is whatever FCS
 //! says — nothing here hardcodes a rule. When a new declaration shape or channel is
 //! added, its whole row/column is checked for free.
@@ -60,6 +69,12 @@ fn ensure_autoopen_fixture_built() -> &'static Path {
 struct Cell {
     /// What the row/column is, for the failure message.
     label: &'static str,
+    /// Lines the file under test declares before its opens — the *project*-side
+    /// declaration axis. A `type … with` here augments an assembly type from
+    /// project source, which is a different thing from the fixture assembly's own
+    /// augmentations every other row exercises: those are already compiled in,
+    /// while these change what the file's own names mean.
+    decls: &'static [&'static str],
     /// Lines that bring the name into scope (`open …`), if any.
     opens: &'static [&'static str],
     /// The exact source text of the reference — the probe span.
@@ -72,36 +87,42 @@ const CELLS: &[Cell] = &[
     // ---- module `open`: augmentations are invisible; plain `let`s are not ----
     Cell {
         label: "open / instance augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "InstAug",
         args: " \"s\"",
     },
     Cell {
         label: "open / static augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "StatAug",
         args: " \"s\"",
     },
     Cell {
         label: "open / renamed augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "RenamedAug",
         args: " \"s\"",
     },
     Cell {
         label: "open / generic augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "GenericAug",
         args: " \"s\"",
     },
     Cell {
         label: "open / plain let",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "plainLet",
         args: " 1",
     },
     Cell {
         label: "open / let colliding with an augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.Aug"],
         probe: "Clash",
         args: " 1",
@@ -109,18 +130,21 @@ const CELLS: &[Cell] = &[
     // ---- auto-open: same rules, reached through the implicit fold ----
     Cell {
         label: "auto-open / instance augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix"],
         probe: "AutoInstAug",
         args: " \"s\"",
     },
     Cell {
         label: "auto-open / static augmentation",
+        decls: &[],
         opens: &["open Demo.ExtMatrix"],
         probe: "AutoStatAug",
         args: " \"s\"",
     },
     Cell {
         label: "auto-open / plain let",
+        decls: &[],
         opens: &["open Demo.ExtMatrix"],
         probe: "autoPlainLet",
         args: " 1",
@@ -128,6 +152,7 @@ const CELLS: &[Cell] = &[
     // ---- `[<Extension>]` module: the `let`s are values, so they ARE in scope ----
     Cell {
         label: "open / [<Extension>] module let",
+        decls: &[],
         opens: &["open Demo.ExtMatrix.ExtAttrLets"],
         probe: "ExtAttrLet",
         args: " 1",
@@ -135,24 +160,28 @@ const CELLS: &[Cell] = &[
     // ---- module-qualified: augmentations are unreachable here too ----
     Cell {
         label: "module-qualified / instance augmentation",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.Aug.InstAug",
         args: " \"s\"",
     },
     Cell {
         label: "module-qualified / static augmentation",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.Aug.StatAug",
         args: " \"s\"",
     },
     Cell {
         label: "module-qualified / plain let",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.Aug.plainLet",
         args: " 1",
     },
     Cell {
         label: "module-qualified / let colliding with an augmentation",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.Aug.Clash",
         args: " 1",
@@ -160,18 +189,21 @@ const CELLS: &[Cell] = &[
     // ---- `open type` on an F#-declared C#-style extension type ----
     Cell {
         label: "open type / C#-style extension static",
+        decls: &[],
         opens: &["open type Demo.ExtMatrix.ExtType"],
         probe: "CsStyle",
         args: " 1",
     },
     Cell {
         label: "open type / plain static beside it",
+        decls: &[],
         opens: &["open type Demo.ExtMatrix.ExtType"],
         probe: "PlainStatic",
         args: " 1",
     },
     Cell {
         label: "open type / curried C#-style extension static",
+        decls: &[],
         opens: &["open type Demo.ExtMatrix.ExtType"],
         probe: "CurriedExt",
         args: " 1 2",
@@ -179,12 +211,14 @@ const CELLS: &[Cell] = &[
     // ---- type-qualified: a C#-style extension static IS reachable ----
     Cell {
         label: "type-qualified / C#-style extension static",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.ExtType.CsStyle",
         args: " 1",
     },
     Cell {
         label: "type-qualified / plain static",
+        decls: &[],
         opens: &[],
         probe: "Demo.ExtMatrix.ExtType.PlainStatic",
         args: " 1",
@@ -192,24 +226,28 @@ const CELLS: &[Cell] = &[
     // ---- the C# assembly: a real Roslyn-emitted extension method ----
     Cell {
         label: "open type / Roslyn extension method",
+        decls: &[],
         opens: &["open type Demo.Exts"],
         probe: "Doubled",
         args: " 1",
     },
     Cell {
         label: "open type / plain static in the extension class",
+        decls: &[],
         opens: &["open type Demo.Exts"],
         probe: "Origin",
         args: " ()",
     },
     Cell {
         label: "type-qualified / Roslyn extension method",
+        decls: &[],
         opens: &[],
         probe: "Demo.Exts.Doubled",
         args: " 1",
     },
     Cell {
         label: "open type / plain C# static class",
+        decls: &[],
         opens: &["open type Demo.Calc"],
         probe: "Zero",
         args: " ()",
@@ -228,18 +266,21 @@ const CELLS: &[Cell] = &[
     // lower tier (this is exactly the round-4 bug, and it fails without that fix).
     Cell {
         label: "tiered qualified / instance augmentation",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "M.InstAug",
         args: " \"s\"",
     },
     Cell {
         label: "tiered qualified / static augmentation",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "M.StatAug",
         args: " \"s\"",
     },
     Cell {
         label: "tiered qualified / renamed augmentation",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "M.RenamedAug",
         args: " \"s\"",
@@ -249,6 +290,7 @@ const CELLS: &[Cell] = &[
     // three cells above and fail this one.
     Cell {
         label: "tiered qualified / plain let in the higher tier",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "M.TierPlain",
         args: " 1",
@@ -257,12 +299,14 @@ const CELLS: &[Cell] = &[
     // through either — the mirror image of the augmentation cells above.
     Cell {
         label: "tiered type-qualified / C#-style extension static",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "TierType.CsStyle",
         args: " 1",
     },
     Cell {
         label: "tiered type-qualified / plain static",
+        decls: &[],
         opens: &["open Demo.TierLow", "open Demo.TierHigh"],
         probe: "TierType.PlainStatic",
         args: " 1",
@@ -273,6 +317,7 @@ const CELLS: &[Cell] = &[
     // member alone, only on (member, channel).
     Cell {
         label: "tiered open type / C#-style extension static hidden by the higher tier",
+        decls: &[],
         opens: &[
             "open type Demo.TierLow.TierType",
             "open type Demo.TierHigh.TierType",
@@ -282,6 +327,7 @@ const CELLS: &[Cell] = &[
     },
     Cell {
         label: "tiered open type / plain static in the higher tier",
+        decls: &[],
         opens: &[
             "open type Demo.TierLow.TierType",
             "open type Demo.TierHigh.TierType",
@@ -296,6 +342,7 @@ const CELLS: &[Cell] = &[
     // F#-assembly twin above can only ever be a deferral (see KNOWN_GAPS).
     Cell {
         label: "tiered open type / Roslyn extension method hidden by the higher tier",
+        decls: &[],
         opens: &["open type Demo.TierLow.TierCs", "open type Demo.Exts"],
         probe: "Doubled",
         args: " 1",
@@ -304,8 +351,54 @@ const CELLS: &[Cell] = &[
     // the name — a fix that made the whole extension *class* fall through fails here.
     Cell {
         label: "tiered open type / plain static in the Roslyn extension class",
+        decls: &[],
         opens: &["open type Demo.TierLow.TierCs", "open type Demo.Exts"],
         probe: "Origin",
+        args: " ()",
+    },
+    // ---- PROJECT-SIDE augmentation: the file under test augments an assembly
+    // type. Every row above augments inside the *fixture assembly*, where the
+    // augmentation is already compiled in; here it is project source, so it
+    // changes what this file's own names mean and the resolver must notice.
+    //
+    // FCS resolves a project extension member to a *project* symbol, which the
+    // fixture-assembly filter reads as "nothing" — so a cell whose winner is the
+    // extension expects `None`, and naming the assembly's member there is a wrong
+    // target, not a deferral.
+    //
+    // fsi, with `type Demo.Calc with static member Zero (x: int) = x + 1000`
+    // ahead of `open type Demo.Calc`: bare `Zero 5` is 1005. The extension joins
+    // the intrinsic's method group and is selectable, so enumerating the
+    // assembly's statics into bare scope wrong-targets it.
+    Cell {
+        label: "open type / statics of a type this file augments",
+        decls: &[
+            "type Demo.Calc with",
+            "    static member Zero (x : int) = x",
+        ],
+        opens: &["open type Demo.Calc"],
+        probe: "Zero",
+        args: " 5",
+    },
+    // The converse guard, and the reason the veto is keyed on the augmented
+    // *path* rather than on "this file augments something": an augmentation of an
+    // unrelated type must leave `open type Demo.Calc` fully knowable.
+    Cell {
+        label: "open type / statics under an augmentation of an unrelated type",
+        decls: &["type Demo.Thing with", "    member this.Zz = 1"],
+        opens: &["open type Demo.Calc"],
+        probe: "Zero",
+        args: " ()",
+    },
+    // The same shape in the type-qualified channel, where the intrinsic wins
+    // outright (fsi: `Demo.Calc.Answer` is 42, not the extension's 99) — so our
+    // deferral here is conservatism, recorded as a known gap rather than a cell we
+    // pass by accident.
+    Cell {
+        label: "type-qualified / intrinsic static of a type this file augments",
+        decls: &["type Demo.Calc with", "    static member Fresh = 7"],
+        opens: &[],
+        probe: "Demo.Calc.Zero",
         args: " ()",
     },
 ];
@@ -316,6 +409,18 @@ const CELLS: &[Cell] = &[
 /// test until its entry is deleted. Nothing may be added here for a cell where we
 /// name the wrong target: that is a bug, not a gap.
 const KNOWN_GAPS: &[(&str, &str)] = &[
+    // A project augmentation of `Demo.Calc` vetoes every value path rooted at
+    // `Demo.Calc`, including this intrinsic static — which fsi says the intrinsic
+    // wins outright (`Demo.Calc.Answer` is 42 beside an extension's 99). The veto
+    // is not name-keyed: it cannot tell an intrinsic the extension only *joins*
+    // (`Zero`, where the extension is selectable and committing the intrinsic
+    // would be wrong) from one it cannot touch. Closing it needs the augmentation's
+    // member names and shapes compared against the assembly's, which is the
+    // extension gate's (EX-3) currency rather than the path shadow's.
+    (
+        "type-qualified / intrinsic static of a type this file augments",
+        "the project augmentation's path veto is not member-name-keyed",
+    ),
     // (The three `open <assembly module>` cells this matrix found on its first run
     // are CLOSED — Slice A of `docs/assembly-module-open-plan.md`. Their entries are
     // deleted, which is what the ratchet below demands: a fixed gap fails the test
@@ -353,6 +458,10 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
 /// The snippet for one cell, and the byte span of its probe within it.
 fn cell_source(cell: &Cell) -> (String, TextRange) {
     let mut src = String::new();
+    for decl in cell.decls {
+        src.push_str(decl);
+        src.push('\n');
+    }
     for open in cell.opens {
         src.push_str(open);
         src.push('\n');

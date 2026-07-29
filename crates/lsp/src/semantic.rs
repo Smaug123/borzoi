@@ -38,7 +38,7 @@ use crate::workspace::{ServedTfm, Workspace};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ReferencedAssemblyProjection {
     entities: Vec<Entity>,
-    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`] for this
+    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_abbreviations_unknowable) for this
     /// DLL, carried through the on-disk cache so a hit reproduces the same
     /// [`AbbreviationVisibility`] a fresh enumeration would compute.
     fsharp_abbreviations_unknowable: bool,
@@ -53,14 +53,14 @@ struct ReferencedAssemblyProjection {
     /// so an old cache entry (a successful read) deserialises as `false`.
     #[serde(default)]
     auto_opens_unreadable: bool,
-    /// [`AssemblyProjectionSkips::fsharp_extension_index_unknowable`] for this DLL —
+    /// [`AssemblyProjectionSkips::fsharp_extension_index_unknowable`](borzoi_assembly::AssemblyProjectionSkips::fsharp_extension_index_unknowable) for this DLL —
     /// its F#-native extension-member index could not be built (absent/undecodable
     /// pickle). Folded into the env's per-assembly extension-knowability so a broken
     /// FSharp.Core pickle (abbreviation-exempt but extension-blind) still defers the
     /// name-keyed gate. `#[serde(default)]` for old cache entries.
     #[serde(default)]
     fsharp_extension_index_unknowable: bool,
-    /// [`AssemblyProjectionSkips::fsharp_signature_non_authoritative`] for this DLL —
+    /// [`AssemblyProjectionSkips::fsharp_signature_non_authoritative`](borzoi_assembly::AssemblyProjectionSkips::fsharp_signature_non_authoritative) for this DLL —
     /// its host F# pickle was not authoritative (absent/undecodable, or a
     /// `--standalone` image with foreign CCUs), so its `EntityKind::Module` markers
     /// are IL heuristics FCS does not share. Folded into the env so semantic-token
@@ -1613,6 +1613,19 @@ struct GraphRefTargets {
     /// closure). The sidecar expands each one's own transitive subtree, so the
     /// boundary set is exactly the set to drive it with — never the interior.
     csharp: Vec<PathBuf>,
+    /// Nodes whose own `<ProjectReference>` list the walk **suppressed**
+    /// ([`crate::project_graph::ProjectNode::references_uncertain`]), rather
+    /// than finding empty.
+    ///
+    /// Their references were dropped before this set was built, so they are
+    /// absent from [`Self::fsharp`] and [`Self::csharp`] and no per-edge
+    /// outcome can be produced for them — the conservation count would agree
+    /// with itself over a set they had already been filtered out of. Naming
+    /// the *suppressing node* is what survives the loss: one
+    /// [`ReferenceOutcome::Unread`] per such node says an unknown number of
+    /// assemblies is missing, which is exactly the claim the incompleteness
+    /// mark needs.
+    suppressed: Vec<PathBuf>,
 }
 
 /// One F# node of the closure, as the env fold consumes it: the
@@ -1649,6 +1662,11 @@ fn graph_ref_targets(graph: &ProjectGraph, entry: &Path) -> GraphRefTargets {
     for node in &graph.nodes {
         match node.kind {
             ProjectKind::FSharp => {
+                // Recorded for the entry too: the entry's own suppressed
+                // references are missing from the env just as a sibling's are.
+                if node.references_uncertain {
+                    targets.suppressed.push(canonicalise(&node.path));
+                }
                 if !paths_equal(&node.path, &entry_key) {
                     targets.fsharp.push(FsharpRefTarget {
                         path: canonicalise(&node.path),
@@ -1846,7 +1864,26 @@ fn resolve_reference_dlls(
         .chain(ref_dlls)
         .chain(csharp_ref_dlls)
         .collect();
-    let edges: Vec<ReferenceEdge> = fsharp_edges.into_iter().chain(csharp_edges).collect();
+    // One outcome per node whose references were suppressed. There is nothing
+    // to look for — the edges are gone — so this is a pure incompleteness
+    // claim, and `transient: false` because only an edit to that project can
+    // change it.
+    let suppressed_edges: Vec<ReferenceEdge> = ref_targets
+        .suppressed
+        .iter()
+        .map(|project| ReferenceEdge {
+            project: project.clone(),
+            outcome: ReferenceOutcome::Unread {
+                why: "the project's own reference list could not be trusted",
+                transient: false,
+            },
+        })
+        .collect();
+    let edges: Vec<ReferenceEdge> = fsharp_edges
+        .into_iter()
+        .chain(csharp_edges)
+        .chain(suppressed_edges)
+        .collect();
     // Conservation: every edge the graph walk *retained* is accounted for, so a
     // reference that contributed nothing is recorded as missing rather than
     // inferred from a shortfall — the distinction the whole grade rests on. A
@@ -1854,17 +1891,16 @@ fn resolve_reference_dlls(
     // reference silently stopped being tracked, which the suite must catch, but
     // in release the right degradation is to serve what we have.
     //
-    // "Retained" is the honest scope, and it is not the whole story: a project
-    // whose `<ProjectReference>`s the evaluator could not trust
-    // (`project_references_uncertain`) has its *entire* edge list emptied by
-    // `workspace::edges_of` before `GraphRefTargets` is built, so those
-    // references never reach this count and the env stays complete. Carrying
-    // that suppression through the graph is tracked separately; it needs a
-    // marker on the node, because by here the edges are simply gone.
+    // A project whose `<ProjectReference>`s the evaluator could not trust has
+    // its *entire* edge list emptied by `workspace::edges_of` before
+    // `GraphRefTargets` is built. Those references cannot be counted — they are
+    // gone — so the node that lost them is counted instead
+    // ([`GraphRefTargets::suppressed`]), one outcome each.
     debug_assert_eq!(
         edges.len(),
-        ref_targets.fsharp.len() + ref_targets.csharp.len(),
-        "every declared project-reference edge must yield exactly one outcome"
+        ref_targets.fsharp.len() + ref_targets.csharp.len() + ref_targets.suppressed.len(),
+        "every retained project-reference edge, and every node whose edges were \
+         suppressed, must yield exactly one outcome"
     );
     // A transient F# output-scan failure has no `retryable` channel of its own —
     // that flag came from the sidecar — but it needs one for the same reason:
@@ -1999,7 +2035,8 @@ fn csharp_project_ref_edges(
 /// flattens `<ProjectReference>` transitively) with its base `framework`
 /// field, and `pick_producer_tfm` recovers each producer's platform-qualified
 /// TFM from the producer's declared list. Keys are canonicalised to match
-/// [`ResolvedAssemblies::project_refs`] / `project_ref_tfms`.
+/// [`ResolvedAssemblies::project_ref_tfms`](crate::project_assets::ResolvedAssemblies::project_ref_tfms)
+/// / `project_ref_assembly_names`.
 ///
 /// Best-effort: empty when the entry's TFM is unknown (no `chosen_tfm`) or
 /// the resolve fails (partial restore, stale assets) — the caller falls back
@@ -2091,7 +2128,7 @@ fn dotnet_exe_for(dotnet_root: &Path) -> PathBuf {
 /// name ([`FsharpRefTarget::output_name`] — the trusted `$(TargetName)`,
 /// which is what MSBuild actually writes to `bin/`), else the entry assets
 /// file's recorded producer name
-/// ([`ResolvedAssemblies::project_ref_assembly_names`]). The assets name
+/// ([`ResolvedAssemblies::project_ref_assembly_names`](crate::project_assets::ResolvedAssemblies::project_ref_assembly_names)). The assets name
 /// is only a fallback because it records the **AssemblyName**, not the
 /// file name: probed (dotnet 10.0.301, 2026-07-10), a `TargetName`-renamed
 /// producer's assets say `bin/placeholder/<AssemblyName>.dll` while the
@@ -2191,7 +2228,7 @@ fn fsharp_project_ref_outcome(
 ///
 /// `output_name` is the producer's resolved output name — the caller
 /// recovers it from the entry's assets file or the graph node's own
-/// evaluation ([`fsharp_project_ref_dlls`] documents the precedence) and
+/// evaluation ([`fsharp_project_ref_outcome`] documents the precedence) and
 /// never guesses: a producer whose real output name doesn't match simply
 /// isn't located, degrading to under-resolution rather than pulling in an
 /// unrelated DLL.
@@ -4273,6 +4310,7 @@ mod tests {
             tfm: crate::project_graph::NodeTfm::NotEvaluated,
             output_name: None,
             output_dir: OutputDirVerdict::Unknown,
+            references_uncertain: false,
         }
     }
 
@@ -5155,6 +5193,80 @@ mod tests {
         ));
     }
 
+    /// A node whose reference list was suppressed reaches
+    /// [`GraphRefTargets::suppressed`], including the entry project itself —
+    /// its own dropped references are missing from the env exactly as a
+    /// sibling's are, even though the entry contributes no output DLL of its
+    /// own.
+    #[test]
+    fn graph_ref_targets_records_suppressed_nodes() {
+        let entry = Path::new("/p/App/App.fsproj");
+        let dep = Path::new("/p/LibA/LibA.fsproj");
+        let clean = Path::new("/p/LibB/LibB.fsproj");
+        let suppressed = |path: &Path| {
+            let mut node = graph_node(path, ProjectKind::FSharp);
+            node.references_uncertain = true;
+            node
+        };
+        let graph = ProjectGraph {
+            nodes: vec![
+                suppressed(entry),
+                suppressed(dep),
+                graph_node(clean, ProjectKind::FSharp),
+            ],
+            problems: Vec::new(),
+        };
+
+        let targets = graph_ref_targets(&graph, entry);
+        assert_eq!(
+            targets.suppressed,
+            vec![PathBuf::from(entry), PathBuf::from(dep)],
+            "both suppressed nodes are recorded; a clean one is not"
+        );
+        // The entry is still excluded from the *reference* set — it is not one
+        // of its own references — so the two lists are independent.
+        assert_eq!(
+            targets.fsharp.iter().map(|t| &t.path).collect::<Vec<_>>(),
+            vec![&PathBuf::from(dep), &PathBuf::from(clean)]
+        );
+    }
+
+    /// A suppressed node earns exactly one [`ReferenceOutcome::Unread`], which
+    /// is what makes the env's identity set incomplete. There is no edge to
+    /// attach it to — the references are gone — so it is the *losing node*
+    /// that is named.
+    #[test]
+    fn a_suppressed_node_makes_the_identity_set_incomplete() {
+        let suppressed = PathBuf::from("/p/LibA/LibA.fsproj");
+        let edges: Vec<ReferenceEdge> = [suppressed.clone()]
+            .iter()
+            .map(|project| ReferenceEdge {
+                project: project.clone(),
+                outcome: ReferenceOutcome::Unread {
+                    why: "the project's own reference list could not be trusted",
+                    transient: false,
+                },
+            })
+            .collect();
+        let set = ReferenceSet {
+            dlls: Vec::new(),
+            edges,
+            retryable: false,
+        };
+        assert_eq!(
+            set.unread().collect::<Vec<_>>(),
+            [(
+                suppressed.as_path(),
+                "the project's own reference list could not be trusted"
+            )]
+        );
+        assert_eq!(set.not_built().count(), 0);
+        assert!(
+            !set.has_transient_failure(),
+            "only an edit to that project can change the verdict, so the env is cacheable"
+        );
+    }
+
     /// The behavioural claim: an `Unread` reference marks the env's identity set
     /// incomplete — so the seal fires and every assembly reading defers — while
     /// an unbuilt one leaves it complete.
@@ -5328,6 +5440,60 @@ mod tests {
             "expected the redirected producer's `MiniLibFs` namespace in the \
              env; env len = {}",
             env.len()
+        );
+    }
+
+    /// End-to-end: a sibling whose own `<ProjectReference>` list the evaluator
+    /// cannot trust leaves the env's identity set **incomplete**, so the seal
+    /// fires and no assembly reading commits.
+    ///
+    /// The sibling itself resolves fine — its DLL is built and folded — which
+    /// is exactly why this needs the node mark: nothing about the sibling's
+    /// own edge is missing, and the loss is entirely in the references it
+    /// dropped, which never became nodes at all.
+    #[test]
+    fn a_suppressed_reference_list_makes_the_env_incomplete() {
+        let dll_bytes = minilibfs_dll_bytes();
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let sibling_dir = root.join("MiniLibFs");
+        std::fs::create_dir_all(&sibling_dir).unwrap();
+        built_fsproj(&sibling_dir, "MiniLibFs", "Release", "net10.0", &dll_bytes);
+        // `Update` on a `<ProjectReference>` is unmodelled, so the captured
+        // list may claim references the real build strips: the whole list is
+        // suppressed.
+        write(
+            &sibling_dir.join("MiniLibFs.fsproj"),
+            r#"<Project>
+              <ItemGroup>
+                <ProjectReference Include="../Other/Other.fsproj" />
+                <ProjectReference Update="../Other/Other.fsproj" Private="false" />
+              </ItemGroup>
+            </Project>"#,
+        );
+
+        let proj = root.join("App.fsproj");
+        write(&proj, &fsproj_with_refs(&["MiniLibFs/MiniLibFs.fsproj"]));
+        let dotnet_root = root.join("dotnet");
+        std::fs::create_dir_all(&dotnet_root).unwrap();
+        write_app_assets(root, true);
+
+        let mut sema = SemanticState::new();
+        let env = sema.assembly_env_for_project(
+            &proj,
+            Some(&dotnet_root),
+            &ServedTfm::NoneDeclared,
+            &Workspace::default(),
+        );
+        assert!(
+            env.has_namespace(&["MiniLibFs".to_string()]),
+            "the sibling's own output still folds — the loss is its dropped references"
+        );
+        assert!(
+            env.identities_incomplete(),
+            "a suppressed reference list leaves an unknown number of assemblies \
+             missing, so the env must not claim to be complete"
         );
     }
 

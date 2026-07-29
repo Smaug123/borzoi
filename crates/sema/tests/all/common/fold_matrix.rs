@@ -25,6 +25,10 @@ use rowan::TextRange;
 /// cells, interleaved `let` bindings), in expression or pattern position.
 pub struct Cell {
     pub label: &'static str,
+    /// The probe file's own top-level header — which decides what FCS opens
+    /// *implicitly*, before any `open` in [`Cell::body`] and before every
+    /// declaration.
+    pub container: Container,
     /// Whole project FILES preceding the probe file in Compile order — the
     /// project-half matrix's declaring files (`namespace Demo.PjFold.<Shape>`
     /// with the shape under test). Empty for the single-file matrices. Each
@@ -39,6 +43,34 @@ pub struct Cell {
     pub probe: &'static str,
     /// Where the probe sits.
     pub position: Position,
+}
+
+/// The probe file's top-level header.
+///
+/// This is the dimension that reaches FCS's **implicit** open of a block's own
+/// enclosing namespace (`ImplicitlyOpenOwnNamespace`): a grid whose probe is
+/// always a header-less top-level `let` can only ever exercise the `open`s a
+/// cell writes, so every contest the implicit channel decides — a project half
+/// against a colliding assembly auto-open, a same-FQN module half against the
+/// namespace half — is *outside* it. Both wrong-commit regressions the first
+/// implicit-open attempt shipped were cells this dimension covers.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Container {
+    /// No header: an anonymous top-level module, whose enclosing namespace is
+    /// empty, so nothing is opened implicitly.
+    Anon,
+    /// `namespace <path>`, with the probe in a nested module (F# forbids values
+    /// at namespace scope). The enclosing namespace is `<path>` itself.
+    ///
+    /// The nested module is named from the cell's label, because every probe
+    /// file of a matrix joins ONE batched FCS project: two cells sharing a
+    /// namespace and a module name would be a duplicate definition, which
+    /// poisons resolution for both.
+    Namespace(&'static str),
+    /// `module <path>` — a dotted top-level module header, whose enclosing
+    /// namespace is everything *before* the last segment. `<path>` must be
+    /// distinct per cell, for the same batched-project reason.
+    Module(&'static str),
 }
 
 /// How a cell places its probe.
@@ -60,8 +92,20 @@ pub enum Position {
 /// its uses, and "no use spans the probe" is exactly the `None` the bijection
 /// wants for it.
 fn cell_source(cell: &Cell) -> (String, TextRange) {
-    let mut src = String::new();
+    // A `namespace` header cannot hold values, so its probe goes in a nested
+    // module and every line below it is indented one level.
+    let (mut src, indent) = match cell.container {
+        Container::Anon => (String::new(), ""),
+        Container::Namespace(path) => {
+            let module: String = std::iter::once('P')
+                .chain(cell.label.chars().filter(char::is_ascii_alphanumeric))
+                .collect();
+            (format!("namespace {path}\n\nmodule {module} =\n"), "    ")
+        }
+        Container::Module(path) => (format!("module {path}\n\n"), ""),
+    };
     for line in cell.body {
+        src.push_str(indent);
         src.push_str(line);
         src.push('\n');
     }
@@ -76,11 +120,27 @@ fn cell_source(cell: &Cell) -> (String, TextRange) {
         ),
         Position::Expr => ("let probeResult = ", "\n"),
     };
-    src.push_str(prefix);
+    // The prefix starts fresh lines, so every one of its lines is indented; the
+    // suffix *continues* the probe's line, so only its later lines are.
+    for (i, line) in prefix.split('\n').enumerate() {
+        if i > 0 {
+            src.push('\n');
+        }
+        src.push_str(indent);
+        src.push_str(line);
+    }
     let start = src.len();
     src.push_str(cell.probe);
     let end = src.len();
-    src.push_str(suffix);
+    for (i, line) in suffix.split('\n').enumerate() {
+        if i > 0 {
+            src.push('\n');
+            if !line.is_empty() {
+                src.push_str(indent);
+            }
+        }
+        src.push_str(line);
+    }
     let span = TextRange::new(
         u32::try_from(start).unwrap().into(),
         u32::try_from(end).unwrap().into(),

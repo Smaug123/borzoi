@@ -915,6 +915,30 @@ pub enum ExtensionMembers<'a> {
     Unknowable,
 }
 
+/// The outcome of resolving one base-class / inherited-interface **edge**
+/// ([`AssemblyEnv::resolve_base`]).
+///
+/// Three-valued because the callers grade the two failures differently, and
+/// collapsing them to `None` is a soundness bug: [`BaseChain`] caps at an
+/// **absent** `System.Object` (a single-assembly view genuinely has no root, and
+/// the universal root declares a member set the consumers already special-case),
+/// but an edge spelled `System.Object` whose target we merely could not *prove*
+/// may name a base-bearing impostor with members of its own — capping there would
+/// call its overload group complete and commit the derived member FCS does not
+/// select.
+pub(crate) enum BaseEdge {
+    /// A handle whose identity the walk can commit to.
+    Resolved(EntityHandle),
+    /// Nothing usable at the edge: absent from the env, or a shape this walk
+    /// declines (generic, nested, primitive, a different assembly's same-FQN
+    /// type). The env holds no candidate the edge could have meant.
+    Absent,
+    /// A candidate is present, but a **dropped** type in its namespace means the
+    /// type this edge names may be one we no longer hold — so nothing about this
+    /// level is provable, whatever the edge is spelled.
+    Unprovable,
+}
+
 /// The outcome of walking an entity's base-type chain
 /// ([`AssemblyEnv::base_chain`]) — how completely the inherited member set is
 /// known, which decides whether an inheritance-aware lookup can resolve or must
@@ -1971,6 +1995,35 @@ impl AssemblyEnv {
         arity: usize,
     ) -> Option<EntityHandle> {
         self.indexed_type(namespace, name, arity)
+    }
+
+    /// [`Self::lookup_type`], **paired with the namespace's drop marker** — the
+    /// sanctioned read for a caller that will commit to the returned entity's
+    /// *identity* (its members, its base chain) rather than merely its presence.
+    ///
+    /// A raw index read answers from the entities that survived projection, so it
+    /// cannot see that a same-`(namespace, name)` sibling in another DLL was
+    /// **dropped** ([`Self::mark_namespace_dropped_type`]). FCS reads every DLL and
+    /// may bind the dropped one; committing the survivor's members would then be a
+    /// definite answer decided against a half we could not see. So a drop anywhere
+    /// in `namespace` declines the whole read — a name-keyed surface answer alone
+    /// is never evidence that the surviving entry is the only occupant.
+    ///
+    /// Exactly `namespace` is asked, not its prefix splits: a *type* has one
+    /// encoding, so the only same-FQN threat is a dropped top-level type in the
+    /// same namespace. (The prefix-split question,
+    /// [`Self::any_split_of_a_module_path_has_a_dropped_type`], exists because a
+    /// **module** path is merged across encodings; and nested types are absent from
+    /// `Self::types_by_namespace` altogether, so this read never returns one.)
+    pub(crate) fn lookup_type_if_certain(
+        &self,
+        namespace: &[String],
+        name: &str,
+        arity: usize,
+    ) -> Option<EntityHandle> {
+        (!self.namespace_has_dropped_type(namespace))
+            .then(|| self.lookup_type(namespace, name, arity))
+            .flatten()
     }
 
     /// The first-wins top-level type-position slot at
@@ -5393,16 +5446,23 @@ impl AssemblyEnv {
                 Some(base) => base,
             };
             match self.resolve_base(base, &entity.assembly.name) {
-                Some(next) if !chain.contains(&next) => {
+                BaseEdge::Resolved(next) if !chain.contains(&next) => {
                     chain.push(next);
                     current = next;
                 }
                 // A resolvable base already in the chain is a metadata cycle — stop.
-                Some(_) => return BaseChain::Incomplete,
-                // Unresolvable: the universal `System.Object` caps the chain; any
-                // other absent / generic / nested / wrong-assembly base sinks it.
-                None if is_system_object(base) => return BaseChain::ObjectCapped(chain),
-                None => return BaseChain::Incomplete,
+                BaseEdge::Resolved(_) => return BaseChain::Incomplete,
+                // Absent: the universal `System.Object` caps the chain; any other
+                // absent / generic / nested / wrong-assembly base sinks it.
+                BaseEdge::Absent if is_system_object(base) => {
+                    return BaseChain::ObjectCapped(chain);
+                }
+                // Unprovable never caps, even spelled `System.Object`: the cap
+                // asserts the level is the universal root, whose members the
+                // consumers account for by name, and an unproven edge may instead
+                // name a base-bearing impostor whose own members would then go
+                // missing from a group we called complete.
+                BaseEdge::Absent | BaseEdge::Unprovable => return BaseChain::Incomplete,
             }
         }
     }
@@ -5436,12 +5496,14 @@ impl AssemblyEnv {
             let declaring = &entity.assembly.name;
             for iface in &entity.interfaces {
                 match self.resolve_base(iface, declaring) {
-                    Some(next) => {
+                    BaseEdge::Resolved(next) => {
                         if seen.insert(next) {
                             levels.push(next);
                         }
                     }
-                    None => return InterfaceChain::Incomplete,
+                    BaseEdge::Absent | BaseEdge::Unprovable => {
+                        return InterfaceChain::Incomplete;
+                    }
                 }
             }
         }
@@ -5454,9 +5516,18 @@ impl AssemblyEnv {
         // has no base edge to Object. The genuine root is the unique **base-less
         // class** — any impostor `System.Object` extends the real one (so carries a
         // `base_type`), and an interface / struct / enum / delegate / module of the
-        // name is the wrong `kind`. When the slot is absent or unprovable, cap
-        // ([`InterfaceChain::ObjectCapped`]): `Object`'s members defer, but the
+        // name is the wrong `kind`. When the slot is absent or fails those tests,
+        // cap ([`InterfaceChain::ObjectCapped`]): `Object`'s members defer, but the
         // interface's own and inherited members still resolve.
+        //
+        // A **dropped** type in `System` is not a cap but a sink, for the reason
+        // [`BaseEdge::Unprovable`] gives: capping asserts the missing level is the
+        // universal root, and under a drop the level we cannot see may be an
+        // impostor with members of its own. Both tests above are powerless against
+        // it — the type they would have to reject is the one we no longer hold.
+        if self.namespace_has_dropped_type(&[String::from("System")]) {
+            return InterfaceChain::Incomplete;
+        }
         match self.lookup_type(&[String::from("System")], "Object", 0) {
             Some(obj)
                 if self.entity(obj).kind == EntityKind::Class
@@ -5472,7 +5543,8 @@ impl AssemblyEnv {
     /// Resolve a base-type [`TypeRef`] to an interned handle, but only for the
     /// **non-generic, top-level** named types the chain walk can complete soundly. A
     /// generic base (its members may mention type parameters we cannot yet
-    /// substitute), a nested base, a primitive, or an absent one yields `None`.
+    /// substitute), a nested base, a primitive, or an absent one is
+    /// [`BaseEdge::Absent`].
     ///
     /// Honours **assembly identity**: [`Self::lookup_type`] keeps only the
     /// first-enumerated definition per `(namespace, name, arity)`, so when two
@@ -5486,11 +5558,22 @@ impl AssemblyEnv {
     /// against a possibly-different *version* than the one loaded, and the compiler
     /// binds by name with version redirection; matching the full identity would
     /// wrongly defer that ordinary case.
-    pub(crate) fn resolve_base(
-        &self,
-        base: &TypeRef,
-        declaring_assembly: &str,
-    ) -> Option<EntityHandle> {
+    ///
+    /// The assembly-name match is not on its own enough, which is why a **dropped**
+    /// type in the base's namespace is [`BaseEdge::Unprovable`]: the drop could have
+    /// removed the type this edge names, leaving a survivor that passes the name
+    /// match while being the wrong type — and every member the walk then attributes
+    /// to this level is attributed to it wrongly. `Unprovable` is a distinct answer
+    /// from `Absent` precisely because [`Self::base_chain`] may cap at an absent
+    /// `System.Object` and must not cap at an unproven one.
+    ///
+    /// The applicability matcher's exemption for CLR-unique primitives
+    /// (`Overloads::ty_named_unprovable`, which lets `System.Object` affirm under a
+    /// drop) does not extend here, and the difference is the stake: there a wrong
+    /// identity mis-ranks candidates whose types a literal already pinned, while
+    /// here the level's **whole member list** becomes a member list of the
+    /// receiver.
+    pub(crate) fn resolve_base(&self, base: &TypeRef, declaring_assembly: &str) -> BaseEdge {
         match base {
             TypeRef::Named {
                 assembly,
@@ -5502,13 +5585,22 @@ impl AssemblyEnv {
                 && segment_arities.iter().all(|&a| a == 0)
                 && !name.contains('/') =>
             {
-                let candidate = self.indexed_type(namespace, name, 0)?;
+                if self.namespace_has_dropped_type(namespace) {
+                    return BaseEdge::Unprovable;
+                }
+                let Some(candidate) = self.lookup_type(namespace, name, 0) else {
+                    return BaseEdge::Absent;
+                };
                 let expected = assembly
                     .as_ref()
                     .map_or(declaring_assembly, |a| a.name.as_str());
-                (self.entity(candidate).assembly.name == expected).then_some(candidate)
+                if self.entity(candidate).assembly.name == expected {
+                    BaseEdge::Resolved(candidate)
+                } else {
+                    BaseEdge::Absent
+                }
             }
-            _ => None,
+            _ => BaseEdge::Absent,
         }
     }
 
@@ -5536,12 +5628,12 @@ impl AssemblyEnv {
             let entity = self.entity(handle);
             let declaring = &entity.assembly.name;
             if let Some(base) = &entity.base_type
-                && let Some(next) = self.resolve_base(base, declaring)
+                && let BaseEdge::Resolved(next) = self.resolve_base(base, declaring)
             {
                 stack.push(next);
             }
             for iface in &entity.interfaces {
-                if let Some(next) = self.resolve_base(iface, declaring) {
+                if let BaseEdge::Resolved(next) = self.resolve_base(iface, declaring) {
                     stack.push(next);
                 }
             }

@@ -20,7 +20,7 @@
 //! (offline SDK) like the sibling `fsproj_msbuild_diff` tests.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
@@ -301,8 +301,8 @@ fn assert_sdk_captures_match(xml: &str, extras: &[(&str, &str)]) {
         .iter()
         .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
         .collect();
-    let dotnet_root = dotnet_root_from_env();
-    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let workload_env = workloads::WorkloadEnvironment {
         user_dotnet_root: user_dotnet_root.as_deref(),
         overrides_present,
@@ -360,32 +360,6 @@ fn assert_sdk_captures_match(xml: &str, extras: &[(&str, &str)]) {
     );
 }
 
-fn dotnet_root_from_env() -> PathBuf {
-    std::env::var_os("DOTNET_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| panic!("DOTNET_ROOT is not set; run under nix develop"))
-}
-
-/// The workload context of the test process — the same environment the
-/// `dotnet msbuild` oracle child inherits, so both sides consult the
-/// same user-local workload roots.
-fn workload_env_from_process() -> (Option<PathBuf>, bool) {
-    // Empty home-ish values count as unset (`string.IsNullOrEmpty`
-    // in .NET's CliFolderPathCalculatorCore) — match what the oracle
-    // child's dotnet host does.
-    let non_empty = |var: &str| std::env::var_os(var).filter(|value| !value.is_empty());
-    let user_dotnet_root = non_empty("DOTNET_CLI_HOME")
-        .or_else(|| non_empty("HOME"))
-        .map(|home| PathBuf::from(home).join(".dotnet"));
-    // Per-variable effective-value semantics, mirroring the LSP's
-    // `SdkDiscoveryEnv::from_process_env` (PACK_ROOTS goes through
-    // IsNullOrEmpty upstream; the other two are presence checks).
-    let overrides_present = std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_ROOTS").is_some()
-        || std::env::var_os("DOTNETSDK_WORKLOAD_MANIFEST_IGNORE_DEFAULT_ROOTS").is_some()
-        || non_empty("DOTNETSDK_WORKLOAD_PACK_ROOTS").is_some();
-    (user_dotnet_root, overrides_present)
-}
-
 #[test]
 fn sdk_style_netcoreapp_fsharp_implicit_dependencies_match_msbuild() {
     assert_sdk_captures_match(
@@ -424,8 +398,8 @@ fn sdk_style_netcoreapp_fsharp_property_functions_leave_no_cause() {
 </Project>"#;
     std::fs::write(&proj, xml).expect("write project");
 
-    let dotnet_root = dotnet_root_from_env();
-    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let workload_env = workloads::WorkloadEnvironment {
         user_dotnet_root: user_dotnet_root.as_deref(),
         overrides_present,
@@ -498,8 +472,8 @@ fn sdk_style_netcoreapp_workflow_gate_no_longer_cascades() {
 </Project>"#;
     std::fs::write(&proj, xml).expect("write project");
 
-    let dotnet_root = dotnet_root_from_env();
-    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let workload_env = workloads::WorkloadEnvironment {
         user_dotnet_root: user_dotnet_root.as_deref(),
         overrides_present,
@@ -558,8 +532,8 @@ fn sdk_style_netcoreapp_fsharp_path_property_default_is_inert() {
 </Project>"#;
     std::fs::write(&proj, xml).expect("write project");
 
-    let dotnet_root = dotnet_root_from_env();
-    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let workload_env = workloads::WorkloadEnvironment {
         user_dotnet_root: user_dotnet_root.as_deref(),
         overrides_present,
@@ -1119,8 +1093,8 @@ fn eval_cpm_fixture_both_ways(
     let proj = root.join("src/Diff.fsproj");
     std::fs::write(&proj, project_xml).expect("write project");
 
-    let dotnet_root = dotnet_root_from_env();
-    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
     let workload_env = workloads::WorkloadEnvironment {
         user_dotnet_root: user_dotnet_root.as_deref(),
         overrides_present,

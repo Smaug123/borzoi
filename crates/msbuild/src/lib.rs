@@ -577,7 +577,7 @@ pub struct ParsedProject {
     pub define_constants: Vec<String>,
     /// The declared target frameworks, in document order: `<TargetFrameworks>`
     /// split into entries, else `<TargetFramework>` as a single entry, else
-    /// empty. Read it through [`target_frameworks`], which is the supported
+    /// empty. Read it through [`target_frameworks()`](fn@target_frameworks), which is the supported
     /// accessor.
     ///
     /// Computed by the evaluator rather than derived from [`Self::properties`],

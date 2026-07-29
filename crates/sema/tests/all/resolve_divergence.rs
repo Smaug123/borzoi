@@ -77,7 +77,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 
 use crate::common::{
-    Bucket, FileCensus, LineIndex, classify, env_usize_or, invoke_fcs_dump_census,
+    B1_TAGS, Bucket, FileCensus, LineIndex, classify, env_usize_or, invoke_fcs_dump_census,
     parse_census_jsonl,
 };
 use borzoi_cst::parser::parse;
@@ -152,11 +152,11 @@ struct Report {
 }
 
 #[derive(Serialize)]
-struct Summary<'a> {
+struct Summary {
     schema_version: u32,
     measurement: &'static str,
     configuration: ConfigurationSummary,
-    statistics: StatisticsSummary<'a>,
+    statistics: StatisticsSummary,
 }
 
 #[derive(Serialize)]
@@ -169,11 +169,11 @@ struct ConfigurationSummary {
 }
 
 #[derive(Serialize)]
-struct StatisticsSummary<'a> {
+struct StatisticsSummary {
     files_compared: usize,
     uses_adjudicated: usize,
     out_of_file: usize,
-    matches: MatchSummary<'a>,
+    matches: MatchSummary,
     divergences: usize,
     alt_binders: usize,
     gaps: GapSummary,
@@ -183,9 +183,9 @@ struct StatisticsSummary<'a> {
 }
 
 #[derive(Serialize)]
-struct MatchSummary<'a> {
+struct MatchSummary {
     total: usize,
-    by_bucket: &'a BTreeMap<&'static str, usize>,
+    by_bucket: BTreeMap<&'static str, usize>,
 }
 
 #[derive(Serialize)]
@@ -220,6 +220,11 @@ fn bucket_name(b: Option<Bucket>) -> &'static str {
         Some(Bucket::Other) | None => "other",
     }
 }
+
+/// Every name [`bucket_name`] can return. The published `matches.by_bucket`
+/// histogram emits all of them every run — see [`B1_TAGS`] for why a
+/// count that only appears when it is non-zero is not a metric.
+const BUCKET_NAMES: [&str; 4] = ["B1", "B2", "B3", "other"];
 
 #[test]
 #[ignore = "categorised name-resolution divergence report (us + FCS type-check); run with --ignored under nix develop"]
@@ -526,9 +531,29 @@ fn summary_json(r: &Report, stride: usize, limit: Option<usize>) -> String {
     let match_total: usize = r.matches.values().sum();
     let gap_total = r.gap_b1.len() + r.gap_b2.len() + r.gap_b3.len() + r.gap_other.len();
     let b1_match = r.matches.get("B1").copied().unwrap_or(0);
-    let mut gap_b1_by_tag = BTreeMap::new();
+    // Both histograms are seeded with their whole closed key set, so a bucket
+    // or sub-tag that stops occurring reads as `0` rather than leaving the
+    // series. A construct disappearing from the gap worklist is the *good*
+    // outcome, and reporting it as a metric going missing would be exactly
+    // backwards.
+    let mut gap_b1_by_tag: BTreeMap<&'static str, usize> =
+        B1_TAGS.iter().map(|tag| (*tag, 0)).collect();
     for site in &r.gap_b1 {
-        *gap_b1_by_tag.entry(site.tag).or_default() += 1;
+        let count = gap_b1_by_tag.get_mut(site.tag).unwrap_or_else(|| {
+            panic!(
+                "gap_b1 sub-tag {:?} is not in common::B1_TAGS, so it would mint a metric \
+                 mid-series; add it there (the taxonomy proof will confirm the list)",
+                site.tag
+            )
+        });
+        *count += 1;
+    }
+    let mut by_bucket: BTreeMap<&'static str, usize> =
+        BUCKET_NAMES.iter().map(|name| (*name, 0)).collect();
+    for (bucket, count) in &r.matches {
+        *by_bucket
+            .get_mut(bucket)
+            .unwrap_or_else(|| panic!("match bucket {bucket:?} is not in BUCKET_NAMES")) += count;
     }
     let summary = Summary {
         schema_version: 1,
@@ -546,7 +571,7 @@ fn summary_json(r: &Report, stride: usize, limit: Option<usize>) -> String {
             out_of_file: r.out_of_file,
             matches: MatchSummary {
                 total: match_total,
-                by_bucket: &r.matches,
+                by_bucket,
             },
             divergences: r.divergences.len(),
             alt_binders: r.alt_binders.len(),
@@ -619,7 +644,7 @@ fn summary_json_contract_is_versioned_and_preserves_denominators() {
     };
     report.matches.insert("B1", 8);
     report.matches.insert("B2", 2);
-    report.gap_b1 = vec![test_site("record-field"), test_site("record-field")];
+    report.gap_b1 = vec![test_site("union-case"), test_site("union-case")];
     report.gap_b2 = vec![test_site("member")];
     report.gap_b3 = vec![test_site("overload")];
     report.gap_other = vec![test_site("other")];
@@ -648,12 +673,31 @@ fn summary_json_contract_is_versioned_and_preserves_denominators() {
                 "files_compared": 5,
                 "uses_adjudicated": 18,
                 "out_of_file": 7,
-                "matches": { "total": 10, "by_bucket": { "B1": 8, "B2": 2 } },
+                // Every bucket and every sub-tag, zeros included: a count that
+                // only appears when it is non-zero is not a metric.
+                "matches": {
+                    "total": 10,
+                    "by_bucket": { "B1": 8, "B2": 2, "B3": 0, "other": 0 }
+                },
                 "divergences": 1,
                 "alt_binders": 1,
                 "gaps": { "total": 5, "b1": 2, "b2": 1, "b3": 1, "other": 1 },
                 "b1_coverage": { "matched": 8, "seen": 10, "basis_points": 8000 },
-                "gap_b1_by_tag": { "record-field": 2 },
+                "gap_b1_by_tag": {
+                    "active-pattern-case": 0,
+                    "active-pattern-fn": 0,
+                    "constructor": 0,
+                    "entity:module": 0,
+                    "entity:namespace": 0,
+                    "entity:type": 0,
+                    "parameter": 0,
+                    "static-member": 0,
+                    "static-member:overloaded(group)": 0,
+                    "type-parameter": 0,
+                    "union-case": 2,
+                    "value:local-or-param": 0,
+                    "value:module-or-import": 0
+                },
                 "infrastructure": {
                     "our_parser_errors": 1,
                     "our_panics": 1,

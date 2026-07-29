@@ -43,7 +43,7 @@ use crate::fsharp_pickle::vrefs::read_vref;
 
 /// Phase-1 result. Bundles everything `unpickleCcuInfo` produces *other*
 /// than the header — `unpickle_signature` retains ownership of the
-/// header and assembles the final [`PickledCcu`] after the phase-1
+/// header and assembles the final [`crate::PickledCcu`] after the phase-1
 /// state has been dropped (releasing the borrow on `header.strings` /
 /// `header.pubpaths` that the reader held).
 pub(crate) struct PhaseOneResult {
@@ -251,7 +251,7 @@ fn read_entity_spec_body(state: &mut PhaseOneState<'_>) -> Result<u32, ImportErr
 /// Consumes `state` by value because [`PhaseOneState::finalize`] is a
 /// by-value method (it must move out the OSGN tables to validate that
 /// every slot was linked). The caller (`unpickle_signature`) holds the
-/// header in an enclosing scope and assembles the [`PickledCcu`] once
+/// header in an enclosing scope and assembles the [`crate::PickledCcu`] once
 /// this function has returned and the reader's borrow on the header
 /// has been released.
 pub(crate) fn walk_ccu_info(mut state: PhaseOneState<'_>) -> Result<PhaseOneResult, ImportError> {

@@ -7,7 +7,7 @@ use rowan::TextRange;
 use crate::assembly_env::{EntityHandle, StaticLookup};
 
 use super::id_text;
-use super::model::{DeferredReason, Resolution};
+use super::model::{DeclineCause, DeclineSite, DeclineTier, DeferredReason, Resolution};
 use super::state::{AssemblyPath, Resolver, ShadowVeto, TieredResolution, TypePathReading};
 
 /// One candidate that **owns** a path at one rooting position — the unit
@@ -31,10 +31,11 @@ impl<'a> Resolver<'a> {
     /// Compute — *without recording* — how a dotted path resolves into the
     /// referenced assemblies, under an opened-namespace `prefix` (empty for a
     /// directly fully-qualified path). Pure, so the caller can compare
-    /// candidates across several opens, and — crucially — distinguish a path F#
-    /// resolves *within the project* ([`AssemblyPath::ProjectShadowed`], which
-    /// must defer rather than fall through to another open) from a genuine
-    /// non-match ([`AssemblyPath::NoMatch`], which may try the next open).
+    /// candidates across several opens, and — crucially — distinguish a path
+    /// something already holds ([`AssemblyPath::Occupied`], whose payload names
+    /// the occupant, and which must defer rather than fall through to another
+    /// open) from a genuine non-match ([`AssemblyPath::NoMatch`], which may try
+    /// the next open).
     ///
     /// On a hit it records [`Resolution::Entity`] at the rooting type's segment
     /// (and each nested-type segment) and [`Resolution::Member`] at the
@@ -62,20 +63,20 @@ impl<'a> Resolver<'a> {
         let n = names.len();
 
         // Decline a path F# resolves within the project (see
-        // [`Self::path_is_project_shadowed`]), searched before referenced
+        // [`Self::project_shadow_cause`]), searched before referenced
         // assemblies. A path shadowed *only* by the current module's own name is
         // a self-qualifier FCS does not bind into the current module (`M.x` inside
         // `M` is FS0039), so an `open` / implicit `[<AutoOpen>]` may still supply
         // it (`List.fold` inside `module List` → `Microsoft.FSharp.Collections`):
         // it defers at the *root* but must not preempt the opens tier.
-        if self.path_is_project_shadowed(&names) {
+        if let Some(cause) = self.project_shadow_cause(&names) {
             // Two questions, and they are not the same one:
             //
             // - is the **written** path a self-qualifier? A fact about what the
             //   user wrote, so it is asked of the source slice. The
             //   prefix-expanded `N.List.rev` for a written `List.rev` has head
             //   `N`, a namespace segment in no module chain, so asking it there
-            //   classifies the reading `ProjectShadowed` and preempts the very
+            //   classifies the reading `Occupied` and preempts the very
             //   opens the `module List` augmentation idiom falls through to.
             // - is *this reading's* shadow that same self module? Only then may
             //   the reading be held rather than deferred at. A prefixed reading
@@ -98,7 +99,7 @@ impl<'a> Resolver<'a> {
             return if shadow_is_the_self_module && self.self_module_shadow_only(source) {
                 AssemblyPath::SelfModuleShadowed
             } else {
-                AssemblyPath::ProjectShadowed
+                AssemblyPath::Occupied(cause)
             };
         }
 
@@ -331,7 +332,7 @@ impl<'a> Resolver<'a> {
     /// rather than the terminal segment, so this recognises only a bare entity.
     /// A **non-authoritative** module is deliberately not treated as one: there
     /// its `Module` kind is an IL heuristic FCS does not share, and it imports
-    /// the type as a plain class, so [`AssemblyEnv::terminal_expression_value`]
+    /// the type as a plain class, so [`AssemblyEnv::terminal_expression_value`](crate::AssemblyEnv::terminal_expression_value)
     /// answers for the shape FCS actually sees.
     fn reading_stops_on_a_non_value(
         &self,
@@ -495,11 +496,11 @@ impl<'a> Resolver<'a> {
                 .assemblies
                 .alias_has_companion_module(type_handle, None)
             {
-                return AssemblyPath::ProjectShadowed;
+                return AssemblyPath::Occupied(DeclineCause::AliasCompanionModule);
             }
             match self.assemblies.resolve_abbreviation_target(type_handle) {
                 Some(target) => target,
-                None => return AssemblyPath::ProjectShadowed,
+                None => return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable),
             }
         } else {
             type_handle
@@ -581,7 +582,7 @@ impl<'a> Resolver<'a> {
                         .assemblies
                         .alias_has_companion_module(child, Some(parent))
                     {
-                        return AssemblyPath::ProjectShadowed;
+                        return AssemblyPath::Occupied(DeclineCause::AliasCompanionModule);
                     }
                     match self.assemblies.resolve_abbreviation_target(child) {
                         Some(target) => {
@@ -598,7 +599,9 @@ impl<'a> Resolver<'a> {
                             via_alias = true;
                             target
                         }
-                        None => return AssemblyPath::ProjectShadowed,
+                        None => {
+                            return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable);
+                        }
                     }
                 } else {
                     child
@@ -639,7 +642,7 @@ impl<'a> Resolver<'a> {
                         // record/union target falls through, a class target keeps
                         // the module — so we can commit neither: defer the whole
                         // path (codex review 3). `AbbreviationOpaque` defers
-                        // *tier-locally* (unlike `ProjectShadowed` it does not
+                        // *tier-locally* (unlike `Occupied` it does not
                         // preempt a higher-priority open that resolves the path —
                         // codex review 4).
                         if self
@@ -667,7 +670,7 @@ impl<'a> Resolver<'a> {
                         // pre-resolve-through marker did, rather than cede the path
                         // to a lower reading and diverge from FCS.
                         if via_alias {
-                            return AssemblyPath::ProjectShadowed;
+                            return AssemblyPath::Occupied(DeclineCause::AliasOwnedTail);
                         }
                         owns_path = false;
                         break;
@@ -689,7 +692,7 @@ impl<'a> Resolver<'a> {
     /// How a path segment that names a **union case** of `parent` resolves, or
     /// `None` when `parent` is not a union that declares it.
     ///
-    /// The case must be *provable* — [`AssemblyEnv::authoritative_union_case`],
+    /// The case must be *provable* — [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case),
     /// so neither an unknowable case list nor a non-authoritative assembly's
     /// IL-heuristic union can make a reading own a path FCS would re-root.
     ///
@@ -699,7 +702,7 @@ impl<'a> Resolver<'a> {
     /// F#-entity projection drops), so it defers: the reading owns the path (the
     /// case is certainly there) while naming no target.
     ///
-    /// [`AssemblyEnv::authoritative_union_case`]: crate::AssemblyEnv::authoritative_union_case
+    /// [`AssemblyEnv::authoritative_union_case`](crate::AssemblyEnv::authoritative_union_case): crate::AssemblyEnv::authoritative_union_case
     fn union_case_tail(&self, parent: EntityHandle, name: &str) -> Option<Resolution> {
         if !self.assemblies.authoritative_union_case(parent, name) {
             return None;
@@ -739,11 +742,14 @@ impl<'a> Resolver<'a> {
     /// Anything else named `type_name` here — a non-union type, an abbreviation,
     /// a union with an unknowable case list or one lacking this case, or a second
     /// union owning it (distinct arities; the pattern writes none) — makes the
-    /// reading [`AssemblyPath::ProjectShadowed`]: the walk decides at this prefix
-    /// and never falls through past it. A **cross-DLL** collision defers the same
-    /// way (FCS merges same-FQN roots by reference order, which sema does not
-    /// model); a same-DLL companion — a `type Shape` beside its `module Shape` —
-    /// is not a collision.
+    /// reading [`AssemblyPath::Occupied`]
+    /// ([`CasePatternHeadOccupied`](DeclineCause::CasePatternHeadOccupied)): the
+    /// walk decides at this prefix and never falls through past it. A
+    /// **cross-DLL** collision defers the same way but is a different occupant
+    /// ([`ContestedRooting`](DeclineCause::ContestedRooting) — FCS merges
+    /// same-FQN roots by reference order, which sema does not model); a
+    /// same-DLL companion — a `type Shape` beside its `module Shape` — is not a
+    /// collision.
     ///
     /// That is a **conservative** decline, not F#'s rule. F# keeps searching
     /// outward for something that declares the case, so a class or a caseless
@@ -772,7 +778,7 @@ impl<'a> Resolver<'a> {
         // with the rooting-collision counts, so the two cannot drift apart into
         // disagreeing about what a collision is.
         if self.assemblies.distinct_dlls(&here) > 1 {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::Occupied(DeclineCause::ContestedRooting);
         }
         let mut owning: Option<EntityHandle> = None;
         let mut binds = false;
@@ -785,7 +791,7 @@ impl<'a> Resolver<'a> {
             }
         }
         if binds {
-            return AssemblyPath::ProjectShadowed;
+            return AssemblyPath::Occupied(DeclineCause::CasePatternHeadOccupied);
         }
         // Only plain modules here: a transparent prefix the walk reads past.
         let Some(union) = owning else {
@@ -825,11 +831,26 @@ impl<'a> Resolver<'a> {
     /// root — see [`OpenGroup`](super::state::OpenGroup)). The one walk order for
     /// every consumer of [`imports`](Self::imports), so a consumer cannot invert
     /// the precedence.
-    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
+    ///
+    /// Each reading is tagged with the [`DeclineTier`] it belongs to. The
+    /// explicit/implicit split is `implicit_import_count` — the implicit seed is
+    /// pushed first, so every index below it is an implicit open — and it is the
+    /// same boundary [`Self::explicit_open_reading_prefixes`] cuts at. Tagging
+    /// here rather than at the consumers is what keeps the two from drifting.
+    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        let implicit = self.implicit_import_count;
         self.imports
             .iter()
+            .enumerate()
             .rev()
-            .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+            .flat_map(move |(i, open)| {
+                let tier = if i < implicit {
+                    DeclineTier::ImplicitOpen
+                } else {
+                    DeclineTier::ExplicitOpen
+                };
+                open.readings.iter().map(move |r| (tier, r.as_slice()))
+            })
     }
 
     /// The [`Self::open_reading_prefixes`] contributed by **explicit source
@@ -840,11 +861,17 @@ impl<'a> Resolver<'a> {
     /// that surface is opened at file start, so every explicit open is later
     /// and wins — see [`Self::prefixes_outranking_the_manifest_surface`] for
     /// the whole stratum.
-    pub(super) fn explicit_open_reading_prefixes(&self) -> impl Iterator<Item = &[String]> {
+    pub(super) fn explicit_open_reading_prefixes(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
         self.imports[self.implicit_import_count..]
             .iter()
             .rev()
-            .flat_map(|open| open.readings.iter().map(Vec::as_slice))
+            .flat_map(|open| {
+                open.readings
+                    .iter()
+                    .map(|r| (DeclineTier::ExplicitOpen, r.as_slice()))
+            })
     }
 
     /// Every reading that out-ranks a **module-shaped manifest auto-open's**
@@ -867,9 +894,12 @@ impl<'a> Resolver<'a> {
     /// enclosing-namespace one.
     pub(super) fn prefixes_outranking_the_manifest_surface(
         &self,
-    ) -> impl Iterator<Item = &[String]> {
-        self.explicit_open_reading_prefixes()
-            .chain(Some(self.enclosing_namespace()).filter(|e| !e.is_empty()))
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        self.explicit_open_reading_prefixes().chain(
+            Some(self.enclosing_namespace())
+                .filter(|e| !e.is_empty())
+                .map(|e| (DeclineTier::EnclosingNamespace, e)),
+        )
     }
 
     /// Every prefix a dotted path may be read under, in strict F# precedence
@@ -882,11 +912,17 @@ impl<'a> Resolver<'a> {
     ///
     /// `pub(super)` so the unmodelled-open guard in `lookup.rs` iterates the
     /// same sequence — a tier added here must be visible to that guard too.
-    pub(super) fn assembly_prefixes_by_priority(&self) -> impl Iterator<Item = &[String]> {
+    pub(super) fn assembly_prefixes_by_priority(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
         const ROOT: &[String] = &[];
         self.open_reading_prefixes()
-            .chain(Some(self.enclosing_namespace()).filter(|e| !e.is_empty()))
-            .chain(std::iter::once(ROOT))
+            .chain(
+                Some(self.enclosing_namespace())
+                    .filter(|e| !e.is_empty())
+                    .map(|e| (DeclineTier::EnclosingNamespace, e)),
+            )
+            .chain(std::iter::once((DeclineTier::Root, ROOT)))
     }
 
     /// Walk F#'s referenced-assembly name-lookup precedence — every reading in
@@ -945,7 +981,7 @@ impl<'a> Resolver<'a> {
     /// which is what lets a higher-priority shadow risk win over a
     /// lower-priority real match, and a real match at equal-or-higher
     /// priority than any shadow risk win over it in turn. A
-    /// [`ShadowVeto::Preemptive`] verdict (exact metadata) vetoes even a
+    /// [`ShadowVeto::Vetoed`] verdict (exact metadata) vetoes even a
     /// same-tier real match — FCS-probed: `namespace Ns; type Foo = …;
     /// [<AutoOpen>] module Auto = type Foo = …` then `open Ns; (x : Foo)`
     /// binds `Ns.Auto.Foo`, not the direct `Ns.Foo` (found by review, round
@@ -982,7 +1018,7 @@ impl<'a> Resolver<'a> {
     /// tier ordering the verdicts assume does not hold.
     pub(super) fn resolve_assembly_path_over<'p, R>(
         &self,
-        prefixes: impl Iterator<Item = &'p [String]>,
+        prefixes: impl Iterator<Item = (DeclineTier, &'p [String])>,
         records: impl Fn(&[String]) -> AssemblyPath<R>,
         as_written_vetoes_opens: bool,
         shadow_at: impl Fn(&[String]) -> ShadowVeto,
@@ -992,8 +1028,11 @@ impl<'a> Resolver<'a> {
         // `records` is pure, and the root reading is the common case's most
         // expensive one to duplicate.
         let mut root = as_written_vetoes_opens.then(|| records(&[]));
-        if matches!(root, Some(AssemblyPath::ProjectShadowed)) {
-            return TieredResolution::ShadowDeferred;
+        if let Some(AssemblyPath::Occupied(cause)) = root {
+            return TieredResolution::ShadowDeferred(DeclineSite {
+                cause,
+                tier: DeclineTier::Root,
+            });
         }
 
         // The highest-priority partial reading seen so far; the result only if
@@ -1004,16 +1043,16 @@ impl<'a> Resolver<'a> {
         // set, a held fallback already outranks anything at or below the
         // current tier — shadow risk included — so the verdict is not
         // consulted once a fallback has been seen.
-        let mut fallback: Option<R> = None;
+        let mut fallback: Option<(R, DeclineTier)> = None;
 
-        for prefix in prefixes {
+        for (tier, prefix) in prefixes {
             let veto = if fallback.is_none() {
                 shadow_at(prefix)
             } else {
                 ShadowVeto::None
             };
-            if veto == ShadowVeto::Preemptive {
-                return TieredResolution::ShadowDeferred;
+            if let ShadowVeto::Vetoed(cause) = veto {
+                return TieredResolution::ShadowDeferred(DeclineSite { cause, tier });
             }
             let reading = match root.take() {
                 // Only the ROOT tier has an empty prefix (a reading/namespace
@@ -1025,34 +1064,38 @@ impl<'a> Resolver<'a> {
                     records(prefix)
                 }
             };
+            // Read before the match consumes the reading; `None` for the two
+            // variants that are not declines.
+            let declining = reading.decline_cause();
             match reading {
                 AssemblyPath::Resolved { payload, owns_path } => {
                     if owns_path {
-                        return TieredResolution::Resolved(payload);
+                        return TieredResolution::Resolved { payload, tier };
                     }
-                    fallback.get_or_insert(payload);
+                    fallback.get_or_insert((payload, tier));
                 }
                 // A generic-abbreviation reading defers, like a project shadow —
                 // but only once *reached in priority order*. The preemptive
                 // as-written-root check above skips it (it is not
-                // `ProjectShadowed`), so a higher-priority `open` resolving the
+                // `Occupied`), so a higher-priority `open` resolving the
                 // path is tried first and wins; the abbreviation defers only if
                 // it is the highest reading left (codex review 4). A
                 // self-module-shadowed root reading is likewise skipped by the
                 // preemptive check and defers here — after every open has
                 // declined — so the current module's own name still shadows the
                 // same-named *root* namespace's assembly reading.
-                AssemblyPath::ProjectShadowed
+                AssemblyPath::Occupied(_)
                 | AssemblyPath::SelfModuleShadowed
                 | AssemblyPath::AbbreviationOpaque
                 | AssemblyPath::ContestedRooting => {
-                    return TieredResolution::ShadowDeferred;
+                    let cause = declining.expect("a declining reading names its cause");
+                    return TieredResolution::ShadowDeferred(DeclineSite { cause, tier });
                 }
                 AssemblyPath::NoMatch => {}
             }
         }
         match fallback {
-            Some(payload) => TieredResolution::Resolved(payload),
+            Some((payload, tier)) => TieredResolution::Resolved { payload, tier },
             None => TieredResolution::NoMatch,
         }
     }
@@ -1091,9 +1134,9 @@ impl<'a> Resolver<'a> {
         // *value* of the same name does NOT shadow a type in type position
         // (`module Demo; let Thing = 1` elsewhere does not stop `x : Demo.Thing`
         // resolving to the assembly type), so it must not pull in the value-space
-        // shadowing that the expression sibling's `path_is_project_shadowed` adds.
-        if self.path_is_project_type_shadowed(&names) {
-            return AssemblyPath::ProjectShadowed;
+        // shadowing that the expression sibling's `project_shadow_cause` adds.
+        if let Some(cause) = self.project_type_shadow_cause(&names) {
+            return AssemblyPath::Occupied(cause);
         }
 
         // Longest prefix `[..k]` (with `k >= base`, a source segment) whose
@@ -1238,7 +1281,7 @@ impl<'a> Resolver<'a> {
         let walk_root = if self.assemblies.is_abbreviation(type_handle) {
             match self.assemblies.resolve_abbreviation_tycon(type_handle) {
                 Some(terminal) => terminal,
-                None => return AssemblyPath::ProjectShadowed,
+                None => return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable),
             }
         } else {
             type_handle
@@ -1289,7 +1332,9 @@ impl<'a> Resolver<'a> {
                             via_alias = true;
                             terminal
                         }
-                        None => return AssemblyPath::ProjectShadowed,
+                        None => {
+                            return AssemblyPath::Occupied(DeclineCause::AliasTargetUnchaseable);
+                        }
                     }
                 } else {
                     child
@@ -1299,7 +1344,7 @@ impl<'a> Resolver<'a> {
                 parent = next;
                 i += 1;
             } else if via_alias {
-                return AssemblyPath::ProjectShadowed;
+                return AssemblyPath::Occupied(DeclineCause::AliasOwnedTail);
             } else {
                 owns_path = false;
                 break;
@@ -1395,7 +1440,7 @@ impl<'a> Resolver<'a> {
     /// the walk would be a *wrong target*, not a deferral: with `open Prefix` in scope,
     /// `open M` where `Prefix.M` is RQA and a root `M` exists would bind the root `M`'s
     /// values where FCS binds `Prefix.M`'s. Reporting FS0892 is a Phase-4 concern
-    /// ([`AssemblyEnv::is_require_qualified_access`] is the signal).
+    /// ([`AssemblyEnv::is_require_qualified_access`](crate::AssemblyEnv::is_require_qualified_access) is the signal).
     pub(super) fn opened_assembly_module(&self, path: &[String]) -> Option<EntityHandle> {
         self.opened_assembly_modules(path).into_iter().next()
     }
@@ -1408,7 +1453,7 @@ impl<'a> Resolver<'a> {
     ///
     /// Same walk as [`Self::opened_assembly_type`] — longest top-level
     /// `(namespace, name)` prefix, then nested types — but branching over *all* roots
-    /// at that prefix ([`AssemblyEnv::public_entities_named`]) rather than the
+    /// at that prefix ([`AssemblyEnv::public_entities_named`](crate::AssemblyEnv::public_entities_named)) rather than the
     /// first-wins index.
     pub(super) fn opened_assembly_modules(&self, path: &[String]) -> Vec<EntityHandle> {
         let n = path.len();
@@ -1458,9 +1503,10 @@ impl<'a> Resolver<'a> {
     /// `Demo.Sub.Calc` (the open), not `Demo.Calc`; and `open Demo; open type
     /// Calc` binds `Demo.Calc`, not a root `Calc`.
     ///
-    /// Shadowing uses the *type-namespace* check
-    /// ([`Self::path_is_project_type_shadowed`]) — a project value of the same
-    /// name does not shadow a type. `None` (an *opaque* open: bare-name resolution
+    /// Shadowing uses [`Self::open_type_target_shadowed`] — the type-namespace
+    /// check (a project value of the same name does not shadow a type), widened
+    /// by the augmentation head that gates the *statics* this open enumerates.
+    /// `None` (an *opaque* open: bare-name resolution
     /// stays conservative) when the target is project-shadowed, names no
     /// accessible assembly type, or is ambiguous across distinct opens (F# breaks
     /// that by latest-open precedence, which we do not model, so we decline rather
@@ -1480,10 +1526,10 @@ impl<'a> Resolver<'a> {
             // wrongly go opaque and suppress later opened statics — while a
             // colliding name takes the relative `Demo.Sub`. The latest open with a
             // match wins.
-            for prefix in self.open_reading_prefixes() {
+            for (_, prefix) in self.open_reading_prefixes() {
                 let mut full = prefix.to_vec();
                 full.extend_from_slice(path);
-                if self.path_is_project_type_shadowed(&full) {
+                if self.open_type_target_shadowed(&full) {
                     return None; // an open routes it into project territory
                 }
                 if let Some(handle) = self.opened_assembly_type(&full) {
@@ -1500,7 +1546,7 @@ impl<'a> Resolver<'a> {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(path);
                 if let Some(handle) = self.opened_assembly_type(&full) {
-                    return (!self.path_is_project_type_shadowed(&full)).then_some(handle);
+                    return (!self.open_type_target_shadowed(&full)).then_some(handle);
                 }
             }
         }
@@ -1515,9 +1561,26 @@ impl<'a> Resolver<'a> {
         // root type could therefore be wrong — decline (defer) rather than guess.
         let bare_in_namespace = path.len() == 1 && !self.container_path.is_empty();
         if !bare_in_namespace && let Some(handle) = self.opened_assembly_type(path) {
-            return (!self.path_is_project_type_shadowed(path)).then_some(handle);
+            return (!self.open_type_target_shadowed(path)).then_some(handle);
         }
         None
+    }
+
+    /// The `open type` flavour of [`Self::path_is_project_type_shadowed`]: also
+    /// declines when project source **augments** the target
+    /// ([`Self::path_is_augmentation_head_shadowed`]).
+    ///
+    /// The type *name* an augmentation head writes is unshadowed — the head
+    /// declares no type — but this predicate does not gate the name. It gates
+    /// enumerating the type's **statics** into unqualified scope, and an
+    /// augmentation contributes statics to exactly that surface. fsi, with
+    /// `type Demo.Calc with static member Zero (x: int) = x + 1000 / static
+    /// member Fresh = 7` ahead of `open type Demo.Calc`: bare `Zero 5` is 1005
+    /// (the extension wins the group) and bare `Fresh` binds only through it.
+    /// Committing the assembly's statics there is a wrong target, so the open
+    /// goes opaque.
+    fn open_type_target_shadowed(&self, names: &[String]) -> bool {
+        self.path_is_project_type_shadowed(names) || self.path_is_augmentation_head_shadowed(names)
     }
 
     /// Whether `path` names (or sits under) an in-project **module** — an F#
@@ -1537,7 +1600,7 @@ impl<'a> Resolver<'a> {
     /// `module_paths` stays an *exact* match because it also holds the file's
     /// `namespace` headers, which must not make an `open <namespace>` opaque.)
     ///
-    /// [`Preceding`]: ProjectItems
+    /// [`Preceding`]: super::model::ProjectItems
     pub(super) fn open_imports_project_values(&self, path: &[String]) -> bool {
         let under_any = |paths: &[Vec<String>]| {
             paths

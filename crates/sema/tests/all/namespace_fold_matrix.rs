@@ -48,11 +48,12 @@
 //! that starts naming a target, or that FCS stops resolving, fails: the ratchet only
 //! tightens.
 
-use crate::common::fold_matrix::{Cell, Position, run_matrix};
+use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
 const CELLS: &[Cell] = &[
     // ---- exception: value + pattern scope, folded opaque (§8 option A) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn / module-half unique value",
         body: &["open Demo.NsFold.Exn"],
@@ -60,6 +61,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn / unique exception, expression",
         body: &["open Demo.NsFold.Exn"],
@@ -67,6 +69,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn / unique exception, pattern",
         body: &["open Demo.NsFold.Exn"],
@@ -74,6 +77,7 @@ const CELLS: &[Cell] = &[
         position: Position::PatternCtor,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn / colliding value-vs-exception, expression",
         body: &["open Demo.NsFold.Exn"],
@@ -81,6 +85,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn / colliding value-vs-exception, pattern",
         body: &["open Demo.NsFold.Exn"],
@@ -91,6 +96,7 @@ const CELLS: &[Cell] = &[
     // the exception at the tycon tier and the auto-open module's literal after it,
     // so the literal wins the bare name in both positions ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-lit / module-half unique value",
         body: &["open Demo.NsFold.ExnLit"],
@@ -98,6 +104,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-lit / literal-vs-exception, expression",
         body: &["open Demo.NsFold.ExnLit"],
@@ -105,6 +112,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "exn-lit / literal-vs-exception, bare pattern",
         body: &["open Demo.NsFold.ExnLit"],
@@ -113,6 +121,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- plain union: cases into value + pattern scope (we fold them opaque) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union / module-half unique value",
         body: &["open Demo.NsFold.Union"],
@@ -120,6 +129,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union / unique case, expression",
         body: &["open Demo.NsFold.Union"],
@@ -127,6 +137,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union / unique case, pattern",
         body: &["open Demo.NsFold.Union"],
@@ -134,6 +145,7 @@ const CELLS: &[Cell] = &[
         position: Position::PatternCtor,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union / colliding case-vs-value, expression",
         body: &["open Demo.NsFold.Union"],
@@ -142,6 +154,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- RQA union: cases NOT imported bare (Q6) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa / module-half unique value",
         body: &["open Demo.NsFold.RqaUnion"],
@@ -149,6 +162,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa / case not imported, expression",
         body: &["open Demo.NsFold.RqaUnion"],
@@ -156,6 +170,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa / case not imported, pattern",
         body: &["open Demo.NsFold.RqaUnion"],
@@ -164,6 +179,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- struct union: cases import bare (non-RQA) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "struct-union / module-half unique value",
         body: &["open Demo.NsFold.StructUnion"],
@@ -171,6 +187,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "struct-union / unique case, expression",
         body: &["open Demo.NsFold.StructUnion"],
@@ -178,6 +195,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "struct-union / unique case, pattern",
         body: &["open Demo.NsFold.StructUnion"],
@@ -186,6 +204,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- plain class: a constructor-slot type ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class / module-half unique value",
         body: &["open Demo.NsFold.ClassType"],
@@ -193,6 +212,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class / unique type, expression",
         body: &["open Demo.NsFold.ClassType"],
@@ -200,6 +220,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class / colliding value-vs-type, expression",
         body: &["open Demo.NsFold.ClassType"],
@@ -208,6 +229,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- [<AutoOpen>] type: statics we cannot enumerate (residue poisons the group) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-type / module-half value (residue-poisoned)",
         body: &["open Demo.NsFold.AutoType"],
@@ -215,6 +237,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-type / auto-opened static",
         body: &["open Demo.NsFold.AutoType"],
@@ -223,6 +246,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- [<AutoOpen>] module: enumerable; folded recursively ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module / module-half unique value",
         body: &["open Demo.NsFold.AutoModule"],
@@ -230,6 +254,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module / unique auto-open value",
         body: &["open Demo.NsFold.AutoModule"],
@@ -237,6 +262,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module / colliding auto-open value",
         body: &["open Demo.NsFold.AutoModule"],
@@ -244,6 +270,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module / literal",
         body: &["open Demo.NsFold.AutoModule"],
@@ -251,6 +278,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module / active-pattern tag, pattern",
         body: &["open Demo.NsFold.AutoModule"],
@@ -259,6 +287,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- type abbreviation (pickle-only) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "abbrev / module-half unique value",
         body: &["open Demo.NsFold.Abbrev"],
@@ -272,6 +301,7 @@ const CELLS: &[Cell] = &[
     //
     // ---- the live qualified channel: an uncontested namespace-type head ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-dotted / unique type static, expression",
         body: &["open Demo.NsFold.ClassType"],
@@ -279,6 +309,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         // The bare `NsClass` value-vs-type contest (codex P1-A) moved behind a
         // dotted head: whichever half wins the head decides whether `.Stat`
         // resolves, so committing the static would gamble on reference order.
@@ -290,6 +321,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- type-qualified union cases (the RQA ones REQUIRE this channel) ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union-dotted / type-qualified case, expression",
         body: &["open Demo.NsFold.Union"],
@@ -297,6 +329,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "union-dotted / type-qualified case, bare pattern",
         body: &["open Demo.NsFold.Union"],
@@ -304,6 +337,7 @@ const CELLS: &[Cell] = &[
         position: Position::PatternBare,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa-dotted / required-qualified case, expression",
         body: &["open Demo.NsFold.RqaUnion"],
@@ -311,6 +345,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "rqa-dotted / required-qualified case, bare pattern",
         body: &["open Demo.NsFold.RqaUnion"],
@@ -319,6 +354,7 @@ const CELLS: &[Cell] = &[
     },
     // ---- module-qualified value through the namespace half's child module ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "auto-module-dotted / module-qualified value, expression",
         body: &["open Demo.NsFold.AutoModule"],
@@ -331,6 +367,7 @@ const CELLS: &[Cell] = &[
     // later cross-kind open's generation barrier stales the binding, and the
     // head must DEFER, not fall through to the assembly reading. ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-dotted / project value captures the head, expression",
         body: &["open Demo.NsFold.ClassType", "let NsClassSolo = 5"],
@@ -338,6 +375,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class-dotted / staled project head defers (round 10), expression",
         body: &[
@@ -349,6 +387,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "class / staled project binding, bare expression",
         body: &[
@@ -360,6 +399,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         // The availability half of round 10: a head with NO entry to stale
         // keeps resolving through the earlier open across a later cross-kind
         // bump (this is the cell a blanket dotted veto would break).
@@ -373,6 +413,7 @@ const CELLS: &[Cell] = &[
     // the auto-open vals fold `let NsTier` after it — the value wins the bare
     // slot and captures the dotted head ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "tier / module-half unique value",
         body: &["open Demo.NsFold.TierClash"],
@@ -380,6 +421,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "tier / same-surface value-vs-type, bare expression",
         body: &["open Demo.NsFold.TierClash"],
@@ -387,6 +429,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "tier-dotted / static under the value-captured head, expression",
         body: &["open Demo.NsFold.TierClash"],
@@ -398,6 +441,7 @@ const CELLS: &[Cell] = &[
     // (`FromA` through the earlier open), latest-open-wins on a tie
     // (`DupStat` is on both) — the tiered-walk pins. ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "evict / earlier module-half value under a later cross-kind bump",
         body: &["open Demo.NsFold.EvictA", "open Demo.NsFold.EvictB"],
@@ -405,6 +449,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "evict-dotted / member unique to the earlier type, expression",
         body: &["open Demo.NsFold.EvictA", "open Demo.NsFold.EvictB"],
@@ -412,6 +457,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "evict-dotted / member unique to the later type, expression",
         body: &["open Demo.NsFold.EvictA", "open Demo.NsFold.EvictB"],
@@ -419,6 +465,7 @@ const CELLS: &[Cell] = &[
         position: Position::Expr,
     },
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "evict-dotted / member on both types, expression",
         body: &["open Demo.NsFold.EvictA", "open Demo.NsFold.EvictB"],
@@ -432,6 +479,7 @@ const CELLS: &[Cell] = &[
     // is what FCS binds. Fully qualified, so this is the rooting walk alone with
     // no `open` tier in play (codex review). ----
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "root-shorten / tail below the shorter rooting, expression",
         body: &[],
@@ -444,6 +492,7 @@ const CELLS: &[Cell] = &[
     // treats any entity it reaches as an owner records the record instead
     // (codex review).
     Cell {
+        container: Container::Anon,
         decls: &[],
         label: "root-shorten / terminal head with the value below it, expression",
         body: &[],

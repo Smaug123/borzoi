@@ -47,7 +47,7 @@ pub(super) struct ExportRecord {
     /// so it inherits the constructor namespace's Compile-order provenance and
     /// accessibility recovery (a plain union case does the same), but a bare use in
     /// *expression* position is FS0039, so every value-namespace query excludes it
-    /// ([`Self::latest_accessible_value`] et al.). `false` for a value or a
+    /// ([`ProjectItems::latest_accessible_value`] et al.). `false` for a value or a
     /// value-live union/exception case.
     pattern_only: bool,
 }
@@ -241,6 +241,14 @@ pub struct ProjectItems {
     /// is sound (over-defers an unrelated assembly path that happens to share
     /// the prefix — availability, never a wrong resolution).
     pub(super) nested_module_paths: HashSet<Vec<String>>,
+    /// Paths named by an earlier file's `type … with` **augmentation head**
+    /// ([`ExportDeclKind::TypeAugmentation`]) — the value-namespace-only
+    /// sibling of [`Self::nested_module_paths`]. See
+    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals):
+    /// the head declares no type, so a *type* path rooted at one must resolve
+    /// normally, while a *value* path must still defer (the extension's members
+    /// join the augmented type's method groups).
+    pub(super) augmentation_head_paths: HashSet<Vec<String>>,
     /// Every earlier-file project **type**'s simple name, from each file's
     /// syntactic whole-file pre-scan
     /// ([`ResolvedFile::own_type_simple_names`]). The attribute resolution's
@@ -318,9 +326,9 @@ pub struct ProjectItems {
     /// module `A` may have `[<AutoOpen>]` fragments in several files and *plain*
     /// (un-attributed) augmentations in others. Only a member declared in an
     /// `[<AutoOpen>]`-attributed fragment is auto-opened, and it folds at *that
-    /// fragment's* file, so [`Self::is_auto_open_fragment`] answers "is `(A,
-    /// file)` an auto-open fragment?" per member. The same path can therefore
-    /// appear more than once here, once per declaring file.
+    /// fragment's* file, so an entry here answers "is `(A, file)` an auto-open
+    /// fragment?" per member. The same path can therefore appear more than once
+    /// here, once per declaring file.
     ///
     /// A `Vec`, not a `HashSet` (codex review of §7's machinery slice): when
     /// two PRECEDING files each declare a same-named-clashing auto-open
@@ -496,7 +504,7 @@ impl ProjectItems {
     /// The names of earlier-file types declared **directly** under `container`
     /// whose [`SlotClass`] is not [`SlotClass::Keeps`] — a class/struct/enum
     /// (`Evicts`) or an abbreviation/delegate/undecidable-kind (`Unknown`), the
-    /// same construction-capable set [`super::lookup::type_name_is_value_slot_contestant`]'s
+    /// same construction-capable set `type_name_is_value_slot_contestant`'s
     /// referenced-assembly mirror tests. `Keeps` types (unions, records,
     /// interfaces) never enter FCS's unqualified constructor slot, so they are
     /// never contestants. Feeds
@@ -593,6 +601,15 @@ impl ProjectItems {
             .any(|p| names.starts_with(p.as_slice()))
     }
 
+    /// Whether `names` is rooted at (equal to, or a path under) a path an
+    /// earlier file's augmentation head names — see
+    /// [`Self::augmentation_head_paths`]. **Value namespace only.**
+    pub(super) fn is_rooted_at_augmentation_head(&self, names: &[String]) -> bool {
+        self.augmentation_head_paths
+            .iter()
+            .any(|p| names.starts_with(p.as_slice()))
+    }
+
     /// Whether `names` is *exactly* a declared *nested* project module from an
     /// earlier file (not merely a path under one). The cross-file half of the
     /// enumerable-module predicate ([`Resolver::is_project_module_path`](super::state::Resolver::is_project_module_path)).
@@ -624,6 +641,10 @@ impl ProjectItems {
         let exact = value_at(path)
             || self.module_headers.contains(path)
             || self.nested_module_paths.contains(path)
+            // An augmentation head binds *members* along its path even though it
+            // declares no type, and this predicate only ever withholds the
+            // self-qualifier relaxation, so it counts here.
+            || self.augmentation_head_paths.contains(path)
             || self.type_paths.contains_key(path)
             || self.type_qualified_cases.contains_key(path);
         exact
@@ -1045,7 +1066,7 @@ impl ProjectItems {
     /// machine check on the coupling.
     ///
     /// Every index is derived from the file's source-ordered
-    /// [`ExportDecl`](super::model::ExportDecl) list
+    /// [`ExportDecl`] list
     /// ([`FileExportIndices::from_decls`]); the derivation reproduces the legacy
     /// per-feature export fields exactly (`docs/export-decl-model-plan.md` Stage 2).
     ///
@@ -1092,6 +1113,9 @@ impl ProjectItems {
         }
         for nested in idx.nested_module_paths {
             self.nested_module_paths.insert(nested);
+        }
+        for head in idx.augmentation_head_paths {
+            self.augmentation_head_paths.insert(head);
         }
         for nested in idx.real_nested_modules {
             self.real_nested_modules.insert(nested);
@@ -1231,7 +1255,7 @@ impl ProjectItems {
 
     /// The qualified paths of earlier-file **non-`private`** `[<AutoOpen>]`
     /// modules directly under `container` (see [`is_directly_in`]) — the
-    /// cross-file half of [`Resolver::project_auto_open_submodules_in`]
+    /// cross-file half of [`Resolver::project_auto_open_submodules_in`](super::Resolver::project_auto_open_submodules_in)
     /// (`resolve/lookup.rs`), which also collects the same-file half and
     /// recurses to fold a project namespace's auto-open descendants like the
     /// assembly namespace half's `[<AutoOpen>]` recursion
@@ -1295,6 +1319,7 @@ struct FileExportIndices {
     active_pattern_shapes: Vec<(ItemId, ActivePatternShape)>,
     module_headers: Vec<Vec<String>>,
     nested_module_paths: Vec<Vec<String>>,
+    augmentation_head_paths: Vec<Vec<String>>,
     real_nested_modules: Vec<Vec<String>>,
     namespace_paths: Vec<Vec<String>>,
     modules_with_hidden_values: Vec<Vec<String>>,
@@ -1477,6 +1502,11 @@ impl FileExportIndices {
                         // backstop against a gap in that collection — the class
                         // that produced two findings in this slice's review.
                         push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
+                    }
+                }
+                ExportDeclKind::TypeAugmentation => {
+                    if !anon {
+                        fi.augmentation_head_paths.push(decl.path.clone());
                     }
                 }
                 ExportDeclKind::Module {
@@ -1750,15 +1780,26 @@ pub(super) enum ExportDeclKind {
     },
     /// A `type` name. `path` = container + name segment(s).
     ///
-    /// `info` is `Some((cases_enumerable, slot))` for a genuine (single-ident,
-    /// non-augmentation) type definition — which feeds `type_paths`, keyed by
-    /// `path`; it is `None` for an augmentation (`type A.B with …`) or a dotted
-    /// abbreviation head, which records only the conflated nested-module shadow.
-    /// `auto_open` marks a `[<AutoOpen>]` type, whose container is hidden.
+    /// `info` is `Some((cases_enumerable, slot))` for a genuine (single-ident)
+    /// type definition — which feeds `type_paths`, keyed by `path`; it is `None`
+    /// for a dotted abbreviation head, which records only the conflated
+    /// nested-module shadow. `auto_open` marks a `[<AutoOpen>]` type, whose
+    /// container is hidden.
     Type {
         info: Option<(bool, SlotClass)>,
         auto_open: bool,
     },
+    /// A `type … with` **augmentation** head. `path` = container + the head's
+    /// name segment(s) — the same conflated form [`Self::Type`] records, and for
+    /// a namespace-rooted bare head (`namespace Demo` ▸ `type Calc with …`) it is
+    /// exactly the augmented type's own path.
+    ///
+    /// Feeds [`ProjectItems::augmentation_head_paths`] rather than
+    /// `nested_module_paths`, because an augmentation head declares no type: see
+    /// [`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals)
+    /// for why the value namespace still has to honour it and the type namespace
+    /// must not.
+    TypeAugmentation,
     /// A module. `path` = the module's full path. `header` distinguishes a
     /// top-level `module`/`namespace`-rooted header (feeds `module_headers`) from a
     /// nested `module X = …` (feeds `real_nested_modules`). `auto_open` / `private`
@@ -1787,7 +1828,7 @@ pub(super) enum ExportDeclKind {
     /// name. AP cases are **pattern-namespace-only** — a bare use in expression
     /// position is FS0039 — so, unlike a value-namespace case, they never enter
     /// [`value_exports`](ProjectItems::value_exports); they enter the dedicated
-    /// [`active_pattern_case_exports`](ProjectItems::active_pattern_case_exports)
+    /// [`active_pattern_shapes`](ProjectItems::active_pattern_shapes)
     /// index (carrying the recognizer `shape`, so a cross-file *parameterized* use
     /// splits its arguments exactly as a same-file one does) and
     /// [`case_item_ids`](ProjectItems::case_item_ids).
@@ -1900,6 +1941,348 @@ impl Resolution {
                 Resolution::Deferred(DeferredReason::IncompleteAssemblies)
             }
             other => other,
+        }
+    }
+}
+
+/// **Which guard** declined a name use — one variant per branch that already
+/// exists in the two assembly precedence walks, named after the predicate that
+/// guards it.
+///
+/// [`DeferredReason`] says what *kind* of decline a consumer is looking at, for
+/// a consumer deciding what to tell a user. This says which of the resolver's
+/// many guards produced it, for a consumer deciding whether a change moved the
+/// right ones. `decide_type_path` alone has a dozen distinct `Deferred`
+/// branches; without this they are one indistinguishable outcome, and the only
+/// way to price a change to the precedence ladder is to disable one guard at a
+/// time and re-run a whole-project differential.
+///
+/// The enumeration is kept **total by the compiler**, not by discipline:
+/// `TypePathResolution::Deferred` carries one, so a decline site added later
+/// cannot compile without naming its cause. That is what makes the census
+/// trustworthy as the resolver grows.
+///
+/// Purely diagnostic — see [`ResolvedFile::decline_site`]. Nothing in the
+/// resolver reads a cause back to make a decision, and a `Resolution` is
+/// identical whether or not a cause was recorded beside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclineCause {
+    /// A same-file `[<AutoOpen>]` module opened a type of this name into scope,
+    /// with no later same-container `type` outranking it.
+    SameFileAutoOpenType,
+    /// A single-segment name inside an active `rec` block, where a
+    /// forward-declared project type may not be in `type_defs` yet.
+    RecursiveModuleActive,
+    /// A dotted path whose head names a module declared anywhere in the
+    /// enclosing `rec` block — it may descend into a forward-declared nested
+    /// module.
+    RecursiveModuleHead,
+    /// An opaque / unmodelled `open` is in scope and could supply a shadowing
+    /// type we do not model.
+    OpaqueOpen,
+    /// The path descends into a project **nested** module, whose own type of
+    /// that name would win and which we do not enumerate.
+    DescendsIntoNestedModule,
+    /// A **dropped TypeDef** somewhere the walk would look could be the type
+    /// FCS binds (a path-scoped, pre-walk gate rather than a per-tier veto).
+    DroppedTypeCouldRoot,
+    /// A manifest auto-open surface is uncertain *name-blind*: the projection is
+    /// incomplete across a whole namespace, so no tier is safe to prefer.
+    ManifestSurfaceUncertain,
+    /// A manifest auto-open surface declares the head at the written position,
+    /// and no reading out-ranking that surface resolved the path.
+    ManifestSurfaceContest,
+    /// A manifest auto-open surface holds the head only at a *different* arity.
+    /// FCS's arity preference is a fallback rather than a filter, so with no
+    /// trustworthy exact-arity leaf the surface's generic may be what it binds.
+    ManifestSurfaceArityFallback,
+    /// The winning reading's leaf is an **authoritative** module, which can
+    /// never be a type — FCS errors on the annotation and reports no use.
+    AuthoritativeModuleLeaf,
+    /// No reading matched at the written arity, but the name has an occupant at
+    /// another one, which FCS binds (with an arity error) rather than treating
+    /// the name as absent.
+    WrongArityOccupant,
+    /// An in-scope assembly `[<AutoOpen>]` module declares a nested type or
+    /// module of exactly the head's name.
+    AssemblyAutoOpenShadow,
+    /// A project `[<AutoOpen>]` module in the reading could own the written
+    /// path, and sema does not enumerate its types.
+    ProjectAutoOpenShadow,
+    /// The reading's namespace belongs to an assembly whose type abbreviations
+    /// could not be decoded, so what it declares there is unknowable.
+    UnknowableAbbreviationShadow,
+    /// A project entity — a value with member access on it, an exact project
+    /// module path, or a lexically-in-scope nested module — binds this
+    /// **value** path, so F# resolves it in-project and the assembly index must
+    /// not be consulted.
+    ///
+    /// The bucket that sizes the value walk's missing *per-member merge* model:
+    /// a project module and an assembly namespace of one name merge member by
+    /// member in FCS, and until that is modelled the whole path declines here.
+    ProjectPathShadow,
+    /// A project **type or module** of this name binds a *type* path. The
+    /// type-namespace sibling of [`Self::ProjectPathShadow`], and a strictly
+    /// narrower question: a project *value* of the name does not shadow a type
+    /// in type position, so the two walks ask different predicates and a census
+    /// that merged them could not tell which model to fix.
+    ProjectTypePathShadow,
+    /// The reading lands on a type abbreviation whose target cannot be chased —
+    /// structural, generic, unloaded, or ambiguous — so the path can neither
+    /// resolve through it nor confidently fall past it. One cause for both
+    /// walks: chasing an alias is the same question in either, with the same
+    /// fix.
+    AliasTargetUnchaseable,
+    /// The reading roots at an alias with a `ModuleSuffix` **companion module**,
+    /// whose members FCS routes `Alias.Member` to rather than the target's — a
+    /// module-over-target precedence sema does not model.
+    AliasCompanionModule,
+    /// The path roots (or descends) through a *chased* alias and a later
+    /// segment is absent from the target's modelled surface. FCS owns such a
+    /// reading, and the tail may live on a surface the walk does not enumerate
+    /// (a union case, an augmentation, a dropped member), so absence does not
+    /// prove absence: the reading keeps the path rather than ceding it.
+    AliasOwnedTail,
+    /// A `Type.Case` **pattern head** is bound by something that is not a union
+    /// declaring the case — a class, an abbreviation, a caseless union, or two
+    /// unions owning it at different arities. F# would keep searching outward
+    /// past some of these; telling "provably cannot supply this name" from
+    /// "occupies it" needs a whole member surface we do not always have.
+    CasePatternHeadOccupied,
+    /// The current module's own name qualifies the path, which FCS does not
+    /// bind as a self-qualifier.
+    SelfModuleShadowed,
+    /// The reading lands on a type-abbreviation marker, which we never resolve
+    /// through.
+    AbbreviationOpaque,
+    /// Several references contest the rooting of this path and none is
+    /// authoritative.
+    ContestedRooting,
+    /// A type binding evicted the value of this name from scope, so the
+    /// assembly tiers are unsafe for it.
+    ValueEvicted,
+    /// An `unmodelled_open_active` open is in scope and a higher-priority
+    /// reading differs from — or shadows — the as-written root, so the root
+    /// binding is unsafe.
+    UnmodelledOpenRoot,
+    /// A **qualified** (or `global.`-rooted) attribute path, which the
+    /// attribute resolver declines wholesale rather than making every
+    /// qualifier segment participate in every shadow guard.
+    QualifiedAttribute,
+    /// An attribute candidate resolving to an in-file type the resolver cannot
+    /// trust here: the name is also a generic/exception/auto-open type, sits in
+    /// a `rec` block, or an `open` later than the definition could redirect it.
+    AttributeInFileUnreliable,
+    /// A project type of this name — declared later in the file, in a sibling
+    /// block, or in a preceding Compile-order file — could satisfy the path
+    /// invisibly, so neither its match nor its no-match is trustworthy.
+    ProjectTypeShadow,
+    /// An attribute candidate whose `…Attribute`-suffix contest the resolver
+    /// cannot rule on.
+    AttributeUnrulable,
+    /// An attribute candidate whose leaf is a module or an abbreviation marker:
+    /// FCS chases neither in attribute position the way the walk would, and the
+    /// interaction is unprobed.
+    AttributeOpaqueLeaf,
+    /// A dotted **value** path whose head is opaque before the assembly walk is
+    /// reached: an opaque value/dotted open could supply it, the head was
+    /// staled by a later `open`'s generation barrier, or its unqualified slot
+    /// is in an unorderable contest with a type. Distinct from
+    /// [`Self::OpaqueOpen`], which is the type path's pre-walk twin.
+    OpaqueValueHead,
+    /// A definite-value head whose FCS unqualified slot is in an *unorderable*
+    /// contest with a type of the same name, so the path may be read as
+    /// module/type-qualified rather than as member access.
+    HeadSlotUnordered,
+    /// A dotted path whose head is a constructor **case**: a nullary case has
+    /// no dottable members, so FCS reads it as a qualifier into a same-named
+    /// module or type we could not resolve.
+    CaseQualifierHead,
+    /// A dotted path headed by the raw `global` namespace-root marker, which is
+    /// not a name use.
+    GlobalMarkerHead,
+    /// A reading of this path may be **signature-exposed**, and FCS binds the
+    /// signature — so no lower-priority candidate may be committed.
+    SignatureScreened,
+    /// A **same-file** type owns this exact case, rooting the reference in this
+    /// file, so an earlier file's same-written-path case is never the target.
+    SameFileCaseShadow,
+    /// An explicit `open` puts a referenced-assembly entity of a `Type.Case`
+    /// pattern head's name in scope, above the project case reading that would
+    /// otherwise bind — so the project reading may not be committed and the
+    /// assembly one is an entity we decline to resolve through.
+    AssemblyCaseHeadContends,
+    /// The env's projection is incomplete — some DLL is present that could not
+    /// be read at all — so every assembly-rooted reading in the file was
+    /// withdrawn (`Resolution::sealed_under_incomplete_projection`). The one
+    /// cause that *replaces* a resolution the resolver had already made.
+    IncompleteAssemblies,
+}
+
+impl DeclineCause {
+    /// Every variant, for a census that must emit a count per cause **including
+    /// the zeros**. A consumer that collected only the causes it observed would
+    /// mint a different metric set each run, which is the sparse-map failure
+    /// `docs/continuous-measurements.md` names; iterating this cannot.
+    pub const ALL: &'static [DeclineCause] = &[
+        DeclineCause::SameFileAutoOpenType,
+        DeclineCause::RecursiveModuleActive,
+        DeclineCause::RecursiveModuleHead,
+        DeclineCause::OpaqueOpen,
+        DeclineCause::DescendsIntoNestedModule,
+        DeclineCause::DroppedTypeCouldRoot,
+        DeclineCause::ManifestSurfaceUncertain,
+        DeclineCause::ManifestSurfaceContest,
+        DeclineCause::ManifestSurfaceArityFallback,
+        DeclineCause::AuthoritativeModuleLeaf,
+        DeclineCause::WrongArityOccupant,
+        DeclineCause::AssemblyAutoOpenShadow,
+        DeclineCause::ProjectAutoOpenShadow,
+        DeclineCause::UnknowableAbbreviationShadow,
+        DeclineCause::ProjectPathShadow,
+        DeclineCause::ProjectTypePathShadow,
+        DeclineCause::AliasTargetUnchaseable,
+        DeclineCause::AliasCompanionModule,
+        DeclineCause::AliasOwnedTail,
+        DeclineCause::CasePatternHeadOccupied,
+        DeclineCause::SelfModuleShadowed,
+        DeclineCause::AbbreviationOpaque,
+        DeclineCause::ContestedRooting,
+        DeclineCause::ValueEvicted,
+        DeclineCause::UnmodelledOpenRoot,
+        DeclineCause::QualifiedAttribute,
+        DeclineCause::AttributeInFileUnreliable,
+        DeclineCause::ProjectTypeShadow,
+        DeclineCause::AttributeUnrulable,
+        DeclineCause::AttributeOpaqueLeaf,
+        DeclineCause::OpaqueValueHead,
+        DeclineCause::HeadSlotUnordered,
+        DeclineCause::CaseQualifierHead,
+        DeclineCause::GlobalMarkerHead,
+        DeclineCause::SignatureScreened,
+        DeclineCause::SameFileCaseShadow,
+        DeclineCause::AssemblyCaseHeadContends,
+        DeclineCause::IncompleteAssemblies,
+    ];
+
+    /// A stable snake-case label, for a census key that must mean the same
+    /// thing in every run of a series.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeclineCause::SameFileAutoOpenType => "same_file_auto_open_type",
+            DeclineCause::RecursiveModuleActive => "recursive_module_active",
+            DeclineCause::RecursiveModuleHead => "recursive_module_head",
+            DeclineCause::OpaqueOpen => "opaque_open",
+            DeclineCause::DescendsIntoNestedModule => "descends_into_nested_module",
+            DeclineCause::DroppedTypeCouldRoot => "dropped_type_could_root",
+            DeclineCause::ManifestSurfaceUncertain => "manifest_surface_uncertain",
+            DeclineCause::ManifestSurfaceContest => "manifest_surface_contest",
+            DeclineCause::ManifestSurfaceArityFallback => "manifest_surface_arity_fallback",
+            DeclineCause::AuthoritativeModuleLeaf => "authoritative_module_leaf",
+            DeclineCause::WrongArityOccupant => "wrong_arity_occupant",
+            DeclineCause::AssemblyAutoOpenShadow => "assembly_auto_open_shadow",
+            DeclineCause::ProjectAutoOpenShadow => "project_auto_open_shadow",
+            DeclineCause::UnknowableAbbreviationShadow => "unknowable_abbreviation_shadow",
+            DeclineCause::ProjectPathShadow => "project_path_shadow",
+            DeclineCause::ProjectTypePathShadow => "project_type_path_shadow",
+            DeclineCause::AliasTargetUnchaseable => "alias_target_unchaseable",
+            DeclineCause::AliasCompanionModule => "alias_companion_module",
+            DeclineCause::AliasOwnedTail => "alias_owned_tail",
+            DeclineCause::CasePatternHeadOccupied => "case_pattern_head_occupied",
+            DeclineCause::SelfModuleShadowed => "self_module_shadowed",
+            DeclineCause::AbbreviationOpaque => "abbreviation_opaque",
+            DeclineCause::ContestedRooting => "contested_rooting",
+            DeclineCause::ValueEvicted => "value_evicted",
+            DeclineCause::UnmodelledOpenRoot => "unmodelled_open_root",
+            DeclineCause::QualifiedAttribute => "qualified_attribute",
+            DeclineCause::AttributeInFileUnreliable => "attribute_in_file_unreliable",
+            DeclineCause::ProjectTypeShadow => "project_type_shadow",
+            DeclineCause::AttributeUnrulable => "attribute_unrulable",
+            DeclineCause::AttributeOpaqueLeaf => "attribute_opaque_leaf",
+            DeclineCause::OpaqueValueHead => "opaque_value_head",
+            DeclineCause::HeadSlotUnordered => "head_slot_unordered",
+            DeclineCause::CaseQualifierHead => "case_qualifier_head",
+            DeclineCause::GlobalMarkerHead => "global_marker_head",
+            DeclineCause::SignatureScreened => "signature_screened",
+            DeclineCause::SameFileCaseShadow => "same_file_case_shadow",
+            DeclineCause::AssemblyCaseHeadContends => "assembly_case_head_contends",
+            DeclineCause::IncompleteAssemblies => "incomplete_assemblies",
+        }
+    }
+}
+
+/// **Where in the referenced-assembly precedence ladder** a decline fired — the
+/// tier of the reading being considered when the guard spoke, in strict
+/// precedence order.
+///
+/// A cause without its tier cannot say what a change to the ladder would do to
+/// it, which is the whole question a reorder asks. The ordering is the walk's
+/// own: [`Self::PreWalk`] guards run before any reading is tried, then explicit
+/// source `open`s, the implicit ones (`FSharp.Core`'s seed and namespace-shaped
+/// manifest auto-opens), the enclosing namespace, and finally the root /
+/// as-written reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclineTier {
+    /// The guard runs before the precedence walk starts, so no reading is in
+    /// play and no reordering of the ladder can move it.
+    PreWalk,
+    /// A reading through an **explicit source `open`**.
+    ExplicitOpen,
+    /// A reading through an **implicit** open — `FSharp.Core`'s seed, or a
+    /// namespace-shaped `[<assembly: AutoOpen>]`.
+    ImplicitOpen,
+    /// A reading through the **current enclosing namespace**.
+    EnclosingNamespace,
+    /// The **root / as-written** reading (the empty prefix).
+    Root,
+    /// The walk ran to completion and every tier declined, so no single tier
+    /// owns the decline.
+    WholeWalk,
+}
+
+impl DeclineTier {
+    /// Every variant — see [`DeclineCause::ALL`] for why a census needs this
+    /// rather than the tiers it happened to observe.
+    pub const ALL: &'static [DeclineTier] = &[
+        DeclineTier::PreWalk,
+        DeclineTier::ExplicitOpen,
+        DeclineTier::ImplicitOpen,
+        DeclineTier::EnclosingNamespace,
+        DeclineTier::Root,
+        DeclineTier::WholeWalk,
+    ];
+
+    /// A stable snake-case label, for a census key that must mean the same
+    /// thing in every run of a series.
+    pub fn label(self) -> &'static str {
+        match self {
+            DeclineTier::PreWalk => "pre_walk",
+            DeclineTier::ExplicitOpen => "explicit_open",
+            DeclineTier::ImplicitOpen => "implicit_open",
+            DeclineTier::EnclosingNamespace => "enclosing_namespace",
+            DeclineTier::Root => "root",
+            DeclineTier::WholeWalk => "whole_walk",
+        }
+    }
+}
+
+/// One recorded decline: the guard that declined, and the ladder position it
+/// spoke from. See [`ResolvedFile::decline_site`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclineSite {
+    /// Which guard declined.
+    pub cause: DeclineCause,
+    /// Where in the precedence ladder it spoke from.
+    pub tier: DeclineTier,
+}
+
+impl DeclineSite {
+    /// A decline from a guard that runs before the precedence walk, so no
+    /// reading is in play.
+    pub(super) const fn pre_walk(cause: DeclineCause) -> DeclineSite {
+        DeclineSite {
+            cause,
+            tier: DeclineTier::PreWalk,
         }
     }
 }
@@ -2351,6 +2734,18 @@ pub struct ResolvedFile {
     /// not perturb the `incremental ≡ batch` value-equality differential. Read
     /// through [`Self::resolution_trace`].
     pub(super) resolution_trace: ResolutionTrace,
+    /// The **decline census**: which guard declined each declined occurrence,
+    /// and the ladder tier it spoke from, keyed by the occurrence's source range
+    /// exactly as [`Self::resolutions`] is. Read through
+    /// [`Self::decline_site`].
+    ///
+    /// Purely diagnostic, on the same terms as [`Self::resolution_trace`]: no
+    /// cross-file fold or use-site resolver reads it, so it is excluded from
+    /// [`Self::same_export_contribution`]; and it is deterministic from source,
+    /// so it does not perturb the `incremental ≡ batch` value-equality
+    /// differential. It is the *per-token* half the per-open
+    /// [`ResolutionTrace`] cannot supply.
+    pub(super) decline_sites: HashMap<TextRange, DeclineSite>,
     /// The file's cross-file declarations, in source order — the single currency
     /// [`ProjectItems::extend_with`] folds (`docs/export-decl-model-plan.md`
     /// Stage 2). Every cross-file index derives from this list.
@@ -2525,6 +2920,7 @@ impl ResolvedFile {
             active_pattern_shape: HashMap::new(),
             diagnostics: Vec::new(),
             resolution_trace: ResolutionTrace::default(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
             sig_screen: Some(screen),
             sig_exports,
@@ -2622,8 +3018,77 @@ impl ResolvedFile {
         &self.resolution_trace
     }
 
+    /// Which guard declined the occurrence at `range`, and the ladder tier it
+    /// spoke from — the per-token complement of [`Self::resolution_trace`]'s
+    /// per-open view, which can say only that *some* open in the file perturbs
+    /// resolution and leaves the correlation to the caller.
+    ///
+    /// **A site is a claim; its absence is not.** When one is present it names
+    /// the guard that declined, and that is what a consumer may rely on.
+    /// Absence means only that the census did not attribute this occurrence —
+    /// which covers three quite different things: it resolved, nothing in the
+    /// model resolves *or shadows* it, or it declined for a reason no guard on
+    /// the attributed paths accounts for.
+    ///
+    /// The scope is deliberate rather than provisional. The census exists to
+    /// price changes to the referenced-assembly precedence ladder, so it
+    /// attributes what that ladder and its pre-walk gates do — every branch of
+    /// `decide_type_path`, the value/member walk, the attribute candidates, the
+    /// `Type.Case` pattern walk, and the incomplete-projection seal. It does
+    /// **not** try to attribute a bare name that simply is not in scope: an
+    /// opaque `open` being live is not evidence that it is why *this* name
+    /// found nothing, and attributing it would inflate every count with
+    /// declines no ladder change can move.
+    ///
+    /// A decline of a dotted path answers at **one** range: the whole written
+    /// path, which is what FCS's `rangeOfLid` names it by. No individual
+    /// segment does, not even the head — every segment of a dotted path defers
+    /// on its own account whatever the guard did, so answering there would
+    /// price a guard by the path's length.
+    ///
+    /// A consumer counting declines should therefore carry an explicit
+    /// *unattributed* bucket rather than treating absence as zero. What the
+    /// type system does enforce is the other direction: [`DeclineCause`] is
+    /// total over the decline sites that do report, so a new branch on an
+    /// attributed path cannot compile without naming its cause.
+    ///
+    /// Purely diagnostic: nothing in the resolver reads a site back, and the
+    /// [`Resolution`] at `range` is what it would be were no census kept.
+    pub fn decline_site(&self, range: TextRange) -> Option<DeclineSite> {
+        self.decline_sites.get(&range).copied()
+    }
+
+    /// Every recorded decline, in arbitrary order — for a census that counts
+    /// causes over a whole file or corpus rather than asking about one range.
+    pub fn decline_sites(&self) -> impl Iterator<Item = (TextRange, DeclineSite)> + '_ {
+        self.decline_sites.iter().map(|(&r, &s)| (r, s))
+    }
+
+    /// Every answer this file **commits** at `range`, whichever map holds it.
+    ///
+    /// Name resolution records into two range-keyed maps — ordinary occurrences
+    /// and attribute types, which answer FCS's suffix-first candidate walk and
+    /// so are kept apart. Both are served to users: the LSP navigates an
+    /// attribute name through the second one exactly as it navigates any other
+    /// name. A differential asking what this file claims must therefore read
+    /// **this**, not [`Self::resolution_at`]: reading one map alone reports a
+    /// committed answer as silence, which is how a wrong answer goes
+    /// uncompared. The maps answer at disjoint ranges (asserted in `finish`), so
+    /// the union is unambiguous.
+    ///
+    /// Not exhaustive over the *crate*: member resolutions are produced by
+    /// inference over a separate value (`Inferred::member_resolutions`) and are
+    /// not reachable from a `ResolvedFile`.
+    pub fn committed_resolution_at(&self, range: TextRange) -> Option<Resolution> {
+        self.resolution_at(range)
+            .or_else(|| self.attribute_resolution_at(range))
+    }
+
     /// The type the attribute written at `range` resolved to, if the resolver
     /// made any claim there (see [`Self::attribute_resolutions`]).
+    ///
+    /// Answers only the attribute map; a caller asking what the file commits
+    /// anywhere wants [`Self::committed_resolution_at`].
     pub fn attribute_resolution_at(&self, range: TextRange) -> Option<Resolution> {
         self.attribute_resolutions.get(&range).copied()
     }

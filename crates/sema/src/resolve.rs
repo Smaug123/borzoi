@@ -25,7 +25,7 @@
 //! A nullary single-segment `LongIdent` pattern head — `None` in `match x with
 //! None -> …`, `let (x, None) = …`, `fun None -> …` — is constructor-shaped (the
 //! parser routes lower-case idents to `Named`, so these are always upper-case)
-//! and [`pattern_names`](crate::pattern_names) flags it
+//! and [`pattern_names`] flags it
 //! [`provisional`](crate::Def::provisional).
 //! Whether it is a real binder or a constructor reference depends on whether the
 //! name resolves to a nullary constructor / literal: FCS binds an upper-case
@@ -34,7 +34,7 @@
 //!
 //! An in-file **union case** in scope *is* now resolved: a provisional head is
 //! looked up via [`Resolver::case_reference`], and if it names a
-//! [`DefKind`](crate::DefKind)`::UnionCase` the head records that resolution (a
+//! [`DefKind`]`::UnionCase` the head records that resolution (a
 //! case reference, not a binder) — so `Red` in `match c with Red -> …`, given an
 //! in-file `type Color = Red | Green`, points at the case. Anything else still
 //! declines to bind and records nothing, so the name falls through to
@@ -71,8 +71,9 @@ mod state;
 mod types;
 
 pub use model::{
-    CaseKind, DeferredReason, ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace,
-    ProjectItems, Resolution, ResolutionTrace, ResolvedFile, ResolvedProject,
+    CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason, ExportedItem, ExportedItems,
+    ItemId, OpenOpacity, OpenTrace, ProjectItems, Resolution, ResolutionTrace, ResolvedFile,
+    ResolvedProject,
 };
 pub use state::ActivePatternShape;
 use state::{
@@ -230,6 +231,38 @@ pub fn resolve_file(
                 }
                 _ => {}
             }
+        }
+        // …and the fact that it EXISTS. Its contents are not enumerated: a
+        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
+        // values, union and exception cases, `extern` prototypes,
+        // active-pattern tags, a single-case union spelled like an
+        // abbreviation, an auto-open *type*'s statics, statics borrowed through
+        // an abbreviation — and each is invisible to a different part of the
+        // parse. Enumerating them is a list that keeps growing and can only be
+        // audited by inspection; the flag is one closed question with a
+        // one-line soundness argument, and it costs commits only in files that
+        // actually declare such a container. Read by the implicit
+        // enclosing-namespace fold, which runs before the block's walk and so
+        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
+        r.own_auto_open_container = true;
+    }
+    // An `[<AutoOpen>]` **type** is the other container whose surface folds into
+    // the rest of its enclosing scope — its statics, and (fsi-verified) the
+    // statics of an abbreviation's target. Same closed flag, same reason.
+    for defn in file.syntax().descendants().filter_map(TypeDefn::cast) {
+        // `CanAutoOpenTyconRef` (`NameResolution.fs`) ends `tcref.Typars(m) |>
+        // List.isEmpty`, so a GENERIC `[<AutoOpen>]` type auto-opens nothing at
+        // all — flagging it would defer every name the enclosing namespace
+        // supplies for a container that contributes none (fcs-dump-verified).
+        if attrs_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
+            r.own_auto_open_container = true;
+        }
+        // The value-slot subset of the type-name pre-scan above.
+        if let Some(name) = defn.long_id().and_then(|li| li.idents().last())
+            && decls::type_slot_class(&defn) != model::SlotClass::Keeps
+        {
+            r.own_value_slot_type_names
+                .insert(id_text(name.text()).to_string());
         }
     }
     // Every value-binder simple name in the file — the constructor fallback's
@@ -450,6 +483,10 @@ pub fn resolve_file(
             .top_level_nested_locals
             .remove(&r.container_path)
             .unwrap_or_default();
+        r.augmentation_head_locals = r
+            .top_level_augmentation_locals
+            .remove(&r.container_path)
+            .unwrap_or_default();
         let frame = r.top_level.remove(&r.container_path).unwrap_or_default();
         r.scopes.push(frame);
         // The block frame is now active: seed the implicit auto-opens'
@@ -462,6 +499,13 @@ pub fn resolve_file(
             // Implicit auto-opens precede every declaration: slot position 0.
             r.open_auto_open_modules_in(&ns, 0, true);
         }
+        // …then the block's **own** enclosing namespace, which FCS opens
+        // implicitly as well (`ImplicitlyOpenOwnNamespace`) — that is how a
+        // referenced assembly's `[<AutoOpen>]` module in `namespace N` is in
+        // scope from a file that declares `namespace N` and opens nothing.
+        // After the implicit auto-opens, matching FCS's order: those are
+        // applied when the CCU is added, before any block env exists.
+        r.open_own_enclosing_namespace();
         // EX-3 §2(d): the block header's own attributes (`[<AutoOpen>] module
         // Test`) resolve in the block's opening scope — the implicit auto-opens
         // just seeded, no explicit `open` yet — which is FCS's env for them.
@@ -493,6 +537,9 @@ pub fn resolve_file(
         let locals = std::mem::take(&mut r.nested_module_locals);
         r.top_level_nested_locals
             .insert(r.container_path.clone(), locals);
+        let augmentation_locals = std::mem::take(&mut r.augmentation_head_locals);
+        r.top_level_augmentation_locals
+            .insert(r.container_path.clone(), augmentation_locals);
     }
     #[cfg(feature = "otel")]
     drop(_phase);
@@ -1375,7 +1422,7 @@ struct ExtThreading {
 /// Advance the Compile-order threaded state past `rf` (the resolution of
 /// `file`), exactly as the fold does: fold this file's exports into `preceding`
 /// and its own extension-source contribution into `ext`. The single writer
-/// of the forward threading — shared by the cold ([`resolve_project_impl`]) and
+/// of the forward threading — shared by the cold ([`resolve_project_files_impl`]) and
 /// incremental ([`resolve_project_incremental`]) folds so the two can never
 /// disagree on what a file contributes downstream.
 ///
@@ -1797,6 +1844,9 @@ impl<'a> Resolver<'a> {
             nested_module_locals: Vec::new(),
             top_level_nested_locals: HashMap::new(),
             nested_module_exports: Vec::new(),
+            augmentation_head_locals: Vec::new(),
+            top_level_augmentation_locals: HashMap::new(),
+            augmentation_head_exports: Vec::new(),
             real_nested_module_exports: Vec::new(),
             type_path_exports: Vec::new(),
             imports: implicit_open_groups(assemblies),
@@ -1820,6 +1870,8 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
+            own_auto_open_container: false,
+            own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
             augmentation_instance_names: HashSet::new(),
             augmentation_static_names: HashSet::new(),
@@ -1841,11 +1893,12 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
     }
 
-    /// Append one [`ExportDecl`] to the file's source-ordered declaration list,
+    /// Append one [`ExportDecl`](model::ExportDecl) to the file's source-ordered declaration list,
     /// stamping it with the current [`Self::anonymous_root`]. The single
     /// append point (`docs/export-decl-model-plan.md` Stage 2): a decl is added
     /// wherever a legacy export writer fires, so the cross-file derivations in
@@ -1866,7 +1919,7 @@ impl<'a> Resolver<'a> {
     }
 
     /// Attach a case's type-qualified path to the most recently appended
-    /// [`ExportDecl`], which must be the [`model::ExportDeclKind::Item`] just
+    /// [`ExportDecl`](model::ExportDecl), which must be the [`model::ExportDeclKind::Item`] just
     /// pushed for this case (both
     /// [`export_type_qualified_case`](Self::export_type_qualified_case) call sites
     /// invoke it immediately after the item's decl append — no other decl can
@@ -1956,17 +2009,88 @@ impl<'a> Resolver<'a> {
         if !self.assemblies.identities_incomplete() {
             return;
         }
-        for res in self
+        // The census follows the seal. A sealed occurrence is a decline the
+        // resolver *made* — it had an answer and withdrew it — so leaving it
+        // unattributed would report the one mode where nothing assembly-rooted
+        // may be trusted as the mode where nothing declined. The seal is
+        // wholesale, so the cause is too.
+        let sealed = model::DeclineSite::pre_walk(model::DeclineCause::IncompleteAssemblies);
+        for (range, res) in self
             .resolutions
-            .values_mut()
-            .chain(self.attribute_resolutions.values_mut())
+            .iter_mut()
+            .chain(self.attribute_resolutions.iter_mut())
         {
+            let before = *res;
             *res = res.sealed_under_incomplete_projection();
+            if *res != before {
+                self.decline_sites.entry(*range).or_insert(sealed);
+            }
+        }
+    }
+
+    /// The census invariant the type path *can* guarantee, checked rather than
+    /// argued: every [`DeferredReason::ShadowableType`] carries a
+    /// [`model::DeclineSite`].
+    ///
+    /// That reason is produced by exactly one recording shell
+    /// (`resolve_type_path`) over exactly one total decision enum
+    /// (`TypePathResolution`, whose `Deferred` cannot be constructed without a
+    /// cause), so the coverage is structural and the assertion only has to
+    /// notice if that structure is ever broken — a second producer, or a shell
+    /// that forgets to record.
+    ///
+    /// Deliberately **not** extended to `QualifiedAccess` / `UnboundName`. Most
+    /// of those are dotted-path *tail* segments deferred because member
+    /// resolution is a later phase, not because any guard declined them, and
+    /// asserting a cause there would force one to be invented. Their
+    /// unattributed share is a number to watch on real corpora
+    /// (`borzoi-corpus-diff`), not an invariant.
+    ///
+    /// Debug-only: it walks the whole map, and a release LSP should not pay for
+    /// a diagnostic cross-check. Every test in the workspace runs it.
+    fn debug_assert_shadowable_types_are_attributed(&self) {
+        if cfg!(debug_assertions) {
+            for (range, res) in &self.resolutions {
+                debug_assert!(
+                    *res != Resolution::Deferred(DeferredReason::ShadowableType)
+                        || self.decline_sites.contains_key(range),
+                    "type-position deferral at {range:?} names no guard;                      a second producer of ShadowableType has appeared, or the                      recording shell stopped recording"
+                );
+            }
+        }
+    }
+
+    /// The two commit maps answer at disjoint ranges, checked rather than
+    /// asserted in prose.
+    ///
+    /// Both consumers of the union rely on it: the LSP chains the maps to
+    /// navigate an attribute name, and `borzoi-corpus-diff` reads
+    /// [`ResolvedFile::committed_resolution_at`] to diff every answer this file
+    /// commits. A collision would make either one's verdict depend on which map
+    /// it happened to look in first — a wrong answer, arrived at silently.
+    ///
+    /// It holds because an attribute name's range is written where no other name
+    /// is: `resolve_attribute_type` keys on the attribute path's own
+    /// `rangeOfLid`, which no expression or type occurrence shares.
+    ///
+    /// Debug-only, like the census cross-check beside it; every test in the
+    /// workspace runs it.
+    fn debug_assert_commit_maps_are_disjoint(&self) {
+        if cfg!(debug_assertions) {
+            for range in self.attribute_resolutions.keys() {
+                debug_assert!(
+                    !self.resolutions.contains_key(range),
+                    "attribute and main resolutions both answer at {range:?}; \
+                     the union a consumer reads is no longer unambiguous"
+                );
+            }
         }
     }
 
     fn finish(mut self) -> ResolvedFile {
         self.seal_assembly_readings();
+        self.debug_assert_shadowable_types_are_attributed();
+        self.debug_assert_commit_maps_are_disjoint();
         ResolvedFile {
             defs: self.defs,
             resolutions: self.resolutions,
@@ -1996,6 +2120,7 @@ impl<'a> Resolver<'a> {
             resolution_trace: model::ResolutionTrace {
                 opens: self.trace_opens,
             },
+            decline_sites: self.decline_sites,
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),
@@ -2006,6 +2131,45 @@ impl<'a> Resolver<'a> {
         let id = DefId::new(self.defs.len());
         self.defs.push(def);
         id
+    }
+
+    /// Record **why** the occurrence at `range` declined, for the census
+    /// ([`ResolvedFile::decline_site`](model::ResolvedFile::decline_site)).
+    ///
+    /// First writer wins. A decline is often reached through several guards in
+    /// sequence — the tiered walk declines, then a downstream fallback declines
+    /// the same head again — and the *earliest* one is the specific answer
+    /// while the later ones are the general shape of "and so we deferred".
+    /// Last-write-wins would replace every precise cause with the broadest one.
+    fn record_decline(&mut self, range: TextRange, site: model::DeclineSite) {
+        self.decline_sites.entry(range).or_insert(site);
+    }
+
+    /// Record one decline against the one range that names **the path**: its
+    /// whole span, first segment through last.
+    ///
+    /// A consumer asks by range, and FCS names a dotted path by its full
+    /// `rangeOfLid` — so that is the range that must answer. For a single
+    /// segment it is the token itself, which is also what the resolution map is
+    /// keyed by.
+    ///
+    /// Deliberately **no individual segment**, not even the head. Every segment
+    /// of a dotted path defers on its own account whatever the guard did: sema
+    /// models neither module-as-def nor member access, and it defers a source
+    /// namespace qualifier even when the whole assembly lookup succeeds. Those
+    /// deferrals exist without the guard, so attributing them to it would price
+    /// the guard by the path's *length* and make a fully-qualified BCL path
+    /// look like several declines. The rule the census documents holds in both
+    /// directions this way: a decline the ladder caused is attributed, and one
+    /// waiting on a later phase is not.
+    fn record_path_decline(&mut self, segs: &[SyntaxToken], site: model::DeclineSite) {
+        let (Some(first), Some(last)) = (segs.first(), segs.last()) else {
+            return;
+        };
+        self.record_decline(
+            TextRange::new(first.text_range().start(), last.text_range().end()),
+            site,
+        );
     }
 
     fn record(&mut self, range: TextRange, res: Resolution) {

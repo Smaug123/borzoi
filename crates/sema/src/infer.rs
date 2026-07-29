@@ -344,7 +344,7 @@
 //!   methods defer.
 //! - **Well-formedness gate.** The return type is the call's type only when the
 //!   argument list is well-formed: the wake gates on the call's positional
-//!   `arg_count` ([`method_arg_count`]) being `Some(param_count)` exactly. FCS does
+//!   `arg_count` ([`Gen::method_arg_vids`]) being `Some(param_count)` exactly. FCS does
 //!   *not* type an ill-formed call as the method return — it falls back to `obj`
 //!   (`call:function`) — so each of these defers fully (no type, no recorded
 //!   resolution): a wrong **arity** (`s.ToLowerInvariant(1)`, `s.Insert()`), a
@@ -2290,7 +2290,7 @@ impl<'a> Gen<'a> {
     ///   fully-qualified static path (`System.Console.WriteLine`) or an unresolved
     ///   name, left for the catch-all so the static-member resolution is untouched;
     /// - an active-pattern segment in the path (`Foo.(|Bar|_|)`), which
-    ///   [`LongIdent::idents`] does not surface as a plain token.
+    ///   [`LongIdent::idents`](borzoi_cst::syntax::LongIdent::idents) does not surface as a plain token.
     ///
     /// The receiver's own value node is emitted at the head token's range (FCS
     /// emits a value node there), coercion-free (synth) — a member access never
@@ -2882,7 +2882,17 @@ impl<'a> Gen<'a> {
         // silence. The member lookup below walks this entity's base chain (Stage
         // 3.x-inh), so an inherited member is found and returned under its declaring
         // base's handle.
-        let Some(handle) = self.env.lookup_type(namespace, type_name, 0) else {
+        //
+        // This is the one place inference itself names an assembly type — a
+        // literal's receiver type (`"hi".Length`) is a path this phase writes down,
+        // vetted by nothing. So it reads through the drop-marker
+        // pairing ([`AssemblyEnv::lookup_type_if_certain`]) rather than the raw
+        // index: a dropped same-FQN sibling would leave us committing the
+        // survivor's members where FCS binds the dropped type's. The other two
+        // doors ([`Self::entity_annotation_ty`], [`Self::static_callee`]) key on an
+        // `Entity` the resolver's type-path walk already vetted, and reach this
+        // lookup only through the path they reconstruct from it.
+        let Some(handle) = self.env.lookup_type_if_certain(namespace, type_name, 0) else {
             return true;
         };
         let looked_up = match kind {

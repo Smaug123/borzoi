@@ -250,8 +250,10 @@ cases in `Renamed.Clr.Holder`, one metadata identifier — so anything that spli
 on dots would read one entity as two.
 
 The oracle's structural declaration is accepted only where our own resolution
-certifies it (`certified_expected` / `chain_position`): the enclosing chain we
-resolved must match the path segment for segment — same namespace, each
+certifies it (`borzoi_sema::test_support`'s `certified_expected` /
+`chain_position` — shared with the LSP crate's `resolve_real_project_diff`,
+which compares the same two sides over one project and cannot import this
+crate): the enclosing chain we resolved must match the path segment for segment — same namespace, each
 segment's compiled name equal to ours (one domain: `Entity::name`, with ECMA's
 arity mangling stripped from both, since matching *either* spelling would not be
 injective across crossed `[<CompiledName>]`s), each segment's generic parameter

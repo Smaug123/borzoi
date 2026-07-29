@@ -1399,3 +1399,62 @@ fn assembly_fall_through_agrees_with_fcs() {
         "FCS resolves hidden bar to the merged assembly"
     );
 }
+
+/// The signature screen shares its verdict with the project-shadow predicates
+/// it is asked alongside — both walks stop at the same reading — so the census
+/// has to say *which* guard spoke. It is a different model with a different
+/// fix, and the project-side commit sites already file it as
+/// `signature_screened`; a decline attributed to a project shadow here would
+/// move signature work into the project-merge bucket and hide it there.
+///
+/// Both walks are covered, because both consult the screen: a type path (the
+/// `.fsi` names `Thing`, so the annotation is screened) and a value path (a
+/// residual past an exported value, which the export's exemption does not
+/// reach).
+#[test]
+fn a_screened_path_is_censused_as_the_screen_and_not_as_a_project_shadow() {
+    let env = reflib_env();
+    let cases: [(&str, [(&str, &str); 3]); 2] = [
+        (
+            "a type the signature names",
+            [
+                (
+                    "/p/A.fsi",
+                    "module ProbeNs.Shared\n\ntype Thing = int\nval shown: int\n",
+                ),
+                (
+                    "/p/A.fs",
+                    "module ProbeNs.Shared\n\ntype Thing = int\nlet shown = 1\n",
+                ),
+                (
+                    "/p/Use.fs",
+                    "module Use\n\nlet t (v : ProbeNs.Shared.Thing) = v\n",
+                ),
+            ],
+        ),
+        (
+            "a residual past an exported value",
+            [
+                ("/p/A.fsi", "module ProbeNs.Shared\n\nval shown: int\n"),
+                ("/p/A.fs", "module ProbeNs.Shared\n\nlet shown = 1\n"),
+                (
+                    "/p/Use.fs",
+                    "module Use\n\nlet t = ProbeNs.Shared.shown.Inner\n",
+                ),
+            ],
+        ),
+    ];
+    for (what, files) in cases {
+        let proj = resolve_project_files(&project(&files), &env);
+        let sites: Vec<String> = proj
+            .file(2)
+            .decline_sites()
+            .map(|(_, site)| format!("{}@{}", site.cause.label(), site.tier.label()))
+            .collect();
+        assert_eq!(
+            sites,
+            vec!["signature_screened@root".to_string()],
+            "{what}: the screen, not a project shadow, is what declined this"
+        );
+    }
+}

@@ -57,11 +57,15 @@ A measurement generator writes this shape:
 `measurement` is a lowercase kebab-case path segment. `configuration` and
 `statistics` are JSON objects. `statistics` must contain at least one number
 and cannot contain arrays; use nested objects for structured metric families.
+An optional `retired_statistics` array names metrics the generator deliberately
+stopped emitting — see [Retiring a metric] below.
 The series identity is a deterministic digest of the generator schema,
 measurement name, pinned corpus revision, `flake.lock` hash, and complete
 configuration. Changing the corpus, toolchain inputs, stride, scope, defines,
 or another configuration field therefore starts a new comparable series rather
 than silently joining unlike points.
+
+[Retiring a metric]: #retiring-a-metric
 
 Nested numeric statistics are discovered automatically by the dashboard. A
 future typed-AST census only needs to emit this contract and add its report
@@ -92,12 +96,152 @@ ways to breach it, and they are the same bug:
   because the denominator is emitted beside it, so "0 of 0" stays
   distinguishable from "0 of many".
 
-Nothing in the recorder can enforce this: a summary with a missing key is
-indistinguishable from a measurement that genuinely has fewer metrics, so the
-generator has to be exhaustive by construction. `borzoi-corpus-diff` guards it
+Nothing in the recorder can enforce this *within* a run: a summary with a
+missing key is indistinguishable from a measurement that genuinely has fewer
+metrics, so the generator has to be exhaustive by construction.
+`borzoi-corpus-diff` guards it
 with `no_statistic_is_ever_null_however_empty_the_run`, which walks the whole
 rendered tree on a deliberately degenerate run rather than naming the fields it
 knows about — the field nobody thought to name is exactly the one that breaks.
+
+The resolution generator's two histograms are the worked example. `matches`
+is counted per bucket and `gap_b1` per `classify` sub-tag, and both are seeded
+with their whole closed key set so a bucket or sub-tag that stops occurring
+reads as `0`. Counting only what occurred would report the *closing* of a gap —
+the outcome the whole sweep is for — as a metric going missing. The sub-tag list
+is not hand-checked against the taxonomy beside it:
+`b1_tags_are_exactly_the_tags_classify_pairs_with_b1` enumerates `classify` over
+all 8,192 combinations of the inputs it reads and asserts the list is exactly
+what comes back, so it can be neither short nor long.
+
+*Across* runs it can, and does. Two consecutive observations of one series
+measure the same thing over the same corpus with the same toolchain, so a
+metric present in one and absent from the next is a change in what is
+measured — and only the generator knows whether it meant it. `record` therefore
+compares each observation against the one it will follow on the dashboard and
+refuses to publish one that drops a metric its predecessor carried, unless it
+says so. It reads the statistics exactly as the dashboard does, one metric per
+nested *number*, so a field that starts serialising as `null` counts as dropped
+for the same reason the dashboard would stop plotting it.
+
+A rerun is checked against the observation it **replaces** as well, and that
+check is the strict one: exact equality of the metric namespace, in both
+directions, ignoring `retired_statistics` entirely. Two attempts of one run
+measure the same commit with the same generator over the same corpus, so their
+namespaces must agree by construction — a metric appearing only on the second
+attempt is a namespace depending on something other than the code just as surely
+as one that disappears, and a retirement declared here would be a false claim,
+since nothing changed to retire. It is the one place the within-run rule above
+can be *checked* rather than merely required of the generator. It also matters
+because re-recording deletes the old file outright, so a metric only it carried
+would otherwise leave no trace anywhere.
+
+The comparison is otherwise against the **predecessor**, not the newest recorded
+observation, because runs finish out of order and observations are ordered by
+workflow creation. An older run landing late has a smaller metric namespace
+because a *later* commit widened it, which is not a drop; comparing against the
+newest would refuse it for one.
+
+What the check therefore claims is narrow, and worth stating exactly: an
+observation is compared against the greatest **already recorded** observation
+below it. A drop escapes whenever the observations carrying the metric have not
+been recorded yet, and once the first post-drop observation escapes so does
+every later one, because each is then compared against an already-gapped
+predecessor. That is not confined to the start of a series — a sufficiently
+reordered arrival escapes at any depth — though in practice a live series has
+its whole prefix long since published, so a new commit's run always has a
+carrying predecessor to be measured against. The check firing is a claim; its
+not firing is not.
+
+Closing that gap by validating the **successor** too is a trap, and the reason
+is worth recording. The observation such a check would refuse is the innocent
+one: in the mirror case — a metric added and removed across two commits, the
+adding run landing late — the late run emitted a strict superset of both its
+neighbours, and the drop it would be refused for belongs to an observation that
+is already published and immutable. Nothing anyone could change would discharge
+the refusal, so a correct observation would be permanently unpublishable and its
+run permanently red. The gap is accepted instead, and
+`a_drop_escapes_when_the_runs_carrying_it_are_recorded_after_it` pins it so it
+is not later "fixed" into that trap.
+
+The boundary is established by enumeration rather than by the argument above,
+because arrival order is precisely what replaying the real history cannot vary —
+it only ever exercises the order that happened.
+`every_arrival_order_that_records_a_carrier_first_catches_the_drop` runs all 24
+orders of a four-observation series and asserts the rule directly: every order
+that records a carrying observation before the first dropping one is refused,
+and the eight that escape all begin with a dropping observation. That count is
+pinned, not as a target but as the size of the accepted gap — a change that
+moves it in either direction has changed what the recorder claims.
+
+Accepting it costs nothing a reader can see, because retirement is rendered from
+presence rather than from the declaration: a metric absent from the newest
+observation is labelled retired whether or not anyone said so. What escapes is
+the record of intent, and the chance to catch a generator regression at the
+moment it happened.
+
+### Retiring a metric
+
+A metric is retired by naming it in the observation's `retired_statistics`:
+
+```json
+{
+  "schema_version": 1,
+  "measurement": "project-corpus-diff",
+  "configuration": { "selection": { "source": "corpus" } },
+  "statistics": { "divergences": 0, "deferrals": { "total": 41 } },
+  "retired_statistics": ["decline_census.project.by_cause.occupied"]
+}
+```
+
+`statistics` must still contain at least one number, so the last metric of a
+measurement cannot be retired. That is deliberate: a measurement with nothing
+left to measure should be removed from the workflow, not published as an
+observation of nothing.
+
+Each entry is a dotted metric path in the spelling the dashboard names it by,
+and it must **not** also appear in `statistics` — a retirement says the metric
+is gone, and one that is still measured would licence dropping it later without
+notice.
+
+**Leave the declaration in place once written.** It is only *consulted* at the
+transition, since by the next run the predecessor already lacks the key — but
+the run that publishes the transition can fail, and this job fails for reasons
+that say nothing about Borzoi. If that happens, the next observation's
+predecessor is still the one from before the retirement, and a generator that
+dropped the marker on the strength of "needed once" is refused, as is every
+observation after it, until someone puts the marker back. Keeping it costs a
+line, and a stale entry cannot quietly license anything: a name that is retired
+*and* emitted is refused outright, so a metric that comes back forces the marker
+to be removed deliberately.
+
+The declaration is deliberately not
+part of the series digest, and that is the whole reason it exists rather than a
+schema bump: retiring one metric must not restart the trend of the metrics
+beside it, which are still measuring exactly what they measured before. The
+`schema_version` is global to every generator, so bumping it would restart the
+parser, resolution and find-references series too; and `configuration` is
+all-or-nothing, so splitting there would discard the divergence and deferral
+history that the PR gate and the tier-reorder plan both read.
+
+Because the workflow runs on push to `main`, forgetting the declaration fails
+*after* the merge: the record step exits non-zero, so that commit's observation
+— along with any the same step would have recorded after it — is not published,
+and the run goes red. So add the declaration in the same commit that removes the
+key. A lost point in a forty-point series costs little; a metric that silently
+freezes at a stale value costs the thing this workflow exists for.
+
+Renaming is retirement plus introduction, and the halves are not symmetrical.
+The new key starts mid-series, which the dashboard shows honestly — the chart
+begins where the metric does. The old key is the half that needs saying out
+loud.
+
+The dashboard labels a metric the newest observation of the selected series
+does not carry as `(retired)`, and its "Latest" card reads "Last measured".
+That covers the retirements predating this check as well as the declared ones:
+liveness is read off the observations themselves, so it needs no declaration to
+be right. The label and the check are two halves of one fact — the label makes
+an absence legible, the check makes it deliberate.
 
 ## Two corpora
 
@@ -228,6 +372,82 @@ precisely why a rise in them is otherwise invisible. Watch
 `deferrals.total` against `uses.total_considered` and `projects.comparable` —
 a deferral count only means something against the population it was drawn from,
 and all three travel together in every observation.
+
+`decline_census` says what those deferrals were *to*, on the same
+project/assembly axis the totals already have — a merged census could not
+explain either bucket, and a swap between them would move nothing it reports.
+Within each: `by_cause` names the guard that declined, `by_tier` the position in
+the referenced-assembly precedence ladder it spoke from, and `by_pair` the two
+together. The pairs are not
+redundant: if a ladder change moves equal numbers of two causes between two
+tiers, every decline in the corpus changed and both marginals read identically,
+so the marginals alone cannot see the one thing the census is for. The totals move whenever the resolver gets more or less
+timid; the census says which model owns the move, which is the question every
+change to that ladder asks and which no aggregate can answer. Both maps carry
+every variant including the zeros — a cause that stops *occurring* must read as
+`0`, not vanish, because a zero and an absence say opposite things and only one
+of them is a measurement. A cause that stops *existing* is a different event and
+has to be declared: see [Retiring a metric]. Narrowing either map — dropping the
+tiers a cause can never speak from, say — retires every pair it removes.
+
+`decline_census.unattributed` is the census's own honesty check, and it is a
+count rather than a residual. A decline site is a claim and its absence is not:
+many deferrals have no causing guard at all — a dotted path's tail segments
+defer because member resolution is a later phase — so the census attributes
+what the ladder and its pre-walk gates do and reports the rest as unattributed.
+Read `unattributed` against `attributed`; a *rise* in the ratio means a new
+decline path appeared that no guard accounts for, which is worth looking at even
+though nothing failed.
+
+`uses.attribute_commits_compared` is a **coverage** number, not a quality one:
+how many of the compared uses were answered out of name resolution's attribute
+commit map rather than its main one. It is published because the failure it
+guards against is silent in every other number here. Attribute types are
+recorded separately (they answer FCS's suffix-first candidate walk) and are
+served to users like any other name, so a comparison that reads only the main
+map sees an attribute answer as *silence* — and silence is what this runner
+banks as a deferral, which claims nothing. Every headline would hold: the
+divergence gate stays at zero, and the deferral count merely rises, which is
+exactly the shape of ordinary timidity. So a fall in this number towards zero on
+a corpus that still contains attributes means a committed surface stopped being
+diffed, and nothing else would say so.
+
+`uses.member_commits_compared` is the same kind of number for the third surface
+the LSP answers from: the member table **inference** fills in
+(`InferredFile::member_resolutions`), which `handlers/definition.rs` layers over
+the resolver's `Deferred(QualifiedAccess)` at a member name. An entry there is a
+go-to-definition target, and read through the resolver alone the site still
+looks deferred, so a wrong member answer could stand forever without moving a
+number. It reads **0** on the pinned corpus today: every member answer inference
+commits there is one the resolver already committed itself, so nothing is
+answered by inference alone. That is the honest state of the surface, not a
+fault — the guard is in place for when inference starts answering where the
+resolver cannot, and the fixtures in `project_resolution.rs` are what exercise
+the grading meanwhile. The two sides key one answer at different spans (FCS
+reports the whole access, inference the member name), so the comparison aligns
+on the span's **end**; keying on whole ranges compares nothing while reporting a
+clean run.
+
+Two skip buckets travel with the attribute number, because asking the oracle
+about a range for the first time exposed that it can answer more than once.
+`skipped_uses.shadowed_constructor_use` counts the sites where FCS reported both
+the name the author wrote and the **constructor** that name invokes — `[<Alias>]`,
+`inherit Base(1)`, `Foo()`. Sema resolves the written name and models no separate
+resolution for the constructor, so the name's record grades the site and the
+constructor's steps aside. This is a coverage-preserving reading, not a decline:
+the site is still compared, just against the record that answers the question
+sema was asked. Grading against the constructor instead would pass only when its
+declaration range happened to coincide with its type's, and in the reverse
+direction would *ratify* a resolution to the constructed type at a site whose
+written name is something else.
+
+`skipped_uses.ambiguous_oracle_range` is what survives that: a range where two
+records still disagree about the declaration after the constructor has stepped
+aside, so the oracle genuinely does not say what the site resolves to. It is
+decided on the oracle's answers alone, never on whether ours agrees, so it cannot
+become the bucket a real disagreement escapes into. Watch it against
+`attribute_commits_compared`: a rise here alongside a fall there is coverage
+draining into "unadjudicable", which is the honest bucket but not a free one.
 
 ## Local validation
 

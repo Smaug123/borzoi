@@ -25,7 +25,7 @@
 
 use borzoi_assembly::{Access, Member, MethodLike, ParamDefault, Parameter, Primitive, TypeRef};
 
-use crate::assembly_env::{AssemblyEnv, EntityHandle, MemberIndex};
+use crate::assembly_env::{AssemblyEnv, BaseEdge, EntityHandle, MemberIndex};
 use crate::ty::Ty;
 
 /// The inclusive caller-argument-count window `[min, max]` at which a candidate
@@ -604,7 +604,13 @@ impl AssemblyEnv {
     fn resolve_super_handle(&self, p: &TypeRef, declaring: &str) -> Option<EntityHandle> {
         match p {
             TypeRef::Primitive(prim) => primitive_canon(*prim).and_then(|c| self.lookup_canon(c)),
-            TypeRef::Named { .. } => self.resolve_base(p, declaring),
+            // Only a provable edge affirms: `super_types` collects positive
+            // memberships, so an unproven or absent one weakens `must_apply` into a
+            // deferral rather than a wrong affirmation.
+            TypeRef::Named { .. } => match self.resolve_base(p, declaring) {
+                BaseEdge::Resolved(handle) => Some(handle),
+                BaseEdge::Absent | BaseEdge::Unprovable => None,
+            },
             _ => None,
         }
     }

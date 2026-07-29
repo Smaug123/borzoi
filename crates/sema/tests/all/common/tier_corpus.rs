@@ -734,3 +734,24 @@ pub fn probe_use_span(src: &str, plant: &Plant) -> (usize, usize) {
     let start = src.rfind(ident).expect("probe template names the plant");
     (start, start + ident.len())
 }
+
+/// The span of the probe's **whole written path** — the range the decline
+/// census keys a path decline at.
+///
+/// For a bare probe this is [`probe_use_span`]; for a dotted one it spans the
+/// plant's name through the [`MARKER`] leaf, where that span reports the leaf
+/// alone. The two differ because they answer different questions: the leaf is
+/// where both oracles report the *use*, while the whole path is what the guard
+/// declined.
+pub fn probe_path_span(src: &str, plant: &Plant) -> (usize, usize) {
+    match plant.form {
+        Form::Bare => probe_use_span(src, plant),
+        Form::DottedHead => {
+            let written = format!("{}.{MARKER}", plant.name);
+            let start = src
+                .rfind(&written)
+                .expect("probe template writes the dotted path");
+            (start, start + written.len())
+        }
+    }
+}

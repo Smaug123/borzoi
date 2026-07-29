@@ -14,6 +14,7 @@
 pub mod companion_corpus;
 pub mod fold_matrix;
 pub mod generator;
+pub mod member_hiding_corpus;
 pub mod overload_corpus;
 pub mod tier_corpus;
 
@@ -560,6 +561,105 @@ pub fn classify(u: &CensusUse) -> (Option<Bucket>, &'static str) {
     }
 }
 
+/// Every sub-tag [`classify`] pairs with [`Bucket::B1`].
+///
+/// The resolution generator publishes a `gap_b1_by_tag` histogram, and a
+/// histogram in `statistics` is a *metric namespace*: the dashboard offers one
+/// plottable metric per key, so every key has to be there every run, zeros
+/// included (see `docs/continuous-measurements.md`). Counting only the tags
+/// that *occurred* would retire a metric the moment a construct stopped
+/// appearing in the corpus — which is the good news of a gap being closed
+/// reported as a measurement going missing.
+///
+/// Emitting zeros needs the whole list up front, and a hand-copied list beside
+/// the taxonomy is exactly the kind of thing that drifts silently.
+/// [`b1_tags_are_exactly_the_tags_classify_pairs_with_b1`] proves it is neither
+/// short nor long by enumerating `classify` over every combination of the flags
+/// it reads.
+pub const B1_TAGS: [&str; 13] = [
+    "active-pattern-case",
+    "active-pattern-fn",
+    "constructor",
+    "entity:module",
+    "entity:namespace",
+    "entity:type",
+    "parameter",
+    "static-member",
+    "static-member:overloaded(group)",
+    "type-parameter",
+    "union-case",
+    "value:local-or-param",
+    "value:module-or-import",
+];
+
+/// [`B1_TAGS`] is the whole of what [`classify`] can produce for
+/// [`Bucket::B1`], established by enumeration rather than by reading the match.
+///
+/// `classify` reads eleven inputs — the symbol class and ten flags — so the
+/// space is 8,192 shapes and searching it exhaustively is cheaper than
+/// arguing about which arms are reachable.
+#[test]
+fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
+    const CLASSES: [&str; 8] = [
+        "Entity",
+        "GenericParameter",
+        "UnionCase",
+        "ActivePatternCase",
+        "Field",
+        "Parameter",
+        "Mfv",
+        "AClassTheTaxonomyDoesNotPlace",
+    ];
+    const FLAGS: [&str; 10] = [
+        "IsFromDefinition",
+        "IsNamespace",
+        "IsModule",
+        "IsMember",
+        "IsInstance",
+        "IsExtension",
+        "IsConstructor",
+        "IsModuleValueOrMember",
+        "IsActivePattern",
+        "IsOverloaded",
+    ];
+
+    let mut produced = std::collections::BTreeSet::new();
+    for class in CLASSES {
+        for bits in 0..(1u32 << FLAGS.len()) {
+            let mut fields = serde_json::Map::new();
+            fields.insert(
+                "Range".into(),
+                serde_json::json!({
+                    "File": "probe.fs",
+                    "Start": { "Line": 1, "Col": 0 },
+                    "End": { "Line": 1, "Col": 1 }
+                }),
+            );
+            fields.insert("DeclRange".into(), serde_json::Value::Null);
+            fields.insert("Class".into(), serde_json::json!(class));
+            for (index, flag) in FLAGS.iter().enumerate() {
+                fields.insert((*flag).into(), serde_json::json!((bits >> index) & 1 == 1));
+            }
+            // Read by other consumers of the census, never by `classify`.
+            for flag in ["IsProperty", "IsValue", "IsFunction"] {
+                fields.insert(flag.into(), serde_json::json!(false));
+            }
+            let probe: CensusUse = serde_json::from_value(serde_json::Value::Object(fields))
+                .expect("the probe carries every field the census use needs");
+            if let (Some(Bucket::B1), tag) = classify(&probe) {
+                produced.insert(tag);
+            }
+        }
+    }
+
+    assert_eq!(
+        produced,
+        B1_TAGS
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
 // ============================================================================
 // Resolution corpus-diff projection — the name-resolution sweep currency
 // ============================================================================
@@ -1060,6 +1160,33 @@ pub fn ensure_overload_corpus_built(csharp: &str) -> &'static Path {
                 .join("Release")
                 .join("net10.0")
                 .join("OverloadCorpus.dll")
+        })
+        .as_path()
+}
+
+/// Build the **member-hiding** corpus (`tests/fixtures/member_hiding`) once per
+/// test binary and return its `.dll` path, writing `csharp` as its `Generated.cs`
+/// first.
+///
+/// One assembly, because the question it poses is about hiding *within* one
+/// reference: which level of a base chain a member access reaches when several
+/// declare the name. Contested names *across* assemblies are
+/// [`ensure_tier_corpus_built`]'s. The write holds [`BUILD_LOCK`] and is
+/// deterministic, like [`ensure_overload_corpus_built`]'s.
+pub fn ensure_member_hiding_corpus_built(csharp: &str) -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/member_hiding");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(project.join("Generated.cs"), csharp).expect("write Generated.cs");
+            dotnet_build(&project, "dotnet build member-hiding fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("MemberHiding.dll")
         })
         .as_path()
 }
@@ -1820,6 +1947,19 @@ pub fn parse_fcs_uses_project(json: &str, sources: &[(PathBuf, String)]) -> Vec<
 struct TypesDump {
     #[serde(rename = "Exprs")]
     exprs: Vec<RawTypedExpr>,
+    /// Every `Severity=Error` diagnostic of the check. FCS's typed tree omits an
+    /// expression it could not check, so a consumer asserting "every type we
+    /// produced, FCS confirms" can only read a *missing* node as a disagreement
+    /// on a line that checked cleanly.
+    ///
+    /// `Option`, not a defaulted `Vec`: absent and empty must stay
+    /// distinguishable. A `BORZOI_FCS_DUMP` override pointing at a binary that
+    /// predates the field would otherwise report *no errors* for every check, and
+    /// a consumer whose soundness argument rests on "the line checked cleanly"
+    /// would silently lose it. [`parse_fcs_types_with_errors`] refuses absence;
+    /// [`parse_fcs_types`], which makes no such claim, ignores it.
+    #[serde(rename = "Errors")]
+    errors: Option<Vec<RawError>>,
 }
 
 #[derive(Deserialize)]
@@ -1836,20 +1976,52 @@ struct RawTypedExpr {
 /// byte range `(start, end)` to FCS's canonical inferred type at that span.
 /// `source` must be the exact text of the checked file (offsets index into it).
 /// fcs-dump de-duplicates nodes by range, so each range appears at most once.
-pub fn parse_fcs_types(
-    json: &str,
-    source: &str,
-) -> std::collections::HashMap<(usize, usize), String> {
+pub fn parse_fcs_types(json: &str, source: &str) -> FcsTypeMap {
+    parse_types_dump(json, source).0
+}
+
+/// [`parse_fcs_types`] plus the errors FCS reported. A consumer that reads a
+/// *missing* node as a disagreement needs them: the typed tree omits the whole
+/// enclosing expression on a line that failed to check, so the absence is
+/// evidence only where the line checked cleanly.
+pub fn parse_fcs_types_with_errors(json: &str, source: &str) -> (FcsTypeMap, Vec<FcsCheckError>) {
+    let (types, errors) = parse_types_dump(json, source);
+    let errors = errors.expect(
+        "the `types` payload carries no `Errors` field — the oracle predates it \
+         (check BORZOI_FCS_DUMP), and a caller reading a missing node as a \
+         disagreement cannot tell a clean check from an unreported one",
+    );
+    (types, errors)
+}
+
+/// The `types` map: an expression's half-open byte range to FCS's canonical type.
+pub type FcsTypeMap = std::collections::HashMap<(usize, usize), String>;
+
+/// The shared body: the type map, and the errors *if the oracle reported the
+/// field at all*.
+fn parse_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsCheckError>>) {
     let dump: TypesDump = serde_json::from_str(json).expect("fcs-dump types JSON shape");
     let idx = LineIndex::new(source);
-    dump.exprs
+    let types = dump
+        .exprs
         .into_iter()
         .map(|e| {
             let start = idx.offset(e.range.start.line, e.range.start.col);
             let end = idx.offset(e.range.end.line, e.range.end.col);
             ((start, end), e.type_canon)
         })
-        .collect()
+        .collect();
+    let errors = dump.errors.map(|errors| {
+        errors
+            .into_iter()
+            .map(|e| FcsCheckError {
+                line: e.line,
+                code: e.code,
+                message: e.message,
+            })
+            .collect()
+    });
+    (types, errors)
 }
 
 #[derive(Deserialize)]
