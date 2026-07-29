@@ -278,6 +278,14 @@ fn declared_output_dirs_agree_with_msbuild() {
 /// Each cluster lays the sidecars on disk and asks MSBuild what `OutDir` really
 /// is. The contract is the file's: `Declared` must equal it; the other arms make
 /// no claim.
+/// One document cluster: the entry project's `<PropertyGroup>` body, and the
+/// sidecar files laid beside (or above) it.
+struct Cluster {
+    label: &'static str,
+    body: &'static str,
+    files: &'static [(&'static str, &'static str)],
+}
+
 #[test]
 fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
     let mut oracle = Oracle::spawn();
@@ -293,63 +301,62 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
     let sdk = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
     let names: Vec<String> = ["OutDir"].iter().map(|s| s.to_string()).collect();
 
-    // (label, entry `<PropertyGroup>` body, sidecar files).
-    let clusters: &[(&str, &str, &[(&str, &str)])] = &[
+    let clusters: &[Cluster] = &[
         // The bare objection: an unconditioned overwrite in the file the SDK
         // imports last.
-        (
-            "dbt-overwrites",
-            "<OutDir>artifacts/</OutDir>",
-            &[(
+        Cluster {
+            label: "dbt-overwrites",
+            body: "<OutDir>artifacts/</OutDir>",
+            files: &[(
                 "Directory.Build.targets",
                 "<Project><PropertyGroup><OutDir>overwritten/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
         // The same, gated on a build dimension: which document wins is a
         // property of the build the user ran, not of the text.
-        (
-            "dbt-overwrites-gated",
-            "<OutDir>artifacts/</OutDir>",
-            &[(
+        Cluster {
+            label: "dbt-overwrites-gated",
+            body: "<OutDir>artifacts/</OutDir>",
+            files: &[(
                 "Directory.Build.targets",
                 "<Project><PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\
                  <OutDir>debug-only/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
         // A `Directory.Build.props` write is *earlier* than the entry body, so
         // the entry's literal still wins — the control that keeps the cluster
         // from passing by declining everything with a sidecar present.
-        (
-            "dbp-loses-to-entry",
-            "<OutDir>artifacts/</OutDir>",
-            &[(
+        Cluster {
+            label: "dbp-loses-to-entry",
+            body: "<OutDir>artifacts/</OutDir>",
+            files: &[(
                 "Directory.Build.props",
                 "<Project><PropertyGroup><OutDir>earlier/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
         // An SDK **extension-hook** import: `Microsoft.Common.targets` imports
         // whatever `$(CustomAfterMicrosoftCommonTargets)` names, so a user file
         // reached only through a property the SDK reads can overwrite the entry
         // body's literal. The design notes named this route specifically.
-        (
-            "hook-after-common-targets",
-            "<CustomAfterMicrosoftCommonTargets>$(MSBuildProjectDirectory)/hook.targets\
+        Cluster {
+            label: "hook-after-common-targets",
+            body: "<CustomAfterMicrosoftCommonTargets>$(MSBuildProjectDirectory)/hook.targets\
              </CustomAfterMicrosoftCommonTargets><OutDir>artifacts/</OutDir>",
-            &[(
+            files: &[(
                 "hook.targets",
                 "<Project><PropertyGroup><OutDir>hooked/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
         // The props-side twin, which lands *before* the entry body — so the
         // entry's literal legitimately wins and this is the coverage control.
-        (
-            "hook-before-common-props",
-            "<OutDir>artifacts/</OutDir>",
-            &[(
+        Cluster {
+            label: "hook-before-common-props",
+            body: "<OutDir>artifacts/</OutDir>",
+            files: &[(
                 "hook.props",
                 "<Project><PropertyGroup><OutDir>hooked-early/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
         // The hole in the completeness premise. `note_document_not_scanned` is
         // gated on the *import site* being outside the SDK subtree, but an
         // extension-hook import is sited in an SDK document and imports a
@@ -357,10 +364,10 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
         // property function in a value position — and the hook's own `<OutDir>`
         // is never counted, so the entry's literal certifies against a document
         // nobody read. Real MSBuild builds to `hooked/`.
-        (
-            "hook-path-unpinnable",
-            "<OutDir>artifacts/</OutDir>",
-            &[
+        Cluster {
+            label: "hook-path-unpinnable",
+            body: "<OutDir>artifacts/</OutDir>",
+            files: &[
                 (
                     "Directory.Build.props",
                     "<Project><PropertyGroup><CustomBeforeMicrosoftCommonTargets>\
@@ -372,22 +379,22 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
                     "<Project><PropertyGroup><OutDir>hooked/</OutDir></PropertyGroup></Project>\n",
                 ),
             ],
-        ),
+        },
         // Nothing declared in the entry body at all: the later document is the
         // only writer, so `Default` would be a claim that the standard layout
         // holds when it does not.
-        (
-            "dbt-only-writer",
-            "",
-            &[(
+        Cluster {
+            label: "dbt-only-writer",
+            body: "",
+            files: &[(
                 "Directory.Build.targets",
                 "<Project><PropertyGroup><OutDir>only/</OutDir></PropertyGroup></Project>\n",
             )],
-        ),
+        },
     ];
 
     let mut checked = 0usize;
-    for (label, body, files) in clusters {
+    for Cluster { label, body, files } in clusters {
         let tmp = TempDir::new().expect("temp dir");
         // The project lives one level down so a sidecar named `../x` is
         // genuinely *above* it — which is where a `GetPathOfFileAbove` hook
@@ -401,7 +408,7 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
              </PropertyGroup>\n</Project>\n"
         );
         std::fs::write(&path, &xml).expect("write project");
-        for (name, contents) in *files {
+        for (name, contents) in files.iter() {
             let at = dir.join(name);
             std::fs::create_dir_all(at.parent().expect("sidecar parent")).expect("sidecar dir");
             std::fs::write(&at, contents).expect("write sidecar");

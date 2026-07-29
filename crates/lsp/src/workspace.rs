@@ -847,7 +847,7 @@ fn evaluated_output_name(path: &Path, evaluated: &EvaluatedProject) -> Option<St
 }
 
 /// Where one evaluation says the node's build writes its output
-/// ([`ProjectNode::output_dir`]). The evaluator already grades its own
+/// ([`crate::project_graph::ProjectNode::output_dir`]). The evaluator already grades its own
 /// certainty, so this is a straight read: the verdict is reported exactly as
 /// far as it commits, and the env fold decides what each grade licenses.
 fn evaluated_output_dir(evaluated: &EvaluatedProject, multi_targeted: bool) -> OutputDirVerdict {
