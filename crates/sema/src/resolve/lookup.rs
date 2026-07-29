@@ -3086,6 +3086,7 @@ impl<'a> Resolver<'a> {
         // assembly type `Demo.Calc`, never the module (FCS-verified), so it must
         // not gate the type path.
         let shadowed = self.path_is_project_type_shadowed(names)
+            || self.path_is_augmentation_head_shadowed(names)
             || self.preceding.is_exact_project_module(names)
             || self
                 .preceding
@@ -3319,6 +3320,21 @@ impl<'a> Resolver<'a> {
     /// bare top-level *module* of the same name (a module is not a type).
     pub(super) fn path_is_project_type_shadowed(&self, names: &[String]) -> bool {
         self.project_type_shadow_cause(names).is_some()
+    }
+
+    /// Whether `names` is rooted at a `type … with` **augmentation head** — this
+    /// file's ([`Resolver::augmentation_head_locals`](super::state::Resolver::augmentation_head_locals),
+    /// which explains the rule) or an earlier Compile-order one's
+    /// ([`ProjectItems::is_rooted_at_augmentation_head`](super::model::ProjectItems::is_rooted_at_augmentation_head)).
+    ///
+    /// **Value namespace only**, and deliberately absent from
+    /// [`Self::project_type_shadow_cause`]: the head names an existing type
+    /// rather than declaring one, so it cannot occupy a type path.
+    pub(super) fn path_is_augmentation_head_shadowed(&self, names: &[String]) -> bool {
+        let rooted_at = |p: &Vec<String>| names.starts_with(p.as_slice());
+        self.augmentation_head_locals.iter().any(rooted_at)
+            || self.augmentation_head_exports.iter().any(rooted_at)
+            || self.preceding.is_rooted_at_augmentation_head(names)
     }
 
     /// [`Self::path_is_project_type_shadowed`], *and which guard said so* — the

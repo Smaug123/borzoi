@@ -905,6 +905,34 @@ pub(super) struct Resolver<'a> {
     /// cross-file shadow index so a *later* file's reference (`Demo.Calc.Answer`)
     /// defers too — see [`ProjectItems::nested_module_paths`].
     pub(super) nested_module_exports: Vec<Vec<String>>,
+    /// The paths a same-file **augmentation head** (`type Demo.Calc with …`)
+    /// names — as written ([`Self::augmentation_head_locals`]) and
+    /// `container_path`-qualified ([`Self::augmentation_head_exports`]),
+    /// mirroring the two forms [`Self::record_project_name_shadow`] records
+    /// and following the same block lifecycle
+    /// ([`Self::top_level_augmentation_locals`]).
+    ///
+    /// Held apart from the nested-module shadow because an augmentation head
+    /// occupies **only the value namespace**. It names an *existing* type, so
+    /// it introduces no project type and must not gate a type path
+    /// ([`Resolver::project_type_shadow_cause`] does not read these) — that is
+    /// the whole of "a file that augments `T` loses every later `(v : T)`". But
+    /// its members really do join the augmented type's method groups, and an
+    /// extension overload is selectable there (fsi: `type Demo.Calc with static
+    /// member Zero (x: int) = x + 1000` makes `Demo.Calc.Zero 5` bind the
+    /// *extension*, while the same-named `static member Answer = 99` loses
+    /// outright to the intrinsic), so a **value** path rooted at one must still
+    /// defer: [`Resolver::project_shadow_cause`] reads them.
+    ///
+    /// Nothing else does. Every other consumer of the nested-module sets asks
+    /// "is there a project *module* here?", which an augmentation head never
+    /// answers.
+    pub(super) augmentation_head_locals: Vec<Vec<String>>,
+    /// The per-container store behind [`Self::augmentation_head_locals`],
+    /// managed like [`Self::top_level_nested_locals`].
+    pub(super) top_level_augmentation_locals: HashMap<Vec<String>, Vec<Vec<String>>>,
+    /// See [`Self::augmentation_head_locals`].
+    pub(super) augmentation_head_exports: Vec<Vec<String>>,
     /// Qualified paths of the file's **real** nested `module X = …` definitions —
     /// the module-only subset of [`Self::nested_module_exports`], which (via
     /// [`record_project_name_shadow`](Self::record_project_name_shadow)) conflates
