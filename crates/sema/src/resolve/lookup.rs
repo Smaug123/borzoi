@@ -2600,13 +2600,10 @@ impl<'a> Resolver<'a> {
                     // An opened value has no in-file position to compare — the
                     // opened-value-vs-lexical-type qualifier contest is unprobed.
                     None => {
-                        self.record(
-                            first.text_range(),
-                            Resolution::Deferred(DeferredReason::QualifiedAccess),
-                        );
                         // An unorderable contest between the head's two slots,
                         // reached before the fallback that usually names it.
-                        self.record_path_decline(
+                        self.defer_with_cause(
+                            first.text_range(),
                             segments,
                             DeclineSite::pre_walk(DeclineCause::HeadSlotUnordered),
                         );
@@ -2997,10 +2994,6 @@ impl<'a> Resolver<'a> {
         // FCS reads the path as module/type-qualified, so recording member
         // access on the value would be a wrong target (probes M20a/M20e).
         if head_is_case || first.text() == "global" || !matches!(head_slot, HeadSlot::Held) {
-            self.record(
-                first.text_range(),
-                Resolution::Deferred(DeferredReason::QualifiedAccess),
-            );
             // Name the guard, so the census does not read a guarded decline as
             // a clean miss. An opaque head is checked first because it is what
             // kept the assembly walk from running at all; the other three are
@@ -3015,7 +3008,7 @@ impl<'a> Resolver<'a> {
             } else {
                 DeclineCause::HeadSlotUnordered
             };
-            self.record_path_decline(segments, DeclineSite::pre_walk(cause));
+            self.defer_with_cause(first.text_range(), segments, DeclineSite::pre_walk(cause));
         } else {
             // The head is member access on a *value*; a type-as-qualifier was
             // already handled by the assembly-path resolution above. Forbid the

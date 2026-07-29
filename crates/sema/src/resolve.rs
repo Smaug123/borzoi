@@ -2172,6 +2172,44 @@ impl<'a> Resolver<'a> {
         );
     }
 
+    /// Defer `range` **because a guard fired**, naming the guard in the same
+    /// breath: the [`DeferredReason::QualifiedAccess`] resolution and the
+    /// census entry are written together, so the pair cannot come apart.
+    ///
+    /// The two maps deliberately answer at *different* ranges — the resolution
+    /// at the head segment, the cause at the whole path
+    /// ([`Self::record_path_decline`] explains why the census is path-keyed) —
+    /// which is exactly what makes the pairing easy to break by hand and
+    /// impossible to check afterwards by comparing keys.
+    ///
+    /// **Only a guard verdict belongs here.** The value walk's *other*
+    /// `QualifiedAccess` deferrals are the prefix/tail segments of a path that
+    /// resolved fine, deferred because sema models neither module-as-def nor
+    /// member access; attributing those would price a guard by the path's
+    /// length. They are not a discipline the reader has to keep: in
+    /// `resolve/assembly.rs` they exist only inside an
+    /// [`AssemblyPath::Resolved`](state::AssemblyPath) payload, and
+    /// `AssemblyPath::decline_cause` maps `Resolved`/`NoMatch` to `None`
+    /// exhaustively, so a *declining* reading there cannot be spelled without a
+    /// cause and both of its readers turn that cause into a recorded
+    /// [`model::DeclineSite`].
+    ///
+    /// There is deliberately no `ShadowableType`-style debug assertion over
+    /// `QualifiedAccess`. That one is sound because
+    /// `Resolver::defer_shadowable_type` writes a resolution *only* for a
+    /// single-segment path, where the segment range and the path range
+    /// coincide; a multi-segment guard verdict here writes the two at different
+    /// keys, so the same range-keyed check would fail on correct code.
+    fn defer_with_cause(
+        &mut self,
+        range: TextRange,
+        segs: &[SyntaxToken],
+        site: model::DeclineSite,
+    ) {
+        self.record(range, Resolution::Deferred(DeferredReason::QualifiedAccess));
+        self.record_path_decline(segs, site);
+    }
+
     fn record(&mut self, range: TextRange, res: Resolution) {
         self.resolutions.insert(range, res);
     }
