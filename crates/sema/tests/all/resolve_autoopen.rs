@@ -2961,3 +2961,32 @@ fn an_auto_open_type_static_outranks_an_exception_declared_after_it() {
         "an exception loses to the auto-open type's static from either side; got {res:?}"
     );
 }
+
+/// A custom `AutoOpenAttribute` supplied by a **referenced assembly** and
+/// brought into scope by an `open` shadows FSharp.Core's, exactly as a
+/// project-declared one does — so `[<AutoOpen>]` is an ordinary attribute
+/// there and the module folds nothing. FCS reports `FS0039` for the bare use
+/// (fcs-dump `uses-project-batch` probe against this very fixture).
+///
+/// The third and last arm of the fold's attribute precondition: same file
+/// ([`a_shadowed_auto_open_attribute_folds_nothing`]), a preceding project file
+/// ([`a_cross_file_custom_auto_open_attribute_folds_nothing`]), and here an
+/// assembly. A project-name scan cannot see this one.
+#[test]
+fn an_assembly_custom_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module Use\n\nopen Demo.CustomAttr\n\n[<AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the assembly's `AutoOpenAttribute` shadows FSharp.Core's, so `A` folds \
+         nothing and `target` is unbound; got {res:?}"
+    );
+}

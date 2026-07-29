@@ -19,6 +19,25 @@ use super::{
     is_type_augmentation, single_ident, type_long_ident_path,
 };
 
+/// The one attribute whose presence means "fold this module's contents into the
+/// enclosing scope". Any other type of the same simple name is an ordinary
+/// attribute, whoever declares it — see
+/// [`Resolver::auto_open_attribute_is_shadowed`].
+const FSHARP_CORE_AUTO_OPEN: &str = "Microsoft.FSharp.Core.AutoOpenAttribute";
+
+/// [`FSHARP_CORE_AUTO_OPEN`]'s namespace, as the segments an
+/// [`AssemblyEnv`](crate::AssemblyEnv) index is keyed by.
+const FSHARP_CORE_NS: &[&str] = &["Microsoft", "FSharp", "Core"];
+
+/// Whether `path` is [`FSHARP_CORE_NS`].
+fn is_fsharp_core_ns(path: &[String]) -> bool {
+    path.len() == FSHARP_CORE_NS.len()
+        && path
+            .iter()
+            .zip(FSHARP_CORE_NS)
+            .all(|(a, b)| a.as_str() == *b)
+}
+
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
 /// import a private type at an `open` from outside its declaration group
@@ -1917,12 +1936,49 @@ impl<'a> Resolver<'a> {
                     rowan::TextRange::new(first.text_range().start(), last.text_range().end());
                 match self.attribute_resolutions.get(&range) {
                     Some(Resolution::Local(_) | Resolution::Item(_)) => true,
+                    // An assembly's. FSharp.Core's own attribute is the fold's
+                    // premise, so it alone is proof of *safety*; any other
+                    // assembly's `AutoOpenAttribute` is an ordinary attribute
+                    // and FCS opens nothing.
+                    Some(Resolution::Entity(h)) => {
+                        self.assemblies.entity_full_name(*h) != FSHARP_CORE_AUTO_OPEN
+                    }
+                    // No committed verdict. The attribute resolver defers in the
+                    // ordinary case too, so the deferral itself says nothing;
+                    // ask both halves of the reference set by name instead.
                     _ => {
                         self.project_type_named("AutoOpenAttribute")
                             || self.project_type_named("AutoOpen")
+                            || self.an_open_supplies_a_foreign_auto_open_attribute()
                     }
                 }
             })
+    }
+
+    /// Whether an `open` reaching this point brought in a referenced assembly's
+    /// own `AutoOpenAttribute` — somebody else's, not FSharp.Core's.
+    ///
+    /// FCS's name environment is last-write-wins, so such an `open` redirects a
+    /// bare `[<AutoOpen>]` to that type and the attribute becomes ordinary
+    /// (`FS0039` for a bare use of the module's contents; probed against this
+    /// crate's own auto-open fixture, which declares one). The attribute
+    /// resolver *defers* the candidate rather than committing it, so nothing
+    /// else names the hazard.
+    ///
+    /// Scoped to the opens actually seen — [`Resolver::open_shortening_prefixes`]
+    /// is the running list of containers an `open` has reached, so a namespace
+    /// nobody opened contributes nothing. A whole-reference-set scan would
+    /// instead disable the fold for every project that merely *references* an
+    /// assembly declaring such a type, which is a large availability loss for a
+    /// hazard that is not in scope.
+    fn an_open_supplies_a_foreign_auto_open_attribute(&self) -> bool {
+        self.open_shortening_prefixes.iter().any(|prefix| {
+            !is_fsharp_core_ns(&prefix.path)
+                && !self
+                    .assemblies
+                    .public_entities_named(&prefix.path, "AutoOpenAttribute")
+                    .is_empty()
+        })
     }
 
     /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame
