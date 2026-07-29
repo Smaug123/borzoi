@@ -257,3 +257,153 @@ fn declared_output_dirs_agree_with_msbuild() {
         "committed={committed} declined={declined}"
     );
 }
+
+/// **The objection this branch was stopped on**, asked of the machine instead of
+/// of my reading of MSBuild.
+///
+/// The entry project's body evaluates *before* `Sdk.targets`, so a document that
+/// arrives later can overwrite an `OutDir` the entry declared: `Directory.Build.targets`
+/// (imported at the end of the SDK chain), a package `.targets`, or an SDK
+/// extension hook. A literal `<OutDir>artifacts/</OutDir>` is certified against
+/// every *global* — nothing can substitute into it — but that says nothing about
+/// a later write, and a wrong directory here sends the consumer to look for a
+/// producer's DLL where the build never put one.
+///
+/// Each cluster lays the sidecars on disk and asks MSBuild what `OutDir` really
+/// is. The contract is the file's: `Declared` must equal it; the other arms make
+/// no claim.
+#[test]
+fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
+    let mut oracle = Oracle::spawn();
+    let dotnet_root = std::env::var_os("DOTNET_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("DOTNET_ROOT is not set; run under nix develop"));
+    let (user_dotnet_root, overrides_present) = workload_env_from_process();
+    let workload_env = workloads::WorkloadEnvironment {
+        user_dotnet_root: user_dotnet_root.as_deref(),
+        overrides_present,
+        global_json_pins_workload_set: false,
+    };
+    let sdk = |name: &str| resolve_sdk(&dotnet_root, None, name, None, None, &workload_env);
+    let names: Vec<String> = ["OutDir"].iter().map(|s| s.to_string()).collect();
+
+    // (label, entry `<PropertyGroup>` body, sidecar files).
+    let clusters: &[(&str, &str, &[(&str, &str)])] = &[
+        // The bare objection: an unconditioned overwrite in the file the SDK
+        // imports last.
+        (
+            "dbt-overwrites",
+            "<OutDir>artifacts/</OutDir>",
+            &[(
+                "Directory.Build.targets",
+                "<Project><PropertyGroup><OutDir>overwritten/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+        // The same, gated on a build dimension: which document wins is a
+        // property of the build the user ran, not of the text.
+        (
+            "dbt-overwrites-gated",
+            "<OutDir>artifacts/</OutDir>",
+            &[(
+                "Directory.Build.targets",
+                "<Project><PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\
+                 <OutDir>debug-only/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+        // A `Directory.Build.props` write is *earlier* than the entry body, so
+        // the entry's literal still wins — the control that keeps the cluster
+        // from passing by declining everything with a sidecar present.
+        (
+            "dbp-loses-to-entry",
+            "<OutDir>artifacts/</OutDir>",
+            &[(
+                "Directory.Build.props",
+                "<Project><PropertyGroup><OutDir>earlier/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+        // An SDK **extension-hook** import: `Microsoft.Common.targets` imports
+        // whatever `$(CustomAfterMicrosoftCommonTargets)` names, so a user file
+        // reached only through a property the SDK reads can overwrite the entry
+        // body's literal. The design notes named this route specifically.
+        (
+            "hook-after-common-targets",
+            "<CustomAfterMicrosoftCommonTargets>$(MSBuildProjectDirectory)/hook.targets\
+             </CustomAfterMicrosoftCommonTargets><OutDir>artifacts/</OutDir>",
+            &[(
+                "hook.targets",
+                "<Project><PropertyGroup><OutDir>hooked/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+        // The props-side twin, which lands *before* the entry body — so the
+        // entry's literal legitimately wins and this is the coverage control.
+        (
+            "hook-before-common-props",
+            "<OutDir>artifacts/</OutDir>",
+            &[(
+                "hook.props",
+                "<Project><PropertyGroup><OutDir>hooked-early/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+        // Nothing declared in the entry body at all: the later document is the
+        // only writer, so `Default` would be a claim that the standard layout
+        // holds when it does not.
+        (
+            "dbt-only-writer",
+            "",
+            &[(
+                "Directory.Build.targets",
+                "<Project><PropertyGroup><OutDir>only/</OutDir></PropertyGroup></Project>\n",
+            )],
+        ),
+    ];
+
+    let mut checked = 0usize;
+    for (label, body, files) in clusters {
+        let tmp = TempDir::new().expect("temp dir");
+        let path = tmp.path().join("P.fsproj");
+        let xml = format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
+             <TargetFramework>net10.0</TargetFramework>\n    {body}\n  \
+             </PropertyGroup>\n</Project>\n"
+        );
+        std::fs::write(&path, &xml).expect("write project");
+        for (name, contents) in *files {
+            std::fs::write(tmp.path().join(name), contents).expect("write sidecar");
+        }
+
+        let globals = HashMap::from([
+            ("Configuration".to_owned(), "Debug".to_owned()),
+            ("Platform".to_owned(), "AnyCPU".to_owned()),
+        ]);
+        let parsed = parse_fsproj_with_imports(
+            &xml,
+            &path,
+            &globals,
+            &common::oracle_environment(),
+            Some(&sdk),
+            None,
+        )
+        .expect("well-formed");
+
+        let theirs = oracle
+            .project(&xml, &names, Some(&path))
+            .expect("MSBuild evaluates these documents");
+        let real = as_directory(theirs.get("OutDir").map(String::as_str).unwrap_or_default());
+        eprintln!("  {label:<24} ours {:?}  msbuild {real:?}", parsed.output_dir);
+        checked += 1;
+
+        match &parsed.output_dir {
+            OutputDirVerdict::Unknown => {}
+            OutputDirVerdict::Default => assert!(
+                real.ends_with("bin/Debug/net10.0") || real.ends_with("bin\\Debug\\net10.0"),
+                "{label}: we reported the default layout, but MSBuild builds to {real:?}"
+            ),
+            OutputDirVerdict::Declared { path: ours } => assert_eq!(
+                as_directory(ours),
+                real,
+                "{label}: we committed an output directory the build does not use"
+            ),
+        }
+    }
+    assert_eq!(checked, clusters.len());
+}
