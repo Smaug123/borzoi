@@ -173,11 +173,18 @@ pub struct ProjectNode {
     /// Where the node's build writes its output, from the same evaluation as
     /// [`Self::tfm`] ([`borzoi_msbuild::ParsedProject::output_dir`]).
     ///
+    /// [`OutputDirVerdict::Declared`] is the **only** claim: that node
+    /// redirects its output, and the fold looks *there* instead.
+    ///
     /// [`OutputDirVerdict::Default`] — the overwhelmingly common answer — is
-    /// the positive claim that the standard `bin/<config>/<tfm>/` layout
-    /// holds, so the env fold may scan it. A
-    /// [`OutputDirVerdict::Declared`] node redirects its output, and the
-    /// fold looks *there* instead.
+    /// weaker than it sounds, and must not be read as "the standard
+    /// `bin/<config>/<tfm>/` layout holds". It is the absence of a redirect
+    /// *this walker recognises among executed writes*, which a
+    /// `<BaseOutputPath>`, a `<UseArtifactsOutput>`, or an `<OutDir>` gated on a
+    /// configuration this evaluation did not model all satisfy while moving the
+    /// output. The fold treats it exactly as [`OutputDirVerdict::Unknown`] —
+    /// scan the `bin` tree — and any future consumer that wants to act on it
+    /// needs a stronger verdict than this one computes.
     ///
     /// [`OutputDirVerdict::Unknown`] is the decline, and it is not the same
     /// as "nothing was declared": it means the project wrote *something*

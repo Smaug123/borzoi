@@ -2431,14 +2431,25 @@ impl<'r> State<'r> {
         }
     }
 
-    /// Note that a user-authored document the project pulls in will not be
-    /// scanned, so [`Self::out_dir_elements_seen`] is missing whatever it
-    /// declares. Every reason an import goes unwalked qualifies — a false or
-    /// unsupported gate, a file we could not read or parse, the depth limit,
-    /// pure mode — because each leaves a document that may hold the `<OutDir>`
-    /// the real build takes.
-    fn note_document_not_scanned(&mut self) {
-        if !self.in_sdk_subtree {
+    /// Note that a document the project pulls in will not be scanned, so
+    /// [`Self::out_dir_elements_seen`] is missing whatever it declares. Every
+    /// reason an import goes unwalked qualifies — a false or unsupported gate, a
+    /// file we could not read or parse, the depth limit, pure mode — because
+    /// each leaves a document that may hold the `<OutDir>` the real build takes.
+    ///
+    /// A site *inside the SDK subtree* is exempt only when `decided_exactly`:
+    /// the SDK's own hook points are almost all gated on properties nobody set,
+    /// and skipping one we evaluated exactly is a decision MSBuild makes too, so
+    /// no document is missing. That exemption tests the **site**, and the site is
+    /// not the document: `Microsoft.Common.targets` imports whatever
+    /// `$(CustomBeforeMicrosoftCommonTargets)` names, which is a *user* file
+    /// reached from an SDK document. So when the gate could not be decided
+    /// exactly — the hook path was written by an expression this walker cannot
+    /// evaluate, say, leaving the read inexact rather than empty — the skip is
+    /// ours and not necessarily MSBuild's, and a user `<OutDir>` may be sitting
+    /// in the file behind it.
+    fn note_document_not_scanned(&mut self, decided_exactly: bool) {
+        if !self.in_sdk_subtree || !decided_exactly {
             self.out_dir_scan_incomplete = true;
         }
     }
@@ -2978,6 +2989,30 @@ impl<'r> State<'r> {
     fn condition_reads_untrusted_value(&self, node: Node<'_, '_>) -> bool {
         node.attribute("Condition").is_some_and(|cond| {
             self.unpinned_root_for_raw(cond).is_some() || self.raw_uses_sdk_package_taint(cond)
+        })
+    }
+
+    /// Whether the gate on `node` leaned on a name whose value this walk did not
+    /// compute — so the branch it selected is *ours*, and not necessarily the
+    /// one MSBuild takes.
+    ///
+    /// Wider than [`Self::condition_reads_untrusted_value`] by exactly
+    /// [`Self::unevaluable_written`], and that is the whole point. A refused
+    /// write does not leave the name undefined: it leaves whatever was there
+    /// before standing, which for an SDK hook point is the SDK's own default. So
+    /// the gate reads a *defined* value, decides cleanly, raises no diagnostic,
+    /// and looks exact — while the value it read is not the one the real build
+    /// has. `$(CustomBeforeMicrosoftCommonTargets)` written by a
+    /// `$([MSBuild]::GetPathOfFileAbove(…))` this walker cannot evaluate is
+    /// precisely that shape, and the document behind that gate is user-authored
+    /// and free to write `<OutDir>`.
+    fn condition_value_is_inexact(&self, node: Node<'_, '_>) -> bool {
+        node.attribute("Condition").is_some_and(|cond| {
+            simple_property_references(cond).any(|name| {
+                self.unevaluable_written
+                    .contains(&name.to_ascii_lowercase())
+            }) || self.unpinned_root_for_raw(cond).is_some()
+                || self.raw_uses_sdk_package_taint(cond)
         })
     }
 
@@ -4836,7 +4871,7 @@ fn handle_import(node: Node<'_, '_>, current_file_dir: &Path, state: &mut State<
             DiagnosticKind::UnresolvedImport { path: project },
             node.range(),
         );
-        state.note_document_not_scanned();
+        state.note_document_not_scanned(true);
         return;
     }
     // A **user-authored** conditioned import makes everything it pulls in
@@ -4946,13 +4981,23 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // Skip may hide writes the real build performs, Run may perform
     // writes the real build skips. Either way no later undefined read
     // can claim exactness.
-    if state.diagnostics.len() != diagnostics_before_gate || matches!(gate, CondGate::Unsupported) {
+    let gate_decided_exactly = state.diagnostics.len() == diagnostics_before_gate
+        && !matches!(gate, CondGate::Unsupported);
+    if !gate_decided_exactly {
         state.walk_opaque = true;
     }
+    // A separate, narrower question from `gate_decided_exactly`, asked only of
+    // the output-directory scan: did the gate *read* a value we never computed?
+    // That raises no diagnostic and decides cleanly, so the exactness test above
+    // cannot see it — see [`State::condition_value_is_inexact`]. Deliberately
+    // not folded into `walk_opaque`, whose blast radius is every later undefined
+    // read in the walk; the claim at stake here is only "we scanned every
+    // document that could declare `<OutDir>`".
+    let skip_is_ours_alone = !gate_decided_exactly || state.condition_value_is_inexact(node);
     match gate {
         CondGate::Run => {}
         CondGate::Skip => {
-            state.note_document_not_scanned();
+            state.note_document_not_scanned(!skip_is_ours_alone);
             return;
         }
         CondGate::Unsupported => {
@@ -4962,7 +5007,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
             emit_unsupported_condition(node, state);
             state.import_gate_context = prev_gate;
             state.package_import_gate_context = prev_pkg_gate;
-            state.note_document_not_scanned();
+            state.note_document_not_scanned(false);
             return;
         }
     }
@@ -5752,7 +5797,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             },
             span,
         );
-        state.note_document_not_scanned();
+        state.note_document_not_scanned(true);
         return;
     }
     if state.depth >= MAX_IMPORT_DEPTH {
@@ -5763,7 +5808,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
             },
             span,
         );
-        state.note_document_not_scanned();
+        state.note_document_not_scanned(true);
         return;
     }
     // Canonical (symlink-resolved) identity for `walked_files` and the
@@ -5808,7 +5853,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                 },
                 span,
             );
-            state.note_document_not_scanned();
+            state.note_document_not_scanned(true);
             return;
         }
     };
@@ -5824,7 +5869,7 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                 },
                 span,
             );
-            state.note_document_not_scanned();
+            state.note_document_not_scanned(true);
             return;
         }
     };

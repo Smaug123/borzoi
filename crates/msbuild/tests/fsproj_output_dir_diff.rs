@@ -344,6 +344,29 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
                 "<Project><PropertyGroup><OutDir>hooked-early/</OutDir></PropertyGroup></Project>\n",
             )],
         ),
+        // The hole in the completeness premise. `note_document_not_scanned` is
+        // gated on the *import site* being outside the SDK subtree, but an
+        // extension-hook import is sited in an SDK document and imports a
+        // **user** one. Point the hook at a path the walker cannot pin — a
+        // property function in a value position — and the hook's own `<OutDir>`
+        // is never counted, so the entry's literal certifies against a document
+        // nobody read. Real MSBuild builds to `hooked/`.
+        (
+            "hook-path-unpinnable",
+            "<OutDir>artifacts/</OutDir>",
+            &[
+                (
+                    "Directory.Build.props",
+                    "<Project><PropertyGroup><CustomBeforeMicrosoftCommonTargets>\
+                     $([MSBuild]::GetPathOfFileAbove('hook.targets'))\
+                     </CustomBeforeMicrosoftCommonTargets></PropertyGroup></Project>\n",
+                ),
+                (
+                    "../hook.targets",
+                    "<Project><PropertyGroup><OutDir>hooked/</OutDir></PropertyGroup></Project>\n",
+                ),
+            ],
+        ),
         // Nothing declared in the entry body at all: the later document is the
         // only writer, so `Default` would be a claim that the standard layout
         // holds when it does not.
@@ -360,7 +383,12 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
     let mut checked = 0usize;
     for (label, body, files) in clusters {
         let tmp = TempDir::new().expect("temp dir");
-        let path = tmp.path().join("P.fsproj");
+        // The project lives one level down so a sidecar named `../x` is
+        // genuinely *above* it — which is where a `GetPathOfFileAbove` hook
+        // looks, and the shape a repo-root file takes in a real tree.
+        let dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&dir).expect("project dir");
+        let path = dir.join("P.fsproj");
         let xml = format!(
             "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    \
              <TargetFramework>net10.0</TargetFramework>\n    {body}\n  \
@@ -368,7 +396,9 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
         );
         std::fs::write(&path, &xml).expect("write project");
         for (name, contents) in *files {
-            std::fs::write(tmp.path().join(name), contents).expect("write sidecar");
+            let at = dir.join(name);
+            std::fs::create_dir_all(at.parent().expect("sidecar parent")).expect("sidecar dir");
+            std::fs::write(&at, contents).expect("write sidecar");
         }
 
         let globals = HashMap::from([
@@ -389,7 +419,10 @@ fn a_later_document_may_not_be_overwritten_by_a_declared_entry_body() {
             .project(&xml, &names, Some(&path))
             .expect("MSBuild evaluates these documents");
         let real = as_directory(theirs.get("OutDir").map(String::as_str).unwrap_or_default());
-        eprintln!("  {label:<24} ours {:?}  msbuild {real:?}", parsed.output_dir);
+        eprintln!(
+            "  {label:<24} ours {:?}  msbuild {real:?}",
+            parsed.output_dir
+        );
         checked += 1;
 
         match &parsed.output_dir {

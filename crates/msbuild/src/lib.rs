@@ -289,9 +289,23 @@ impl ItemMetadataValue {
 /// directory reports a built project as unbuilt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputDirVerdict {
-    /// No user-authored redirect, so MSBuild's default layout applies
-    /// (`bin/$(Configuration)/$(TargetFramework)/`, the tail segment
-    /// dropped when `AppendTargetFrameworkToOutputPath` is false).
+    /// No redirect **this walker recognises among the writes it saw execute**.
+    ///
+    /// Not a claim that MSBuild's default layout
+    /// (`bin/$(Configuration)/$(TargetFramework)/`, the tail segment dropped
+    /// when `AppendTargetFrameworkToOutputPath` is false) actually applies, and
+    /// a consumer must not locate against it. The arm is reached by a
+    /// `<BaseOutputPath>` or `<UseArtifactsOutput>` — names this walk does not
+    /// treat as redirects — and by an `<OutDir>`/`<OutputPath>` write whose gate
+    /// was false under the configuration this evaluation modelled, all of which
+    /// move the output. It is a *weaker* answer than [`Self::Unknown`] is a
+    /// strong one, not a stronger one: both mean "do what you did before the
+    /// verdict existed", which for the LSP is scanning the `bin` tree.
+    ///
+    /// Widening the recognised-name list to chase those shapes is the
+    /// enumerate-the-leak-routes game [`Self::Declared`] deliberately refuses to
+    /// play; making this arm load-bearing needs certification by construction,
+    /// as that one has.
     Default,
     /// A user-declared output directory, verbatim as evaluated — relative to
     /// the project directory unless rooted.

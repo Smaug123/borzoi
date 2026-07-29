@@ -20,9 +20,13 @@
 //! in the workspace.
 //!
 //! So this group's job is to pin the verdicts in the one configuration that
-//! ships. `Default` for an ordinary project is the load-bearing case: it is a
-//! positive claim that the standard layout holds, and losing it takes every
-//! project reference in the workspace down with it.
+//! ships. `Default` for an ordinary project is the case to watch, though not
+//! because it is a claim — the consumer treats it exactly as `Unknown`
+//! (`semantic.rs`, one arm: both scan the `bin` tree). What it guards against is
+//! the *opposite* slip: reading the SDK's own `OutDir` write as a user
+//! declaration and returning `Declared` with a `bin/Debug/`-shaped partial
+//! answer, which would send the fold to a directory the build does not use.
+//! Losing `Default` to `Unknown` would cost nothing at all.
 //!
 //! Requires the .NET SDK on PATH — run under `nix develop`.
 
@@ -69,10 +73,10 @@ fn node_verdict(nodes: &[borzoi::project_graph::ProjectNode], proj: &Path) -> Ou
 }
 
 /// **The regression this group exists for.** An ordinary SDK project declares
-/// no redirect, so the standard `bin/<config>/<tfm>/` layout holds and the
-/// fold may scan it. The SDK's own `OutDir` write must not be mistaken for a
-/// declaration — read as one it takes out project-reference resolution across
-/// the whole workspace, which no SDK-blind test can observe.
+/// no redirect, so the fold scans the `bin` tree as it always did. The SDK's own
+/// `OutDir` write must not be mistaken for a declaration — read as one it
+/// returns `Declared` with a partial path and takes out project-reference
+/// resolution across the whole workspace, which no SDK-blind test can observe.
 #[test]
 fn an_ordinary_sdk_project_reports_the_default_layout() {
     assert_eq!(verdict_under_real_sdk(""), OutputDirVerdict::Default);
@@ -133,4 +137,40 @@ fn a_user_output_path_declines_rather_than_claiming_the_default() {
         verdict_under_real_sdk("<OutputPath>elsewhere/</OutputPath>"),
         OutputDirVerdict::Unknown
     );
+}
+
+/// **The shapes that reach `Default` while the build writes somewhere else.**
+///
+/// Each of these moves the output without any write this walker treats as a
+/// redirect, so the verdict is `Default` and MSBuild's real `OutDir` is not the
+/// standard layout. That is sound *today* only because the consumer treats
+/// `Default` and `Unknown` identically — both scan the `bin` tree
+/// (`semantic.rs`, one arm).
+///
+/// They are pinned so that stops being an invisible property. A future change
+/// that makes `Default` load-bearing — locating against the standard layout
+/// instead of scanning — turns every row here into a wrong directory, and will
+/// have to come past this test to do it.
+#[test]
+fn the_shapes_that_reach_default_while_the_build_moves_elsewhere() {
+    for body in [
+        // Recognised names, but the write never executed under the modelled
+        // configuration — so `NeverWritten` is reached with a gated redirect
+        // sitting in the document.
+        "<OutDir Condition=\"'$(Configuration)' == 'Release'\">rel/</OutDir>",
+        "<OutputPath Condition=\"'$(Configuration)' == 'Release'\">el/</OutputPath>",
+        // Names this walk does not treat as redirects at all. Both move the
+        // output for the *modelled* build, not merely some other one.
+        "<BaseOutputPath>build/</BaseOutputPath>",
+        "<UseArtifactsOutput>true</UseArtifactsOutput>",
+    ] {
+        assert_eq!(
+            verdict_under_real_sdk(body),
+            OutputDirVerdict::Default,
+            "{body}: this row is here because it reaches `Default`. If it now \
+             declines, that is an improvement — delete the row. If the consumer \
+             has started locating against `Default`, this row is a wrong \
+             directory and the verdict must be strengthened first."
+        );
+    }
 }
