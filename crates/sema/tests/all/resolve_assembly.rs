@@ -6612,6 +6612,16 @@ fn only_an_unrecovered_augmentation_header_keys_an_assembly_lookup() {
     // | `type Pair<> with` | a **project** `M.Pair` |
     // | `type Pair<'T>(x) with` | a **project** `M.Pair` (a class definition) |
     // | `type Pair(x) with` | a **project** `M.Pair` |
+    // | `type Pair<'T with` | **nothing** (unterminated list) |
+    // | `type Pair<'T when 'T : comparison> with` | the assembly `Demo.Pair` |
+    // | `type Pair<'T, 'U when 'T : comparison> with` | the assembly `Demo.Pair` |
+    //
+    // FCS binds the assembly for every other spelling probed — `<^T>`,
+    // `<[<Measure>] 'T>`, an outside-`<>` `when`, `type private`, and inner
+    // spaces — and those are in the table as the converse guard: a rule that
+    // declined anything unusual inside `<…>` would over-decline all of them.
+    // What the arity may be read from is a **complete list** — opened,
+    // non-empty, all members named, and closed by its `>`.
     //
     // For the first three the arity is the whole answer, so each is checked
     // against its own handle; for the rest, naming any assembly entity is a
@@ -6626,12 +6636,20 @@ fn only_an_unrecovered_augmentation_header_keys_an_assembly_lookup() {
         .collect();
 
     // (header, the arity FCS binds — `None` when it binds no assembly type)
-    let cases: [(&str, Option<usize>); 7] = [
+    let cases: [(&str, Option<usize>); 15] = [
         ("type Pair with", Some(0)),
         ("type Pair<'T> with", Some(1)),
         ("type Pair<'T, 'U> with", Some(2)),
+        ("type Pair<'T when 'T : comparison> with", Some(1)),
+        ("type Pair<'T, 'U when 'T : comparison> with", Some(2)),
+        ("type Pair<^T> with", Some(1)),
+        ("type Pair<[<Measure>] 'T> with", Some(1)),
+        ("type Pair<'T> when 'T : comparison with", Some(1)),
+        ("type private Pair<'T> with", Some(1)),
+        ("type Pair< 'T > with", Some(1)),
         ("type Pair<'T,> with", None),
         ("type Pair<> with", None),
+        ("type Pair<'T with", None),
         ("type Pair<'T>(x) with", None),
         ("type Pair(x) with", None),
     ];

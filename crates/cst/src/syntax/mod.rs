@@ -447,6 +447,20 @@ impl TyparDecls {
     pub fn constraint_clause(&self) -> Option<TyparConstraints> {
         child(&self.0)
     }
+
+    /// Whether the list is **closed** by its `>` — `false` for one the parser
+    /// recovered at an unterminated header (`type Pair<'T with`), where the
+    /// decls present are a prefix of what the author was typing.
+    ///
+    /// A reader that derives a *generic arity* from this node must consult
+    /// this: an unclosed list still yields well-formed [`TyparDecl`] children,
+    /// so counting them reports an arity nobody wrote. (Being closed is not on
+    /// its own enough — `<>` closes while declaring nothing, and `<'T,>` closes
+    /// over an identifier-less decl; a complete list is opened, non-empty, all
+    /// members named, and closed.)
+    pub fn is_closed(&self) -> bool {
+        token(&self.0, SyntaxKind::GREATER_TOK).is_some()
+    }
 }
 
 /// The kind of a [`TyparConstraint`] (phase 9.3b) — the supported

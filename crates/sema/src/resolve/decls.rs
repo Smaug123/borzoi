@@ -639,11 +639,13 @@ impl<'a> Resolver<'a> {
                         // *project* `M.Pair`. Committing an assembly entity for
                         // any of the last four is a wrong target, so they keep the
                         // in-file-only reading.
-                        let typars_are_written = defn.typar_decls().is_none_or(|decls| {
+                        let typar_list_is_complete = defn.typar_decls().is_none_or(|decls| {
                             let mut typars = decls.typars().peekable();
-                            typars.peek().is_some() && typars.all(|t| t.ident().is_some())
+                            decls.is_closed()
+                                && typars.peek().is_some()
+                                && typars.all(|t| t.ident().is_some())
                         });
-                        if defn.implicit_ctor().is_none() && typars_are_written {
+                        if defn.implicit_ctor().is_none() && typar_list_is_complete {
                             let head_arity =
                                 defn.typar_decls().map_or(0, |decls| decls.typars().count());
                             self.resolve_type_path(&segs, head_arity);
