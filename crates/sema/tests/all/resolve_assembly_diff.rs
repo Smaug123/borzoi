@@ -752,6 +752,17 @@ fn type_position_resolution_is_complete_in_the_assembly_envelope() {
         "Demo.Calc",
         1,
     );
+    // …and where the augmented name reaches the assembly only through a *chained*
+    // open: `open Demo; open Sub` shortens to `Demo.Sub`, but `RootOnly` exists
+    // only in the root `Sub`, so both the head and the annotation are the root
+    // reading. An augmentation must not collapse that to the relative one either.
+    assert_later_type_use_complete(
+        "module M\nopen Demo\nopen Sub\ntype RootOnly with\n    member this.Zz = 1\n\
+         let f (x : RootOnly) = x\n",
+        "RootOnly",
+        "Sub.RootOnly",
+        1,
+    );
     // Chained open: `open Demo; open Sub` shortens the second open through the
     // first (→ `Demo.Sub`), so `Deep` (only in `Demo.Sub`) is `Demo.Sub.Deep`.
     assert_type_use_complete(

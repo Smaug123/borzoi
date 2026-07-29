@@ -6312,6 +6312,28 @@ fn an_earlier_files_augmentation_head_does_not_shadow_the_type_it_augments() {
 }
 
 #[test]
+fn an_augmentation_head_does_not_shadow_a_nested_type_under_it() {
+    // The *prefix* dimension: the shadow matches every path rooted at the head,
+    // so augmenting `Demo.Thing` also blocked the nested `Demo.Thing.Inner`. An
+    // augmentation adds members, never nested types, so the whole subtree stays
+    // the assembly's in type position.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Thing with\n    member this.Zz = 1\nlet f (x : Demo.Thing.Inner) = x\n";
+    let rf = resolve(src, &env);
+    let thing = env.lookup_type(&["Demo".to_string()], "Thing", 0).unwrap();
+    let inner = env.nested(thing, "Inner", 0).expect("Thing.Inner");
+    let annotation = {
+        let s = src.rfind("Inner").expect("annotation use of Inner");
+        span(s, "Inner".len())
+    };
+    assert_eq!(
+        rf.resolution_at(annotation),
+        Some(Resolution::Entity(inner)),
+        "augmenting `Demo.Thing` must leave its nested `Inner` resolving",
+    );
+}
+
+#[test]
 fn a_namespace_rooted_augmentation_head_does_not_shadow_the_type_it_augments() {
     // The shape where the *exported* shadow lands on the augmented type's own
     // path: under `namespace Demo`, a bare `type Calc with …` exports
