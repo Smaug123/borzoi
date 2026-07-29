@@ -2329,6 +2329,25 @@ impl<'a> Resolver<'a> {
                 && !self.preceding.is_exact_nested_module(names))
     }
 
+    /// In-file-only type-path resolution: record a [`Resolution::Local`] when a
+    /// single segment names an in-file `type` def (arity-agnostic, as F# in-file
+    /// type lookup is). Returns whether it recorded.
+    ///
+    /// The fallback for a `type … with` header whose shape cannot key an
+    /// assembly lookup — see the call site in
+    /// [`Resolver::module_decl`](super::Resolver::module_decl). The ordinary
+    /// [`Self::resolve_type_path`] runs its own in-file step first, so this is
+    /// only reached where that walk must not run at all.
+    pub(super) fn resolve_in_file_type_path(&mut self, segs: &[SyntaxToken]) -> bool {
+        if let [only] = segs
+            && let Some(id) = self.lookup_type_def(only.text())
+        {
+            self.record(only.text_range(), Resolution::Local(id));
+            return true;
+        }
+        false
+    }
+
     /// The in-file `type` def named `name` visible from the current container:
     /// the innermost match found by walking the container path outward, since a
     /// nested module sees its enclosing module/namespace's types and a nested

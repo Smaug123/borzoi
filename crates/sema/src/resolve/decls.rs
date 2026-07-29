@@ -625,9 +625,31 @@ impl<'a> Resolver<'a> {
                         // assembly lookup at 0 would name the wrong same-named
                         // entity where a `Pair` / `Pair<'T>` / `Pair<'T, 'U>` family
                         // exists (fsi: it augments the arity-1 one).
-                        let head_arity =
-                            defn.typar_decls().map_or(0, |decls| decls.typars().count());
-                        self.resolve_type_path(&segs, head_arity);
+                        //
+                        // Only a header the parser did *not* have to recover may
+                        // key that lookup. A `with` token alone does not make an
+                        // augmentation — `TypeDefnObjectModel::is_augmentation`
+                        // reads exactly that token, and `type Pair<'T>(x) with
+                        // member …` is a **class definition** whose members follow
+                        // `with` — and a recovered typar list (`<'T,>`, `<>`)
+                        // reports an arity nobody wrote. FCS-probed against the
+                        // fixture's `Demo.Pair` family: `type Pair with` /
+                        // `<'T>` / `<'T, 'U>` bind the assembly `Demo.Pair`;
+                        // `<'T,>` binds nothing; `<>`, `<'T>(x)` and `(x)` bind a
+                        // *project* `M.Pair`. Committing an assembly entity for
+                        // any of the last four is a wrong target, so they keep the
+                        // in-file-only reading.
+                        let typars_are_written = defn.typar_decls().is_none_or(|decls| {
+                            let mut typars = decls.typars().peekable();
+                            typars.peek().is_some() && typars.all(|t| t.ident().is_some())
+                        });
+                        if defn.implicit_ctor().is_none() && typars_are_written {
+                            let head_arity =
+                                defn.typar_decls().map_or(0, |decls| decls.typars().count());
+                            self.resolve_type_path(&segs, head_arity);
+                        } else {
+                            self.resolve_in_file_type_path(&segs);
+                        }
                         // The augmentation's members join the in-file member
                         // index — visible only from here on (FCS FS0039 before
                         // the augmentation, probe M4a) — or, when the head is

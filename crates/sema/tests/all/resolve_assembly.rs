@@ -6594,3 +6594,70 @@ fn a_query_join_binder_defers_the_constructor_fallback() {
         "a query range variable must not resolve to the opened type"
     );
 }
+
+#[test]
+fn only_an_unrecovered_augmentation_header_keys_an_assembly_lookup() {
+    // A `with` token alone does not make an augmentation, and a recovered typar
+    // list reports an arity nobody wrote — so the head is not always a
+    // trustworthy assembly key. FCS-probed 2026-07-29 against the fixture's
+    // `Demo.Pair` family (arities 0, 1, 2), each header followed by `member
+    // this.Zz = 1`:
+    //
+    // | header | FCS binds |
+    // |---|---|
+    // | `type Pair with` | the assembly `Demo.Pair` |
+    // | `type Pair<'T> with` | the assembly `Demo.Pair` |
+    // | `type Pair<'T, 'U> with` | the assembly `Demo.Pair` |
+    // | `type Pair<'T,> with` | **nothing** (recovered trailing comma) |
+    // | `type Pair<> with` | a **project** `M.Pair` |
+    // | `type Pair<'T>(x) with` | a **project** `M.Pair` (a class definition) |
+    // | `type Pair(x) with` | a **project** `M.Pair` |
+    //
+    // For the first three the arity is the whole answer, so each is checked
+    // against its own handle; for the rest, naming any assembly entity is a
+    // wrong target.
+    let env = fixture_env();
+    let demo = ["Demo".to_string()];
+    let handles: Vec<EntityHandle> = (0..=2)
+        .map(|a| {
+            env.lookup_type(&demo, "Pair", a)
+                .unwrap_or_else(|| panic!("Demo.Pair at arity {a}"))
+        })
+        .collect();
+
+    // (header, the arity FCS binds — `None` when it binds no assembly type)
+    let cases: [(&str, Option<usize>); 7] = [
+        ("type Pair with", Some(0)),
+        ("type Pair<'T> with", Some(1)),
+        ("type Pair<'T, 'U> with", Some(2)),
+        ("type Pair<'T,> with", None),
+        ("type Pair<> with", None),
+        ("type Pair<'T>(x) with", None),
+        ("type Pair(x) with", None),
+    ];
+    for (header, expected) in cases {
+        let src = format!("module M\nopen Demo\n{header}\n    member this.Zz = 1\n");
+        // Recovered headers are the point of the table, so parse errors are
+        // tolerated here — the LSP resolves whatever the parser recovered.
+        let file = ImplFile::cast(parse(&src).root).expect("impl file");
+        let rf = resolve_file(&file, &ProjectItems::default(), &env);
+        let head = {
+            let at = src.find("Pair").expect("the head");
+            span(at, "Pair".len())
+        };
+        match expected {
+            Some(arity) => assert_eq!(
+                rf.resolution_at(head),
+                Some(Resolution::Entity(handles[arity])),
+                "{header:?}: expected the arity-{arity} `Demo.Pair`",
+            ),
+            None => assert!(
+                !handles
+                    .iter()
+                    .any(|h| rf.resolution_at(head) == Some(Resolution::Entity(*h))),
+                "{header:?}: a recovered header must not name an assembly type; got {:?}",
+                rf.resolution_at(head),
+            ),
+        }
+    }
+}
