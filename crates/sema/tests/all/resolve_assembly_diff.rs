@@ -574,15 +574,13 @@ fn assert_type_use_complete(src: &str, needle: &str, expected_full: &str) {
     assert_use_complete(src, needle, expected_full, false, 0);
 }
 
-/// [`assert_type_use_complete`] against the `skip`-th *later* occurrence FCS
-/// resolves to `expected_full`, for a snippet that names the same type twice
-/// and asks about the second: `type Demo.Calc with …` followed by an annotation
-/// of `Demo.Calc`. FCS resolves the augmentation head as well, but that head is
-/// a shape we do not resolve into an assembly at all (its typars sit on the
-/// type-defn header rather than its long-ident, so the arity-keyed lookup has
-/// nothing to key on) — a separate completeness gap from the annotation's.
-fn assert_later_type_use_complete(src: &str, needle: &str, expected_full: &str, skip: usize) {
-    assert_use_complete(src, needle, expected_full, false, skip);
+/// [`assert_type_use_complete`] against the `nth` occurrence FCS resolves to
+/// `expected_full`, for a snippet that names the same type more than once and
+/// asks about a later one: `type Demo.Calc with …` (the augmentation head, `0`)
+/// followed by an annotation of `Demo.Calc` (`1`). Both are uses FCS resolves,
+/// and both must resolve on our side.
+fn assert_nth_type_use_complete(src: &str, needle: &str, expected_full: &str, nth: usize) {
+    assert_use_complete(src, needle, expected_full, false, nth);
 }
 
 /// Value/member-position counterpart of [`assert_type_use_complete`]: a use FCS
@@ -737,32 +735,37 @@ fn type_position_resolution_is_complete_in_the_assembly_envelope() {
         "Thing",
         "Demo.Sub.Thing",
     );
-    // A `type … with` augmentation names an existing type, so it occupies
-    // nothing in the type namespace: a later annotation of the augmented type
-    // still resolves, in both the qualified and the opened spelling.
-    assert_later_type_use_complete(
-        "module M\ntype Demo.Calc with\n    member this.Zz = 1\nlet f (x : Demo.Calc) = x\n",
-        "Calc",
-        "Demo.Calc",
-        1,
-    );
-    assert_later_type_use_complete(
-        "module M\nopen Demo\ntype Calc with\n    member this.Zz = 1\nlet f (x : Calc) = x\n",
-        "Calc",
-        "Demo.Calc",
-        1,
-    );
+    // A `type … with` augmentation names an existing type: the head is a use of
+    // it, and it occupies nothing in the type namespace, so the annotation below
+    // resolves too — in both the qualified and the opened spelling.
+    for nth in [0, 1] {
+        // `0` is the augmentation head, `1` the annotation below it.
+        assert_nth_type_use_complete(
+            "module M\ntype Demo.Calc with\n    member this.Zz = 1\nlet f (x : Demo.Calc) = x\n",
+            "Calc",
+            "Demo.Calc",
+            nth,
+        );
+        assert_nth_type_use_complete(
+            "module M\nopen Demo\ntype Calc with\n    member this.Zz = 1\nlet f (x : Calc) = x\n",
+            "Calc",
+            "Demo.Calc",
+            nth,
+        );
+    }
     // …and where the augmented name reaches the assembly only through a *chained*
     // open: `open Demo; open Sub` shortens to `Demo.Sub`, but `RootOnly` exists
     // only in the root `Sub`, so both the head and the annotation are the root
     // reading. An augmentation must not collapse that to the relative one either.
-    assert_later_type_use_complete(
-        "module M\nopen Demo\nopen Sub\ntype RootOnly with\n    member this.Zz = 1\n\
-         let f (x : RootOnly) = x\n",
-        "RootOnly",
-        "Sub.RootOnly",
-        1,
-    );
+    for nth in [0, 1] {
+        assert_nth_type_use_complete(
+            "module M\nopen Demo\nopen Sub\ntype RootOnly with\n    member this.Zz = 1\n\
+             let f (x : RootOnly) = x\n",
+            "RootOnly",
+            "Sub.RootOnly",
+            nth,
+        );
+    }
     // Chained open: `open Demo; open Sub` shortens the second open through the
     // first (→ `Demo.Sub`), so `Deep` (only in `Demo.Sub`) is `Demo.Sub.Deep`.
     assert_type_use_complete(

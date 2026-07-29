@@ -6312,6 +6312,93 @@ fn an_earlier_files_augmentation_head_does_not_shadow_the_type_it_augments() {
 }
 
 #[test]
+fn an_augmentation_head_resolves_the_assembly_type_it_names() {
+    // The head is a *use* of an existing type (FCS reports a symbol use there),
+    // so hover / go-to-definition on the `Demo.Calc` in `type Demo.Calc with …`
+    // must name the assembly type.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Calc with\n    member this.Zz = 1\n";
+    let rf = resolve(src, &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    assert_eq!(
+        rf.resolution_at(at(src, "Calc")),
+        Some(Resolution::Entity(calc)),
+        "the augmentation head resolves the type it augments",
+    );
+}
+
+#[test]
+fn a_generic_augmentation_head_resolves_at_its_declared_arity() {
+    // The head's typars sit on the type-defn header, not on its long-ident, so
+    // an arity-keyed lookup off the long-ident alone would key `Demo.Pair<'T>`
+    // to arity 0 and name the wrong same-named entity — the fixture declares
+    // `Pair`, `Pair<T>` and `Pair<T, U>` as three distinct handles. fsi confirms
+    // `type Demo.Pair<'T> with` augments the arity-1 one.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Pair<'T> with\n    member this.Zz = 1\n";
+    let rf = resolve(src, &env);
+    let demo = ["Demo".to_string()];
+    let pair1 = env.lookup_type(&demo, "Pair", 1).expect("Demo.Pair<'T>");
+    let pair0 = env.lookup_type(&demo, "Pair", 0).expect("Demo.Pair");
+    assert_eq!(
+        rf.resolution_at(at(src, "Pair")),
+        Some(Resolution::Entity(pair1)),
+        "a generic augmentation head resolves at its own arity",
+    );
+    assert_ne!(
+        rf.resolution_at(at(src, "Pair")),
+        Some(Resolution::Entity(pair0)),
+        "…and must not fall to the arity-0 sibling",
+    );
+}
+
+#[test]
+fn an_augmentation_head_with_an_unavailable_arity_resolves_nothing() {
+    // `Demo.Calc` is arity 0 only. A head written at arity 1 names no entity, so
+    // it must record nothing rather than fall back to the arity-0 one.
+    let env = fixture_env();
+    let src = "module M\ntype Demo.Calc<'T> with\n    member this.Zz = 1\n";
+    let rf = resolve(src, &env);
+    let calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    assert_ne!(
+        rf.resolution_at(at(src, "Calc")),
+        Some(Resolution::Entity(calc)),
+        "an arity the assembly does not declare must not resolve the arity-0 type",
+    );
+}
+
+#[test]
+fn an_augmentation_head_of_a_project_type_still_resolves_the_project_def() {
+    // The in-file half must keep working: a head naming a same-file `type`
+    // resolves to that definition, not to the same-named assembly type.
+    let env = fixture_env();
+    let src =
+        "module M\nopen Demo\ntype Calc = { X : int }\ntype Calc with\n    member this.Zz = 1\n";
+    let rf = resolve(src, &env);
+    let assembly_calc = env
+        .lookup_type(&["Demo".to_string()], "Calc", 0)
+        .expect("Demo.Calc in env");
+    let head = {
+        let s = src.rfind("type Calc with").expect("the augmentation head") + "type ".len();
+        span(s, "Calc".len())
+    };
+    assert!(
+        matches!(rf.resolution_at(head), Some(Resolution::Local(_))),
+        "an augmentation head of a project type resolves the project def; got {:?}",
+        rf.resolution_at(head),
+    );
+    assert_ne!(
+        rf.resolution_at(head),
+        Some(Resolution::Entity(assembly_calc)),
+        "…never the same-named assembly type",
+    );
+}
+
+#[test]
 fn an_augmentation_head_does_not_shadow_a_nested_type_under_it() {
     // The *prefix* dimension: the shadow matches every path rooted at the head,
     // so augmenting `Demo.Thing` also blocked the nested `Demo.Thing.Inner`. An
@@ -6401,6 +6488,18 @@ fn an_earlier_files_project_type_still_shadows_the_assembly_when_augmented() {
         proj.file(1).resolution_at(annotation),
         Some(Resolution::Entity(calc)),
         "an earlier file's project `Demo.Calc` must keep shadowing the assembly type",
+    );
+    // The *head* resolves too now, so it is a commit site with the same
+    // obligation: an earlier file owns this path, so naming the assembly type
+    // here would be a wrong target.
+    let head = {
+        let s = src2.find("Demo.Calc").expect("the augmentation head");
+        span(s + "Demo.".len(), "Calc".len())
+    };
+    assert_ne!(
+        proj.file(1).resolution_at(head),
+        Some(Resolution::Entity(calc)),
+        "the augmentation head must not commit the assembly type an earlier file shadows",
     );
 }
 

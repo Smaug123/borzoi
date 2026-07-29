@@ -970,7 +970,7 @@ impl<'a> Resolver<'a> {
     ///   shadow tests).
     /// - **Type path → false.** The only single-name project binder that reaches
     ///   the type as-written reading is a **module** (a same-file `type` is
-    ///   resolved earlier by [`Self::resolve_in_file_type_path`]), and a module is
+    ///   resolved earlier, by [`Self::decide_type_path`]'s in-file step), and a module is
     ///   not a type, so it does not capture a *type* reference: `module Calc;
     ///   open Demo; (x : Calc)` is the assembly type `Demo.Calc` via the open
     ///   (FCS). The as-written reading then keeps its ordinary lowest-priority

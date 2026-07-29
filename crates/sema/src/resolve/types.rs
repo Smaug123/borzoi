@@ -1248,8 +1248,7 @@ impl<'a> Resolver<'a> {
         let names: Vec<String> = segs.iter().map(|t| id_text(t.text()).to_string()).collect();
         match self.decide_type_path(&names, arity) {
             // A single-segment in-file `type` shadows any assembly type of that
-            // name — record the local, exactly as
-            // [`Self::resolve_in_file_type_path`] does for an augmentation head.
+            // name — record the local.
             TypePathResolution::InFileType(id) => {
                 self.record(segs[0].text_range(), Resolution::Local(id));
             }
@@ -2328,23 +2327,6 @@ impl<'a> Resolver<'a> {
             || self.nested_module_exports.iter().any(strictly_under)
             || (self.preceding.is_rooted_at_nested_module(names)
                 && !self.preceding.is_exact_nested_module(names))
-    }
-
-    /// In-file-only type-path resolution: record a [`Resolution::Local`] when a
-    /// single segment names an in-file `type` def (arity-agnostic, as F# in-file
-    /// type lookup is). Returns whether it recorded. Used both as the first step
-    /// of [`Self::resolve_type_path`] and on its own for an augmentation head,
-    /// where an assembly lookup would be unsound — the augmented type's generic
-    /// arity is not on the `long_id` there, so a keyed assembly lookup could pick
-    /// the wrong arity (`type Demo.Pair<'T> with …` is ``Pair`1``, not `Pair`).
-    pub(super) fn resolve_in_file_type_path(&mut self, segs: &[SyntaxToken]) -> bool {
-        if let [only] = segs
-            && let Some(id) = self.lookup_type_def(only.text())
-        {
-            self.record(only.text_range(), Resolution::Local(id));
-            return true;
-        }
-        false
     }
 
     /// The in-file `type` def named `name` visible from the current container:

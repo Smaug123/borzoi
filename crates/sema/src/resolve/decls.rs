@@ -613,14 +613,21 @@ impl<'a> Resolver<'a> {
                         && let Some(li) = defn.long_id()
                     {
                         let segs: Vec<SyntaxToken> = li.idents().collect();
-                        // An augmentation head (`type T with …`) resolves in-file
-                        // only: an in-file `T` resolves via `lookup_type_def`
-                        // (arity-agnostic). It must *not* fall through to the
-                        // arity-keyed assembly lookup — the augmented type's typars
-                        // aren't on this `long_id`, so a generic assembly target
-                        // (`type Demo.Pair<'T> with …`) would mis-key to arity 0 and
-                        // resolve a wrong same-named entity (D5).
-                        self.resolve_in_file_type_path(&segs);
+                        // An augmentation head (`type T with …`) is a *use* of an
+                        // existing type, so it resolves through the ordinary
+                        // type-path walk — an in-file `T` to its definition
+                        // (arity-agnostically, via `lookup_type_def`), otherwise
+                        // into the referenced assemblies.
+                        //
+                        // The arity comes from the **type-defn header**, not from
+                        // the long-ident: `type Demo.Pair<'T> with …` carries its
+                        // `<'T>` beside the head rather than on it, and keying the
+                        // assembly lookup at 0 would name the wrong same-named
+                        // entity where a `Pair` / `Pair<'T>` / `Pair<'T, 'U>` family
+                        // exists (fsi: it augments the arity-1 one).
+                        let head_arity =
+                            defn.typar_decls().map_or(0, |decls| decls.typars().count());
+                        self.resolve_type_path(&segs, head_arity);
                         // The augmentation's members join the in-file member
                         // index — visible only from here on (FCS FS0039 before
                         // the augmentation, probe M4a) — or, when the head is
@@ -631,9 +638,9 @@ impl<'a> Resolver<'a> {
                     // The type header's generic parameters (`type Foo<'T>`) are in
                     // scope throughout its body: the abbreviation/record/union RHS
                     // resolved by `resolve_type_defn`, and every member signature
-                    // and body reached by `resolve_type_member_bodies`. (An
-                    // augmentation carries no `<…>` on its head, so this pushes
-                    // nothing there.)
+                    // and body reached by `resolve_type_member_bodies`. An
+                    // augmentation carries them too (`type Demo.Pair<'T> with …`),
+                    // which is where its head's arity above comes from.
                     let pushed_typars = self.enter_typars(defn.typar_decls());
                     self.resolve_type_defn(defn);
                     // Descend into the type's member bodies (self-id, params,
