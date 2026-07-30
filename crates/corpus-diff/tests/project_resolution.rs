@@ -2152,6 +2152,26 @@ fn attribute_matrix() -> Vec<AttrCell> {
     let writtens = ["Mark", "MarkAttribute"];
 
     let mut cells = Vec::new();
+    // The **contested** shape, which the crossed axes above cannot express: a
+    // cell declares `Mark` or `MarkAttribute`, never both, so only one
+    // candidate can resolve and a resolver that tried the written name before
+    // the suffixed one would answer every other cell identically. Here both are
+    // declared at distinct ranges, so F#'s suffix-first walk is decidable from
+    // the answer alone — `[<Mark>]` must bind `MarkAttribute`, and binding
+    // `Mark` is exactly the wrong-order resolver. `[<MarkAttribute>]` binds it
+    // too, by the second candidate, so the pair also pins that the first
+    // candidate's *failure* falls through rather than ending the walk.
+    for written in &writtens {
+        let mut src = String::from("module Test\n\n");
+        src.push_str("type Mark() =\n    inherit System.Attribute()\n\n");
+        src.push_str("type MarkAttribute() =\n    inherit System.Attribute()\n\n");
+        src.push_str(&format!("[<{written}>]\nlet x = 5\n"));
+        cells.push(AttrCell {
+            kind: "contested",
+            label: format!("contested-written{written}"),
+            src,
+        });
+    }
     for (kind, template) in &decl_kinds {
         for name in &names {
             for written in &writtens {
@@ -2420,11 +2440,24 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
 
     for cell in &cells {
         let outcome = run_attribute_cell(cell);
-        let checked_clean = outcome.runner.fcs_error_files.is_empty();
+        // One path for every cell, with each assertion guarded by its own
+        // precondition rather than by which half of an if/else it sits in.
+        // The split version had every rule written twice — once for cells that
+        // compile and once for the rest — and a rule added to one side and not
+        // the other is silent, which is how three separate coverage holes got
+        // in. Facts first, then assertions that name what they need.
+        let clean = outcome.runner.fcs_error_files.is_empty();
         let attr = attribute_name_range(&cell.src);
+        let (named, constructors) = records_at(&outcome.fcs, attr);
+        let oracle_speaks_here = named + constructors > 0;
+        let graded_at_attr = outcome.forward_at_attr.uses_considered > 0;
 
-        // Forward, for every cell: our commits must name what FCS reported,
-        // whether or not the rest of the file type-checked.
+        if !clean {
+            errored.push(&cell.label);
+        }
+
+        // Our commits must name what FCS reported, whether or not the rest of
+        // the file type-checked.
         assert_eq!(
             outcome.forward.divergences,
             Vec::new(),
@@ -2438,63 +2471,66 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
             cell.label
         );
 
-        if !checked_clean {
-            errored.push(&cell.label);
-            // Per cell, not summed: the oracle either spoke at this range or it
-            // did not, and if it did, this cell's own comparison has to have
-            // graded it. A total over cells would let the shapes that still
-            // work vouch for the ones that stopped.
-            let (named, constructors) = records_at(&outcome.fcs, attr);
-            if named + constructors > 0 {
-                assert!(
-                    outcome.forward_at_attr.uses_considered > 0,
-                    "cell {}: the oracle reports {} record(s) at the attribute \
-                     range but the relaxed comparison graded none of them, so \
-                     this cell's forward assertions examined nothing",
-                    cell.label,
-                    named + constructors
-                );
-                erroring_kinds.insert(cell.kind);
-            }
-            continue;
+        // If the oracle spoke at this range, this cell's own comparison has to
+        // have graded it — a total over cells would let the shapes that still
+        // work vouch for the ones that stopped.
+        if oracle_speaks_here {
+            assert!(
+                graded_at_attr,
+                "cell {}: the oracle reports {} record(s) at the attribute \
+                 range but the comparison graded none of them, so this cell's \
+                 assertions examined nothing",
+                cell.label,
+                named + constructors
+            );
         }
 
-        assert_eq!(
-            outcome.runner.reverse_divergences,
-            Vec::new(),
-            "cell {}: reverse divergence",
-            cell.label
-        );
-        // A range the comparator cannot adjudicate is decided on the oracle's
-        // answers alone, so it cannot produce a *wrong* pass — but it silently
-        // drops exactly the per-shape comparison this sweep exists to make, and
-        // a sweep that loses its subject while staying green is the failure
-        // mode the whole file is written against.
-        assert_eq!(
-            outcome.runner.skipped_uses.ambiguous_oracle_range, 0,
-            "cell {}: the attribute range stopped being adjudicable, so this \
-             shape is no longer compared at all",
-            cell.label
-        );
+        if clean {
+            assert_eq!(
+                outcome.runner.reverse_divergences,
+                Vec::new(),
+                "cell {}: reverse divergence",
+                cell.label
+            );
+            // A range the comparator cannot adjudicate is decided on the
+            // oracle's answers alone, so it cannot produce a *wrong* pass — but
+            // it silently drops exactly the per-shape comparison this sweep
+            // exists to make, and a sweep that loses its subject while staying
+            // green is the failure mode the whole file is written against.
+            assert_eq!(
+                outcome.runner.skipped_uses.ambiguous_oracle_range, 0,
+                "cell {}: the attribute range stopped being adjudicable, so \
+                 this shape is no longer compared at all",
+                cell.label
+            );
+            assert_eq!(
+                named, 1,
+                "cell {}: the written attribute name must carry exactly one \
+                 non-constructor record for the site to have an answer",
+                cell.label
+            );
+            assert!(
+                constructors >= 1,
+                "cell {}: no constructor record at the attribute range, so \
+                 this cell no longer exercises the crowding the sweep is \
+                 about — the shape or the oracle changed under it",
+                cell.label
+            );
+            crowded_cells += 1;
+            attribute_commits += outcome.runner.attribute_commits_compared;
+        }
 
-        let (named, constructors) = records_at(&outcome.fcs, attr);
-        assert_eq!(
-            named, 1,
-            "cell {}: the written attribute name must carry exactly one \
-             non-constructor record for the site to have an answer",
-            cell.label
-        );
-        assert!(
-            constructors >= 1,
-            "cell {}: no constructor record at the attribute range, so this \
-             cell no longer exercises the crowding the sweep is about — the \
-             shape or the oracle changed under it",
-            cell.label
-        );
-
-        crowded_cells += 1;
-        attribute_commits += outcome.runner.attribute_commits_compared;
-        clean_kinds.insert(cell.kind);
+        // Coverage is claimed only where the range was actually graded, in
+        // either population: `records_at` reads the raw stream, so a record the
+        // comparator's own eligibility rules skip is visible here while being
+        // compared nowhere.
+        if graded_at_attr {
+            if clean {
+                clean_kinds.insert(cell.kind);
+            } else {
+                erroring_kinds.insert(cell.kind);
+            }
+        }
     }
 
     assert!(
