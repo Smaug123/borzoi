@@ -551,14 +551,17 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// container — a collision declines.
 ///
 /// The real-case pass (first loop) additionally requires the ECMA row to be an
-/// `EntityKind::Union`, so a class or record sharing the key is never selected,
-/// and it declines the **property retention** (dropping every candidate) when
-/// two union rows sit at one key. Both matter because that retention is
-/// destructive: mis-selecting a row there would strip members the row genuinely
-/// publishes. Its case-name half still commits on an ambiguous key, which can
-/// misattach cases between two same-keyed unions — a pre-existing lossy-key
-/// gap shared with the overlays below, closed for all of them at once by the
-/// injective-key work (#145).
+/// `EntityKind::Union`, so a class or record sharing the key is never selected —
+/// which matters because the property retention is destructive: mis-selecting a
+/// row there would strip members the row genuinely publishes.
+///
+/// When two union rows *do* sit at one key, the pass declines **both** halves of
+/// the entry it cannot attribute: no case names and no retained properties. The
+/// pickled lists describe one of those rows and fit the other as readily, and
+/// the key cannot say which, so committing either half to whichever row the
+/// search reached first would put one union's cases and members on another. The
+/// general repair — a key that distinguishes the rows, for every overlay here at
+/// once — is the injective-key work (#145).
 ///
 /// The real-case pass (the first loop) is a host-CCU fact, so it runs even when
 /// the source-name overlay is non-authoritative (foreign pickles present) — like

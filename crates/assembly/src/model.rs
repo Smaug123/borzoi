@@ -837,9 +837,17 @@ pub struct Entity {
     /// properties a union projection drops, and the per-case carrier nested
     /// types exist only for the class-per-case representation.
     ///
-    /// `None` means **unknowable** (no host pickle described this union — a
-    /// foreign CCU, a decode failure): name-resolution consumers folding an
-    /// `open` must treat it as name-unknown residue (its hidden cases can
+    /// `None` means **unknowable**, and arises two ways. Either no host pickle
+    /// described this union (a foreign CCU, a decode failure), or one did but
+    /// could not be attributed: the overlay finds a row by
+    /// `(name-without-arity-suffix, generic parameter count)`, which is not
+    /// injective, and when two union rows share that key the pickled list fits
+    /// each as readily as the other. Committing it to whichever row the search
+    /// reached first would put one union's cases on another — so that is a
+    /// decline, and it lands here.
+    ///
+    /// Either way the obligation is the same: name-resolution consumers folding
+    /// an `open` must treat it as name-unknown residue (its hidden cases can
     /// shadow anything), exactly as they treat
     /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`].
     /// `Some(names)` is the **complete accessible list** — possibly empty: a

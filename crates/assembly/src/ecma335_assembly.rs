@@ -3495,10 +3495,18 @@ impl Ecma335Assembly {
 /// [`apply_union_case_names`](crate::fsharp_pickle_merge::apply_union_case_names)
 /// claims a union.
 ///
-/// This is the other half: a union that pass never claimed still holds its raw
-/// candidates, and they must not reach a consumer. `union_case_names` is exactly
-/// the record of being claimed — it is `Some` on every union the pass matched
-/// and `None` on every one it did not — so a `None` union loses every property.
+/// This is the other half: a union that pass never *vouched for* still holds its
+/// raw candidates, and they must not reach a consumer. `union_case_names` is
+/// exactly the record of having been vouched for — `Some` only where the pass
+/// found one pickle entry it could attribute to one row — so a `None` union
+/// loses every property.
+///
+/// Note the pass reaches more unions than it vouches for: two rows sharing its
+/// (non-injective) key leave both `None`, since the pickled lists fit either.
+/// That is the same decline, arrived at differently, and it wants the same
+/// outcome — so the two agreeing here is the design, not a coincidence to be
+/// relied on. `retain_published_union_properties` strips such a row's members in
+/// the same pass; this makes the result independent of that.
 ///
 /// Unconditional, and outside the pickle block on purpose. A decoded pickle is
 /// not the only way to arrive here: a foreign union in a `--standalone` image,
