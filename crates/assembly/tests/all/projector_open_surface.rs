@@ -19,7 +19,8 @@ use std::path::Path;
 use borzoi_assembly::{AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
 
 use crate::common::{
-    ensure_fs_ext_index_built, ensure_minilib_fs_built, ensure_sig_hidden_union_built,
+    ensure_fs_ext_index_built, ensure_minilib_fs_built, ensure_pre_visible_union_built,
+    ensure_sig_hidden_union_built,
 };
 
 fn load(dll: &Path) -> Vec<Entity> {
@@ -137,6 +138,71 @@ fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
     let teq = entity_named(&entities, "Teq");
     assert_eq!(teq.kind, EntityKind::Union);
     assert_eq!(teq.union_case_names.as_deref(), Some(&[][..]));
+}
+
+/// Every property a union surfaces, in projection order.
+fn union_property_names(entity: &Entity) -> Vec<&str> {
+    entity
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Property(p) => Some(p.name.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_union_surfaces_exactly_the_members_its_pickle_publishes() {
+    // `Verdict = Accepted | Rejected` compiles to three properties — `IsAccepted`,
+    // `IsRejected` and the `Tag` discriminant — carrying identical attributes
+    // (`[CompilerGenerated]`, `[DebuggerNonUserCode]`, `[DebuggerBrowsable]`).
+    // FCS surfaces the two testers and hides `Tag`, so nothing on the rows
+    // themselves separates what to keep from what to drop. The host pickle's
+    // published member list does, and it is what
+    // `retain_published_union_properties` reads.
+    let entities = load(ensure_fs_ext_index_built());
+    let verdict = entity_named(&entities, "Verdict");
+    assert_eq!(
+        union_property_names(verdict),
+        vec!["IsAccepted", "IsRejected"]
+    );
+}
+
+#[test]
+fn a_union_whose_testers_are_unpublished_surfaces_none() {
+    // The soundness direction, and the one a metadata-only rule fails.
+    // `PreVisibleUnion` is compiled under `<LangVersion>8.0</LangVersion>`: fsc
+    // emits public `IsHeads` / `IsTails` property rows attributed exactly as a
+    // current compiler's nameable testers are, but does not publish them, so
+    // `coin.IsHeads` is `FS0039` for a consumer. Deriving the kept set from the
+    // case names — which are present and correct here — surfaces both and hands
+    // sema a member the F# compiler rejects.
+    let entities = load(ensure_pre_visible_union_built());
+    let coin = entity_named(&entities, "Coin");
+    assert_eq!(coin.kind, EntityKind::Union);
+    assert_eq!(
+        coin.union_case_names.as_deref(),
+        Some(&["Heads".to_string(), "Tails".to_string()][..]),
+        "precondition: the cases ARE known, so a case-derived rule would fire"
+    );
+    assert_eq!(union_property_names(coin), Vec::<&str>::new());
+}
+
+#[test]
+fn a_union_naming_no_accessible_case_surfaces_no_tester() {
+    // `Concealed = private | Hidden of int` seals to `Some([])` — knowably zero
+    // ACCESSIBLE cases. fsc emits no `IsHidden` for a private representation, so
+    // no tester is at stake here; `Tag` is what must not survive.
+    //
+    // A union the pickle never claimed at all (no pickle, an undecodable one, a
+    // foreign CCU's union) keeps `union_case_names = None` and loses its
+    // properties to `drop_unvouched_union_properties` instead. No fixture can
+    // produce one: every F# fixture here has an authoritative host pickle.
+    let entities = load(ensure_fs_ext_index_built());
+    let concealed = entity_named(&entities, "Concealed");
+    assert_eq!(concealed.union_case_names.as_deref(), Some(&[][..]));
+    assert_eq!(union_property_names(concealed), Vec::<&str>::new());
 }
 
 #[test]

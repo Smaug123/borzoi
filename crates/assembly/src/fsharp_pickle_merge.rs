@@ -481,6 +481,39 @@ pub(crate) fn apply_extension_member_index(
     Ok(())
 }
 
+/// Keep exactly those of a union's candidate properties the host pickle
+/// **publishes**, dropping the rest.
+///
+/// [`Ecma335Assembly::project_fsharp_members`](crate::Ecma335Assembly) keeps a
+/// union's property rows wholesale because the metadata cannot answer which of
+/// them a consumer may name. fsc emits an `Is<Case>` property per case, plus the
+/// `Tag` discriminant, all carrying the same attributes
+/// (`[CompilerGenerated]`, `[DebuggerNonUserCode]`, `[DebuggerBrowsable]`) — and
+/// it emits the `Is<Case>` rows *whether or not the language version publishes
+/// them*. Under `<LangVersion>8.0</LangVersion>` the rows are byte-identical to
+/// a current one's, yet `x.IsA` is `FS0039`. So no property of the row
+/// distinguishes a member from a hidden helper, and neither does the case list:
+/// the cases exist in both.
+///
+/// `published` is the entity's pickled `tcaug.adhoc` names, which is what FCS
+/// itself reads (`MembersOfFSharpTyconSorted`) — the one place the answer is
+/// recorded. Members are pickled under an accessor's own name, so a property `P`
+/// is vouched for by `get_P` or `set_P`.
+///
+/// Only properties are filtered; a union's methods and fields are settled
+/// elsewhere. Passing an empty `published` drops every property, which is the
+/// honest reading whenever the pickle vouches for nothing.
+fn retain_published_union_properties(entity: &mut Entity, published: &[String]) {
+    entity.members.retain(|m| match m {
+        Member::Property(p) => {
+            let getter = format!("get_{}", p.name);
+            let setter = format!("set_{}", p.name);
+            published.iter().any(|n| *n == getter || *n == setter)
+        }
+        _ => true,
+    });
+}
+
 /// Populate each F# union entity's
 /// [`union_case_names`](crate::Entity::union_case_names) — the case names in
 /// declaration order — straight from the host CCU's signature pickle
@@ -515,9 +548,17 @@ pub(crate) fn apply_extension_member_index(
 /// mangled arity. That projected key is not injective (distinct metadata rows
 /// like `U` and `U`0`, or a measure-erased `U`1`, collapse onto it), so the seal
 /// (second loop) commits ONLY when the key names exactly one ECMA row in the
-/// container — a collision declines. The real-case pass (first loop) does not
-/// seal, so a mismatch there only loses that union's cases (a pre-existing
-/// completeness gap), never misattaches them.
+/// container — a collision declines.
+///
+/// The real-case pass (first loop) additionally requires the ECMA row to be an
+/// `EntityKind::Union`, so a class or record sharing the key is never selected,
+/// and it declines the **property retention** (dropping every candidate) when
+/// two union rows sit at one key. Both matter because that retention is
+/// destructive: mis-selecting a row there would strip members the row genuinely
+/// publishes. Its case-name half still commits on an ambiguous key, which can
+/// misattach cases between two same-keyed unions — a pre-existing lossy-key
+/// gap shared with the overlays below, closed for all of them at once by the
+/// injective-key work (#145).
 ///
 /// The real-case pass (the first loop) is a host-CCU fact, so it runs even when
 /// the source-name overlay is non-authoritative (foreign pickles present) — like
@@ -538,12 +579,20 @@ pub(crate) fn apply_union_case_names(
     // 'T`), and both CLR paths strip to `Foo` — a name-only match hands one
     // union the other's cases (codex round 24).
     #[allow(clippy::type_complexity)]
-    let mut targets: Vec<(Vec<String>, Vec<String>, String, usize, Vec<String>)> = Vec::new();
+    let mut targets: Vec<(
+        Vec<String>,
+        Vec<String>,
+        String,
+        usize,
+        Vec<String>,
+        Vec<String>,
+    )> = Vec::new();
     // A union whose representation is HIDDEN BY A SIGNATURE pickles as `NoRepr`
     // (see the second loop below) — the union-repr match above never reaches it.
     // Collect every `NoRepr` entity's identity so a still-`None` ECMA `Union` at
     // that path can be sealed to a knowably-empty case list.
-    let mut hidden_repr: Vec<(Vec<String>, Vec<String>, String, usize)> = Vec::new();
+    #[allow(clippy::type_complexity)]
+    let mut hidden_repr: Vec<(Vec<String>, Vec<String>, String, usize, Vec<String>)> = Vec::new();
     let mut path = Vec::new();
     walk_entity_tree(
         pickled,
@@ -587,6 +636,19 @@ pub(crate) fn apply_union_case_names(
                             .filter(|c| c.access.is_empty())
                             .map(|c| c.ident.name.clone())
                             .collect(),
+                        // The entity's PUBLISHED members, by the name each is
+                        // pickled under — an accessor's own (`get_IsOne`), not
+                        // its property's. This is what FCS reads to answer
+                        // `x.IsOne` (`MembersOfFSharpTyconSorted`), and it is the
+                        // only place the answer exists: fsc emits the `Is<Case>`
+                        // metadata properties whether or not the language version
+                        // publishes them, identically attributed either way.
+                        entity
+                            .tcaug
+                            .adhoc
+                            .iter()
+                            .map(|(name, _)| name.clone())
+                            .collect(),
                     ));
                 } else if entity.flags & ENTITY_FLAGS_IS_MODULE_OR_NAMESPACE == 0
                     && entity.type_abbrev.is_none()
@@ -610,24 +672,77 @@ pub(crate) fn apply_union_case_names(
                         type_chain.to_vec(),
                         clr_name(entity),
                         entity.typars.len(),
+                        // Hiding the REPRESENTATION does not hide the members: a
+                        // `.fsi` that exposes `type U` opaquely may still publish
+                        // `member IsFoo: bool`, and FCS binds `x.IsFoo` against it.
+                        // So the published list is read here exactly as on the
+                        // case-bearing path — what the seal knows is that zero
+                        // *cases* are accessible, not that zero members are.
+                        entity
+                            .tcaug
+                            .adhoc
+                            .iter()
+                            .map(|(name, _)| name.clone())
+                            .collect(),
                     ));
                 }
             }
             Ok(())
         },
     )?;
-    for (namespace, containers, name, arity, names) in targets {
-        let matches_union = |e: &Entity| e.name == name && e.generic_parameters.len() == arity;
-        let target = if containers.is_empty() {
-            entities
-                .iter_mut()
-                .find(|e| e.namespace == namespace && matches_union(e))
+    for (namespace, containers, name, arity, names, published) in targets {
+        // The ECMA **kind** is part of the key, not merely a property of whatever
+        // the key finds. `(strip_arity(name), generic_parameters.len())` is not
+        // injective, and a collision here is legal F#: `type U() = member _.P = 1`
+        // beside ``[<CompiledName("U`0")>] type Other = A | B`` puts a class at the
+        // pickled union's key. Selecting that class would hand it another type's
+        // cases *and* — since the property retention below is destructive — strip
+        // its own public members.
+        let matches_union = |e: &Entity| {
+            e.kind == EntityKind::Union && e.name == name && e.generic_parameters.len() == arity
+        };
+        let (target, ambiguous) = if containers.is_empty() {
+            let count = entities
+                .iter()
+                .filter(|e| e.namespace == namespace && matches_union(e))
+                .count();
+            (
+                entities
+                    .iter_mut()
+                    .find(|e| e.namespace == namespace && matches_union(e)),
+                count > 1,
+            )
         } else {
-            find_entity_mut(entities, &namespace, &containers)
-                .and_then(|c| c.nested_types.iter_mut().find(|e| matches_union(e)))
+            match find_entity_mut(entities, &namespace, &containers) {
+                Some(container) => {
+                    let count = container
+                        .nested_types
+                        .iter()
+                        .filter(|e| matches_union(e))
+                        .count();
+                    (
+                        container.nested_types.iter_mut().find(|e| matches_union(e)),
+                        count > 1,
+                    )
+                }
+                None => (None, false),
+            }
         };
         if let Some(ecma) = target {
             ecma.union_case_names = Some(names);
+            // Two union rows at one key: the published list belongs to one of
+            // them and this is the other as readily as not, so it vouches for
+            // nothing here. Dropping every candidate is the decline — leaving
+            // them would surface `Tag` and, on a pre-F#9 assembly, testers that
+            // are `FS0039` to name.
+            //
+            // The case names are assigned either way. That half is unchanged and
+            // non-destructive: an ambiguous key could already misattach cases
+            // before this pass touched members, and narrowing it here would
+            // regress the module-open fold's pattern surface for a separate
+            // reason. Whether to seal that too belongs with the injective-key
+            // work (#145), which fixes every lossy-key overlay at once.
+            retain_published_union_properties(ecma, if ambiguous { &[] } else { &published });
         }
     }
     // Signature-hidden unions. `type Teq<'a,'b>` exposed opaquely in a `.fsi`
@@ -670,7 +785,7 @@ pub(crate) fn apply_union_case_names(
     // `[<CompiledName>]` / an undecodable type — never ordinary F#. The proper
     // fix is an injective projection key (retain the exact metadata identity),
     // which #145 closes for every overlay at once.
-    for (namespace, containers, name, arity) in hidden_repr {
+    for (namespace, containers, name, arity, published) in hidden_repr {
         let matches_key = |e: &Entity| e.name == name && e.generic_parameters.len() == arity;
         let is_target = |e: &Entity| {
             matches_key(e) && e.kind == EntityKind::Union && e.union_case_names.is_none()
@@ -686,6 +801,7 @@ pub(crate) fn apply_union_case_names(
                     .find(|e| e.namespace == namespace && is_target(e))
             {
                 ecma.union_case_names = Some(Vec::new());
+                retain_published_union_properties(ecma, &published);
             }
         } else if let Some(container) = find_entity_mut(entities, &namespace, &containers) {
             let count = container
@@ -697,6 +813,7 @@ pub(crate) fn apply_union_case_names(
                 && let Some(ecma) = container.nested_types.iter_mut().find(|e| is_target(e))
             {
                 ecma.union_case_names = Some(Vec::new());
+                retain_published_union_properties(ecma, &published);
             }
         }
     }

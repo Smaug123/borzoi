@@ -433,6 +433,10 @@ impl Ecma335Assembly {
                 }
             }
         }
+        // The union property candidates `project_fsharp_members` kept are sound
+        // only once every one of them is either vouched for by the pickle or
+        // gone; this drops the ones no pickle claimed.
+        drop_unvouched_union_properties(&mut out);
         Ok((
             out,
             AssemblyProjectionSkips {
@@ -3207,8 +3211,23 @@ impl Ecma335Assembly {
                     }
                     return Ok(Some(Member::Method(projected)));
                 }
-                // All other F#-kind properties (Union, or non-`Field` on
-                // Record/Exception) are dropped: FCS surfaces none.
+                // A union's properties are kept as *candidates*, to be settled
+                // against the host pickle's published member list once that is
+                // readable (`retain_published_union_properties`, then
+                // `drop_unvouched_union_properties` for whatever it never
+                // reached). Nothing here can settle them: fsc emits the
+                // `Is<Case>` testers, the hidden `Tag`, and the testers of a
+                // pre-F#9 assembly that are `FS0039` to name, all under the same
+                // attributes.
+                if matches!(kind, EntityKind::Union) {
+                    return Ok(Some(Member::Property(self.project_property(
+                        td,
+                        p,
+                        type_context,
+                    )?)));
+                }
+                // A non-`Field` property on a Record or Exception is dropped:
+                // FCS surfaces none.
                 Ok(None)
             })();
             out.push_or_skip_opt(&p.name, projected);
@@ -3460,6 +3479,39 @@ impl Ecma335Assembly {
             nullability: Nullability::Oblivious,
             custom_attrs: Vec::new(),
         })
+    }
+}
+
+/// Drop the union property candidates no pickle vouched for.
+///
+/// [`Ecma335Assembly::project_fsharp_members`] keeps a union's property rows
+/// wholesale, because nothing in the metadata says which of them a consumer may
+/// name: the `Is<Case>` testers, the `Tag` discriminant fsc hides, and the
+/// testers of a `<LangVersion>8.0</LangVersion>` assembly — which exist as rows
+/// but are `FS0039` to name — are all attributed identically. Only the host
+/// pickle's published member list answers it, and
+/// [`retain_published_union_properties`](crate::fsharp_pickle_merge)
+/// applies that answer wherever
+/// [`apply_union_case_names`](crate::fsharp_pickle_merge::apply_union_case_names)
+/// claims a union.
+///
+/// This is the other half: a union that pass never claimed still holds its raw
+/// candidates, and they must not reach a consumer. `union_case_names` is exactly
+/// the record of being claimed — it is `Some` on every union the pass matched
+/// and `None` on every one it did not — so a `None` union loses every property.
+///
+/// Unconditional, and outside the pickle block on purpose. A decoded pickle is
+/// not the only way to arrive here: a foreign union in a `--standalone` image,
+/// an undecodable signature resource, or an F#-kinded type in an assembly with
+/// no signature data at all each leave the candidates in place with nothing to
+/// vouch for them. Each is a decline rather than a claim — the union projects
+/// no properties, exactly as this crate projected it before any were surfaced.
+fn drop_unvouched_union_properties(entities: &mut [Entity]) {
+    for entity in entities {
+        if entity.kind == EntityKind::Union && entity.union_case_names.is_none() {
+            entity.members.retain(|m| !matches!(m, Member::Property(_)));
+        }
+        drop_unvouched_union_properties(&mut entity.nested_types);
     }
 }
 

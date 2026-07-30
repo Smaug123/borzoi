@@ -459,6 +459,25 @@ pub fn ensure_sig_hidden_union_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the PreVisibleUnion F# fixture once and return the path to the
+/// produced `.dll`. Same build-once pattern as [`ensure_minilib_built`].
+///
+/// PreVisibleUnion is a single union `Coin` compiled under
+/// `<LangVersion>8.0</LangVersion>`, where a union's `Is<Case>` properties are
+/// emitted into metadata but **not published as members** — naming one
+/// cross-assembly is `FS0039`. The emitted rows carry exactly the attributes a
+/// current compiler gives the nameable testers, so it pins that the projection
+/// reads the host pickle's published member list rather than the rows: a
+/// metadata-only rule would surface `Coin.IsHeads` and hand a consumer a member
+/// the F# compiler rejects.
+pub fn ensure_pre_visible_union_built() -> &'static Path {
+    static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();
+    BUILT
+        .get_or_init(|| build_fixture("PreVisibleUnion", "PreVisibleUnion.dll"))
+        .1
+        .as_path()
+}
+
 /// Build the MeasureAttrArgs F# fixture once and return the path to the
 /// produced `.dll`. Same build-once pattern as [`ensure_minilib_built`].
 ///
