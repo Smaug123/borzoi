@@ -2516,6 +2516,20 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
                  about — the shape or the oracle changed under it",
                 cell.label
             );
+            // Per clean cell, not summed. A shape whose attribute answer
+            // regresses to a deferral produces no *divergence* — the comparator
+            // records a deferral, and `graded_at_attr` stays true because FCS
+            // reported a use — so a total is held up by the shapes that still
+            // resolve. Removing the resolver's fallback to the suffixed
+            // candidate takes the total from eleven to four and every
+            // divergence assertion stays green; this is what notices.
+            assert!(
+                outcome.runner.attribute_commits_compared >= 1,
+                "cell {}: the attribute answer stopped being committed, so this \
+                 shape is deferred rather than resolved and nothing here \
+                 compares it",
+                cell.label
+            );
             crowded_cells += 1;
             attribute_commits += outcome.runner.attribute_commits_compared;
         }
@@ -2533,11 +2547,6 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
         }
     }
 
-    assert!(
-        attribute_commits > 0,
-        "no cell put an attribute answer to the oracle: the sweep would pass \
-         however wrong every attribute resolution became"
-    );
     // Every declaration kind the matrix generates has to be graded somewhere.
     // Not per population: a language version that starts or stops compiling a
     // kind moves it between the two legitimately, and a floor keyed to one
