@@ -867,3 +867,37 @@ fn later_application_does_not_monomorphise_an_earlier_binder() {
     );
     assert_binder_sound(annotated);
 }
+
+/// A generic annotation still defers, at every head. [`Ty::Named`] can *carry*
+/// arguments now, but nothing in `annotation_ty` builds one: the bridge from a
+/// written `Type::App` to an applied `Ty` needs a generated sweep against this
+/// oracle before it can be trusted, because the safe subset turned out to be
+/// far narrower than it looks. Four separate shapes were measured diverging —
+/// a source-renamed head (`Result`, compiled `FSharpResult`), a tycon FCS
+/// canonicalises structurally (`System.Tuple<int, string>` renders
+/// `System.Int32 * System.String`), a tuple or function anywhere in an
+/// argument's tree, and an unsatisfied generic constraint
+/// (`System.Nullable<string>`, which FCS reports as `System.Object`).
+///
+/// This pins the silence so the bridge lands as a visible, reviewed change
+/// rather than by accident.
+#[test]
+fn a_generic_annotation_still_defers() {
+    for (source, name) in [
+        ("module M\nlet x : int option = None\n", "x"),
+        ("module M\nlet l : int list = []\n", "l"),
+        ("module M\nlet r : Result<int, string> = Ok 1\n", "r"),
+        (
+            "module M\nlet k : System.Collections.Generic.KeyValuePair<int, string> = System.Collections.Generic.KeyValuePair<int, string>()\n",
+            "k",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name),
+            None,
+            "binder `{name}` in {source:?}"
+        );
+        // Whatever else the snippet types, nothing it *does* emit may disagree.
+        assert_binder_sound(source);
+    }
+}

@@ -44,8 +44,10 @@ pub(crate) fn type_ref_to_ty(ty: &TypeRef) -> Option<Ty> {
         // segment that introduces no generics (`segment_arities == [0]`, i.e. the
         // name has no `/` and declares arity 0). A generic instantiation (non-empty
         // `type_args`), an *open* generic (non-zero arity with empty args), or a
-        // nested type (multiple segments) all defer — `Ty::Named` carries no
-        // generic-argument list yet.
+        // nested type (multiple segments) all defer. [`Ty::Named`] can carry
+        // arguments, but this bridge does not yet build them: an instantiation's
+        // `type_args` are `TypeRef`s needing the same conversion recursively, and
+        // an *open* generic has no arguments to convert at all.
         TypeRef::Named {
             namespace,
             name,
@@ -65,7 +67,7 @@ pub(crate) fn type_ref_to_ty(ty: &TypeRef) -> Option<Ty> {
             }
             let mut path: Vec<String> = namespace.clone();
             path.push(name.clone());
-            Some(Ty::Named(path))
+            Some(Ty::named_path(path))
         }
         // A plain vector (`T[]`): rank 1, no explicit sizes or lower bounds, and a
         // convertible element. A multidimensional (`rank != 1`) or bounded
@@ -162,7 +164,7 @@ mod tests {
         // No namespace → a bare name.
         assert_eq!(
             type_ref_to_ty(&named(&[], "Thing")),
-            Some(Ty::Named(vec!["Thing".to_string()]))
+            Some(Ty::named_path(vec!["Thing".to_string()]))
         );
     }
 

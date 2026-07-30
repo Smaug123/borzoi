@@ -1413,7 +1413,7 @@ impl<'a> Gen<'a> {
         if self.env.entity_full_name(handle) != path.join(".") {
             return None;
         }
-        Some(Ty::Named(path))
+        Some(Ty::named_path(path))
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -1991,7 +1991,7 @@ impl<'a> Gen<'a> {
             // The static receiver's type is the rooting entity itself, ground at
             // generation time.
             let recv = self.table.fresh();
-            self.eq(Ty::Var(recv), Ty::Named(path));
+            self.eq(Ty::Var(recv), Ty::named_path(path));
             let result = self.table.fresh();
             self.has_member(
                 recv,
@@ -2418,7 +2418,7 @@ impl<'a> Gen<'a> {
     fn no_subsumption_ty(&mut self, ty: &Ty) -> bool {
         match ty {
             // Only a sealed BCL primitive; `obj` and arbitrary named types are not.
-            Ty::Named(path) => is_sealed_primitive(path),
+            Ty::Named { path, args } => args.is_empty() && is_sealed_primitive(path),
             Ty::Tuple(elems) => elems.iter().all(|e| self.no_subsumption_ty(e)),
             Ty::Var(v) => self.is_scheme_inst_root(*v),
             // Arrays, functions, and quantified `Param`s (never bound into the
@@ -2702,7 +2702,17 @@ impl<'a> Gen<'a> {
                     // grounds the argument re-triggers this one. Termination holds —
                     // a retry sets no `woke`, and the number of progress passes is
                     // bounded by the (finite) suspension count.
-                    Ty::Named(path) => {
+                    // `wake_member` looks the head up at arity 0, so a GENERIC
+                    // receiver must not reach it: with both `N.C` and `N.C<'T>`
+                    // in the env it would resolve the nullary one and commit a
+                    // member of a type the receiver is not. Making the lookup
+                    // arity-aware is what lets these wake; until then they stay
+                    // parked, which is the silence they had before `Ty` carried
+                    // arguments at all.
+                    Ty::Named { ref args, .. } if !args.is_empty() => {
+                        still_pending.push(m);
+                    }
+                    Ty::Named { path, .. } => {
                         if self.wake_member(&path, &m.name, m.result, m.use_range, &m.kind) {
                             woke = true;
                         } else {
@@ -3180,7 +3190,14 @@ impl<'a> Gen<'a> {
                 self.scheme_inst_vars.insert(v);
                 Ty::Var(v)
             }
-            Ty::Named(_) | Ty::Var(_) => ty.clone(),
+            Ty::Var(_) => ty.clone(),
+            Ty::Named { path, args } => Ty::Named {
+                path: path.clone(),
+                args: args
+                    .iter()
+                    .map(|a| self.instantiate_rec(a, fresh))
+                    .collect(),
+            },
             Ty::Array { elem, rank } => Ty::Array {
                 elem: Box::new(self.instantiate_rec(elem, fresh)),
                 rank: *rank,
@@ -3291,13 +3308,11 @@ fn trivial_typed_head(paren: &ParenPat) -> Option<(NamedPat, Type)> {
     Some((named, ty))
 }
 
-/// Whether `ty` contains a [`Ty::Param`] anywhere. A resolved `fn_ty` must not
-/// before generalisation introduces them (the `debug_assert` in
-/// [`Gen::generalise`]).
 fn contains_param(ty: &Ty) -> bool {
     match ty {
         Ty::Param(_) => true,
-        Ty::Named(_) | Ty::Var(_) => false,
+        Ty::Var(_) => false,
+        Ty::Named { args, .. } => args.iter().any(contains_param),
         Ty::Array { elem, .. } => contains_param(elem),
         Ty::Tuple(elems) => elems.iter().any(contains_param),
         Ty::Fun { arg, ret } => contains_param(arg) || contains_param(ret),
@@ -3313,7 +3328,8 @@ fn collect_var_roots(ty: &Ty, out: &mut HashSet<TyVid>) {
         Ty::Var(v) => {
             out.insert(*v);
         }
-        Ty::Named(_) | Ty::Param(_) => {}
+        Ty::Param(_) => {}
+        Ty::Named { args, .. } => args.iter().for_each(|a| collect_var_roots(a, out)),
         Ty::Array { elem, .. } => collect_var_roots(elem, out),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_var_roots(e, out)),
         Ty::Fun { arg, ret } => {
@@ -3335,7 +3351,8 @@ fn collect_open_order(ty: &Ty, order: &mut Vec<TyVid>) {
                 order.push(*v);
             }
         }
-        Ty::Named(_) | Ty::Param(_) => {}
+        Ty::Param(_) => {}
+        Ty::Named { args, .. } => args.iter().for_each(|a| collect_open_order(a, order)),
         Ty::Array { elem, .. } => collect_open_order(elem, order),
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_open_order(e, order)),
         Ty::Fun { arg, ret } => {
@@ -3355,7 +3372,11 @@ fn subst_params(ty: &Ty, assign: &HashMap<TyVid, u32>) -> Ty {
             Some(&i) => Ty::Param(i),
             None => Ty::Var(*v),
         },
-        Ty::Named(_) | Ty::Param(_) => ty.clone(),
+        Ty::Param(_) => ty.clone(),
+        Ty::Named { path, args } => Ty::Named {
+            path: path.clone(),
+            args: args.iter().map(|a| subst_params(a, assign)).collect(),
+        },
         Ty::Array { elem, rank } => Ty::Array {
             elem: Box::new(subst_params(elem, assign)),
             rank: *rank,
@@ -4816,7 +4837,7 @@ mod tests {
             let ty = super::literal_ty(&cst);
             match ty {
                 // Every named literal type must be a sealed primitive.
-                Some(super::Ty::Named(ref path)) => assert!(
+                Some(super::Ty::Named { ref path, .. }) => assert!(
                     super::is_sealed_primitive(path),
                     "{lit}: literal_ty gave named {path:?} but is_sealed_primitive says no"
                 ),

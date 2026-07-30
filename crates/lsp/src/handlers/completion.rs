@@ -278,11 +278,16 @@ fn receiver_type(receiver: &Receiver, file: &ResolvedFile, inferred: &InferredFi
 /// from the env. Duplicates (overloaded method names) are already deduplicated by
 /// [`AssemblyEnv::public_instance_member_names`].
 fn members_of<'e>(env: &'e AssemblyEnv, ty: &Ty) -> Option<Vec<&'e str>> {
-    let Ty::Named(path) = ty else {
+    let Ty::Named { path, args } = ty else {
         return None;
     };
-    let (type_name, namespace) = path.split_last()?;
     // Arity 0 — a non-generic receiver, exactly Stage 3.3a's `HasMember` lookup.
+    // A generic application's members are instantiation-dependent and the lookup
+    // is not, so it offers nothing rather than a wrongly-typed member list.
+    if !args.is_empty() {
+        return None;
+    }
+    let (type_name, namespace) = path.split_last()?;
     let handle = env.lookup_type(namespace, type_name, 0)?;
     Some(env.public_instance_member_names(handle))
 }

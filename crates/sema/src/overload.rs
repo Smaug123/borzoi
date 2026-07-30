@@ -205,9 +205,15 @@ impl ClosedTy {
     /// or `None` if it is outside the set.
     fn of_ty(ty: &Ty) -> Option<ClosedTy> {
         match ty {
-            Ty::Named(path) => sealed_canon_path(path).map(ClosedTy::Prim),
+            // A generic application is never a sealed primitive, so it falls
+            // out of the closed set and declines.
+            Ty::Named { path, args } if args.is_empty() => {
+                sealed_canon_path(path).map(ClosedTy::Prim)
+            }
             Ty::Array { elem, rank: 1 } => match elem.as_ref() {
-                Ty::Named(path) => sealed_canon_path(path).map(ClosedTy::Vector),
+                Ty::Named { path, args } if args.is_empty() => {
+                    sealed_canon_path(path).map(ClosedTy::Vector)
+                }
                 _ => None,
             },
             _ => None,
@@ -553,7 +559,12 @@ impl AssemblyEnv {
     /// into its element.
     fn ty_named_unprovable(&self, a: &Ty) -> bool {
         match a {
-            Ty::Named(path) => {
+            Ty::Named { path, args } => {
+                // A generic ARGUMENT is a named type too, and just as able to be
+                // unprovable — so it is asked before the head's own shortcut.
+                if args.iter().any(|a| self.ty_named_unprovable(a)) {
+                    return true;
+                }
                 if sealed_canon_path(path).is_some()
                     || path.iter().map(String::as_str).eq(["System", "Object"])
                 {
@@ -579,9 +590,15 @@ impl AssemblyEnv {
     /// array/tuple/function argument, or a `p` that cannot be resolved to an
     /// entity (generic, nested, absent), declines (`false`, hence a deferral).
     fn is_subtype(&self, a: &Ty, p: &TypeRef, declaring: &str) -> bool {
-        let Ty::Named(path) = a else {
+        let Ty::Named { path, args } = a else {
             return false;
         };
+        // A generic application's base/interface closure is instantiation-
+        // dependent and `super_types` is not; decline rather than compare the
+        // uninstantiated closure.
+        if !args.is_empty() {
+            return false;
+        }
         let Some(a_handle) = self.lookup_path(path) else {
             return false;
         };
@@ -666,7 +683,7 @@ impl AssemblyEnv {
 /// argument) is *not* affirmed here — conservative, hence a deferral.
 fn ty_equiv(a: &Ty, p: &TypeRef) -> bool {
     match a {
-        Ty::Named(path) => named_matches(path, p),
+        Ty::Named { path, args } => args.is_empty() && named_matches(path, p),
         Ty::Array { elem, rank } => matches!(
             p,
             TypeRef::Array { element, rank: r2, sizes, lower_bounds }
