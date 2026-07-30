@@ -2384,6 +2384,23 @@ fn records_at(fcs: &[FileUses], range: (usize, usize)) -> (usize, usize) {
 /// listed here — a hand-kept legality table would be one more thing to get
 /// wrong, and it would go stale the moment a language version changed which
 /// shapes compile.
+///
+/// **No coverage floor is an aggregate.** A count summed over cells and checked
+/// after the loop is held up by whichever cells still work, so a whole axis can
+/// go dark behind it — the same way a whole-file count is held up by a
+/// declaration body. Both are the one mistake, at different widths, so the
+/// floors here are stated at the only two widths that cannot hide a subset:
+///
+/// - **per cell**: if the oracle speaks at a cell's attribute range, that cell's
+///   comparison must have graded it. Whether the oracle speaks is read from the
+///   oracle, per cell, so the assertion is skipped only where there is provably
+///   nothing to assert.
+/// - **per declaration kind**: every kind the matrix generates must be graded
+///   *somewhere*, in whichever population it lands in. That survives a language
+///   version moving a kind between the two — which is a legitimate change, and
+///   would make a floor keyed to one population fail for no reason — while
+///   still failing loudly if a kind stops being graded at all. The list comes
+///   from the generated cells, so it cannot fall behind the matrix.
 #[test]
 #[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
 fn generated_attribute_shapes_agree_with_the_project_use_stream() {
@@ -2391,9 +2408,14 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
     eprintln!("attribute uses-project sweep: {} cells", cells.len());
 
     let mut attribute_commits = 0usize;
-    let mut forward_graded_uses = 0usize;
     let mut crowded_cells = 0usize;
-    let mut graded_kinds: BTreeSet<&str> = BTreeSet::new();
+    // Kinds graded as a compiling shape, and kinds graded only through the
+    // relaxed comparison. Kept apart so the report says which population a kind
+    // is covered by, and unioned for the floor so a kind moving between them is
+    // not a failure.
+    let mut clean_kinds: BTreeSet<&str> = BTreeSet::new();
+    let mut erroring_kinds: BTreeSet<&str> = BTreeSet::new();
+    let all_kinds: BTreeSet<&str> = cells.iter().map(|c| c.kind).collect();
     let mut errored: Vec<&str> = Vec::new();
 
     for cell in &cells {
@@ -2417,8 +2439,23 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
         );
 
         if !checked_clean {
-            forward_graded_uses += outcome.forward_at_attr.uses_considered;
             errored.push(&cell.label);
+            // Per cell, not summed: the oracle either spoke at this range or it
+            // did not, and if it did, this cell's own comparison has to have
+            // graded it. A total over cells would let the shapes that still
+            // work vouch for the ones that stopped.
+            let (named, constructors) = records_at(&outcome.fcs, attr);
+            if named + constructors > 0 {
+                assert!(
+                    outcome.forward_at_attr.uses_considered > 0,
+                    "cell {}: the oracle reports {} record(s) at the attribute \
+                     range but the relaxed comparison graded none of them, so \
+                     this cell's forward assertions examined nothing",
+                    cell.label,
+                    named + constructors
+                );
+                erroring_kinds.insert(cell.kind);
+            }
             continue;
         }
 
@@ -2457,7 +2494,7 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
 
         crowded_cells += 1;
         attribute_commits += outcome.runner.attribute_commits_compared;
-        graded_kinds.insert(cell.kind);
+        clean_kinds.insert(cell.kind);
     }
 
     assert!(
@@ -2465,37 +2502,39 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
         "no cell put an attribute answer to the oracle: the sweep would pass \
          however wrong every attribute resolution became"
     );
-    // The erroring half asserts two things per cell, and both are vacuous if
-    // the relaxed comparison grades nothing at the attribute range — which is
-    // precisely the state the unrelaxed one was in, asserting three things
-    // about a file it had already dropped. Counted at that range alone, so a
-    // declaration body's own uses cannot hold the floor up on the sweep's
-    // behalf.
-    assert!(
-        forward_graded_uses > 0,
-        "no erroring cell had its attribute range graded, so their forward \
-         assertions claim something about a comparison that examined every \
-         range but the one in question"
-    );
-    // The three shapes whose ranges are crowded *differently* — a single
-    // constructor, an overload set, and an abbreviation whose two records name
-    // different declarations. A language version that stopped compiling one of
-    // them would otherwise quietly shrink the sweep to the shapes that still
-    // work, which is how coverage decays without a red test.
+    // Every declaration kind the matrix generates has to be graded somewhere.
+    // Not per population: a language version that starts or stops compiling a
+    // kind moves it between the two legitimately, and a floor keyed to one
+    // would fail for a change that lost no coverage at all. What it will not
+    // survive is a kind that stops being graded in *either*.
+    for kind in &all_kinds {
+        assert!(
+            clean_kinds.contains(kind) || erroring_kinds.contains(kind),
+            "no {kind} cell was graded in either population, so the sweep no \
+             longer covers that shape; graded clean {clean_kinds:?}, graded \
+             through the relaxed comparison {erroring_kinds:?}, and these cells \
+             errored: {errored:?}"
+        );
+    }
+    // The three shapes whose attribute ranges are crowded *differently* — a
+    // single constructor, an overload set, and an abbreviation whose two
+    // records name different declarations — have to be graded as compiling
+    // shapes specifically. That is the subject of the sweep, and the relaxed
+    // comparison is a weaker check than the one they exist to get.
     for kind in ["class", "multi-ctor", "abbrev"] {
         assert!(
-            graded_kinds.contains(kind),
-            "no {kind} cell was graded, so the sweep no longer covers that \
-             shape; graded kinds were {graded_kinds:?} and these cells errored: \
-             {errored:?}"
+            clean_kinds.contains(kind),
+            "no {kind} cell was graded as a clean check, so the crowded-range \
+             comparison it exists for is no longer made; graded clean \
+             {clean_kinds:?} and these cells errored: {errored:?}"
         );
     }
 
     eprintln!(
         "attribute uses-project sweep: {} cells checked clean ({crowded_cells} with a \
-         crowded attribute range), {} graded forward-only over \
-         {forward_graded_uses} uses, {attribute_commits} attribute commits \
-         compared, kinds graded {graded_kinds:?}",
+         crowded attribute range), {} graded through the relaxed comparison, \
+         {attribute_commits} attribute commits compared; kinds graded clean \
+         {clean_kinds:?}, kinds graded only relaxed {erroring_kinds:?}",
         cells.len() - errored.len(),
         errored.len(),
     );
