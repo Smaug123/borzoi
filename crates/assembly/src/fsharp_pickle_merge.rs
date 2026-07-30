@@ -729,19 +729,28 @@ pub(crate) fn apply_union_case_names(
             }
         };
         if let Some(ecma) = target {
-            ecma.union_case_names = Some(names);
-            // Two union rows at one key: the published list belongs to one of
-            // them and this is the other as readily as not, so it vouches for
-            // nothing here. Dropping every candidate is the decline — leaving
-            // them would surface `Tag` and, on a pre-F#9 assembly, testers that
-            // are `FS0039` to name.
+            // Two union rows at one key: this pickle entry describes one of them
+            // and fits the other as readily, and the key cannot say which. So
+            // neither half of it may be applied to the row the search happened
+            // to reach first.
             //
-            // The case names are assigned either way. That half is unchanged and
-            // non-destructive: an ambiguous key could already misattach cases
-            // before this pass touched members, and narrowing it here would
-            // regress the module-open fold's pattern surface for a separate
-            // reason. Whether to seal that too belongs with the injective-key
-            // work (#145), which fixes every lossy-key overlay at once.
+            // Both declines are silence rather than a different answer, because
+            // `None` is already what "no pickle described this union" means to
+            // every consumer: `AssemblyEnv::authoritative_union_case` documents a
+            // `None` case list as proving "neither presence nor absence", and
+            // `open_fold_surface` records unknown residue for it instead of
+            // claiming the union contributes no bare names. Committing instead
+            // would put another type's cases behind
+            // `authoritative_union_case` and into the bare-name surface an
+            // `open` imports — a wrong go-to-definition target with a source
+            // location attached.
+            //
+            // Only a `[<CompiledName>]` fabricating a backtick-arity name can
+            // reach this, since F# forbids two types of one name and arity in a
+            // namespace; the general repair is the injective key (#145).
+            if !ambiguous {
+                ecma.union_case_names = Some(names);
+            }
             retain_published_union_properties(ecma, if ambiguous { &[] } else { &published });
         }
     }
