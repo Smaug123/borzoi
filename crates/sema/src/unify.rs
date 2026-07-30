@@ -136,8 +136,13 @@ impl InferTable {
                 arg: Box::new(self.resolve(&arg)),
                 ret: Box::new(self.resolve(&ret)),
             },
-            // `Named` / `Param` (ground heads) or an unbound `Var` — nothing more
-            // to do.
+            // An application's ARGUMENTS are types and can hold solved
+            // variables; only its head is a leaf.
+            Ty::Named { path, args } => Ty::Named {
+                path,
+                args: args.iter().map(|a| self.resolve(a)).collect(),
+            },
+            // `Param` or an unbound `Var` — nothing more to do.
             resolved => resolved,
         }
     }
@@ -150,7 +155,11 @@ impl InferTable {
             Ty::Var(v2) => self.table.unioned(v, v2),
             // A `Param` is a rigid constant, so — like a `Named` — it cannot
             // contain a variable's equivalence class.
-            Ty::Named(_) | Ty::Param(_) => false,
+            // A `Param` is a rigid constant, so it cannot contain a variable's
+            // equivalence class. A `Named`'s own path cannot either, but its
+            // generic ARGUMENTS are types and can.
+            Ty::Param(_) => false,
+            Ty::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
             Ty::Array { elem, .. } => self.occurs(v, &elem),
             Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
             Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
@@ -233,12 +242,17 @@ impl InferTable {
                     .expect("binding an unbound variable is infallible");
                 Ok(())
             }
-            (Ty::Named(pa), Ty::Named(pb)) => {
-                if pa == pb {
-                    Ok(())
-                } else {
-                    Err(UnifyError::Mismatch)
+            // Two applications are equal when their heads are and their
+            // arguments unify pairwise. A differing arity is a mismatch, not a
+            // partial match: `Dictionary<int>` is not a `Dictionary<int, string>`.
+            (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab }) => {
+                if pa != pb || aa.len() != ab.len() {
+                    return Err(UnifyError::Mismatch);
                 }
+                for (x, y) in aa.iter().zip(ab.iter()) {
+                    self.unify(x, y)?;
+                }
+                Ok(())
             }
             (Ty::Array { elem: ea, rank: ra }, Ty::Array { elem: eb, rank: rb }) => {
                 if ra != rb {
@@ -334,6 +348,10 @@ mod tests {
                     arg: Box::new(self.resolve(&arg)),
                     ret: Box::new(self.resolve(&ret)),
                 },
+                Ty::Named { path, args } => Ty::Named {
+                    path,
+                    args: args.iter().map(|a| self.resolve(a)).collect(),
+                },
                 resolved => resolved,
             }
         }
@@ -341,7 +359,8 @@ mod tests {
         fn occurs(&self, v: u32, ty: &Ty) -> bool {
             match self.walk(ty) {
                 Ty::Var(v2) => v2.index() == v,
-                Ty::Named(_) | Ty::Param(_) => false,
+                Ty::Param(_) => false,
+                Ty::Named { args, .. } => args.iter().any(|a| self.occurs(v, a)),
                 Ty::Array { elem, .. } => self.occurs(v, &elem),
                 Ty::Tuple(elems) => elems.iter().any(|e| self.occurs(v, e)),
                 Ty::Fun { arg, ret } => self.occurs(v, &arg) || self.occurs(v, &ret),
@@ -360,12 +379,14 @@ mod tests {
                     self.map.insert(x.index(), term);
                     Ok(())
                 }
-                (Ty::Named(pa), Ty::Named(pb)) => {
-                    if pa == pb {
-                        Ok(())
-                    } else {
-                        Err(UnifyError::Mismatch)
+                (Ty::Named { path: pa, args: aa }, Ty::Named { path: pb, args: ab }) => {
+                    if pa != pb || aa.len() != ab.len() {
+                        return Err(UnifyError::Mismatch);
                     }
+                    for (x, y) in aa.iter().zip(ab.iter()) {
+                        self.unify(x, y)?;
+                    }
+                    Ok(())
                 }
                 (Ty::Array { elem: ea, rank: ra }, Ty::Array { elem: eb, rank: rb }) => {
                     if ra == rb {
@@ -428,7 +449,10 @@ mod tests {
             // A `Param` is a rigid constant, not a variable — it is not renamed
             // by first appearance (only free `Var`s are), so it passes through
             // like a `Named`.
-            Ty::Named(p) => Ty::Named(p.clone()),
+            Ty::Named { path, args } => Ty::Named {
+                path: path.clone(),
+                args: args.iter().map(|a| canon_one(a, rename, next)).collect(),
+            },
             Ty::Param(i) => Ty::Param(*i),
             Ty::Array { elem, rank } => Ty::Array {
                 elem: Box::new(canon_one(elem, rename, next)),
@@ -461,9 +485,14 @@ mod tests {
             ])
             .prop_map(Ty::named),
         ];
-        // Nested arrays / tuples / functions around the leaves; bounded depth
-        // keeps shrinking quick. Exercises the structural `Array` / `Tuple` /
-        // `Fun` unify arms.
+        // Nested arrays / tuples / functions / generic applications around the
+        // leaves; bounded depth keeps shrinking quick. Exercises the structural
+        // `Array` / `Tuple` / `Fun` / applied-`Named` unify arms.
+        //
+        // The applied `Named` arm is what makes a variable reachable *inside* a
+        // named type. Without it every `Ty::Named` the generator produced was a
+        // leaf, so any operation that treated `Named` as a leaf — the occurs
+        // check, either resolver — agreed with the reference vacuously.
         leaf.prop_recursive(3, 24, 3, |inner| {
             prop_oneof![
                 (inner.clone(), 1u32..3).prop_map(|(elem, rank)| Ty::Array {
@@ -471,12 +500,61 @@ mod tests {
                     rank,
                 }),
                 prop::collection::vec(inner.clone(), 2..4).prop_map(Ty::Tuple),
-                (inner.clone(), inner).prop_map(|(arg, ret)| Ty::Fun {
+                (inner.clone(), inner.clone()).prop_map(|(arg, ret)| Ty::Fun {
                     arg: Box::new(arg),
                     ret: Box::new(ret),
                 }),
+                (
+                    prop::sample::select(vec!["G.One", "G.Two"]),
+                    prop::collection::vec(inner, 1..3),
+                )
+                    .prop_map(|(head, args)| Ty::Named {
+                        path: head.split('.').map(str::to_owned).collect(),
+                        args,
+                    }),
             ]
         })
+    }
+
+    /// A variable bound inside a named type's ARGUMENTS must be substituted by
+    /// `resolve`. The direct statement of what the generated property covers
+    /// only by chance — `N<'a> = N<int>` binds `'a`, so resolving `N<'a>` must
+    /// give `N<int>` and not the stale `N<'a>`.
+    #[test]
+    fn resolve_substitutes_inside_a_named_types_arguments() {
+        let mut table = InferTable::new();
+        let v = table.fresh();
+        let applied = |arg: Ty| Ty::Named {
+            path: vec!["G".to_string(), "One".to_string()],
+            args: vec![arg],
+        };
+        table
+            .unify(&applied(Ty::Var(v)), &applied(Ty::named("System.Int32")))
+            .expect("same head and arity unify");
+        assert_eq!(
+            table.resolve(&applied(Ty::Var(v))),
+            applied(Ty::named("System.Int32")),
+            "the argument variable was solved, so it must not survive resolution"
+        );
+        assert!(
+            table.resolve(&applied(Ty::Var(v))).is_ground(),
+            "a fully-solved application is ground"
+        );
+    }
+
+    /// Every variable still standing in a resolved type, in traversal order.
+    fn free_vars(ty: &Ty, out: &mut Vec<TyVid>) {
+        match ty {
+            Ty::Var(v) => out.push(*v),
+            Ty::Named { args, .. } => args.iter().for_each(|a| free_vars(a, out)),
+            Ty::Array { elem, .. } => free_vars(elem, out),
+            Ty::Tuple(elems) => elems.iter().for_each(|e| free_vars(e, out)),
+            Ty::Fun { arg, ret } => {
+                free_vars(arg, out);
+                free_vars(ret, out);
+            }
+            Ty::Param(_) => {}
+        }
     }
 
     fn constraint_list() -> impl Strategy<Value = Vec<(Ty, Ty)>> {
@@ -494,6 +572,37 @@ mod tests {
     }
 
     proptest! {
+        /// **Resolution is complete**: no variable surviving a resolved type is
+        /// one the table has already solved. Stated absolutely rather than
+        /// against the reference MGU on purpose — the two resolvers are
+        /// independent implementations of the same recursion, so a shape either
+        /// one treats as a leaf is a shape they agree about vacuously, and
+        /// `matches_reference_mgu` cannot see it. (That is exactly what happened
+        /// when `Ty::Named` gained arguments: both resolvers stopped at the head
+        /// and the differential stayed green.)
+        #[test]
+        fn resolution_leaves_no_solved_variable(constraints in constraint_list()) {
+            let mut table = pooled_table();
+            for (a, b) in &constraints {
+                if table.unify(a, b).is_err() {
+                    break;
+                }
+                for t in [a, b] {
+                    let resolved = table.resolve(t);
+                    let mut vars = Vec::new();
+                    free_vars(&resolved, &mut vars);
+                    for v in vars {
+                        let again = table.resolve(&Ty::Var(v));
+                        prop_assert_eq!(
+                            &again, &Ty::Var(v),
+                            "resolved {:?} still holds {:?}, which the table solves to {:?}",
+                            resolved, v, again
+                        );
+                    }
+                }
+            }
+        }
+
         /// The headline property: for an arbitrary equality-constraint
         /// sequence, the `ena`-backed table and the reference MGU agree on which
         /// constraint (if any) is first unsatisfiable and on the resolved

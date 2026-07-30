@@ -5,8 +5,9 @@
 //! (literal typing) populates only the ground shapes a literal can have:
 //! nullary named primitives and `byte[]`; Stage 3.2b-2 adds [`Ty::Tuple`];
 //! Stage 3.2c-2b adds [`Ty::Fun`], the curried function type an emitted
-//! monomorphic function binder carries. Generic arguments arrive with a later
-//! phase (annotation / member typing), extending this DU mechanically.
+//! monomorphic function binder carries. Stage R2-d's annotation typing adds
+//! generic *application* — [`Ty::Named`] carries its argument list — so an
+//! `int option` receiver grounds and its members become reachable.
 //!
 //! Phase 3.2a adds the **inference variable** [`Ty::Var`], the unknown the
 //! unification substrate ([`crate::unify`]) solves for. A `Var` is an *internal*
@@ -46,11 +47,20 @@ impl TyVid {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ty {
     /// A named type by its canonical, abbreviation-resolved dotted path —
-    /// `["System", "Int32"]` for `int`, `["System", "String"]` for `string`.
-    /// No generic-argument list yet: Stage 3.1 literal typing produces only
-    /// nullary primitives, and "no speculative generality" says the `args`
-    /// field waits until generic/annotation typing has a use for it.
-    Named(Vec<String>),
+    /// `["System", "Int32"]` for `int`, `["System", "String"]` for `string` —
+    /// applied to `args`.
+    ///
+    /// `args` is empty for a nullary type, and a *generic application* carries
+    /// its arguments in source order: `int option` is
+    /// `{ path: ["Microsoft", "FSharp", "Core", "FSharpOption"], args: [int] }`.
+    /// The two surface spellings — postfix `int option` and prefix
+    /// `Option<int>` — are already normalised by the CST
+    /// ([`borzoi_cst::syntax::AppType`]), so only one shape reaches here.
+    ///
+    /// A nullary type is `args: []` and never a separate variant, so a type has
+    /// exactly one representation and structural equality is the type equality
+    /// the unifier needs. Build one with [`Ty::named`].
+    Named { path: Vec<String>, args: Vec<Ty> },
     /// An array type. `elem` is the element type, `rank` the dimensionality
     /// (1 for `T[]`, 2 for `T[,]`, …). Stage 3.1 produces only `byte[]`.
     Array { elem: Box<Ty>, rank: u32 },
@@ -90,7 +100,15 @@ pub enum Ty {
 impl Ty {
     /// A nullary [`Ty::Named`] from a dotted canonical path (`"System.Int32"`).
     pub fn named(path: &str) -> Ty {
-        Ty::Named(path.split('.').map(str::to_owned).collect())
+        Ty::named_path(path.split('.').map(str::to_owned).collect())
+    }
+
+    /// A nullary [`Ty::Named`] from an already-split canonical path.
+    pub fn named_path(path: Vec<String>) -> Ty {
+        Ty::Named {
+            path,
+            args: Vec::new(),
+        }
     }
 
     /// Whether this type is fully resolved — contains no [`Ty::Var`]. The
@@ -99,7 +117,7 @@ impl Ty {
     /// rather than a wrong or meaningless answer.
     pub fn is_ground(&self) -> bool {
         match self {
-            Ty::Named(_) => true,
+            Ty::Named { args, .. } => args.iter().all(Ty::is_ground),
             Ty::Array { elem, .. } => elem.is_ground(),
             Ty::Tuple(elems) => elems.iter().all(Ty::is_ground),
             Ty::Fun { arg, ret } => arg.is_ground() && ret.is_ground(),
@@ -117,7 +135,7 @@ impl Ty {
     /// differential (`crates/sema/tests/all/infer_literals_diff.rs`) compares.
     pub fn render(&self) -> String {
         match self {
-            Ty::Named(path) => path.join("."),
+            Ty::Named { path, args } => render_named(&path.join("."), args, Ty::render),
             Ty::Array { elem, rank } => {
                 let commas = ",".repeat((*rank as usize).saturating_sub(1));
                 format!("{}[{}]", elem.render(), commas)
@@ -154,14 +172,15 @@ impl Ty {
     /// with no alias falls back to its canonical dotted string, so this is total.
     pub fn render_fsharp(&self) -> String {
         match self {
-            Ty::Named(path) => {
+            Ty::Named { path, args } => {
                 let (namespace, name) = match path.split_last() {
                     Some((name, ns)) => (ns.join("."), name.as_str()),
                     None => return String::new(),
                 };
-                borzoi_assembly::fsharp_alias(&namespace, name)
+                let head = borzoi_assembly::fsharp_alias(&namespace, name)
                     .map(str::to_owned)
-                    .unwrap_or_else(|| path.join("."))
+                    .unwrap_or_else(|| path.join("."));
+                render_named(&head, args, Ty::render_fsharp)
             }
             Ty::Array { elem, rank } => {
                 let commas = ",".repeat((*rank as usize).saturating_sub(1));
@@ -199,6 +218,25 @@ pub(crate) fn typar_name(i: u32) -> String {
     } else {
         format!("'t{i}")
     }
+}
+
+/// Render a named type applied to `args` — the head alone when `args` is empty,
+/// else `Head<a, b>`. The `", "` separator and angle brackets are the oracle's
+/// (`fcs-dump`'s `renderTypeInScope`), so [`Ty::render`] compares by string
+/// equality; [`Ty::render_fsharp`] reuses the shape with aliased operands.
+///
+/// `Head<a>` is legal F# for every generic type, but it is not always the
+/// spelling FCS's *display* context picks: that prefers the postfix idiom for a
+/// single-argument F# type constructor (`int option`, not `option<int>`), which
+/// is what `borzoi_assembly::display` already does for assembly members.
+/// Aligning the two display forms is separate work — the canonical form, which
+/// is the differential currency, is unaffected either way.
+fn render_named(head: &str, args: &[Ty], render_arg: fn(&Ty) -> String) -> String {
+    if args.is_empty() {
+        return head.to_owned();
+    }
+    let args: Vec<String> = args.iter().map(render_arg).collect();
+    format!("{head}<{}>", args.join(", "))
 }
 
 /// Render a tuple's elements with `render_elem`, joined by ` * `, parenthesising
