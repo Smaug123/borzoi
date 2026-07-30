@@ -484,7 +484,7 @@ pub enum FsharpOverlayKind {
     /// Name-only marker entities for metadata-invisible type abbreviations
     /// from the host CCU pickle.
     AbbreviationMarkers,
-    /// Union case names ([`Entity::union_case_names`]) from the host CCU
+    /// Union case names ([`Entity::union_cases`]) from the host CCU
     /// pickle — the module-open fold's pattern surface.
     UnionCases,
 }
@@ -581,6 +581,46 @@ pub struct AssemblyProjectionSkips {
     /// gate misses it; keying only on pickle authority catches it. Harmless for a
     /// C#/BCL image, which is non-authoritative but declares no modules to gate.
     pub fsharp_signature_non_authoritative: bool,
+}
+
+/// What is known about an [`EntityKind::Union`]'s cross-assembly-accessible
+/// cases — carried by [`Entity::union_cases`].
+///
+/// The host signature pickle is the *only* source (`PickledUnionCase.ident.name`,
+/// the F# **logical** name an `open`'s bare-name resolution matches): the
+/// ECMA-only projection cannot recover case names, because the `NewCase`
+/// constructors are `[CompilerGenerated]` and dropped, the nullary-case getters
+/// are properties a union projection drops, and the per-case carrier nested types
+/// exist only for the class-per-case representation.
+///
+/// The two variants are spelt out rather than left as an `Option` because the
+/// distinction is a soundness one and reading it wrong is silent: a consumer that
+/// treats "we could not recover the cases" as "there are no cases" commits an
+/// answer the pickle never vouched for. Making it a named enum costs each reader
+/// one `match` arm and buys a compile error when a new reader forgets.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum UnionCases {
+    /// The **complete** list of accessible case source names, in declaration
+    /// order. Only `TAccess []` (public) cases are listed.
+    ///
+    /// Possibly **empty**, which is a real observation and not a decline: a union
+    /// with a private representation (`type U = private | Hidden`) knowably
+    /// contributes no case to a cross-assembly `open`, and FCS resolves an earlier
+    /// same-named binding where a hidden entry would wrongly shadow it.
+    Known(Vec<String>),
+    /// The accessible cases could not be recovered, so nothing may be concluded
+    /// from a name's absence — the union's hidden cases can shadow anything, and a
+    /// name-resolution consumer folding an `open` must treat this as name-unknown
+    /// residue exactly as it treats
+    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`].
+    ///
+    /// Reached three ways: no host pickle described this union (a foreign CCU, a
+    /// decode failure); one did but could not be attributed, because the overlay
+    /// finds a row by `(name-without-arity-suffix, generic parameter count)` and
+    /// that key is not injective, so when two union rows share it the pickled list
+    /// fits each as readily as the other; or the entity is not a union at all.
+    Unknowable,
 }
 
 /// A type, module, or other top-level definition in an assembly.
@@ -828,35 +868,14 @@ pub struct Entity {
     /// `[<Extension>]` methods are **not** here — they are the trustworthy
     /// per-method [`MethodLike::is_extension_method`] channel.
     pub extension_member_names: Vec<String>,
-    /// The F# **source names of this union's cross-assembly-accessible
-    /// cases**, in declaration order. Populated only for
-    /// [`EntityKind::Union`], and only from the host signature pickle
-    /// (`PickledUnionCase.ident.name`): the ECMA-only projection cannot
-    /// recover case names — the `NewCase` constructors are
-    /// `[CompilerGenerated]` and dropped, the nullary-case getters are
-    /// properties a union projection drops, and the per-case carrier nested
-    /// types exist only for the class-per-case representation.
+    /// This union's cross-assembly-accessible cases, or the statement that they
+    /// could not be recovered. See [`UnionCases`].
     ///
-    /// `None` means **unknowable**, and arises two ways. Either no host pickle
-    /// described this union (a foreign CCU, a decode failure), or one did but
-    /// could not be attributed: the overlay finds a row by
-    /// `(name-without-arity-suffix, generic parameter count)`, which is not
-    /// injective, and when two union rows share that key the pickled list fits
-    /// each as readily as the other. Committing it to whichever row the search
-    /// reached first would put one union's cases on another — so that is a
-    /// decline, and it lands here.
-    ///
-    /// Either way the obligation is the same: name-resolution consumers folding
-    /// an `open` must treat it as name-unknown residue (its hidden cases can
-    /// shadow anything), exactly as they treat
-    /// [`AssemblyProjectionSkips::fsharp_abbreviations_unknowable`].
-    /// `Some(names)` is the **complete accessible list** — possibly empty: a
-    /// union with a private representation (`type U = private | Hidden`)
-    /// knowably contributes no case to a cross-assembly `open`, and FCS
-    /// resolves an earlier same-named binding where a hidden entry would
-    /// wrongly shadow it (codex round 21). Only `TAccess []` (public) cases
-    /// are listed.
-    pub union_case_names: Option<Vec<String>>,
+    /// [`UnionCases::Unknowable`] for every entity whose [`Self::kind`] is not
+    /// [`EntityKind::Union`] — a non-union has no cases to enumerate, and the
+    /// unknowable reading is the one that costs a consumer which forgot to check
+    /// the kind an availability loss rather than a wrong answer.
+    pub union_cases: UnionCases,
     /// The F# source names of this module's **static** extension members — what
     /// `type T with static member M …` declares. The static sibling of
     /// [`Self::extension_member_names`], read from the same pickled

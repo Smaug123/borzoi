@@ -399,7 +399,7 @@ fn resolve_through_an_alias_owns_the_path_over_a_lower_reading() {
     // `open Lib.Lower` brings a `UAlias` class with a real static `UCase`; `open
     // Lib` (later, so it wins the `UAlias` binding) brings `UAlias = U`, a union
     // alias. `UAlias.UCase` must resolve THROUGH the later alias — the union case
-    // lives in `union_case_names`, not the `members` surface the tail walk
+    // lives in `union_cases`, not the `members` surface the tail walk
     // searches — and OWN the path, never ceding to `Lower.UAlias.UCase`. Absence
     // from the target's member surface is not proof of absence (codex round 4:
     // resolve-through must not let a lower reading win on a non-member surface).
@@ -974,7 +974,7 @@ fn synth_entity(
     name: &str,
     kind: borzoi_assembly::EntityKind,
 ) -> borzoi_assembly::Entity {
-    use borzoi_assembly::{Access, AssemblyIdentity, Entity, Version};
+    use borzoi_assembly::{Access, AssemblyIdentity, Entity, UnionCases, Version};
     Entity {
         assembly: AssemblyIdentity {
             name: assembly.to_string(),
@@ -1014,7 +1014,7 @@ fn synth_entity(
         compiler_feature_required: vec![],
         source_name: None,
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         custom_attrs: vec![],

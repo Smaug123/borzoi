@@ -1592,7 +1592,7 @@ fn a_submodule_of_an_opened_assembly_module_is_a_dotted_head() {
 fn an_enumerated_case_surface_no_longer_blanks_an_earlier_open() {
     // Slice C, the fold. `Demo.ModuleOpen.WithCases` declares a union (`Colour =
     // Crimson | Viridian`) whose cases FCS brings into bare scope (Q1). The fold
-    // enumerates them from the pickle (`Entity::union_case_names`), so the open
+    // enumerates them from the pickle (`Entity::union_cases`), so the open
     // carries NO name-unknown residue: an earlier open's `Tag` — a name this module
     // provably does not supply — keeps resolving, exactly as FCS binds it. (Until
     // Slice B/C this deferred: the cases were invisible, so the whole open had to

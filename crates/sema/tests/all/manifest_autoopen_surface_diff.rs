@@ -28,7 +28,7 @@ use std::collections::BTreeSet;
 use crate::common::{
     ensure_autoopen_fixture_built, invoke_fcs_dump_with_refs, parse_fcs_uses, temp_fs_file,
 };
-use borzoi_assembly::{Access, Ecma335Assembly, Entity, EntityKind, Member};
+use borzoi_assembly::{Access, Ecma335Assembly, Entity, EntityKind, Member, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
@@ -378,7 +378,7 @@ fn bare_constructor_fallback_is_sound_over_every_bare_value_surface() {
         if plain_ident(source_name(e)) {
             names.insert(source_name(e).to_string());
         }
-        if let Some(cases) = &e.union_case_names {
+        if let UnionCases::Known(cases) = &e.union_cases {
             for case in cases.iter().filter(|c| plain_ident(c)) {
                 names.insert(case.clone());
             }

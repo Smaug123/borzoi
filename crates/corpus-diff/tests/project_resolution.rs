@@ -9,7 +9,7 @@ use borzoi::semantic::{ProjectParses, SemanticState};
 use borzoi::workspace::Workspace;
 use borzoi_assembly::{
     Access, AssemblyIdentity, Entity, EntityKind, Field, Member, Nullability, Primitive, TypeRef,
-    Version,
+    UnionCases, Version,
 };
 use borzoi_corpus_diff::{
     Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
@@ -236,7 +236,7 @@ fn synthetic_assembly_env() -> AssemblyEnv {
     });
     AssemblyEnv::from_entities(vec![Entity {
         extension_member_names: Vec::new(),
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: identity,

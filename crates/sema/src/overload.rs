@@ -704,7 +704,7 @@ mod tests {
     use crate::ty::TyVid;
     use borzoi_assembly::{
         AssemblyIdentity, Entity, EntityKind, MethodSignature, Nullability, NullableType,
-        TypeParameter, Variance, Version,
+        TypeParameter, UnionCases, Variance, Version,
     };
     use proptest::prelude::*;
 
@@ -869,7 +869,7 @@ mod tests {
             compiler_feature_required: vec![],
             source_name: None,
             extension_member_names: vec![],
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],

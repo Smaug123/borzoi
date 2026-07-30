@@ -17,7 +17,7 @@ use crate::model::{
     FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike,
     MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
     Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter,
-    TypeRef, UnclassifiedMethodImpl, Variance, Version,
+    TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -425,7 +425,7 @@ impl Ecma335Assembly {
                     // images still get their host unions' cases; foreign-CCU
                     // unions stay empty (= unknowable, bounded by
                     // `fsharp_abbreviations_unknowable`).
-                    crate::fsharp_pickle_merge::apply_union_case_names(&mut out, &ccu)?;
+                    crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
                 }
                 Err(error) => {
                     skipped_fsharp_overlays
@@ -734,7 +734,7 @@ impl Ecma335Assembly {
             // (`apply_extension_member_index`) from the host signature pickle;
             // the ECMA projection alone cannot see the `IsExtensionMember` bit.
             extension_member_names: Vec::new(),
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             // FCS's `IsTyconRefUsedForCSharpStyleExtensionMembers`: the container
             // marker on a C# `static class` of extension methods (or an F#
@@ -3492,17 +3492,17 @@ impl Ecma335Assembly {
 /// pickle's published member list answers it, and
 /// [`retain_published_union_properties`](crate::fsharp_pickle_merge)
 /// applies that answer wherever
-/// [`apply_union_case_names`](crate::fsharp_pickle_merge::apply_union_case_names)
+/// [`apply_union_cases`](crate::fsharp_pickle_merge::apply_union_cases)
 /// claims a union.
 ///
 /// This is the other half: a union that pass never *vouched for* still holds its
-/// raw candidates, and they must not reach a consumer. `union_case_names` is
-/// exactly the record of having been vouched for — `Some` only where the pass
-/// found one pickle entry it could attribute to one row — so a `None` union
-/// loses every property.
+/// raw candidates, and they must not reach a consumer. [`Entity::union_cases`] is
+/// exactly the record of having been vouched for — `Known` only where the pass
+/// found one pickle entry it could attribute to one row — so an `Unknowable`
+/// union loses every property.
 ///
 /// Note the pass reaches more unions than it vouches for: two rows sharing its
-/// (non-injective) key leave both `None`, since the pickled lists fit either.
+/// (non-injective) key leave both `Unknowable`, since the pickled lists fit either.
 /// That is the same decline, arrived at differently, and it wants the same
 /// outcome — so the two agreeing here is the design, not a coincidence to be
 /// relied on. `retain_published_union_properties` strips such a row's members in
@@ -3516,7 +3516,7 @@ impl Ecma335Assembly {
 /// no properties, exactly as this crate projected it before any were surfaced.
 fn drop_unvouched_union_properties(entities: &mut [Entity]) {
     for entity in entities {
-        if entity.kind == EntityKind::Union && entity.union_case_names.is_none() {
+        if entity.kind == EntityKind::Union && entity.union_cases == UnionCases::Unknowable {
             entity.members.retain(|m| !matches!(m, Member::Property(_)));
         }
         drop_unvouched_union_properties(&mut entity.nested_types);

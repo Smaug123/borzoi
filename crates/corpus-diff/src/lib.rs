@@ -4518,7 +4518,7 @@ fn collect_fsprojs_into(dir: &Path, collection: &mut FsprojCollection) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use borzoi_assembly::EntityKind;
+    use borzoi_assembly::{EntityKind, UnionCases};
     use borzoi_sema::EntityHandle;
     use proptest::prelude::*;
     use std::ffi::OsString;
@@ -4782,7 +4782,7 @@ mod tests {
             compiler_feature_required: vec![],
             source_name: None,
             extension_member_names: vec![],
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],

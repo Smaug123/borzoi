@@ -3706,7 +3706,7 @@ mod tests {
         name: &str,
         kind: borzoi_assembly::EntityKind,
     ) -> borzoi_assembly::Entity {
-        use borzoi_assembly::{Access, AssemblyIdentity, Entity, Version};
+        use borzoi_assembly::{Access, AssemblyIdentity, Entity, UnionCases, Version};
         Entity {
             assembly: AssemblyIdentity {
                 name: "FSharp.Core".to_string(),
@@ -3746,7 +3746,7 @@ mod tests {
             compiler_feature_required: vec![],
             source_name: None,
             extension_member_names: vec![],
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],
