@@ -2440,12 +2440,12 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
 
     for cell in &cells {
         let outcome = run_attribute_cell(cell);
-        // One path for every cell, with each assertion guarded by its own
-        // precondition rather than by which half of an if/else it sits in.
-        // The split version had every rule written twice — once for cells that
-        // compile and once for the rest — and a rule added to one side and not
-        // the other is silent, which is how three separate coverage holes got
-        // in. Facts first, then assertions that name what they need.
+        // Every cell takes one path: the facts first, then assertions each
+        // guarded by the precondition it actually needs. Branching on the
+        // clean/erroring split instead would state every rule twice, once per
+        // side, and a rule stated on one side only is silent rather than a
+        // compile error — so the conditions belong on the assertions, not on
+        // which arm the cell fell into.
         let clean = outcome.runner.fcs_error_files.is_empty();
         let attr = attribute_name_range(&cell.src);
         let (named, constructors) = records_at(&outcome.fcs, attr);
