@@ -23,7 +23,11 @@
 //!   *finds* something, so a mistake surfaces as a wrong target rather than a
 //!   decline;
 //! - an **abbreviation**, which names a type without declaring it, so every
-//!   answer through it must land on what it abbreviates.
+//!   answer through it must land on what it abbreviates;
+//! - **FSharp.Core's own `option` and `list`**, whose unions are hand-written
+//!   in `prim-types.fsi` rather than generated whole from a `type U = A | B`,
+//!   and which are the unions real F# actually touches. Their receivers are
+//!   *generic*, which is the second half of what those cells cover.
 //!
 //! Two shapes the fixture declares but does not probe, both because measurement
 //! said so rather than by choice. A union's `Tag` draws no use from FCS at all,
@@ -52,7 +56,9 @@ pub struct Site {
     pub line: usize,
     /// Human-readable cell identity, printed verbatim on failure.
     pub label: String,
-    /// The receiver's static type, as written in the probe.
+    /// The receiver's static type, **verbatim as written** in the probe — so a
+    /// cell may name a fixture type (`FSharpMember.Rec`) or an FSharp.Core one
+    /// (`int option`) without the generator having to know which.
     pub receiver_ty: String,
     /// The member name **as written** at the access.
     pub member: String,
@@ -63,13 +69,49 @@ pub struct Site {
     pub compiled_name: String,
     /// The compiled name of the type that *declares* the member — the currency
     /// the member-hiding differential settled on, since a rendered full name
-    /// arrives decorated by `NicePrint`.
+    /// arrives decorated by `NicePrint`. Carries the ``\`n`` arity suffix
+    /// exactly as FCS reports it, so [`declaring_arity`](Self::declaring_arity)
+    /// cannot disagree with it.
     pub declaring_ty: String,
+    /// The namespace the declaring type sits in, and the **F# source name** it is
+    /// found under there — together, the search key into an [`AssemblyEnv`],
+    /// which indexes by source name while FCS reports the compiled one
+    /// (`Microsoft.FSharp.Core.Option` finds the entity whose compiled name is
+    /// `FSharpOption`).
+    ///
+    /// Neither half is taken on trust: a lookup that finds nothing fails, and
+    /// what it finds must carry [`declaring_ty`](Self::declaring_ty)'s compiled
+    /// name. So a wrong key is a loud failure rather than a vacuous pass.
+    pub declaring_ns: Vec<String>,
+    /// See [`declaring_ns`](Self::declaring_ns).
+    pub declaring_src: String,
     /// Half-open byte range of the access expression (`v<n>.<member>`) in the
     /// probe source, for the range-keyed `types` oracle.
     pub access: (usize, usize),
     /// The line's source text.
     pub text: String,
+}
+
+impl Site {
+    /// The declaring type's generic arity, read off the ``\`n`` suffix of
+    /// [`declaring_ty`](Self::declaring_ty) — the compiled-name convention FCS
+    /// reports and the projector strips. Derived rather than declared so the two
+    /// cannot drift apart.
+    pub fn declaring_arity(&self) -> usize {
+        match self.declaring_ty.rsplit_once('`') {
+            Some((_, n)) => n.parse().expect("a compiled arity suffix is a number"),
+            None => 0,
+        }
+    }
+
+    /// [`declaring_ty`](Self::declaring_ty) without its arity suffix — the name
+    /// the projector stores on the entity.
+    pub fn declaring_stem(&self) -> &str {
+        match self.declaring_ty.rsplit_once('`') {
+            Some((stem, _)) => stem,
+            None => &self.declaring_ty,
+        }
+    }
 }
 
 /// The generated universe: the fixture assembly's source, the probe file's
@@ -83,10 +125,15 @@ pub struct Corpus {
 
 /// One cell before line numbers and ranges are known.
 struct Cell {
+    /// The receiver's type **verbatim as it is written in the probe**, so a cell
+    /// is free to name a fixture type or an FSharp.Core one.
     receiver_ty: &'static str,
     member: &'static str,
     compiled_name: &'static str,
     declaring_ty: &'static str,
+    /// Dotted namespace of the declaring type, and its F# source name there.
+    declaring_ns: &'static str,
+    declaring_src: &'static str,
     label: &'static str,
 }
 
@@ -99,24 +146,30 @@ struct Cell {
 /// is the whole point of that dimension.
 const CELLS: &[Cell] = &[
     Cell {
-        receiver_ty: "Rec",
+        receiver_ty: "FSharpMember.Rec",
         member: "Payload",
         compiled_name: "Payload",
         declaring_ty: "Rec",
+        declaring_src: "Rec",
+        declaring_ns: NS,
         label: "record field",
     },
     Cell {
-        receiver_ty: "Rec",
+        receiver_ty: "FSharpMember.Rec",
         member: "Label",
         compiled_name: "Label",
         declaring_ty: "Rec",
+        declaring_src: "Rec",
+        declaring_ns: NS,
         label: "record field, second",
     },
     Cell {
-        receiver_ty: "Klass",
+        receiver_ty: "FSharpMember.Klass",
         member: "Plain",
         compiled_name: "Plain",
         declaring_ty: "Klass",
+        declaring_src: "Klass",
+        declaring_ns: NS,
         label: "class property (control)",
     },
     // The dimension with the widest gap between the two names, and the only one
@@ -124,24 +177,30 @@ const CELLS: &[Cell] = &[
     // nothing: FCS reports this access as `Renamed`, the source name, while the
     // metadata our reader sees carries `CompiledRenamed`.
     Cell {
-        receiver_ty: "Klass",
+        receiver_ty: "FSharpMember.Klass",
         member: "Renamed",
         compiled_name: "CompiledRenamed",
         declaring_ty: "Klass",
+        declaring_src: "Klass",
+        declaring_ns: NS,
         label: "class property under [<CompiledName>]",
     },
     Cell {
-        receiver_ty: "Alias",
+        receiver_ty: "FSharpMember.Alias",
         member: "Plain",
         compiled_name: "Plain",
         declaring_ty: "Klass",
+        declaring_src: "Klass",
+        declaring_ns: NS,
         label: "class property through an abbreviation",
     },
     Cell {
-        receiver_ty: "Alias",
+        receiver_ty: "FSharpMember.Alias",
         member: "Renamed",
         compiled_name: "CompiledRenamed",
         declaring_ty: "Klass",
+        declaring_src: "Klass",
+        declaring_ns: NS,
         label: "[<CompiledName>] property through an abbreviation",
     },
     // A union case *test* property. Its range carries two oracle records — the
@@ -153,11 +212,63 @@ const CELLS: &[Cell] = &[
     // `u.Tag`, so a cell probing it would assert nothing while looking like
     // coverage.
     Cell {
-        receiver_ty: "Union",
+        receiver_ty: "FSharpMember.Union",
         member: "IsOne",
         compiled_name: "IsOne",
         declaring_ty: "Union",
+        declaring_src: "Union",
+        declaring_ns: NS,
         label: "union case test property",
+    },
+    // FSharp.Core's own unions. Every other cell reads a union fsc generated
+    // whole from a plain `type U = A | B`; `option` and `list` are hand-written
+    // in `prim-types.fsi`, carry `[<CompilationRepresentation>]`, and publish
+    // members whose names merely *coincide* with a case-derived spelling. They
+    // are also the unions real F# actually touches — `x.IsSome` is about as
+    // common as member access gets — so a rule that happens to work on the
+    // generated shape and not on these would be wrong everywhere that matters.
+    //
+    // `IsSome`/`IsNone` compile to **static** properties over a null receiver
+    // check, which is why they are here rather than assumed: an instance-only
+    // wake declines them while FCS binds them.
+    Cell {
+        receiver_ty: "int option",
+        member: "IsSome",
+        compiled_name: "IsSome",
+        declaring_ty: "FSharpOption`1",
+        declaring_src: "Option",
+        declaring_ns: "Microsoft.FSharp.Core",
+        label: "FSharp.Core option case test property",
+    },
+    Cell {
+        receiver_ty: "int option",
+        member: "Value",
+        compiled_name: "Value",
+        declaring_ty: "FSharpOption`1",
+        declaring_src: "Option",
+        declaring_ns: "Microsoft.FSharp.Core",
+        label: "FSharp.Core option instance property",
+    },
+    // `list`'s cases are logically `[]` and `::`, so nothing about `IsEmpty` is
+    // derivable from a case name — it is published, and that is the whole of the
+    // rule. The cell fails on any reading of the metadata rows alone.
+    Cell {
+        receiver_ty: "int list",
+        member: "IsEmpty",
+        compiled_name: "IsEmpty",
+        declaring_ty: "FSharpList`1",
+        declaring_src: "List",
+        declaring_ns: "Microsoft.FSharp.Collections",
+        label: "FSharp.Core list published property",
+    },
+    Cell {
+        receiver_ty: "int list",
+        member: "Head",
+        compiled_name: "Head",
+        declaring_ty: "FSharpList`1",
+        declaring_src: "List",
+        declaring_ns: "Microsoft.FSharp.Collections",
+        label: "FSharp.Core list published property, second",
     },
 ];
 
@@ -199,7 +310,7 @@ pub fn corpus() -> Corpus {
     );
     for (idx, cell) in CELLS.iter().enumerate() {
         probe.push_str(&format!(
-            "let v{idx} : {NS}.{} = failwith \"fixture\"\n",
+            "let v{idx} : {} = failwith \"fixture\"\n",
             cell.receiver_ty
         ));
     }
@@ -221,6 +332,8 @@ pub fn corpus() -> Corpus {
             member: cell.member.to_string(),
             compiled_name: cell.compiled_name.to_string(),
             declaring_ty: cell.declaring_ty.to_string(),
+            declaring_ns: cell.declaring_ns.split('.').map(str::to_owned).collect(),
+            declaring_src: cell.declaring_src.to_string(),
             access: (start, start + expr.len()),
             text: text.clone(),
         });
