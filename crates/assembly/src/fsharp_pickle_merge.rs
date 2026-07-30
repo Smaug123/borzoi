@@ -551,14 +551,17 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// container — a collision declines.
 ///
 /// The real-case pass (first loop) additionally requires the ECMA row to be an
-/// `EntityKind::Union`, so a class or record sharing the key is never selected,
-/// and it declines the **property retention** (dropping every candidate) when
-/// two union rows sit at one key. Both matter because that retention is
-/// destructive: mis-selecting a row there would strip members the row genuinely
-/// publishes. Its case-name half still commits on an ambiguous key, which can
-/// misattach cases between two same-keyed unions — a pre-existing lossy-key
-/// gap shared with the overlays below, closed for all of them at once by the
-/// injective-key work (#145).
+/// `EntityKind::Union`, so a class or record sharing the key is never selected —
+/// which matters because the property retention is destructive: mis-selecting a
+/// row there would strip members the row genuinely publishes.
+///
+/// When two union rows *do* sit at one key, the pass declines **both** halves of
+/// the entry it cannot attribute: no case names and no retained properties. The
+/// pickled lists describe one of those rows and fit the other as readily, and
+/// the key cannot say which, so committing either half to whichever row the
+/// search reached first would put one union's cases and members on another. The
+/// general repair — a key that distinguishes the rows, for every overlay here at
+/// once — is the injective-key work (#145).
 ///
 /// The real-case pass (the first loop) is a host-CCU fact, so it runs even when
 /// the source-name overlay is non-authoritative (foreign pickles present) — like
@@ -729,19 +732,35 @@ pub(crate) fn apply_union_case_names(
             }
         };
         if let Some(ecma) = target {
-            ecma.union_case_names = Some(names);
-            // Two union rows at one key: the published list belongs to one of
-            // them and this is the other as readily as not, so it vouches for
-            // nothing here. Dropping every candidate is the decline — leaving
-            // them would surface `Tag` and, on a pre-F#9 assembly, testers that
-            // are `FS0039` to name.
+            // Two union rows at one key: this pickle entry describes one of them
+            // and fits the other as readily, and the key cannot say which. So
+            // neither half of it may be applied to the row the search happened
+            // to reach first.
             //
-            // The case names are assigned either way. That half is unchanged and
-            // non-destructive: an ambiguous key could already misattach cases
-            // before this pass touched members, and narrowing it here would
-            // regress the module-open fold's pattern surface for a separate
-            // reason. Whether to seal that too belongs with the injective-key
-            // work (#145), which fixes every lossy-key overlay at once.
+            // Committing instead would put another type's cases behind
+            // `AssemblyEnv::authoritative_union_case` and into the bare-name
+            // surface an `open` imports — a wrong go-to-definition target with a
+            // source location attached.
+            //
+            // `None` is this crate's "unknowable", and it is the *same* state a
+            // foreign CCU or an undecodable signature resource produces, so this
+            // adds a route to it rather than a new condition. Be aware that sema
+            // does not yet honour it uniformly: `authoritative_union_case` and
+            // `module_qualified_occupied` treat it as unknown, but
+            // `index_union_case_carriers` skips such a union — after which
+            // `entity_class` positively calls a payload case's carrier a
+            // `SemanticClass::Type` where FCS says `UnionCase` — and a qualified
+            // tail that finds nothing cedes the path to a lower reading rather
+            // than deferring. Those are defects on the reading side, live for
+            // every `None` union today and tracked separately; this decline is
+            // not what makes them reachable.
+            //
+            // Only a `[<CompiledName>]` fabricating a backtick-arity name can
+            // reach this, since F# forbids two types of one name and arity in a
+            // namespace; the general repair is the injective key (#145).
+            if !ambiguous {
+                ecma.union_case_names = Some(names);
+            }
             retain_published_union_properties(ecma, if ambiguous { &[] } else { &published });
         }
     }

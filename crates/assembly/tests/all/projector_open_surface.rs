@@ -19,8 +19,8 @@ use std::path::Path;
 use borzoi_assembly::{AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
 
 use crate::common::{
-    ensure_fs_ext_index_built, ensure_minilib_fs_built, ensure_pre_visible_union_built,
-    ensure_sig_hidden_union_built,
+    ensure_fs_ext_index_built, ensure_key_collision_built, ensure_minilib_fs_built,
+    ensure_pre_visible_union_built, ensure_sig_hidden_union_built,
 };
 
 fn load(dll: &Path) -> Vec<Entity> {
@@ -316,4 +316,129 @@ fn arity_overloaded_unions_keep_their_own_cases() {
         generic.union_case_names.as_deref(),
         Some(&["AmbigB".to_string()][..])
     );
+}
+
+/// Every entity named `name`, in projection order, searched recursively.
+fn entities_named<'a>(entities: &'a [Entity], name: &str) -> Vec<&'a Entity> {
+    fn walk<'a>(entities: &'a [Entity], name: &str, out: &mut Vec<&'a Entity>) {
+        for e in entities {
+            if e.name == name {
+                out.push(e);
+            }
+            walk(&e.nested_types, name, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(entities, name, &mut out);
+    out
+}
+
+/// The `_unique_<case>` singleton backing fields fsc emits for a nullary case —
+/// the only thing on a projected row that still says which *source* union it is
+/// once a `[<CompiledName>]` has made two rows share a name and arity.
+fn case_marker_fields(entity: &Entity) -> Vec<&str> {
+    entity
+        .members
+        .iter()
+        .filter_map(|m| match m {
+            Member::Field(f) => f.name.strip_prefix("_unique_"),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The row a key-only match selects first must not be handed the *other*
+/// union's cases.
+///
+/// [`arity_overloaded_unions_keep_their_own_cases`] fixed this defect at the
+/// name-only level by adding generic arity to the key. `(name, arity)` is not
+/// injective either: a `[<CompiledName>]` that fabricates a backtick-arity name
+/// puts a second union at one key, and this is that shape. F# forbids two types
+/// of one name and arity in a namespace, so nothing but a deliberate
+/// `[<CompiledName>]` reaches it — but it compiles with no warning, and the
+/// consequence is not a silence. `union_case_names` is what
+/// `AssemblyEnv::authoritative_union_case` answers "is this a case of that
+/// union" from, and what `open_fold_surface` contributes as *bare* names, so a
+/// misattached list is a wrong go-to-definition target with a source location.
+#[test]
+fn two_unions_at_one_projected_key_attach_no_cases() {
+    let entities = load(ensure_key_collision_built());
+    let rows = entities_named(&entities, "V");
+    assert_eq!(
+        rows.len(),
+        2,
+        "precondition: the fixture must actually collide — two rows named V, \
+         from source `V` and from `W`'s [<CompiledName(\"V`0\")>]. Got {:?}",
+        rows.iter().map(|e| e.name.as_str()).collect::<Vec<_>>()
+    );
+    for row in &rows {
+        assert_eq!(row.kind, EntityKind::Union);
+        assert!(row.generic_parameters.is_empty(), "both rows are arity 0");
+    }
+
+    // Identify each row by its own backing fields, since the names no longer can.
+    let v = rows
+        .iter()
+        .find(|e| case_marker_fields(e) == ["X", "Y"])
+        .expect("a row whose singleton fields are _unique_X / _unique_Y — source V");
+    let w = rows
+        .iter()
+        .find(|e| case_marker_fields(e) == ["R", "S"])
+        .expect("a row whose singleton fields are _unique_R / _unique_S — source W");
+
+    // The pickle's case list fits either row as readily, so applying it to the
+    // one the key happened to find first is a guess. `None` is the decline, and
+    // every consumer already treats it as "unknowable" rather than "empty".
+    assert_eq!(
+        v.union_case_names, None,
+        "source V was handed a case list on an ambiguous key: {:?}",
+        v.union_case_names
+    );
+    assert_eq!(
+        w.union_case_names, None,
+        "source W was handed a case list on an ambiguous key: {:?}",
+        w.union_case_names
+    );
+}
+
+/// A **class** at a pickled union's key keeps the members it declares.
+///
+/// The property retention is destructive, so selecting a class here would strip
+/// its own public members as "unvouched union candidates" — a member FCS
+/// exposes, gone. `matches_union`'s `EntityKind::Union` requirement is what
+/// stops it, and this is the only test of that.
+#[test]
+fn a_class_sharing_a_unions_projected_key_keeps_its_own_members() {
+    let entities = load(ensure_key_collision_built());
+    let rows = entities_named(&entities, "U");
+    assert_eq!(
+        rows.len(),
+        2,
+        "precondition: the fixture must actually collide — a class U and \
+         `Other`'s [<CompiledName(\"U`0\")>] both project to the name U"
+    );
+    let class = rows
+        .iter()
+        .find(|e| e.kind == EntityKind::Class)
+        .expect("the class row");
+    let union = rows
+        .iter()
+        .find(|e| e.kind == EntityKind::Union)
+        .expect("the union row");
+    assert!(
+        union_property_names(class).contains(&"P"),
+        "the class lost the property it declares: {:?}",
+        union_property_names(class)
+    );
+    assert_eq!(
+        class.union_case_names, None,
+        "a class was handed a union's cases"
+    );
+    // The union at that key is unambiguous — one union row — so it keeps both
+    // its cases and its published testers.
+    assert_eq!(
+        union.union_case_names.as_deref(),
+        Some(&["A".to_string(), "B".to_string()][..])
+    );
+    assert_eq!(union_property_names(union), vec!["IsA", "IsB"]);
 }
