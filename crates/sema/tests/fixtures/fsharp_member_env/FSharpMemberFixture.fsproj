@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the F#-authored member differential
+       (tests/all/fsharp_member_diff.rs). The member-hiding corpus is entirely
+       C#, so nothing covers the metadata an F# compiler emits — which is the
+       shape every `<ProjectReference>` in a real solution produces: record
+       fields and union case fields compiled to properties, `[<CompiledName>]`
+       splitting a member's source name from its compiled one, a module's
+       values compiled as static properties on a module type, and an
+       abbreviation standing in for the type it names.
+
+       `Generated.fs` is NOT checked in: it is emitted from the dimension
+       tables by crates/sema/tests/all/common/fsharp_member_corpus.rs before
+       this project is built, so the F# universe and the Rust side's site
+       index cannot drift apart. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaFSharpMemberFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Generated.fs" />
+  </ItemGroup>
+
+</Project>

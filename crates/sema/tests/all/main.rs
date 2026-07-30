@@ -19,6 +19,7 @@ mod decline_cause;
 mod extension_shadow_diff;
 mod extension_visibility_matrix;
 mod fcs_dump_refs_absolute;
+mod fsharp_member_diff;
 mod implicit_namespace_matrix;
 mod infer_annotation_entity_diff;
 mod infer_binder_types_diff;

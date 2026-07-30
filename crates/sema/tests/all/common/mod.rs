@@ -13,6 +13,7 @@
 
 pub mod companion_corpus;
 pub mod fold_matrix;
+pub mod fsharp_member_corpus;
 pub mod generator;
 pub mod member_hiding_corpus;
 pub mod overload_corpus;
@@ -1187,6 +1188,40 @@ pub fn ensure_member_hiding_corpus_built(csharp: &str) -> &'static Path {
                 .join("Release")
                 .join("net10.0")
                 .join("MemberHiding.dll")
+        })
+        .as_path()
+}
+
+/// Build the **F#-authored member** corpus (`tests/fixtures/fsharp_member_env`)
+/// once per test binary and return its `.dll` path.
+///
+/// An F# fixture rather than the C# one next door: the metadata an F# compiler
+/// emits is what every `<ProjectReference>` in a real solution hands us, and it
+/// carries shapes C# never produces — record fields as properties, a case-test
+/// property beside the case it tests, and a `[<CompiledName>]` whose compiled
+/// name is not the name any F# source writes.
+///
+/// `Generated.fs` is not checked in: it is emitted from
+/// [`fsharp_member_corpus`]'s table here, under the shared [`BUILD_LOCK`] like
+/// every other fixture.
+pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fsharp_member_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            std::fs::write(
+                project.join("Generated.fs"),
+                fsharp_member_corpus::fixture_source(),
+            )
+            .expect("write fsharp-member Generated.fs");
+            dotnet_build(&project, "dotnet build fsharp-member fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join(format!("{}.dll", fsharp_member_corpus::FIXTURE_ASM))
         })
         .as_path()
 }
