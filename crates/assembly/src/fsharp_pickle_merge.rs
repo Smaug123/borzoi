@@ -737,16 +737,23 @@ pub(crate) fn apply_union_case_names(
             // neither half of it may be applied to the row the search happened
             // to reach first.
             //
-            // Both declines are silence rather than a different answer, because
-            // `None` is already what "no pickle described this union" means to
-            // every consumer: `AssemblyEnv::authoritative_union_case` documents a
-            // `None` case list as proving "neither presence nor absence", and
-            // `open_fold_surface` records unknown residue for it instead of
-            // claiming the union contributes no bare names. Committing instead
-            // would put another type's cases behind
-            // `authoritative_union_case` and into the bare-name surface an
-            // `open` imports — a wrong go-to-definition target with a source
-            // location attached.
+            // Committing instead would put another type's cases behind
+            // `AssemblyEnv::authoritative_union_case` and into the bare-name
+            // surface an `open` imports — a wrong go-to-definition target with a
+            // source location attached.
+            //
+            // `None` is this crate's "unknowable", and it is the *same* state a
+            // foreign CCU or an undecodable signature resource produces, so this
+            // adds a route to it rather than a new condition. Be aware that sema
+            // does not yet honour it uniformly: `authoritative_union_case` and
+            // `module_qualified_occupied` treat it as unknown, but
+            // `index_union_case_carriers` skips such a union — after which
+            // `entity_class` positively calls a payload case's carrier a
+            // `SemanticClass::Type` where FCS says `UnionCase` — and a qualified
+            // tail that finds nothing cedes the path to a lower reading rather
+            // than deferring. Those are defects on the reading side, live for
+            // every `None` union today and tracked separately; this decline is
+            // not what makes them reachable.
             //
             // Only a `[<CompiledName>]` fabricating a backtick-arity name can
             // reach this, since F# forbids two types of one name and arity in a
