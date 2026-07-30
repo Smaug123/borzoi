@@ -94,7 +94,7 @@ const PATTERN_DECOY: &str = "the case-pattern walk declines at a prefix holding 
 
 /// A **nullary** union case compiles to a static property, which the F#-entity
 /// projection drops (FCS surfaces the case, not the property), and it has no
-/// nested carrier type either. So the case is *found* — `union_case_names` names
+/// nested carrier type either. So the case is *found* — `union_cases` names
 /// it, which is what lets the reading own the path — but there is no handle to
 /// name it by.
 const NULLARY_CASE: &str = "a nullary union case has neither a carrier type nor a projected member, so the reading owns \

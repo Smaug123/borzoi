@@ -54,6 +54,6 @@ pub use model::{
     InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
     NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
     SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef,
-    UnclassifiedMethodImpl, Variance, Version,
+    UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};

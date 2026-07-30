@@ -2924,7 +2924,7 @@ mod tests {
     use super::*;
     use borzoi_assembly::{
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,
-        FsharpOverlayKind, ImportError, SkippedFsharpOverlay, Version,
+        FsharpOverlayKind, ImportError, SkippedFsharpOverlay, UnionCases, Version,
     };
     use std::fs;
     use tempfile::TempDir;
@@ -5612,7 +5612,7 @@ mod tests {
     fn minimal_entity(namespace: &[&str], name: &str) -> Entity {
         Entity {
             extension_member_names: Vec::new(),
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             assembly: fake_identity(),

@@ -448,8 +448,8 @@ pub fn ensure_fs_ext_index_built() -> &'static Path {
 /// signature pickle a cross-assembly consumer reads, yet the compiled class
 /// keeps `CompilationMapping(SumType)`, so ECMA still classifies it a union.
 /// It pins that the projector seals such a signature-hidden union to a
-/// knowably-empty `union_case_names` (`Some(vec![])`) rather than the
-/// unknowable `None` — the regression behind `open`ing such a namespace
+/// knowably-empty `UnionCases::Known(vec![])` rather than
+/// `UnionCases::Unknowable` — the regression behind `open`ing such a namespace
 /// deferring every dotted head (the `TypeEquality.Teq` shape).
 pub fn ensure_sig_hidden_union_built() -> &'static Path {
     static BUILT: OnceLock<(TempDir, PathBuf)> = OnceLock::new();

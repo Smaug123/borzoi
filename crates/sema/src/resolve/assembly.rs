@@ -436,7 +436,7 @@ impl<'a> Resolver<'a> {
     /// has to agree with FCS's notion exactly for such a commit to be safe, and
     /// review found three shapes where it did not — a terminal module, a
     /// non-authoritative module kind, and a union-case tail (union constructors
-    /// live in `union_case_names`, not `members`, so an owning union reads as
+    /// live in `union_cases`, not `members`, so an owning union reads as
     /// absent). Each was a *wrong target*, the one outcome D5 forbids, whereas
     /// deferring costs only coverage in an already-rare shape.
     ///
@@ -508,7 +508,7 @@ impl<'a> Resolver<'a> {
         // True once the path roots (or descends) through a *resolved* abbreviation
         // alias. FCS then owns the alias reading, so an `Absent` member tail must
         // NOT cede the path to a lower reading: the tail may live on a non-member
-        // target surface — a union case (`union_case_names`) or a type
+        // target surface — a union case (`union_cases`) or a type
         // augmentation — that we do not walk, so absence from `members` does not
         // prove absence (codex review 4 on Stage 4).
         let mut via_alias = walk_root != type_handle;
@@ -733,7 +733,7 @@ impl<'a> Resolver<'a> {
     ///   past a later-`open`ed `WoofWare.Whippet.Fantomas.SynType` *module*;
     /// - the reading **owns its prefix** ([`AssemblyPath::Resolved`]'s `owns_path`)
     ///   as soon as a union here declares the case, keyed on
-    ///   [`union_case_names`](borzoi_assembly::Entity::union_case_names) rather
+    ///   [`union_cases`](borzoi_assembly::Entity::union_cases) rather
     ///   than on a nested type existing. A **nullary** case compiles to a
     ///   singleton with no nested IL type, so keying ownership on the nested walk
     ///   (as [`Self::assembly_type_path_core`] must) would demote it to a

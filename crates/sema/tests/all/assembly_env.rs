@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{
     Access, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, Nullability,
-    NullableType, ParamDefault, Parameter, Primitive, TypeRef,
+    NullableType, ParamDefault, Parameter, Primitive, TypeRef, UnionCases,
 };
 use borzoi_sema::{
-    AbbreviationVisibility, AssemblyEnv, EntityHandle, ExtensionMembers, StaticLookup,
+    AbbreviationVisibility, AssemblyEnv, EntityHandle, ExtensionMembers, SemanticClass,
+    StaticLookup,
 };
 
 /// Build the fixture assembly once per test binary and return the `.dll` path.
@@ -1405,5 +1406,86 @@ fn a_nested_module_reads_dropped_types_from_its_owning_namespace() {
     assert!(
         env.module_may_hide_nested_modules(inner_h),
         "the NESTED module must see it too — it inherits its owning namespace"
+    );
+}
+
+/// Build `Demo.Shape`, a union with one nested type `Circle` — the shape fsc
+/// compiles a *field-carrying* case to. `cases` is what the pickle overlay
+/// managed to recover about it.
+fn union_with_one_nested_type(cases: UnionCases) -> AssemblyEnv {
+    let mut union = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == ns(&["Demo"]) && e.name == "Calc")
+        .expect("Demo.Calc");
+    union.name = "Shape".to_string();
+    union.kind = EntityKind::Union;
+    union.members = vec![];
+    union.union_cases = cases;
+
+    let mut carrier = union.clone();
+    carrier.name = "Circle".to_string();
+    carrier.namespace = vec![]; // a nested TypeDef declares no namespace of its own
+    carrier.kind = EntityKind::Class;
+    carrier.union_cases = UnionCases::Unknowable;
+    union.nested_types = vec![carrier];
+
+    AssemblyEnv::from_entities(vec![union])
+}
+
+/// The classification of `Demo.Shape.Circle` in an env built by
+/// [`union_with_one_nested_type`].
+fn nested_class(env: &AssemblyEnv) -> Option<SemanticClass> {
+    let shape = env
+        .lookup_type(&ns(&["Demo"]), "Shape", 0)
+        .expect("Demo.Shape");
+    let circle = env.nested(shape, "Circle", 0).expect("Demo.Shape.Circle");
+    env.entity_class(circle)
+}
+
+/// A field-carrying union case compiles to a nested class that carries no marker
+/// of its own — only the parent union's recovered case list says it is a case.
+/// So when that list is [`UnionCases::Unknowable`] the two readings of the nested
+/// type are both available and nothing chooses between them: it is either a
+/// case's carrier (FCS: `UnionCase`) or the generated `Tags` class (`Type`).
+/// Committing `Type` there is a wrong answer on every payload case of every union
+/// whose cases we could not recover — a foreign CCU, an undecodable signature
+/// resource, an assembly with no signature data, or a pickle entry that collided
+/// on the projected key.
+#[test]
+fn a_nested_type_of_an_unenumerable_union_is_not_classified() {
+    assert_eq!(
+        nested_class(&union_with_one_nested_type(UnionCases::Unknowable)),
+        None,
+        "the union's cases are unknowable, so nothing says whether this nested \
+         type is a case carrier — neither reading may be committed"
+    );
+}
+
+/// The control on the arm above: a union that DOES enumerate its cases still
+/// classifies the named one as a case, so the decline cannot be widened into a
+/// blanket "a union's nested types are never classified".
+#[test]
+fn a_named_case_of_an_enumerable_union_is_still_a_union_case() {
+    assert_eq!(
+        nested_class(&union_with_one_nested_type(UnionCases::Known(vec![
+            "Circle".to_string()
+        ]))),
+        Some(SemanticClass::UnionCase),
+        "the pickle names `Circle` as a case, so its carrier is a union case"
+    );
+}
+
+/// The second control: an enumerable union's *unnamed* nested type — the `Tags`
+/// class fsc generates beside the carriers — is an ordinary type. Only the
+/// unknowable list makes the reading undecidable; a knowably-complete one leaves
+/// everything it does not name a plain nested type.
+#[test]
+fn an_unnamed_nested_type_of_an_enumerable_union_is_a_type() {
+    assert_eq!(
+        nested_class(&union_with_one_nested_type(UnionCases::Known(vec![
+            "Square".to_string()
+        ]))),
+        Some(SemanticClass::Type),
+        "the complete case list does not name `Circle`, so it is not a carrier"
     );
 }

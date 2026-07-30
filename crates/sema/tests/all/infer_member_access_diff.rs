@@ -26,7 +26,7 @@ use crate::common::{
     ensure_assembly_fixture_built, ensure_fsharp_core_dll, ensure_system_runtime_dll,
     invoke_fcs_dump, invoke_fcs_dump_with_refs, parse_fcs_types, temp_fs_file,
 };
-use borzoi_assembly::{Augmentation, Ecma335Assembly, EcmaView};
+use borzoi_assembly::{Augmentation, Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
@@ -984,7 +984,7 @@ fn env_with_substring_extension_in(namespace: &[&str]) -> AssemblyEnv {
         base_type: None,
         interfaces: vec![],
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template_ent
@@ -1034,7 +1034,7 @@ fn env_with_object_derived_demo_type() -> AssemblyEnv {
         base_type: Some(object_base),
         interfaces: vec![],
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..string
@@ -1306,7 +1306,7 @@ fn interface_receiver_method_call_defers() {
         base_type: None,
         interfaces: ifaces,
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template.clone()
@@ -1436,7 +1436,7 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         base_type: None,
         interfaces: vec![],
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         ..template
@@ -1555,7 +1555,7 @@ fn skipped_member_in_scope_defers_the_overload_gate() {
         base_type: None,
         interfaces: vec![],
         extension_member_names: vec![],
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         skipped_members: vec![SkippedMember {

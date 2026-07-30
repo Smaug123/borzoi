@@ -451,7 +451,7 @@ mod tests {
     use crate::model::{
         Access, AssemblyIdentity, Entity, EntityKind, Event, Field, IndexParameter, Member,
         MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, ParamDefault,
-        Parameter, Primitive, Property, TypeParameter, TypeRef, Variance, Version,
+        Parameter, Primitive, Property, TypeParameter, TypeRef, UnionCases, Variance, Version,
     };
 
     // ---- model builders (the model is wide; these keep the vectors legible) ----
@@ -487,7 +487,7 @@ mod tests {
     fn ent(namespace: &[&str], name: &str, arity: usize) -> Entity {
         Entity {
             extension_member_names: Vec::new(),
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             assembly: ai(),

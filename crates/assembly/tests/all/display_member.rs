@@ -5,8 +5,8 @@
 use borzoi_assembly::{
     Access, AssemblyIdentity, Augmentation, ConstantValue, Entity, EntityKind, Event, Field,
     IndexParameter, Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType,
-    ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, Variance, Version,
-    format_entity_header, format_member,
+    ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, UnionCases, Variance,
+    Version, format_entity_header, format_member,
 };
 
 // ---- construction helpers -------------------------------------------------
@@ -43,7 +43,7 @@ fn typar(name: &str) -> TypeParameter {
 fn entity(name: &str, kind: EntityKind, typars: &[&str]) -> Entity {
     Entity {
         extension_member_names: Vec::new(),
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         assembly: assembly_id(),

@@ -12,7 +12,7 @@
 use crate::common::ensure_assembly_fixture_built;
 use borzoi_assembly::{
     AbbreviationTarget, Access, Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind,
-    Member, ModuleValue, SkippedMember,
+    Member, ModuleValue, SkippedMember, UnionCases,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
@@ -2196,7 +2196,7 @@ fn env_shadow_color(kind: EntityKind, is_struct: bool, arity: usize) -> Assembly
     // channel, not the case fold, so give the union knowable cases that cannot
     // collide with the `Color` value under test.
     if kind == EntityKind::Union {
-        e.union_case_names = Some(vec!["Hue".to_string()]);
+        e.union_cases = UnionCases::Known(vec!["Hue".to_string()]);
     }
     AssemblyEnv::from_entities(vec![e])
 }
@@ -2854,7 +2854,7 @@ fn a_module_roots_a_nested_type_tail_but_a_contest_still_defers_it() {
 /// It defers instead. Committing on a sole supplier requires our "supplies the
 /// path" to agree with FCS's exactly, and review found three shapes where it
 /// did not — a terminal module, a non-authoritative module kind, and a
-/// union-case tail (union constructors live in `union_case_names`, not
+/// union-case tail (union constructors live in `union_cases`, not
 /// `members`, so an owning union reads as absent). Each was a **wrong target**,
 /// the one outcome D5 forbids; deferring costs only coverage, in an
 /// already-rare shape. The evidence is kept here so the trade stays visible and
@@ -4462,7 +4462,7 @@ fn a_higher_hidden_assembly_module_must_shadow_a_lower_project_module() {
         .expect("Demo.Calc");
 
     // Relative `N.M`: an assembly module whose only `Zero` is a HIDDEN union case
-    // (`union_case_names` empty on a Union = unknowable — name-unknown residue).
+    // (`UnionCases::Unknowable` on a Union = name-unknown residue).
     let mut zero_case = template.clone();
     zero_case.namespace = vec![];
     zero_case.name = "U".to_string();
@@ -4499,7 +4499,7 @@ fn a_higher_hidden_assembly_module_must_shadow_a_lower_project_module() {
 }
 
 /// The fold's availability payoff: a module whose nested union's case names ARE
-/// enumerable (`union_case_names` from the pickle) carries no name-unknown residue, so
+/// enumerable (`union_cases` from the pickle) carries no name-unknown residue, so
 /// opening it must NOT blank out an earlier open's unrelated value — the fold pushes
 /// the case names as (opaque) entries instead of raising the blanket barrier.
 #[test]
@@ -4523,7 +4523,7 @@ fn an_enumerable_union_does_not_stale_an_earlier_opens_values() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_case_names = Some(vec!["Red".to_string(), "Green".to_string()]);
+    union.union_cases = UnionCases::Known(vec!["Red".to_string(), "Green".to_string()]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4562,7 +4562,7 @@ fn an_enumerable_union_case_shadows_an_earlier_opens_value() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_case_names = Some(vec!["Red".to_string()]);
+    union.union_cases = UnionCases::Known(vec!["Red".to_string()]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4608,7 +4608,7 @@ fn an_rqa_unions_cases_do_not_shadow_an_earlier_opens_value() {
     union.members = vec![];
     union.nested_types = vec![];
     union.is_require_qualified_access = true;
-    union.union_case_names = Some(vec!["Red".to_string()]);
+    union.union_cases = UnionCases::Known(vec!["Red".to_string()]);
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4783,7 +4783,7 @@ fn a_private_representation_union_shadows_nothing() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_case_names = Some(vec![]);
+    union.union_cases = UnionCases::Known(Vec::new());
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -4832,7 +4832,7 @@ fn a_residue_open_shadows_an_earlier_lexical_binding() {
     union.kind = EntityKind::Union;
     union.members = vec![];
     union.nested_types = vec![];
-    union.union_case_names = None;
+    union.union_cases = UnionCases::Unknowable;
     let mut m = template.clone();
     m.namespace = vec!["Tycon".to_string()];
     m.name = "M".to_string();
@@ -5101,7 +5101,7 @@ fn a_cross_kind_namespace_union_without_case_names_shadows_an_earlier_open() {
     union.namespace = vec!["Foo".to_string()];
     union.name = "U".to_string();
     union.kind = EntityKind::Union;
-    union.union_case_names = None; // unknowable — a hidden case could be `Zero`
+    union.union_cases = UnionCases::Unknowable; // unknowable — a hidden case could be `Zero`
     union.members = vec![];
     union.nested_types = vec![];
 
@@ -6133,7 +6133,7 @@ fn non_authoritative_module_uses_the_type_rule_for_qualified_ownership() {
 
 /// Codex review round 7 (P1): the union-case shape that made the sole-supplier
 /// commit unsafe. F# union constructors are deliberately absent from
-/// `Entity::members` — their names live in `union_case_names` — so a union that
+/// `Entity::members` — their names live in `union_cases` — so a union that
 /// genuinely owns `Color.Red` walks as a *partial* reading. With
 /// `[union Color = Red, class Color with static Red, union Color = Red]` the
 /// supplier test saw only the class and committed its member, while FCS binds
@@ -6155,7 +6155,7 @@ fn a_contested_union_case_tail_does_not_commit_a_rival_dlls_member() {
         e.kind = EntityKind::Union;
         e.members = vec![];
         e.nested_types = vec![];
-        e.union_case_names = Some(vec!["Red".to_string()]);
+        e.union_cases = UnionCases::Known(vec!["Red".to_string()]);
         e
     };
     // The middle candidate is a class whose STATIC is named `Red` — the member

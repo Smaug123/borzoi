@@ -60,7 +60,7 @@ use crate::fsharp_pickle::model::{
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind,
-    FsharpSourceRange, Member, SkippedMember, TypeParameter,
+    FsharpSourceRange, Member, SkippedMember, TypeParameter, UnionCases,
 };
 use std::collections::HashMap;
 
@@ -515,7 +515,7 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 }
 
 /// Populate each F# union entity's
-/// [`union_case_names`](crate::Entity::union_case_names) — the case names in
+/// [`union_cases`](crate::Entity::union_cases) — the case names in
 /// declaration order — straight from the host CCU's signature pickle
 /// (module-open plan, Slice B: the fold's pattern surface).
 ///
@@ -530,8 +530,8 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// name resolution matches (a `[<CompiledName>]` on a case renames only the
 /// compiled form). Only **accessible** cases are listed (`TAccess []`): a
 /// private representation contributes no case to a cross-assembly consumer,
-/// and the resulting `Some(vec![])` is a real observation, distinct from the
-/// absent-pickle `None` (codex round 21).
+/// and the resulting `UnionCases::Known(vec![])` is a real
+/// observation, distinct from `UnionCases::Unknowable` (codex round 21).
 ///
 /// A union whose representation is **hidden by a signature** (`type Teq<'a,'b>`
 /// exposed opaquely in a `.fsi` while the `.fs` defines the union, or an inline
@@ -539,7 +539,7 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// at all — yet the compiled class keeps `CompilationMapping(SumType)`, so the
 /// ECMA projector still classifies it `EntityKind::Union`. Such an entity is not
 /// reached by the repr walk above; the second loop seals it to the same
-/// knowably-empty `Some(vec![])` (a signature-hidden representation exposes zero
+/// knowably-empty `UnionCases::Known(vec![])` (a signature-hidden representation exposes zero
 /// accessible cases), keyed on the ECMA `Union` kind and restricted to opaque,
 /// measure-free *type* nodes (never modules / namespaces / abbreviations /
 /// exceptions / measure-parameterised types).
@@ -572,7 +572,7 @@ fn retain_published_union_properties(entity: &mut Entity, published: &[String]) 
 /// *unknowable* (a union has at least one case by construction). A union
 /// whose ECMA row was filtered out is skipped — an annotation, not a
 /// structural claim, exactly as the extension index treats a missing row.
-pub(crate) fn apply_union_case_names(
+pub(crate) fn apply_union_cases(
     entities: &mut [Entity],
     pickled: &PickledCcu,
 ) -> Result<(), ImportError> {
@@ -742,24 +742,22 @@ pub(crate) fn apply_union_case_names(
             // surface an `open` imports — a wrong go-to-definition target with a
             // source location attached.
             //
-            // `None` is this crate's "unknowable", and it is the *same* state a
-            // foreign CCU or an undecodable signature resource produces, so this
-            // adds a route to it rather than a new condition. Be aware that sema
-            // does not yet honour it uniformly: `authoritative_union_case` and
-            // `module_qualified_occupied` treat it as unknown, but
-            // `index_union_case_carriers` skips such a union — after which
-            // `entity_class` positively calls a payload case's carrier a
-            // `SemanticClass::Type` where FCS says `UnionCase` — and a qualified
-            // tail that finds nothing cedes the path to a lower reading rather
-            // than deferring. Those are defects on the reading side, live for
-            // every `None` union today and tracked separately; this decline is
-            // not what makes them reachable.
+            // `UnionCases::Unknowable` is the *same* state a foreign CCU or an
+            // undecodable signature resource produces, so this adds a route to it
+            // rather than a new condition. Be aware of one reading that does not
+            // yet honour it: sema's qualified tail cedes a path whose tail it
+            // cannot find to a lower reading, and a nullary case is invisible to
+            // that search (no carrier type, and its getter is a property the union
+            // projection drops) — so an unenumerable union answers "not a member"
+            // where the honest answer is "cannot say". That is a defect on the
+            // reading side, live for every unenumerable union today and tracked
+            // separately; this decline is not what makes it reachable.
             //
             // Only a `[<CompiledName>]` fabricating a backtick-arity name can
             // reach this, since F# forbids two types of one name and arity in a
             // namespace; the general repair is the injective key (#145).
             if !ambiguous {
-                ecma.union_case_names = Some(names);
+                ecma.union_cases = UnionCases::Known(names);
             }
             retain_published_union_properties(ecma, if ambiguous { &[] } else { &published });
         }
@@ -770,12 +768,12 @@ pub(crate) fn apply_union_case_names(
     // the SIGNATURE data (FCS `SignatureConformance`: `TFSharpTyconRepr r,
     // TNoRepr`), so the walk above never reached it. But the compiled class
     // still carries `CompilationMapping(SumType)`, so the ECMA projector
-    // classifies it `EntityKind::Union` — and it kept `union_case_names = None`,
+    // classifies it `EntityKind::Union` — and it kept `UnionCases::Unknowable`,
     // which the module-open fold (`sema` `fold_tycon_tier`) reads as "unknowable
     // hidden cases" and defers every dotted head over (a bare `List.replicate`
     // where a file-local union case `List` forces the dotted-path branch). A
     // representation hidden by the signature exposes ZERO accessible cases, so
-    // the honest answer is a knowably-empty `Some(vec![])`, exactly like the
+    // the honest answer is a knowably-empty `UnionCases::Known(vec![])`, exactly like the
     // private-case filter above.
     //
     // **Decline any projected-key collision** — the load-bearing soundness guard
@@ -807,7 +805,7 @@ pub(crate) fn apply_union_case_names(
     for (namespace, containers, name, arity, published) in hidden_repr {
         let matches_key = |e: &Entity| e.name == name && e.generic_parameters.len() == arity;
         let is_target = |e: &Entity| {
-            matches_key(e) && e.kind == EntityKind::Union && e.union_case_names.is_none()
+            matches_key(e) && e.kind == EntityKind::Union && e.union_cases == UnionCases::Unknowable
         };
         if containers.is_empty() {
             let count = entities
@@ -819,7 +817,7 @@ pub(crate) fn apply_union_case_names(
                     .iter_mut()
                     .find(|e| e.namespace == namespace && is_target(e))
             {
-                ecma.union_case_names = Some(Vec::new());
+                ecma.union_cases = UnionCases::Known(Vec::new());
                 retain_published_union_properties(ecma, &published);
             }
         } else if let Some(container) = find_entity_mut(entities, &namespace, &containers) {
@@ -831,7 +829,7 @@ pub(crate) fn apply_union_case_names(
             if count == 1
                 && let Some(ecma) = container.nested_types.iter_mut().find(|e| is_target(e))
             {
-                ecma.union_case_names = Some(Vec::new());
+                ecma.union_cases = UnionCases::Known(Vec::new());
                 retain_published_union_properties(ecma, &published);
             }
         }
@@ -2375,7 +2373,7 @@ fn abbreviation_marker(
         // A name-only abbreviation marker is not a module, so it declares no
         // extension members.
         extension_member_names: Vec::new(),
-        union_case_names: None,
+        union_cases: UnionCases::Unknowable,
         static_extension_member_names: Vec::new(),
         is_extension_container: false,
         custom_attrs: Vec::new(),
@@ -2642,7 +2640,7 @@ mod tests {
     fn make_ecma_entity(namespace: Vec<&str>, name: &str, kind: EntityKind) -> Entity {
         Entity {
             extension_member_names: Vec::new(),
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             assembly: dummy_assembly(),
@@ -5414,14 +5412,14 @@ mod tests {
     #[test]
     fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
         // Regression: `type Teq<'a,'b>` abstract in a `.fsi`, union in the
-        // `.fs`, pickles the SIGNATURE as `NoRepr`, so `apply_union_case_names`
+        // `.fs`, pickles the SIGNATURE as `NoRepr`, so `apply_union_cases`
         // never reaches it via the union-repr walk and it kept
-        // `union_case_names = None` — read downstream (`assembly_env.rs`
+        // `UnionCases::Unknowable` — read downstream (`assembly_env.rs`
         // `fold_tycon_tier`) as "unknowable hidden cases", which made `open`ing
         // the namespace defer every dotted head (e.g. `List.replicate` where a
         // file-local union case `List` forces the dotted-path branch). But a
         // representation hidden by the signature exposes ZERO accessible cases,
-        // so the answer is a knowably-empty `Some(vec![])`, exactly like a
+        // so the answer is a knowably-empty `UnionCases::Known(vec![])`, exactly like a
         // private representation's private-case filter. A same-shaped `NoRepr`
         // module (the `IsModuleOrNamespace` flag set) must stay untouched — it is
         // never even a candidate.
@@ -5430,14 +5428,15 @@ mod tests {
             make_ecma_entity(vec!["Ns"], "Teq", EntityKind::Union),
             make_ecma_entity(vec!["Ns"], "Helpers", EntityKind::Module),
         ];
-        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        apply_union_cases(&mut entities, &pickled).expect("apply union case names");
         assert_eq!(
-            entities[0].union_case_names.as_deref(),
-            Some(&[][..]),
+            entities[0].union_cases,
+            UnionCases::Known(Vec::new()),
             "a signature-hidden union has knowably zero accessible cases"
         );
         assert_eq!(
-            entities[1].union_case_names, None,
+            entities[1].union_cases,
+            UnionCases::Unknowable,
             "a NoRepr module is not a union and must not be sealed"
         );
     }
@@ -5491,9 +5490,10 @@ mod tests {
         };
         // The copied foreign union at `Collision.U` — unknowable, `None`.
         let mut entities = vec![make_ecma_entity(vec!["Collision"], "U", EntityKind::Union)];
-        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        apply_union_cases(&mut entities, &pickled).expect("apply union case names");
         assert_eq!(
-            entities[0].union_case_names, None,
+            entities[0].union_cases,
+            UnionCases::Unknowable,
             "a host namespace node must never seal a foreign union at its FQN"
         );
     }
@@ -5518,9 +5518,10 @@ mod tests {
         let root = make_entity("Host", PickledTyconRepr::NoRepr, root_modul);
         let pickled = make_ccu(vec![root, collision, u], Vec::new(), 0);
         let mut entities = vec![make_ecma_entity(vec!["Collision"], "U", EntityKind::Union)];
-        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        apply_union_cases(&mut entities, &pickled).expect("apply union case names");
         assert_eq!(
-            entities[0].union_case_names, None,
+            entities[0].union_cases,
+            UnionCases::Unknowable,
             "an exception node must never seal a foreign union at its FQN"
         );
     }
@@ -5601,14 +5602,15 @@ mod tests {
             make_ecma_entity(vec!["Ns"], "U", EntityKind::Union),
             make_ecma_entity(vec!["Ns"], "V", EntityKind::Union),
         ];
-        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        apply_union_cases(&mut entities, &pickled).expect("apply union case names");
         assert_eq!(
-            entities[0].union_case_names, None,
+            entities[0].union_cases,
+            UnionCases::Unknowable,
             "a measure-parameterised hidden union is declined (kept unknowable)"
         );
         assert_eq!(
-            entities[1].union_case_names.as_deref(),
-            Some(&[][..]),
+            entities[1].union_cases,
+            UnionCases::Known(Vec::new()),
             "a measure-free hidden union is still sealed"
         );
     }
@@ -5640,9 +5642,10 @@ mod tests {
             make_ecma_entity(vec!["Ns"], "U", EntityKind::Class),
             make_ecma_entity(vec!["Ns"], "U", EntityKind::Union),
         ];
-        apply_union_case_names(&mut entities, &pickled).expect("apply union case names");
+        apply_union_cases(&mut entities, &pickled).expect("apply union case names");
         assert_eq!(
-            entities[1].union_case_names, None,
+            entities[1].union_cases,
+            UnionCases::Unknowable,
             "a projected-key collision must decline, leaving the union's cases intact"
         );
     }

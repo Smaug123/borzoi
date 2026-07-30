@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use crate::common::{ensure_system_runtime_dll, invoke_fcs_dump, parse_fcs_types, temp_fs_file};
-use borzoi_assembly::{Ecma335Assembly, EcmaView};
+use borzoi_assembly::{Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Resolution, infer_file, resolve_file};
@@ -519,7 +519,7 @@ mod synthetic {
             }),
             interfaces: vec![],
             extension_member_names: vec![],
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             // The `System.String` template may carry undecodable members the
             // reader dropped; a synthetic entity must not inherit them (they

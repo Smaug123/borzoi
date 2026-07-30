@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use borzoi_assembly::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, EcmaView, Entity, EntityKind,
-    ImportError, Member, MethodLike, TypeRef,
+    ImportError, Member, MethodLike, TypeRef, UnionCases,
 };
 
 use crate::def::SemanticClass;
@@ -596,6 +596,13 @@ pub struct AssemblyEnv {
     /// The nested types that are *union-case carriers* — see
     /// [`Self::index_union_case_carriers`], which fills it.
     union_case_carriers: HashSet<EntityHandle>,
+    /// The nested types that **might** be union-case carriers and cannot be told
+    /// apart from one — every nested type of a union whose
+    /// [`UnionCases`] are `Unknowable`. Filled by the
+    /// same walk as [`Self::union_case_carriers`], and read by
+    /// [`Self::entity_class`], which declines on a member rather than committing
+    /// either reading.
+    undecidable_union_case_carriers: HashSet<EntityHandle>,
     /// Namespaces where an assembly whose **abbreviations are unknowable**
     /// ([`AbbreviationVisibility::Unknowable`]: its signature pickle failed to
     /// decode, or it embeds foreign CCU pickles we never decode) is known —
@@ -1291,28 +1298,49 @@ impl AssemblyEnv {
     /// entity itself says "union case" — [`Self::entity_class`] would call it a
     /// [`SemanticClass::Type`] and a hover would render the generated class where
     /// FCS names the case. Only the *parent* union knows, through
-    /// [`union_case_names`](borzoi_assembly::Entity::union_case_names), and
+    /// [`union_cases`](borzoi_assembly::Entity::union_cases), and
     /// entities carry no parent link, so the relation is indexed once here rather
     /// than rediscovered per query.
     ///
     /// A **nullary** case has no carrier at all (it is a singleton), so it is
     /// absent from this set and simply never asked about.
+    ///
+    /// A union whose cases are [`UnionCases::Unknowable`] names no carrier, and
+    /// nothing else can: the relation runs one way, from a case name to the nested
+    /// type it compiled to. Its nested types therefore go into
+    /// [`Self::undecidable_union_case_carriers`] wholesale — *some* of them are
+    /// carriers, the rest are the compiler-generated `Tags` class, and the
+    /// projection cannot say which. Leaving them out of both sets would make
+    /// [`Self::entity_class`] call a case's carrier a [`SemanticClass::Type`],
+    /// which is the reading FCS contradicts.
     fn index_union_case_carriers(&mut self) {
-        let unions: Vec<(EntityHandle, Vec<String>, usize)> = (0..self.nodes.len())
+        enum Cases {
+            Known(Vec<String>),
+            Unknowable,
+        }
+        let unions: Vec<(EntityHandle, Cases, usize)> = (0..self.nodes.len())
             .map(EntityHandle::new)
             .filter_map(|handle| {
                 let entity = self.entity(handle);
                 if entity.kind != EntityKind::Union {
                     return None;
                 }
-                Some((
-                    handle,
-                    entity.union_case_names.clone()?,
-                    entity.generic_parameters.len(),
-                ))
+                let cases = match &entity.union_cases {
+                    UnionCases::Known(cases) => Cases::Known(cases.clone()),
+                    UnionCases::Unknowable => Cases::Unknowable,
+                };
+                Some((handle, cases, entity.generic_parameters.len()))
             })
             .collect();
         for (union, cases, arity) in unions {
+            let cases = match cases {
+                Cases::Known(cases) => cases,
+                Cases::Unknowable => {
+                    let children = self.children(union).to_vec();
+                    self.undecidable_union_case_carriers.extend(children);
+                    continue;
+                }
+            };
             for case in &cases {
                 // A generic union's carrier carries the union's own generic
                 // parameters; a non-generic one's is at arity 0.
@@ -2846,6 +2874,13 @@ impl AssemblyEnv {
         if self.union_case_carriers.contains(&handle) {
             return (!self.fsharp_signature_unreliable(handle)).then_some(SemanticClass::UnionCase);
         }
+        // The parent union's cases could not be recovered, so nothing says whether
+        // this nested type is a case's carrier or the generated `Tags` class. Both
+        // readings are available and the projection cannot choose, so decline —
+        // committing `Type` here is what FCS contradicts on the carrier.
+        if self.undecidable_union_case_carriers.contains(&handle) {
+            return None;
+        }
         match self.entity(handle).kind {
             // A module's kind is trustworthy only from an authoritative F# pickle;
             // a non-authoritative assembly's `Module` is an IL heuristic FCS does
@@ -3092,19 +3127,19 @@ impl AssemblyEnv {
     /// case list are IL heuristics FCS does not share — it imports the type
     /// through IL, where a union is a plain class with no cases — so a walk that
     /// *acts* on a case (owning a path FCS would re-root elsewhere, say) must ask
-    /// this rather than read [`Entity::union_case_names`] directly. A case list of
-    /// `None` is likewise no evidence: it means no pickle described the union, so
-    /// it proves neither presence nor absence.
+    /// this rather than read [`Entity::union_cases`] directly.
+    /// [`UnionCases::Unknowable`] is likewise no evidence: the accessible cases
+    /// could not be recovered, so it proves neither presence nor absence.
     ///
-    /// [`Entity::union_case_names`]: borzoi_assembly::Entity::union_case_names
+    /// [`Entity::union_cases`]: borzoi_assembly::Entity::union_cases
     pub fn authoritative_union_case(&self, handle: EntityHandle, name: &str) -> bool {
         let entity = self.entity(handle);
         entity.kind == EntityKind::Union
             && !self.fsharp_signature_unreliable(handle)
-            && entity
-                .union_case_names
-                .as_ref()
-                .is_some_and(|cases| cases.iter().any(|c| c == name))
+            && match &entity.union_cases {
+                UnionCases::Known(cases) => cases.iter().any(|c| c == name),
+                UnionCases::Unknowable => false,
+            }
     }
 
     /// Whether the entity is `[<RequireQualifiedAccess>]`. Opening such a module is
@@ -3139,7 +3174,7 @@ impl AssemblyEnv {
     ///    value-space contestant (FCS's unqualified constructor slot — opaque:
     ///    we model the *shadow*, not the construction), a non-RQA union's
     ///    accessible **cases** (both spaces, opaque; an absent case list —
-    ///    `union_case_names` of `None`, no pickle described the union — is
+    ///    `UnionCases::Unknowable`, the cases could not be recovered — is
     ///    residue, while a knowably-empty list, a private representation,
     ///    contributes nothing), and a non-generic `[<AutoOpen>]` **type**
     ///    (residue — FCS adds its statics at the tycon tier, *below* the
@@ -3430,12 +3465,12 @@ impl AssemblyEnv {
                 });
             }
             if c.kind == EntityKind::Union && !c.is_require_qualified_access {
-                match &c.union_case_names {
-                    // The pickle did not describe this union (foreign CCU, no
-                    // pickle): its case names are unknowable. The hidden names
-                    // are tycon-tier — below the top container's vals (round
-                    // 10), but above a parent's when recursed.
-                    None => {
+                match &c.union_cases {
+                    // The case names could not be recovered (a foreign CCU, no
+                    // pickle, an unattributable one). The hidden names are
+                    // tycon-tier — below the top container's vals (round 10),
+                    // but above a parent's when recursed.
+                    UnionCases::Unknowable => {
                         if top {
                             out.residue_below_vals = true;
                         } else {
@@ -3445,7 +3480,7 @@ impl AssemblyEnv {
                     // The complete accessible-case list — possibly empty (a
                     // private representation contributes nothing to a
                     // cross-assembly open, and is NOT residue).
-                    Some(cases) => {
+                    UnionCases::Known(cases) => {
                         for case in cases {
                             out.entries.push(OpenFoldName {
                                 name: case.clone(),
@@ -4792,13 +4827,13 @@ impl AssemblyEnv {
     ///   `[<RequireQualifiedAccess>]` unions included (their cases resolve at the
     ///   lowest in-module priority, but still *in the module* — the final
     ///   `tyconSearch +++ moduleSearch +++ unionSearch` arm); a union whose case
-    ///   names the pickle did not supply (`union_case_names` of `None`) may hide
+    ///   names the pickle did not supply (`UnionCases::Unknowable`) may hide
     ///   any name, so it occupies conservatively. **Bounded residual** (codex
     ///   review, unmodelled): FCS's `TryFindTypeWithUnionCase` stops at the
     ///   *first* child union declaring the case and only then checks
     ///   representation accessibility, so two child unions sharing a case name
     ///   where the first has a private representation would make FCS fall through
-    ///   — but a private representation contributes no names to `union_case_names`
+    ///   — but a private representation contributes no names to `union_cases`
     ///   at all, so we cannot see the first union declared it, and this `any`
     ///   accepts the later union. The scenario (two module-level unions with a
     ///   shared case name, the first private, colliding with a same-named type's
@@ -4833,9 +4868,9 @@ impl AssemblyEnv {
                 return true;
             }
             c.kind == EntityKind::Union
-                && match &c.union_case_names {
-                    None => true,
-                    Some(cases) => cases.iter().any(|case| case == name),
+                && match &c.union_cases {
+                    UnionCases::Unknowable => true,
+                    UnionCases::Known(cases) => cases.iter().any(|case| case == name),
                 }
         })
     }
@@ -6037,7 +6072,7 @@ mod from_views_tests {
     use borzoi_assembly::{
         AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, EcmaView, Entity,
         EntityKind, FSharpResource, ImportError, Member, Nullability, Primitive, Property,
-        SkippedProjectionItem, TypeParameter, TypeRef, Variance, Version,
+        SkippedProjectionItem, TypeParameter, TypeRef, UnionCases, Variance, Version,
     };
     use proptest::prelude::*;
 
@@ -6248,7 +6283,7 @@ mod from_views_tests {
             compiler_feature_required: vec![],
             source_name: None,
             extension_member_names: vec![],
-            union_case_names: None,
+            union_cases: UnionCases::Unknowable,
             static_extension_member_names: Vec::new(),
             is_extension_container: false,
             custom_attrs: vec![],

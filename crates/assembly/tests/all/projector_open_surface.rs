@@ -6,8 +6,8 @@
 //! names — where the owned model historically carried only members. These
 //! tests pin the two projection channels that make those names enumerable:
 //!
-//! - `Entity::union_case_names`, lifted from the host signature pickle by
-//!   `apply_union_case_names` (the ECMA image cannot recover case names:
+//! - `Entity::union_cases`, lifted from the host signature pickle by
+//!   `apply_union_cases` (the ECMA image cannot recover case names:
 //!   the `NewCase` constructors are `[CompilerGenerated]`, the nullary-case
 //!   getters are dropped properties, and per-case carrier types exist only
 //!   for one representation);
@@ -16,7 +16,9 @@
 
 use std::path::Path;
 
-use borzoi_assembly::{AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member};
+use borzoi_assembly::{
+    AbbreviationTarget, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, UnionCases,
+};
 
 use crate::common::{
     ensure_fs_ext_index_built, ensure_key_collision_built, ensure_minilib_fs_built,
@@ -48,13 +50,13 @@ fn entity_named<'a>(entities: &'a [Entity], name: &str) -> &'a Entity {
 }
 
 #[test]
-fn union_case_names_are_lifted_from_the_pickle_in_declaration_order() {
+fn union_cases_are_lifted_from_the_pickle_in_declaration_order() {
     let entities = load(ensure_minilib_fs_built());
     let choice = entity_named(&entities, "Choice");
     assert_eq!(choice.kind, EntityKind::Union);
     assert_eq!(
-        choice.union_case_names.as_deref(),
-        Some(&["Yes".to_string(), "No".to_string()][..])
+        choice.union_cases,
+        UnionCases::Known(vec!["Yes".to_string(), "No".to_string()])
     );
 }
 
@@ -68,8 +70,8 @@ fn an_rqa_union_still_carries_its_case_names() {
     let rqa = entity_named(&entities, "RqaUnion");
     assert!(rqa.is_require_qualified_access);
     assert_eq!(
-        rqa.union_case_names.as_deref(),
-        Some(&["A".to_string(), "B".to_string()][..])
+        rqa.union_cases,
+        UnionCases::Known(vec!["A".to_string(), "B".to_string()])
     );
 }
 
@@ -80,7 +82,7 @@ fn an_exception_is_its_own_constructor_name() {
     let entities = load(ensure_minilib_fs_built());
     let exn = entity_named(&entities, "MyError");
     assert_eq!(exn.kind, EntityKind::Exception);
-    assert!(exn.union_case_names.is_none());
+    assert_eq!(exn.union_cases, UnionCases::Unknowable);
 }
 
 #[test]
@@ -92,8 +94,8 @@ fn a_union_with_static_members_keeps_its_cases() {
     let tallied = entity_named(&entities, "Tallied");
     assert_eq!(tallied.kind, EntityKind::Union);
     assert_eq!(
-        tallied.union_case_names.as_deref(),
-        Some(&["Zero".to_string(), "Some'".to_string()][..])
+        tallied.union_cases,
+        UnionCases::Known(vec!["Zero".to_string(), "Some'".to_string()])
     );
 }
 
@@ -103,8 +105,8 @@ fn a_plain_union_in_a_module_keeps_its_cases() {
     let verdict = entity_named(&entities, "Verdict");
     assert_eq!(verdict.kind, EntityKind::Union);
     assert_eq!(
-        verdict.union_case_names.as_deref(),
-        Some(&["Accepted".to_string(), "Rejected".to_string()][..])
+        verdict.union_cases,
+        UnionCases::Known(vec!["Accepted".to_string(), "Rejected".to_string()])
     );
 }
 
@@ -114,11 +116,11 @@ fn a_private_representation_has_knowably_zero_accessible_cases() {
     // restricted `TAccess`, so a cross-assembly consumer can never name it.
     // The overlay must record the ACCESSIBLE list — here empty — and not the
     // private name (which would wrongly shadow a same-named earlier binding),
-    // nor `None` (which reads as unknowable and forces residue).
+    // nor `Unknowable` (which forces residue).
     let entities = load(ensure_fs_ext_index_built());
     let concealed = entity_named(&entities, "Concealed");
     assert_eq!(concealed.kind, EntityKind::Union);
-    assert_eq!(concealed.union_case_names.as_deref(), Some(&[][..]));
+    assert_eq!(concealed.union_cases, UnionCases::Known(Vec::new()));
 }
 
 #[test]
@@ -129,7 +131,7 @@ fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
     // union-repr walk never reaches it — yet the compiled class keeps
     // `CompilationMapping(SumType)`, so ECMA still classifies it a union. The
     // projector must seal it to the ACCESSIBLE list — empty, since the
-    // representation is hidden — not `None` (which reads as unknowable and, via
+    // representation is hidden — not `Unknowable` (which, via
     // the module-open fold, deferred every dotted head after `open`ing this
     // namespace: the `TypeEquality.Teq` regression). Distinct from
     // `Concealed` above, whose union repr IS pickled (with a private case) —
@@ -137,7 +139,7 @@ fn a_signature_hidden_union_has_knowably_zero_accessible_cases() {
     let entities = load(ensure_sig_hidden_union_built());
     let teq = entity_named(&entities, "Teq");
     assert_eq!(teq.kind, EntityKind::Union);
-    assert_eq!(teq.union_case_names.as_deref(), Some(&[][..]));
+    assert_eq!(teq.union_cases, UnionCases::Known(Vec::new()));
 }
 
 /// Every property a union surfaces, in projection order.
@@ -182,8 +184,8 @@ fn a_union_whose_testers_are_unpublished_surfaces_none() {
     let coin = entity_named(&entities, "Coin");
     assert_eq!(coin.kind, EntityKind::Union);
     assert_eq!(
-        coin.union_case_names.as_deref(),
-        Some(&["Heads".to_string(), "Tails".to_string()][..]),
+        coin.union_cases,
+        UnionCases::Known(vec!["Heads".to_string(), "Tails".to_string()]),
         "precondition: the cases ARE known, so a case-derived rule would fire"
     );
     assert_eq!(union_property_names(coin), Vec::<&str>::new());
@@ -196,12 +198,12 @@ fn a_union_naming_no_accessible_case_surfaces_no_tester() {
     // no tester is at stake here; `Tag` is what must not survive.
     //
     // A union the pickle never claimed at all (no pickle, an undecodable one, a
-    // foreign CCU's union) keeps `union_case_names = None` and loses its
+    // foreign CCU's union) keeps `UnionCases::Unknowable` and loses its
     // properties to `drop_unvouched_union_properties` instead. No fixture can
     // produce one: every F# fixture here has an authoritative host pickle.
     let entities = load(ensure_fs_ext_index_built());
     let concealed = entity_named(&entities, "Concealed");
-    assert_eq!(concealed.union_case_names.as_deref(), Some(&[][..]));
+    assert_eq!(concealed.union_cases, UnionCases::Known(Vec::new()));
     assert_eq!(union_property_names(concealed), Vec::<&str>::new());
 }
 
@@ -309,12 +311,12 @@ fn arity_overloaded_unions_keep_their_own_cases() {
         .find(|e| e.name == "Ambig" && e.generic_parameters.len() == 1)
         .expect("arity-1 Ambig");
     assert_eq!(
-        plain.union_case_names.as_deref(),
-        Some(&["AmbigA".to_string()][..])
+        plain.union_cases,
+        UnionCases::Known(vec!["AmbigA".to_string()])
     );
     assert_eq!(
-        generic.union_case_names.as_deref(),
-        Some(&["AmbigB".to_string()][..])
+        generic.union_cases,
+        UnionCases::Known(vec!["AmbigB".to_string()])
     );
 }
 
@@ -356,7 +358,7 @@ fn case_marker_fields(entity: &Entity) -> Vec<&str> {
 /// puts a second union at one key, and this is that shape. F# forbids two types
 /// of one name and arity in a namespace, so nothing but a deliberate
 /// `[<CompiledName>]` reaches it — but it compiles with no warning, and the
-/// consequence is not a silence. `union_case_names` is what
+/// consequence is not a silence. `union_cases` is what
 /// `AssemblyEnv::authoritative_union_case` answers "is this a case of that
 /// union" from, and what `open_fold_surface` contributes as *bare* names, so a
 /// misattached list is a wrong go-to-definition target with a source location.
@@ -390,14 +392,16 @@ fn two_unions_at_one_projected_key_attach_no_cases() {
     // one the key happened to find first is a guess. `None` is the decline, and
     // every consumer already treats it as "unknowable" rather than "empty".
     assert_eq!(
-        v.union_case_names, None,
+        v.union_cases,
+        UnionCases::Unknowable,
         "source V was handed a case list on an ambiguous key: {:?}",
-        v.union_case_names
+        v.union_cases
     );
     assert_eq!(
-        w.union_case_names, None,
+        w.union_cases,
+        UnionCases::Unknowable,
         "source W was handed a case list on an ambiguous key: {:?}",
-        w.union_case_names
+        w.union_cases
     );
 }
 
@@ -431,14 +435,15 @@ fn a_class_sharing_a_unions_projected_key_keeps_its_own_members() {
         union_property_names(class)
     );
     assert_eq!(
-        class.union_case_names, None,
+        class.union_cases,
+        UnionCases::Unknowable,
         "a class was handed a union's cases"
     );
     // The union at that key is unambiguous — one union row — so it keeps both
     // its cases and its published testers.
     assert_eq!(
-        union.union_case_names.as_deref(),
-        Some(&["A".to_string(), "B".to_string()][..])
+        union.union_cases,
+        UnionCases::Known(vec!["A".to_string(), "B".to_string()])
     );
     assert_eq!(union_property_names(union), vec!["IsA", "IsB"]);
 }
