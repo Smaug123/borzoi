@@ -1318,9 +1318,34 @@ impl DeclineCensus {
     /// pre-walk guards are constructed with it fixed — so most of this map is
     /// permanently rather than incidentally zero, and a table of each cause's
     /// reachable tiers would emit a much smaller closed set. That table would
-    /// be a second source of truth about the resolver, correct only for as long
-    /// as someone maintains it, and wrong in the direction that silently drops
-    /// an observation. Emitting the full product is duller and cannot go stale.
+    /// be a second source of truth about the resolver, wrong in the direction
+    /// that silently drops an observation, and it is **not derivable from the
+    /// cause at all**: a tier is fixed where the *site* is built, not where the
+    /// cause is named. Three live shapes defeat it, none visible to a grep for
+    /// the cause —
+    ///
+    /// - a tier **laundered from an unrelated success**. `AuthoritativeModuleLeaf`
+    ///   and `AttributeOpaqueLeaf` are never built inside a walk: a reading
+    ///   *resolves*, a caller post-filters that success into a decline, and the
+    ///   winning tier is reattached to a cause the walk never saw.
+    /// - a tier set fixed by the **caller**. `resolve_assembly_path_over` is
+    ///   handed `prefixes_outranking_the_manifest_surface` (explicit opens and
+    ///   the enclosing namespace) by one caller and `assembly_prefixes_by_priority`
+    ///   (those, plus the implicit opens and the root) by another, so one cause
+    ///   flowing through both has two different reachable sets.
+    /// - a statically-possible tier that is **dynamically unreachable**.
+    ///   `UnmodelledOpenRoot` cannot carry `Root`: at the empty prefix the guard
+    ///   recomputes the very reading it is comparing against, so the difference
+    ///   it records a tier for is false by construction.
+    ///
+    /// Emitting the full product is duller and cannot go stale. The zeros are
+    /// the bulk of the plottable metric namespace, but that is a *rendering*
+    /// cost and belongs to the dashboard, which can collapse a series that is
+    /// zero across all of history reversibly and without claiming anything
+    /// about the resolver. Retiring them here is neither: each retired key
+    /// needs a permanent `retired_statistics` entry (see
+    /// `docs/continuous-measurements.md`), so a narrowing that later proves
+    /// wrong cannot be quietly undone.
     pub fn pairs(&self) -> BTreeMap<&'static str, BTreeMap<&'static str, usize>> {
         DeclineCause::ALL
             .iter()

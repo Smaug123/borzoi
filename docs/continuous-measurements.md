@@ -387,8 +387,12 @@ change to that ladder asks and which no aggregate can answer. Both maps carry
 every variant including the zeros — a cause that stops *occurring* must read as
 `0`, not vanish, because a zero and an absence say opposite things and only one
 of them is a measurement. A cause that stops *existing* is a different event and
-has to be declared: see [Retiring a metric]. Narrowing either map — dropping the
-tiers a cause can never speak from, say — retires every pair it removes.
+has to be declared: see [Retiring a metric]. Narrowing either map retires every
+pair it removes, permanently — which is why `by_pair` publishes the whole
+product rather than each cause's reachable tiers. That narrowing is not
+available at all: a tier is fixed where the decline *site* is built, not where
+the cause is named, so which tiers a cause can speak from is not a function of
+the cause. `DeclineCensus::pairs` carries the three shapes that defeat it.
 
 `decline_census.unattributed` is the census's own honesty check, and it is a
 count rather than a residual. A decline site is a claim and its absence is not:
