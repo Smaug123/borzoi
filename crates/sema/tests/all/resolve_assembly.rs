@@ -6495,3 +6495,141 @@ fn a_query_join_binder_defers_the_constructor_fallback() {
         "a query range variable must not resolve to the opened type"
     );
 }
+
+/// `High.U` — a union whose accessible cases could not be recovered
+/// ([`UnionCases::Unknowable`]), so a hidden **nullary** case named `R` is
+/// invisible to every lookup the qualified-tail walk performs: it has no carrier
+/// nested type, and its getter is a property the F#-entity projection drops.
+fn unenumerable_union(namespace: Vec<String>) -> Entity {
+    let mut union = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc");
+    union.namespace = namespace;
+    union.name = "U".to_string();
+    union.kind = EntityKind::Union;
+    union.members = vec![];
+    union.nested_types = vec![];
+    union.union_cases = UnionCases::Unknowable;
+    union
+}
+
+/// A class `U` carrying a real static `R` — the *decoy* a lower tier could bind
+/// if the union's absent tail ceded the path.
+fn decoy_with_static_r(namespace: Vec<String>) -> Entity {
+    let mut decoy = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == vec!["Demo".to_string()] && e.name == "Calc")
+        .expect("Demo.Calc");
+    decoy.namespace = namespace;
+    decoy.name = "U".to_string();
+    decoy.kind = EntityKind::Class;
+    decoy.nested_types = vec![];
+    let m = decoy
+        .members
+        .iter_mut()
+        .find(|m| matches!(m, Member::Method(_)))
+        .expect("a method to rename");
+    if let Member::Method(m) = m {
+        m.name = "R".to_string();
+        m.source_name = None;
+    }
+    decoy
+}
+
+/// Whether any resolution in `rf` names a member of `parent` — i.e. whether the
+/// decoy was bound.
+fn binds_a_member_of(rf: &ResolvedFile, parent: EntityHandle) -> bool {
+    rf.resolutions()
+        .values()
+        .any(|r| matches!(r, Resolution::Member { parent: p, .. } if *p == parent))
+}
+
+/// A union whose cases we cannot enumerate must never let a **lower** tier bind
+/// through it.
+///
+/// The tail walk cannot see a nullary case (no carrier type, and its getter is a
+/// dropped property), so `static_lookup` answers `Absent` — "not a member" —
+/// where the honest answer is "cannot say". `Absent` sets `owns_path = false`,
+/// which *cedes* the path, and a lower-priority reading of the same spelling
+/// could then be committed where FCS binds the case.
+///
+/// Each cell pairs the contested shape with a **control** that resolves the
+/// lower reading on its own, so "nothing bound" cannot pass by accident: the
+/// control proves the decoy is bindable, and the cell proves the union's
+/// presence stops it. Every cell is silent today — by the opaque-bare-name
+/// residue channel for an open or enclosing namespace, and by having no
+/// contesting tier at all when the path is written out in full — so this is a
+/// gate on that remaining sound, not a pin on a guard in the tail walk.
+///
+/// It bites: deleting the residue an unenumerable union raises in
+/// [`AssemblyEnv::open_fold_surface`]'s tycon tier binds the root decoy's `R`
+/// through `High.U` in the first cell. That is the regression this exists to
+/// catch — the tail walk itself has no such guard, so the fold's residue is the
+/// only thing standing between an unenumerable union and a wrong target.
+#[test]
+fn an_unenumerable_union_never_cedes_its_tail_to_a_lower_reading() {
+    // Cell 1–3: the union directly in a namespace, so `U` is the written head.
+    let union = unenumerable_union(vec!["High".to_string()]);
+    let decoy = decoy_with_static_r(vec![]);
+
+    let control_env = AssemblyEnv::from_entities(vec![decoy.clone()]);
+    let control_src = "module M\nlet x = U.R\n";
+    let control = resolve(control_src, &control_env);
+    let control_decoy = control_env.lookup_type(&[], "U", 0).expect("root `U`");
+    assert!(
+        binds_a_member_of(&control, control_decoy),
+        "control: the root decoy `U.R` must bind on its own, or the cells below \
+         are vacuous — got {:?}",
+        control.resolution_at(at(control_src, "U.R"))
+    );
+
+    let env = AssemblyEnv::from_entities(vec![union, decoy.clone()]);
+    let decoy_handle = env.lookup_type(&[], "U", 0).expect("root `U`");
+    for src in [
+        "module M\nopen High\nlet x = U.R\n",
+        "namespace High\nmodule M =\n    let x = U.R\n",
+        "module M\nlet x = High.U.R\n",
+    ] {
+        let rf = resolve(src, &env);
+        assert!(
+            !binds_a_member_of(&rf, decoy_handle),
+            "the root decoy's `R` was bound through `High.U`, whose cases are \
+             unknowable and could include a nullary `R`: {src:?}"
+        );
+    }
+
+    // Cell 4: the union nested one level down, so the written head is the module
+    // `H` and the opaque-bare-name channel never sees the union at all.
+    let mut holder = unenumerable_union(vec!["High".to_string()]);
+    holder.name = "H".to_string();
+    holder.kind = EntityKind::Module;
+    holder.union_cases = UnionCases::Known(Vec::new());
+    holder.nested_types = vec![unenumerable_union(vec![])];
+
+    let mut root_holder = holder.clone();
+    root_holder.namespace = vec![];
+    root_holder.nested_types = vec![decoy_with_static_r(vec![])];
+
+    let root_only = AssemblyEnv::from_entities(vec![root_holder.clone()]);
+    let nested_src = "module M\nlet x = H.U.R\n";
+    let nested_control = resolve(nested_src, &root_only);
+    let control_h = root_only.lookup_type(&[], "H", 0).expect("root `H`");
+    let control_nested = root_only.nested(control_h, "U", 0).expect("root `H.U`");
+    assert!(
+        binds_a_member_of(&nested_control, control_nested),
+        "control: the root `H.U.R` must bind on its own — got {:?}",
+        nested_control.resolution_at(at(nested_src, "H.U.R"))
+    );
+
+    let nested_env = AssemblyEnv::from_entities(vec![holder, root_holder]);
+    let contested_src = "module M\nopen High\nlet x = H.U.R\n";
+    let contested = resolve(contested_src, &nested_env);
+    let root_h = nested_env.lookup_type(&[], "H", 0).expect("root `H`");
+    let root_nested = nested_env.nested(root_h, "U", 0).expect("root `H.U`");
+    assert!(
+        !binds_a_member_of(&contested, root_nested),
+        "the root `H.U.R` was bound while the higher-priority `High.H.U` is a \
+         union whose cases are unknowable"
+    );
+}
