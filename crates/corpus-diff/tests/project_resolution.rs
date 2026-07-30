@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use borzoi::position::position_to_offset;
 use borzoi::semantic::{ProjectParses, SemanticState};
@@ -15,18 +15,23 @@ use borzoi_corpus_diff::{
     Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
     LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses,
     UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
-    explain_token, fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project,
-    load_lsp_project_with_limits, load_lsp_project_with_options, parse_project_uses,
-    project_candidates_from_env, project_corpus_run_options_from_env,
+    explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
+    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
+    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
     render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
+use borzoi_oracle_harness::BatchChild;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, SourceFile, qualified_names, resolve_project_files,
 };
 use lsp_types::Position;
 use tempfile::TempDir;
+
+/// One request type-checks a whole (single-file) generated project, so it gets
+/// a project-scale budget rather than the snippet-sized driver default.
+const PROJECT_ORACLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn write(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
@@ -2165,6 +2170,61 @@ fn attribute_matrix() -> Vec<AttrCell> {
     cells
 }
 
+/// The resident `uses-project-batch` child the generated sweep drives.
+///
+/// One child for the whole matrix. `invoke_fcs_uses_project` spawns a one-shot
+/// per call and, without `BORZOI_FCS_DUMP`, builds `tools/fcs-dump` first — so
+/// a cell-per-invocation loop pays a `dotnet build` and a process start twenty
+/// times over, which is most of its wall clock and grows with every shape
+/// added. The batch op exists for exactly this loop.
+///
+/// The request is the same project description the one-shot composes from
+/// `LoadedProject`: these cells carry no references, no `#if` symbols and no
+/// `<LangVersion>` pin, so `refs`/`defines`/`langversion` are empty and
+/// `exclusiveRefs` is false — which is what the one-shot does when
+/// `fcs_extra_refs` is empty (it *clears* `BORZOI_FCS_EXCLUSIVE_REFS` rather
+/// than leaving an inherited one set). A cell that ever needs a reference set
+/// must send it here too, or the oracle stops reading what our env was built
+/// from.
+///
+/// Serialised behind a mutex because a resident oracle matches requests to
+/// responses positionally, so it cannot serve concurrent callers.
+///
+/// One child across cells is safe for the isolation this sweep rests on — FCS
+/// caches by file path and each cell writes its `A.fs` under its own temporary
+/// directory — and that was checked rather than argued: the batched matrix
+/// reports the same clean/erroring split, the same graded counts and the same
+/// erroring-cell list as one one-shot invocation per cell did, in an eighth of
+/// the wall clock. The single-project tests above stay on the one-shot driver,
+/// which is the invocation the corpus runner itself makes.
+fn uses_project_batch(paths: &[PathBuf]) -> String {
+    static CHILD: OnceLock<Mutex<BatchChild>> = OnceLock::new();
+    let child = CHILD.get_or_init(|| {
+        Mutex::new(BatchChild::with_factory(
+            Box::new(|| {
+                fcs_dump_command("uses-project-batch").expect("build fcs-dump for the batch oracle")
+            }),
+            "fcs-dump uses-project-batch",
+            PROJECT_ORACLE_TIMEOUT,
+            2,
+        ))
+    });
+    let request = serde_json::json!({
+        "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "refs": Vec::<String>::new(),
+        "exclusiveRefs": false,
+    });
+    let line = child
+        .lock()
+        .expect("batch oracle mutex")
+        .request(&request.to_string());
+    assert!(
+        !line.contains("\"BatchError\""),
+        "fcs-dump uses-project-batch refused the request: {line}"
+    );
+    line
+}
+
 /// What one cell produced: the comparison the corpus runner itself would make,
 /// and the same comparison forced to grade a file whose check errored.
 struct AttrCellOutcome {
@@ -2177,6 +2237,20 @@ struct AttrCellOutcome {
     /// **real** comparator, not a second copy of its rules — only its input is
     /// relaxed. Identical to `runner` for a clean cell.
     forward: Comparison,
+    /// `forward` narrowed to the written attribute range alone.
+    ///
+    /// The floor on an erroring cell has to be counted here, not on `forward`:
+    /// that one considers every in-project use in the file — the generic
+    /// parameter, the secondary constructor's call, the abbreviation's
+    /// right-hand side — so it stays positive on declaration-body uses even if
+    /// FCS stops emitting anything at all at the attribute range, which is the
+    /// one range the sweep is about. Same defect as a whole-file
+    /// `shadowed_constructor_use` floor, one range further out.
+    ///
+    /// Narrowing the comparator's *input* again rather than its rules: the
+    /// oracle's records at that range are the whole input, so `uses_considered`
+    /// is by construction the attribute range's own count.
+    forward_at_attr: Comparison,
     fcs: Vec<FileUses>,
 }
 
@@ -2197,8 +2271,7 @@ fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
     write(&tmp.path().join("A.fs"), &cell.src);
     let loaded = load_lsp_project(&project)
         .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
-    let json = invoke_fcs_uses_project(&loaded)
-        .unwrap_or_else(|e| panic!("cell {}: fcs-dump uses-project: {e}", cell.label));
+    let json = uses_project_batch(&loaded.parses.paths);
     let sources: Vec<_> = loaded
         .parses
         .paths
@@ -2214,9 +2287,16 @@ fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
         file.diagnostics.clear();
     }
     let forward = compare_project_uses(&loaded, &relaxed);
+    let attr = attribute_name_range(&cell.src);
+    let mut only_attr = relaxed.clone();
+    for file in &mut only_attr {
+        file.uses.retain(|u| (u.start, u.end) == attr);
+    }
+    let forward_at_attr = compare_project_uses(&loaded, &only_attr);
     AttrCellOutcome {
         runner,
         forward,
+        forward_at_attr,
         fcs,
     }
 }
@@ -2337,7 +2417,7 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
         );
 
         if !checked_clean {
-            forward_graded_uses += outcome.forward.uses_considered;
+            forward_graded_uses += outcome.forward_at_attr.uses_considered;
             errored.push(&cell.label);
             continue;
         }
@@ -2386,14 +2466,16 @@ fn generated_attribute_shapes_agree_with_the_project_use_stream() {
          however wrong every attribute resolution became"
     );
     // The erroring half asserts two things per cell, and both are vacuous if
-    // the relaxed comparison grades nothing — which is precisely the state the
-    // unrelaxed one was in, asserting three things about a file it had already
-    // dropped. Nine of those cells grade between one and four uses today; the
-    // floor is what keeps the claim honest if that ever falls to nothing.
+    // the relaxed comparison grades nothing at the attribute range — which is
+    // precisely the state the unrelaxed one was in, asserting three things
+    // about a file it had already dropped. Counted at that range alone, so a
+    // declaration body's own uses cannot hold the floor up on the sweep's
+    // behalf.
     assert!(
         forward_graded_uses > 0,
-        "no use in any erroring cell was graded, so their forward assertions \
-         claim something about a comparison that examined nothing"
+        "no erroring cell had its attribute range graded, so their forward \
+         assertions claim something about a comparison that examined every \
+         range but the one in question"
     );
     // The three shapes whose ranges are crowded *differently* — a single
     // constructor, an overload set, and an abbreviation whose two records name
