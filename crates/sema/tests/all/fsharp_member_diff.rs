@@ -13,7 +13,8 @@
 //!
 //! # The property
 //!
-//! Per access site, the same two directions the C# differential asserts:
+//! Per access site, the two directions the C# differential asserts, plus one it
+//! has no need of:
 //!
 //! 1. **We commit ⇒ FCS bound a member of that name on the same declaring
 //!    type.** The currency is the declaring entity's *compiled* name, since a
@@ -22,9 +23,14 @@
 //!    location attached.
 //! 2. **Every type we publish is confirmed by the `types` oracle at its exact
 //!    range** — the soundness net the other inference differentials use.
+//! 3. **Every member FCS bound is present on the entity we project for its
+//!    declaring type**, whether or not the wake reached it. Directions 1 and 2
+//!    are about a *commit*, so a cell that declines satisfies both while the
+//!    projection underneath it has silently lost the member; this one holds the
+//!    projection to account independently of the wake.
 //!
-//! Deferring is always sound, so both directions are satisfied vacuously by an
-//! engine that answers nothing. [`MIN_COMMITS`] is the floor against a run that
+//! Deferring is always sound, so the first two directions are satisfied
+//! vacuously by an engine that answers nothing. [`MIN_COMMITS`] is the floor against a run that
 //! compares nothing, and [`ANSWERED_CELLS`] is a two-sided ratchet on *which*
 //! cells answer, so a cell that silently stops being reached is a review
 //! conversation rather than a passing suite.
@@ -61,13 +67,37 @@
 //! host pickle's published member list — the same list FCS answers from — rather
 //! than deciding from the metadata rows, which are identical whether or not the
 //! member can be named.
+//!
+//! # The generic receiver, which no union work reaches
+//!
+//! The four FSharp.Core cells all decline, and **not** for any reason this
+//! corpus is otherwise about. [`borzoi_sema::Ty::Named`] carries a dotted path
+//! and no generic-argument list, so `int option` never grounds: the receiver
+//! gets no published type at all, the access stays a `Ty::Var`, and the wake
+//! never sees a head to look a member up on. `x.IsSome` is about as common as F#
+//! member access gets, and it is silence — as is every member of `list`, `Map`,
+//! `Dictionary<_,_>`, or any other instantiated receiver.
+//!
+//! So these cells are a tripwire on a gap far larger than the union rule. They
+//! are pinned as declines exactly like the `[<CompiledName>]` cells, so whichever
+//! change first makes a generic receiver ground arrives as a review conversation
+//! about four now-answering cells.
+//!
+//! Direction 3 is what keeps them from being *only* a tripwire. Their decline is
+//! upstream of everything else, so it would equally hide an env that had lost
+//! FSharp.Core or a projection that had dropped the member — and both would leave
+//! the cells looking exactly as they do now. Holding the projection to account
+//! separately is also the only check the published-member rule gets against
+//! FSharp.Core's **hand-written** unions: `list`'s cases are `op_Nil` and
+//! `op_ColonColon`, so a rule reading case names instead of `tcaug.adhoc`
+//! surfaces neither `IsEmpty` nor `Head`, and loses `option`'s `Value` besides.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::common::fsharp_member_corpus::{Corpus, Site, corpus};
 use crate::common::{
-    ensure_fsharp_member_corpus_built, ensure_system_runtime_dll, invoke_fcs_dump_with_refs,
-    parse_fcs_types_with_errors, parse_fcs_uses, temp_fs_file,
+    ensure_fsharp_core_dll, ensure_fsharp_member_corpus_built, ensure_system_runtime_dll,
+    invoke_fcs_dump_with_refs, parse_fcs_types_with_errors, parse_fcs_uses, temp_fs_file,
 };
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
@@ -78,11 +108,11 @@ use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Resolution, infer_fil
 /// starts answering and a cell that stops are both a diff here, so neither
 /// passes unremarked.
 const ANSWERED_CELLS: &[&str] = &[
-    "class property (control) (Klass.Plain)",
-    "class property through an abbreviation (Alias.Plain)",
-    "record field (Rec.Payload)",
-    "record field, second (Rec.Label)",
-    "union case test property (Union.IsOne)",
+    "class property (control) (FSharpMember.Klass.Plain)",
+    "class property through an abbreviation (FSharpMember.Alias.Plain)",
+    "record field (FSharpMember.Rec.Payload)",
+    "record field, second (FSharpMember.Rec.Label)",
+    "union case test property (FSharpMember.Union.IsOne)",
 ];
 
 /// The floor on committed answers, against a run that compares nothing — the
@@ -122,6 +152,7 @@ enum Theirs {
 
 struct Run {
     corpus: Corpus,
+    env: AssemblyEnv,
     inferred: InferredFile,
     ours: HashMap<usize, Ours>,
     theirs: HashMap<usize, Theirs>,
@@ -161,11 +192,26 @@ fn run() -> Run {
     let dll = ensure_fsharp_member_corpus_built();
     let system_runtime = ensure_system_runtime_dll();
 
-    let bcl_bytes = std::fs::read(system_runtime).expect("read System.Runtime.dll");
+    // The oracle compiles the probe as a script, so FCS resolves it against the
+    // framework *and* FSharp.Core. Our env carries the same three: reading less
+    // than the oracle would make an FSharp.Core cell decline for want of the
+    // assembly rather than for anything the wake decided, and assert nothing.
+    // `netstandard` rides along because FSharp.Core's pickle names its BCL
+    // abbreviation targets through that CCU.
+    let netstandard = system_runtime
+        .parent()
+        .expect("System.Runtime.dll sits in a ref dir")
+        .join("netstandard.dll");
+    let bcl_bytes = std::fs::read(&system_runtime).expect("read System.Runtime.dll");
+    let netstandard_bytes = std::fs::read(&netstandard).expect("read netstandard.dll");
+    let core_bytes = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
     let fixture_bytes = std::fs::read(dll).expect("read the F# fixture dll");
     let bcl = Ecma335Assembly::parse(&bcl_bytes).expect("parse System.Runtime.dll");
+    let netstandard = Ecma335Assembly::parse(&netstandard_bytes).expect("parse netstandard.dll");
+    let core = Ecma335Assembly::parse(&core_bytes).expect("parse FSharp.Core.dll");
     let fixture = Ecma335Assembly::parse(&fixture_bytes).expect("parse the F# fixture dll");
-    let env = AssemblyEnv::from_views(&[bcl, fixture]).expect("build AssemblyEnv");
+    let env =
+        AssemblyEnv::from_views(&[bcl, netstandard, core, fixture]).expect("build AssemblyEnv");
 
     let parsed = parse(&corpus.probe);
     assert!(
@@ -222,6 +268,7 @@ fn run() -> Run {
 
     Run {
         corpus,
+        env,
         inferred,
         ours,
         theirs,
@@ -432,6 +479,72 @@ fn exactly_the_recorded_cells_answer() {
          changes to what the LSP serves on an F#-authored reference. Update \
          ANSWERED_CELLS once every move is understood."
     );
+}
+
+/// The **projection** half, which the wake cannot reach: every member FCS binds
+/// is present on the entity our env projects for its declaring type.
+///
+/// The four FSharp.Core cells decline because their receiver is generic, and
+/// that decline is upstream of everything else — so it would equally hide an env
+/// that had lost FSharp.Core entirely, or a projection that had dropped the
+/// member. Both would leave those cells looking exactly as they do now, and
+/// every other gate here would still pass.
+///
+/// This is also the only place the published-member rule is checked against
+/// FSharp.Core's **hand-written** unions rather than fsc-generated ones, and the
+/// two `list` cells are what make that bite: `list`'s cases are `op_Nil` and
+/// `op_ColonColon`, so nothing about `IsEmpty` or `Head` is derivable from a case
+/// name. A rule that read the case names instead of `tcaug.adhoc` surfaces
+/// neither.
+#[test]
+fn the_env_projects_every_member_fcs_bound() {
+    let run = run();
+    for site in &run.corpus.sites {
+        let Theirs::Bound { .. } = site_theirs(&run, site) else {
+            // `every_cell_is_still_an_access_fcs_binds` owns this failure.
+            continue;
+        };
+        let candidates = run.env.public_types_named_at_arity(
+            &site.declaring_ns,
+            &site.declaring_src,
+            site.declaring_arity(),
+        );
+        let [handle] = candidates.as_slice() else {
+            panic!(
+                "cell {}: our env holds {} public types at {}.{}, arity {} — the \
+                 declaring entity has to be unique for the member check below to \
+                 mean anything",
+                site.label,
+                candidates.len(),
+                site.declaring_ns.join("."),
+                site.declaring_src,
+                site.declaring_arity()
+            );
+        };
+        // The search key is an F# source name; FCS's currency is the compiled
+        // one. Tying them here is what stops the lookup from being a fixture
+        // claim: it must land on the entity the oracle named.
+        assert_eq!(
+            run.env.entity(*handle).name,
+            site.declaring_stem(),
+            "cell {}: {}.{} is the entity our env holds, but FCS declares the member \
+             on {}",
+            site.label,
+            site.declaring_ns.join("."),
+            site.declaring_src,
+            site.declaring_ty
+        );
+        assert!(
+            run.env.member(*handle, &site.compiled_name).is_some(),
+            "cell {}: FCS binds {}.{}, but our projection of that entity carries no \
+             member named {} — so the cell's decline is a missing member rather than \
+             the wake's verdict, and closing the wake's gap would not fix it",
+            site.label,
+            site.declaring_ty,
+            site.member,
+            site.compiled_name
+        );
+    }
 }
 
 /// The per-cell table — a measurement, not a gate.
