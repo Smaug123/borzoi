@@ -102,7 +102,6 @@ enum Theirs {
 
 struct Run {
     corpus: Corpus,
-    #[allow(dead_code)]
     inferred: InferredFile,
     ours: HashMap<usize, Ours>,
     theirs: HashMap<usize, Theirs>,
@@ -211,6 +210,17 @@ fn run() -> Run {
     }
 }
 
+impl Run {
+    /// The type we published at `range`, if any.
+    fn our_type(&self, range: (usize, usize)) -> Option<String> {
+        self.inferred
+            .types()
+            .iter()
+            .find(|(r, _)| (usize::from(r.start()), usize::from(r.end())) == range)
+            .map(|(_, ty)| ty.render())
+    }
+}
+
 fn site_ours<'a>(run: &'a Run, site: &Site) -> &'a Ours {
     run.ours.get(&site.line).unwrap_or(&Ours::Deferred)
 }
@@ -221,7 +231,6 @@ fn site_theirs<'a>(run: &'a Run, site: &Site) -> &'a Theirs {
 
 /// Direction 1: a commit of ours names a member FCS bound on the same type.
 #[test]
-#[ignore = "builds an F# fixture and runs FCS; use --ignored for oracle smoke"]
 fn every_committed_member_names_what_fcs_bound() {
     let run = run();
     let mut commits = 0usize;
@@ -234,11 +243,17 @@ fn every_committed_member_names_what_fcs_bound() {
             Theirs::Bound {
                 declaring: theirs, ..
             } => {
+                // Both halves. Two cells here read *different* members off one
+                // type (`Rec.Payload` and `Rec.Label`), so a declaring-type
+                // comparison alone ratifies answering either for the other —
+                // which is exactly the wrong go-to-definition target this gate
+                // exists to reject.
                 assert_eq!(
-                    declaring, theirs,
-                    "cell {}: we committed {declaring}.{member}, FCS bound the member on \
-                     {theirs}",
-                    site.label
+                    (declaring.as_str(), member.as_str()),
+                    (theirs.as_str(), site.member.as_str()),
+                    "cell {}: we committed {declaring}.{member}, FCS bound {theirs}.{}",
+                    site.label,
+                    site.member
                 );
             }
             Theirs::Nothing => panic!(
@@ -257,7 +272,6 @@ fn every_committed_member_names_what_fcs_bound() {
 
 /// Direction 2: the `types` oracle confirms what we publish, at the exact range.
 #[test]
-#[ignore = "builds an F# fixture and runs FCS; use --ignored for oracle smoke"]
 fn every_committed_access_is_confirmed_by_the_types_oracle() {
     let run = run();
     let mut checked = 0usize;
@@ -270,14 +284,26 @@ fn every_committed_access_is_confirmed_by_the_types_oracle() {
         if run.error_lines.contains(&site.line) {
             continue;
         }
-        assert!(
-            run.fcs_types.contains_key(&site.access),
-            "cell {}: we committed an answer at {:?} but the types oracle reports no type \
-             there, so nothing confirms it",
-            site.label,
-            site.access
-        );
-        checked += 1;
+        // The *value*, not merely a node at the range: a run where inference
+        // regressed from `int` to `string` still emits a node, so presence
+        // confirms nothing about what we published.
+        let Some(ours) = run.our_type(site.access) else {
+            // A cell can commit a member whose type the bridge declines; then we
+            // publish nothing at the access and there is nothing to confirm.
+            continue;
+        };
+        match run.fcs_types.get(&site.access) {
+            Some(fcs) if *fcs == ours => checked += 1,
+            Some(fcs) => panic!(
+                "cell {}: we typed the access `{ours}`, FCS says `{fcs}`",
+                site.label
+            ),
+            None => panic!(
+                "cell {}: we typed the access `{ours}` but the types oracle has no node \
+                 there, so nothing confirms it",
+                site.label
+            ),
+        }
     }
     assert!(
         checked >= MIN_COMMITS,
@@ -287,7 +313,6 @@ fn every_committed_access_is_confirmed_by_the_types_oracle() {
 
 /// The two-sided ratchet: exactly [`ANSWERED_CELLS`] commit.
 #[test]
-#[ignore = "builds an F# fixture and runs FCS; use --ignored for oracle smoke"]
 fn exactly_the_recorded_cells_answer() {
     let run = run();
     let answered: BTreeSet<&str> = run
