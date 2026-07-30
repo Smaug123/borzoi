@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use borzoi::position::position_to_offset;
 use borzoi::semantic::{ProjectParses, SemanticState};
@@ -12,21 +12,26 @@ use borzoi_assembly::{
     Version,
 };
 use borzoi_corpus_diff::{
-    CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses, LoadLimits,
-    LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses, UseDecl,
-    check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env, explain_token,
-    fcs_error_skip_reason, invoke_fcs_uses_project, load_lsp_project, load_lsp_project_with_limits,
-    load_lsp_project_with_options, parse_project_uses, project_candidates_from_env,
-    project_corpus_run_options_from_env, render_project_corpus_run_report,
-    run_project_corpus_diff_with_options, write_json_report_line,
+    Comparison, CorpusSummary, DeclSite, FcsDiagnostic, FcsErrorFile, FcsPos, FcsRange, FileUses,
+    LoadLimits, LoadOptions, LoadSkip, LoadedProject, ProjectAssetsStatus, ProjectUse, SkippedUses,
+    UseDecl, check_project_corpus_run, compare_project_uses, corpus_runner_config_from_env,
+    explain_token, fcs_dump_command, fcs_error_skip_reason, invoke_fcs_uses_project,
+    load_lsp_project, load_lsp_project_with_limits, load_lsp_project_with_options,
+    parse_project_uses, project_candidates_from_env, project_corpus_run_options_from_env,
+    render_project_corpus_run_report, run_project_corpus_diff_with_options, write_json_report_line,
 };
 use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
+use borzoi_oracle_harness::BatchChild;
 use borzoi_sema::{
     AssemblyEnv, ProjectFile, Resolution, SourceFile, qualified_names, resolve_project_files,
 };
 use lsp_types::Position;
 use tempfile::TempDir;
+
+/// One request type-checks a whole (single-file) generated project, so it gets
+/// a project-scale budget rather than the snippet-sized driver default.
+const PROJECT_ORACLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn write(path: &Path, text: &str) {
     if let Some(parent) = path.parent() {
@@ -2074,4 +2079,509 @@ fn select_explain_file(paths: &[PathBuf], file_arg: &str) -> usize {
             names(many)
         ),
     }
+}
+
+/// Byte range of the name written inside the cell's single `[<...>]`.
+fn attribute_name_range(src: &str) -> (usize, usize) {
+    let open = src.find("[<").expect("cell has an attribute");
+    let start = open + 2;
+    let end = src[start..].find(">]").expect("attribute is closed") + start;
+    (start, end)
+}
+
+/// One generated cell of the attribute sweep: a whole single-file project.
+struct AttrCell {
+    /// The declaration kind, carried rather than parsed back out of `label` —
+    /// `multi-ctor` contains the separator, so a label split silently yields
+    /// `multi` and a coverage floor keyed on it can never be satisfied.
+    kind: &'static str,
+    label: String,
+    src: String,
+}
+
+/// A declaration template: the declared name to the declaration text.
+type AttrDeclTemplate = fn(&str) -> String;
+
+/// The generated attribute-shape matrix, adjudicated against the **general**
+/// symbol-use stream.
+///
+/// Every declaration is in-file and every attribute type is project-declared, so
+/// a cell is graded on declaration ranges and needs no reference set. That is
+/// deliberate: threading an exclusive reference set would make each cell's
+/// verdict depend on which DLLs the ref pack happens to hold, and the question
+/// here is not which assembly an attribute came from — it is *how many answers
+/// the oracle reports at the written name's range*, which is a property of the
+/// shape alone.
+///
+/// The axes are the ones that make a range crowded, since that is the shape the
+/// attribute-specific oracle cannot express:
+///
+/// - **declaration kind** — a plain class, a *generic* class, a class with two
+///   constructors, an abbreviation of a class, and an `exception` (which
+///   declares a type in the same namespace without being one an attribute may
+///   name). An abbreviation and a multi-constructor class are the two shapes
+///   where the entity record and the constructor record at one range carry
+///   *different* declarations.
+/// - **declared name** vs **written form** — `Mark` against `MarkAttribute`,
+///   crossed, which is F#'s suffix-first candidate walk. Both spellings are
+///   declared in-file rather than contested against `FSharp.Core`, so the
+///   contest is exercised without a reference set deciding it.
+fn attribute_matrix() -> Vec<AttrCell> {
+    let decl_kinds: [(&str, AttrDeclTemplate); 5] = [
+        ("class", |n| {
+            format!("type {n}() =\n    inherit System.Attribute()\n")
+        }),
+        ("generic", |n| {
+            format!("type {n}<'T>() =\n    inherit System.Attribute()\n")
+        }),
+        // Two constructors: the constructor record at the attribute's range
+        // cannot name a unique declaration, so the entity record must be the
+        // one that grades the site.
+        ("multi-ctor", |n| {
+            format!("type {n}(x: int) =\n    inherit System.Attribute()\n    new () = {n}(0)\n")
+        }),
+        // The #226 shape: the written name is an abbreviation, so the entity
+        // record names the abbreviation and the constructor record names the
+        // target — two records, two declarations, one range.
+        ("abbrev", |n| {
+            format!("type {n}Base() =\n    inherit System.Attribute()\n\ntype {n} = {n}Base\n")
+        }),
+        ("exception", |n| format!("exception {n} of string\n")),
+    ];
+    let names = ["Mark", "MarkAttribute"];
+    let writtens = ["Mark", "MarkAttribute"];
+
+    let mut cells = Vec::new();
+    // The **contested** shape, which the crossed axes above cannot express: a
+    // cell declares `Mark` or `MarkAttribute`, never both, so only one
+    // candidate can resolve and a resolver that tried the written name before
+    // the suffixed one would answer every other cell identically. Here both are
+    // declared at distinct ranges, so F#'s suffix-first walk is decidable from
+    // the answer alone — `[<Mark>]` must bind `MarkAttribute`, and binding
+    // `Mark` is exactly the wrong-order resolver. `[<MarkAttribute>]` binds it
+    // too, by the second candidate, so the pair also pins that the first
+    // candidate's *failure* falls through rather than ending the walk.
+    for written in &writtens {
+        let mut src = String::from("module Test\n\n");
+        src.push_str("type Mark() =\n    inherit System.Attribute()\n\n");
+        src.push_str("type MarkAttribute() =\n    inherit System.Attribute()\n\n");
+        src.push_str(&format!("[<{written}>]\nlet x = 5\n"));
+        cells.push(AttrCell {
+            kind: "contested",
+            label: format!("contested-written{written}"),
+            src,
+        });
+    }
+    for (kind, template) in &decl_kinds {
+        for name in &names {
+            for written in &writtens {
+                let mut src = String::from("module Test\n\n");
+                src.push_str(&template(name));
+                src.push('\n');
+                src.push_str(&format!("[<{written}>]\nlet x = 5\n"));
+                cells.push(AttrCell {
+                    kind,
+                    label: format!("{kind}-decl{name}-written{written}"),
+                    src,
+                });
+            }
+        }
+    }
+    cells
+}
+
+/// The resident `uses-project-batch` child the generated sweep drives.
+///
+/// One child for the whole matrix. `invoke_fcs_uses_project` spawns a one-shot
+/// per call and, without `BORZOI_FCS_DUMP`, builds `tools/fcs-dump` first — so
+/// a cell-per-invocation loop pays a `dotnet build` and a process start twenty
+/// times over, which is most of its wall clock and grows with every shape
+/// added. The batch op exists for exactly this loop.
+///
+/// The request is the same project description the one-shot composes from
+/// `LoadedProject`: these cells carry no references, no `#if` symbols and no
+/// `<LangVersion>` pin, so `refs`/`defines`/`langversion` are empty and
+/// `exclusiveRefs` is false — which is what the one-shot does when
+/// `fcs_extra_refs` is empty (it *clears* `BORZOI_FCS_EXCLUSIVE_REFS` rather
+/// than leaving an inherited one set). A cell that ever needs a reference set
+/// must send it here too, or the oracle stops reading what our env was built
+/// from.
+///
+/// Serialised behind a mutex because a resident oracle matches requests to
+/// responses positionally, so it cannot serve concurrent callers.
+///
+/// One child across cells is safe for the isolation this sweep rests on — FCS
+/// caches by file path and each cell writes its `A.fs` under its own temporary
+/// directory — and that was checked rather than argued: the batched matrix
+/// reports the same clean/erroring split, the same graded counts and the same
+/// erroring-cell list as one one-shot invocation per cell did, in an eighth of
+/// the wall clock. The single-project tests above stay on the one-shot driver,
+/// which is the invocation the corpus runner itself makes.
+fn uses_project_batch(paths: &[PathBuf]) -> String {
+    static CHILD: OnceLock<Mutex<BatchChild>> = OnceLock::new();
+    let child = CHILD.get_or_init(|| {
+        Mutex::new(BatchChild::with_factory(
+            Box::new(|| {
+                fcs_dump_command("uses-project-batch").expect("build fcs-dump for the batch oracle")
+            }),
+            "fcs-dump uses-project-batch",
+            PROJECT_ORACLE_TIMEOUT,
+            2,
+        ))
+    });
+    let request = serde_json::json!({
+        "paths": paths.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        "refs": Vec::<String>::new(),
+        "exclusiveRefs": false,
+    });
+    let line = child
+        .lock()
+        .expect("batch oracle mutex")
+        .request(&request.to_string());
+    assert!(
+        !line.contains("\"BatchError\""),
+        "fcs-dump uses-project-batch refused the request: {line}"
+    );
+    line
+}
+
+/// What one cell produced: the comparison the corpus runner itself would make,
+/// and the same comparison forced to grade a file whose check errored.
+struct AttrCellOutcome {
+    /// Exactly what the runner would do with this project. Empty of everything
+    /// but `fcs_error_files` when the check errored, since
+    /// `compare_project_uses` skips such a file before it looks at a single use.
+    runner: Comparison,
+    /// The comparison with the file's error diagnostics cleared, so the records
+    /// FCS *did* emit are graded even for a cell that does not compile. The
+    /// **real** comparator, not a second copy of its rules — only its input is
+    /// relaxed. Identical to `runner` for a clean cell.
+    forward: Comparison,
+    /// `forward` narrowed to the written attribute range alone.
+    ///
+    /// The floor on an erroring cell has to be counted here, not on `forward`:
+    /// that one considers every in-project use in the file — the generic
+    /// parameter, the secondary constructor's call, the abbreviation's
+    /// right-hand side — so it stays positive on declaration-body uses even if
+    /// FCS stops emitting anything at all at the attribute range, which is the
+    /// one range the sweep is about. Same defect as a whole-file
+    /// `shadowed_constructor_use` floor, one range further out.
+    ///
+    /// Narrowing the comparator's *input* again rather than its rules: the
+    /// oracle's records at that range are the whole input, so `uses_considered`
+    /// is by construction the attribute range's own count.
+    forward_at_attr: Comparison,
+    fcs: Vec<FileUses>,
+}
+
+/// Run one generated cell as its own single-file project.
+///
+/// One project per cell, not one project of many files: a cell may declare its
+/// attribute inside a module that later cells would see, and an
+/// `[<AutoOpen>]`-shaped declaration leaks to every later file in the same
+/// Compile order — so sharing a project would let one cell decide another's
+/// verdict.
+fn run_attribute_cell(cell: &AttrCell) -> AttrCellOutcome {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let project = tmp.path().join("AttrCell.fsproj");
+    write(
+        &project,
+        "<Project>\n  <ItemGroup>\n    <Compile Include=\"A.fs\" />\n  </ItemGroup>\n</Project>\n",
+    );
+    write(&tmp.path().join("A.fs"), &cell.src);
+    let loaded = load_lsp_project(&project)
+        .unwrap_or_else(|e| panic!("cell {} should load: {e:?}", cell.label));
+    let json = uses_project_batch(&loaded.parses.paths);
+    let sources: Vec<_> = loaded
+        .parses
+        .paths
+        .iter()
+        .cloned()
+        .zip(loaded.parses.texts.iter().cloned())
+        .collect();
+    let fcs = parse_project_uses(&json, &sources)
+        .unwrap_or_else(|e| panic!("cell {}: parse FCS uses: {e:?}", cell.label));
+    let runner = compare_project_uses(&loaded, &fcs);
+    let mut relaxed = fcs.clone();
+    for file in &mut relaxed {
+        file.diagnostics.clear();
+    }
+    let forward = compare_project_uses(&loaded, &relaxed);
+    let attr = attribute_name_range(&cell.src);
+    let mut only_attr = relaxed.clone();
+    for file in &mut only_attr {
+        file.uses.retain(|u| (u.start, u.end) == attr);
+    }
+    let forward_at_attr = compare_project_uses(&loaded, &only_attr);
+    AttrCellOutcome {
+        runner,
+        forward,
+        forward_at_attr,
+        fcs,
+    }
+}
+
+/// The oracle records at `range`, split by whether they are constructor records
+/// — the crowding this sweep is about, read at the written attribute name
+/// itself rather than anywhere in the file.
+fn records_at(fcs: &[FileUses], range: (usize, usize)) -> (usize, usize) {
+    let at = fcs
+        .iter()
+        .flat_map(|f| f.uses.iter())
+        .filter(|u| (u.start, u.end) == range);
+    let mut constructors = 0;
+    let mut named = 0;
+    for u in at {
+        if u.is_constructor {
+            constructors += 1;
+        } else {
+            named += 1;
+        }
+    }
+    (named, constructors)
+}
+
+/// The sweep: every generated attribute shape graded through the same
+/// comparison the corpus runner uses.
+///
+/// `attr_resolution_sweep` in `borzoi-sema` already enumerates a larger
+/// *semantic* matrix, but it rides on `fcs-dump attrs`, which emits one record
+/// per attribute — it filters the sink to entity uses and groups by range, so
+/// the constructor record is dropped before the harness ever sees it. That is a
+/// sound projection for the question that oracle answers, and it makes the
+/// oracle structurally unable to disagree with itself about how many answers a
+/// site has. The corpus runner grades attributes through `uses-project`, where
+/// both records survive and `oracle_shape` decides between them, so a shape
+/// where the two streams part company can pass the sema sweep and diverge on a
+/// real project — which is exactly what happened to the abbreviation-aliased
+/// attribute, found by review rather than by any test.
+///
+/// This sweep is therefore not a second copy of that one. It asks the narrower
+/// question the other cannot: for each shape, does the crowded range still
+/// resolve to one adjudicable answer, and is it ours?
+///
+/// What it adds over [`alias_attribute_project_matches_fcs`] is **breadth, not
+/// power against the known case** — measured, not assumed. Folding the
+/// constructor-shadowing rule out of `oracle_shape` fails that fixture too, so
+/// this does not catch the #226 defect any better; it catches the *next* shape
+/// in that class. The mutation lands here on `multi-ctor`, a shape neither the
+/// fixture (an abbreviation) nor the sema matrix (no multi-constructor axis)
+/// contains, which is the whole argument for generating the population rather
+/// than hand-picking a representative of it.
+///
+/// Certain-implies-exact per cell — our commit names FCS's resolution or we
+/// decline.
+///
+/// The assertions are **per cell and at the written attribute range**, not
+/// file-aggregate floors, because an aggregate floor here is satisfied by
+/// accident: every class-based cell also contains `inherit System.Attribute()`,
+/// which is itself a range carrying a type record and a constructor record, so
+/// a whole-file `shadowed_constructor_use > 0` stays true even if no `[<...>]`
+/// site shadows anything at all. Measured, not supposed — every clean cell
+/// reports exactly two records at its attribute range, one of them a
+/// constructor, and the file total is two per cell, so precisely half of it is
+/// the inheritance.
+///
+/// **A cell whose check errors is graded, not skipped.** Only three of the four
+/// name-against-written combinations resolve — F# tries `XAttribute` then `X`
+/// and never strips a suffix, so a written `MarkAttribute` against a declared
+/// `Mark` names neither — and an `exception` is not an `Attribute` subclass at
+/// all. About half the matrix therefore type-checks with errors, currently
+/// including *every* generic cell.
+///
+/// `compare_project_uses` drops such a file whole, before it looks at a single
+/// use, so running it alone would leave those cells asserting nothing while
+/// appearing to assert three things. They are graded by relaxing its *input*
+/// instead — the diagnostics are cleared and the real comparator runs — and
+/// only in the **forward** direction: an erroring check under-reports its sink,
+/// so a record it never emitted is no evidence against a resolution of ours,
+/// but a record it did emit still has to be what we say. That asymmetry is why
+/// the reverse direction is asserted for clean cells only.
+///
+/// This does *not* catch a resolver that strips the `Attribute` suffix: FCS
+/// emits nothing at the range it would bind, and absence under an erroring
+/// check implicates nobody. Which cells error is read off FCS rather than
+/// listed here — a hand-kept legality table would be one more thing to get
+/// wrong, and it would go stale the moment a language version changed which
+/// shapes compile.
+///
+/// **No coverage floor is an aggregate.** A count summed over cells and checked
+/// after the loop is held up by whichever cells still work, so a whole axis can
+/// go dark behind it — the same way a whole-file count is held up by a
+/// declaration body. Both are the one mistake, at different widths, so the
+/// floors here are stated at the only two widths that cannot hide a subset:
+///
+/// - **per cell**: if the oracle speaks at a cell's attribute range, that cell's
+///   comparison must have graded it. Whether the oracle speaks is read from the
+///   oracle, per cell, so the assertion is skipped only where there is provably
+///   nothing to assert.
+/// - **per declaration kind**: every kind the matrix generates must be graded
+///   *somewhere*, in whichever population it lands in. That survives a language
+///   version moving a kind between the two — which is a legitimate change, and
+///   would make a floor keyed to one population fail for no reason — while
+///   still failing loudly if a kind stops being graded at all. The list comes
+///   from the generated cells, so it cannot fall behind the matrix.
+#[test]
+#[ignore = "builds/runs FCS; use --ignored for oracle smoke"]
+fn generated_attribute_shapes_agree_with_the_project_use_stream() {
+    let cells = attribute_matrix();
+    eprintln!("attribute uses-project sweep: {} cells", cells.len());
+
+    let mut attribute_commits = 0usize;
+    let mut crowded_cells = 0usize;
+    // Kinds graded as a compiling shape, and kinds graded only through the
+    // relaxed comparison. Kept apart so the report says which population a kind
+    // is covered by, and unioned for the floor so a kind moving between them is
+    // not a failure.
+    let mut clean_kinds: BTreeSet<&str> = BTreeSet::new();
+    let mut erroring_kinds: BTreeSet<&str> = BTreeSet::new();
+    let all_kinds: BTreeSet<&str> = cells.iter().map(|c| c.kind).collect();
+    let mut errored: Vec<&str> = Vec::new();
+
+    for cell in &cells {
+        let outcome = run_attribute_cell(cell);
+        // Every cell takes one path: the facts first, then assertions each
+        // guarded by the precondition it actually needs. Branching on the
+        // clean/erroring split instead would state every rule twice, once per
+        // side, and a rule stated on one side only is silent rather than a
+        // compile error — so the conditions belong on the assertions, not on
+        // which arm the cell fell into.
+        let clean = outcome.runner.fcs_error_files.is_empty();
+        let attr = attribute_name_range(&cell.src);
+        let (named, constructors) = records_at(&outcome.fcs, attr);
+        let oracle_speaks_here = named + constructors > 0;
+        let graded_at_attr = outcome.forward_at_attr.uses_considered > 0;
+
+        if !clean {
+            errored.push(&cell.label);
+        }
+
+        // Our commits must name what FCS reported, whether or not the rest of
+        // the file type-checked.
+        assert_eq!(
+            outcome.forward.divergences,
+            Vec::new(),
+            "cell {}: project-declaration divergence",
+            cell.label
+        );
+        assert_eq!(
+            outcome.forward.assembly_divergences,
+            Vec::new(),
+            "cell {}: assembly-identity divergence",
+            cell.label
+        );
+
+        // If the oracle spoke at this range, this cell's own comparison has to
+        // have graded it — a total over cells would let the shapes that still
+        // work vouch for the ones that stopped.
+        if oracle_speaks_here {
+            assert!(
+                graded_at_attr,
+                "cell {}: the oracle reports {} record(s) at the attribute \
+                 range but the comparison graded none of them, so this cell's \
+                 assertions examined nothing",
+                cell.label,
+                named + constructors
+            );
+        }
+
+        if clean {
+            assert_eq!(
+                outcome.runner.reverse_divergences,
+                Vec::new(),
+                "cell {}: reverse divergence",
+                cell.label
+            );
+            // A range the comparator cannot adjudicate is decided on the
+            // oracle's answers alone, so it cannot produce a *wrong* pass — but
+            // it silently drops exactly the per-shape comparison this sweep
+            // exists to make, and a sweep that loses its subject while staying
+            // green is the failure mode the whole file is written against.
+            assert_eq!(
+                outcome.runner.skipped_uses.ambiguous_oracle_range, 0,
+                "cell {}: the attribute range stopped being adjudicable, so \
+                 this shape is no longer compared at all",
+                cell.label
+            );
+            assert_eq!(
+                named, 1,
+                "cell {}: the written attribute name must carry exactly one \
+                 non-constructor record for the site to have an answer",
+                cell.label
+            );
+            assert!(
+                constructors >= 1,
+                "cell {}: no constructor record at the attribute range, so \
+                 this cell no longer exercises the crowding the sweep is \
+                 about — the shape or the oracle changed under it",
+                cell.label
+            );
+            // Per clean cell, not summed. A shape whose attribute answer
+            // regresses to a deferral produces no *divergence* — the comparator
+            // records a deferral, and `graded_at_attr` stays true because FCS
+            // reported a use — so a total is held up by the shapes that still
+            // resolve. Removing the resolver's fallback to the suffixed
+            // candidate takes the total from eleven to four and every
+            // divergence assertion stays green; this is what notices.
+            assert!(
+                outcome.runner.attribute_commits_compared >= 1,
+                "cell {}: the attribute answer stopped being committed, so this \
+                 shape is deferred rather than resolved and nothing here \
+                 compares it",
+                cell.label
+            );
+            crowded_cells += 1;
+            attribute_commits += outcome.runner.attribute_commits_compared;
+        }
+
+        // Coverage is claimed only where the range was actually graded, in
+        // either population: `records_at` reads the raw stream, so a record the
+        // comparator's own eligibility rules skip is visible here while being
+        // compared nowhere.
+        if graded_at_attr {
+            if clean {
+                clean_kinds.insert(cell.kind);
+            } else {
+                erroring_kinds.insert(cell.kind);
+            }
+        }
+    }
+
+    // Every declaration kind the matrix generates has to be graded somewhere.
+    // Not per population: a language version that starts or stops compiling a
+    // kind moves it between the two legitimately, and a floor keyed to one
+    // would fail for a change that lost no coverage at all. What it will not
+    // survive is a kind that stops being graded in *either*.
+    for kind in &all_kinds {
+        assert!(
+            clean_kinds.contains(kind) || erroring_kinds.contains(kind),
+            "no {kind} cell was graded in either population, so the sweep no \
+             longer covers that shape; graded clean {clean_kinds:?}, graded \
+             through the relaxed comparison {erroring_kinds:?}, and these cells \
+             errored: {errored:?}"
+        );
+    }
+    // The three shapes whose attribute ranges are crowded *differently* — a
+    // single constructor, an overload set, and an abbreviation whose two
+    // records name different declarations — have to be graded as compiling
+    // shapes specifically. That is the subject of the sweep, and the relaxed
+    // comparison is a weaker check than the one they exist to get.
+    for kind in ["class", "multi-ctor", "abbrev"] {
+        assert!(
+            clean_kinds.contains(kind),
+            "no {kind} cell was graded as a clean check, so the crowded-range \
+             comparison it exists for is no longer made; graded clean \
+             {clean_kinds:?} and these cells errored: {errored:?}"
+        );
+    }
+
+    eprintln!(
+        "attribute uses-project sweep: {} cells checked clean ({crowded_cells} with a \
+         crowded attribute range), {} graded through the relaxed comparison, \
+         {attribute_commits} attribute commits compared; kinds graded clean \
+         {clean_kinds:?}, kinds graded only relaxed {erroring_kinds:?}",
+        cells.len() - errored.len(),
+        errored.len(),
+    );
+    eprintln!("attribute uses-project sweep: cells whose check errored {errored:?}");
 }

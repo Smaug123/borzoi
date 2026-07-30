@@ -21,6 +21,10 @@ serde_json = "1"
 
 [dev-dependencies]
 borzoi-assembly = { path = "../assembly" }
+# The resident-oracle driver. A generated per-project sweep spawns one child and
+# sends a request per case; a one-shot per case pays a `dotnet build` and a
+# process start each time.
+borzoi-oracle-harness = { path = "../oracle-harness" }
 borzoi-cst = { path = "../cst" }
 # The recorder that publishes this crate's generator summary. A dev-dependency
 # so the contract is checked by the real validator rather than by a second copy

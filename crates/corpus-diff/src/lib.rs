@@ -785,7 +785,14 @@ impl fmt::Display for FcsInvokeError {
 
 impl std::error::Error for FcsInvokeError {}
 
-fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
+/// The `fcs-dump` invocation for `subcommand`, building the tool on demand.
+///
+/// `pub` so a differential that drives the **resident** oracle
+/// (`…-batch`) locates the binary exactly as the one-shot callers here do
+/// rather than re-deriving the path: without `BORZOI_FCS_DUMP` this builds
+/// `tools/fcs-dump` on *every* call, so a per-case loop that spawns one-shots
+/// pays a `dotnet build` per case.
+pub fn fcs_dump_command(subcommand: &str) -> Result<Command, FcsInvokeError> {
     if let Some(bin) = std::env::var_os("BORZOI_FCS_DUMP") {
         let mut c = Command::new(bin);
         c.arg(subcommand);
