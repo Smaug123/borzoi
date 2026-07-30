@@ -40,19 +40,27 @@
 //!
 //! # What it found
 //!
-//! The wake reaches record fields, a class property, and either of those through
-//! an abbreviation. It **declines** three shapes FCS binds, and
-//! [`ANSWERED_CELLS`] pins that:
+//! The wake reaches record fields, a class property, either of those through an
+//! abbreviation, and a union's case-test property (`IsOne`). It **declines** a
+//! `[<CompiledName>]` member, directly and through an abbreviation: the metadata
+//! carries `CompiledRenamed` and every F# source writes `Renamed`, so a lookup
+//! keyed on the written name finds nothing. Nothing in the assembly records the
+//! source name — the `[CompilationSourceName]` on the getter carries the
+//! *getter's* own name, `get_Renamed` — so recovering it is a derivation rather
+//! than a read, and [`ANSWERED_CELLS`] pins the decline until one is justified.
 //!
-//! - a `[<CompiledName>]` member, directly and through an abbreviation. The
-//!   metadata carries `CompiledRenamed` and every F# source writes `Renamed`, so
-//!   a lookup keyed on the written name finds nothing;
-//! - a union's case-test property (`IsOne`).
+//! The decline is never a wrong answer, so this is a silence rather than a
+//! soundness bug — but it is silence on the most ordinary reference a solution
+//! has. The ratchet is what turns closing it into a review conversation instead
+//! of a quietly-changed test.
 //!
-//! All three are declines, never wrong answers, so this is a silence rather than
-//! a soundness bug — but it is silence on the most ordinary reference a solution
-//! has. The ratchet is what turns closing any of them into a review conversation
-//! instead of a quietly-changed test.
+//! The case-test property was the same kind of silence and is now closed: FCS
+//! surfaces an `Is<Case>` per union case, and the projector was dropping every
+//! union property because no attribute tells one from the `Tag` discriminant FCS
+//! hides. `retain_published_union_properties` (in `borzoi-assembly`) reads the
+//! host pickle's published member list — the same list FCS answers from — rather
+//! than deciding from the metadata rows, which are identical whether or not the
+//! member can be named.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -74,6 +82,7 @@ const ANSWERED_CELLS: &[&str] = &[
     "class property through an abbreviation (Alias.Plain)",
     "record field (Rec.Payload)",
     "record field, second (Rec.Label)",
+    "union case test property (Union.IsOne)",
 ];
 
 /// The floor on committed answers, against a run that compares nothing — the

@@ -4381,11 +4381,6 @@ let rec private projectEntity (e: FSharpEntity) : objnull =
             // the pickle view is unfiltered, and the Rust normaliser
             // drops private/internal members.
             |> Seq.filter (fun m -> m.Accessibility.IsPublic || m.Accessibility.IsProtected)
-            // FCS synthesises an `IsC0`/`IsC1`/… case-tester property
-            // symbol per union case; the Rust side's F#-member filter
-            // hides the whole compiler-generated union surface, so drop
-            // the testers here too.
-            |> Seq.filter (fun m -> not m.IsUnionCaseTester)
             |> Seq.map (fun m ->
                 // An indexed property (an F# `Item` indexer) carries its
                 // index dimension in `CurriedParameterGroups`; rendering
