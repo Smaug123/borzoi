@@ -1192,15 +1192,6 @@ pub fn ensure_member_hiding_corpus_built(csharp: &str) -> &'static Path {
         .as_path()
 }
 
-/// Build the **companion-head** corpus (`tests/fixtures/companion_env`) once per
-/// test binary and return its `.dll` path.
-///
-/// One assembly, because the question is what a *single* `(namespace, name)`
-/// holds — a type, its companion module, or both — rather than how two
-/// assemblies contest a name (that is [`ensure_tier_corpus_built`]'s). Its
-/// `Generated.fs` is not checked in: it is emitted from
-/// [`companion_corpus`]'s dimension enums here, under the shared [`BUILD_LOCK`]
-/// like every other fixture.
 /// Build the **F#-authored member** corpus (`tests/fixtures/fsharp_member_env`)
 /// once per test binary and return its `.dll` path.
 ///
@@ -1235,6 +1226,15 @@ pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **companion-head** corpus (`tests/fixtures/companion_env`) once per
+/// test binary and return its `.dll` path.
+///
+/// One assembly, because the question is what a *single* `(namespace, name)`
+/// holds — a type, its companion module, or both — rather than how two
+/// assemblies contest a name (that is [`ensure_tier_corpus_built`]'s). Its
+/// `Generated.fs` is not checked in: it is emitted from
+/// [`companion_corpus`]'s dimension enums here, under the shared [`BUILD_LOCK`]
+/// like every other fixture.
 pub fn ensure_companion_corpus_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
