@@ -82,6 +82,17 @@ const ANSWERED_CELLS: &[&str] = &[
 /// exact set) so it is a tripwire rather than a second copy of it.
 const MIN_COMMITS: usize = 3;
 
+/// The `SymbolKind`s that name a **data member** — the only subjects this wake
+/// answers about. A record field arrives as `field` and a property as `member`;
+/// anything else at the range (a union *case* beside its case-test property, a
+/// constructor beside a type) is a different subject, and grading against it
+/// would let FCS ratify an answer about something else.
+const DATA_MEMBER_KINDS: [&str; 2] = ["member", "field"];
+
+fn is_data_member(kind: Option<&str>) -> bool {
+    kind.is_some_and(|k| DATA_MEMBER_KINDS.contains(&k))
+}
+
 /// What we answered at one site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Ours {
@@ -241,8 +252,25 @@ fn every_committed_member_names_what_fcs_bound() {
         commits += 1;
         match site_theirs(&run, site) {
             Theirs::Bound {
-                declaring: theirs, ..
+                declaring: theirs,
+                kind,
             } => {
+                // FCS still emits a symbol use for an access it errored on, and
+                // a use of a non-data-member subject at the same range names
+                // something else entirely. Neither may ratify a commit.
+                assert!(
+                    !run.error_lines.contains(&site.line),
+                    "cell {}: we committed {declaring}.{member} on a line FCS reported an \
+                     error for, so its use is no evidence the read is legal",
+                    site.label
+                );
+                assert!(
+                    is_data_member(kind.as_deref()),
+                    "cell {}: we committed {declaring}.{member} but FCS bound a \
+                     {} there, which is a different subject",
+                    site.label,
+                    kind.as_deref().unwrap_or("kind-less symbol")
+                );
                 // Both halves. Two cells here read *different* members off one
                 // type (`Rec.Payload` and `Rec.Label`), so a declaring-type
                 // comparison alone ratifies answering either for the other —
@@ -274,6 +302,30 @@ fn every_committed_member_names_what_fcs_bound() {
 #[test]
 fn every_committed_access_is_confirmed_by_the_types_oracle() {
     let run = run();
+    // Everything we publish, not only the accesses: an inference regression on a
+    // receiver or a binding is a wrong type served by hover just as much as one
+    // on the access itself. A *missing* FCS node is not disagreement — its typed
+    // tree omits what it could not check and reshapes what it elaborates — but a
+    // node that disagrees is.
+    let mut wrong: Vec<String> = Vec::new();
+    for (range, ty) in run.inferred.types() {
+        let key = (usize::from(range.start()), usize::from(range.end()));
+        if let Some(fcs) = run.fcs_types.get(&key)
+            && *fcs != ty.render()
+        {
+            wrong.push(format!(
+                "  {key:?}: we typed `{}`, FCS says `{fcs}`",
+                ty.render()
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} published type(s) the oracle does not confirm:\n{}",
+        wrong.len(),
+        wrong.join("\n")
+    );
+
     let mut checked = 0usize;
     for site in &run.corpus.sites {
         if !matches!(site_ours(&run, site), Ours::Member { .. }) {
@@ -309,6 +361,47 @@ fn every_committed_access_is_confirmed_by_the_types_oracle() {
         checked >= MIN_COMMITS,
         "only {checked} committed accesses were confirmed, below the {MIN_COMMITS} floor"
     );
+}
+
+/// The **oracle-side** invariant, which the ratchet cannot express: every cell
+/// is still a legal access that FCS binds to a data member of the expected type.
+///
+/// Without it a dimension can vanish silently. Our answer at the three deferred
+/// cells is `Deferred`, and `Deferred` is also what we would report if the
+/// fixture stopped declaring `Renamed` at all — so [`ANSWERED_CELLS`] would not
+/// move, every soundness gate would still pass, and the corpus would have
+/// quietly lost the shape it exists to cover.
+#[test]
+fn every_cell_is_still_an_access_fcs_binds() {
+    let run = run();
+    for site in &run.corpus.sites {
+        assert!(
+            !run.error_lines.contains(&site.line),
+            "cell {}: FCS reports an error on this line, so the probe is no longer a legal \
+             access and the cell tests nothing",
+            site.label
+        );
+        match site_theirs(&run, site) {
+            Theirs::Bound { declaring, kind } => {
+                assert_eq!(
+                    declaring, &site.declaring_ty,
+                    "cell {}: FCS now binds the member on {declaring}, not {}",
+                    site.label, site.declaring_ty
+                );
+                assert!(
+                    is_data_member(kind.as_deref()),
+                    "cell {}: FCS binds a {} here rather than a data member",
+                    site.label,
+                    kind.as_deref().unwrap_or("kind-less symbol")
+                );
+            }
+            Theirs::Nothing => panic!(
+                "cell {}: FCS binds nothing at this access — the fixture or the probe stopped \
+                 declaring what the cell is about",
+                site.label
+            ),
+        }
+    }
 }
 
 /// The two-sided ratchet: exactly [`ANSWERED_CELLS`] commit.
