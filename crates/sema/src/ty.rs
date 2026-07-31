@@ -344,6 +344,46 @@ mod tests {
         assert_eq!(arr(Ty::Param(0)).render_fsharp(), "'a[]");
     }
 
+    /// The mirror of the array rule: a **generic argument** that is a tuple or a
+    /// function is *not* parenthesised, because a comma-separated argument list
+    /// has nothing to regroup — both `*` and `->` bind tighter than `,`. The F#
+    /// compiler reads `Func<int -> string, bool>` and
+    /// `Dictionary<int * string, bool>` as two-argument applications for exactly
+    /// that reason.
+    ///
+    /// The rendering stays injective without the parens, which is the property
+    /// that actually matters for a comparison currency: a single tuple argument
+    /// and a two-argument application are distinct strings.
+    #[test]
+    fn renders_a_structural_generic_argument_bare() {
+        let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
+        let fun = Ty::Fun {
+            arg: Box::new(Ty::named("System.Int32")),
+            ret: Box::new(Ty::named("System.String")),
+        };
+        let app = |args: Vec<Ty>| Ty::Named {
+            path: vec!["N".to_owned(), "H".to_owned()],
+            args,
+        };
+
+        assert_eq!(
+            app(vec![pair.clone()]).render(),
+            "N.H<System.Int32 * System.String>"
+        );
+        assert_eq!(app(vec![pair.clone()]).render_fsharp(), "N.H<int * string>");
+        assert_eq!(
+            app(vec![fun.clone()]).render(),
+            "N.H<System.Int32 -> System.String>"
+        );
+        assert_eq!(app(vec![fun]).render_fsharp(), "N.H<int -> string>");
+
+        // Injectivity: one tuple argument never collides with two arguments.
+        assert_ne!(
+            app(vec![pair]).render(),
+            app(vec![Ty::named("System.Int32"), Ty::named("System.String")]).render()
+        );
+    }
+
     #[test]
     fn renders_tuples() {
         let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
