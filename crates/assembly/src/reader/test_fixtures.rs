@@ -22,7 +22,20 @@ use borzoi_spawn::BoundedCommand;
 /// `[<CompiledName>]`-renamed `[<Literal>]` whose IL-heuristic projection is
 /// pinned in `ecma335_assembly`'s tests, and is deliberately never diffed whole
 /// against fcs-dump, so the skip it provokes stays local to that test.
-const FIXTURES: [&str; 4] = ["MiniLib", "MiniLibFs", "MiniLibFsExt", "LiteralConsts"];
+///
+/// `MiniLibFsTypars` is here for the same reason and is likewise never diffed
+/// whole: it declares F#-authored *generic* types, which `fcs-dump entities`
+/// refuses (FCS reads them out of signature data, so `IsILTycon` is false and
+/// the raw IL typar row the differential compares against is unreachable). It
+/// is the only fixture carrying an F# type parameter, which is what makes the
+/// F#-constraint blanking observable at all.
+const FIXTURES: [&str; 5] = [
+    "MiniLib",
+    "MiniLibFs",
+    "MiniLibFsExt",
+    "LiteralConsts",
+    "MiniLibFsTypars",
+];
 
 /// Budget for one fixture `dotnet build`.
 ///

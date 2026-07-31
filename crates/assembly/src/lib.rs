@@ -50,10 +50,10 @@ pub use fsharp_pickle_merge::{ModuleMemberTarget, ModuleMemberVal, collect_modul
 pub use model::{
     AbbreviationTarget, Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation,
     CompilerFeatureRequired, ConstantValue, CustomAttr, DefaultMember, Entity, EntityKind, Event,
-    Experimental, Field, FsharpOverlayKind, FsharpSourceRange, ImplementedMember, IndexParameter,
-    InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
-    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
-    SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter, TypeRef,
-    UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    Experimental, FSharpConstraints, Field, FsharpOverlayKind, FsharpSourceRange,
+    ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike, MethodSignature,
+    ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property,
+    SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeForwarder, TypeParameter,
+    TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 pub use view::{EcmaView, FSharpResource, ResourceKind};
