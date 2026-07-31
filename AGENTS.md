@@ -339,12 +339,18 @@ nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --i
 nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
 ```
 
-Their floors are pinned to exact measured values, so **improving the code fails
-them**: a parser change that cleanly parses one more file pushes
-`MIN_CLEAN_PARSES` past its constant. That is the intended direction — bump the
-constant in the same commit, with the date and the new figure, exactly as the
-existing comments do. What must never happen is loosening one to make a red run
-green without establishing which direction it moved.
+`parser_corpus`'s `CLEAN_PARSES` is **two-sided**, so **improving the parser
+fails it**: parse one more file cleanly and it goes red until you bump the
+constant, with the date and the new figure. That is deliberate — the corpus is
+content-addressed and the parser deterministic, so there is no drift for a
+one-sided floor to absorb, and a one-sided floor is exactly what rotted 2,401
+files deep while nothing ran the sweep. The same discipline `ci.yml`'s
+`BORZOI_PROJECT_EXPECT_DIVERGENCES` already applies, for the reason stated
+there: a one-sided bound quietly decays into a rubber stamp.
+
+The other sweeps' floors are one-sided and documented as such. What must never
+happen to any of them is loosening one to make a red run green without first
+establishing which direction it moved and why.
 
 `docs/continuous-measurements.md` has the full gate/measurement split, including
 the one sweep that is deliberately still unwired and why.
