@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The fixture behind the annotation sweep's **constraint** dimension
+       (tests/all/infer_annotation_shape_gen_diff.rs).
+
+       Without it that sweep is structurally blind to a whole defect class:
+       an F#-only constraint (`when 'T : comparison`) has no IL encoding, and
+       every constrained head reachable from the shipped FSharp.Core is *also*
+       excluded from a bridge by an unrelated guard — `Map` and `Set` are
+       source-renamed, `System.Nullable`'s constraint is IL-visible. So a
+       constraint-blind bridge passes the sweep green while publishing a type
+       FCS positively disagrees with (it recovers a violating annotation's
+       binder to `System.Object`).
+
+       Every type here is declared so that no *other* guard can stand in for
+       the constraint one: none is renamed (the IL name is the source name),
+       none is an abbreviation, and each constrained type has an
+       unconstrained twin of identical shape. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaConstrainedFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>
