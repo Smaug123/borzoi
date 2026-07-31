@@ -120,7 +120,22 @@ fn metadata_name() -> impl Strategy<Value = String> {
     prop::collection::vec(alphabet, 1..8).prop_map(|chars| chars.into_iter().collect())
 }
 
+/// Seeds are not persisted. A saved case is only useful if replaying it
+/// reproduces the failure, and the strategy here is the thing under
+/// development — the first failure it found (a bare `` ` ``) is now outside the
+/// alphabet deliberately, so its seed would replay as an unrelated name while
+/// still reading as a live regression. The corpus that *does* survive strategy
+/// changes is [`the_names_review_found_all_round_trip`], written out by hand.
+fn config() -> proptest::test_runner::Config {
+    proptest::test_runner::Config {
+        failure_persistence: None,
+        ..proptest::test_runner::Config::default()
+    }
+}
+
 proptest! {
+    #![proptest_config(config())]
+
     /// For all generated metadata names, the rendered spelling lexes back as
     /// exactly that identifier.
     #[test]
