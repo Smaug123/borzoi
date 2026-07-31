@@ -30,7 +30,7 @@ use borzoi_assembly::{
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
-    ResolvedFile, ResolvedProject, Ty, infer_file, resolve_file,
+    ResolvedFile, ResolvedProject, SemanticClass, Ty, infer_file, resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use rowan::TextRange;
@@ -431,6 +431,9 @@ fn file_name_of(path: &str) -> &str {
 /// `entity_context`. Public so the integration tests can drive it against a
 /// real [`AssemblyEnv`] without reconstructing a whole project.
 pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
+    if env.entity_class(handle) == Some(SemanticClass::UnionCase) {
+        return union_case_hover_label(env, handle);
+    }
     let entity = env.entity(handle);
     let head = format!("`{}`", format_entity_header(entity));
     assemble_body(
@@ -440,6 +443,80 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
         entity.obsolete.as_ref(),
         entity.experimental.as_ref(),
     )
+}
+
+/// Hover body for a **field-carrying union case** of a referenced assembly —
+/// e.g.
+///
+/// ```text
+/// `union case Choice1Of2`
+///
+/// in Microsoft.FSharp.Core.Choice<'T1, 'T2>
+///
+/// from FSharp.Core v9.0.0.0
+/// ```
+///
+/// fsc compiles such a case to a nested class, so the projected entity carries
+/// [`EntityKind::Class`] and nothing of its own says "case"; the fact lives on
+/// the *parent* union and reaches us through
+/// [`AssemblyEnv::entity_class`](borzoi_sema::AssemblyEnv::entity_class), which
+/// is deliberately the same predicate the semantic-token classifier asks. One
+/// predicate means the two surfaces cannot drift into calling one handle a class
+/// and a union case (the defect this arm fixes), and its declines — a
+/// non-authoritative F# signature, a union whose cases could not be recovered —
+/// are inherited rather than restated here.
+///
+/// Deliberately *not* [`format_entity_header`]: a nested type re-declares its
+/// enclosing type's generic parameters as its own, so the carrier's are the
+/// union's and the header would render `union case Choice1Of2<'T1, 'T2>` — type
+/// parameters on a case name, which F# never writes. They belong to the union,
+/// which is where the context line renders them.
+///
+/// An `[<Obsolete>]` / `[<Experimental>]` marker on the *case* never surfaces:
+/// fsc puts a case's attributes on its `New<Case>` maker method, which is not in
+/// [`Entity::members`] at all (a union's constructors live in `union_cases`), so
+/// neither the carrier nor its union carries the marker — checked against a
+/// purpose-built `[<Obsolete>]`-cased union, whose carrier projects
+/// `obsolete: None`. The entity's own markers are still passed through: they are
+/// empty today, and reading them keeps this arm honest if that changes.
+///
+/// [`Entity::members`]: borzoi_assembly::Entity::members
+///
+/// [`EntityKind::Class`]: borzoi_assembly::EntityKind::Class
+fn union_case_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
+    let entity = env.entity(handle);
+    let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+    // The case's payload (`of string * SynStringKind * range`) is not rendered:
+    // it survives only as the carrier's generated `Item`/`ItemN` (or named-field)
+    // properties, and reconstructing an `of` clause from those is a guess. An
+    // absent payload under-states the case; a wrong one misreports it.
+    let head = format!("`union case {name}`");
+    let context =
+        declaring_union(env, handle).map(|union| format!("in {}", entity_fqn(env, union)));
+    assemble_body(
+        head,
+        context,
+        &entity.assembly,
+        entity.obsolete.as_ref(),
+        entity.experimental.as_ref(),
+    )
+}
+
+/// The union a case carrier is nested in — the last entity before `handle` on
+/// its enclosing chain. `None` only if `handle` is unreachable from any
+/// top-level type (which [`AssemblyEnv::enclosing_chain`] reports as a one-entry
+/// chain), leaving the case to render without a context line rather than
+/// inventing a declaring type.
+///
+/// [`AssemblyEnv::enclosing_chain`]: borzoi_sema::AssemblyEnv::enclosing_chain
+fn declaring_union(env: &AssemblyEnv, handle: EntityHandle) -> Option<EntityHandle> {
+    let chain = env.enclosing_chain(handle);
+    let (last, rest) = chain.split_last()?;
+    debug_assert_eq!(
+        *last, handle,
+        "the chain ends at the entity it was asked for"
+    );
+    rest.last().copied()
 }
 
 /// The entity context line: `<kind>, in <namespace>` — the kind (only when the

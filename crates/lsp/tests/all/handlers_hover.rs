@@ -19,7 +19,7 @@ use borzoi::semantic::SemanticState;
 use borzoi::server::State;
 use borzoi::workspace::Workspace;
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
-use borzoi_sema::AssemblyEnv;
+use borzoi_sema::{AssemblyEnv, SemanticClass};
 use lsp_types::{
     Hover, HoverContents, HoverParams, MarkupKind, Position, TextDocumentIdentifier,
     TextDocumentPositionParams, Url, WorkDoneProgressParams,
@@ -533,6 +533,88 @@ fn struct_union_entity_renders_struct_attr_and_union_kind() {
         body.contains("\n\nunion, in Microsoft.FSharp.Core\n\n"),
         "expected the `union` kind + namespace context line, got:\n{body}"
     );
+}
+
+/// A **field-carrying union case** of a referenced assembly is resolved to the
+/// nested class fsc compiled it to (`Choice<'T1,'T2>` → `Choice/Choice1Of2`), so
+/// the entity itself says only "class" — the reading FCS contradicts, and the
+/// one a user sees on hovering `SynConst.String`. The case-ness lives on the
+/// *parent* union and is already indexed (`AssemblyEnv::entity_class`), so hover
+/// must ask that rather than the raw `EntityKind`.
+///
+/// The head carries **no** type-parameter list: a nested type re-declares its
+/// enclosing type's parameters, so the carrier's `generic_parameters` are the
+/// *union's* (`Choice1Of2` reports two) and rendering them would put `<'T1, 'T2>`
+/// on a case name, which F# never writes. They belong to the union, which is
+/// where the context line renders them.
+#[test]
+fn union_case_entity_renders_as_a_case_of_its_union() {
+    let env = fsharp_core_env();
+    let choice = env
+        .lookup_type(&ns(&["Microsoft", "FSharp", "Core"]), "Choice", 2)
+        .expect("Choice<'T1,'T2> resolves");
+    let case = env
+        .nested(choice, "Choice1Of2", 2)
+        .expect("the Choice1Of2 carrier");
+    let body = entity_hover_label(&env, case);
+    let mut lines = body.split("\n\n");
+    assert_eq!(lines.next(), Some("`union case Choice1Of2`"));
+    assert_eq!(
+        lines.next(),
+        Some("in Microsoft.FSharp.Core.Choice<'T1, 'T2>")
+    );
+    assert!(
+        body.contains("\n\nfrom FSharp.Core v"),
+        "expected an FSharp.Core provenance line, got:\n{body}"
+    );
+}
+
+/// The invariant the union-case bug broke: hover and semantic-token colouring
+/// must not contradict each other about whether an entity is a union case.
+/// Both surfaces are ours, so this is a self-consistency sweep rather than a
+/// differential — and it is the systematic form of the defect, which was not
+/// that one case rendered wrongly but that *two views of the same handle*
+/// disagreed with nothing able to see it.
+///
+/// Swept over every interned entity of a real `FSharp.Core.dll` (hence
+/// [`AssemblyEnv::all_handles`]): a lookup-driven sweep would miss exactly the
+/// compiler-generated nested types this is about — `Choice1Of2@DebugTypeProxy`
+/// sits beside the carriers and must *not* read as a case.
+///
+/// Scoped to the union-case question rather than asserting blanket agreement
+/// between the hover keyword and [`AssemblyEnv::entity_class`]: the two are
+/// known to diverge for a `module` whose assembly's F# signature is not
+/// authoritative (`entity_class` declines it; the declaration head renders
+/// `module` regardless). That is a real second instance of this bug family, but
+/// it is a different fix, and FSharp.Core — which has an authoritative pickle —
+/// cannot exercise it either way.
+#[test]
+fn hover_calls_an_entity_a_union_case_exactly_when_classification_does() {
+    let env = fsharp_core_env();
+    let mut swept = 0usize;
+    let mut cases = 0usize;
+    for handle in env.all_handles() {
+        let classified = env.entity_class(handle) == Some(SemanticClass::UnionCase);
+        let head = entity_hover_label(&env, handle)
+            .split("\n\n")
+            .next()
+            .expect("a hover body always has a head line")
+            .to_string();
+        let rendered = head.starts_with("`union case ");
+        assert_eq!(
+            rendered,
+            classified,
+            "hover and classification disagree for {} (hover head {head})",
+            env.entity_full_name(handle),
+        );
+        swept += 1;
+        cases += usize::from(classified);
+    }
+    // A sweep that reached no case would pass vacuously — FSharp.Core's
+    // `Choice<'T1,'T2>` is the union whose cases are field-carrying, so the
+    // count is at least its two carriers.
+    assert!(swept > 1000, "expected a whole FSharp.Core, swept {swept}");
+    assert!(cases >= 2, "expected the Choice carriers, found {cases}");
 }
 
 #[test]

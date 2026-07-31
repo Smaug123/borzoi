@@ -6633,3 +6633,74 @@ fn an_unenumerable_union_never_cedes_its_tail_to_a_lower_reading() {
          union whose cases are unknowable"
     );
 }
+
+/// A **union whose cases could not be recovered** (`UnionCases::Unknowable`)
+/// still has nested types, and one of them may be a case's carrier — but nothing
+/// says which (the other readings being the generated `Tags` class and fsc's
+/// debug proxies), so [`AssemblyEnv::entity_class`] declines them
+/// (`assembly_env::a_nested_type_of_an_unenumerable_union_is_not_classified`).
+///
+/// Which consumers such a handle can reach is therefore load-bearing, and it is
+/// pinned here rather than argued from the gates: the two routes that record a
+/// *case* gate on `AssemblyEnv::authoritative_union_case`, which an unknowable
+/// case list fails — but a generic nested-type walk records
+/// [`Resolution::Entity`] with no such gate, and that is the route an expression
+/// takes. So an undecidable carrier **does** reach a renderer, which is why the
+/// declining classification is the thing that must hold: the hover label is
+/// gated on it, so a case-carrier reading is never *claimed* where it cannot be
+/// proved (`handlers_hover::hover_calls_an_entity_a_union_case_exactly_when_classification_does`
+/// in the LSP crate closes that loop). Pattern position, gated, declines to
+/// resolve the carrier at all.
+///
+/// [`AssemblyEnv::entity_class`]: borzoi_sema::AssemblyEnv::entity_class
+#[test]
+fn an_undecidable_carrier_reaches_a_renderer_but_is_never_classified_a_case() {
+    let widget = fixture_entities()
+        .into_iter()
+        .find(|e| e.namespace == ["Demo"] && e.name == "Widget")
+        .expect("fixture declares Demo.Widget");
+    let mut carrier = widget.clone();
+    carrier.namespace = vec![]; // a nested TypeDef declares no namespace of its own
+    carrier.name = "Circle".to_string();
+    carrier.kind = EntityKind::Class;
+    carrier.members = vec![];
+    carrier.nested_types = vec![];
+    carrier.union_cases = UnionCases::Unknowable;
+
+    let mut shape = widget;
+    shape.namespace = vec!["Ns".to_string()];
+    shape.name = "Shape".to_string();
+    shape.kind = EntityKind::Union;
+    shape.members = vec![];
+    shape.union_cases = UnionCases::Unknowable;
+    shape.nested_types = vec![carrier];
+
+    let env = AssemblyEnv::from_entities(vec![shape]);
+    let shape_h = env
+        .lookup_type(&["Ns".to_string()], "Shape", 0)
+        .expect("Ns.Shape");
+    let circle = env.nested(shape_h, "Circle", 0).expect("Ns.Shape.Circle");
+
+    let reaches = |src: &str| {
+        resolve(src, &env)
+            .resolutions()
+            .values()
+            .any(|res| *res == Resolution::Entity(circle))
+    };
+    assert!(
+        reaches("module M\nlet x = Ns.Shape.Circle 1\n"),
+        "expression position walks nested types ungated, so the carrier IS handed \
+         to whatever renders a `Resolution::Entity`"
+    );
+    assert!(
+        !reaches("module M\nlet f v = match v with | Ns.Shape.Circle _ -> 1 | _ -> 0\n"),
+        "pattern position resolves a case only through `authoritative_union_case`, \
+         which an unknowable case list fails"
+    );
+    assert_eq!(
+        env.entity_class(circle),
+        None,
+        "nothing says whether this nested type is a case carrier or the generated \
+         `Tags` class, so no consumer may commit either reading"
+    );
+}
