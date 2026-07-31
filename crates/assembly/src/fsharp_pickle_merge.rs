@@ -378,7 +378,13 @@ struct TyparConstraintTarget {
     namespace: Vec<String>,
     /// The enclosing type chain, outermost first; empty for a top-level entity.
     containers: Vec<String>,
-    /// The CLR name with its arity suffix stripped — the owned `Entity::name`.
+    /// The name the ECMA row is looked up by: the owned `Entity::name` (the CLR
+    /// name with its arity suffix stripped) for a real type, and the F# *source*
+    /// name for an abbreviation — which is how [`apply_abbreviation_markers`]
+    /// keys the very rows an abbreviation target can match. Two aliases may
+    /// legally share one `[<CompiledName>]` and still be distinct source types,
+    /// so keying an alias by its CLR name would collapse a pair the marker pass
+    /// deliberately kept apart.
     name: String,
     /// One reading per typar, in declaration order. Its length is the key's
     /// arity.
@@ -440,12 +446,17 @@ pub(crate) fn apply_typar_constraints(
                 return Ok(());
             }
             if let Some(readings) = pickled_typar_constraints(pickled, entity) {
+                let is_abbreviation = entity.type_abbrev.is_some();
                 targets.push(TyparConstraintTarget {
                     namespace: namespace.to_vec(),
                     containers: type_chain.to_vec(),
-                    name: clr_name(entity),
+                    name: if is_abbreviation {
+                        abbreviation_lookup_name(entity)
+                    } else {
+                        clr_name(entity)
+                    },
                     readings,
-                    is_abbreviation: entity.type_abbrev.is_some(),
+                    is_abbreviation,
                 });
             }
             Ok(())
@@ -468,7 +479,12 @@ pub(crate) fn apply_typar_constraints(
             continue; // Two pickled entities collapse onto this key.
         }
         let matches_key = |e: &Entity| {
-            e.name == target.name
+            let row_name = if target.is_abbreviation {
+                e.source_name.as_deref().unwrap_or(&e.name)
+            } else {
+                e.name.as_str()
+            };
+            row_name == target.name
                 && e.generic_parameters.len() == target.readings.len()
                 && (e.kind == EntityKind::Abbreviation) == target.is_abbreviation
         };
@@ -495,6 +511,22 @@ pub(crate) fn apply_typar_constraints(
         }
     }
     Ok(())
+}
+
+/// The name an abbreviation's synthesised marker is keyed by: its F# *source*
+/// name, which is the logical name whenever a `[<CompiledName>]` renamed it.
+///
+/// Derived exactly as [`apply_abbreviation_markers`] derives the `source_name`
+/// it stamps on the marker, because the two must agree: this is the name that
+/// pass uses to decide whether a marker is needed at all, so it is the name the
+/// resulting row carries.
+fn abbreviation_lookup_name(entity: &PickledEntity) -> String {
+    match &entity.compiled_name {
+        Some(compiled) if *compiled != entity.logical_name => {
+            strip_arity(&entity.logical_name).to_string()
+        }
+        _ => clr_name(entity),
+    }
 }
 
 /// One [`FSharpConstraints`] per pickled typar of `entity`, in declaration
@@ -6029,6 +6061,42 @@ mod tests {
             readings(&owned[0]),
             vec![FSharpConstraints::Free],
             "the alias's own marker is the one row it may claim"
+        );
+    }
+
+    #[test]
+    fn two_aliases_sharing_a_compiled_name_keep_their_own_readings() {
+        // `[<CompiledName("X")>] type A<'T when 'T : comparison>` beside
+        // `[<CompiledName("X")>] type B<'T>`: legal F#, two distinct source
+        // types, and `apply_abbreviation_markers` keeps them apart by source
+        // name. Keying by the CLR name alone would collapse them and decline
+        // both, throwing away a reading the pickle states outright.
+        let mut a = typed_entity_with_typars("A", vec![0]);
+        a.compiled_name = Some("X".to_string());
+        a.type_abbrev = some_abbrev_target();
+        let mut b = typed_entity_with_typars("B", vec![1]);
+        b.compiled_name = Some("X".to_string());
+        b.type_abbrev = some_abbrev_target();
+        let [root, ns] = root_and_namespace(vec![2, 3]);
+        let mut ccu = make_ccu(vec![root, ns, a, b], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", true), typar_spec("T", false)];
+
+        let marker = |source: &str| {
+            let mut e = ecma_generic(vec!["N"], "X", 1);
+            e.kind = EntityKind::Abbreviation;
+            e.source_name = Some(source.to_string());
+            e
+        };
+        let mut owned = vec![marker("A"), marker("B")];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            (readings(&owned[0]), readings(&owned[1])),
+            (
+                vec![FSharpConstraints::Present],
+                vec![FSharpConstraints::Free]
+            ),
+            "each alias takes its own pickled reading; the shared compiled name is \
+             not their identity"
         );
     }
 
