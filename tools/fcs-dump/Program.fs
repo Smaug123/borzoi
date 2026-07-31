@@ -6080,7 +6080,17 @@ let private renderTypeCanonical (t: FSharpType) : string =
     let needsGrouping (t: FSharpType) : bool =
         let t = strip t
         (t.IsTupleType && not t.IsStructTupleType) || t.IsFunctionType
-    let rec go (t: FSharpType) : string =
+    // Render a child that sits under an operator binding tighter than ` * ` and
+    // ` -> ` — an array element, a byref referent, a tuple element. Every such
+    // position goes through this rather than deciding for itself, so adding one
+    // is a call to this function, not a grouping rule to remember: a bare
+    // `System.Int32 * System.String&` denotes a tuple whose second element is a
+    // byref, which is a different type from a byref tuple.
+    let rec goGrouped (t: FSharpType) : string =
+        let s = go t
+        if needsGrouping t then sprintf "(%s)" s else s
+
+    and go (t: FSharpType) : string =
         // The canonical currency names the *compiled* tycon
         // (`Microsoft.FSharp.Core.FSharpOption`, not `option`), so strip before
         // dispatching — the same first step [`renderTypeInScope`] takes, hoisted
@@ -6089,15 +6099,11 @@ let private renderTypeCanonical (t: FSharpType) : string =
         if t.IsAbbreviation then
             go (strip t)
         elif t.IsTupleType && not t.IsStructTupleType then
-            t.GenericArguments
-            |> Seq.map (fun a ->
-                let s = go a
-                // Parenthesise a tuple or function element so the flat ` * ` join
-                // stays unambiguous, matching `Ty::render`'s `render_tuple`
-                // (`* ` binds tighter than `->`, so a bare function element would
-                // be mis-grouped as `a -> (b * c)`).
-                if needsGrouping a then sprintf "(%s)" s else s)
-            |> String.concat " * "
+            // A tuple or function element is parenthesised so the flat ` * ` join
+            // stays unambiguous, matching `Ty::render`'s `render_tuple` (`*`
+            // binds tighter than `->`, so a bare function element would be
+            // mis-grouped as `a -> (b * c)`).
+            t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
         elif t.IsTupleType then
             // A **struct** tuple. FCS exposes it structurally — no
             // `TypeDefinition` — so the generic-application arm below cannot see
@@ -6135,24 +6141,14 @@ let private renderTypeCanonical (t: FSharpType) : string =
             // `System.Tuple<…>`, and a function or typar element throws, which the
             // caller's `try` turns into FCS's *display* rendering of the entire
             // type from the root — three currencies in one field.
-            let elem = t.GenericArguments.[0]
-            let rendered = go elem
-            // `[]` binds tighter than `*` and `->`, so a structural element must
-            // be parenthesised or it denotes a different type. This is the same
-            // rule the tuple branch applies to its own elements.
-            let rendered =
-                if needsGrouping elem then
-                    sprintf "(%s)" rendered
-                else
-                    rendered
             let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
-            sprintf "%s[%s]" rendered commas
+            sprintf "%s[%s]" (goGrouped t.GenericArguments.[0]) commas
         elif isRealByref t && t.GenericArguments.Count = 1 then
             // `T&`, as [`renderTypeInScope`] spells it, recursing for the same
             // reason every other arm does — the metadata renderer throws on a
-            // function or typar pointee and drops the whole type into display
+            // function or typar referent and drops the whole type into display
             // currency.
-            sprintf "%s&" (go t.GenericArguments.[0])
+            sprintf "%s&" (goGrouped t.GenericArguments.[0])
         elif t.HasTypeDefinition && not (isRealByref t) && t.GenericArguments.Count > 0 then
             // A generic application: `Head<a, b>`, recursing into the arguments
             // for the same reason the array branch recurses into its element —
