@@ -652,10 +652,16 @@ fn every_rendered_name_is_spelled_as_fsharp_could_write_it() {
                 // member it can *address*, not every member.
                 continue;
             };
-            quoted += usize::from(check_name_rendering(
-                name,
-                &member_hover_label(&env, handle, idx),
-            ));
+            let body = member_hover_label(&env, handle, idx);
+            quoted += usize::from(check_name_rendering(name, &body));
+            // The context line names the declaring type by its whole enclosing
+            // chain, so *every* segment is a rendered name too — and the segment
+            // needing backticks is rarely the last one.
+            for segment in env.enclosing_chain(handle) {
+                let entity = env.entity(segment);
+                let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+                quoted += usize::from(check_name_rendering(name, &body));
+            }
         }
     }
     assert!(

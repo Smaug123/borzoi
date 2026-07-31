@@ -1336,13 +1336,20 @@ fn an_ordinary_name_is_left_bare() {
     }
 }
 
-/// The two exemptions the compiler's own `DoesIdentifierNeedBackticks` carries:
-/// backticks would break both spellings rather than fix them.
+/// The compiler exempts operator and active-pattern names from quoting because
+/// it renders them parenthesised (`(mod)`, `(|Even|Odd|)`). This renderer has no
+/// such syntax, and exempting them *without* it emits what F# cannot parse
+/// (`val mod: int`), so they are quoted like any other name that is not a bare
+/// identifier. Rendering the parenthesised forms is a separate feature, and one
+/// only a call site that knows the name is in operator position can decide.
 #[test]
-fn operator_and_active_pattern_names_are_not_quoted() {
-    assert_eq!(format_fsharp_name("mod"), "mod");
-    assert_eq!(format_fsharp_name("|Even|Odd|"), "|Even|Odd|");
-    assert_eq!(format_fsharp_name("|Parsed|_|"), "|Parsed|_|");
+fn operator_and_active_pattern_names_are_quoted_like_any_other() {
+    assert_eq!(format_fsharp_name("mod"), "``mod``");
+    assert_eq!(format_fsharp_name("|Even|Odd|"), "``|Even|Odd|``");
+    // The shapes a bars-delimited exemption would have mis-tokenized: neither is
+    // an active-pattern name, and neither may be written bare.
+    assert_eq!(format_fsharp_name("|||"), "``|||``");
+    assert_eq!(format_fsharp_name("|+|"), "``|+|``");
 }
 
 /// An already-quoted name is left alone: quoting it again would nest the

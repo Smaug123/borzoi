@@ -175,10 +175,16 @@ const FSHARP_KEYWORDS: &[&str] = &[
 /// that is not F# and silently loses the identifier's boundaries
 /// (`union case Circle Case`).
 ///
-/// Mirrors the compiler's `AddBackticksToIdentifierIfNeeded`
-/// (`PrettyNaming.fs`), including its two exemptions, so that a name it renders
-/// specially is not made *worse* here: an operator name (`mod`) and an
-/// active-pattern name (`|Even|Odd|`) are left alone rather than quoted.
+/// Follows the compiler's `AddBackticksToIdentifierIfNeeded` (`PrettyNaming.fs`)
+/// on which names need quoting, but *not* its two exemptions. The compiler
+/// exempts an operator name (`mod`) and an active-pattern name (`|Even|Odd|`)
+/// because it renders those through a different path, which wraps them in
+/// parentheses (`(mod)`, `(|Even|Odd|)`); exempting them without that wrapping
+/// emits a declaration F# cannot parse — `val mod: int` — which is worse than
+/// quoting. This renderer has no operator syntax, so it spells every name as the
+/// identifier metadata says it is. Rendering the parenthesised forms is a
+/// separate feature; when it lands, it belongs at the call sites that know the
+/// name is in operator position, not in a context-free helper.
 ///
 /// The character classes are `char::is_alphabetic` / `is_alphanumeric`, which
 /// under-approximate the compiler's Unicode categories (they miss `LetterNumber`
@@ -199,11 +205,12 @@ fn is_writable_bare(name: &str) -> bool {
     if name.starts_with("``") || name.ends_with("``") {
         return true;
     }
-    // `mod` is a keyword the compiler nonetheless writes bare as an operator
-    // name, and an active-pattern name (`|Even|Odd|`) has its own syntax that
-    // backticks would break.
-    if name == "mod" || is_active_pattern_name(name) {
-        return true;
+    // F#'s one *unencoded operator name* (the compiler's `IsUnencodedOpName`).
+    // It is absent from the keyword table because it is operator syntax
+    // (`x mod y`) rather than a keyword, but a declaration must quote it all the
+    // same.
+    if name == "mod" {
+        return false;
     }
     if FSHARP_KEYWORDS.contains(&name) {
         return false;
@@ -214,12 +221,6 @@ fn is_writable_bare(name: &str) -> bool {
     };
     (first == '_' || first.is_alphabetic())
         && chars.all(|c| c == '_' || c == '\'' || c.is_alphanumeric())
-}
-
-/// Whether `name` has the shape of an active-pattern name — `|Even|Odd|`,
-/// `|Parsed|_|` — which is written with its bars, never in backticks.
-fn is_active_pattern_name(name: &str) -> bool {
-    name.len() >= 3 && name.starts_with('|') && name.ends_with('|')
 }
 
 /// Render a type as an F# type expression. The outermost position's

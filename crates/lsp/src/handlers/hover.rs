@@ -716,12 +716,17 @@ fn member_experimental(member: &Member) -> Option<&Experimental> {
 /// source names throughout, so a suffixed module reads `List`, not the compiled
 /// `ListModule`), with `<'T, 'U>` appended when generic.
 ///
-/// The dotted part comes from
-/// [`AssemblyEnv::entity_full_name`](borzoi_sema::AssemblyEnv::entity_full_name),
-/// which walks the enclosing chain: a *nested* ECMA TypeDef declares no
-/// namespace of its own, so composing the name from `Entity::namespace` alone
+/// The dotted part is built from the enclosing chain — a *nested* ECMA TypeDef
+/// declares no namespace of its own, so composing from `Entity::namespace` alone
 /// drops every enclosing entity and leaves a bare `Choice1Of2` naming nothing a
-/// reader could look up.
+/// reader could look up. Every segment goes through [`format_fsharp_name`]
+/// individually, which is why this does not simply call
+/// [`AssemblyEnv::entity_full_name`](borzoi_sema::AssemblyEnv::entity_full_name):
+/// that returns one pre-joined string of *raw metadata* names (it is the currency
+/// of the FCS differentials, which compare against unquoted full names), and a
+/// segment needing backticks cannot be recovered from the join. The awkward
+/// segment is usually not the last one — fsc's generated types nest under names
+/// like `System-Collections-Generic-IDictionary<'Key, 'T>-get_Keys@60`.
 ///
 /// The type parameters are the entity's *own*, which for a nested type are the
 /// ones it re-declares from its enclosing type, so they land on the last segment
@@ -735,7 +740,36 @@ fn entity_fqn(env: &AssemblyEnv, handle: EntityHandle) -> String {
         .iter()
         .map(|p| p.name.as_str())
         .collect();
-    append_typars(env.entity_full_name(handle), &typars)
+    append_typars(entity_dotted_name(env, handle), &typars)
+}
+
+/// The dotted name of an entity with every segment rendered as an F# identifier:
+/// the outermost enclosing entity's namespace, then one segment per entry of the
+/// enclosing chain (which ends at `handle` itself).
+///
+/// A handle unreachable from any top-level type yields a one-entry chain, so this
+/// degrades to the entity's own namespace and name — the same fallback
+/// `AssemblyEnv::entity_full_name` takes.
+fn entity_dotted_name(env: &AssemblyEnv, handle: EntityHandle) -> String {
+    let chain = env.enclosing_chain(handle);
+    let namespace = chain
+        .first()
+        .map(|&outermost| env.entity(outermost).namespace.as_slice())
+        .unwrap_or_default();
+    let segments = namespace
+        .iter()
+        .map(String::as_str)
+        .chain(chain.iter().map(|&h| entity_source_name(env.entity(h))));
+    segments
+        .map(|segment| format_fsharp_name(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The name an entity renders under: its F# source name where metadata records
+/// one (`List`, not the compiled `ListModule`).
+fn entity_source_name(entity: &Entity) -> &str {
+    entity.source_name.as_deref().unwrap_or(&entity.name)
 }
 
 /// Append (bare) type-parameter names to a dotted name in the F# leading-
