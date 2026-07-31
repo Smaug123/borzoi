@@ -6107,12 +6107,20 @@ let private renderTypeCanonical (t: FSharpType) : string =
         elif t.IsTupleType then
             // A **struct** tuple. FCS exposes it structurally — no
             // `TypeDefinition` — so the generic-application arm below cannot see
-            // it, and without this arm an argument that makes the metadata
-            // renderer throw drops the whole type into display currency. Render
-            // the compiled `System.ValueTuple<…>` shape [`renderTypeInScope`]
-            // emits, recursing so the currency holds under the elements.
-            let args = t.GenericArguments |> Seq.map go |> String.concat ", "
-            sprintf "System.ValueTuple<%s>" args
+            // it, and without this arm an element that makes the metadata
+            // renderer throw drops the whole type into display currency.
+            //
+            // `struct (a * b)`, F#'s own surface spelling and the convention
+            // `borzoi_assembly`'s `AbbreviationTarget` already documents, rather
+            // than the compiled `System.ValueTuple<…>`. The compiled form would
+            // not be injective: FCS presents an 8+-element struct tuple with a
+            // *flat* `GenericArguments` list even though `ValueTuple` nests the
+            // tail through an eighth `TRest` slot, so `struct (a * … * h)` and a
+            // written `System.ValueTuple<a, …, h>` would render alike. The
+            // surface form cannot collide with an application at any arity, and
+            // its own parens mean it never needs grouping.
+            let args = t.GenericArguments |> Seq.map goGrouped |> String.concat " * "
+            sprintf "struct (%s)" args
         elif t.IsFunctionType then
             // `dom -> ran`, matching `Ty::render`'s `render_fun`: `->` is right-
             // associative and looser than `*`, so the range is never parenthesised

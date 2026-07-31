@@ -66,22 +66,20 @@
 //! rendering is **not** an application at all, because FCS's own `IsTupleType` /
 //! `IsFunctionType` / `IsArrayType` hold for them:
 //!
-//! | written                                       | FCS renders                  |
-//! |-----------------------------------------------|------------------------------|
-//! | `System.Tuple<int, string>`                   | `System.Int32 * System.String` |
-//! | `Microsoft.FSharp.Core.FSharpFunc<int, bool>` | `System.Int32 -> System.Boolean` |
-//! | `array<int>`                                  | `System.Int32[]`             |
+//! | written                                       | FCS renders                        |
+//! |-----------------------------------------------|------------------------------------|
+//! | `System.Tuple<int, string>`                   | `System.Int32 * System.String`     |
+//! | `Microsoft.FSharp.Core.FSharpFunc<int, bool>` | `System.Int32 -> System.Boolean`   |
+//! | `array<int>`                                  | `System.Int32[]`                   |
+//! | `System.ValueTuple<int, string>`              | `struct (System.Int32 * System.String)` |
 //!
-//! Those are exactly the tycons that name a shape [`borzoi_sema::Ty`] spells with
-//! a variant of its own, so a bridge committing the application form for them
-//! commits a wrong string for the right type. The set is closed *because*
-//! `Ty`'s structural variants are: one head per variant, not an open list of
-//! shapes to keep discovering.
-//!
-//! The same measurement refutes a guard that reads plausibly and is wrong:
-//! `System.ValueTuple<int, string>` renders as an ordinary application, not as
-//! `a * b`, because `Ty::Tuple` is a *reference* tuple and there is nothing for
-//! it to collide with. Reasoning by analogy from `System.Tuple` over-defers it.
+//! Those are exactly the tycons naming a shape a bridge cannot spell as an
+//! application, so committing one commits a wrong string for the right type. The
+//! set is closed because what it enumerates is closed: the first three are
+//! [`borzoi_sema::Ty`]'s structural variants, one head each, and the fourth is
+//! the struct tuple, which `Ty` cannot represent at all — which is why
+//! `annotation_ty` already declines a written `struct (a * b)`, and the head form
+//! has to decline for the same reason rather than a rendering-specific one.
 //!
 //! # Two properties the three arms structurally cannot check
 //!
@@ -657,18 +655,42 @@ const ALIAS_CONTEXTS: [(&str, &str, Grouping); 9] = [
 /// Whether `rendered` has a ` * ` or a ` -> ` at **paren depth zero** — the
 /// property that decides whether wrapping it changes what it denotes. Angle
 /// brackets count as depth too: the `*` inside `H<a * b>` is already enclosed.
+///
+/// The `>` of an arrow is not a closing bracket. Counting it as one drives the
+/// depth negative inside `H<a -> b>`, which then reads a later top-level ` * `
+/// as nested and silently expects the wrong grouping.
 fn splits_at_top_level(rendered: &str, needle: &str) -> bool {
     let bytes = rendered.as_bytes();
     let mut depth = 0i32;
     for (i, b) in bytes.iter().enumerate() {
+        let arrow_tail = *b == b'>' && i > 0 && bytes[i - 1] == b'-';
         match b {
             b'(' | b'<' => depth += 1,
-            b')' | b'>' => depth -= 1,
+            b')' | b'>' if !arrow_tail => depth -= 1,
             _ if depth == 0 && rendered[i..].starts_with(needle) => return true,
             _ => {}
         }
     }
     false
+}
+
+#[test]
+fn top_level_split_ignores_the_arrow_and_nesting() {
+    // The arrow's `>` is not a bracket …
+    assert!(splits_at_top_level(
+        "H<System.Int32 -> System.String> * System.Boolean",
+        " * "
+    ));
+    // … and a genuinely nested operator is still nested.
+    assert!(!splits_at_top_level(
+        "H<System.Int32 * System.String>",
+        " * "
+    ));
+    assert!(!splits_at_top_level(
+        "(System.Int32 -> System.String)",
+        " -> "
+    ));
+    assert!(splits_at_top_level("System.Int32 -> System.String", " -> "));
 }
 
 /// The child rendering as it must appear inside `grouping`'s context.
