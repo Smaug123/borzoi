@@ -239,6 +239,10 @@ struct EntityOverlayTarget {
     /// The entity's `entity_range`, resolved to a source range. `None` on a bad
     /// file index or the degenerate `"unknown"` file.
     definition_range: Option<FsharpSourceRange>,
+    /// The leaf's CLR generic arity — its pickled typar count, which *is* its
+    /// arity for a measure-free entity. `None` for a measure-bearing one, whose
+    /// erased typars make the two disagree, so no arity claim can be made.
+    arity: Option<usize>,
 }
 
 /// Apply the two per-entity host-pickle facts to the ECMA tree: each entity's
@@ -322,16 +326,35 @@ pub(crate) fn apply_entity_overlay(
                     },
                     is_module_or_type,
                     definition_range: resolve_entity_range(pickled, entity),
+                    arity: is_measure_free(pickled, entity).then_some(entity.typars.len()),
                 });
             }
             Ok(())
         },
     )?;
-    // Source-name half: module/type targets only, name-only lookup, always
-    // assign (clearing a stale name is correct). Unchanged from before.
+    // Source-name half: module/type targets only, and the leaf is keyed by
+    // **arity** as well as by name.
+    //
+    // The arity-stripped CLR name is not injective, and the collision is
+    // ordinary in real F#: FSharp.Core declares both `Expr` and `Expr<'T>`,
+    // compiled ``FSharpExpr`` and ``FSharpExpr`1``. Keyed by name alone the two
+    // targets reach one row — assigned twice, its twin never — so a twin keeps
+    // its IL name. For a `[<CompiledName>]`-renamed type that IL name is one no
+    // F# source can write (`Microsoft.FSharp.Quotations.FSharpExpr<int>` is
+    // FS0039 against the real compiler, while `Expr<int>` binds), and a consumer
+    // reading `source_name.unwrap_or(name)` as "what a user writes" then
+    // resolves a name F# rejects.
+    //
+    // A measure-bearing target makes no arity claim — its typars are erased from
+    // IL, so the counts disagree — and is skipped rather than assigned by name
+    // alone: an unassigned row keeps the projector's IL-name reading, the
+    // conservative direction.
     for target in &targets {
-        if target.is_module_or_type
-            && let Some(ecma) = find_entity_mut(entities, &target.namespace, &target.type_chain)
+        let (true, Some(arity)) = (target.is_module_or_type, target.arity) else {
+            continue;
+        };
+        if let Some(ecma) =
+            find_entity_at_arity_mut(entities, &target.namespace, &target.type_chain, arity)
         {
             ecma.source_name = target.entity_source_name.clone();
         }
@@ -2694,6 +2717,43 @@ fn find_entity_mut<'a>(
             .find(|e| e.name == *segment)?;
     }
     Some(current)
+}
+
+/// Like [`find_entity_mut`], but the **leaf** must also match `arity`, and must
+/// be the only row that does.
+///
+/// The arity-stripped CLR name is not injective — `type A` and `type A<'T>` both
+/// project to the name `A` — so a name-only walk reaches whichever twin comes
+/// first, and a caller that *assigns* through it writes one row twice and the
+/// other never. A measure-free entity's pickled typar count is its CLR arity and
+/// separates them exactly.
+///
+/// Container steps stay name-keyed, matching [`find_entity_mut`]: an arity twin
+/// *containing* the addressed leaf would need the same treatment, but the
+/// collected target does not carry its containers' pickled arities.
+fn find_entity_at_arity_mut<'a>(
+    entities: &'a mut [Entity],
+    namespace: &[String],
+    type_chain: &[String],
+    arity: usize,
+) -> Option<&'a mut Entity> {
+    let (leaf, containers) = type_chain.split_last()?;
+    let rows: &mut [Entity] = if containers.is_empty() {
+        entities
+    } else {
+        &mut find_entity_mut(entities, namespace, containers)?.nested_types
+    };
+    // A top-level row is keyed by its namespace too; a nested one carries an
+    // empty namespace of its own (the path lives on the outermost type).
+    let matches = |e: &Entity| {
+        e.name == *leaf
+            && e.generic_parameters.len() == arity
+            && (!containers.is_empty() || e.namespace.as_slice() == namespace)
+    };
+    if rows.iter().filter(|e| matches(e)).count() != 1 {
+        return None;
+    }
+    rows.iter_mut().find(|e| matches(e))
 }
 
 /// Like [`find_entity_mut`], but returns `None` unless the addressed name is

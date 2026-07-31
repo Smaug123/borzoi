@@ -616,3 +616,65 @@ fn a_non_fsharp_assembly_has_no_fsharp_constraints_to_miss() {
         }
     }
 }
+
+/// An entity's F# source name is keyed by **arity**, not by its arity-stripped
+/// CLR name alone.
+///
+/// FSharp.Core declares both `Expr` and `Expr<'T>`, compiled ``FSharpExpr`` and
+/// ``FSharpExpr`1``, which strip to one name. Keyed by name alone the two
+/// pickled targets collapse onto one row: it is assigned twice and its twin
+/// never, so one of them keeps the IL name — and a `[<CompiledName>]`-renamed
+/// IL name is one **no F# source can write**. Measured against the real
+/// compiler: `Microsoft.FSharp.Quotations.Expr<int>` binds cleanly while
+/// `Microsoft.FSharp.Quotations.FSharpExpr<int>` is FS0039 "not defined". A
+/// consumer reading `source_name.unwrap_or(name)` as "the name a user writes"
+/// therefore resolves — and can publish — a name F# rejects.
+///
+/// Both twins are asserted at both arities, in two namespaces with different
+/// shapes: `Expr`/`Expr<'T>` are two ordinary types, while
+/// `List`/`List<'T>` pairs a non-generic type (which FCS also binds cleanly)
+/// with the union. That makes this a *keying* claim rather than "the generic
+/// one happens to work now".
+#[test]
+fn fsharp_core_source_names_key_by_arity() {
+    let entities = load();
+    let source_name_of = |namespace: &[&str], name: &str, arity: usize| -> Option<String> {
+        entities
+            .iter()
+            .find(|e| {
+                e.namespace
+                    .iter()
+                    .map(String::as_str)
+                    .eq(namespace.iter().copied())
+                    && e.name == name
+                    && e.generic_parameters.len() == arity
+            })
+            .unwrap_or_else(|| panic!("FSharp.Core projects `{name}` at arity {arity}"))
+            .source_name
+            .clone()
+    };
+    let quotations = ["Microsoft", "FSharp", "Quotations"];
+    let collections = ["Microsoft", "FSharp", "Collections"];
+
+    assert_eq!(
+        source_name_of(&quotations, "FSharpExpr", 1).as_deref(),
+        Some("Expr"),
+        "`Expr<'T>` is what F# source writes; `FSharpExpr` is unwritable"
+    );
+    assert_eq!(
+        source_name_of(&quotations, "FSharpExpr", 0).as_deref(),
+        Some("Expr"),
+        "…and its nullary twin keeps its own name rather than losing it to the \
+         arity-blind collision"
+    );
+    assert_eq!(
+        source_name_of(&collections, "FSharpList", 1).as_deref(),
+        Some("List"),
+        "`'T list`'s source name"
+    );
+    assert_eq!(
+        source_name_of(&collections, "FSharpList", 0).as_deref(),
+        Some("List"),
+        "the non-generic `List` is a real type FCS binds, not a compiler artefact"
+    );
+}
