@@ -6034,7 +6034,14 @@ let private canonicalTyparName (i: int) : string =
 /// This lives *here*, not in the shared [`renderType`], so it stays confined to
 /// the inference `TypeCanon` path and does not change the assembly-metadata dump's
 /// tuple/typar currency (which keeps the IL `System.Tuple<…>` / positional-typar
-/// forms the Rust assembly normaliser mirrors). A **measure** or **SRTP**
+/// forms the Rust assembly normaliser mirrors). An **array** renders
+/// `(canonical elem)[,…]`, recursing rather than delegating, so the convention
+/// holds all the way down the array spine: `(int * string)[]` is
+/// `(System.Int32 * System.String)[]`, not the IL `System.Tuple<…>[]` the
+/// metadata renderer would emit, and `'a[]` keeps its canonical typar instead of
+/// throwing into the display fallback. The element is parenthesised for a tuple
+/// or function, since `[]` binds tighter than both `*` and `->` and a bare
+/// `System.Int32 * System.String[]` denotes a different type. A **measure** or **SRTP**
 /// (`^`-static-req) typar renders *distinctively* — `<measure:name>` /
 /// `<srtp:name>` — a shape the Rust side never emits, so a wrong emission on our
 /// side fails loudly instead of matching by accident. Falls back to FCS's `Format`
@@ -6086,6 +6093,26 @@ let private renderTypeCanonical (t: FSharpType) : string =
             if tp.IsMeasure then sprintf "<measure:%s>" tp.Name
             elif tp.IsSolveAtCompileTime then sprintf "<srtp:%s>" tp.Name
             else canonTypar tp.Name
+        elif t.HasTypeDefinition && t.TypeDefinition.IsArrayType
+             && t.GenericArguments.Count = 1 then
+            // Recurse, so the canonical convention holds under the array rather
+            // than handing the whole subtree to the metadata renderer. Delegating
+            // switches currency silently: a tuple element comes back as the IL
+            // `System.Tuple<…>`, and a function or typar element throws, which the
+            // caller's `try` turns into FCS's *display* rendering of the entire
+            // type from the root — three currencies in one field.
+            let elem = t.GenericArguments.[0]
+            let rendered = go elem
+            // `[]` binds tighter than `*` and `->`, so a structural element must
+            // be parenthesised or it denotes a different type. This is the same
+            // rule the tuple branch applies to its own elements.
+            let rendered =
+                if (elem.IsTupleType && not elem.IsStructTupleType) || elem.IsFunctionType then
+                    sprintf "(%s)" rendered
+                else
+                    rendered
+            let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
+            sprintf "%s[%s]" rendered commas
         else
             try renderType t with _ -> renderExprType t
     go t
@@ -6197,8 +6224,8 @@ let private checkScriptImplFileWithDiags
     | None ->
         failwithf "fcs-dump %s: no implementation file (keepAssemblyContents not honoured?)" label
 
-/// [`checkScriptImplFileWithDiags`] without the diagnostics — the shape the
-/// `binder-types` oracle wants.
+/// [`checkScriptImplFileWithDiags`] without the diagnostics, for a caller that
+/// makes no claim resting on whether the check was clean.
 let private checkScriptImplFile (label: string) (absolute: string) : FSharpImplementationFileContents =
     fst (checkScriptImplFileWithDiags label absolute)
 
@@ -6264,9 +6291,21 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
 /// Dump every binder's inferred type for a single file — the Phase-3
 /// binder-type oracle (see [`collectBinderTypes`]).
 let private dumpBinderTypes (absolute: string) =
-    let impl = checkScriptImplFile "binder-types" absolute
+    let impl, diags = checkScriptImplFileWithDiags "binder-types" absolute
     let binders = collectBinderTypes impl
-    let payload = {| File = absolute; Binders = binders |}
+    // FCS error-recovers an annotation it rejects — `System.Nullable<string>` and
+    // an IL-only name both come back as a binder typed `System.Object` — so the
+    // binder record alone cannot distinguish "FCS says this type" from "FCS says
+    // this annotation is not writable". A consumer whose rule is "commit nothing
+    // where FCS rejected" needs the errors to tell those apart.
+    let errors =
+        diags
+        |> Array.filter (fun d -> d.Severity = FSharp.Compiler.Diagnostics.FSharpDiagnosticSeverity.Error)
+        |> Array.map (fun d ->
+            {| Line = d.StartLine
+               Code = d.ErrorNumber
+               Message = d.Message |})
+    let payload = {| File = absolute; Binders = binders; Errors = errors |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -6563,7 +6602,8 @@ let private fileBatchCore () =
                     {| File = absolute; Exprs = exprs; Errors = errorLines () |}, compact)
             | "binder-types" ->
                 let binders = collectBinderTypes (implFile ())
-                JsonSerializer.Serialize({| File = absolute; Binders = binders |}, compact)
+                JsonSerializer.Serialize(
+                    {| File = absolute; Binders = binders; Errors = errorLines () |}, compact)
             | "overloads" ->
                 let calls = collectOverloads (implFile ())
                 JsonSerializer.Serialize({| File = absolute; Calls = calls; Errors = errorLines () |}, compact)

@@ -2063,6 +2063,16 @@ fn parse_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsChec
 struct BinderTypesDump {
     #[serde(rename = "Binders")]
     binders: Vec<RawBinder>,
+    /// Every `Severity=Error` diagnostic of the check.
+    ///
+    /// `Option`, not a defaulted `Vec`, for the same reason [`TypesDump`]'s is:
+    /// absent and empty must stay distinguishable, or a `BORZOI_FCS_DUMP` binary
+    /// predating the field reports *no errors* for every check and a consumer
+    /// whose soundness argument rests on "FCS rejected this line" silently loses
+    /// it. [`parse_fcs_binder_types_with_errors`] refuses absence;
+    /// [`parse_fcs_binder_types`], which makes no such claim, ignores it.
+    #[serde(rename = "Errors")]
+    errors: Option<Vec<RawError>>,
 }
 
 #[derive(Deserialize)]
@@ -2082,21 +2092,54 @@ struct RawBinder {
 /// into it). The range is a binder's `DeclarationLocation`, matching the `sema`
 /// resolver's [`borzoi_sema::Def`]`::range`, so our `def_type` map keys
 /// (a `DefId` → its `Def::range`) line up with this map's keys.
-pub fn parse_fcs_binder_types(
+pub fn parse_fcs_binder_types(json: &str, source: &str) -> FcsTypeMap {
+    parse_binder_types_dump(json, source).0
+}
+
+/// [`parse_fcs_binder_types`] plus the errors FCS reported. A consumer that reads
+/// a binder's *reported* type as FCS's answer needs them: FCS error-recovers an
+/// annotation it rejects to `System.Object` and still emits a binder record, so
+/// the record alone cannot distinguish "FCS says this type" from "FCS says this
+/// annotation is not writable".
+pub fn parse_fcs_binder_types_with_errors(
     json: &str,
     source: &str,
-) -> std::collections::HashMap<(usize, usize), String> {
+) -> (FcsTypeMap, Vec<FcsCheckError>) {
+    let (types, errors) = parse_binder_types_dump(json, source);
+    let errors = errors.expect(
+        "the `binder-types` payload carries no `Errors` field — the oracle predates it \
+         (check BORZOI_FCS_DUMP), and a caller that must not commit on an annotation \
+         FCS rejected cannot tell a clean check from an unreported one",
+    );
+    (types, errors)
+}
+
+/// The shared body: the binder-type map, and the errors *if the oracle reported
+/// the field at all*.
+fn parse_binder_types_dump(json: &str, source: &str) -> (FcsTypeMap, Option<Vec<FcsCheckError>>) {
     let dump: BinderTypesDump =
         serde_json::from_str(json).expect("fcs-dump binder-types JSON shape");
     let idx = LineIndex::new(source);
-    dump.binders
+    let types = dump
+        .binders
         .into_iter()
         .map(|b| {
             let start = idx.offset(b.range.start.line, b.range.start.col);
             let end = idx.offset(b.range.end.line, b.range.end.col);
             ((start, end), b.type_canon)
         })
-        .collect()
+        .collect();
+    let errors = dump.errors.map(|errors| {
+        errors
+            .into_iter()
+            .map(|e| FcsCheckError {
+                line: e.line,
+                code: e.code,
+                message: e.message,
+            })
+            .collect()
+    });
+    (types, errors)
 }
 
 // ============================================================================

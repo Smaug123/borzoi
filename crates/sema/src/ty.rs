@@ -136,10 +136,7 @@ impl Ty {
     pub fn render(&self) -> String {
         match self {
             Ty::Named { path, args } => render_named(&path.join("."), args, Ty::render),
-            Ty::Array { elem, rank } => {
-                let commas = ",".repeat((*rank as usize).saturating_sub(1));
-                format!("{}[{}]", elem.render(), commas)
-            }
+            Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render),
             // `a * b * …` with FQN elements, matching the oracle's canonical
             // tuple rendering (`fcs-dump`'s `renderTypeInScope`). A nested tuple
             // element is parenthesised so the flat ` * ` join stays unambiguous.
@@ -182,10 +179,7 @@ impl Ty {
                     .unwrap_or_else(|| path.join("."));
                 render_named(&head, args, Ty::render_fsharp)
             }
-            Ty::Array { elem, rank } => {
-                let commas = ",".repeat((*rank as usize).saturating_sub(1));
-                format!("{}[{}]", elem.render_fsharp(), commas)
-            }
+            Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render_fsharp),
             // The F# display form is the same `a * b` shape, with aliased
             // elements (`int * string`).
             Ty::Tuple(elems) => render_tuple(elems, Ty::render_fsharp),
@@ -237,6 +231,22 @@ fn render_named(head: &str, args: &[Ty], render_arg: fn(&Ty) -> String) -> Strin
     }
     let args: Vec<String> = args.iter().map(render_arg).collect();
     format!("{head}<{}>", args.join(", "))
+}
+
+/// Render an array as `Elem[,…]` (rank commas, as ECMA-335 / FCS render them),
+/// parenthesising an element that is itself a **tuple** or a **function**.
+///
+/// The parens are load-bearing, not cosmetic: `[]` binds tighter than both `*`
+/// and `->`, so a bare `System.Int32 * System.String[]` denotes a *2-tuple of
+/// `int` and `string[]`* — a different type from the array of pairs it was meant
+/// to render. Shared by [`Ty::render`] and [`Ty::render_fsharp`].
+fn render_array(elem: &Ty, rank: u32, render_elem: fn(&Ty) -> String) -> String {
+    let commas = ",".repeat((rank as usize).saturating_sub(1));
+    let elem = match elem {
+        Ty::Tuple(_) | Ty::Fun { .. } => format!("({})", render_elem(elem)),
+        _ => render_elem(elem),
+    };
+    format!("{elem}[{commas}]")
 }
 
 /// Render a tuple's elements with `render_elem`, joined by ` * `, parenthesising
@@ -295,6 +305,43 @@ mod tests {
             .render(),
             "System.Int32[,]"
         );
+    }
+
+    /// An array whose element is a **tuple** or a **function** parenthesises it.
+    /// Without the parens `(int * string)[]` renders `int * string[]`, which
+    /// denotes a different type — a 2-tuple of `int` and `string[]` — because
+    /// `[]` binds tighter than `*` and `->`. That is a wrong hover, not a
+    /// cosmetic one.
+    #[test]
+    fn renders_a_structural_array_element_parenthesised() {
+        let arr = |t: Ty| Ty::Array {
+            elem: Box::new(t),
+            rank: 1,
+        };
+        let pair = Ty::Tuple(vec![Ty::named("System.Int32"), Ty::named("System.String")]);
+        assert_eq!(
+            arr(pair.clone()).render(),
+            "(System.Int32 * System.String)[]"
+        );
+        assert_eq!(arr(pair).render_fsharp(), "(int * string)[]");
+
+        let fun = Ty::Fun {
+            arg: Box::new(Ty::named("System.Int32")),
+            ret: Box::new(Ty::named("System.String")),
+        };
+        assert_eq!(
+            arr(fun.clone()).render(),
+            "(System.Int32 -> System.String)[]"
+        );
+        assert_eq!(arr(fun).render_fsharp(), "(int -> string)[]");
+
+        // A named, array or parameter element needs none: `[]` already binds
+        // tighter than anything those spell.
+        assert_eq!(
+            arr(arr(Ty::named("System.Int32"))).render_fsharp(),
+            "int[][]"
+        );
+        assert_eq!(arr(Ty::Param(0)).render_fsharp(), "'a[]");
     }
 
     #[test]
