@@ -119,7 +119,7 @@ fn tuple_expression_hover_is_not_labelled_literal() {
     let (mut state, uri) = orphan_state(src);
     let space_col = src.find(',').unwrap() as u32 + 1; // the ` ` between elements
     let hover = run(&mut state, &uri, 0, space_col).expect("hover inside the tuple");
-    assert_eq!(body(&hover), "`1, \"hi\"` — int * string");
+    assert_eq!(body(&hover), "`1, \"hi\"` — `int * string`");
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn hovers_an_int_literal() {
     // resolution; the literal does not, so this exercises the inferred fallback.
     let (mut state, uri) = orphan_state("let x = 1\n");
     let hover = run(&mut state, &uri, 0, 8).expect("hover for the int literal");
-    assert_eq!(body(&hover), "`1` — int literal");
+    assert_eq!(body(&hover), "`1` — `int` literal");
     let range = hover.range.expect("hover.range pins the literal");
     assert_eq!((range.start.character, range.end.character), (8, 9));
 }
@@ -277,14 +277,14 @@ fn hovers_a_string_literal() {
     // `let s = "hi"`: cursor inside the string literal (column 9).
     let (mut state, uri) = orphan_state("let s = \"hi\"\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the string literal");
-    assert_eq!(body(&hover), "`\"hi\"` — string literal");
+    assert_eq!(body(&hover), "`\"hi\"` — `string` literal");
 }
 
 #[test]
 fn hovers_a_float_literal() {
     let (mut state, uri) = orphan_state("let f = 1.5\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the float literal");
-    assert_eq!(body(&hover), "`1.5` — float literal");
+    assert_eq!(body(&hover), "`1.5` — `float` literal");
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn hovers_a_byte_string_literal() {
     // Byte strings are `byte[]`, and the F# alias matches the assembly crate's.
     let (mut state, uri) = orphan_state("let b = \"ab\"B\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the byte-string literal");
-    assert_eq!(body(&hover), "`\"ab\"B` — byte[] literal");
+    assert_eq!(body(&hover), "`\"ab\"B` — `byte[]` literal");
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn project_file_literal_hover_shows_inferred_type() {
     // the project hover falls back to the inferred literal type.
     let col = a_src.lines().nth(1).unwrap().find("42").unwrap() as u32;
     let hover = run(&mut state, &a_uri, 1, col).expect("project literal hover");
-    assert_eq!(body(&hover), "`42` — int literal");
+    assert_eq!(body(&hover), "`42` — `int` literal");
 
     // Cursor on the binder `answer`: the project hover enriches the resolved
     // name with its inferred type.
@@ -506,7 +506,7 @@ fn entity_hover_label_renders_declaration_namespace_and_provenance() {
         Some("`[<AutoOpen>] module ExtraTopLevelOperators`")
     );
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core`\n\n"),
         "expected the namespace context line, got:\n{body}"
     );
     assert!(
@@ -530,7 +530,7 @@ fn struct_union_entity_renders_struct_attr_and_union_kind() {
     let mut lines = body.split("\n\n");
     assert_eq!(lines.next(), Some("`[<Struct>] type ValueOption<'T>`"));
     assert!(
-        body.contains("\n\nunion, in Microsoft.FSharp.Core\n\n"),
+        body.contains("\n\nunion, in `Microsoft.FSharp.Core`\n\n"),
         "expected the `union` kind + namespace context line, got:\n{body}"
     );
 }
@@ -561,7 +561,7 @@ fn union_case_entity_renders_as_a_case_of_its_union() {
     assert_eq!(lines.next(), Some("`union case Choice1Of2`"));
     assert_eq!(
         lines.next(),
-        Some("in Microsoft.FSharp.Core.Choice<'T1, 'T2>")
+        Some("in `Microsoft.FSharp.Core.Choice<'T1, 'T2>`")
     );
     assert!(
         body.contains("\n\nfrom FSharp.Core v"),
@@ -617,6 +617,99 @@ fn hover_calls_an_entity_a_union_case_exactly_when_classification_does() {
     assert!(cases >= 2, "expected the Choice carriers, found {cases}");
 }
 
+/// Every name a hover renders must be spelled as F# could write it: a metadata
+/// name that needs double backticks must carry them. This is the invariant
+/// behind `format_fsharp_name`, asserted over a real assembly rather than the
+/// helper alone — the helper being right is not the risk, a *render site that
+/// never calls it* is (each name had its own `format!`), and only a sweep over
+/// real names sees that.
+///
+/// FSharp.Core supplies the awkward names for free: fsc's generated types carry
+/// `@` (`Choice1Of2@DebugTypeProxy`), which no bare F# identifier may contain.
+#[test]
+fn every_rendered_name_is_spelled_as_fsharp_could_write_it() {
+    let env = fsharp_core_env();
+    let mut quoted = 0usize;
+    for handle in env.all_handles() {
+        let entity = env.entity(handle);
+        let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+        quoted += usize::from(check_name_rendering(
+            name,
+            &entity_hover_label(&env, handle),
+        ));
+        for member in &entity.members {
+            // A constructor renders as `new: … -> Owner`: its metadata name
+            // (`.ctor`) is not in the output at all, so there is no spelling to
+            // check. This is the one exemption, and it is structural — the
+            // `quoted` counter below still proves the sweep saw real work.
+            if matches!(member, borzoi_assembly::Member::Method(m) if m.is_constructor) {
+                continue;
+            }
+            let name = member_source_name(member);
+            let Some(idx) = env.member(handle, name) else {
+                // Name-keyed lookup: an overload set or a name the index does
+                // not key resolves elsewhere or not at all. The sweep needs a
+                // member it can *address*, not every member.
+                continue;
+            };
+            let body = member_hover_label(&env, handle, idx);
+            quoted += usize::from(check_name_rendering(name, &body));
+            // The context line names the declaring type by its whole enclosing
+            // chain, so *every* segment is a rendered name too — and the segment
+            // needing backticks is rarely the last one.
+            for segment in env.enclosing_chain(handle) {
+                let entity = env.entity(segment);
+                let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+                quoted += usize::from(check_name_rendering(name, &body));
+            }
+        }
+    }
+    assert!(
+        quoted > 0,
+        "the sweep saw no name needing backticks, so it proved nothing — \
+         FSharp.Core's `@`-carrying generated names should have supplied some"
+    );
+}
+
+/// The name a member renders under — its F# source name where metadata records
+/// one (`printfn`, not the compiled `PrintFormatLine`).
+fn member_source_name(member: &borzoi_assembly::Member) -> &str {
+    use borzoi_assembly::Member;
+    match member {
+        Member::Method(m) => m.source_name.as_deref().unwrap_or(&m.name),
+        Member::Field(f) => &f.name,
+        Member::Property(p) => &p.name,
+        Member::Event(e) => &e.name,
+    }
+}
+
+/// Assert `body` spells `name` the way F# would, and report whether it needed
+/// backticks (so the caller can prove the sweep was not vacuous).
+fn check_name_rendering(name: &str, body: &str) -> bool {
+    let rendered = borzoi_assembly::format_fsharp_name(name);
+    if rendered == name {
+        return false;
+    }
+    assert!(
+        body.contains(rendered.as_ref()),
+        "{name:?} needs backticks but the hover body spells it bare:\n{body}"
+    );
+    // The F# backticks are *content*, and every line carrying them is Markdown:
+    // a two-backtick run inside a one-backtick span (or in a bare paragraph)
+    // is consumed as a delimiter, so the quotes vanish from what the user sees.
+    // The enclosing span must therefore be fenced longer than the run it holds.
+    let line = body
+        .lines()
+        .find(|line| line.contains(rendered.as_ref()))
+        .expect("the body contains it, so some line does");
+    assert!(
+        line.contains("```"),
+        "{name:?} is quoted but its line is not fenced past the quotes, so \
+         Markdown will eat them:\n{line}"
+    );
+    true
+}
+
 #[test]
 fn member_hover_label_renders_signature_declaring_type_and_provenance() {
     let env = fsharp_core_env();
@@ -639,7 +732,7 @@ fn member_hover_label_renders_signature_declaring_type_and_provenance() {
         "expected a `val printfn` signature head, got: {head}"
     );
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core.ExtraTopLevelOperators\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core.ExtraTopLevelOperators`\n\n"),
         "expected the declaring-module context line, got:\n{body}"
     );
     assert!(
@@ -672,7 +765,7 @@ fn member_of_a_nested_type_names_its_enclosing_chain() {
         .expect("the carrier's Item property");
     let body = member_hover_label(&env, case, item);
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>`\n\n"),
         "expected the enclosing chain on the context line, got:\n{body}"
     );
 }
@@ -698,7 +791,7 @@ fn rqa_attribute_renders_on_non_module_kinds() {
         Some("`[<RequireQualifiedAccess>] type DynamicallyAccessedMemberTypes`")
     );
     assert!(
-        body.contains("\n\nenum, in System.Diagnostics.CodeAnalysis\n\n"),
+        body.contains("\n\nenum, in `System.Diagnostics.CodeAnalysis`\n\n"),
         "expected the `enum` kind + namespace context line, got:\n{body}"
     );
 }

@@ -174,9 +174,17 @@ impl Ty {
                     Some((name, ns)) => (ns.join("."), name.as_str()),
                     None => return String::new(),
                 };
+                // No alias: the path is raw metadata, so each segment is spelled
+                // as an F# identifier ([`borzoi_assembly::join_quoted`]) — an
+                // fsc-generated or source-quoted name cannot be written bare, and
+                // under F#'s postfix generics an unquoted `Odd Type` is not
+                // malformed but a *different* type (`Type<Odd>`). An alias is our
+                // own literal (`int`, `string list`) and needs no such treatment.
                 let head = borzoi_assembly::fsharp_alias(&namespace, name)
                     .map(str::to_owned)
-                    .unwrap_or_else(|| path.join("."));
+                    .unwrap_or_else(|| {
+                        borzoi_assembly::join_quoted(path.iter().map(String::as_str))
+                    });
                 render_named(&head, args, Ty::render_fsharp)
             }
             Ty::Array { elem, rank } => render_array(elem, *rank, Ty::render_fsharp),
@@ -284,6 +292,39 @@ fn render_fun(arg: &Ty, ret: &Ty, render_elem: fn(&Ty) -> String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The F# rendering spells each segment as an identifier. `Ty::Named`'s path
+    /// is raw metadata, and metadata carries names F# can only write in double
+    /// backticks — an fsc-generated type (`@`) or a source-quoted one — so a raw
+    /// join emits a type that is not F#. Worse than malformed: F#'s postfix
+    /// generic syntax makes `Odd Type` legal and *different* (`Type<Odd>`), so an
+    /// unquoted awkward name reads as another type rather than as broken text.
+    ///
+    /// The `render` (CLR) form deliberately does not quote: it is the currency of
+    /// the FCS differentials, which compare against raw metadata names.
+    #[test]
+    fn renders_fsharp_names_as_identifiers() {
+        let ty = Ty::Named {
+            path: vec![
+                "Ns".to_string(),
+                "Odd Type".to_string(),
+                "Inner@42".to_string(),
+            ],
+            args: vec![],
+        };
+        assert_eq!(ty.render_fsharp(), "Ns.``Odd Type``.``Inner@42``");
+        assert_eq!(ty.render(), "Ns.Odd Type.Inner@42");
+        // A generic argument is rendered through the same path, so it is quoted
+        // wherever it appears.
+        let outer = Ty::Named {
+            path: vec!["Ns".to_string(), "Holder".to_string()],
+            args: vec![ty],
+        };
+        assert_eq!(
+            outer.render_fsharp(),
+            "Ns.Holder<Ns.``Odd Type``.``Inner@42``>"
+        );
+    }
 
     #[test]
     fn renders_named_and_array() {

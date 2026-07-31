@@ -25,7 +25,7 @@
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
-    format_entity_header, format_member,
+    format_entity_header, format_fsharp_name, format_member, join_quoted,
 };
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
@@ -398,8 +398,8 @@ fn append_defined_in(body: &mut String, document: Option<DefinitionDocument>) {
 /// the build machine's absolute path ([`file_name_of`]), useless on this host.
 fn defined_in_line(document: &DefinitionDocument) -> String {
     format!(
-        "Defined in `{}`, line {}",
-        file_name_of(&document.document),
+        "Defined in {}, line {}",
+        code_span(file_name_of(&document.document)),
         document.line
     )
 }
@@ -410,6 +410,47 @@ fn defined_in_line(document: &DefinitionDocument) -> String {
 /// separator.
 fn file_name_of(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+/// A string that has been through [`code_span`], and so is safe to place in a
+/// Markdown paragraph even if it contains F# backticks.
+///
+/// Only [`code_span`] constructs one. Every line of a hover body that carries a
+/// rendered F# name — head or context — is typed as this, so a new line added
+/// later cannot skip the fencing and silently have its quotes eaten: that is a
+/// compile error rather than a rendering nobody looks at twice.
+#[derive(Debug, PartialEq, Eq)]
+struct Fenced(String);
+
+impl PartialEq<&str> for Fenced {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::fmt::Display for Fenced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// Wrap `content` in a Markdown code span whose fence is long enough to hold it.
+///
+/// A code span may not contain a backtick run as long as its own fence, and F#'s
+/// quoted identifiers are made of backticks (`` ``Circle Case`` ``): the usual
+/// single-backtick wrapper would end the span in the middle of the name. The
+/// fence is therefore one longer than the longest run inside, and a content that
+/// starts or ends with a backtick is padded with a space on *both* sides —
+/// CommonMark strips one space from each end only when both are present.
+fn code_span(content: &str) -> Fenced {
+    let longest_run = content.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest_run + 1);
+    let pad = if content.starts_with('`') || content.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    Fenced(format!("{fence}{pad}{content}{pad}{fence}"))
 }
 
 /// Hover body for a referenced-assembly entity: the F# **declaration** as the
@@ -435,7 +476,7 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
         return union_case_hover_label(env, handle);
     }
     let entity = env.entity(handle);
-    let head = format!("`{}`", format_entity_header(entity));
+    let head = code_span(&format_entity_header(entity));
     assemble_body(
         head,
         entity_context(entity),
@@ -470,7 +511,10 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
 /// enclosing type's generic parameters as its own, so the carrier's are the
 /// union's and the header would render `union case Choice1Of2<'T1, 'T2>` — type
 /// parameters on a case name, which F# never writes. They belong to the union,
-/// which is where the context line renders them.
+/// which is where the context line renders them. The name itself still goes
+/// through [`format_fsharp_name`], as every other declaration head does: a case
+/// may be declared with a quoted identifier, and its metadata name then carries
+/// the spaces (`` union case ``Circle Case`` ``).
 ///
 /// An `[<Obsolete>]` / `[<Experimental>]` marker on the *case* never surfaces:
 /// fsc puts a case's attributes on its `New<Case>` maker method, which is not in
@@ -485,14 +529,14 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
 /// [`EntityKind::Class`]: borzoi_assembly::EntityKind::Class
 fn union_case_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
     let entity = env.entity(handle);
-    let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+    let name = format_fsharp_name(entity.source_name.as_deref().unwrap_or(&entity.name));
     // The case's payload (`of string * SynStringKind * range`) is not rendered:
     // it survives only as the carrier's generated `Item`/`ItemN` (or named-field)
     // properties, and reconstructing an `of` clause from those is a guess. An
     // absent payload under-states the case; a wrong one misreports it.
-    let head = format!("`union case {name}`");
-    let context =
-        declaring_union(env, handle).map(|union| format!("in {}", entity_fqn(env, union)));
+    let head = code_span(&format!("union case {name}"));
+    let context = declaring_union(env, handle)
+        .map(|union| format!("in {}", code_span(&entity_fqn(env, union))));
     assemble_body(
         head,
         context,
@@ -524,11 +568,11 @@ fn declaring_union(env: &AssemblyEnv, handle: EntityHandle) -> Option<EntityHand
 /// `None` for a global-namespace entity whose keyword is the kind (e.g. a
 /// top-level `module`).
 fn entity_context(entity: &Entity) -> Option<String> {
-    let namespace = entity.namespace.join(".");
+    let namespace = join_quoted(entity.namespace.iter().map(String::as_str));
     match (entity_qualifier(entity), namespace.is_empty()) {
-        (Some(kind), false) => Some(format!("{kind}, in {namespace}")),
+        (Some(kind), false) => Some(format!("{kind}, in {}", code_span(&namespace))),
         (Some(kind), true) => Some(kind.to_string()),
-        (None, false) => Some(format!("in {namespace}")),
+        (None, false) => Some(format!("in {}", code_span(&namespace))),
         (None, true) => None,
     }
 }
@@ -568,10 +612,10 @@ fn entity_qualifier(entity: &Entity) -> Option<&'static str> {
 pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIndex) -> String {
     let entity = env.entity(parent);
     let member = env.member_at(parent, idx);
-    let head = format!("`{}`", format_member(member, entity));
+    let head = code_span(&format_member(member, entity));
     let context = match member_qualifier(member) {
-        Some(qualifier) => format!("{qualifier}, in {}", entity_fqn(env, parent)),
-        None => format!("in {}", entity_fqn(env, parent)),
+        Some(qualifier) => format!("{qualifier}, in {}", code_span(&entity_fqn(env, parent))),
+        None => format!("in {}", code_span(&entity_fqn(env, parent))),
     };
     assemble_body(
         head,
@@ -589,13 +633,13 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
 /// order — head, context, provenance, then warnings — keeps the at-a-glance
 /// identity first.
 fn assemble_body(
-    head: String,
+    head: Fenced,
     context: Option<String>,
     assembly: &AssemblyIdentity,
     obsolete: Option<&Obsolete>,
     experimental: Option<&Experimental>,
 ) -> String {
-    let mut lines = vec![head];
+    let mut lines = vec![head.0];
     if let Some(context) = context {
         lines.push(context);
     }
@@ -616,9 +660,15 @@ fn assemble_body(
 /// differently don't render identically.
 fn assembly_provenance(assembly: &AssemblyIdentity) -> String {
     let v = assembly.version;
+    // The simple name is metadata, and this is a plain paragraph, so it is
+    // escaped for the same reason the banners are.
     let mut s = format!(
         "from {} v{}.{}.{}.{}",
-        assembly.name, v.major, v.minor, v.build, v.revision
+        escape_metadata_prose(&assembly.name),
+        v.major,
+        v.minor,
+        v.build,
+        v.revision
     );
     if let Some(token) = assembly.public_key_token {
         let hex: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -628,13 +678,30 @@ fn assembly_provenance(assembly: &AssemblyIdentity) -> String {
     s
 }
 
+/// Escape the Markdown delimiters in free-form text that came from *metadata*
+/// rather than from us — an `[<Obsolete>]` message is an arbitrary string an
+/// author wrote, and `[<Obsolete("Use ``newName`` instead")>]` is ordinary
+/// advice, not markup.
+///
+/// Only the backtick and the escaping backslash are escaped, which is the pair
+/// that matters here: a backtick run in unescaped prose is read as a code-span
+/// delimiter, so the words between two of them vanish from what the user sees —
+/// and it would trip [`quotes_are_fenced`], whose whole-body invariant is
+/// meaningful precisely because nothing else emits stray backticks. Wider
+/// injection (`*emphasis*`, a `[link](…)`) is not attempted: it garbles a
+/// message rather than losing it, and escaping every metacharacter would make
+/// ordinary prose read as line noise.
+fn escape_metadata_prose(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('`', "\\`")
+}
+
 /// `⚠ Obsolete[ (error)][: <message>]` — the `[<Obsolete>]` marker. `(error)`
 /// distinguishes a hard `error: true` deprecation (using it fails to compile)
 /// from a plain warning.
 fn obsolete_banner(obsolete: &Obsolete) -> String {
     let severity = if obsolete.is_error { " (error)" } else { "" };
     match &obsolete.message {
-        Some(message) => format!("⚠ Obsolete{severity}: {message}"),
+        Some(message) => format!("⚠ Obsolete{severity}: {}", escape_metadata_prose(message)),
         None => format!("⚠ Obsolete{severity}"),
     }
 }
@@ -644,11 +711,11 @@ fn obsolete_banner(obsolete: &Obsolete) -> String {
 /// message is optional.
 fn experimental_banner(experimental: &Experimental) -> String {
     let id = match &experimental.diagnostic_id {
-        Some(id) => format!(" ({id})"),
+        Some(id) => format!(" ({})", escape_metadata_prose(id)),
         None => String::new(),
     };
     match &experimental.message {
-        Some(message) => format!("⚠ Experimental{id}: {message}"),
+        Some(message) => format!("⚠ Experimental{id}: {}", escape_metadata_prose(message)),
         None => format!("⚠ Experimental{id}"),
     }
 }
@@ -694,12 +761,17 @@ fn member_experimental(member: &Member) -> Option<&Experimental> {
 /// source names throughout, so a suffixed module reads `List`, not the compiled
 /// `ListModule`), with `<'T, 'U>` appended when generic.
 ///
-/// The dotted part comes from
-/// [`AssemblyEnv::entity_full_name`](borzoi_sema::AssemblyEnv::entity_full_name),
-/// which walks the enclosing chain: a *nested* ECMA TypeDef declares no
-/// namespace of its own, so composing the name from `Entity::namespace` alone
+/// The dotted part is built from the enclosing chain — a *nested* ECMA TypeDef
+/// declares no namespace of its own, so composing from `Entity::namespace` alone
 /// drops every enclosing entity and leaves a bare `Choice1Of2` naming nothing a
-/// reader could look up.
+/// reader could look up. Every segment goes through [`format_fsharp_name`]
+/// individually, which is why this does not simply call
+/// [`AssemblyEnv::entity_full_name`](borzoi_sema::AssemblyEnv::entity_full_name):
+/// that returns one pre-joined string of *raw metadata* names (it is the currency
+/// of the FCS differentials, which compare against unquoted full names), and a
+/// segment needing backticks cannot be recovered from the join. The awkward
+/// segment is usually not the last one — fsc's generated types nest under names
+/// like `System-Collections-Generic-IDictionary<'Key, 'T>-get_Keys@60`.
 ///
 /// The type parameters are the entity's *own*, which for a nested type are the
 /// ones it re-declares from its enclosing type, so they land on the last segment
@@ -713,7 +785,34 @@ fn entity_fqn(env: &AssemblyEnv, handle: EntityHandle) -> String {
         .iter()
         .map(|p| p.name.as_str())
         .collect();
-    append_typars(env.entity_full_name(handle), &typars)
+    append_typars(entity_dotted_name(env, handle), &typars)
+}
+
+/// The dotted name of an entity with every segment rendered as an F# identifier:
+/// the outermost enclosing entity's namespace, then one segment per entry of the
+/// enclosing chain (which ends at `handle` itself).
+///
+/// A handle unreachable from any top-level type yields a one-entry chain, so this
+/// degrades to the entity's own namespace and name — the same fallback
+/// `AssemblyEnv::entity_full_name` takes.
+fn entity_dotted_name(env: &AssemblyEnv, handle: EntityHandle) -> String {
+    let chain = env.enclosing_chain(handle);
+    let namespace = chain
+        .first()
+        .map(|&outermost| env.entity(outermost).namespace.as_slice())
+        .unwrap_or_default();
+    join_quoted(
+        namespace
+            .iter()
+            .map(String::as_str)
+            .chain(chain.iter().map(|&h| entity_source_name(env.entity(h)))),
+    )
+}
+
+/// The name an entity renders under: its F# source name where metadata records
+/// one (`List`, not the compiled `ListModule`).
+fn entity_source_name(entity: &Entity) -> &str {
+    entity.source_name.as_deref().unwrap_or(&entity.name)
 }
 
 /// Append (bare) type-parameter names to a dotted name in the F# leading-
@@ -779,8 +878,11 @@ fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
         DefKind::TypeParam => "type parameter",
     };
     match ty {
-        Some(ty) => format!("`{name} : {}` — {kind_label}", ty.render_fsharp()),
-        None => format!("`{name}` — {kind_label}"),
+        Some(ty) => format!(
+            "{} — {kind_label}",
+            code_span(&format!("{name} : {}", ty.render_fsharp()))
+        ),
+        None => format!("{} — {kind_label}", code_span(name)),
     }
 }
 
@@ -802,10 +904,12 @@ fn literal_hover_body(text: &str, root: &SyntaxNode, range: TextRange, ty: &Ty) 
     // misdescribe it. The kind is read off the covering syntax node rather than
     // guessed from the `Ty` (a `Ty::Named` is produced by both a literal and a
     // future call).
+    let value = code_span(value);
+    let ty = code_span(&ty.render_fsharp());
     if covers_literal(root, range) {
-        format!("`{value}` — {} literal", ty.render_fsharp())
+        format!("{value} — {ty} literal")
     } else {
-        format!("`{value}` — {}", ty.render_fsharp())
+        format!("{value} — {ty}")
     }
 }
 
@@ -827,7 +931,29 @@ fn covers_literal(root: &SyntaxNode, range: TextRange) -> bool {
 
 /// Wrap the body in an LSP [`Hover`] using markdown content. Including the
 /// `range` field scopes the editor tooltip to the cursor's symbol.
+/// Whether every line of `body` carrying an F# quoted identifier is fenced past
+/// it — a two-backtick run inside a one-backtick span, or in a bare paragraph, is
+/// consumed by CommonMark as a delimiter, so the quotes vanish from what the user
+/// reads and the name silently becomes a different one.
+///
+/// The [`Fenced`] type makes this unskippable for the bodies built by
+/// [`assemble_body`], but a hover body assembled any other way (an inferred
+/// expression's type, say) has no such gate, so the invariant is also asserted
+/// here, at the one place every hover passes through. A `debug_assert` because
+/// the test suite is where it must fire: shipping a mangled hover is bad,
+/// panicking in a user's editor over it is worse.
+fn quotes_are_fenced(body: &str) -> bool {
+    body.lines()
+        .filter(|line| line.contains("``"))
+        .all(|line| line.contains("```"))
+}
+
 fn make_hover(body: String, text: &str, range: TextRange) -> Hover {
+    debug_assert!(
+        quotes_are_fenced(&body),
+        "a hover body carries F# backticks on a line Markdown will eat them \
+         from; wrap that part in `code_span`:\n{body}"
+    );
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
@@ -956,6 +1082,81 @@ mod tests {
         assert_eq!(member_qualifier(&field(false)), None);
         assert_eq!(member_qualifier(&property(true)), Some("required member"));
         assert_eq!(member_qualifier(&property(false)), None);
+    }
+
+    /// An F# quoted identifier is made of backticks, so the usual
+    /// single-backtick code span would end in the middle of the name. The fence
+    /// grows past the longest run inside, and content that starts or ends with a
+    /// backtick is padded (CommonMark strips the padding when rendering).
+    /// The three places a hover body carries text we did not generate: an
+    /// attribute message, an assembly's simple name, and a PDB document path.
+    /// Each is metadata, so each can carry a backtick run, and each sits in a
+    /// place Markdown would read it as markup. The first two are escaped; the
+    /// third is fenced (it is already shown as a code span). Nothing else in a
+    /// body is free-form — signatures and names are generated through
+    /// `format_fsharp_name`, and the availability explanations are our own
+    /// `&'static str` prose — which is what makes `quotes_are_fenced` a
+    /// meaningful whole-body invariant rather than a heuristic.
+    #[test]
+    fn every_untrusted_string_in_a_body_is_escaped_or_fenced() {
+        let id = AssemblyIdentity {
+            name: "Odd``Name".to_string(),
+            version: Version {
+                major: 1,
+                minor: 0,
+                build: 0,
+                revision: 0,
+            },
+            public_key_token: None,
+        };
+        assert!(quotes_are_fenced(&assembly_provenance(&id)));
+        assert!(quotes_are_fenced(&defined_in_line(&DefinitionDocument {
+            document: "/src/Odd``File.fs".to_string(),
+            line: 12,
+            column: 1,
+        })));
+        assert!(quotes_are_fenced(&experimental_banner(&Experimental {
+            diagnostic_id: Some("X``1".to_string()),
+            message: Some("see ``other``".to_string()),
+            url_format: None,
+        })));
+    }
+
+    /// An `[<Obsolete>]` message is prose an author wrote, and may contain
+    /// backticks — `[<Obsolete("Use ``newName`` instead")>]` is ordinary advice.
+    /// Unescaped, Markdown reads them as a code span and the words between them
+    /// disappear; and the body-wide fencing invariant, which is meaningful only
+    /// because nothing else emits stray backticks, would fire on valid input.
+    #[test]
+    fn a_metadata_message_carrying_backticks_is_escaped() {
+        let banner = obsolete_banner(&Obsolete {
+            message: Some("Use ``newName`` instead".to_string()),
+            is_error: false,
+        });
+        assert_eq!(banner, "⚠ Obsolete: Use \\`\\`newName\\`\\` instead");
+        assert!(
+            quotes_are_fenced(&banner),
+            "an escaped message leaves no backtick run for the invariant to trip on"
+        );
+        // A backslash of its own survives as itself rather than escaping the
+        // character after it.
+        assert_eq!(
+            obsolete_banner(&Obsolete {
+                message: Some(r"path\to".to_string()),
+                is_error: false,
+            }),
+            r"⚠ Obsolete: path\\to"
+        );
+    }
+
+    #[test]
+    fn code_span_fences_past_any_backticks_inside() {
+        assert_eq!(code_span("type List<'T>"), "`type List<'T>`");
+        assert_eq!(
+            code_span("union case ``Circle Case``"),
+            "``` union case ``Circle Case`` ```"
+        );
+        assert_eq!(code_span("``Odd``"), "``` ``Odd`` ```");
     }
 
     #[test]

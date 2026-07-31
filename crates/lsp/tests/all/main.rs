@@ -14,6 +14,7 @@ mod csharp_sidecar;
 mod csharp_sidecar_bundled_e2e;
 mod definition_availability_incomplete;
 mod fcs_bridge;
+mod fsharp_name_lexes_back;
 mod glob_msbuild_diff;
 mod goto_source_fsharp_core;
 mod goto_source_sidecar;

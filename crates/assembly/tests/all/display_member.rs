@@ -6,7 +6,7 @@ use borzoi_assembly::{
     Access, AssemblyIdentity, Augmentation, ConstantValue, Entity, EntityKind, Event, Field,
     IndexParameter, Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType,
     ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, UnionCases, Variance,
-    Version, format_entity_header, format_member,
+    Version, format_entity_header, format_fsharp_name, format_member,
 };
 
 // ---- construction helpers -------------------------------------------------
@@ -1296,4 +1296,131 @@ fn entity_header_uses_source_name() {
     e.source_name = Some("ValueOption".to_string());
     e.is_struct = true;
     assert_eq!(format_entity_header(&e), "[<Struct>] type ValueOption<'T>");
+}
+
+// ---- F# identifier quoting ------------------------------------------------
+
+/// A metadata name that F# source could only have written in double backticks
+/// must render back in them: emitting `type Circle Case` loses the identifier's
+/// boundaries and is not a declaration F# would accept.
+#[test]
+fn a_name_that_cannot_be_written_bare_is_quoted() {
+    assert_eq!(format_fsharp_name("Circle Case"), "``Circle Case``");
+    assert_eq!(format_fsharp_name("has-dash"), "``has-dash``");
+    // Compiler-generated names carry `@`, which is not an identifier character.
+    assert_eq!(
+        format_fsharp_name("Circle@DebugTypeProxy"),
+        "``Circle@DebugTypeProxy``"
+    );
+    // An F# keyword is a legal *metadata* name (C# `void type()`, or F#'s own
+    // ``type``), and needs the backticks for the same reason.
+    assert_eq!(format_fsharp_name("type"), "``type``");
+    assert_eq!(format_fsharp_name("member"), "``member``");
+    // Degenerate metadata: an empty name has no bare spelling either.
+    assert_eq!(format_fsharp_name(""), "````");
+}
+
+/// The guarantee is one-directional: a name may be quoted needlessly, never left
+/// bare when F# would reject it. Matching the compiler's Unicode categories by
+/// approximation is what breaks that — Rust's `is_alphanumeric` admits
+/// `OtherNumber` (`²`), which F# rejects — so the bare spelling is confined to
+/// ASCII, and a non-ASCII identifier F# would have accepted bare is quoted.
+#[test]
+fn a_non_ascii_name_is_quoted_rather_than_guessed_at() {
+    // U+00B2 is `OtherNumber`: F# rejects it in an identifier, and leaving it
+    // bare would emit a signature the F# lexer cannot read.
+    assert_eq!(format_fsharp_name("A\u{b2}"), "``A\u{b2}``");
+    // Legal F# identifiers that this deliberately over-quotes: valid output,
+    // just noisier than the compiler's own rendering.
+    assert_eq!(format_fsharp_name("caf\u{e9}"), "``caf\u{e9}``");
+}
+
+/// An ordinary name is returned untouched — the quoting must not become noise on
+/// the names that make up almost every signature.
+#[test]
+fn an_ordinary_name_is_left_bare() {
+    for name in [
+        "WriteLine",
+        "_private",
+        "x'",
+        "Item1",
+        "Choice1Of2",
+        "MailboxProcessor",
+    ] {
+        assert_eq!(format_fsharp_name(name), name, "{name} needs no backticks");
+    }
+}
+
+/// The compiler exempts operator and active-pattern names from quoting because
+/// it renders them parenthesised (`(mod)`, `(|Even|Odd|)`). This renderer has no
+/// such syntax, and exempting them *without* it emits what F# cannot parse
+/// (`val mod: int`), so they are quoted like any other name that is not a bare
+/// identifier. Rendering the parenthesised forms is a separate feature, and one
+/// only a call site that knows the name is in operator position can decide.
+#[test]
+fn operator_and_active_pattern_names_are_quoted_like_any_other() {
+    assert_eq!(format_fsharp_name("mod"), "``mod``");
+    assert_eq!(format_fsharp_name("|Even|Odd|"), "``|Even|Odd|``");
+    // The shapes a bars-delimited exemption would have mis-tokenized: neither is
+    // an active-pattern name, and neither may be written bare.
+    assert_eq!(format_fsharp_name("|||"), "``|||``");
+    assert_eq!(format_fsharp_name("|+|"), "``|+|``");
+}
+
+/// A name carrying double backticks of its own has no faithful spelling: bare it
+/// lexes as the shorter name between the delimiters, quoted its delimiters close
+/// early. It is quoted regardless, so the backticks show as part of the name
+/// rather than silently renaming it. Metadata does not carry such a name — an F#
+/// quoted identifier stores its decoded text — so this pins a degenerate input,
+/// not a case the renderer must serve.
+#[test]
+fn a_name_carrying_backticks_is_quoted_though_no_spelling_is_faithful() {
+    assert_eq!(format_fsharp_name("``Circle Case``"), "````Circle Case````");
+}
+
+/// The quoting reaches the *rendered* declarations, not just the helper — one
+/// per name-bearing shape, since each was its own `format!` site.
+#[test]
+fn quoted_names_survive_into_rendered_declarations() {
+    assert_eq!(
+        format_entity_header(&entity("Odd Name", EntityKind::Class, &[])),
+        "type ``Odd Name``"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Field(field("odd field", TypeRef::Primitive(Primitive::I4))),
+            &class("Holder")
+        ),
+        "val mutable ``odd field``: int"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Property(property(
+                "odd prop",
+                TypeRef::Primitive(Primitive::I4),
+                true,
+                false
+            )),
+            &class("Holder")
+        ),
+        "member ``odd prop``: int with get"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Event(event("odd event", named0(&["System"], "EventHandler"))),
+            &class("Counter")
+        ),
+        "[<CLIEvent>] member ``odd event``: EventHandler"
+    );
+    let m = method(
+        "Take",
+        sig(
+            vec![param(Some("odd arg"), TypeRef::Primitive(Primitive::I4))],
+            TypeRef::Primitive(Primitive::Void),
+        ),
+    );
+    assert_eq!(
+        format_member(&Member::Method(m), &class("Holder")),
+        "member Take: ``odd arg``: int -> unit"
+    );
 }

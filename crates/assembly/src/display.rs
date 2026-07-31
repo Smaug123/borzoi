@@ -88,6 +88,199 @@ impl<'a> TyparScope<'a> {
     }
 }
 
+/// Every word the F# lexer tokenizes as something other than an identifier, so
+/// none may be written bare where a name is expected.
+///
+/// This is the compiler's own `keywordList` (`LexHelpers.fs`) — the lexer's
+/// table, not the smaller `keywordsWithDescription` used for tooltips, which
+/// omits `fixed`, `mod`, the wildcard `_`, and the ml-compatibility reserved
+/// words (`tailcall`, `constraint`, `sealed`, …). Those are all legal CLR names,
+/// and `type _` / `val fixed: int` parse no better than `type match` does. The
+/// bang forms (`let!`, `yield!`) are lexed separately but need no entry: `!` is
+/// not an identifier character, so the shape check already rejects them.
+///
+/// The three `__…__` entries are the compiler's source-location literals, which
+/// the lexer substitutes rather than binding, and the `__token_…` entries are
+/// its synthetic offside/parser tokens — all legal CLR names, none of which lex
+/// as an identifier.
+const FSHARP_LEXER_WORDS: &[&str] = &[
+    "_",
+    "__LINE__",
+    "__SOURCE_DIRECTORY__",
+    "__SOURCE_FILE__",
+    "__token_OBLOCKSEP",
+    "__token_ODECLEND",
+    "__token_ODO",
+    "__token_OELSE",
+    "__token_OEND",
+    "__token_OLET",
+    "__token_OTHEN",
+    "__token_OWITH",
+    "__token_constraint",
+    "abstract",
+    "and",
+    "as",
+    "assert",
+    "base",
+    "begin",
+    "break",
+    "checked",
+    "class",
+    "component",
+    "const",
+    "constraint",
+    "continue",
+    "default",
+    "delegate",
+    "do",
+    "done",
+    "downcast",
+    "downto",
+    "elif",
+    "else",
+    "end",
+    "exception",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "for",
+    "fori",
+    "fun",
+    "function",
+    "global",
+    "if",
+    "in",
+    "include",
+    "inherit",
+    "inline",
+    "interface",
+    "internal",
+    "lazy",
+    "let",
+    "match",
+    "member",
+    "mixin",
+    "mod",
+    "module",
+    "mutable",
+    "namespace",
+    "new",
+    "null",
+    "of",
+    "open",
+    "or",
+    "override",
+    "parallel",
+    "params",
+    "private",
+    "process",
+    "protected",
+    "public",
+    "pure",
+    "rec",
+    "return",
+    "sealed",
+    "sig",
+    "static",
+    "struct",
+    "tailcall",
+    "then",
+    "to",
+    "trait",
+    "true",
+    "try",
+    "type",
+    "upcast",
+    "use",
+    "val",
+    "virtual",
+    "void",
+    "when",
+    "while",
+    "with",
+    "yield",
+];
+/// Render `name` as an F# identifier: wrapped in double backticks when it cannot
+/// be written bare, unchanged when it can.
+///
+/// A name reaching the renderer is a *metadata* name, and metadata admits names
+/// F# source cannot spell unquoted — an F# quoted identifier
+/// (`` | ``Circle Case`` of int ``) keeps its spaces in metadata, and a
+/// compiler-generated name carries `@`. Emitting those bare produces a signature
+/// that is not F# and silently loses the identifier's boundaries
+/// (`union case Circle Case`).
+///
+/// Follows the compiler's `AddBackticksToIdentifierIfNeeded` (`PrettyNaming.fs`)
+/// on which names need quoting, but *not* its two exemptions. The compiler
+/// exempts an operator name (`mod`) and an active-pattern name (`|Even|Odd|`)
+/// because it renders those through a different path, which wraps them in
+/// parentheses (`(mod)`, `(|Even|Odd|)`); exempting them without that wrapping
+/// emits a declaration F# cannot parse — `val mod: int` — which is worse than
+/// quoting. This renderer has no operator syntax, so it spells every name as the
+/// identifier metadata says it is. Rendering the parenthesised forms is a
+/// separate feature; when it lands, it belongs at the call sites that know the
+/// name is in operator position, not in a context-free helper.
+///
+/// A name containing a double-backtick run has **no** faithful F# spelling —
+/// bare, it lexes as a different (shorter) name; quoted, its delimiters close
+/// early. Such a name is quoted anyway, so the backticks are at least visible as
+/// part of it. Metadata does not carry one in practice: an F# quoted identifier
+/// stores its *decoded* text (`Circle Case`), verified by projecting a union
+/// declared with one, so this is a degenerate input rather than a rendering
+/// borzoi must get right. It is not special-cased for the same reason the `mod`
+/// and active-pattern exemptions were removed — a guard that fires for no real
+/// input is a guard whose behaviour nothing checks.
+///
+/// The bare spelling is allowed only for ASCII identifiers — `[A-Za-z_]` then
+/// `[A-Za-z0-9_']` — which is a strict *subset* of what F# accepts, so the error
+/// can only ever be an unnecessary pair of backticks (still valid F#, and it
+/// reads correctly) and never a missing one. Matching the compiler's Unicode
+/// categories exactly is what would break that guarantee without a general-
+/// category table: Rust's `char::is_alphanumeric` admits `OtherNumber`, which F#
+/// rejects (`A²` would have gone out bare and unparseable), and `is_alphabetic`
+/// admits combining marks F# rejects as a first character. A non-ASCII
+/// identifier F# would have taken bare is therefore quoted here; that is the
+/// price of the guarantee, and it is only cosmetic.
+pub fn format_fsharp_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if is_writable_bare(name) {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("``{name}``"))
+    }
+}
+
+/// Join dotted-name segments, each rendered as an F# identifier
+/// ([`format_fsharp_name`]): `["Ns", "Odd Type"]` → `` Ns.``Odd Type`` ``.
+///
+/// A dotted name is a sequence of identifiers, so quoting the *joined* string
+/// would be wrong (the dots are syntax, not name characters) and quoting no
+/// segment loses the boundary of any that needs it. Every caller that builds one
+/// goes through here: the sites are far apart — a type reference in a signature,
+/// a namespace on a context line, the enclosing chain of a nested entity — and
+/// each one that grew its own copy of this loop is a defect this crate has
+/// already shipped once.
+pub fn join_quoted<'a>(segments: impl IntoIterator<Item = &'a str>) -> String {
+    segments
+        .into_iter()
+        .map(|segment| format_fsharp_name(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// Whether [`format_fsharp_name`] may emit `name` without backticks.
+fn is_writable_bare(name: &str) -> bool {
+    if FSHARP_LEXER_WORDS.contains(&name) {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c == '\'' || c.is_ascii_alphanumeric())
+}
+
 /// Render a type as an F# type expression. The outermost position's
 /// nullable-reference annotation lives on the enclosing structural field
 /// (`Parameter`/`Field`/…), not the [`TypeRef`], so this entry renders the type
@@ -173,7 +366,7 @@ pub fn format_entity_header(entity: &Entity) -> String {
         EntityKind::Exception => "exception",
         _ => "type",
     };
-    let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+    let name = format_fsharp_name(entity.source_name.as_deref().unwrap_or(&entity.name));
     format!(
         "{prefix}{keyword} {name}{}",
         format_typar_list(&entity.generic_parameters)
@@ -190,7 +383,7 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
     }
 
     let keyword = method_keyword(m, owner);
-    let name = m.source_name.as_deref().unwrap_or(&m.name);
+    let name = format_fsharp_name(m.source_name.as_deref().unwrap_or(&m.name));
     let typars = format_typar_list(&m.generic_parameters);
     let ret = format_return(
         &m.signature.return_type,
@@ -305,7 +498,7 @@ fn format_param(p: &Parameter, scope: &TyparScope) -> String {
             let ty = format_param_type(p, scope);
             let value = render_constant(value);
             match &p.name {
-                Some(name) => format!("{name}: {ty} = {value}"),
+                Some(name) => format!("{}: {ty} = {value}", format_fsharp_name(name)),
                 None => format!("{ty} = {value}"),
             }
         }
@@ -366,10 +559,12 @@ fn render_decimal(negative: bool, scale: u8, mantissa: u128) -> String {
     format!("{sign}{magnitude}M")
 }
 
-/// `{prefix}{name}: {ty}`, or `{prefix}{ty}` for a nameless parameter.
+/// `{prefix}{name}: {ty}`, or `{prefix}{ty}` for a nameless parameter. The name
+/// is rendered as an F# identifier ([`format_fsharp_name`]) — a parameter can be
+/// declared with a quoted identifier just as any other binding can.
 fn prefix_named(prefix: &str, ty: &str, name: Option<&str>) -> String {
     match name {
-        Some(name) => format!("{prefix}{name}: {ty}"),
+        Some(name) => format!("{prefix}{}: {ty}", format_fsharp_name(name)),
         None => format!("{prefix}{ty}"),
     }
 }
@@ -455,7 +650,7 @@ fn format_typar_list(typars: &[TypeParameter]) -> String {
 /// The owner's short F# name with its type parameters: `List<'T>`. Used as a
 /// constructor's return type.
 fn owner_name_with_typars(owner: &Entity) -> String {
-    let name = owner.source_name.as_deref().unwrap_or(&owner.name);
+    let name = format_fsharp_name(owner.source_name.as_deref().unwrap_or(&owner.name));
     format!("{name}{}", format_typar_list(&owner.generic_parameters))
 }
 
@@ -486,7 +681,7 @@ fn format_field(f: &Field, owner: &Entity) -> String {
     };
     format!(
         "{literal}{volatile}{static_}val {mutable}{}: {}",
-        f.name,
+        format_fsharp_name(&f.name),
         format_nullable_type(
             &NullableType {
                 ty: f.ty.clone(),
@@ -511,7 +706,7 @@ fn format_property(p: &Property, owner: &Entity) -> String {
     // it back as the `val` it was written as, not `member … with get`.
     if owner.kind == EntityKind::Module {
         let mutable = if p.has_setter { "mutable " } else { "" };
-        return format!("val {mutable}{}: {ty}", p.name);
+        return format!("val {mutable}{}: {ty}", format_fsharp_name(&p.name));
     }
 
     let keyword = if p.is_static {
@@ -530,10 +725,13 @@ fn format_property(p: &Property, owner: &Entity) -> String {
     // Multiple indices tuple with `*` (`x: int * y: int -> 'T`). An ordinary
     // property has no index dimension and renders `member Name: T`.
     if p.parameters.is_empty() {
-        format!("{keyword} {}: {ty}{accessors}", p.name)
+        format!("{keyword} {}: {ty}{accessors}", format_fsharp_name(&p.name))
     } else {
         let indices = format_index_params(&p.parameters, &scope);
-        format!("{keyword} {}: {indices} -> {ty}{accessors}", p.name)
+        format!(
+            "{keyword} {}: {indices} -> {ty}{accessors}",
+            format_fsharp_name(&p.name)
+        )
     }
 }
 
@@ -573,7 +771,7 @@ fn format_event(e: &Event, owner: &Entity) -> String {
     // the only way to keep the event-ness the signature would otherwise hide.
     format!(
         "[<CLIEvent>] {keyword} {}: {}",
-        e.name,
+        format_fsharp_name(&e.name),
         format_nullable_type(
             &NullableType {
                 ty: e.delegate_type.clone(),
@@ -738,9 +936,12 @@ fn render_named(
     // case we fall back to the naive arrangement on the whole dotted name.
     // Abbreviations are all top-level, so a `/` only ever reaches this branch
     // via that fallback.
+    // Each segment of the name is an identifier in its own right, so each is
+    // spelled as F# would write it — an abbreviation (`list`, `option`) is our
+    // own literal and needs no such treatment.
     let display = match abbreviation(&ns, name) {
         Some(abbr) => abbr.to_string(),
-        None => name.replace('/', "."),
+        None => join_quoted(name.split('/')),
     };
     match type_args.len() {
         0 => (display, Prec::Atom),
@@ -829,8 +1030,9 @@ fn render_nested(
     let mut args = type_args.iter();
     let mut out = Vec::with_capacity(segments.len());
     for (seg, &arity) in segments.iter().zip(segment_arities) {
+        let seg = format_fsharp_name(seg);
         if arity == 0 {
-            out.push((*seg).to_string());
+            out.push(seg.into_owned());
         } else {
             let mut seg_args = Vec::with_capacity(arity);
             for _ in 0..arity {
