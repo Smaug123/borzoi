@@ -6,7 +6,7 @@ use borzoi_assembly::{
     Access, AssemblyIdentity, Augmentation, ConstantValue, Entity, EntityKind, Event, Field,
     IndexParameter, Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType,
     ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, UnionCases, Variance,
-    Version, format_entity_header, format_member,
+    Version, format_entity_header, format_fsharp_name, format_member,
 };
 
 // ---- construction helpers -------------------------------------------------
@@ -1296,4 +1296,105 @@ fn entity_header_uses_source_name() {
     e.source_name = Some("ValueOption".to_string());
     e.is_struct = true;
     assert_eq!(format_entity_header(&e), "[<Struct>] type ValueOption<'T>");
+}
+
+// ---- F# identifier quoting ------------------------------------------------
+
+/// A metadata name that F# source could only have written in double backticks
+/// must render back in them: emitting `type Circle Case` loses the identifier's
+/// boundaries and is not a declaration F# would accept.
+#[test]
+fn a_name_that_cannot_be_written_bare_is_quoted() {
+    assert_eq!(format_fsharp_name("Circle Case"), "``Circle Case``");
+    assert_eq!(format_fsharp_name("has-dash"), "``has-dash``");
+    // Compiler-generated names carry `@`, which is not an identifier character.
+    assert_eq!(
+        format_fsharp_name("Circle@DebugTypeProxy"),
+        "``Circle@DebugTypeProxy``"
+    );
+    // An F# keyword is a legal *metadata* name (C# `void type()`, or F#'s own
+    // ``type``), and needs the backticks for the same reason.
+    assert_eq!(format_fsharp_name("type"), "``type``");
+    assert_eq!(format_fsharp_name("member"), "``member``");
+    // Degenerate metadata: an empty name has no bare spelling either.
+    assert_eq!(format_fsharp_name(""), "````");
+}
+
+/// An ordinary name is returned untouched — the quoting must not become noise on
+/// the names that make up almost every signature.
+#[test]
+fn an_ordinary_name_is_left_bare() {
+    for name in [
+        "WriteLine",
+        "_private",
+        "x'",
+        "Item1",
+        "Choice1Of2",
+        "MailboxProcessor",
+    ] {
+        assert_eq!(format_fsharp_name(name), name, "{name} needs no backticks");
+    }
+}
+
+/// The two exemptions the compiler's own `DoesIdentifierNeedBackticks` carries:
+/// backticks would break both spellings rather than fix them.
+#[test]
+fn operator_and_active_pattern_names_are_not_quoted() {
+    assert_eq!(format_fsharp_name("mod"), "mod");
+    assert_eq!(format_fsharp_name("|Even|Odd|"), "|Even|Odd|");
+    assert_eq!(format_fsharp_name("|Parsed|_|"), "|Parsed|_|");
+}
+
+/// An already-quoted name is left alone: quoting it again would nest the
+/// delimiters and produce a name F# cannot parse at all.
+#[test]
+fn an_already_quoted_name_is_not_requoted() {
+    assert_eq!(format_fsharp_name("``Circle Case``"), "``Circle Case``");
+}
+
+/// The quoting reaches the *rendered* declarations, not just the helper — one
+/// per name-bearing shape, since each was its own `format!` site.
+#[test]
+fn quoted_names_survive_into_rendered_declarations() {
+    assert_eq!(
+        format_entity_header(&entity("Odd Name", EntityKind::Class, &[])),
+        "type ``Odd Name``"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Field(field("odd field", TypeRef::Primitive(Primitive::I4))),
+            &class("Holder")
+        ),
+        "val mutable ``odd field``: int"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Property(property(
+                "odd prop",
+                TypeRef::Primitive(Primitive::I4),
+                true,
+                false
+            )),
+            &class("Holder")
+        ),
+        "member ``odd prop``: int with get"
+    );
+    assert_eq!(
+        format_member(
+            &Member::Event(event("odd event", named0(&["System"], "EventHandler"))),
+            &class("Counter")
+        ),
+        "[<CLIEvent>] member ``odd event``: EventHandler"
+    );
+    let m = method(
+        "Take",
+        sig(
+            vec![param(Some("odd arg"), TypeRef::Primitive(Primitive::I4))],
+            TypeRef::Primitive(Primitive::Void),
+        ),
+    );
+    assert_eq!(
+        format_member(&Member::Method(m), &class("Holder")),
+        "member Take: ``odd arg``: int -> unit"
+    );
 }

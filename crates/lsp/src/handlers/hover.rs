@@ -25,7 +25,7 @@
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
-    format_entity_header, format_member,
+    format_entity_header, format_fsharp_name, format_member,
 };
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
@@ -412,6 +412,25 @@ fn file_name_of(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// Wrap `content` in a Markdown code span whose fence is long enough to hold it.
+///
+/// A code span may not contain a backtick run as long as its own fence, and F#'s
+/// quoted identifiers are made of backticks (`` ``Circle Case`` ``): the usual
+/// single-backtick wrapper would end the span in the middle of the name. The
+/// fence is therefore one longer than the longest run inside, and a content that
+/// starts or ends with a backtick is padded with a space on *both* sides —
+/// CommonMark strips one space from each end only when both are present.
+fn code_span(content: &str) -> String {
+    let longest_run = content.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat(longest_run + 1);
+    let pad = if content.starts_with('`') || content.ends_with('`') {
+        " "
+    } else {
+        ""
+    };
+    format!("{fence}{pad}{content}{pad}{fence}")
+}
+
 /// Hover body for a referenced-assembly entity: the F# **declaration** as the
 /// head (`type List<'T>`, `[<Struct>] type Vector2`, `module Operators`, …),
 /// then the namespace as context and the assembly + any obsolete/experimental
@@ -435,7 +454,7 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
         return union_case_hover_label(env, handle);
     }
     let entity = env.entity(handle);
-    let head = format!("`{}`", format_entity_header(entity));
+    let head = code_span(&format_entity_header(entity));
     assemble_body(
         head,
         entity_context(entity),
@@ -470,7 +489,10 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
 /// enclosing type's generic parameters as its own, so the carrier's are the
 /// union's and the header would render `union case Choice1Of2<'T1, 'T2>` — type
 /// parameters on a case name, which F# never writes. They belong to the union,
-/// which is where the context line renders them.
+/// which is where the context line renders them. The name itself still goes
+/// through [`format_fsharp_name`], as every other declaration head does: a case
+/// may be declared with a quoted identifier, and its metadata name then carries
+/// the spaces (`` union case ``Circle Case`` ``).
 ///
 /// An `[<Obsolete>]` / `[<Experimental>]` marker on the *case* never surfaces:
 /// fsc puts a case's attributes on its `New<Case>` maker method, which is not in
@@ -485,12 +507,12 @@ pub fn entity_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
 /// [`EntityKind::Class`]: borzoi_assembly::EntityKind::Class
 fn union_case_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
     let entity = env.entity(handle);
-    let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+    let name = format_fsharp_name(entity.source_name.as_deref().unwrap_or(&entity.name));
     // The case's payload (`of string * SynStringKind * range`) is not rendered:
     // it survives only as the carrier's generated `Item`/`ItemN` (or named-field)
     // properties, and reconstructing an `of` clause from those is a guess. An
     // absent payload under-states the case; a wrong one misreports it.
-    let head = format!("`union case {name}`");
+    let head = code_span(&format!("union case {name}"));
     let context =
         declaring_union(env, handle).map(|union| format!("in {}", entity_fqn(env, union)));
     assemble_body(
@@ -568,7 +590,7 @@ fn entity_qualifier(entity: &Entity) -> Option<&'static str> {
 pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIndex) -> String {
     let entity = env.entity(parent);
     let member = env.member_at(parent, idx);
-    let head = format!("`{}`", format_member(member, entity));
+    let head = code_span(&format_member(member, entity));
     let context = match member_qualifier(member) {
         Some(qualifier) => format!("{qualifier}, in {}", entity_fqn(env, parent)),
         None => format!("in {}", entity_fqn(env, parent)),
@@ -779,8 +801,11 @@ fn format_def(name: &str, kind: DefKind, ty: Option<&Ty>) -> String {
         DefKind::TypeParam => "type parameter",
     };
     match ty {
-        Some(ty) => format!("`{name} : {}` — {kind_label}", ty.render_fsharp()),
-        None => format!("`{name}` — {kind_label}"),
+        Some(ty) => format!(
+            "{} — {kind_label}",
+            code_span(&format!("{name} : {}", ty.render_fsharp()))
+        ),
+        None => format!("{} — {kind_label}", code_span(name)),
     }
 }
 
@@ -956,6 +981,20 @@ mod tests {
         assert_eq!(member_qualifier(&field(false)), None);
         assert_eq!(member_qualifier(&property(true)), Some("required member"));
         assert_eq!(member_qualifier(&property(false)), None);
+    }
+
+    /// An F# quoted identifier is made of backticks, so the usual
+    /// single-backtick code span would end in the middle of the name. The fence
+    /// grows past the longest run inside, and content that starts or ends with a
+    /// backtick is padded (CommonMark strips the padding when rendering).
+    #[test]
+    fn code_span_fences_past_any_backticks_inside() {
+        assert_eq!(code_span("type List<'T>"), "`type List<'T>`");
+        assert_eq!(
+            code_span("union case ``Circle Case``"),
+            "``` union case ``Circle Case`` ```"
+        );
+        assert_eq!(code_span("``Odd``"), "``` ``Odd`` ```");
     }
 
     #[test]

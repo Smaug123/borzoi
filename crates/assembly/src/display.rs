@@ -88,6 +88,140 @@ impl<'a> TyparScope<'a> {
     }
 }
 
+/// F#'s keywords, which cannot be written as a bare identifier. Taken from the
+/// compiler's own `keywordsWithDescription` (`PrettyNaming.fs`), which is what
+/// `IsIdentifierName` — and so FCS's own rendering — consults.
+const FSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "and",
+    "as",
+    "assert",
+    "base",
+    "begin",
+    "class",
+    "const",
+    "default",
+    "delegate",
+    "do",
+    "done",
+    "downcast",
+    "downto",
+    "elif",
+    "else",
+    "end",
+    "exception",
+    "extern",
+    "false",
+    "finally",
+    "for",
+    "fun",
+    "function",
+    "global",
+    "if",
+    "in",
+    "inherit",
+    "inline",
+    "interface",
+    "internal",
+    "lazy",
+    "let",
+    "let!",
+    "match",
+    "match!",
+    "member",
+    "module",
+    "mutable",
+    "namespace",
+    "new",
+    "not",
+    "null",
+    "of",
+    "open",
+    "or",
+    "override",
+    "private",
+    "public",
+    "rec",
+    "return",
+    "return!",
+    "sig",
+    "static",
+    "struct",
+    "then",
+    "to",
+    "true",
+    "try",
+    "type",
+    "upcast",
+    "use",
+    "use!",
+    "val",
+    "void",
+    "when",
+    "while",
+    "while!",
+    "with",
+    "yield",
+    "yield!",
+];
+
+/// Render `name` as an F# identifier: wrapped in double backticks when it cannot
+/// be written bare, unchanged when it can.
+///
+/// A name reaching the renderer is a *metadata* name, and metadata admits names
+/// F# source cannot spell unquoted — an F# quoted identifier
+/// (`` | ``Circle Case`` of int ``) keeps its spaces in metadata, and a
+/// compiler-generated name carries `@`. Emitting those bare produces a signature
+/// that is not F# and silently loses the identifier's boundaries
+/// (`union case Circle Case`).
+///
+/// Mirrors the compiler's `AddBackticksToIdentifierIfNeeded`
+/// (`PrettyNaming.fs`), including its two exemptions, so that a name it renders
+/// specially is not made *worse* here: an operator name (`mod`) and an
+/// active-pattern name (`|Even|Odd|`) are left alone rather than quoted.
+///
+/// The character classes are `char::is_alphabetic` / `is_alphanumeric`, which
+/// under-approximate the compiler's Unicode categories (they miss `LetterNumber`
+/// starts, connector punctuation beyond `_`, and combining marks). The bias is
+/// deliberate and one-directional: an unnecessary pair of backticks is still
+/// valid F# that reads correctly, whereas a missing pair is not.
+pub fn format_fsharp_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if is_writable_bare(name) {
+        std::borrow::Cow::Borrowed(name)
+    } else {
+        std::borrow::Cow::Owned(format!("``{name}``"))
+    }
+}
+
+/// Whether [`format_fsharp_name`] may emit `name` without backticks.
+fn is_writable_bare(name: &str) -> bool {
+    // Already quoted: re-quoting would nest the delimiters.
+    if name.starts_with("``") || name.ends_with("``") {
+        return true;
+    }
+    // `mod` is a keyword the compiler nonetheless writes bare as an operator
+    // name, and an active-pattern name (`|Even|Odd|`) has its own syntax that
+    // backticks would break.
+    if name == "mod" || is_active_pattern_name(name) {
+        return true;
+    }
+    if FSHARP_KEYWORDS.contains(&name) {
+        return false;
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first == '_' || first.is_alphabetic())
+        && chars.all(|c| c == '_' || c == '\'' || c.is_alphanumeric())
+}
+
+/// Whether `name` has the shape of an active-pattern name — `|Even|Odd|`,
+/// `|Parsed|_|` — which is written with its bars, never in backticks.
+fn is_active_pattern_name(name: &str) -> bool {
+    name.len() >= 3 && name.starts_with('|') && name.ends_with('|')
+}
+
 /// Render a type as an F# type expression. The outermost position's
 /// nullable-reference annotation lives on the enclosing structural field
 /// (`Parameter`/`Field`/…), not the [`TypeRef`], so this entry renders the type
@@ -173,7 +307,7 @@ pub fn format_entity_header(entity: &Entity) -> String {
         EntityKind::Exception => "exception",
         _ => "type",
     };
-    let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+    let name = format_fsharp_name(entity.source_name.as_deref().unwrap_or(&entity.name));
     format!(
         "{prefix}{keyword} {name}{}",
         format_typar_list(&entity.generic_parameters)
@@ -190,7 +324,7 @@ fn format_method(m: &MethodLike, owner: &Entity) -> String {
     }
 
     let keyword = method_keyword(m, owner);
-    let name = m.source_name.as_deref().unwrap_or(&m.name);
+    let name = format_fsharp_name(m.source_name.as_deref().unwrap_or(&m.name));
     let typars = format_typar_list(&m.generic_parameters);
     let ret = format_return(
         &m.signature.return_type,
@@ -305,7 +439,7 @@ fn format_param(p: &Parameter, scope: &TyparScope) -> String {
             let ty = format_param_type(p, scope);
             let value = render_constant(value);
             match &p.name {
-                Some(name) => format!("{name}: {ty} = {value}"),
+                Some(name) => format!("{}: {ty} = {value}", format_fsharp_name(name)),
                 None => format!("{ty} = {value}"),
             }
         }
@@ -366,10 +500,12 @@ fn render_decimal(negative: bool, scale: u8, mantissa: u128) -> String {
     format!("{sign}{magnitude}M")
 }
 
-/// `{prefix}{name}: {ty}`, or `{prefix}{ty}` for a nameless parameter.
+/// `{prefix}{name}: {ty}`, or `{prefix}{ty}` for a nameless parameter. The name
+/// is rendered as an F# identifier ([`format_fsharp_name`]) — a parameter can be
+/// declared with a quoted identifier just as any other binding can.
 fn prefix_named(prefix: &str, ty: &str, name: Option<&str>) -> String {
     match name {
-        Some(name) => format!("{prefix}{name}: {ty}"),
+        Some(name) => format!("{prefix}{}: {ty}", format_fsharp_name(name)),
         None => format!("{prefix}{ty}"),
     }
 }
@@ -455,7 +591,7 @@ fn format_typar_list(typars: &[TypeParameter]) -> String {
 /// The owner's short F# name with its type parameters: `List<'T>`. Used as a
 /// constructor's return type.
 fn owner_name_with_typars(owner: &Entity) -> String {
-    let name = owner.source_name.as_deref().unwrap_or(&owner.name);
+    let name = format_fsharp_name(owner.source_name.as_deref().unwrap_or(&owner.name));
     format!("{name}{}", format_typar_list(&owner.generic_parameters))
 }
 
@@ -486,7 +622,7 @@ fn format_field(f: &Field, owner: &Entity) -> String {
     };
     format!(
         "{literal}{volatile}{static_}val {mutable}{}: {}",
-        f.name,
+        format_fsharp_name(&f.name),
         format_nullable_type(
             &NullableType {
                 ty: f.ty.clone(),
@@ -511,7 +647,7 @@ fn format_property(p: &Property, owner: &Entity) -> String {
     // it back as the `val` it was written as, not `member … with get`.
     if owner.kind == EntityKind::Module {
         let mutable = if p.has_setter { "mutable " } else { "" };
-        return format!("val {mutable}{}: {ty}", p.name);
+        return format!("val {mutable}{}: {ty}", format_fsharp_name(&p.name));
     }
 
     let keyword = if p.is_static {
@@ -530,10 +666,13 @@ fn format_property(p: &Property, owner: &Entity) -> String {
     // Multiple indices tuple with `*` (`x: int * y: int -> 'T`). An ordinary
     // property has no index dimension and renders `member Name: T`.
     if p.parameters.is_empty() {
-        format!("{keyword} {}: {ty}{accessors}", p.name)
+        format!("{keyword} {}: {ty}{accessors}", format_fsharp_name(&p.name))
     } else {
         let indices = format_index_params(&p.parameters, &scope);
-        format!("{keyword} {}: {indices} -> {ty}{accessors}", p.name)
+        format!(
+            "{keyword} {}: {indices} -> {ty}{accessors}",
+            format_fsharp_name(&p.name)
+        )
     }
 }
 
@@ -573,7 +712,7 @@ fn format_event(e: &Event, owner: &Entity) -> String {
     // the only way to keep the event-ness the signature would otherwise hide.
     format!(
         "[<CLIEvent>] {keyword} {}: {}",
-        e.name,
+        format_fsharp_name(&e.name),
         format_nullable_type(
             &NullableType {
                 ty: e.delegate_type.clone(),

@@ -617,6 +617,80 @@ fn hover_calls_an_entity_a_union_case_exactly_when_classification_does() {
     assert!(cases >= 2, "expected the Choice carriers, found {cases}");
 }
 
+/// Every name a hover renders must be spelled as F# could write it: a metadata
+/// name that needs double backticks must carry them. This is the invariant
+/// behind `format_fsharp_name`, asserted over a real assembly rather than the
+/// helper alone — the helper being right is not the risk, a *render site that
+/// never calls it* is (each name had its own `format!`), and only a sweep over
+/// real names sees that.
+///
+/// FSharp.Core supplies the awkward names for free: fsc's generated types carry
+/// `@` (`Choice1Of2@DebugTypeProxy`), which no bare F# identifier may contain.
+#[test]
+fn every_rendered_name_is_spelled_as_fsharp_could_write_it() {
+    let env = fsharp_core_env();
+    let mut quoted = 0usize;
+    for handle in env.all_handles() {
+        let entity = env.entity(handle);
+        let name = entity.source_name.as_deref().unwrap_or(&entity.name);
+        quoted += usize::from(check_name_rendering(
+            name,
+            &entity_hover_label(&env, handle),
+        ));
+        for member in &entity.members {
+            // A constructor renders as `new: … -> Owner`: its metadata name
+            // (`.ctor`) is not in the output at all, so there is no spelling to
+            // check. This is the one exemption, and it is structural — the
+            // `quoted` counter below still proves the sweep saw real work.
+            if matches!(member, borzoi_assembly::Member::Method(m) if m.is_constructor) {
+                continue;
+            }
+            let name = member_source_name(member);
+            let Some(idx) = env.member(handle, name) else {
+                // Name-keyed lookup: an overload set or a name the index does
+                // not key resolves elsewhere or not at all. The sweep needs a
+                // member it can *address*, not every member.
+                continue;
+            };
+            quoted += usize::from(check_name_rendering(
+                name,
+                &member_hover_label(&env, handle, idx),
+            ));
+        }
+    }
+    assert!(
+        quoted > 0,
+        "the sweep saw no name needing backticks, so it proved nothing — \
+         FSharp.Core's `@`-carrying generated names should have supplied some"
+    );
+}
+
+/// The name a member renders under — its F# source name where metadata records
+/// one (`printfn`, not the compiled `PrintFormatLine`).
+fn member_source_name(member: &borzoi_assembly::Member) -> &str {
+    use borzoi_assembly::Member;
+    match member {
+        Member::Method(m) => m.source_name.as_deref().unwrap_or(&m.name),
+        Member::Field(f) => &f.name,
+        Member::Property(p) => &p.name,
+        Member::Event(e) => &e.name,
+    }
+}
+
+/// Assert `body` spells `name` the way F# would, and report whether it needed
+/// backticks (so the caller can prove the sweep was not vacuous).
+fn check_name_rendering(name: &str, body: &str) -> bool {
+    let rendered = borzoi_assembly::format_fsharp_name(name);
+    if rendered == name {
+        return false;
+    }
+    assert!(
+        body.contains(rendered.as_ref()),
+        "{name:?} needs backticks but the hover body spells it bare:\n{body}"
+    );
+    true
+}
+
 #[test]
 fn member_hover_label_renders_signature_declaring_type_and_provenance() {
     let env = fsharp_core_env();
