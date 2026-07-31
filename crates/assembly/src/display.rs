@@ -186,11 +186,16 @@ const FSHARP_KEYWORDS: &[&str] = &[
 /// separate feature; when it lands, it belongs at the call sites that know the
 /// name is in operator position, not in a context-free helper.
 ///
-/// The character classes are `char::is_alphabetic` / `is_alphanumeric`, which
-/// under-approximate the compiler's Unicode categories (they miss `LetterNumber`
-/// starts, connector punctuation beyond `_`, and combining marks). The bias is
-/// deliberate and one-directional: an unnecessary pair of backticks is still
-/// valid F# that reads correctly, whereas a missing pair is not.
+/// The bare spelling is allowed only for ASCII identifiers — `[A-Za-z_]` then
+/// `[A-Za-z0-9_']` — which is a strict *subset* of what F# accepts, so the error
+/// can only ever be an unnecessary pair of backticks (still valid F#, and it
+/// reads correctly) and never a missing one. Matching the compiler's Unicode
+/// categories exactly is what would break that guarantee without a general-
+/// category table: Rust's `char::is_alphanumeric` admits `OtherNumber`, which F#
+/// rejects (`A²` would have gone out bare and unparseable), and `is_alphabetic`
+/// admits combining marks F# rejects as a first character. A non-ASCII
+/// identifier F# would have taken bare is therefore quoted here; that is the
+/// price of the guarantee, and it is only cosmetic.
 pub fn format_fsharp_name(name: &str) -> std::borrow::Cow<'_, str> {
     if is_writable_bare(name) {
         std::borrow::Cow::Borrowed(name)
@@ -219,8 +224,8 @@ fn is_writable_bare(name: &str) -> bool {
     let Some(first) = chars.next() else {
         return false;
     };
-    (first == '_' || first.is_alphabetic())
-        && chars.all(|c| c == '_' || c == '\'' || c.is_alphanumeric())
+    (first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|c| c == '_' || c == '\'' || c.is_ascii_alphanumeric())
 }
 
 /// Render a type as an F# type expression. The outermost position's

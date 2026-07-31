@@ -1320,6 +1320,21 @@ fn a_name_that_cannot_be_written_bare_is_quoted() {
     assert_eq!(format_fsharp_name(""), "````");
 }
 
+/// The guarantee is one-directional: a name may be quoted needlessly, never left
+/// bare when F# would reject it. Matching the compiler's Unicode categories by
+/// approximation is what breaks that — Rust's `is_alphanumeric` admits
+/// `OtherNumber` (`²`), which F# rejects — so the bare spelling is confined to
+/// ASCII, and a non-ASCII identifier F# would have accepted bare is quoted.
+#[test]
+fn a_non_ascii_name_is_quoted_rather_than_guessed_at() {
+    // U+00B2 is `OtherNumber`: F# rejects it in an identifier, and leaving it
+    // bare would emit a signature the F# lexer cannot read.
+    assert_eq!(format_fsharp_name("A\u{b2}"), "``A\u{b2}``");
+    // Legal F# identifiers that this deliberately over-quotes: valid output,
+    // just noisier than the compiler's own rendering.
+    assert_eq!(format_fsharp_name("caf\u{e9}"), "``caf\u{e9}``");
+}
+
 /// An ordinary name is returned untouched — the quoting must not become noise on
 /// the names that make up almost every signature.
 #[test]
