@@ -40,7 +40,7 @@ mod view;
 
 pub use display::{
     TyparScope, format_entity_header, format_fsharp_name, format_member, format_nullable_type,
-    format_type, fsharp_alias,
+    format_type, fsharp_alias, join_quoted,
 };
 // The public ECMA-335 assembly view, backed by the in-crate reader.
 pub use ecma335_assembly::Ecma335Assembly;

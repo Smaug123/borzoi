@@ -1367,11 +1367,15 @@ fn operator_and_active_pattern_names_are_quoted_like_any_other() {
     assert_eq!(format_fsharp_name("|+|"), "``|+|``");
 }
 
-/// An already-quoted name is left alone: quoting it again would nest the
-/// delimiters and produce a name F# cannot parse at all.
+/// A name carrying double backticks of its own has no faithful spelling: bare it
+/// lexes as the shorter name between the delimiters, quoted its delimiters close
+/// early. It is quoted regardless, so the backticks show as part of the name
+/// rather than silently renaming it. Metadata does not carry such a name — an F#
+/// quoted identifier stores its decoded text — so this pins a degenerate input,
+/// not a case the renderer must serve.
 #[test]
-fn an_already_quoted_name_is_not_requoted() {
-    assert_eq!(format_fsharp_name("``Circle Case``"), "``Circle Case``");
+fn a_name_carrying_backticks_is_quoted_though_no_spelling_is_faithful() {
+    assert_eq!(format_fsharp_name("``Circle Case``"), "````Circle Case````");
 }
 
 /// The quoting reaches the *rendered* declarations, not just the helper — one

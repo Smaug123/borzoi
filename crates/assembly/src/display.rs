@@ -211,6 +211,16 @@ const FSHARP_LEXER_WORDS: &[&str] = &[
 /// separate feature; when it lands, it belongs at the call sites that know the
 /// name is in operator position, not in a context-free helper.
 ///
+/// A name containing a double-backtick run has **no** faithful F# spelling —
+/// bare, it lexes as a different (shorter) name; quoted, its delimiters close
+/// early. Such a name is quoted anyway, so the backticks are at least visible as
+/// part of it. Metadata does not carry one in practice: an F# quoted identifier
+/// stores its *decoded* text (`Circle Case`), verified by projecting a union
+/// declared with one, so this is a degenerate input rather than a rendering
+/// borzoi must get right. It is not special-cased for the same reason the `mod`
+/// and active-pattern exemptions were removed — a guard that fires for no real
+/// input is a guard whose behaviour nothing checks.
+///
 /// The bare spelling is allowed only for ASCII identifiers — `[A-Za-z_]` then
 /// `[A-Za-z0-9_']` — which is a strict *subset* of what F# accepts, so the error
 /// can only ever be an unnecessary pair of backticks (still valid F#, and it
@@ -229,12 +239,26 @@ pub fn format_fsharp_name(name: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// Join dotted-name segments, each rendered as an F# identifier
+/// ([`format_fsharp_name`]): `["Ns", "Odd Type"]` → `` Ns.``Odd Type`` ``.
+///
+/// A dotted name is a sequence of identifiers, so quoting the *joined* string
+/// would be wrong (the dots are syntax, not name characters) and quoting no
+/// segment loses the boundary of any that needs it. Every caller that builds one
+/// goes through here: the sites are far apart — a type reference in a signature,
+/// a namespace on a context line, the enclosing chain of a nested entity — and
+/// each one that grew its own copy of this loop is a defect this crate has
+/// already shipped once.
+pub fn join_quoted<'a>(segments: impl IntoIterator<Item = &'a str>) -> String {
+    segments
+        .into_iter()
+        .map(|segment| format_fsharp_name(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 /// Whether [`format_fsharp_name`] may emit `name` without backticks.
 fn is_writable_bare(name: &str) -> bool {
-    // Already quoted: re-quoting would nest the delimiters.
-    if name.starts_with("``") || name.ends_with("``") {
-        return true;
-    }
     if FSHARP_LEXER_WORDS.contains(&name) {
         return false;
     }
@@ -906,11 +930,7 @@ fn render_named(
     // own literal and needs no such treatment.
     let display = match abbreviation(&ns, name) {
         Some(abbr) => abbr.to_string(),
-        None => name
-            .split('/')
-            .map(|segment| format_fsharp_name(segment).into_owned())
-            .collect::<Vec<_>>()
-            .join("."),
+        None => join_quoted(name.split('/')),
     };
     match type_args.len() {
         0 => (display, Prec::Atom),

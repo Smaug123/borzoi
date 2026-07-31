@@ -25,7 +25,7 @@
 
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
-    format_entity_header, format_fsharp_name, format_member,
+    format_entity_header, format_fsharp_name, format_member, join_quoted,
 };
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
@@ -412,6 +412,28 @@ fn file_name_of(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
+/// A string that has been through [`code_span`], and so is safe to place in a
+/// Markdown paragraph even if it contains F# backticks.
+///
+/// Only [`code_span`] constructs one. Every line of a hover body that carries a
+/// rendered F# name — head or context — is typed as this, so a new line added
+/// later cannot skip the fencing and silently have its quotes eaten: that is a
+/// compile error rather than a rendering nobody looks at twice.
+#[derive(Debug, PartialEq, Eq)]
+struct Fenced(String);
+
+impl PartialEq<&str> for Fenced {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::fmt::Display for Fenced {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Wrap `content` in a Markdown code span whose fence is long enough to hold it.
 ///
 /// A code span may not contain a backtick run as long as its own fence, and F#'s
@@ -420,7 +442,7 @@ fn file_name_of(path: &str) -> &str {
 /// fence is therefore one longer than the longest run inside, and a content that
 /// starts or ends with a backtick is padded with a space on *both* sides —
 /// CommonMark strips one space from each end only when both are present.
-fn code_span(content: &str) -> String {
+fn code_span(content: &str) -> Fenced {
     let longest_run = content.split(|c| c != '`').map(str::len).max().unwrap_or(0);
     let fence = "`".repeat(longest_run + 1);
     let pad = if content.starts_with('`') || content.ends_with('`') {
@@ -428,7 +450,7 @@ fn code_span(content: &str) -> String {
     } else {
         ""
     };
-    format!("{fence}{pad}{content}{pad}{fence}")
+    Fenced(format!("{fence}{pad}{content}{pad}{fence}"))
 }
 
 /// Hover body for a referenced-assembly entity: the F# **declaration** as the
@@ -546,21 +568,11 @@ fn declaring_union(env: &AssemblyEnv, handle: EntityHandle) -> Option<EntityHand
 /// `None` for a global-namespace entity whose keyword is the kind (e.g. a
 /// top-level `module`).
 fn entity_context(entity: &Entity) -> Option<String> {
-    let namespace = entity
-        .namespace
-        .iter()
-        .map(|segment| format_fsharp_name(segment).into_owned())
-        .collect::<Vec<_>>()
-        .join(".");
-    let namespace = if namespace.is_empty() {
-        namespace
-    } else {
-        code_span(&namespace)
-    };
+    let namespace = join_quoted(entity.namespace.iter().map(String::as_str));
     match (entity_qualifier(entity), namespace.is_empty()) {
-        (Some(kind), false) => Some(format!("{kind}, in {namespace}")),
+        (Some(kind), false) => Some(format!("{kind}, in {}", code_span(&namespace))),
         (Some(kind), true) => Some(kind.to_string()),
-        (None, false) => Some(format!("in {namespace}")),
+        (None, false) => Some(format!("in {}", code_span(&namespace))),
         (None, true) => None,
     }
 }
@@ -621,13 +633,13 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
 /// order — head, context, provenance, then warnings — keeps the at-a-glance
 /// identity first.
 fn assemble_body(
-    head: String,
+    head: Fenced,
     context: Option<String>,
     assembly: &AssemblyIdentity,
     obsolete: Option<&Obsolete>,
     experimental: Option<&Experimental>,
 ) -> String {
-    let mut lines = vec![head];
+    let mut lines = vec![head.0];
     if let Some(context) = context {
         lines.push(context);
     }
@@ -766,14 +778,12 @@ fn entity_dotted_name(env: &AssemblyEnv, handle: EntityHandle) -> String {
         .first()
         .map(|&outermost| env.entity(outermost).namespace.as_slice())
         .unwrap_or_default();
-    let segments = namespace
-        .iter()
-        .map(String::as_str)
-        .chain(chain.iter().map(|&h| entity_source_name(env.entity(h))));
-    segments
-        .map(|segment| format_fsharp_name(segment).into_owned())
-        .collect::<Vec<_>>()
-        .join(".")
+    join_quoted(
+        namespace
+            .iter()
+            .map(String::as_str)
+            .chain(chain.iter().map(|&h| entity_source_name(env.entity(h)))),
+    )
 }
 
 /// The name an entity renders under: its F# source name where metadata records
