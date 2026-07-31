@@ -370,9 +370,11 @@ pub(crate) fn apply_entity_overlay(
 /// since a measure-free entity's pickled typar count *is* its CLR arity and
 /// separates them exactly.
 /// A [`TyparConstraintTarget`]'s identity: namespace, enclosing type chain,
-/// arity-stripped CLR name, and arity. Borrowed from the target, so it is only
-/// a lookup key.
-type TyparConstraintKey<'a> = (&'a [String], &'a [String], &'a str, usize);
+/// lookup name, arity, and whether it is an abbreviation. Borrowed from the
+/// target, so it is only a lookup key. It carries everything `matches_key`
+/// discriminates on, so that two targets counted as duplicates really are
+/// indistinguishable — an alias and a real type at one name are not.
+type TyparConstraintKey<'a> = (&'a [String], &'a [String], &'a str, usize, bool);
 
 struct TyparConstraintTarget {
     namespace: Vec<String>,
@@ -468,6 +470,7 @@ pub(crate) fn apply_typar_constraints(
             t.containers.as_slice(),
             t.name.as_str(),
             t.readings.len(),
+            t.is_abbreviation,
         )
     }
     let mut key_counts: HashMap<TyparConstraintKey<'_>, usize> = HashMap::new();

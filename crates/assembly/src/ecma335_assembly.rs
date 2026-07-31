@@ -446,13 +446,26 @@ impl Ecma335Assembly {
                     // unions stay empty (= unknowable, bounded by
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
-                    // F#-only typar constraints (`when 'T : comparison` and
-                    // friends), which have no IL encoding at all. Host-CCU facts
-                    // like the union cases above, and keyed by arity as they
-                    // are, so it runs on the non-authoritative path too; a row
-                    // the host pickle does not describe keeps the `Unknowable`
-                    // reading blanked in above.
-                    crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu)?;
+                    if authoritative {
+                        // F#-only typar constraints (`when 'T : comparison` and
+                        // friends), which have no IL encoding at all.
+                        //
+                        // **Last**, because an abbreviation marker is one of the
+                        // rows this stamps and the marker pass above is what
+                        // creates it.
+                        //
+                        // Authoritative-only, like the source-name and
+                        // declaration-order overlays and for the same reason:
+                        // this one locates a row by a reconstructed name key,
+                        // and a non-authoritative image holds copied foreign
+                        // TypeDefs the host pickle never describes — a container
+                        // or a row of theirs can sit at a host entity's key and
+                        // take its reading. Every row was blanked to
+                        // `Unknowable` before this, so declining a
+                        // `--standalone` image costs coverage, never
+                        // correctness.
+                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu)?;
+                    }
                 }
                 Err(error) => {
                     skipped_fsharp_overlays
