@@ -21,9 +21,16 @@
 //! (`OtherNumber`) where our lexer accepts it. Two implementations sharing an
 //! approximation agree vacuously, so this oracle is blind on exactly the axis
 //! review round 3 found. That is why `format_fsharp_name` confines its bare
-//! spelling to ASCII instead of matching the categories: the blindness is
-//! pinned by [`the_oracle_is_blind_to_the_unicode_category_difference`] so a
-//! later reader cannot mistake this test's silence for coverage.
+//! spelling to ASCII instead of matching the categories.
+//!
+//! Our lexer also has no `__token_…` entries, so it reads the compiler's
+//! synthetic offside words as ordinary identifiers.
+//!
+//! Both blind spots are *pinned*
+//! ([`the_oracle_is_blind_to_the_unicode_category_difference`],
+//! [`the_oracle_is_blind_to_the_synthetic_lexer_words`]) so a later reader
+//! cannot mistake this test's silence for coverage, and so the parts of
+//! `format_fsharp_name` that cover them are not mistaken for redundancy.
 
 use borzoi_assembly::format_fsharp_name;
 use borzoi_cst::lexer::{Token, lex};
@@ -143,6 +150,25 @@ proptest! {
             );
         }
     }
+}
+
+/// The second blind spot: our lexer has no `__token_…` entries at all, so it
+/// reads the compiler's synthetic offside/parser words as ordinary identifiers
+/// and the round-trip property would pass on a bare one. `format_fsharp_name`
+/// carries them in its table for that reason — the table is not redundant with
+/// this oracle, it covers exactly what the oracle cannot see.
+#[test]
+fn the_oracle_is_blind_to_the_synthetic_lexer_words() {
+    assert_eq!(
+        lexes_as_one_identifier("__token_OBLOCKSEP").as_deref(),
+        Some("__token_OBLOCKSEP"),
+        "our lexer takes a synthetic token word as an identifier; if this ever \
+         fails, it models them and the oracle now covers this axis"
+    );
+    assert_eq!(
+        format_fsharp_name("__token_OBLOCKSEP"),
+        "``__token_OBLOCKSEP``"
+    );
 }
 
 /// The blindness, pinned. Our lexer accepts `A²` as an identifier because its

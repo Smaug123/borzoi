@@ -100,12 +100,23 @@ impl<'a> TyparScope<'a> {
 /// not an identifier character, so the shape check already rejects them.
 ///
 /// The three `__…__` entries are the compiler's source-location literals, which
-/// the lexer substitutes rather than binding.
+/// the lexer substitutes rather than binding, and the `__token_…` entries are
+/// its synthetic offside/parser tokens — all legal CLR names, none of which lex
+/// as an identifier.
 const FSHARP_LEXER_WORDS: &[&str] = &[
     "_",
     "__LINE__",
     "__SOURCE_DIRECTORY__",
     "__SOURCE_FILE__",
+    "__token_OBLOCKSEP",
+    "__token_ODECLEND",
+    "__token_ODO",
+    "__token_OELSE",
+    "__token_OEND",
+    "__token_OLET",
+    "__token_OTHEN",
+    "__token_OWITH",
+    "__token_constraint",
     "abstract",
     "and",
     "as",

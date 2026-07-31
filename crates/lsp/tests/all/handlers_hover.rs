@@ -119,7 +119,7 @@ fn tuple_expression_hover_is_not_labelled_literal() {
     let (mut state, uri) = orphan_state(src);
     let space_col = src.find(',').unwrap() as u32 + 1; // the ` ` between elements
     let hover = run(&mut state, &uri, 0, space_col).expect("hover inside the tuple");
-    assert_eq!(body(&hover), "`1, \"hi\"` — int * string");
+    assert_eq!(body(&hover), "`1, \"hi\"` — `int * string`");
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn hovers_an_int_literal() {
     // resolution; the literal does not, so this exercises the inferred fallback.
     let (mut state, uri) = orphan_state("let x = 1\n");
     let hover = run(&mut state, &uri, 0, 8).expect("hover for the int literal");
-    assert_eq!(body(&hover), "`1` — int literal");
+    assert_eq!(body(&hover), "`1` — `int` literal");
     let range = hover.range.expect("hover.range pins the literal");
     assert_eq!((range.start.character, range.end.character), (8, 9));
 }
@@ -277,14 +277,14 @@ fn hovers_a_string_literal() {
     // `let s = "hi"`: cursor inside the string literal (column 9).
     let (mut state, uri) = orphan_state("let s = \"hi\"\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the string literal");
-    assert_eq!(body(&hover), "`\"hi\"` — string literal");
+    assert_eq!(body(&hover), "`\"hi\"` — `string` literal");
 }
 
 #[test]
 fn hovers_a_float_literal() {
     let (mut state, uri) = orphan_state("let f = 1.5\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the float literal");
-    assert_eq!(body(&hover), "`1.5` — float literal");
+    assert_eq!(body(&hover), "`1.5` — `float` literal");
 }
 
 #[test]
@@ -292,7 +292,7 @@ fn hovers_a_byte_string_literal() {
     // Byte strings are `byte[]`, and the F# alias matches the assembly crate's.
     let (mut state, uri) = orphan_state("let b = \"ab\"B\n");
     let hover = run(&mut state, &uri, 0, 9).expect("hover for the byte-string literal");
-    assert_eq!(body(&hover), "`\"ab\"B` — byte[] literal");
+    assert_eq!(body(&hover), "`\"ab\"B` — `byte[]` literal");
 }
 
 #[test]
@@ -404,7 +404,7 @@ fn project_file_literal_hover_shows_inferred_type() {
     // the project hover falls back to the inferred literal type.
     let col = a_src.lines().nth(1).unwrap().find("42").unwrap() as u32;
     let hover = run(&mut state, &a_uri, 1, col).expect("project literal hover");
-    assert_eq!(body(&hover), "`42` — int literal");
+    assert_eq!(body(&hover), "`42` — `int` literal");
 
     // Cursor on the binder `answer`: the project hover enriches the resolved
     // name with its inferred type.

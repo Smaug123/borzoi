@@ -881,10 +881,12 @@ fn literal_hover_body(text: &str, root: &SyntaxNode, range: TextRange, ty: &Ty) 
     // misdescribe it. The kind is read off the covering syntax node rather than
     // guessed from the `Ty` (a `Ty::Named` is produced by both a literal and a
     // future call).
+    let value = code_span(value);
+    let ty = code_span(&ty.render_fsharp());
     if covers_literal(root, range) {
-        format!("`{value}` — {} literal", ty.render_fsharp())
+        format!("{value} — {ty} literal")
     } else {
-        format!("`{value}` — {}", ty.render_fsharp())
+        format!("{value} — {ty}")
     }
 }
 
@@ -906,7 +908,29 @@ fn covers_literal(root: &SyntaxNode, range: TextRange) -> bool {
 
 /// Wrap the body in an LSP [`Hover`] using markdown content. Including the
 /// `range` field scopes the editor tooltip to the cursor's symbol.
+/// Whether every line of `body` carrying an F# quoted identifier is fenced past
+/// it — a two-backtick run inside a one-backtick span, or in a bare paragraph, is
+/// consumed by CommonMark as a delimiter, so the quotes vanish from what the user
+/// reads and the name silently becomes a different one.
+///
+/// The [`Fenced`] type makes this unskippable for the bodies built by
+/// [`assemble_body`], but a hover body assembled any other way (an inferred
+/// expression's type, say) has no such gate, so the invariant is also asserted
+/// here, at the one place every hover passes through. A `debug_assert` because
+/// the test suite is where it must fire: shipping a mangled hover is bad,
+/// panicking in a user's editor over it is worse.
+fn quotes_are_fenced(body: &str) -> bool {
+    body.lines()
+        .filter(|line| line.contains("``"))
+        .all(|line| line.contains("```"))
+}
+
 fn make_hover(body: String, text: &str, range: TextRange) -> Hover {
+    debug_assert!(
+        quotes_are_fenced(&body),
+        "a hover body carries F# backticks on a line Markdown will eat them \
+         from; wrap that part in `code_span`:\n{body}"
+    );
     Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
