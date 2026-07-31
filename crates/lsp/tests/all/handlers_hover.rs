@@ -506,7 +506,7 @@ fn entity_hover_label_renders_declaration_namespace_and_provenance() {
         Some("`[<AutoOpen>] module ExtraTopLevelOperators`")
     );
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core`\n\n"),
         "expected the namespace context line, got:\n{body}"
     );
     assert!(
@@ -530,7 +530,7 @@ fn struct_union_entity_renders_struct_attr_and_union_kind() {
     let mut lines = body.split("\n\n");
     assert_eq!(lines.next(), Some("`[<Struct>] type ValueOption<'T>`"));
     assert!(
-        body.contains("\n\nunion, in Microsoft.FSharp.Core\n\n"),
+        body.contains("\n\nunion, in `Microsoft.FSharp.Core`\n\n"),
         "expected the `union` kind + namespace context line, got:\n{body}"
     );
 }
@@ -561,7 +561,7 @@ fn union_case_entity_renders_as_a_case_of_its_union() {
     assert_eq!(lines.next(), Some("`union case Choice1Of2`"));
     assert_eq!(
         lines.next(),
-        Some("in Microsoft.FSharp.Core.Choice<'T1, 'T2>")
+        Some("in `Microsoft.FSharp.Core.Choice<'T1, 'T2>`")
     );
     assert!(
         body.contains("\n\nfrom FSharp.Core v"),
@@ -694,6 +694,19 @@ fn check_name_rendering(name: &str, body: &str) -> bool {
         body.contains(rendered.as_ref()),
         "{name:?} needs backticks but the hover body spells it bare:\n{body}"
     );
+    // The F# backticks are *content*, and every line carrying them is Markdown:
+    // a two-backtick run inside a one-backtick span (or in a bare paragraph)
+    // is consumed as a delimiter, so the quotes vanish from what the user sees.
+    // The enclosing span must therefore be fenced longer than the run it holds.
+    let line = body
+        .lines()
+        .find(|line| line.contains(rendered.as_ref()))
+        .expect("the body contains it, so some line does");
+    assert!(
+        line.contains("```"),
+        "{name:?} is quoted but its line is not fenced past the quotes, so \
+         Markdown will eat them:\n{line}"
+    );
     true
 }
 
@@ -719,7 +732,7 @@ fn member_hover_label_renders_signature_declaring_type_and_provenance() {
         "expected a `val printfn` signature head, got: {head}"
     );
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core.ExtraTopLevelOperators\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core.ExtraTopLevelOperators`\n\n"),
         "expected the declaring-module context line, got:\n{body}"
     );
     assert!(
@@ -752,7 +765,7 @@ fn member_of_a_nested_type_names_its_enclosing_chain() {
         .expect("the carrier's Item property");
     let body = member_hover_label(&env, case, item);
     assert!(
-        body.contains("\n\nin Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>\n\n"),
+        body.contains("\n\nin `Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>`\n\n"),
         "expected the enclosing chain on the context line, got:\n{body}"
     );
 }
@@ -778,7 +791,7 @@ fn rqa_attribute_renders_on_non_module_kinds() {
         Some("`[<RequireQualifiedAccess>] type DynamicallyAccessedMemberTypes`")
     );
     assert!(
-        body.contains("\n\nenum, in System.Diagnostics.CodeAnalysis\n\n"),
+        body.contains("\n\nenum, in `System.Diagnostics.CodeAnalysis`\n\n"),
         "expected the `enum` kind + namespace context line, got:\n{body}"
     );
 }

@@ -513,8 +513,8 @@ fn union_case_hover_label(env: &AssemblyEnv, handle: EntityHandle) -> String {
     // properties, and reconstructing an `of` clause from those is a guess. An
     // absent payload under-states the case; a wrong one misreports it.
     let head = code_span(&format!("union case {name}"));
-    let context =
-        declaring_union(env, handle).map(|union| format!("in {}", entity_fqn(env, union)));
+    let context = declaring_union(env, handle)
+        .map(|union| format!("in {}", code_span(&entity_fqn(env, union))));
     assemble_body(
         head,
         context,
@@ -546,7 +546,17 @@ fn declaring_union(env: &AssemblyEnv, handle: EntityHandle) -> Option<EntityHand
 /// `None` for a global-namespace entity whose keyword is the kind (e.g. a
 /// top-level `module`).
 fn entity_context(entity: &Entity) -> Option<String> {
-    let namespace = entity.namespace.join(".");
+    let namespace = entity
+        .namespace
+        .iter()
+        .map(|segment| format_fsharp_name(segment).into_owned())
+        .collect::<Vec<_>>()
+        .join(".");
+    let namespace = if namespace.is_empty() {
+        namespace
+    } else {
+        code_span(&namespace)
+    };
     match (entity_qualifier(entity), namespace.is_empty()) {
         (Some(kind), false) => Some(format!("{kind}, in {namespace}")),
         (Some(kind), true) => Some(kind.to_string()),
@@ -592,8 +602,8 @@ pub fn member_hover_label(env: &AssemblyEnv, parent: EntityHandle, idx: MemberIn
     let member = env.member_at(parent, idx);
     let head = code_span(&format_member(member, entity));
     let context = match member_qualifier(member) {
-        Some(qualifier) => format!("{qualifier}, in {}", entity_fqn(env, parent)),
-        None => format!("in {}", entity_fqn(env, parent)),
+        Some(qualifier) => format!("{qualifier}, in {}", code_span(&entity_fqn(env, parent))),
+        None => format!("in {}", code_span(&entity_fqn(env, parent))),
     };
     assemble_body(
         head,

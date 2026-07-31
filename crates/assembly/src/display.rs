@@ -88,18 +88,37 @@ impl<'a> TyparScope<'a> {
     }
 }
 
-/// F#'s keywords, which cannot be written as a bare identifier. Taken from the
-/// compiler's own `keywordsWithDescription` (`PrettyNaming.fs`), which is what
-/// `IsIdentifierName` — and so FCS's own rendering — consults.
-const FSHARP_KEYWORDS: &[&str] = &[
+/// Every word the F# lexer tokenizes as something other than an identifier, so
+/// none may be written bare where a name is expected.
+///
+/// This is the compiler's own `keywordList` (`LexHelpers.fs`) — the lexer's
+/// table, not the smaller `keywordsWithDescription` used for tooltips, which
+/// omits `fixed`, `mod`, the wildcard `_`, and the ml-compatibility reserved
+/// words (`tailcall`, `constraint`, `sealed`, …). Those are all legal CLR names,
+/// and `type _` / `val fixed: int` parse no better than `type match` does. The
+/// bang forms (`let!`, `yield!`) are lexed separately but need no entry: `!` is
+/// not an identifier character, so the shape check already rejects them.
+///
+/// The three `__…__` entries are the compiler's source-location literals, which
+/// the lexer substitutes rather than binding.
+const FSHARP_LEXER_WORDS: &[&str] = &[
+    "_",
+    "__LINE__",
+    "__SOURCE_DIRECTORY__",
+    "__SOURCE_FILE__",
     "abstract",
     "and",
     "as",
     "assert",
     "base",
     "begin",
+    "break",
+    "checked",
     "class",
+    "component",
     "const",
+    "constraint",
+    "continue",
     "default",
     "delegate",
     "do",
@@ -113,58 +132,64 @@ const FSHARP_KEYWORDS: &[&str] = &[
     "extern",
     "false",
     "finally",
+    "fixed",
     "for",
+    "fori",
     "fun",
     "function",
     "global",
     "if",
     "in",
+    "include",
     "inherit",
     "inline",
     "interface",
     "internal",
     "lazy",
     "let",
-    "let!",
     "match",
-    "match!",
     "member",
+    "mixin",
+    "mod",
     "module",
     "mutable",
     "namespace",
     "new",
-    "not",
     "null",
     "of",
     "open",
     "or",
     "override",
+    "parallel",
+    "params",
     "private",
+    "process",
+    "protected",
     "public",
+    "pure",
     "rec",
     "return",
-    "return!",
+    "sealed",
     "sig",
     "static",
     "struct",
+    "tailcall",
     "then",
     "to",
+    "trait",
     "true",
     "try",
     "type",
     "upcast",
     "use",
-    "use!",
     "val",
+    "virtual",
     "void",
     "when",
     "while",
-    "while!",
     "with",
     "yield",
-    "yield!",
 ];
-
 /// Render `name` as an F# identifier: wrapped in double backticks when it cannot
 /// be written bare, unchanged when it can.
 ///
@@ -210,14 +235,7 @@ fn is_writable_bare(name: &str) -> bool {
     if name.starts_with("``") || name.ends_with("``") {
         return true;
     }
-    // F#'s one *unencoded operator name* (the compiler's `IsUnencodedOpName`).
-    // It is absent from the keyword table because it is operator syntax
-    // (`x mod y`) rather than a keyword, but a declaration must quote it all the
-    // same.
-    if name == "mod" {
-        return false;
-    }
-    if FSHARP_KEYWORDS.contains(&name) {
+    if FSHARP_LEXER_WORDS.contains(&name) {
         return false;
     }
     let mut chars = name.chars();
@@ -883,9 +901,16 @@ fn render_named(
     // case we fall back to the naive arrangement on the whole dotted name.
     // Abbreviations are all top-level, so a `/` only ever reaches this branch
     // via that fallback.
+    // Each segment of the name is an identifier in its own right, so each is
+    // spelled as F# would write it — an abbreviation (`list`, `option`) is our
+    // own literal and needs no such treatment.
     let display = match abbreviation(&ns, name) {
         Some(abbr) => abbr.to_string(),
-        None => name.replace('/', "."),
+        None => name
+            .split('/')
+            .map(|segment| format_fsharp_name(segment).into_owned())
+            .collect::<Vec<_>>()
+            .join("."),
     };
     match type_args.len() {
         0 => (display, Prec::Atom),
@@ -974,8 +999,9 @@ fn render_nested(
     let mut args = type_args.iter();
     let mut out = Vec::with_capacity(segments.len());
     for (seg, &arity) in segments.iter().zip(segment_arities) {
+        let seg = format_fsharp_name(seg);
         if arity == 0 {
-            out.push((*seg).to_string());
+            out.push(seg.into_owned());
         } else {
             let mut seg_args = Vec::with_capacity(arity);
             for _ in 0..arity {
