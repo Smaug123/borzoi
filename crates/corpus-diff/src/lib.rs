@@ -4802,6 +4802,7 @@ mod tests {
             allows_ref_struct: false,
             nullability: borzoi_assembly::Nullability::Oblivious,
             type_constraints: vec![],
+            fsharp_constraints: borzoi_assembly::FSharpConstraints::Unknowable,
         }
     }
 

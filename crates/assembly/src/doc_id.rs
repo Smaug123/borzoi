@@ -480,6 +480,7 @@ mod tests {
             allows_ref_struct: false,
             nullability: Nullability::Oblivious,
             type_constraints: Vec::new(),
+            fsharp_constraints: crate::model::FSharpConstraints::Unknowable,
         }
     }
 

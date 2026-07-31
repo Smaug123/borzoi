@@ -3,10 +3,11 @@
 //! builds a `Member` + owning `Entity` and asserts the exact signature line.
 
 use borzoi_assembly::{
-    Access, AssemblyIdentity, Augmentation, ConstantValue, Entity, EntityKind, Event, Field,
-    IndexParameter, Member, MethodLike, MethodSignature, ModuleValue, Nullability, NullableType,
-    ParamDefault, Parameter, Primitive, Property, TypeParameter, TypeRef, UnionCases, Variance,
-    Version, format_entity_header, format_fsharp_name, format_member,
+    Access, AssemblyIdentity, Augmentation, ConstantValue, Entity, EntityKind, Event,
+    FSharpConstraints, Field, IndexParameter, Member, MethodLike, MethodSignature, ModuleValue,
+    Nullability, NullableType, ParamDefault, Parameter, Primitive, Property, TypeParameter,
+    TypeRef, UnionCases, Variance, Version, format_entity_header, format_fsharp_name,
+    format_member,
 };
 
 // ---- construction helpers -------------------------------------------------
@@ -35,6 +36,7 @@ fn typar(name: &str) -> TypeParameter {
         allows_ref_struct: false,
         nullability: Nullability::Oblivious,
         type_constraints: vec![],
+        fsharp_constraints: FSharpConstraints::Unknowable,
     }
 }
 

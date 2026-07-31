@@ -18,7 +18,8 @@
 
 use borzoi_assembly::pdb::{PortablePdb, embedded_portable_pdb};
 use borzoi_assembly::{
-    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, Member, MethodLike, ParamDefault,
+    Augmentation, Ecma335Assembly, EcmaView, Entity, EntityKind, FSharpConstraints, Member,
+    MethodLike, ParamDefault,
 };
 
 use crate::common::ensure_fsharp_core_dll;
@@ -526,4 +527,92 @@ fn fsharp_core_member_list_pass_leaves_no_skips() {
         )),
         "StringModule retains its lambda-lifted internal helpers"
     );
+}
+
+/// F#-only typar constraints reach the entity model from the shipped
+/// FSharp.Core's own pickle — the fact a consumer applying type arguments to a
+/// generic head cannot do without.
+///
+/// `Map<'Key, 'Value when 'Key : comparison>` is the discriminating case: the
+/// constraint has **no IL encoding**, so every field beside
+/// [`TypeParameter::fsharp_constraints`] reports the key as unconstrained, and a
+/// consumer reading those alone would accept `Map<(int -> int), int>` — which
+/// F# rejects, recovering the binder to `System.Object`.
+///
+/// `Option<'T>` and `list<'T>` are the controls, and they are what make the
+/// signal *usable*: a projection coarse enough to mark all of FSharp.Core
+/// unknowable would be sound and useless, since these two are exactly the heads
+/// a generic-application bridge must be able to commit on.
+#[test]
+fn fsharp_core_typar_constraints_separate_map_from_option() {
+    let entities = load();
+    let constraints = |namespace: &[&str], name: &str| -> Vec<FSharpConstraints> {
+        entity(&entities, namespace, name)
+            .generic_parameters
+            .iter()
+            .map(|p| p.fsharp_constraints)
+            .collect()
+    };
+
+    assert_eq!(
+        constraints(&["Microsoft", "FSharp", "Collections"], "FSharpMap"),
+        vec![FSharpConstraints::Present, FSharpConstraints::Free],
+        "Map's key carries `comparison` (pickle-only) and its value carries nothing"
+    );
+    // `Set` is the case that decides whether the key may be the name alone.
+    // FSharp.Core pickles both `type Set<'T>` (compiled ``FSharpSet`1``) and a
+    // nullary companion compiled `FSharpSet`, which strip to one name — as do
+    // `List<'T>` and its own companion. Keyed by name alone both would decline;
+    // keyed by name *and arity* they separate exactly, because a measure-free
+    // entity's pickled typar count is its CLR arity.
+    assert_eq!(
+        constraints(&["Microsoft", "FSharp", "Collections"], "FSharpSet"),
+        vec![FSharpConstraints::Present],
+        "Set's element carries `comparison`"
+    );
+    assert_eq!(
+        constraints(&["Microsoft", "FSharp", "Core"], "FSharpOption"),
+        vec![FSharpConstraints::Free],
+        "`'T option` constrains nothing — a bridge must be able to commit on it"
+    );
+    assert_eq!(
+        constraints(&["Microsoft", "FSharp", "Collections"], "FSharpList"),
+        vec![FSharpConstraints::Free],
+        "`'T list` constrains nothing"
+    );
+}
+
+/// A **non**-F# assembly's type parameters read [`FSharpConstraints::Free`], and
+/// that is a proof rather than a default: an assembly with no
+/// `FSharpInterfaceDataVersionAttribute` has no F# signature data, so there is
+/// no F#-only constraint for its IL to be missing.
+///
+/// Without this the F#-side assertions above could be satisfied by a projection
+/// that marks *everything* unknowable except a hard-coded list.
+#[test]
+fn a_non_fsharp_assembly_has_no_fsharp_constraints_to_miss() {
+    let dll = crate::common::ensure_member_shapes_built();
+    let bytes = std::fs::read(dll).expect("read MemberShapes.dll");
+    let view = Ecma335Assembly::parse(&bytes).expect("parse MemberShapes");
+    let entities = view.enumerate_type_defs().expect("enumerate MemberShapes");
+    let generic: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| !e.generic_parameters.is_empty())
+        .collect();
+    assert!(
+        !generic.is_empty(),
+        "vacuous: the C# fixture declares no generic type"
+    );
+    for e in generic {
+        for p in &e.generic_parameters {
+            assert_eq!(
+                p.fsharp_constraints,
+                FSharpConstraints::Free,
+                "{}.{}'s `{}` is in a non-F# assembly",
+                e.namespace.join("."),
+                e.name,
+                p.name
+            );
+        }
+    }
 }

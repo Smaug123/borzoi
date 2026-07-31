@@ -350,6 +350,57 @@ pub enum Nullability {
     Annotated,
 }
 
+/// What is known about one type parameter's **F#-only** constraints —
+/// `when 'T : comparison`, `: equality`, member (SRTP) constraints, and the
+/// rest of `FSharpTyparConstraint`. They have no IL encoding at all: the F#
+/// signature pickle is the only place they exist, so
+/// [`TypeParameter`]'s IL-derived flags are silent about them.
+///
+/// A consumer applying type arguments to a generic head needs this: F# rejects
+/// `Map<(int -> int), int>` for the key's `comparison` constraint and recovers
+/// the annotated binder's type to `System.Object`, so a consumer that read the
+/// IL flags alone would publish a type FCS positively disagrees with. Since
+/// nothing here *checks* a constraint against an argument, the only sound use
+/// is to decline whenever one is present — hence a knowability signal rather
+/// than the constraint list.
+///
+/// The three readings are kept apart because they are three different facts,
+/// exactly as [`UnionCases::Unknowable`] is kept apart from an empty
+/// [`UnionCases::Known`]: "provably none" licenses a conclusion, "we did not
+/// read them" licenses nothing, and collapsing the two is how an unread pickle
+/// starts looking like a constraint-free type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum FSharpConstraints {
+    /// This type parameter carries no F#-only constraint.
+    ///
+    /// Two ways to reach it, and both are proofs rather than defaults: the
+    /// declaring assembly is not F# at all (no
+    /// `FSharpInterfaceDataVersionAttribute`, so there is no F#-only concept to
+    /// be missing from its IL), or its host signature pickle described this
+    /// entity and the typar's constraint list was empty.
+    ///
+    /// The first arm covers `fsc --nointerfacedata`, which drops the attribute
+    /// *and* the signature resource from an assembly whose source did declare
+    /// constraints — and `Free` is right there, not merely safe. Measured
+    /// against the real compiler: `type Constrained<'T when 'T : comparison>`
+    /// built that way admits `Constrained<int -> int>` with no diagnostic,
+    /// because F# enforces a constraint it cannot see no more than we do. The
+    /// contract this field keeps is agreement with the F# compiler, and the two
+    /// sides read the same artefact.
+    Free,
+    /// The pickle described this type parameter and it carries at least one
+    /// F#-only constraint. Which one is not recorded: no consumer can check a
+    /// constraint, so presence is the whole of the usable fact.
+    Present,
+    /// Nothing may be concluded. The assembly is F#-authored but its host
+    /// pickle did not describe this type parameter — no signature resource, a
+    /// decode failure, a foreign CCU (`fsc --standalone`), a `[<Measure>]`
+    /// typar erased from IL (so positions do not correspond), or an
+    /// FQN whose ECMA row is ambiguous.
+    Unknowable,
+}
+
 /// One generic type parameter, declared either on a type or a method. The
 /// index of the parameter in its parent's `generic_parameters` list is its
 /// ECMA-335 typar number — i.e. the value that appears in `TypeRef::Var`.
@@ -414,6 +465,10 @@ pub struct TypeParameter {
     /// Base classes and interfaces the type argument must satisfy. Order
     /// matches the GenericParamConstraint table row order.
     pub type_constraints: Vec<TypeRef>,
+    /// What is known about this parameter's **F#-only** constraints, which the
+    /// fields above cannot carry because IL has no encoding for them. See
+    /// [`FSharpConstraints`].
+    pub fsharp_constraints: FSharpConstraints,
 }
 
 /// A member the projector dropped because it could not decode it, paired with
@@ -487,6 +542,14 @@ pub enum FsharpOverlayKind {
     /// Union case names ([`Entity::union_cases`]) from the host CCU
     /// pickle — the module-open fold's pattern surface.
     UnionCases,
+    /// F#-only type-parameter constraints
+    /// ([`TypeParameter::fsharp_constraints`]) from the host CCU pickle. Unlike
+    /// the overlays above, the fields this one fills carry their own
+    /// [`FSharpConstraints::Unknowable`] reading when it does not run, so a
+    /// consumer is never *misled* by its absence — it is listed because a
+    /// caller reading this list to explain reduced capability would otherwise
+    /// have no account of why every generic head suddenly declines.
+    TyparConstraints,
 }
 
 /// A host F# signature-pickle overlay the projector skipped, paired with the

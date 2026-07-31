@@ -14,9 +14,9 @@
 use borzoi_assembly::test_support::{normalise_entities, parse_fcs_dump};
 use borzoi_assembly::{
     Access, AssemblyIdentity, Augmentation, DefaultMember, Ecma335Assembly, EcmaView, Entity,
-    EntityKind, Field, IndexParameter, Member, MethodLike, MethodSignature, Nullability,
-    NullableType, ParamDefault, Parameter, Primitive, Property, ResourceKind, TypeParameter,
-    TypeRef, UnionCases, Variance, Version,
+    EntityKind, FSharpConstraints, Field, IndexParameter, Member, MethodLike, MethodSignature,
+    Nullability, NullableType, ParamDefault, Parameter, Primitive, Property, ResourceKind,
+    TypeParameter, TypeRef, UnionCases, Variance, Version,
 };
 
 use crate::common::{
@@ -960,6 +960,7 @@ fn sort_tiebreaks_on_generic_arity() {
             allows_ref_struct: false,
             nullability: Nullability::Oblivious,
             type_constraints: vec![],
+            fsharp_constraints: FSharpConstraints::Unknowable,
         }],
         ..non_generic.clone()
     };
@@ -1073,6 +1074,7 @@ fn entity_sort_tiebreaks_on_generic_arity() {
             allows_ref_struct: false,
             nullability: Nullability::Oblivious,
             type_constraints: vec![],
+            fsharp_constraints: FSharpConstraints::Unknowable,
         }],
         ..bare.clone()
     };

@@ -60,7 +60,7 @@ use crate::fsharp_pickle::model::{
 };
 use crate::model::{
     AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind,
-    FsharpSourceRange, Member, SkippedMember, TypeParameter, UnionCases,
+    FSharpConstraints, FsharpSourceRange, Member, SkippedMember, TypeParameter, UnionCases,
 };
 use std::collections::HashMap;
 
@@ -357,6 +357,228 @@ pub(crate) fn apply_entity_overlay(
         }
     }
     Ok(())
+}
+
+/// One entity's F#-constraint readings, located by the ECMA row they attach to.
+///
+/// The key carries the **arity** alongside the name because the arity-stripped
+/// name alone is not injective, and the collision is ordinary in real F#:
+/// FSharp.Core pickles both `type List<'T>` (compiled ``FSharpList`1``) and a
+/// nullary companion compiled `FSharpList`, which strip to one name. Keying by
+/// name alone would decline both — the entity overlay's range half does exactly
+/// that — which would cost `'T list` and `Set<'T>` their readings for no reason,
+/// since a measure-free entity's pickled typar count *is* its CLR arity and
+/// separates them exactly.
+/// A [`TyparConstraintTarget`]'s identity: namespace, enclosing type chain,
+/// lookup name, arity, and whether it is an abbreviation. Borrowed from the
+/// target, so it is only a lookup key. It carries everything `matches_key`
+/// discriminates on, so that two targets counted as duplicates really are
+/// indistinguishable — an alias and a real type at one name are not.
+type TyparConstraintKey<'a> = (&'a [String], &'a [String], &'a str, usize, bool);
+
+struct TyparConstraintTarget {
+    namespace: Vec<String>,
+    /// The enclosing type chain, outermost first; empty for a top-level entity.
+    containers: Vec<String>,
+    /// The name the ECMA row is looked up by: the owned `Entity::name` (the CLR
+    /// name with its arity suffix stripped) for a real type, and the F# *source*
+    /// name for an abbreviation — which is how [`apply_abbreviation_markers`]
+    /// keys the very rows an abbreviation target can match. Two aliases may
+    /// legally share one `[<CompiledName>]` and still be distinct source types,
+    /// so keying an alias by its CLR name would collapse a pair the marker pass
+    /// deliberately kept apart.
+    name: String,
+    /// One reading per typar, in declaration order. Its length is the key's
+    /// arity.
+    readings: Vec<FSharpConstraints>,
+    /// Whether the pickled entity is a type **abbreviation**, which decides
+    /// which ECMA rows it may claim. See [`apply_typar_constraints`].
+    is_abbreviation: bool,
+}
+
+/// Attach each F# entity's pickled typar constraints to its ECMA row
+/// ([`FSharpConstraints`]).
+///
+/// Every typar of an F#-authored assembly was blanked to
+/// [`FSharpConstraints::Unknowable`] before this runs, so this pass only ever
+/// *licenses* a conclusion: a row it does not reach, or reaches ambiguously,
+/// keeps the reading that concludes nothing. That is what makes a marker-only
+/// assembly, a decode failure and a foreign CCU all decline without any of them
+/// being special-cased here.
+///
+/// Ambiguity is counted on **both** sides, like [`apply_union_cases`]: two
+/// pickled entities at one key cannot say which row they describe, and two ECMA
+/// rows at one key cannot say which pickle entry describes them. Either way the
+/// constraint fact is withheld rather than attached to whichever the search
+/// reached first — a misattached `comparison` would silently license an
+/// application F# rejects.
+///
+/// **Abbreviation-ness is part of the key**, for the same reason
+/// [`apply_union_cases`] makes the ECMA *kind* part of its own. An abbreviation
+/// is erased from IL, so it has no row of its own and the only row it may claim
+/// is the name-only marker [`apply_abbreviation_markers`] synthesised for it. A
+/// row that already existed at that key is therefore somebody *else's* — in a
+/// `--standalone` image, a copied dependency's TypeDef — and the marker pass,
+/// which suppresses a marker whose name is taken, leaves exactly that shape
+/// behind: one pickled alias, one foreign row, both ambiguity counts at 1. An
+/// unconstrained alias would then report the foreign type's constrained
+/// parameters as `Free`. Two types cannot share an FQN within one assembly, so
+/// a *non*-abbreviation target has no such twin; the check is symmetric anyway,
+/// since a real type has no business claiming a marker either.
+pub(crate) fn apply_typar_constraints(
+    entities: &mut [Entity],
+    pickled: &PickledCcu,
+) -> Result<(), ImportError> {
+    let mut targets: Vec<TyparConstraintTarget> = Vec::new();
+    let mut path = Vec::new();
+    walk_entity_tree(
+        pickled,
+        pickled.root_entity,
+        true,
+        &[],
+        &[],
+        &mut path,
+        &mut |_stamp, entity, is_root, namespace, type_chain| {
+            if is_root
+                || !matches!(
+                    entity.module_type.is_type,
+                    IsType::ModuleOrType | IsType::FSharpModuleWithSuffix
+                )
+            {
+                return Ok(());
+            }
+            if let Some(readings) = pickled_typar_constraints(pickled, entity) {
+                let is_abbreviation = entity.type_abbrev.is_some();
+                targets.push(TyparConstraintTarget {
+                    namespace: namespace.to_vec(),
+                    containers: type_chain.to_vec(),
+                    name: if is_abbreviation {
+                        abbreviation_lookup_name(entity)
+                    } else {
+                        clr_name(entity)
+                    },
+                    readings,
+                    is_abbreviation,
+                });
+            }
+            Ok(())
+        },
+    )?;
+    fn key(t: &TyparConstraintTarget) -> TyparConstraintKey<'_> {
+        (
+            t.namespace.as_slice(),
+            t.containers.as_slice(),
+            t.name.as_str(),
+            t.readings.len(),
+            t.is_abbreviation,
+        )
+    }
+    let mut key_counts: HashMap<TyparConstraintKey<'_>, usize> = HashMap::new();
+    for target in &targets {
+        *key_counts.entry(key(target)).or_insert(0) += 1;
+    }
+    for target in &targets {
+        if key_counts[&key(target)] != 1 {
+            continue; // Two pickled entities collapse onto this key.
+        }
+        let matches_key = |e: &Entity| {
+            let row_name = if target.is_abbreviation {
+                e.source_name.as_deref().unwrap_or(&e.name)
+            } else {
+                e.name.as_str()
+            };
+            row_name == target.name
+                && e.generic_parameters.len() == target.readings.len()
+                && (e.kind == EntityKind::Abbreviation) == target.is_abbreviation
+        };
+        let rows: &mut [Entity] = if target.containers.is_empty() {
+            entities
+        } else {
+            match find_entity_mut(entities, &target.namespace, &target.containers) {
+                Some(container) => &mut container.nested_types,
+                None => continue,
+            }
+        };
+        // A top-level row is keyed by its namespace too; a nested one carries an
+        // empty namespace of its own (the path lives on the outermost type).
+        let in_scope = |e: &Entity| {
+            matches_key(e) && (!target.containers.is_empty() || e.namespace == target.namespace)
+        };
+        if rows.iter().filter(|e| in_scope(e)).count() != 1 {
+            continue; // Two ECMA rows at this key, or none.
+        }
+        if let Some(ecma) = rows.iter_mut().find(|e| in_scope(e)) {
+            for (typar, reading) in ecma.generic_parameters.iter_mut().zip(&target.readings) {
+                typar.fsharp_constraints = *reading;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The name an abbreviation's synthesised marker is keyed by: its F# *source*
+/// name, which is the logical name whenever a `[<CompiledName>]` renamed it.
+///
+/// Derived exactly as [`apply_abbreviation_markers`] derives the `source_name`
+/// it stamps on the marker, because the two must agree: this is the name that
+/// pass uses to decide whether a marker is needed at all, so it is the name the
+/// resulting row carries.
+fn abbreviation_lookup_name(entity: &PickledEntity) -> String {
+    match &entity.compiled_name {
+        Some(compiled) if *compiled != entity.logical_name => {
+            strip_arity(&entity.logical_name).to_string()
+        }
+        _ => clr_name(entity),
+    }
+}
+
+/// One [`FSharpConstraints`] per pickled typar of `entity`, in declaration
+/// order, or `None` when the pickled positions cannot be matched to the ECMA
+/// row's generic parameters.
+///
+/// The only usable fact is **presence**: nothing in this crate checks a
+/// constraint against a type argument, so the constraint list collapses to
+/// `Free`/`Present`. That makes `DefaultsTo` — which restricts nothing, it only
+/// picks a default for an unresolved typar — read as `Present` and so decline a
+/// head it need not. That is a coverage loss inside a sound direction, and
+/// spending a per-variant classification on it before a measurement shows the
+/// loss is real would be modelling constraint *semantics* for no consumer.
+///
+/// `None` (hence `Unknowable`) for a measure-bearing entity: an erased
+/// `[<Measure>]` typar has no CLR generic parameter, so the pickled list is
+/// longer than the ECMA one and position `i` names different typars on the two
+/// sides. [`is_measure_free`] also treats an out-of-range typar index as a
+/// measure, so a corrupt index declines here rather than reading a neighbour's
+/// constraints.
+fn pickled_typar_constraints(
+    pickled: &PickledCcu,
+    entity: &PickledEntity,
+) -> Option<Vec<FSharpConstraints>> {
+    if !is_measure_free(pickled, entity) {
+        return None;
+    }
+    entity
+        .typars
+        .iter()
+        .map(|&ti| {
+            pickled
+                .tables
+                .typars
+                .get(ti as usize)
+                .map(|t| {
+                    if t.constraints.is_empty() {
+                        FSharpConstraints::Free
+                    } else {
+                        FSharpConstraints::Present
+                    }
+                })
+                // Unreachable while `is_measure_free` treats an unknown index as
+                // a measure, but the `Option` is what makes that a decline
+                // rather than a panic if that ever changes.
+                .ok_or(())
+        })
+        .collect::<Result<Vec<_>, ()>>()
+        .ok()
 }
 
 /// The F# `DisplayName` of an entity when it differs from its CLR name (the
@@ -2347,6 +2569,14 @@ fn abbreviation_marker(
                 allows_ref_struct: false,
                 nullability: crate::model::Nullability::Oblivious,
                 type_constraints: Vec::new(),
+                // The reading `apply_typar_constraints` refines when the
+                // pickle describes this abbreviation, which is every case but
+                // a measure-bearing one. An alias may constrain its own
+                // parameters (`type Sorted<'T when 'T : comparison> = 'T list`),
+                // so a consumer chasing the alias to its target still has to
+                // answer for the alias's own constraints — the marker being
+                // name-only does not make that question go away.
+                fsharp_constraints: FSharpConstraints::Unknowable,
             })
             .collect(),
         base_type: None,
@@ -5647,6 +5877,250 @@ mod tests {
             entities[1].union_cases,
             UnionCases::Unknowable,
             "a projected-key collision must decline, leaving the union's cases intact"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // F#-only typar constraints: `apply_typar_constraints`
+    // -----------------------------------------------------------------
+    //
+    // The real FSharp.Core assertions live in the assembly crate's
+    // `projector_fsharp_core` group (Map/Set constrained, option/list free).
+    // These pin the two ambiguity guards and the measure decline, which no
+    // shipped assembly exhibits at the arity-bearing key — an F# source file
+    // cannot declare the colliding shapes at all, so a synthetic tree is the
+    // only way to reach them.
+
+    /// One typar spec, constrained or not.
+    fn typar_spec(name: &str, constrained: bool) -> PickledTyparSpecData {
+        PickledTyparSpecData {
+            ident: PickledIdent {
+                name: name.to_string(),
+                range: dummy_range(),
+            },
+            attribs: Vec::new(),
+            flags: 0,
+            constraints: if constrained {
+                vec![FSharpTyparConstraint::SupportsComparison]
+            } else {
+                Vec::new()
+            },
+            xmldoc: PickledXmlDoc { lines: Vec::new() },
+        }
+    }
+
+    /// A top-level pickled `type` owning typar rows `typars`.
+    fn typed_entity_with_typars(logical: &str, typars: Vec<u32>) -> PickledEntity {
+        let mut e = make_entity(
+            logical,
+            measure_object_model_repr(),
+            module_modul_typ(vec![]),
+        );
+        e.typars = typars;
+        e
+    }
+
+    /// An ECMA row with `arity` generic parameters, every one blanked to
+    /// `Unknowable` — the state an F# assembly's rows are in when the overlay
+    /// runs.
+    fn ecma_generic(namespace: Vec<&str>, name: &str, arity: usize) -> Entity {
+        let mut e = make_ecma_entity(namespace, name, EntityKind::Class);
+        e.generic_parameters = (0..arity)
+            .map(|i| TypeParameter {
+                name: format!("T{i}"),
+                variance: crate::model::Variance::Invariant,
+                reference_type_constraint: false,
+                value_type_constraint: false,
+                default_constructor_constraint: false,
+                is_unmanaged: false,
+                allows_ref_struct: false,
+                nullability: crate::model::Nullability::Oblivious,
+                type_constraints: Vec::new(),
+                fsharp_constraints: FSharpConstraints::Unknowable,
+            })
+            .collect();
+        e
+    }
+
+    fn readings(e: &Entity) -> Vec<FSharpConstraints> {
+        e.generic_parameters
+            .iter()
+            .map(|p| p.fsharp_constraints)
+            .collect()
+    }
+
+    #[test]
+    fn a_pickled_constraint_reaches_its_ecma_typar() {
+        // stamps: root(0), N(1), A(2)
+        let a = typed_entity_with_typars("A", vec![0, 1]);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, a], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("K", true), typar_spec("V", false)];
+        let mut owned = vec![ecma_generic(vec!["N"], "A", 2)];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            "each typar takes its own pickled reading, by position"
+        );
+    }
+
+    #[test]
+    fn two_pickled_entities_at_one_key_leave_the_row_unknowable() {
+        // Two pickled types whose CLR names and arities coincide: neither can
+        // say which describes the row, and the row's own name cannot say
+        // either.
+        let mut a1 = typed_entity_with_typars("A", vec![0]);
+        a1.compiled_name = Some("A".to_string());
+        let mut a2 = typed_entity_with_typars("Other", vec![1]);
+        a2.compiled_name = Some("A".to_string());
+        let [root, ns] = root_and_namespace(vec![2, 3]);
+        let mut ccu = make_ccu(vec![root, ns, a1, a2], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", true), typar_spec("T", false)];
+        let mut owned = vec![ecma_generic(vec!["N"], "A", 1)];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Unknowable],
+            "an ambiguous pickle key must not attach whichever entry was walked first"
+        );
+    }
+
+    #[test]
+    fn two_ecma_rows_at_one_key_leave_both_unknowable() {
+        // The mirror image: one pickled type, two rows it fits equally.
+        let a = typed_entity_with_typars("A", vec![0]);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, a], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", true)];
+        let mut owned = vec![
+            ecma_generic(vec!["N"], "A", 1),
+            ecma_generic(vec!["N"], "A", 1),
+        ];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        for row in &owned {
+            assert_eq!(
+                readings(row),
+                vec![FSharpConstraints::Unknowable],
+                "two rows at one key: the pickle entry fits each as readily as the other"
+            );
+        }
+    }
+
+    #[test]
+    fn a_differing_arity_is_not_the_same_key() {
+        // The `List<'T>` / `List` shape FSharp.Core really ships: two pickled
+        // entities whose arity-stripped names collide but whose arities do
+        // not. Keyed by name alone both would decline; each must find its own
+        // row.
+        let mut generic = typed_entity_with_typars("A`1", vec![0]);
+        generic.compiled_name = Some("A`1".to_string());
+        let nullary = typed_entity_with_typars("A", vec![]);
+        let [root, ns] = root_and_namespace(vec![2, 3]);
+        let mut ccu = make_ccu(vec![root, ns, generic, nullary], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", true)];
+        let mut owned = vec![
+            ecma_generic(vec!["N"], "A", 1),
+            ecma_generic(vec!["N"], "A", 0),
+        ];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Present],
+            "the arity-1 row takes the arity-1 pickle entry's reading"
+        );
+    }
+
+    #[test]
+    fn an_alias_never_claims_a_row_it_did_not_synthesise() {
+        // The `--standalone` shape: the host pickle declares an erased
+        // abbreviation `N.A<'T>`, and the only TypeDef at that key is a copied
+        // dependency's — so the marker pass left no marker (the name was
+        // taken) and both ambiguity counts are 1. Stamping here would report
+        // the foreign type's parameters using the alias's constraints.
+        let mut alias = typed_entity_with_typars("A", vec![0]);
+        alias.type_abbrev = some_abbrev_target();
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, alias], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", false)];
+        let mut owned = vec![ecma_generic(vec!["N"], "A", 1)];
+        assert_eq!(owned[0].kind, EntityKind::Class, "the row is a real type");
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Unknowable],
+            "an erased alias has no row of its own, so a real row at its key is \
+             somebody else's"
+        );
+
+        // …and the marker it *would* have synthesised does take the reading,
+        // so the guard costs an alias nothing where the alias really owns the
+        // row.
+        let mut marker = ecma_generic(vec!["N"], "A", 1);
+        marker.kind = EntityKind::Abbreviation;
+        let mut owned = vec![marker];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Free],
+            "the alias's own marker is the one row it may claim"
+        );
+    }
+
+    #[test]
+    fn two_aliases_sharing_a_compiled_name_keep_their_own_readings() {
+        // `[<CompiledName("X")>] type A<'T when 'T : comparison>` beside
+        // `[<CompiledName("X")>] type B<'T>`: legal F#, two distinct source
+        // types, and `apply_abbreviation_markers` keeps them apart by source
+        // name. Keying by the CLR name alone would collapse them and decline
+        // both, throwing away a reading the pickle states outright.
+        let mut a = typed_entity_with_typars("A", vec![0]);
+        a.compiled_name = Some("X".to_string());
+        a.type_abbrev = some_abbrev_target();
+        let mut b = typed_entity_with_typars("B", vec![1]);
+        b.compiled_name = Some("X".to_string());
+        b.type_abbrev = some_abbrev_target();
+        let [root, ns] = root_and_namespace(vec![2, 3]);
+        let mut ccu = make_ccu(vec![root, ns, a, b], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", true), typar_spec("T", false)];
+
+        let marker = |source: &str| {
+            let mut e = ecma_generic(vec!["N"], "X", 1);
+            e.kind = EntityKind::Abbreviation;
+            e.source_name = Some(source.to_string());
+            e
+        };
+        let mut owned = vec![marker("A"), marker("B")];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            (readings(&owned[0]), readings(&owned[1])),
+            (
+                vec![FSharpConstraints::Present],
+                vec![FSharpConstraints::Free]
+            ),
+            "each alias takes its own pickled reading; the shared compiled name is \
+             not their identity"
+        );
+    }
+
+    #[test]
+    fn a_measure_typar_declines_the_whole_entity() {
+        // A `[<Measure>]` typar is erased from IL, so the pickled positions do
+        // not correspond to the row's generic parameters and nothing may be
+        // attached by position.
+        let a = typed_entity_with_typars("A", vec![0, 1]);
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, a], Vec::new(), 0);
+        let mut measure = typar_spec("m", false);
+        // `TyparFlags.Kind`: the measure bit, as `is_measure_free` reads it.
+        measure.flags = 0b00000000100000000;
+        ccu.tables.typars = vec![typar_spec("T", false), measure];
+        let mut owned = vec![ecma_generic(vec!["N"], "A", 2)];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Unknowable; 2],
+            "a measure-bearing entity's positions do not correspond"
         );
     }
 

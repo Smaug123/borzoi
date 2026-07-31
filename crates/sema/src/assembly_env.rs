@@ -6365,6 +6365,7 @@ mod from_views_tests {
             allows_ref_struct: false,
             nullability: Nullability::Oblivious,
             type_constraints: vec![],
+            fsharp_constraints: borzoi_assembly::FSharpConstraints::Unknowable,
         }
     }
 

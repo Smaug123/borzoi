@@ -13,11 +13,11 @@ use crate::fsharp_resource::{
 };
 use crate::model::{
     Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental, Field,
-    FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member, MethodLike,
-    MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault, Parameter,
-    Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem, TypeParameter,
-    TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints,
+    Field, FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
+    MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault,
+    Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem,
+    TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -47,6 +47,7 @@ fn skipped_host_signature_overlays(
             FsharpOverlayKind::Measure,
             FsharpOverlayKind::AbbreviationMarkers,
             FsharpOverlayKind::UnionCases,
+            FsharpOverlayKind::TyparConstraints,
         ],
         reason: error.to_string(),
     }
@@ -320,18 +321,37 @@ impl Ecma335Assembly {
         // resource-without-marker both errored out), so this re-read cannot newly
         // fail. Refining `None` to a per-val group count from the pickle is a
         // documented follow-up. See `docs/completed/ov-6.1-curry-detection-plan.md`.
+        //
+        // The same F#-ness signal blanks every **typar's** F#-constraint
+        // reading for the same reason: `when 'T : comparison` and its siblings
+        // have no IL encoding, so the projector's `Free` — a proof for a C#
+        // image — is unfounded here. The pickle overlay below re-reads each
+        // typar it can describe; anything it cannot reach stays
+        // [`FSharpConstraints::Unknowable`], which is what makes a
+        // marker-only or undecodable F# assembly decline rather than look
+        // constraint-free.
         if self.fsharp_interface_data_version()?.is_some() {
-            fn blank_arg_group_counts(entities: &mut [Entity]) {
+            fn blank_fsharp_facts(entities: &mut [Entity]) {
                 for entity in entities {
                     for member in &mut entity.members {
                         if let Member::Method(m) = member {
                             m.arg_group_count = None;
+                            // A method typar carries F# constraints too
+                            // (`let f<'T when 'T : comparison>`), and no overlay
+                            // reads a val's constraint list, so this one is
+                            // blanked with nothing to restore it.
+                            for typar in &mut m.generic_parameters {
+                                typar.fsharp_constraints = FSharpConstraints::Unknowable;
+                            }
                         }
                     }
-                    blank_arg_group_counts(&mut entity.nested_types);
+                    for typar in &mut entity.generic_parameters {
+                        typar.fsharp_constraints = FSharpConstraints::Unknowable;
+                    }
+                    blank_fsharp_facts(&mut entity.nested_types);
                 }
             }
-            blank_arg_group_counts(&mut out);
+            blank_fsharp_facts(&mut out);
         }
 
         // An F# assembly's type abbreviations are **erased from IL** — the pickle is the
@@ -426,6 +446,26 @@ impl Ecma335Assembly {
                     // unions stay empty (= unknowable, bounded by
                     // `fsharp_abbreviations_unknowable`).
                     crate::fsharp_pickle_merge::apply_union_cases(&mut out, &ccu)?;
+                    if authoritative {
+                        // F#-only typar constraints (`when 'T : comparison` and
+                        // friends), which have no IL encoding at all.
+                        //
+                        // **Last**, because an abbreviation marker is one of the
+                        // rows this stamps and the marker pass above is what
+                        // creates it.
+                        //
+                        // Authoritative-only, like the source-name and
+                        // declaration-order overlays and for the same reason:
+                        // this one locates a row by a reconstructed name key,
+                        // and a non-authoritative image holds copied foreign
+                        // TypeDefs the host pickle never describes — a container
+                        // or a row of theirs can sit at a host entity's key and
+                        // take its reading. Every row was blanked to
+                        // `Unknowable` before this, so declining a
+                        // `--standalone` image costs coverage, never
+                        // correctness.
+                        crate::fsharp_pickle_merge::apply_typar_constraints(&mut out, &ccu)?;
+                    }
                 }
                 Err(error) => {
                     skipped_fsharp_overlays
@@ -1990,6 +2030,12 @@ impl Ecma335Assembly {
             allows_ref_struct: gp.allows_ref_struct,
             nullability,
             type_constraints,
+            // The IL walk's reading, correct for every non-F# image: with no
+            // signature pickle there is no F#-only constraint to be missing.
+            // An F# image's typars are blanked to
+            // [`FSharpConstraints::Unknowable`] after projection and re-read
+            // from the pickle, exactly as `arg_group_count` is.
+            fsharp_constraints: FSharpConstraints::Free,
         })
     }
 
@@ -4182,7 +4228,8 @@ mod tests {
     use super::Ecma335Assembly;
     use crate::ImportError;
     use crate::model::{
-        FsharpOverlayKind, Nullability, ParamDefault, Parameter, Primitive, TypeRef,
+        Entity, FSharpConstraints, FsharpOverlayKind, Member, Nullability, ParamDefault, Parameter,
+        Primitive, TypeRef,
     };
     use crate::reader::all_dlls;
 
@@ -4234,6 +4281,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(
@@ -4262,6 +4310,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(
@@ -4504,6 +4553,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(
@@ -4562,6 +4612,125 @@ mod tests {
             skips.fsharp_extension_index_unknowable,
             "…and its extension index is unread, so the name-keyed gate must treat it \
              as unknowable too"
+        );
+    }
+
+    /// The pickle's F#-only typar constraints reach the entity model, and an
+    /// assembly whose pickle cannot be read leaves every reading
+    /// [`FSharpConstraints::Unknowable`] rather than falling back on the IL
+    /// walk's `Free`.
+    ///
+    /// The blanking is what makes the whole signal sound, and it is invisible
+    /// to every other test: with a readable pickle the overlay re-reads each
+    /// typar anyway, so deleting the blanking changes nothing they can see. The
+    /// unreadable case is the only place `Free`-by-default and
+    /// `Unknowable`-then-restored differ — and it is exactly the case where the
+    /// difference is a wrong answer, since F# constraints have no IL encoding
+    /// and an unread pickle means unread constraints, not absent ones.
+    ///
+    /// The fixture's pairs are what make the readable half discriminating: each
+    /// constrained type has an unconstrained twin of identical shape and
+    /// identical IL, so `Present` beside `Free` can only have come from the
+    /// pickle.
+    ///
+    /// The unreadable case is simulated as the extension-index test above does
+    /// it: renaming the manifest identity makes the host signature resource
+    /// (named for the assembly) unfindable, which is the shape a stripped or
+    /// format-upgraded assembly presents.
+    #[test]
+    fn fsharp_typar_constraints_are_read_from_the_pickle_or_unknowable() {
+        let dll = all_dlls()
+            .into_iter()
+            .find(|path| path.file_name().and_then(|n| n.to_str()) == Some("MiniLibFsTypars.dll"))
+            .expect("MiniLibFsTypars fixture");
+        let bytes = std::fs::read(&dll).expect("fixture");
+        let mut view = Ecma335Assembly::parse(&bytes).expect("parse");
+
+        fn typars_of(entities: &[Entity], name: &str) -> Vec<FSharpConstraints> {
+            fn walk<'a>(es: &'a [Entity], name: &str) -> Option<&'a Entity> {
+                es.iter()
+                    .find(|e| e.name == name)
+                    .or_else(|| es.iter().find_map(|e| walk(&e.nested_types, name)))
+            }
+            walk(entities, name)
+                .unwrap_or_else(|| panic!("the fixture declares `{name}`"))
+                .generic_parameters
+                .iter()
+                .map(|p| p.fsharp_constraints)
+                .collect()
+        }
+
+        let (shipped, _) = view.enumerate_with_skips_impl().expect("enumerate shipped");
+        assert_eq!(
+            typars_of(&shipped, "Constrained"),
+            vec![FSharpConstraints::Present],
+            "the pickle says this typar carries `comparison` — a fact no IL-derived \
+             field can carry"
+        );
+        assert_eq!(
+            typars_of(&shipped, "Free"),
+            vec![FSharpConstraints::Free],
+            "its twin, whose IL is identical, reads Free — so the projection is \
+             separating them on the pickle, not on their metadata"
+        );
+        assert_eq!(
+            typars_of(&shipped, "ConstrainedKey"),
+            vec![FSharpConstraints::Present, FSharpConstraints::Free],
+            "the reading is per position, not one verdict for the whole entity"
+        );
+        // An abbreviation has no ECMA row: it arrives as a synthesised name-only
+        // marker, and its own constraints are a question a consumer chasing the
+        // alias still has to answer.
+        assert_eq!(
+            typars_of(&shipped, "ConstrainedAlias"),
+            vec![FSharpConstraints::Present],
+            "an abbreviation marker carries its own pickled reading"
+        );
+        assert_eq!(
+            typars_of(&shipped, "FreeAlias"),
+            vec![FSharpConstraints::Free],
+            "…and its unconstrained twin's"
+        );
+
+        // A generic **method**'s typar has no overlay to restore it, so its
+        // blanked reading is visible even with the pickle readable. This is the
+        // only place the method half of the blanking is observable at all.
+        let module_entity = shipped
+            .iter()
+            .find(|e| e.name == "MiniLibFsTypars")
+            .expect("the fixture's module projects");
+        let method = module_entity
+            .members
+            .iter()
+            .find_map(|m| match m {
+                Member::Method(m) if m.name == "constrainedFn" => Some(m),
+                _ => None,
+            })
+            .expect("the fixture declares a generic function");
+        assert_eq!(
+            method
+                .generic_parameters
+                .iter()
+                .map(|p| p.fsharp_constraints)
+                .collect::<Vec<_>>(),
+            vec![FSharpConstraints::Unknowable],
+            "a val's constraint list is never read, so its typars claim nothing"
+        );
+
+        view.identity.name = "Renamed".to_string();
+        let (renamed, _) = view
+            .enumerate_with_skips_impl()
+            .expect("a pickle-less F# assembly still projects its IL");
+        assert_eq!(
+            typars_of(&renamed, "Constrained"),
+            vec![FSharpConstraints::Unknowable],
+            "with the pickle unfindable the constraints are unread, not absent"
+        );
+        assert_eq!(
+            typars_of(&renamed, "Free"),
+            vec![FSharpConstraints::Unknowable],
+            "…and the unconstrained twin is equally unread: `Free` here would be a \
+             claim the projection cannot make"
         );
     }
 

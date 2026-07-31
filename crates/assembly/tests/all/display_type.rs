@@ -5,8 +5,8 @@
 //! `TypeRef`s (no panic, balanced delimiters, no placeholder/arity leakage).
 
 use borzoi_assembly::{
-    Nullability, NullableType, Primitive, TyparScope, TypeParameter, TypeRef, Variance,
-    format_nullable_type, format_type,
+    FSharpConstraints, Nullability, NullableType, Primitive, TyparScope, TypeParameter, TypeRef,
+    Variance, format_nullable_type, format_type,
 };
 use proptest::prelude::*;
 
@@ -77,6 +77,7 @@ fn typar(name: &str) -> TypeParameter {
         allows_ref_struct: false,
         nullability: Nullability::Oblivious,
         type_constraints: vec![],
+        fsharp_constraints: FSharpConstraints::Unknowable,
     }
 }
 

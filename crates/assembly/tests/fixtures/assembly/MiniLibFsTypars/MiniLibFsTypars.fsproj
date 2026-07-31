@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net10.0 matches the sibling fixtures — keeps the test runner on a
+         single runtime pack. -->
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>MiniLibFsTypars</AssemblyName>
+    <RootNamespace>MiniLibFsTypars</RootNamespace>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>
