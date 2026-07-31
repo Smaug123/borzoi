@@ -9,13 +9,21 @@
 //!   source byte-for-byte (`root.text() == src`). A failure here is a real
 //!   byte-dropping bug, never a "feature not implemented yet" gap, so it is a
 //!   hard assertion for every file the parser returns from.
-//! * **Graduating ratchets.** The parser is intentionally incomplete, so most
-//!   real files still produce parse errors (and a few constructs still panic
-//!   the raw parser). Rather than an unwieldy multi-thousand-entry allow-list,
-//!   we ratchet on counts: at least [`MIN_CLEAN_PARSES`] files must parse with
-//!   zero errors, and at most [`MAX_PANICS`] may panic. As the parser grows,
-//!   bump the floor up / the ceiling down — the corpus is content-addressed
-//!   (pinned in `flake.nix`), so these counts are stable across machines.
+//! * **Recorded counts.** The parser is intentionally incomplete, so most real
+//!   files still produce parse errors. Rather than an unwieldy
+//!   multi-thousand-entry allow-list, we record counts: [`CLEAN_PARSES`] files
+//!   parse with zero errors, and at most [`MAX_NON_UTF8_SOURCES`] are skipped
+//!   as non-UTF-8. The corpus is content-addressed (pinned in `flake.nix`) and
+//!   the parser is deterministic, so these counts are exactly reproducible
+//!   across machines.
+//!
+//!   [`CLEAN_PARSES`] is **two-sided**: improving the parser fails this test
+//!   just as a regression does. Parse one more file cleanly and it goes red
+//!   until you bump the constant, with the date and the new figure. That is the
+//!   intended cost — the alternative is a one-sided floor with slack nobody
+//!   re-measures, which is what let this number sit 2,401 files below the truth
+//!   while the sweep ran nowhere. [`MAX_NON_UTF8_SOURCES`] stays a ceiling: it
+//!   counts a property of the corpus, not of our code.
 //!
 //! Symbols are empty (plain [`parse`]), matching the lexer corpus test: every
 //! `#if <ident>` is false, so the `#else` / post-`#endif` branch is active.
@@ -36,20 +44,33 @@ use crate::common::{
     catch_unwind_silent, collect_fsharp_corpus_files, corpus_root, read_corpus_source,
 };
 
-/// Lower bound on files that parse with **zero** errors and round-trip. The
-/// parser only grows, so this only goes up — bump it after a phase lands.
-/// A drop below this is a regression (some construct stopped parsing cleanly).
+/// Files that parse with **zero** errors and round-trip, as a **two-sided**
+/// record: a run that parses fewer fails, and so does one that parses more.
 ///
-/// Measured 2026-06-19 against the pinned corpus: 3227 / 6367 (50.7%).
-const MIN_CLEAN_PARSES: usize = 3227;
+/// The corpus is content-addressed and the parser is deterministic, so this
+/// count is exactly reproducible — there is no drift for a one-sided floor to
+/// absorb, and a floor is precisely what rotted. Measured 2026-06-19 as
+/// 3227 / 6367, it was still 3227 on 2026-07-31 when the truth was 5628 / 6344
+/// (88.7%): 2,401 files of slack, enough to un-parse a third of the corpus
+/// without failing, because nothing ran this sweep.
+///
+/// Two-sided is therefore the point rather than pedantry. Lowering it needs a
+/// reason; **raising it is the good direction and still requires the bump** —
+/// parse one more file cleanly and this fails until the constant records it,
+/// which is what keeps the number honest between measurements. Same discipline
+/// as `ci.yml`'s `BORZOI_PROJECT_EXPECT_DIVERGENCES`, and for the same stated
+/// reason: a one-sided bound quietly decays into a rubber stamp.
+const CLEAN_PARSES: usize = 5628;
 
-/// Upper bound on files whose raw parse **panics**. The LSP wraps the parser in
-/// `catch_unwind` so a panic never kills the server (see
-/// `crates/lsp/tests/all/parser_corpus_sweep.rs`), but a panic is still a latent
-/// bug; this ceiling ratchets down as they are fixed.
-///
-/// Measured 2026-06-19 against the pinned corpus: 7 files.
-const MAX_PANICS: usize = 7;
+// The raw parser panicking on a corpus file used to be ratcheted (`MAX_PANICS`,
+// 7 when it was last measured in June 2026). It reaches zero on the pinned
+// corpus, so the ceiling became an invariant and is asserted as one below: at
+// zero a `<=` bound states nothing a `is_empty()` does not, and leaving slack
+// nobody re-measures is what let the clean-parse floor drift 2,401 files.
+//
+// The LSP wraps the parser in `catch_unwind` so a panic never kills the server
+// (see `crates/lsp/tests/all/parser_corpus_sweep.rs`, which asserts exactly
+// that); a panic here is still a latent bug worth failing on.
 
 /// Upper bound on corpus files that are real F# fixtures but not UTF-8 source.
 /// These are explicit skips because the CST parser takes `&str`; I/O failures
@@ -176,11 +197,11 @@ fn parse_fsharp_corpus() {
             .join("\n"),
     );
     assert!(
-        tally.panics.len() <= MAX_PANICS,
-        "raw parser panicked on {} files (ceiling is MAX_PANICS = {}). New \
-         panics regressed in; investigate or raise the ceiling deliberately.\n{}",
+        tally.panics.is_empty(),
+        "raw parser panicked on {} files. The corpus panics none of it today, so \
+         this is a construct that regressed in — investigate rather than \
+         restoring a ceiling.\n{}",
         tally.panics.len(),
-        MAX_PANICS,
         tally
             .panics
             .iter()
@@ -188,11 +209,13 @@ fn parse_fsharp_corpus() {
             .collect::<Vec<_>>()
             .join("\n"),
     );
-    assert!(
-        tally.clean >= MIN_CLEAN_PARSES,
-        "only {} files parsed cleanly (floor is MIN_CLEAN_PARSES = {}). Clean \
-         parses regressed; some construct stopped parsing without errors.",
-        tally.clean,
-        MIN_CLEAN_PARSES,
+    assert_eq!(
+        tally.clean, CLEAN_PARSES,
+        "clean parses moved: {} now, CLEAN_PARSES records {}. Fewer means a \
+         construct stopped parsing without errors — a regression. More is the \
+         good direction and still fails here: bump CLEAN_PARSES in the same \
+         commit, with the date and the new figure, so the record cannot drift \
+         from the truth between measurements.",
+        tally.clean, CLEAN_PARSES,
     );
 }

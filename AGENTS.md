@@ -321,3 +321,36 @@ Note `oracle-harness`'s `batch_recovers_from_a_transient_wedge` hardcodes a
 300 ms child deadline and flakes on a loaded machine (e.g. sibling worktrees
 building concurrently). If it is the *only* failure, check `uptime` before
 blaming your diff — it fails on `main` too under load.
+
+### The corpus sweeps gate on the pull request
+
+`cargo test` does not run them: they are `#[ignore]`d because they walk the
+whole pinned corpus. `ci.yml` runs them anyway, gated by the same change filters
+as the crate they belong to, so a change to `cst` or `sema` will have its
+ratchets checked whether or not you ran them locally. Run the affected ones
+before pushing rather than discovering it in CI:
+
+```sh
+nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --ignored  #  ~30 s
+nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
+nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
+nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored
+nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
+nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
+```
+
+`parser_corpus`'s `CLEAN_PARSES` is **two-sided**, so **improving the parser
+fails it**: parse one more file cleanly and it goes red until you bump the
+constant, with the date and the new figure. That is deliberate — the corpus is
+content-addressed and the parser deterministic, so there is no drift for a
+one-sided floor to absorb, and a one-sided floor is exactly what rotted 2,401
+files deep while nothing ran the sweep. The same discipline `ci.yml`'s
+`BORZOI_PROJECT_EXPECT_DIVERGENCES` already applies, for the reason stated
+there: a one-sided bound quietly decays into a rubber stamp.
+
+The other sweeps' floors are one-sided and documented as such. What must never
+happen to any of them is loosening one to make a red run green without first
+establishing which direction it moved and why.
+
+`docs/continuous-measurements.md` has the full gate/measurement split, including
+the one sweep that is deliberately still unwired and why.

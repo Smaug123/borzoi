@@ -54,7 +54,7 @@
 //! nix develop -c cargo test -p borzoi-sema --test all overload_corpus_diff:: -- --ignored --nocapture
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::common::overload_corpus::{Corpus, Site, corpus};
 use crate::common::{
@@ -638,6 +638,147 @@ enum Outcome {
     NoSurvivor,
 }
 
+/// Every [`Outcome`] except [`Outcome::FcsErrored`], which is the one that
+/// leaves the denominator rather than joining the histogram.
+///
+/// Published in full every run, zeros included: an outcome that stops occurring
+/// is the good news this measurement exists to show (a bucket emptying means
+/// the engine started committing there), and a histogram that only carries what
+/// occurred would report exactly that as a metric going missing.
+const REPORTED_OUTCOMES: [(Outcome, &str); 7] = [
+    (Outcome::Committed, "committed"),
+    (Outcome::GroupIncomplete, "group_incomplete"),
+    (Outcome::PossiblyCurried, "possibly_curried"),
+    (Outcome::Betterness, "betterness"),
+    (Outcome::Unaffirmable, "unaffirmable"),
+    (Outcome::GateDeclined, "gate_declined"),
+    (Outcome::NoSurvivor, "no_survivor"),
+];
+
+#[derive(serde::Serialize)]
+struct Summary {
+    schema_version: u32,
+    measurement: &'static str,
+    configuration: ConfigurationSummary,
+    statistics: StatisticsSummary,
+}
+
+/// The matrix is *generated from this repository*, not walked from a pinned
+/// external tree, so its identity has to come from the matrix itself.
+/// [`matrix_digest`] hashes the two sources the generator emits, and `stats.yml`
+/// passes that digest as the observation's corpus revision — so an edit to the
+/// generator starts a new series (the points really are of a different corpus)
+/// and an edit anywhere else does not.
+#[derive(serde::Serialize)]
+struct ConfigurationSummary {
+    corpus: &'static str,
+    matrix_digest: String,
+    sites: usize,
+}
+
+#[derive(serde::Serialize)]
+struct StatisticsSummary {
+    sites: SiteSummary,
+    /// Keyed by [`REPORTED_OUTCOMES`]. Deliberately *not* the per-shape
+    /// breakdown the report prints beneath it: that one is keyed by declaring
+    /// type and argument tag, an open key space that would mint a metric per
+    /// run.
+    outcomes: BTreeMap<&'static str, usize>,
+    commit_rate: RatioSummary,
+    /// OV-8's addressable market — groups where ≥ 2 candidates survive
+    /// `may_apply`, so FCS runs its betterness ladder and we cannot.
+    betterness_addressable: RatioSummary,
+    /// The affirmation gap, which OV-8 does **not** recover. Published beside
+    /// the betterness share precisely because the two are easy to conflate, and
+    /// the build-or-not decision turns on their ratio rather than either alone.
+    affirmation_gap: RatioSummary,
+    commits_on_error_lines: usize,
+}
+
+#[derive(serde::Serialize)]
+struct SiteSummary {
+    total: usize,
+    fcs_errored: usize,
+    /// The coverage denominator: sites FCS resolved cleanly.
+    fcs_resolved: usize,
+}
+
+/// A ratio as two integers plus basis points — never a float, never an
+/// `Option`. An empty denominator gives `0`, with `denominator` beside it so
+/// "0 of 0" stays distinguishable from "0 of many".
+#[derive(serde::Serialize)]
+struct RatioSummary {
+    numerator: usize,
+    denominator: usize,
+    basis_points: usize,
+}
+
+impl RatioSummary {
+    fn new(numerator: usize, denominator: usize) -> Self {
+        // `checked_div` rather than a zero test: an empty denominator yields a
+        // defined `0`, never a `null` the dashboard would skip.
+        let basis_points = (numerator * 10_000).checked_div(denominator).unwrap_or(0);
+        Self {
+            numerator,
+            denominator,
+            basis_points,
+        }
+    }
+}
+
+/// SHA-1 over the generated C# and F# sources, domain-separated by length so
+/// moving a line between the two cannot leave the digest unchanged.
+fn matrix_digest(corpus: &Corpus) -> String {
+    use sha1::{Digest, Sha1};
+    let mut hasher = Sha1::new();
+    hasher.update((corpus.csharp.len() as u64).to_le_bytes());
+    hasher.update(corpus.csharp.as_bytes());
+    hasher.update((corpus.fsharp.len() as u64).to_le_bytes());
+    hasher.update(corpus.fsharp.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+fn summary_json(
+    corpus: &Corpus,
+    tally: &HashMap<Outcome, usize>,
+    commits_on_error_lines: usize,
+) -> String {
+    let total = corpus.sites.len();
+    let errored = tally.get(&Outcome::FcsErrored).copied().unwrap_or(0);
+    let resolvable = total - errored;
+    let count = |o: Outcome| tally.get(&o).copied().unwrap_or(0);
+
+    let summary = Summary {
+        schema_version: 1,
+        measurement: "overload-coverage",
+        configuration: ConfigurationSummary {
+            corpus: "generated-overload-matrix",
+            matrix_digest: matrix_digest(corpus),
+            sites: total,
+        },
+        statistics: StatisticsSummary {
+            sites: SiteSummary {
+                total,
+                fcs_errored: errored,
+                fcs_resolved: resolvable,
+            },
+            outcomes: REPORTED_OUTCOMES
+                .into_iter()
+                .map(|(outcome, name)| (name, count(outcome)))
+                .collect(),
+            commit_rate: RatioSummary::new(count(Outcome::Committed), resolvable),
+            betterness_addressable: RatioSummary::new(count(Outcome::Betterness), resolvable),
+            affirmation_gap: RatioSummary::new(count(Outcome::Unaffirmable), resolvable),
+            commits_on_error_lines,
+        },
+    };
+    serde_json::to_string_pretty(&summary).expect("summary serialises")
+}
+
 #[test]
 #[ignore = "coverage measurement (OV-9(b)); run with --ignored --nocapture"]
 fn coverage_report() {
@@ -715,6 +856,98 @@ fn coverage_report() {
     for (arg, n) in args {
         println!("  {n:>4}  {arg}");
     }
+
+    if let Some(dir) = std::env::var_os("BORZOI_OVERLOAD_COVERAGE_OUT") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).expect("create overload-coverage output directory");
+        let json = summary_json(&run.corpus, &tally, commits_on_error_lines);
+        std::fs::write(dir.join("summary.json"), json)
+            .expect("write overload-coverage summary.json");
+        eprintln!("wrote {}", dir.join("summary.json").display());
+    }
+}
+
+/// The generator contract, on a run where every denominator is zero as well as
+/// on a populated one — an `Option` ratio serialises as `null` the moment its
+/// denominator empties, and the dashboard treats a `null` exactly as it treats
+/// an absent key.
+#[test]
+fn summary_json_is_versioned_and_never_publishes_a_null() {
+    fn assert_all_numbers(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    assert_all_numbers(child, &format!("{path}.{key}"));
+                }
+            }
+            serde_json::Value::Number(_) => {}
+            other => panic!(
+                "statistics{path} is {other}, not a number — the dashboard skips it exactly \
+                 as it skips an absent key, and the previous run still reads as Latest"
+            ),
+        }
+    }
+
+    let generated = corpus();
+    let empty: HashMap<Outcome, usize> = HashMap::new();
+    let populated: HashMap<Outcome, usize> = [
+        (Outcome::Committed, 40),
+        (Outcome::Betterness, 7),
+        (Outcome::Unaffirmable, 3),
+    ]
+    .into_iter()
+    .collect();
+
+    for tally in [&empty, &populated] {
+        let json: serde_json::Value =
+            serde_json::from_str(&summary_json(&generated, tally, 0)).expect("summary is JSON");
+        assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["measurement"], "overload-coverage");
+        assert_all_numbers(&json["statistics"], "");
+
+        // Every outcome is present whether or not it occurred: a bucket
+        // emptying is this measurement's good news, not a retired metric.
+        let outcomes = json["statistics"]["outcomes"]
+            .as_object()
+            .expect("outcomes is an object");
+        assert_eq!(outcomes.len(), REPORTED_OUTCOMES.len());
+        for (_, name) in REPORTED_OUTCOMES {
+            assert!(outcomes.contains_key(name), "outcomes lost {name}");
+        }
+    }
+}
+
+/// The digest is the observation's corpus identity, so it must move when — and
+/// only when — the generated matrix does. A digest blind to a matrix change
+/// would graft unlike points onto one series silently, which is the failure the
+/// series key exists to prevent.
+#[test]
+fn the_matrix_digest_is_a_40_hex_identity_of_the_generated_sources() {
+    let generated = corpus();
+    let digest = matrix_digest(&generated);
+    assert_eq!(digest.len(), 40, "the recorder requires 40 hex characters");
+    assert!(
+        digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+        "the recorder requires lowercase hex, got {digest}"
+    );
+    // Deterministic: the generator takes no seed, so two builds of one commit
+    // must agree or every rerun would restart the series.
+    assert_eq!(digest, matrix_digest(&corpus()));
+
+    let perturb = |csharp: &str, fsharp: &str| {
+        matrix_digest(&Corpus {
+            csharp: csharp.to_string(),
+            fsharp: fsharp.to_string(),
+            sites: Vec::new(),
+        })
+    };
+    assert_ne!(perturb("a", "b"), perturb("a", "b\n"));
+    assert_ne!(perturb("a", "b"), perturb("a\n", "b"));
+    // Length-prefixed, so moving text across the boundary between the two
+    // sources cannot leave the digest unchanged.
+    assert_ne!(perturb("ab", "c"), perturb("a", "bc"));
 }
 
 /// Classify one call site for the coverage report. **FCS's status comes first**:
