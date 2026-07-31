@@ -1027,13 +1027,16 @@ fn a_generic_argument_may_be_structured() {
 
 /// Two shapes F# rejects that a bridge reading only the head would commit.
 ///
-/// **A byref-like argument.** `System.Span<int>` is fine as a binder's own type
-/// but not as a type argument — FCS emits FS0412 "a type instantiation involves
-/// a byref type" — and the parameter it lands on declares no constraint at all,
-/// so a check that reads constraints alone sees nothing wrong. `Ty` cannot carry
-/// byref-likeness, and nothing here checks a parameter's `allows ref struct`
-/// against an argument, so a byref-like type is committed only where it is the
-/// whole annotation.
+/// **A byref-like type.** F# admits `System.Span<int>` in exactly one annotation
+/// position — a parameter — and rejects the rest (FS0431 for a let-bound value,
+/// FS0412 for a return type or a type argument). The parameter it lands on
+/// declares no constraint at all, so a check reading constraints sees nothing
+/// wrong. Nothing here distinguishes the legal position and `Ty` cannot carry
+/// byref-likeness onward, so one is committed nowhere.
+///
+/// **`System.Void`.** Admitted only as `typeof<System.Void>` (FS0411), so it is
+/// never a type an annotation denotes — and the display renderer aliases it to
+/// `unit`, which would make a rejected annotation hover as a plausible one.
 ///
 /// **A recovered application.** `KeyValuePair<int, string,>` is a parse error
 /// FCS reports as FS1241 and recovers to `System.Object`, but the recovery tree
@@ -1042,27 +1045,45 @@ fn a_generic_argument_may_be_structured() {
 /// wrong hover on exactly the half-typed input an editor sees most.
 #[test]
 fn a_generic_application_defers_on_input_fsharp_rejects() {
-    // Sound at the root: this one FCS accepts.
-    assert_eq!(
-        binder_render("module M\nlet s : System.Span<int> = failwith \"\"\n", "s").as_deref(),
-        Some("System.Span<System.Int32>"),
-        "a byref-like type is the binder's own type here, which F# allows"
-    );
-
     for (source, name) in [
+        // FCS admits a byref-like type in exactly one annotation position — a
+        // parameter — and rejects the rest: FS0431 for this let-bound value,
+        // FS0412 for a return type or a type argument. Nothing here
+        // distinguishes the legal position, so all of them decline.
+        ("module M\nlet s : System.Span<int> = failwith \"\"\n", "s"),
         (
-            "module M\nlet a : System.Collections.Generic.KeyValuePair<System.Span<int>, System.Span<int>> = failwith \"\"\n",
+            "module M\nlet a : System.Collections.Generic.KeyValuePair<System.Span<int>, int> = failwith \"\"\n",
             "a",
         ),
         (
             "module M\nlet b : System.Span<System.Span<int>> = failwith \"\"\n",
             "b",
         ),
+        // A **non-generic** byref-like type, which reaches the nullary bridge
+        // rather than the applied one — the arm an abbreviation of a byref-like
+        // type also lands on, once its marker (whose own `is_byref_like` is
+        // false) has been chased to its terminal.
+        (
+            "module M\nlet r : System.Collections.Generic.KeyValuePair<System.TypedReference, int> = failwith \"\"\n",
+            "r",
+        ),
+        (
+            "module M\nlet t : System.TypedReference = failwith \"\"\n",
+            "t",
+        ),
+        // `System.Void` is a type F# admits only as `typeof<System.Void>`
+        // (FS0411). It also renders as `unit` in the display form, so
+        // committing it would make a rejected annotation hover plausibly.
+        (
+            "module M\nlet v : System.Collections.Generic.KeyValuePair<System.Void, int> = failwith \"\"\n",
+            "v",
+        ),
+        ("module M\nlet w : System.Void = failwith \"\"\n", "w"),
     ] {
         assert_eq!(
             binder_render(source, name),
             None,
-            "a byref-like argument must defer: {source:?}"
+            "F# rejects this annotation, so nothing may be committed: {source:?}"
         );
     }
 
