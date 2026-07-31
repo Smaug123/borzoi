@@ -121,7 +121,10 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::common::{invoke_fcs_dump, parse_fcs_binder_types_with_errors, temp_fs_file};
+use crate::common::{
+    ensure_constrained_fixture_built, invoke_fcs_dump_with_refs,
+    parse_fcs_binder_types_with_errors, temp_fs_file,
+};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{InferredFile, ProjectItems, ResolvedFile, infer_file, resolve_file};
@@ -139,7 +142,7 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
         parsed.errors
     );
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let env = crate::common::full_bcl_env();
+    let env = crate::common::constrained_fixture_env();
     let resolved = resolve_file(&file, &ProjectItems::default(), env);
     let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred)
@@ -227,7 +230,7 @@ impl Ann {
 
 /// Arity-1 heads. Each is here for a distinct reason the projection could get
 /// wrong; see the module docs.
-const HEADS1: [&str; 10] = [
+const HEADS1: [&str; 12] = [
     "option",
     "list",
     "ResizeArray",
@@ -241,6 +244,17 @@ const HEADS1: [&str; 10] = [
     "array",
     "seq",
     "byref",
+    // The **constraint** dimension, from `tests/fixtures/constrained_env`. F#
+    // constraints have no IL encoding, and FCS recovers a violating annotation's
+    // binder to `System.Object` — so a bridge blind to them commits a type FCS
+    // positively disagrees with. Every constrained head in the shipped
+    // FSharp.Core is *also* excluded by an unrelated guard (`Map` and `Set` are
+    // source-renamed, `System.Nullable`'s constraint is IL-visible), which is
+    // why this dimension needs a fixture rather than a library head: without one
+    // the sweep is green on the defect. `Free` is the twin that makes a decline
+    // on `Constrained` attributable to the constraint rather than to genericity.
+    "ConstrainedFixture.Constrained",
+    "ConstrainedFixture.Free",
 ];
 
 /// Arity-2 heads.
@@ -252,7 +266,7 @@ const HEADS1: [&str; 10] = [
 /// bridge that treats every application alike commits `System.Tuple<…>` for
 /// them, which is a wrong string for the right type. They sit in the alphabet so
 /// that stays a *measured* defer rather than a guard someone reasoned out.
-const HEADS2: [&str; 8] = [
+const HEADS2: [&str; 10] = [
     "Result",
     "Map",
     "System.Tuple",
@@ -261,6 +275,11 @@ const HEADS2: [&str; 8] = [
     "System.Func",
     "System.Collections.Generic.KeyValuePair",
     "System.Collections.Generic.Dictionary",
+    // The arity-2 half of the constraint dimension: `ConstrainedKey` constrains
+    // only its *first* parameter, so a verdict computed per entity rather than
+    // per position is visible; `BothConstrained` constrains both.
+    "ConstrainedFixture.ConstrainedKey",
+    "ConstrainedFixture.BothConstrained",
 ];
 
 /// The atoms the structural enumeration is built from. Two suffice: the shapes
@@ -455,7 +474,11 @@ fn run_chunk(chunk_index: usize, anns: &[Ann]) -> Vec<Row> {
         .collect();
 
     let path = temp_fs_file(&format!("ann_sweep{chunk_index}"), &src);
-    let json = invoke_fcs_dump("binder-types", &path);
+    // The oracle reads exactly our reference set: a head only one side can see
+    // would decline for want of the assembly rather than for anything a guard
+    // decided, and assert nothing.
+    let json =
+        invoke_fcs_dump_with_refs("binder-types", &path, &[ensure_constrained_fixture_built()]);
     let _ = std::fs::remove_file(&path);
     let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
 
@@ -796,7 +819,10 @@ fn an_alias_and_its_expansion_render_identically() {
     }
 
     let path = temp_fs_file("alias_invariance", &src);
-    let json = invoke_fcs_dump("binder-types", &path);
+    // No fixture head appears in this property's source, but the oracle is
+    // handed the same reference set as the sweep so the two cannot drift.
+    let json =
+        invoke_fcs_dump_with_refs("binder-types", &path, &[ensure_constrained_fixture_built()]);
     let _ = std::fs::remove_file(&path);
     let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
     // A `let f (p : T) = ()` line carries two binders, `f` and `p`; the parameter

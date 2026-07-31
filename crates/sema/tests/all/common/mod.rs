@@ -1226,6 +1226,34 @@ pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
         .as_path()
 }
 
+/// Build the **constraint** fixture (`tests/fixtures/constrained_env`,
+/// `SemaConstrainedFixture.dll`) once per test binary and return its `.dll`
+/// path.
+///
+/// It exists because the annotation sweep is otherwise structurally blind to
+/// F#-only typar constraints: they have no IL encoding, and every constrained
+/// head reachable from the shipped FSharp.Core is *also* excluded from a bridge
+/// by an unrelated guard, so a constraint-blind bridge passes the sweep green
+/// while publishing a type FCS disagrees with. The fixture's types are declared
+/// so no other guard can stand in — none renamed, none an abbreviation, each
+/// constrained type paired with an unconstrained twin.
+pub fn ensure_constrained_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/constrained_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build constrained fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaConstrainedFixture.dll")
+        })
+        .as_path()
+}
+
 /// Build the **companion-head** corpus (`tests/fixtures/companion_env`) once per
 /// test binary and return its `.dll` path.
 ///
@@ -1409,6 +1437,35 @@ pub fn ensure_system_runtime_dll() -> PathBuf {
 /// signature pickle names its BCL abbreviation targets through the
 /// `netstandard` CCU, so the primitive-alias chase (`int` → `int32` → a
 /// `netstandard` type forwarder → `System.Int32`) needs all three loaded.
+/// [`full_bcl_env`] plus the constraint fixture
+/// ([`ensure_constrained_fixture_built`]) — the reference set the annotation
+/// sweep needs, and exactly what it hands the oracle, so neither side can see a
+/// head the other cannot.
+pub fn constrained_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
+    use std::sync::OnceLock;
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        use borzoi_assembly::Ecma335Assembly;
+        let core = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
+        let sysrt_path = ensure_system_runtime_dll();
+        let netstd_path = sysrt_path
+            .parent()
+            .expect("ref dir")
+            .join("netstandard.dll");
+        let sysrt = std::fs::read(&sysrt_path).expect("read System.Runtime.dll");
+        let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
+        let fixture =
+            std::fs::read(ensure_constrained_fixture_built()).expect("read the constraint fixture");
+        let views = vec![
+            Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
+            Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
+            Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
+            Ecma335Assembly::parse(&fixture).expect("parse SemaConstrainedFixture.dll"),
+        ];
+        borzoi_sema::AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
+    })
+}
+
 pub fn full_bcl_env() -> &'static borzoi_sema::AssemblyEnv {
     use std::sync::OnceLock;
     static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
