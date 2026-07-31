@@ -383,6 +383,9 @@ struct TyparConstraintTarget {
     /// One reading per typar, in declaration order. Its length is the key's
     /// arity.
     readings: Vec<FSharpConstraints>,
+    /// Whether the pickled entity is a type **abbreviation**, which decides
+    /// which ECMA rows it may claim. See [`apply_typar_constraints`].
+    is_abbreviation: bool,
 }
 
 /// Attach each F# entity's pickled typar constraints to its ECMA row
@@ -401,6 +404,19 @@ struct TyparConstraintTarget {
 /// constraint fact is withheld rather than attached to whichever the search
 /// reached first — a misattached `comparison` would silently license an
 /// application F# rejects.
+///
+/// **Abbreviation-ness is part of the key**, for the same reason
+/// [`apply_union_cases`] makes the ECMA *kind* part of its own. An abbreviation
+/// is erased from IL, so it has no row of its own and the only row it may claim
+/// is the name-only marker [`apply_abbreviation_markers`] synthesised for it. A
+/// row that already existed at that key is therefore somebody *else's* — in a
+/// `--standalone` image, a copied dependency's TypeDef — and the marker pass,
+/// which suppresses a marker whose name is taken, leaves exactly that shape
+/// behind: one pickled alias, one foreign row, both ambiguity counts at 1. An
+/// unconstrained alias would then report the foreign type's constrained
+/// parameters as `Free`. Two types cannot share an FQN within one assembly, so
+/// a *non*-abbreviation target has no such twin; the check is symmetric anyway,
+/// since a real type has no business claiming a marker either.
 pub(crate) fn apply_typar_constraints(
     entities: &mut [Entity],
     pickled: &PickledCcu,
@@ -429,6 +445,7 @@ pub(crate) fn apply_typar_constraints(
                     containers: type_chain.to_vec(),
                     name: clr_name(entity),
                     readings,
+                    is_abbreviation: entity.type_abbrev.is_some(),
                 });
             }
             Ok(())
@@ -451,7 +468,9 @@ pub(crate) fn apply_typar_constraints(
             continue; // Two pickled entities collapse onto this key.
         }
         let matches_key = |e: &Entity| {
-            e.name == target.name && e.generic_parameters.len() == target.readings.len()
+            e.name == target.name
+                && e.generic_parameters.len() == target.readings.len()
+                && (e.kind == EntityKind::Abbreviation) == target.is_abbreviation
         };
         let rows: &mut [Entity] = if target.containers.is_empty() {
             entities
@@ -5974,6 +5993,42 @@ mod tests {
             readings(&owned[0]),
             vec![FSharpConstraints::Present],
             "the arity-1 row takes the arity-1 pickle entry's reading"
+        );
+    }
+
+    #[test]
+    fn an_alias_never_claims_a_row_it_did_not_synthesise() {
+        // The `--standalone` shape: the host pickle declares an erased
+        // abbreviation `N.A<'T>`, and the only TypeDef at that key is a copied
+        // dependency's — so the marker pass left no marker (the name was
+        // taken) and both ambiguity counts are 1. Stamping here would report
+        // the foreign type's parameters using the alias's constraints.
+        let mut alias = typed_entity_with_typars("A", vec![0]);
+        alias.type_abbrev = some_abbrev_target();
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, alias], Vec::new(), 0);
+        ccu.tables.typars = vec![typar_spec("T", false)];
+        let mut owned = vec![ecma_generic(vec!["N"], "A", 1)];
+        assert_eq!(owned[0].kind, EntityKind::Class, "the row is a real type");
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Unknowable],
+            "an erased alias has no row of its own, so a real row at its key is \
+             somebody else's"
+        );
+
+        // …and the marker it *would* have synthesised does take the reading,
+        // so the guard costs an alias nothing where the alias really owns the
+        // row.
+        let mut marker = ecma_generic(vec!["N"], "A", 1);
+        marker.kind = EntityKind::Abbreviation;
+        let mut owned = vec![marker];
+        apply_typar_constraints(&mut owned, &ccu).expect("apply");
+        assert_eq!(
+            readings(&owned[0]),
+            vec![FSharpConstraints::Free],
+            "the alias's own marker is the one row it may claim"
         );
     }
 

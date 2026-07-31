@@ -379,6 +379,15 @@ pub enum FSharpConstraints {
     /// `FSharpInterfaceDataVersionAttribute`, so there is no F#-only concept to
     /// be missing from its IL), or its host signature pickle described this
     /// entity and the typar's constraint list was empty.
+    ///
+    /// The first arm covers `fsc --nointerfacedata`, which drops the attribute
+    /// *and* the signature resource from an assembly whose source did declare
+    /// constraints — and `Free` is right there, not merely safe. Measured
+    /// against the real compiler: `type Constrained<'T when 'T : comparison>`
+    /// built that way admits `Constrained<int -> int>` with no diagnostic,
+    /// because F# enforces a constraint it cannot see no more than we do. The
+    /// contract this field keeps is agreement with the F# compiler, and the two
+    /// sides read the same artefact.
     Free,
     /// The pickle described this type parameter and it carries at least one
     /// F#-only constraint. Which one is not recorded: no consumer can check a
