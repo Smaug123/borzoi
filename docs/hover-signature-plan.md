@@ -1,8 +1,8 @@
 # Hover: F# member/type signatures
 
 > **Status:** landed. `textDocument/hover` renders a referenced entity/member as
-> an F# signature line with declaring-type + assembly provenance context. One
-> narrow gap remains (below); everything else is done. Code comments in
+> an F# signature line with declaring-type + assembly provenance context. Four
+> gaps remain (below); everything else is done. Code comments in
 > `crates/lsp/src/handlers/hover.rs` and `crates/assembly/src/display.rs` point
 > here as the tracker for the remaining items.
 
@@ -97,6 +97,23 @@ resolution layer (`borzoi-sema`), and the F# type pretty-printer
   the pickle merge overwrites that presumption authoritatively wherever it does
   cover the member (`ecma335_assembly::pickle_less_generic_module_method_is_presumed_a_value`).
 
+- **union cases** — a field-carrying union case of a referenced assembly renders
+  as a case, not as the nested class fsc compiled it to: `` `union case
+  Choice1Of2` `` + `in Microsoft.FSharp.Core.Choice<'T1, 'T2>`
+  (`hover::union_case_hover_label`). Gated on `AssemblyEnv::entity_class` —
+  deliberately the predicate the semantic-token classifier already asks, so the
+  two surfaces cannot drift into calling one handle a class and a union case
+  (they had), and hover inherits its declines rather than restating them. Built
+  without `format_entity_header`: a nested type re-declares its enclosing type's
+  generic parameters, so the header would write them onto the case name.
+  `AssemblyEnv::all_handles` lands with it, for the invariant sweep over every
+  entity of a real FSharp.Core (`handlers_hover::hover_calls_an_entity_a_union_case_exactly_when_classification_does`).
+- **nested-entity context lines** — `hover::entity_fqn` composes from
+  `AssemblyEnv::entity_full_name`, so a member of a nested type names its whole
+  enclosing chain (`in Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>`); a
+  nested ECMA TypeDef declares no namespace of its own, so building from
+  `Entity::namespace` had left a bare `Choice1Of2`.
+
 All model/reader additions above are additive: the differential normaliser
 renders any optional as `= ?` and reads index/nullable positions through its own
 renderer, so the FCS diff stays byte-identical throughout.
@@ -105,9 +122,9 @@ renderer, so the FCS diff stays byte-identical throughout.
 
 ## Still to do
 
-One narrow gap remains, deliberately deferred — hover renders the **F#
-signature** view, so a not-yet-wired sidecar doc-file lookup is the only fact
-not yet surfaced.
+Hover renders the **F# signature** view. The remaining gaps are facts that view
+would show but the projection cannot currently supply, plus one rendering the
+`type` keyword still over-claims.
 
 ### 1. XML doc summaries not wired into hover
 
@@ -116,3 +133,51 @@ not yet surfaced.
 handler, so no summary text is shown. Requires: locating the companion `.xml`
 next to the resolved assembly, parsing the `<member name="…">` entries, keying
 by `doc_id`, and appending the summary to the hover body.
+
+### 2. A union case's payload and its `[<Obsolete>]` marker
+
+`union case Circle` stops at the name: neither the payload (`of radius: int`)
+nor an `[<Obsolete>]`/`[<Experimental>]` marker on the *case* is rendered, and
+the two have different causes.
+
+The payload survives only as the carrier's generated `Item`/`ItemN` (or
+named-field) properties, so reconstructing an `of` clause means guessing which
+of them are fields of the case — an absent payload under-states the case, a
+wrong one misreports it.
+
+The marker is not reachable at all today: fsc attaches a case's attributes to
+its `New<Case>` maker method, and a union's constructors are deliberately absent
+from `Entity::members` (their names live in `union_cases`), so neither the
+carrier nor the union carries it. Checked against a purpose-built
+`[<Obsolete>]`-cased union, whose carrier projects `obsolete: None`. Surfacing
+it means projecting the maker method, or lifting case attributes into the
+pickle-derived case list.
+
+### 3. `type X` over-claims for an undecidable nested type
+
+A union whose cases could not be recovered (`UnionCases::Unknowable`) makes its
+nested types undecidable: each is either a case's carrier or the generated
+`Tags` class, and `AssemblyEnv::entity_class` declines them for exactly that
+reason. Hover has no third rendering, so it falls to the ordinary entity arm and
+says `type Circle` / `class` — the reading FCS contradicts on a carrier.
+
+Such a handle does reach hover: expression position walks nested types through
+the *ungated* path, unlike pattern position, which resolves a case only through
+`authoritative_union_case`
+(`resolve_assembly::an_undecidable_carrier_reaches_a_renderer_but_is_never_classified_a_case`
+pins both). What holds today is that the case reading is never *claimed* where
+it cannot be proved. Fixing the residue needs a rendering that withholds the
+kind without inventing a state a user cannot act on.
+
+### 4. The declaration head does not consult authoritative-signature knowledge
+
+The same drift the union-case arm closed exists once more, unfixed: for an
+assembly whose F# signature is not authoritative (`fsc --standalone`, an
+undecodable pickle), `AssemblyEnv::entity_class` declines to call an entity a
+`module` — FCS imports such an assembly through IL, where a module is a plain
+type — but `format_entity_header` reads `EntityKind` directly and renders
+`module X` regardless. It is the union-case bug in a different kind: two views
+of one handle disagreeing. The invariant sweep is deliberately scoped to the
+union-case question so it does not fail on this; widening it is the test for
+this fix. FSharp.Core cannot exercise it (its pickle is authoritative), so a
+fixture assembly is needed.

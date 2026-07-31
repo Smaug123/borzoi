@@ -2011,6 +2011,18 @@ impl AssemblyEnv {
         self.nodes.is_empty()
     }
 
+    /// Every interned entity, top-level and nested alike, in interning order.
+    ///
+    /// [`EntityHandle`]'s constructor is private, so without this a caller
+    /// outside this crate can only reach the handles some *lookup* hands it —
+    /// which is exactly the wrong shape for a sweep asserting a property of
+    /// *all* of them (a lookup-driven sweep would silently skip whatever it
+    /// could not name, and the entities most likely to be mis-modelled are the
+    /// ones no ordinary lookup reaches, e.g. a compiler-generated nested type).
+    pub fn all_handles(&self) -> impl Iterator<Item = EntityHandle> + use<> {
+        (0..self.nodes.len()).map(EntityHandle::new)
+    }
+
     /// Resolve a top-level type by its namespace, simple name, and generic
     /// arity (the number of type arguments; `0` for a non-generic type). `None`
     /// if no referenced assembly declares that type at that arity — never a
