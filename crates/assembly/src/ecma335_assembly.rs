@@ -47,6 +47,7 @@ fn skipped_host_signature_overlays(
             FsharpOverlayKind::Measure,
             FsharpOverlayKind::AbbreviationMarkers,
             FsharpOverlayKind::UnionCases,
+            FsharpOverlayKind::TyparConstraints,
         ],
         reason: error.to_string(),
     }
@@ -4267,6 +4268,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(
@@ -4295,6 +4297,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(
@@ -4537,6 +4540,7 @@ mod tests {
                 FsharpOverlayKind::Measure,
                 FsharpOverlayKind::AbbreviationMarkers,
                 FsharpOverlayKind::UnionCases,
+                FsharpOverlayKind::TyparConstraints,
             ]
         );
         assert!(

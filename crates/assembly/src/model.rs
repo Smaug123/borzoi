@@ -533,6 +533,14 @@ pub enum FsharpOverlayKind {
     /// Union case names ([`Entity::union_cases`]) from the host CCU
     /// pickle — the module-open fold's pattern surface.
     UnionCases,
+    /// F#-only type-parameter constraints
+    /// ([`TypeParameter::fsharp_constraints`]) from the host CCU pickle. Unlike
+    /// the overlays above, the fields this one fills carry their own
+    /// [`FSharpConstraints::Unknowable`] reading when it does not run, so a
+    /// consumer is never *misled* by its absence — it is listed because a
+    /// caller reading this list to explain reduced capability would otherwise
+    /// have no account of why every generic head suddenly declines.
+    TyparConstraints,
 }
 
 /// A host F# signature-pickle overlay the projector skipped, paired with the
