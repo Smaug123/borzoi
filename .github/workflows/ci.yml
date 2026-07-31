@@ -988,6 +988,15 @@ jobs:
         # without a named exemption fails. Losses are identified by the file's
         # bytes, never its path, so the cache layout here cannot perturb a
         # verdict.
+        #
+        # Measured 2026-07-31 against this exact restore: 1124 assemblies found,
+        # 1118 projected, 6 exempt (native PE), 0 dropped types. The sweep's own
+        # `MIN_PROJECTED = 1_000` anti-vacuity floor exists to catch a mistyped
+        # root, and this population clears it by 118 — thin enough that a corpus
+        # bump which drops a few dependencies could fail this step for a reason
+        # that has nothing to do with projection. If it goes red with
+        # "population too small" after a `nix/project-corpus.json` change, that
+        # is what happened; re-measure rather than assuming a projection defect.
         run: |
           nix develop --command env \
             BORZOI_DLL_SWEEP_ROOT="$RUNNER_TEMP/project-corpus-packages" \
