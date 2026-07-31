@@ -1299,6 +1299,12 @@ impl<'a> Gen<'a> {
     /// its own soundness argument in `docs/completed/r2-annotation-typing-plan.md`
     /// first.
     fn annotation_ty(&self, ty: &Type) -> Option<Ty> {
+        self.annotation_ty_at(ty, Position::Root)
+    }
+
+    /// [`Self::annotation_ty`]'s recursion, carrying whether the type sits at
+    /// the annotation's **root** or inside another type. See [`Position`].
+    fn annotation_ty_at(&self, ty: &Type, position: Position) -> Option<Ty> {
         // An annotation is only worth reading if the parser understood the
         // declaration it was written in. Recovery *drops* what it cannot parse,
         // so `let v : System.String. = …` and `let v : System.String[ = …`
@@ -1309,16 +1315,18 @@ impl<'a> Gen<'a> {
         // rule we can reproduce, so the only sound answer on a declaration that
         // did not parse is silence.
         //
-        // Asked here rather than at the callers so a new entry point into
-        // annotation reading cannot miss it. The recursion re-asks it per node,
-        // which is free on a clean parse (the empty-span case answers without
-        // touching the tree) and a short ancestor climb per node on a file that
-        // did error — where there is nothing to commit anyway.
+        // Asked on the recursive entry point rather than at the callers so a
+        // new entry point into annotation reading cannot miss it, and so every
+        // node re-asks it. That is free on a clean parse (the empty-span case
+        // answers without touching the tree) and a short ancestor climb per
+        // node on a file that did error — where there is nothing to commit
+        // anyway.
         if !self.resolved.recovery().declaration_is_intact(ty.syntax()) {
             return None;
         }
         match ty {
-            Type::Paren(p) => self.annotation_ty(&p.inner()?),
+            // Parentheses do not move a type into another type.
+            Type::Paren(p) => self.annotation_ty_at(&p.inner()?, position),
             Type::LongIdent(li) => {
                 let li = li.long_ident()?;
                 // An active-pattern segment cannot be projected as an ident
@@ -1334,15 +1342,17 @@ impl<'a> Gen<'a> {
                 // qualified type — bridges (R2-d); anything else defers.
                 match idents.as_slice() {
                     [.., last] => match self.resolved.resolution_at(last.text_range()) {
-                        Some(Resolution::Entity(handle)) => self.entity_annotation_ty(handle),
+                        Some(Resolution::Entity(handle)) => {
+                            self.entity_annotation_ty(handle, position)
+                        }
                         _ => None,
                     },
                     [] => None,
                 }
             }
             Type::Fun(f) => Some(Ty::Fun {
-                arg: Box::new(self.annotation_ty(&f.arg()?)?),
-                ret: Box::new(self.annotation_ty(&f.ret()?)?),
+                arg: Box::new(self.annotation_ty_at(&f.arg()?, Position::Inside)?),
+                ret: Box::new(self.annotation_ty_at(&f.ret()?, Position::Inside)?),
             }),
             Type::Tuple(t) => {
                 // A struct tuple is a different runtime type; a `/` segment is
@@ -1353,7 +1363,9 @@ impl<'a> Gen<'a> {
                 let mut elems = Vec::new();
                 for seg in t.segments() {
                     match seg {
-                        TupleSegment::Type(e) => elems.push(self.annotation_ty(&e)?),
+                        TupleSegment::Type(e) => {
+                            elems.push(self.annotation_ty_at(&e, Position::Inside)?)
+                        }
                         TupleSegment::Star(_) => {}
                         TupleSegment::Slash(_) => return None,
                     }
@@ -1366,7 +1378,7 @@ impl<'a> Gen<'a> {
                 Some(Ty::Tuple(elems))
             }
             Type::Array(a) => Some(Ty::Array {
-                elem: Box::new(self.annotation_ty(&a.element_type()?)?),
+                elem: Box::new(self.annotation_ty_at(&a.element_type()?, Position::Inside)?),
                 rank: u32::try_from(a.rank()).ok()?,
             }),
             // A generic application. The CST has already normalised the two
@@ -1376,6 +1388,9 @@ impl<'a> Gen<'a> {
             // (`Dictionary<int, string>.KeyCollection`) is a different shape
             // that `Ty` cannot spell and stays deferred.
             Type::App(app) => {
+                if !application_syntax_is_complete(app) {
+                    return None;
+                }
                 let Type::LongIdent(li) = &app.type_name()? else {
                     return None;
                 };
@@ -1391,9 +1406,9 @@ impl<'a> Gen<'a> {
                 };
                 let mut args = Vec::new();
                 for arg in app.type_args() {
-                    args.push(self.annotation_ty(&arg)?);
+                    args.push(self.annotation_ty_at(&arg, Position::Inside)?);
                 }
-                self.applied_annotation_ty(handle, args)
+                self.applied_annotation_ty(handle, args, position)
             }
             _ => None,
         }
@@ -1429,8 +1444,11 @@ impl<'a> Gen<'a> {
     /// The nested/renamed check is one comparison: the canonical dotted path
     /// must equal [`AssemblyEnv::entity_full_name`], which walks enclosing
     /// entities for nested types and prefers the source name.
-    fn entity_annotation_ty(&self, handle: EntityHandle) -> Option<Ty> {
+    fn entity_annotation_ty(&self, handle: EntityHandle, position: Position) -> Option<Ty> {
         let entity = self.env.entity(handle);
+        if position == Position::Inside && entity.is_byref_like {
+            return None;
+        }
         if !entity.generic_parameters.is_empty() {
             return None;
         }
@@ -1493,8 +1511,16 @@ impl<'a> Gen<'a> {
     /// three are [`Ty`]'s own structural variants, one head each, and the fourth
     /// is the struct tuple, which `Ty` cannot represent at all — which is why
     /// [`Self::annotation_ty`] already declines a written `struct (a * b)`.
-    fn applied_annotation_ty(&self, handle: EntityHandle, args: Vec<Ty>) -> Option<Ty> {
+    fn applied_annotation_ty(
+        &self,
+        handle: EntityHandle,
+        args: Vec<Ty>,
+        position: Position,
+    ) -> Option<Ty> {
         let entity = self.env.entity(handle);
+        if position == Position::Inside && entity.is_byref_like {
+            return None;
+        }
         if entity.generic_parameters.len() != args.len() {
             return None;
         }
@@ -3424,6 +3450,71 @@ fn trivial_typed_head(paren: &ParenPat) -> Option<(NamedPat, Type)> {
         return None;
     };
     Some((named, ty))
+}
+
+/// Whether a written generic application's **punctuation accounts for every
+/// argument it appears to have**.
+///
+/// Parser recovery drops what it could not parse rather than representing it, so
+/// the surviving `Type` children of `KeyValuePair<int, string,>` are a
+/// well-formed-looking pair — while FCS reports FS1241 and recovers the binder
+/// to `System.Object`. Committing there is a wrong hover on exactly the
+/// half-typed input an editor sees most.
+///
+/// The punctuation is what still records the loss: a well-formed prefix
+/// application has one `,` between each pair of arguments and is closed by `>`,
+/// so a trailing comma or a missing bracket no longer adds up. The postfix form
+/// (`int list`) carries neither and has exactly one argument.
+///
+/// Not done by looking for `ERROR` in the tree: the parser emits **zero-width
+/// `ERROR` tokens as ordinary structure** — a cleanly-parsed
+/// `KeyValuePair<int, string>` contains one — so their presence says nothing
+/// about whether anything was lost.
+fn application_syntax_is_complete(app: &borzoi_cst::syntax::AppType) -> bool {
+    let args = app.type_args().len();
+    if app.is_postfix() {
+        return args == 1;
+    }
+    let mut commas = 0usize;
+    let (mut opened, mut closed) = (false, false);
+    for token in app
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        match token.kind() {
+            SyntaxKind::COMMA_TOK => commas += 1,
+            SyntaxKind::LESS_TOK => opened = true,
+            SyntaxKind::GREATER_TOK => closed = true,
+            _ => {}
+        }
+    }
+    opened && closed && args > 0 && commas + 1 == args
+}
+
+/// Where a type sits inside an annotation: is it the whole thing, or is it
+/// inside another type?
+///
+/// The distinction exists for **byref-like** types (`[<IsByRefLike>]`, `Span<_>`
+/// and friends). `let s : System.Span<int>` is legal F#, but the same type as a
+/// tuple element, an array element, a function operand or a type argument is
+/// not: FCS emits FS0412, "a type instantiation involves a byref type". The
+/// parameter it lands on declares no constraint at all, so
+/// [`constrained_parameter`] sees nothing wrong — this is a property of the
+/// *argument* and its position, not of the head.
+///
+/// Deliberately coarser than F#: a parameter declaring `allows ref struct`
+/// admits one (`System.Func<System.Span<int>, int>` checks cleanly), which this
+/// declines anyway. Nothing here checks admissibility, and `Ty` cannot carry
+/// byref-likeness to a later consumer, so the sound reading is to commit a
+/// byref-like type only where it is the whole annotation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Position {
+    /// The annotation itself.
+    Root,
+    /// Inside another type — a type argument, tuple element, array element or
+    /// function operand.
+    Inside,
 }
 
 /// Whether a generic parameter constrains what may be substituted for it, in

@@ -331,10 +331,21 @@ fn generic_args() -> Vec<Ann> {
         Ann::atom("bool"),
         Ann::atom("'a"),
         Ann::atom(NESTED_ENUM),
+        // A **byref-like** type. Legal as a binder's own type, illegal as a type
+        // argument unless the parameter declares `allows ref struct` — FCS emits
+        // FS0412, "a type instantiation involves a byref type". The parameter it
+        // lands on declares no constraint at all, so the constraint dimension
+        // cannot see this: it is a fact about the *argument* and its position.
+        Ann::atom(BYREF_LIKE),
     ];
     out.extend(structural.iter().step_by(11).cloned());
     out
 }
+
+/// A byref-like (`[<IsByRefLike>]`) type — the argument-position hazard that no
+/// head-side guard can catch. `Span<'T>` is the BCL's canonical one, and it is
+/// generic, so it also exercises an application *inside* an application.
+const BYREF_LIKE: &str = "System.Span<int>";
 
 /// A type nested inside a **non-generic** one. The oracle's metadata renderer
 /// normalises FCS's `+` separator to `/`, but this one arrives already dotted, so

@@ -335,6 +335,22 @@ fn tuple_containing_a_function_is_parenthesised() {
 // ============================================================================
 
 /// Look up the canonical render of the binder named `name` in `inferred`.
+/// [`binder_render`] for a snippet that does **not** parse cleanly — the
+/// half-typed input an editor sees, where inference still runs over a recovery
+/// tree.
+fn binder_render_allowing_parse_errors(source: &str, name: &str) -> Option<String> {
+    let parsed = parse(source);
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let env = crate::common::full_bcl_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let inferred = infer_file(&file, &resolved, env);
+    inferred
+        .def_types()
+        .iter()
+        .find(|(id, _)| resolved.def(**id).name == name)
+        .map(|(_, ty)| ty.render())
+}
+
 fn binder_render(source: &str, name: &str) -> Option<String> {
     let (resolved, inferred) = resolve_and_infer(source);
     inferred
@@ -1007,6 +1023,63 @@ fn a_generic_argument_may_be_structured() {
         );
         assert_eq!(assert_binder_sound(source), 1, "in {source:?}");
     }
+}
+
+/// Two shapes F# rejects that a bridge reading only the head would commit.
+///
+/// **A byref-like argument.** `System.Span<int>` is fine as a binder's own type
+/// but not as a type argument — FCS emits FS0412 "a type instantiation involves
+/// a byref type" — and the parameter it lands on declares no constraint at all,
+/// so a check that reads constraints alone sees nothing wrong. `Ty` cannot carry
+/// byref-likeness, and nothing here checks a parameter's `allows ref struct`
+/// against an argument, so a byref-like type is committed only where it is the
+/// whole annotation.
+///
+/// **A recovered application.** `KeyValuePair<int, string,>` is a parse error
+/// FCS reports as FS1241 and recovers to `System.Object`, but the recovery tree
+/// drops the missing argument rather than representing it, so the surviving
+/// children *look* like a complete two-argument list. Committing there is a
+/// wrong hover on exactly the half-typed input an editor sees most.
+#[test]
+fn a_generic_application_defers_on_input_fsharp_rejects() {
+    // Sound at the root: this one FCS accepts.
+    assert_eq!(
+        binder_render("module M\nlet s : System.Span<int> = failwith \"\"\n", "s").as_deref(),
+        Some("System.Span<System.Int32>"),
+        "a byref-like type is the binder's own type here, which F# allows"
+    );
+
+    for (source, name) in [
+        (
+            "module M\nlet a : System.Collections.Generic.KeyValuePair<System.Span<int>, System.Span<int>> = failwith \"\"\n",
+            "a",
+        ),
+        (
+            "module M\nlet b : System.Span<System.Span<int>> = failwith \"\"\n",
+            "b",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name),
+            None,
+            "a byref-like argument must defer: {source:?}"
+        );
+    }
+
+    // Recovery: the snippet does not parse, so `assert_binder_sound` (which
+    // demands a clean parse) cannot be used — the point is precisely that
+    // inference still runs over a broken tree.
+    let malformed =
+        "module M\nlet c : System.Collections.Generic.KeyValuePair<int, string,> = failwith \"\"\n";
+    assert!(
+        !parse(malformed).errors.is_empty(),
+        "the malformed annotation really is a parse error, else this asserts nothing"
+    );
+    assert_eq!(
+        binder_render_allowing_parse_errors(malformed, "c"),
+        None,
+        "an application whose syntax did not parse cleanly commits nothing"
+    );
 }
 
 /// The heads a generic application still defers on. Each is a *decline*, so each
