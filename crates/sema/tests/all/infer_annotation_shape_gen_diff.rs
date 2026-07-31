@@ -1,0 +1,540 @@
+//! Generative **type-annotation shape** differential vs the FCS `binder-types`
+//! oracle — the instrument the generic `annotation_ty` bridge is built behind.
+//!
+//! The bridge was first written as "accept a generic application, then subtract
+//! the cases that go wrong". Under a certain-implies-exact contract that is
+//! backwards: three review rounds each subtracted one more guard and the next
+//! found another shape (a source-renamed head, a structurally-rendered tycon, a
+//! tuple buried in an argument's tree, an unsatisfiable constraint, an IL-only
+//! name). A subtractive allow-list has no closure argument, so "no more findings"
+//! only ever means "no reviewer thought of the next one". This harness
+//! *enumerates* the annotation space instead, so the safe subset is read off a
+//! measurement rather than argued.
+//!
+//! # The space
+//!
+//! One `let vN : <annotation> = failwith ""` per case, batched a chunk of cases
+//! to a file. Two halves, and the split matters:
+//!
+//! - [`structural`] enumerates every array / tuple / function nesting to depth 3
+//!   over two atoms. This is the surface we commit on **today** — an annotation
+//!   built only from primitives and F#'s three syntactic type formers needs no
+//!   generic bridge to reach inference — so it is enumerated rather than listed.
+//! - [`applications`] applies arity-1 and arity-2 heads chosen for the ways they
+//!   are known to diverge — an F#-renamed union (`Result` compiles to
+//!   `FSharpResult`), a plain BCL generic (`KeyValuePair`), a constrained one
+//!   (`System.Nullable`, `Map`), abbreviations (`option`, `list`, `ResizeArray`),
+//!   a structurally-rendered tycon (`System.Tuple`), and an IL-only name
+//!   (`Microsoft.FSharp.Quotations.FSharpExpr`, whose source spelling is `Expr`)
+//!   — over structural arguments and a typar, then nests them one level further.
+//!   This is the surface the bridge would add.
+//!
+//! # The oracle is diagnostic-aware — this is the design point
+//!
+//! Two of the shapes above are **invalid F#** that FCS *error-recovers* from:
+//! `System.Nullable<string>` violates the value-type constraint and
+//! `Microsoft.FSharp.Quotations.FSharpExpr<int>` names a type F# source cannot
+//! write. In both cases FCS reports the binder as `System.Object` while emitting
+//! FS0001 / FS0039. A type-only comparison reads that as an ordinary divergence —
+//! or, if we happened to also say `System.Object`, as **agreement**, and the bug
+//! is invisible. `resolve_qualified_path_access_gen_diff` records the identical
+//! trap on its own axis.
+//!
+//! So the rule is three arms, not a comparison:
+//!
+//! 1. FCS types the binder cleanly **and we commit** → the rendered strings must
+//!    match exactly;
+//! 2. FCS types it cleanly and we **defer** → allowed (an availability loss);
+//! 3. FCS emits an **error on the annotation's line** → we must commit *nothing*;
+//!    an annotation FCS rejects has exactly one correct answer, and any type
+//!    there is a wrong hover.
+//!
+//! Line granularity is exact here because the harness lays out one annotation per
+//! line, and it is what the oracle payload already carries (`Errors`, the shape
+//! `types` / `attrs` / `overloads` share). A misattributed error cannot hide a
+//! defect: it can only *demand* a deferral we would otherwise be free to make.
+//!
+//! # The currency caveat the report must be read with
+//!
+//! `renderTypeCanonical` keeps F# surface syntax (`a * b`, `a -> b`, `'a`) down
+//! the tuple / function / array spine, but a **generic application** hands its
+//! whole argument subtree to the metadata renderer, which compiles to the IL
+//! shape — and that renderer runs with *empty* typar scopes, so it throws on any
+//! generic parameter and the caller's `try` falls back to FCS's **display**
+//! rendering of the entire type from the root. So `option<int * string>` comes
+//! back as `FSharpOption<System.Tuple<System.Int32, System.String>>`, and
+//! `Result<(int[] * bool), ((int * string) -> bool)>` comes back in display
+//! currency end to end. That is not a harness artefact to filter out: it is the
+//! oracle's answer, and a bridge that commits the application form there commits
+//! a string FCS contradicts. The sweep records it so the guard is a measurement.
+//!
+//! # What it is green on today
+//!
+//! The structural half genuinely compares — over a hundred cases where we commit
+//! and FCS confirms — and it is what caught a live wrong hover: our array
+//! renderer dropped the parentheses around a structural element, so
+//! `(int * string)[]` rendered `int * string[]`, a string denoting a different
+//! type. The application half is all deferral, since we decline every generic
+//! annotation.
+//!
+//! That asymmetry is why the vacuity floors are load-bearing: the sweep asserts
+//! FCS genuinely rejected some annotations (arm 3 is exercised at all), that we
+//! genuinely committed and matched on others (arm 1 compares something), and that
+//! we still defer somewhere (the shapes it exists to size are still in it). A
+//! sweep that has quietly stopped measuring fails instead of passing.
+
+use std::collections::HashMap;
+use std::fmt::Write as _;
+
+use crate::common::{invoke_fcs_dump, parse_fcs_binder_types_with_errors, temp_fs_file};
+use borzoi_cst::parser::parse;
+use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_sema::{InferredFile, ProjectItems, ResolvedFile, infer_file, resolve_file};
+
+/// Resolve and infer a generated chunk over the shared real FSharp.Core + BCL
+/// closure — the same env the `binder-types` differential uses, and the honest
+/// counterpart to the FCS side, which always compiles against the real
+/// FSharp.Core.
+fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
+    let parsed = parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "generated chunk has parse errors — a shape outside our parseable subset \
+         silences its whole chunk: {:?}\n{source}",
+        parsed.errors
+    );
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let env = crate::common::full_bcl_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let inferred = infer_file(&file, &resolved, env);
+    (resolved, inferred)
+}
+
+/// The 1-based line `offset` falls on. The generated chunks are small and ASCII,
+/// so a scan is cheaper than an index.
+fn line_of(source: &str, offset: usize) -> u32 {
+    let n = source[..offset].bytes().filter(|b| *b == b'\n').count() + 1;
+    u32::try_from(n).expect("line fits u32")
+}
+
+/// A generated type annotation. Rendering is the case's identity, so a shape is
+/// named by the F# it produces.
+#[derive(Clone, Debug)]
+enum Ann {
+    /// A type with no arguments: a primitive, an F# alias, or a typar.
+    Atom(&'static str),
+    /// `T[]`.
+    Array(Box<Ann>),
+    /// `a * b`.
+    Tuple(Box<Ann>, Box<Ann>),
+    /// `a -> b`.
+    Fun(Box<Ann>, Box<Ann>),
+    /// `Head<a, …>` — always the prefix form, so one renderer covers both the
+    /// BCL heads and the F# ones that also admit postfix (`int option`).
+    App(&'static str, Vec<Ann>),
+}
+
+impl Ann {
+    fn atom(s: &'static str) -> Ann {
+        Ann::Atom(s)
+    }
+
+    fn array(t: Ann) -> Ann {
+        Ann::Array(Box::new(t))
+    }
+
+    fn tuple(a: Ann, b: Ann) -> Ann {
+        Ann::Tuple(Box::new(a), Box::new(b))
+    }
+
+    fn fun(a: Ann, b: Ann) -> Ann {
+        Ann::Fun(Box::new(a), Box::new(b))
+    }
+
+    /// The annotation as F# source.
+    fn render(&self) -> String {
+        match self {
+            Ann::Atom(s) => (*s).to_owned(),
+            Ann::Array(t) => format!("{}[]", t.render_nested()),
+            Ann::Tuple(a, b) => format!("{} * {}", a.render_nested(), b.render_nested()),
+            Ann::Fun(a, b) => format!("{} -> {}", a.render_nested(), b.render_nested()),
+            Ann::App(head, args) => {
+                let args: Vec<String> = args.iter().map(Ann::render_nested).collect();
+                format!("{head}<{}>", args.join(", "))
+            }
+        }
+    }
+
+    /// The annotation as F# source in a position where `*` / `->` would bind
+    /// wrongly — an array element, a tuple/function operand, a generic argument.
+    /// Parenthesised for exactly those two forms, so the generated source says
+    /// what the tree says rather than what F#'s precedence would re-associate it
+    /// into.
+    fn render_nested(&self) -> String {
+        match self {
+            Ann::Tuple(..) | Ann::Fun(..) => format!("({})", self.render()),
+            _ => self.render(),
+        }
+    }
+
+    /// Whether a typar appears anywhere in the tree. Recorded on the report row
+    /// rather than filtered out: a typar changes the oracle's *currency* (see the
+    /// module docs), which is a fact the bridge's guard needs, not noise.
+    fn has_typar(&self) -> bool {
+        match self {
+            Ann::Atom(s) => s.starts_with('\''),
+            Ann::Array(t) => t.has_typar(),
+            Ann::Tuple(a, b) | Ann::Fun(a, b) => a.has_typar() || b.has_typar(),
+            Ann::App(_, args) => args.iter().any(Ann::has_typar),
+        }
+    }
+}
+
+/// Arity-1 heads. Each is here for a distinct reason the projection could get
+/// wrong; see the module docs.
+const HEADS1: [&str; 7] = [
+    "option",
+    "list",
+    "ResizeArray",
+    "System.Nullable",
+    "System.Collections.Generic.List",
+    "Microsoft.FSharp.Quotations.Expr",
+    "Microsoft.FSharp.Quotations.FSharpExpr",
+];
+
+/// Arity-2 heads.
+const HEADS2: [&str; 6] = [
+    "Result",
+    "Map",
+    "System.Tuple",
+    "System.Func",
+    "System.Collections.Generic.KeyValuePair",
+    "System.Collections.Generic.Dictionary",
+];
+
+/// The atoms the structural enumeration is built from. Two suffice: the shapes
+/// that diverge are structural, and a third atom multiplies the space without
+/// reaching a new one.
+const ATOMS: [&str; 2] = ["int", "string"];
+
+/// Every **structural** annotation — array, tuple, function — to depth 3 over
+/// [`ATOMS`], each nesting level combined against the atoms.
+///
+/// Enumerated rather than listed, because this is exactly the surface we commit
+/// on *today*: an annotation built only from primitives and F#'s three syntactic
+/// type formers needs no generic bridge to reach inference. Listing it by hand is
+/// how the array-of-function corner stayed hidden while the array-of-tuple one
+/// beside it was written down.
+fn structural() -> Vec<Ann> {
+    let mut level: Vec<Ann> = ATOMS.iter().map(|a| Ann::atom(a)).collect();
+    let mut all = level.clone();
+    for _ in 1..3 {
+        let mut next = Vec::new();
+        for t in &level {
+            next.push(Ann::array(t.clone()));
+            for a in ATOMS {
+                next.push(Ann::tuple(t.clone(), Ann::atom(a)));
+                next.push(Ann::tuple(Ann::atom(a), t.clone()));
+                next.push(Ann::fun(t.clone(), Ann::atom(a)));
+                next.push(Ann::fun(Ann::atom(a), t.clone()));
+            }
+        }
+        all.extend(next.iter().cloned());
+        level = next;
+    }
+    all
+}
+
+/// The argument alphabet for the generic-head sweep: a sample of the structural
+/// space (strided so it spans the nesting depths rather than exhausting the
+/// shallowest), the atoms in both an F# and a BCL spelling, and a **typar** —
+/// which changes the oracle's currency rather than merely its content, so it has
+/// to be measured, not assumed.
+fn generic_args() -> Vec<Ann> {
+    let structural = structural();
+    let mut out = vec![
+        Ann::atom("int"),
+        Ann::atom("System.Int32"),
+        Ann::atom("bool"),
+        Ann::atom("'a"),
+        Ann::atom(NESTED_ENUM),
+    ];
+    out.extend(structural.iter().step_by(11).cloned());
+    out
+}
+
+/// A type nested inside a **non-generic** one. The oracle's metadata renderer
+/// normalises FCS's `+` separator to `/`, but this one arrives already dotted, so
+/// the two conventions are not distinguishable from the head spelling alone.
+const NESTED_ENUM: &str = "System.Environment.SpecialFolder";
+
+/// A type nested inside a **generic** one, which is a different shape again: the
+/// oracle renders it `Dictionary`2.KeyCollection<System.Int32, System.String>` —
+/// the enclosing type's arity suffix survives (only the *outermost* segment's is
+/// stripped) and the arguments hoist to the leaf. Nothing on our side spells that
+/// today; the sweep is where that becomes a measured fact rather than a surprise
+/// in a later review round.
+const NESTED_IN_GENERIC: &str = "System.Collections.Generic.Dictionary<int, string>.KeyCollection";
+
+/// Every arity-1 head over every [`generic_args`] argument, and every arity-2
+/// head over two argument pairings — a rotation (so each argument appears in both
+/// positions across the sweep) and a `(arg, int)` row (so the *first* position
+/// sees every shape against a fixed second).
+fn applications() -> Vec<Ann> {
+    let args = generic_args();
+    let mut out = Vec::new();
+    for head in HEADS1 {
+        for a in &args {
+            out.push(Ann::App(head, vec![a.clone()]));
+        }
+    }
+    for head in HEADS2 {
+        for (i, a) in args.iter().enumerate() {
+            let rotated = &args[(i + 1) % args.len()];
+            out.push(Ann::App(head, vec![a.clone(), rotated.clone()]));
+            out.push(Ann::App(head, vec![a.clone(), Ann::atom("int")]));
+        }
+    }
+    out
+}
+
+/// An arity-1 head wrapped around a sample of [`applications`], so an argument
+/// that is *itself* an application — the tree a head-only `matches!` guard lets
+/// through — is covered at every arity-1 head.
+fn nested_applications(applications: &[Ann]) -> Vec<Ann> {
+    // Stride rather than take a prefix, so the sample spans every head instead of
+    // exhausting the first one.
+    let sample: Vec<&Ann> = applications.iter().step_by(23).collect();
+    let mut out = Vec::new();
+    for head in HEADS1 {
+        for inner in &sample {
+            out.push(Ann::App(head, vec![(*inner).clone()]));
+        }
+    }
+    out
+}
+
+/// The whole enumerated space, de-duplicated (distinct trees can render the same
+/// source — a rotation that lands on `(int, int)`, or a structural level that
+/// rebuilds a shallower shape).
+fn enumerate() -> Vec<Ann> {
+    let structural = structural();
+    let applications = applications();
+    let nested = nested_applications(&applications);
+    // A type nested in a generic one is not an `App`, so it rides in directly —
+    // bare, under an array, and as a generic argument.
+    let nested_in_generic = vec![
+        Ann::atom(NESTED_IN_GENERIC),
+        Ann::array(Ann::atom(NESTED_IN_GENERIC)),
+        Ann::App("option", vec![Ann::atom(NESTED_IN_GENERIC)]),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for a in structural
+        .into_iter()
+        .chain(applications)
+        .chain(nested)
+        .chain(nested_in_generic)
+    {
+        if seen.insert(a.render()) {
+            out.push(a);
+        }
+    }
+    out
+}
+
+/// What FCS said about one annotation.
+#[derive(Debug, Clone)]
+enum Verdict {
+    /// FCS checked the line cleanly and reports this canonical rendering.
+    Clean(String),
+    /// FCS reported an error on the annotation's line: `FS####: message`.
+    Rejected(String),
+    /// FCS emitted no binder record for the line and no error explaining why —
+    /// the harness cannot classify it, so it is a failure rather than a skip.
+    Missing,
+}
+
+/// One case's outcome, for the report and the assertions.
+struct Row {
+    source: String,
+    has_typar: bool,
+    verdict: Verdict,
+    ours: Option<String>,
+}
+
+/// How the case counts split. Every floor below is a claim that some arm is
+/// genuinely exercised — without them the sweep passes by measuring nothing.
+#[derive(Default)]
+struct Tally {
+    /// Arm 1 satisfied by an actual comparison: FCS clean, we committed, equal.
+    agreed: usize,
+    /// Arm 2: FCS clean, we declined.
+    deferred: usize,
+    /// Arm 3 exercised: FCS rejected the annotation.
+    rejected: usize,
+    /// Arm 3 exercised *and* we correctly stayed silent.
+    rejected_silent: usize,
+}
+
+/// A case whose outcome violates one of the three arms.
+struct Violation {
+    source: String,
+    arm: &'static str,
+    fcs: String,
+    ours: String,
+}
+
+/// Check one chunk of annotations: emit them as a single file, run the oracle
+/// over it, infer our side, and classify each case.
+fn run_chunk(chunk_index: usize, anns: &[Ann]) -> Vec<Row> {
+    let mut src = format!("module AnnSweep{chunk_index}\n");
+    // 1-based line of each case's binder, matching the oracle's error lines.
+    let mut lines = Vec::with_capacity(anns.len());
+    for (i, ann) in anns.iter().enumerate() {
+        lines.push(src.lines().count() + 1);
+        let _ = writeln!(src, "let v{i} : {} = failwith \"\"", ann.render());
+    }
+
+    let (resolved, inferred) = resolve_and_infer(&src);
+    let ours: HashMap<String, String> = inferred
+        .def_types()
+        .iter()
+        .map(|(id, ty)| (resolved.def(*id).name.clone(), ty.render()))
+        .collect();
+
+    let path = temp_fs_file(&format!("ann_sweep{chunk_index}"), &src);
+    let json = invoke_fcs_dump("binder-types", &path);
+    let _ = std::fs::remove_file(&path);
+    let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
+
+    // FCS's binder records keyed by the line they sit on: the harness knows which
+    // line each case owns, and a binder's declaration range never spans lines.
+    let by_line: HashMap<u32, String> = fcs
+        .into_iter()
+        .map(|((start, _), ty)| (line_of(&src, start), ty))
+        .collect();
+
+    let mut rows = Vec::with_capacity(anns.len());
+    for (i, ann) in anns.iter().enumerate() {
+        let line = u32::try_from(lines[i]).expect("line fits u32");
+        let error = errors.iter().find(|e| e.line == line);
+        let verdict = match (error, by_line.get(&line)) {
+            (Some(e), _) => Verdict::Rejected(format!("FS{:04}: {}", e.code, e.message)),
+            (None, Some(ty)) => Verdict::Clean(ty.clone()),
+            (None, None) => Verdict::Missing,
+        };
+        rows.push(Row {
+            source: ann.render(),
+            has_typar: ann.has_typar(),
+            verdict,
+            ours: ours.get(&format!("v{i}")).cloned(),
+        });
+    }
+    rows
+}
+
+#[test]
+fn annotation_shapes_agree_with_fcs() {
+    let anns = enumerate();
+    // A chunk is one oracle request and one of our inference runs; 25 keeps a
+    // failure's file small enough to read while paying .NET's per-request cost
+    // only ~10 times.
+    let rows: Vec<Row> = anns
+        .chunks(25)
+        .enumerate()
+        .flat_map(|(i, chunk)| run_chunk(i, chunk))
+        .collect();
+
+    let mut tally = Tally::default();
+    let mut violations: Vec<Violation> = Vec::new();
+    let mut report = String::new();
+    for row in &rows {
+        let ours = row.ours.clone();
+        match (&row.verdict, &ours) {
+            (Verdict::Clean(fcs), Some(ours)) => {
+                if fcs == ours {
+                    tally.agreed += 1;
+                } else {
+                    violations.push(Violation {
+                        source: row.source.clone(),
+                        arm: "clean/commit",
+                        fcs: fcs.clone(),
+                        ours: ours.clone(),
+                    });
+                }
+            }
+            (Verdict::Clean(_), None) => tally.deferred += 1,
+            (Verdict::Rejected(diag), ours) => {
+                tally.rejected += 1;
+                match ours {
+                    None => tally.rejected_silent += 1,
+                    Some(ours) => violations.push(Violation {
+                        source: row.source.clone(),
+                        arm: "rejected/commit",
+                        fcs: diag.clone(),
+                        ours: ours.clone(),
+                    }),
+                }
+            }
+            (Verdict::Missing, ours) => violations.push(Violation {
+                source: row.source.clone(),
+                arm: "unclassifiable",
+                fcs: "no binder record and no error on the line".to_owned(),
+                ours: ours.clone().unwrap_or_else(|| "-".to_owned()),
+            }),
+        }
+        let _ = writeln!(
+            report,
+            "{}\t{}\t{}\t{}",
+            row.source,
+            if row.has_typar { "typar" } else { "ground" },
+            match &row.verdict {
+                Verdict::Clean(t) => format!("clean\t{t}"),
+                Verdict::Rejected(d) => format!("rejected\t{d}"),
+                Verdict::Missing => "missing\t-".to_owned(),
+            },
+            row.ours.as_deref().unwrap_or("(deferred)"),
+        );
+    }
+
+    // The measurement, for reading the bridge's guard off rather than arguing it.
+    // Captured unless the run asks for output.
+    println!("{report}");
+    println!(
+        "annotation sweep: {} cases | agreed {} | deferred {} | rejected {} (silent {})",
+        rows.len(),
+        tally.agreed,
+        tally.deferred,
+        tally.rejected,
+        tally.rejected_silent
+    );
+
+    assert!(
+        tally.agreed > 0,
+        "vacuous: we committed a type for no cleanly-typed annotation, so arm 1 compared nothing"
+    );
+    assert!(
+        tally.rejected > 0,
+        "vacuous: FCS rejected no annotation, so arm 3 — the only arm that can see an \
+         error-recovered `System.Object` — was never exercised"
+    );
+    assert!(
+        tally.deferred > 0,
+        "vacuous: we committed on every cleanly-typed annotation, so the sweep no longer \
+         covers the deferring shapes it exists to size"
+    );
+    assert!(
+        violations.is_empty(),
+        "{} annotation-shape violation(s) vs FCS:\n{}",
+        violations.len(),
+        violations
+            .iter()
+            .map(|v| format!(
+                "  [{}] `{}`: FCS {} | we gave {}",
+                v.arm, v.source, v.fcs, v.ours
+            ))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}

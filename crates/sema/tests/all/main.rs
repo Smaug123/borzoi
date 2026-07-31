@@ -22,6 +22,7 @@ mod fcs_dump_refs_absolute;
 mod fsharp_member_diff;
 mod implicit_namespace_matrix;
 mod infer_annotation_entity_diff;
+mod infer_annotation_shape_gen_diff;
 mod infer_binder_types_diff;
 mod infer_dropped_namespace_perturbation;
 mod infer_literals_diff;
