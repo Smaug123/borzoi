@@ -54,19 +54,54 @@
 //! `types` / `attrs` / `overloads` share). A misattributed error cannot hide a
 //! defect: it can only *demand* a deferral we would otherwise be free to make.
 //!
-//! # The currency caveat the report must be read with
+//! # What the report says a bridge must defer
 //!
-//! `renderTypeCanonical` keeps F# surface syntax (`a * b`, `a -> b`, `'a`) down
-//! the tuple / function / array spine, but a **generic application** hands its
-//! whole argument subtree to the metadata renderer, which compiles to the IL
-//! shape — and that renderer runs with *empty* typar scopes, so it throws on any
-//! generic parameter and the caller's `try` falls back to FCS's **display**
-//! rendering of the entire type from the root. So `option<int * string>` comes
-//! back as `FSharpOption<System.Tuple<System.Int32, System.String>>`, and
-//! `Result<(int[] * bool), ((int * string) -> bool)>` comes back in display
-//! currency end to end. That is not a harness artefact to filter out: it is the
-//! oracle's answer, and a bridge that commits the application form there commits
-//! a string FCS contradicts. The sweep records it so the guard is a measurement.
+//! `renderTypeCanonical` holds one currency all the way down — F# surface syntax
+//! (`a * b`, `a -> b`, `'a`) with fully-qualified named heads — through tuples,
+//! functions, arrays and generic applications alike. So the report's FCS column
+//! is directly comparable with [`borzoi_sema::Ty::render`] at every node, and a
+//! divergence is a fact about the *type*, not about where in the tree it sat.
+//!
+//! What the measurement then shows is a small closed set of heads whose canonical
+//! rendering is **not** an application at all, because FCS's own `IsTupleType` /
+//! `IsFunctionType` / `IsArrayType` hold for them:
+//!
+//! | written                                       | FCS renders                        |
+//! |-----------------------------------------------|------------------------------------|
+//! | `System.Tuple<int, string>`                   | `System.Int32 * System.String`     |
+//! | `Microsoft.FSharp.Core.FSharpFunc<int, bool>` | `System.Int32 -> System.Boolean`   |
+//! | `array<int>`                                  | `System.Int32[]`                   |
+//! | `System.ValueTuple<int, string>`              | `struct (System.Int32 * System.String)` |
+//!
+//! Those are exactly the tycons naming a shape a bridge cannot spell as an
+//! application, so committing one commits a wrong string for the right type. The
+//! set is closed because what it enumerates is closed: the first three are
+//! [`borzoi_sema::Ty`]'s structural variants, one head each, and the fourth is
+//! the struct tuple, which `Ty` cannot represent at all — which is why
+//! `annotation_ty` already declines a written `struct (a * b)`, and the head form
+//! has to decline for the same reason rather than a rendering-specific one.
+//!
+//! # Two properties the three arms structurally cannot check
+//!
+//! Both concern the *reference*, and neither can be seen by comparing against a
+//! subject that defers — which is every generic shape today. So a green sweep is
+//! not evidence for either, and they are asserted separately.
+//!
+//! [`an_alias_and_its_expansion_render_identically`] is the load-bearing one. A
+//! canonical string can be in the right currency and still name the wrong type,
+//! by losing a grouping: a renderer that recurses into an expanded shape while
+//! asking the *unexpanded* one whether to parenthesise emits
+//! `System.Int32 * System.String[]` for `PairAlias[]` — a 2-tuple of `int` and
+//! `string[]`, not an array of pairs. An alias is what makes that reachable at
+//! all, since it is the one way to put a tuple or a function somewhere the writer
+//! could not have parenthesised it. Writing the same type both ways and demanding
+//! one string catches it without any knowledge of which shapes are at risk.
+//!
+//! The second is the absence of the **display-currency fallback**. `go`'s
+//! fallthrough (`try renderType with _ -> renderExprType`) silently switches to
+//! FCS's display form for the whole type from the root, and the shapes that
+//! trigger it — a struct tuple, a byref — are invisible from the head. Every arm
+//! now recurses instead, and no row in the enumerated space reaches the fallback.
 //!
 //! # What it is green on today
 //!
@@ -192,7 +227,7 @@ impl Ann {
 
 /// Arity-1 heads. Each is here for a distinct reason the projection could get
 /// wrong; see the module docs.
-const HEADS1: [&str; 7] = [
+const HEADS1: [&str; 10] = [
     "option",
     "list",
     "ResizeArray",
@@ -200,13 +235,29 @@ const HEADS1: [&str; 7] = [
     "System.Collections.Generic.List",
     "Microsoft.FSharp.Quotations.Expr",
     "Microsoft.FSharp.Quotations.FSharpExpr",
+    // The three arity-1 heads a *written* application can carry that name a
+    // shape [`Ty`] spells with a variant of its own rather than as an
+    // application — see [`HEADS2`] for why they are in the alphabet at all.
+    "array",
+    "seq",
+    "byref",
 ];
 
 /// Arity-2 heads.
-const HEADS2: [&str; 6] = [
+///
+/// `System.Tuple`, `System.ValueTuple` and `Microsoft.FSharp.Core.FSharpFunc`
+/// earn their places by being the heads whose canonical rendering is **not** an
+/// application: FCS's own `IsTupleType` / `IsFunctionType` hold for them, so it
+/// renders `System.Tuple<int, string>` as `System.Int32 * System.String`. A
+/// bridge that treats every application alike commits `System.Tuple<…>` for
+/// them, which is a wrong string for the right type. They sit in the alphabet so
+/// that stays a *measured* defer rather than a guard someone reasoned out.
+const HEADS2: [&str; 8] = [
     "Result",
     "Map",
     "System.Tuple",
+    "System.ValueTuple",
+    "Microsoft.FSharp.Core.FSharpFunc",
     "System.Func",
     "System.Collections.Generic.KeyValuePair",
     "System.Collections.Generic.Dictionary",
@@ -536,5 +587,281 @@ fn annotation_shapes_agree_with_fcs() {
             ))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+/// Source-declared aliases whose targets are *precedence-sensitive* shapes, with
+/// the parenthesised spelling that denotes the same type.
+///
+/// An alias is the only way to put a tuple or a function somewhere the writer
+/// cannot parenthesise it, which is exactly where a renderer that inspects the
+/// **unexpanded** type loses the grouping.
+/// The struct-tuple target is parenthesised in the *declaration* too: a bare
+/// `type T = struct (…)` is read as a struct class definition, not as a struct
+/// tuple, and the resulting syntax error cascades through the whole file.
+const ALIASES: [(&str, &str, &str); 3] = [
+    ("PairAlias", "int * string", "(int * string)"),
+    ("FunAlias", "int -> string", "(int -> string)"),
+    (
+        "StructPairAlias",
+        "(struct (int * string))",
+        "(struct (int * string))",
+    ),
+];
+
+/// How a context groups the child it wraps — the *rule*, stated once, so that
+/// checking it is not a matter of remembering it at each position.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Grouping {
+    /// The operator binds tighter than both ` * ` and ` -> `, so a child
+    /// rendering with either at its top level must be parenthesised or the
+    /// string names a different type: `[]`, `&`, and a tuple element's join.
+    Tight,
+    /// A function's *domain*. `->` is right-associative, so only a function
+    /// child regroups; a tuple domain (`a * b -> c`) needs no parens.
+    FunctionDomain,
+    /// Nothing regroups here — a function's range, or a comma-separated generic
+    /// argument list.
+    None,
+}
+
+/// The contexts an alias is placed in, each with the canonical shape the
+/// oracle must produce. `{}` takes the alias spelling in the first, and the
+/// child's own canonical rendering — parenthesised per [`Grouping`] — in the
+/// second.
+///
+/// The pair is what makes the check **absolute** rather than relative: comparing
+/// two spellings of one type only catches a rendering that depends on how the
+/// type was *written*, and a position that drops its parens does so for every
+/// spelling alike. Byref is exactly that case, and it is why this table exists.
+const ALIAS_CONTEXTS: [(&str, &str, Grouping); 9] = [
+    ("{}", "{}", Grouping::None),
+    ("{}[]", "{}[]", Grouping::Tight),
+    ("{}[][]", "{}[][]", Grouping::Tight),
+    ("{} * int", "{} * System.Int32", Grouping::Tight),
+    ("int * {}", "System.Int32 * {}", Grouping::Tight),
+    ("{} -> int", "{} -> System.Int32", Grouping::FunctionDomain),
+    ("int -> {}", "System.Int32 -> {}", Grouping::None),
+    (
+        "option<{}>",
+        "Microsoft.FSharp.Core.FSharpOption<{}>",
+        Grouping::None,
+    ),
+    // Only legal in a parameter position, so it is emitted differently — and it
+    // is the position the alias-invariance half cannot see.
+    ("byref<{}>", "{}&", Grouping::Tight),
+];
+
+/// Whether `rendered` has a ` * ` or a ` -> ` at **paren depth zero** — the
+/// property that decides whether wrapping it changes what it denotes. Angle
+/// brackets count as depth too: the `*` inside `H<a * b>` is already enclosed.
+///
+/// The `>` of an arrow is not a closing bracket. Counting it as one drives the
+/// depth negative inside `H<a -> b>`, which then reads a later top-level ` * `
+/// as nested and silently expects the wrong grouping.
+fn splits_at_top_level(rendered: &str, needle: &str) -> bool {
+    let bytes = rendered.as_bytes();
+    let mut depth = 0i32;
+    for (i, b) in bytes.iter().enumerate() {
+        let arrow_tail = *b == b'>' && i > 0 && bytes[i - 1] == b'-';
+        match b {
+            b'(' | b'<' => depth += 1,
+            b')' | b'>' if !arrow_tail => depth -= 1,
+            _ if depth == 0 && rendered[i..].starts_with(needle) => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+#[test]
+fn top_level_split_ignores_the_arrow_and_nesting() {
+    // The arrow's `>` is not a bracket …
+    assert!(splits_at_top_level(
+        "H<System.Int32 -> System.String> * System.Boolean",
+        " * "
+    ));
+    // … and a genuinely nested operator is still nested.
+    assert!(!splits_at_top_level(
+        "H<System.Int32 * System.String>",
+        " * "
+    ));
+    assert!(!splits_at_top_level(
+        "(System.Int32 -> System.String)",
+        " -> "
+    ));
+    assert!(splits_at_top_level("System.Int32 -> System.String", " -> "));
+}
+
+/// The child rendering as it must appear inside `grouping`'s context.
+fn grouped(rendered: &str, grouping: Grouping) -> String {
+    let needs = match grouping {
+        Grouping::Tight => {
+            splits_at_top_level(rendered, " * ") || splits_at_top_level(rendered, " -> ")
+        }
+        Grouping::FunctionDomain => splits_at_top_level(rendered, " -> "),
+        Grouping::None => false,
+    };
+    if needs {
+        format!("({rendered})")
+    } else {
+        rendered.to_owned()
+    }
+}
+
+/// **Alias invariance**: an annotation written through an alias and the same
+/// annotation written out denote *one type*, so the oracle must render them to
+/// one string.
+///
+/// This is a property of the reference alone — our side defers a source-declared
+/// alias head, so no comparison against `Ty` could see it. It catches the defect
+/// class that the three-arm sweep structurally cannot: a canonical rendering that
+/// is wrong about the *type* rather than merely in a different currency. A
+/// renderer that recurses into an expanded shape while asking the unexpanded one
+/// whether to parenthesise emits `System.Int32 * System.String[]` for
+/// `PairAlias[]` — a well-formed canonical string denoting an entirely different
+/// type, which every string comparison against a deferring subject passes.
+///
+/// It is also spelling-agnostic by construction, so it keeps holding for shapes
+/// nobody enumerated: any future arm whose output depends on how the user wrote
+/// the type rather than on what the type is fails here.
+///
+/// # Why that is not enough on its own
+///
+/// Invariance is a *relative* property: it compares two spellings against each
+/// other. A position that drops its parens for **every** spelling passes it. The
+/// byref arm did exactly that — `byref<PairAlias>` and `byref<(int * string)>`
+/// both rendered `System.Int32 * System.String&`, agreeing with each other and
+/// both naming a tuple whose second element is a byref.
+///
+/// So each context also carries the canonical shape it must produce, built from
+/// the child's *own* rendering by the grouping rule ([`Grouping`], [`grouped`]).
+/// That is a reference implementation of one narrow thing — where parens go —
+/// checked against the oracle at every context, which is what makes "did I apply
+/// the rule at this position?" a machine question instead of a review question.
+#[test]
+fn an_alias_and_its_expansion_render_identically() {
+    let mut src = "module AliasInvariance\n".to_owned();
+    for (name, target, _) in ALIASES {
+        let _ = writeln!(src, "type {name} = {target}");
+    }
+    // A context legal only in parameter position is emitted as a function
+    // binding; `binder-types` reports the parameter as its own binder, so the
+    // annotation is still one binder on one line. The enclosing function is
+    // named `fnOf…` so it is the *wider* binder of the two and the narrowest-
+    // range rule below picks the parameter, whose type is the annotation itself
+    // rather than the function's `T -> unit`.
+    let emit = |src: &mut String, i: usize, tag: char, ann: &str| -> u32 {
+        let line = u32::try_from(src.lines().count() + 1).expect("line fits u32");
+        if ann.contains("byref<") {
+            let _ = writeln!(src, "let fnOf{tag}{i} ({tag}{i} : {ann}) = ()");
+        } else {
+            let _ = writeln!(src, "let {tag}{i} : {ann} = failwith \"\"");
+        }
+        line
+    };
+
+    struct Case {
+        aliased: String,
+        expanded: String,
+        alias_line: u32,
+        expanded_line: u32,
+        bare_line: u32,
+        grouping: Grouping,
+        canon_template: &'static str,
+    }
+    // The bare rendering of each alias target is itself read off the oracle, so
+    // the expected string is never hand-written.
+    let mut bare_line_of: HashMap<&str, u32> = HashMap::new();
+    let mut cases: Vec<Case> = Vec::new();
+    for (name, _, parenthesised) in ALIASES {
+        let bare = emit(&mut src, cases.len(), 'z', name);
+        bare_line_of.insert(name, bare);
+        for (ctx, canon_template, grouping) in ALIAS_CONTEXTS {
+            let aliased = ctx.replace("{}", name);
+            let expanded = ctx.replace("{}", parenthesised);
+            let i = cases.len();
+            let alias_line = emit(&mut src, i, 'a', &aliased);
+            let expanded_line = emit(&mut src, i, 'b', &expanded);
+            cases.push(Case {
+                aliased,
+                expanded,
+                alias_line,
+                expanded_line,
+                bare_line: bare,
+                grouping,
+                canon_template,
+            });
+        }
+    }
+
+    let path = temp_fs_file("alias_invariance", &src);
+    let json = invoke_fcs_dump("binder-types", &path);
+    let _ = std::fs::remove_file(&path);
+    let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
+    // A `let f (p : T) = ()` line carries two binders, `f` and `p`; the parameter
+    // is the narrower range, so prefer it.
+    let mut by_line: HashMap<u32, (usize, String)> = HashMap::new();
+    for ((start, end), ty) in fcs {
+        let line = line_of(&src, start);
+        let width = end.saturating_sub(start);
+        match by_line.get(&line) {
+            Some((w, _)) if *w <= width => {}
+            _ => {
+                by_line.insert(line, (width, ty));
+            }
+        }
+    }
+    let rendered = |line: u32| -> Option<&String> { by_line.get(&line).map(|(_, t)| t) };
+    let clean = |line: u32| !errors.iter().any(|e| e.line == line);
+
+    let mut invariance_compared = 0usize;
+    let mut shape_compared = 0usize;
+    let mut mismatches = Vec::new();
+    for case in &cases {
+        if !clean(case.alias_line) || !clean(case.expanded_line) {
+            // A line FCS rejected makes no claim.
+            continue;
+        }
+        let (Some(via_alias), Some(written_out)) =
+            (rendered(case.alias_line), rendered(case.expanded_line))
+        else {
+            continue;
+        };
+        invariance_compared += 1;
+        if via_alias != written_out {
+            mismatches.push(format!(
+                "  [spelling-dependent] `{}` rendered {via_alias}\n                       `{}` rendered {written_out}",
+                case.aliased, case.expanded
+            ));
+        }
+        // The absolute half: the child's own rendering, grouped by the rule, must
+        // be what the context actually produced.
+        if let (true, Some(bare)) = (clean(case.bare_line), rendered(case.bare_line)) {
+            let expected = case
+                .canon_template
+                .replace("{}", &grouped(bare, case.grouping));
+            shape_compared += 1;
+            if *via_alias != expected {
+                mismatches.push(format!(
+                    "  [wrong grouping] `{}` rendered {via_alias}\n                   expected {expected} (child renders {bare})",
+                    case.aliased
+                ));
+            }
+        }
+    }
+
+    assert!(
+        invariance_compared >= cases.len() / 2 && shape_compared >= cases.len() / 2,
+        "vacuous: {invariance_compared} invariance and {shape_compared} shape comparisons over \
+         {} cases — the property is measuring almost nothing",
+        cases.len()
+    );
+    assert!(
+        mismatches.is_empty(),
+        "{} canonical-grouping violation(s) — a rendering that names a different type than the \
+         one annotated:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
     );
 }
