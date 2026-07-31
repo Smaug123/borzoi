@@ -398,8 +398,8 @@ fn append_defined_in(body: &mut String, document: Option<DefinitionDocument>) {
 /// the build machine's absolute path ([`file_name_of`]), useless on this host.
 fn defined_in_line(document: &DefinitionDocument) -> String {
     format!(
-        "Defined in `{}`, line {}",
-        file_name_of(&document.document),
+        "Defined in {}, line {}",
+        code_span(file_name_of(&document.document)),
         document.line
     )
 }
@@ -660,9 +660,15 @@ fn assemble_body(
 /// differently don't render identically.
 fn assembly_provenance(assembly: &AssemblyIdentity) -> String {
     let v = assembly.version;
+    // The simple name is metadata, and this is a plain paragraph, so it is
+    // escaped for the same reason the banners are.
     let mut s = format!(
         "from {} v{}.{}.{}.{}",
-        assembly.name, v.major, v.minor, v.build, v.revision
+        escape_metadata_prose(&assembly.name),
+        v.major,
+        v.minor,
+        v.build,
+        v.revision
     );
     if let Some(token) = assembly.public_key_token {
         let hex: String = token.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -672,13 +678,30 @@ fn assembly_provenance(assembly: &AssemblyIdentity) -> String {
     s
 }
 
+/// Escape the Markdown delimiters in free-form text that came from *metadata*
+/// rather than from us — an `[<Obsolete>]` message is an arbitrary string an
+/// author wrote, and `[<Obsolete("Use ``newName`` instead")>]` is ordinary
+/// advice, not markup.
+///
+/// Only the backtick and the escaping backslash are escaped, which is the pair
+/// that matters here: a backtick run in unescaped prose is read as a code-span
+/// delimiter, so the words between two of them vanish from what the user sees —
+/// and it would trip [`quotes_are_fenced`], whose whole-body invariant is
+/// meaningful precisely because nothing else emits stray backticks. Wider
+/// injection (`*emphasis*`, a `[link](…)`) is not attempted: it garbles a
+/// message rather than losing it, and escaping every metacharacter would make
+/// ordinary prose read as line noise.
+fn escape_metadata_prose(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('`', "\\`")
+}
+
 /// `⚠ Obsolete[ (error)][: <message>]` — the `[<Obsolete>]` marker. `(error)`
 /// distinguishes a hard `error: true` deprecation (using it fails to compile)
 /// from a plain warning.
 fn obsolete_banner(obsolete: &Obsolete) -> String {
     let severity = if obsolete.is_error { " (error)" } else { "" };
     match &obsolete.message {
-        Some(message) => format!("⚠ Obsolete{severity}: {message}"),
+        Some(message) => format!("⚠ Obsolete{severity}: {}", escape_metadata_prose(message)),
         None => format!("⚠ Obsolete{severity}"),
     }
 }
@@ -688,11 +711,11 @@ fn obsolete_banner(obsolete: &Obsolete) -> String {
 /// message is optional.
 fn experimental_banner(experimental: &Experimental) -> String {
     let id = match &experimental.diagnostic_id {
-        Some(id) => format!(" ({id})"),
+        Some(id) => format!(" ({})", escape_metadata_prose(id)),
         None => String::new(),
     };
     match &experimental.message {
-        Some(message) => format!("⚠ Experimental{id}: {message}"),
+        Some(message) => format!("⚠ Experimental{id}: {}", escape_metadata_prose(message)),
         None => format!("⚠ Experimental{id}"),
     }
 }
@@ -1065,6 +1088,67 @@ mod tests {
     /// single-backtick code span would end in the middle of the name. The fence
     /// grows past the longest run inside, and content that starts or ends with a
     /// backtick is padded (CommonMark strips the padding when rendering).
+    /// The three places a hover body carries text we did not generate: an
+    /// attribute message, an assembly's simple name, and a PDB document path.
+    /// Each is metadata, so each can carry a backtick run, and each sits in a
+    /// place Markdown would read it as markup. The first two are escaped; the
+    /// third is fenced (it is already shown as a code span). Nothing else in a
+    /// body is free-form — signatures and names are generated through
+    /// `format_fsharp_name`, and the availability explanations are our own
+    /// `&'static str` prose — which is what makes `quotes_are_fenced` a
+    /// meaningful whole-body invariant rather than a heuristic.
+    #[test]
+    fn every_untrusted_string_in_a_body_is_escaped_or_fenced() {
+        let id = AssemblyIdentity {
+            name: "Odd``Name".to_string(),
+            version: Version {
+                major: 1,
+                minor: 0,
+                build: 0,
+                revision: 0,
+            },
+            public_key_token: None,
+        };
+        assert!(quotes_are_fenced(&assembly_provenance(&id)));
+        assert!(quotes_are_fenced(&defined_in_line(&DefinitionDocument {
+            document: "/src/Odd``File.fs".to_string(),
+            line: 12,
+            column: 1,
+        })));
+        assert!(quotes_are_fenced(&experimental_banner(&Experimental {
+            diagnostic_id: Some("X``1".to_string()),
+            message: Some("see ``other``".to_string()),
+            url_format: None,
+        })));
+    }
+
+    /// An `[<Obsolete>]` message is prose an author wrote, and may contain
+    /// backticks — `[<Obsolete("Use ``newName`` instead")>]` is ordinary advice.
+    /// Unescaped, Markdown reads them as a code span and the words between them
+    /// disappear; and the body-wide fencing invariant, which is meaningful only
+    /// because nothing else emits stray backticks, would fire on valid input.
+    #[test]
+    fn a_metadata_message_carrying_backticks_is_escaped() {
+        let banner = obsolete_banner(&Obsolete {
+            message: Some("Use ``newName`` instead".to_string()),
+            is_error: false,
+        });
+        assert_eq!(banner, "⚠ Obsolete: Use \\`\\`newName\\`\\` instead");
+        assert!(
+            quotes_are_fenced(&banner),
+            "an escaped message leaves no backtick run for the invariant to trip on"
+        );
+        // A backslash of its own survives as itself rather than escaping the
+        // character after it.
+        assert_eq!(
+            obsolete_banner(&Obsolete {
+                message: Some(r"path\to".to_string()),
+                is_error: false,
+            }),
+            r"⚠ Obsolete: path\\to"
+        );
+    }
+
     #[test]
     fn code_span_fences_past_any_backticks_inside() {
         assert_eq!(code_span("type List<'T>"), "`type List<'T>`");
