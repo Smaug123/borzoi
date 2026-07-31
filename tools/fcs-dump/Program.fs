@@ -6041,12 +6041,17 @@ let private canonicalTyparName (i: int) : string =
 /// metadata renderer would emit, and `'a[]` keeps its canonical typar instead of
 /// throwing into the display fallback. The element is parenthesised for a tuple
 /// or function, since `[]` binds tighter than both `*` and `->` and a bare
-/// `System.Int32 * System.String[]` denotes a different type. A **measure** or **SRTP**
+/// `System.Int32 * System.String[]` denotes a different type. A **generic
+/// application** renders `Head<a, b>`, recursing the same way, so the convention
+/// holds under the arguments too: `option<int * string>` is
+/// `Microsoft.FSharp.Core.FSharpOption<System.Int32 * System.String>`. Arguments
+/// are *not* parenthesised — a comma-separated list has no regrouping to
+/// prevent, since both `*` and `->` bind tighter than `,`. A **measure** or **SRTP**
 /// (`^`-static-req) typar renders *distinctively* — `<measure:name>` /
 /// `<srtp:name>` — a shape the Rust side never emits, so a wrong emission on our
 /// side fails loudly instead of matching by accident. Falls back to FCS's `Format`
-/// for shapes [`renderType`] still does not model (struct tuples, measures on
-/// named types), which inference never produces.
+/// for shapes [`renderType`] still does not model (struct tuples), which
+/// inference never produces.
 let private renderTypeCanonical (t: FSharpType) : string =
     // A rename table threaded through one top-level render call, mapping each
     // generic-parameter *name* to its canonical index by first appearance. Fresh
@@ -6060,7 +6065,14 @@ let private renderTypeCanonical (t: FSharpType) : string =
             rename.[name] <- i
             canonicalTyparName i
     let rec go (t: FSharpType) : string =
-        if t.IsTupleType && not t.IsStructTupleType then
+        // An abbreviation names the same type as its target, and the canonical
+        // currency is the *compiled* tycon (`Microsoft.FSharp.Core.FSharpOption`,
+        // not `option`), so strip every layer before dispatching — the same first
+        // step [`renderTypeInScope`] takes, hoisted here so every branch below
+        // sees the stripped type rather than only the fallthrough.
+        if t.IsAbbreviation then
+            go t.AbbreviatedType
+        elif t.IsTupleType && not t.IsStructTupleType then
             t.GenericArguments
             |> Seq.map (fun a ->
                 let s = go a
@@ -6113,6 +6125,37 @@ let private renderTypeCanonical (t: FSharpType) : string =
                     rendered
             let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
             sprintf "%s[%s]" rendered commas
+        elif t.HasTypeDefinition && not (isRealByref t) && t.GenericArguments.Count > 0 then
+            // A generic application: `Head<a, b>`, recursing into the arguments
+            // for the same reason the array branch recurses into its element —
+            // the metadata renderer runs a *different* currency, so delegating
+            // makes the convention depend on what an argument happens to
+            // contain. A tuple argument would come back as the IL
+            // `System.Tuple<…>`, and a function or typar argument throws, which
+            // the caller's `try` turns into FCS's display rendering of the whole
+            // type from the root (postfix `X option`, source aliases).
+            //
+            // The head is spelled exactly as [`renderTypeInScope`] spells it, so
+            // the two renderers keep naming a tycon identically: `TryFullName`
+            // (falling back to `DisplayName` for an entity FCS reports without
+            // one), FCS's nested-type `+` normalised to `/`, and the ECMA-335
+            // backtick-arity suffix stripped.
+            let td = t.TypeDefinition
+            let baseName =
+                td.TryFullName
+                |> Option.defaultWith (fun () -> td.DisplayName)
+            let baseName = stripAritySuffix (baseName.Replace('+', '/'))
+            // Arguments are *not* parenthesised. Unlike a tuple element, an
+            // array element or a function domain — where the enclosing operator
+            // binds tighter and a bare structural child would regroup into a
+            // different type — a comma-separated argument list has nothing to
+            // regroup: both `*` and `->` bind tighter than `,`, which the F#
+            // compiler itself confirms by accepting `Func<int -> string, bool>`
+            // and `Dictionary<int * string, bool>` as two-argument applications.
+            // The rendering also stays injective without them: `H<a * b>` is one
+            // tuple argument, `H<a, b>` is two.
+            let args = t.GenericArguments |> Seq.map go |> String.concat ", "
+            sprintf "%s<%s>" baseName args
         else
             try renderType t with _ -> renderExprType t
     go t

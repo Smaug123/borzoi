@@ -54,19 +54,34 @@
 //! `types` / `attrs` / `overloads` share). A misattributed error cannot hide a
 //! defect: it can only *demand* a deferral we would otherwise be free to make.
 //!
-//! # The currency caveat the report must be read with
+//! # What the report says a bridge must defer
 //!
-//! `renderTypeCanonical` keeps F# surface syntax (`a * b`, `a -> b`, `'a`) down
-//! the tuple / function / array spine, but a **generic application** hands its
-//! whole argument subtree to the metadata renderer, which compiles to the IL
-//! shape — and that renderer runs with *empty* typar scopes, so it throws on any
-//! generic parameter and the caller's `try` falls back to FCS's **display**
-//! rendering of the entire type from the root. So `option<int * string>` comes
-//! back as `FSharpOption<System.Tuple<System.Int32, System.String>>`, and
-//! `Result<(int[] * bool), ((int * string) -> bool)>` comes back in display
-//! currency end to end. That is not a harness artefact to filter out: it is the
-//! oracle's answer, and a bridge that commits the application form there commits
-//! a string FCS contradicts. The sweep records it so the guard is a measurement.
+//! `renderTypeCanonical` holds one currency all the way down — F# surface syntax
+//! (`a * b`, `a -> b`, `'a`) with fully-qualified named heads — through tuples,
+//! functions, arrays and generic applications alike. So the report's FCS column
+//! is directly comparable with [`borzoi_sema::Ty::render`] at every node, and a
+//! divergence is a fact about the *type*, not about where in the tree it sat.
+//!
+//! What the measurement then shows is a small closed set of heads whose canonical
+//! rendering is **not** an application at all, because FCS's own `IsTupleType` /
+//! `IsFunctionType` / `IsArrayType` hold for them:
+//!
+//! | written                                       | FCS renders                  |
+//! |-----------------------------------------------|------------------------------|
+//! | `System.Tuple<int, string>`                   | `System.Int32 * System.String` |
+//! | `Microsoft.FSharp.Core.FSharpFunc<int, bool>` | `System.Int32 -> System.Boolean` |
+//! | `array<int>`                                  | `System.Int32[]`             |
+//!
+//! Those are exactly the tycons that name a shape [`borzoi_sema::Ty`] spells with
+//! a variant of its own, so a bridge committing the application form for them
+//! commits a wrong string for the right type. The set is closed *because*
+//! `Ty`'s structural variants are: one head per variant, not an open list of
+//! shapes to keep discovering.
+//!
+//! The same measurement refutes a guard that reads plausibly and is wrong:
+//! `System.ValueTuple<int, string>` renders as an ordinary application, not as
+//! `a * b`, because `Ty::Tuple` is a *reference* tuple and there is nothing for
+//! it to collide with. Reasoning by analogy from `System.Tuple` over-defers it.
 //!
 //! # What it is green on today
 //!
@@ -192,7 +207,7 @@ impl Ann {
 
 /// Arity-1 heads. Each is here for a distinct reason the projection could get
 /// wrong; see the module docs.
-const HEADS1: [&str; 7] = [
+const HEADS1: [&str; 10] = [
     "option",
     "list",
     "ResizeArray",
@@ -200,13 +215,29 @@ const HEADS1: [&str; 7] = [
     "System.Collections.Generic.List",
     "Microsoft.FSharp.Quotations.Expr",
     "Microsoft.FSharp.Quotations.FSharpExpr",
+    // The three arity-1 heads a *written* application can carry that name a
+    // shape [`Ty`] spells with a variant of its own rather than as an
+    // application — see [`HEADS2`] for why they are in the alphabet at all.
+    "array",
+    "seq",
+    "byref",
 ];
 
 /// Arity-2 heads.
-const HEADS2: [&str; 6] = [
+///
+/// `System.Tuple`, `System.ValueTuple` and `Microsoft.FSharp.Core.FSharpFunc`
+/// earn their places by being the heads whose canonical rendering is **not** an
+/// application: FCS's own `IsTupleType` / `IsFunctionType` hold for them, so it
+/// renders `System.Tuple<int, string>` as `System.Int32 * System.String`. A
+/// bridge that treats every application alike commits `System.Tuple<…>` for
+/// them, which is a wrong string for the right type. They sit in the alphabet so
+/// that stays a *measured* defer rather than a guard someone reasoned out.
+const HEADS2: [&str; 8] = [
     "Result",
     "Map",
     "System.Tuple",
+    "System.ValueTuple",
+    "Microsoft.FSharp.Core.FSharpFunc",
     "System.Func",
     "System.Collections.Generic.KeyValuePair",
     "System.Collections.Generic.Dictionary",
