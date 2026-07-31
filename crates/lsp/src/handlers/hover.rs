@@ -690,11 +690,22 @@ fn member_experimental(member: &Member) -> Option<&Experimental> {
     }
 }
 
-/// The fully-qualified, F#-rendered name of an entity: dotted namespace + the
-/// F# source name (so a suffixed module reads `List`, not the compiled
-/// `ListModule`), with `<'T, 'U>` appended when generic. A *nested* type
-/// carries an empty namespace and we don't walk its enclosing chain, so it
-/// renders as its simple name alone — refining that is a follow-up.
+/// The fully-qualified, F#-rendered name of an entity: its full dotted name (F#
+/// source names throughout, so a suffixed module reads `List`, not the compiled
+/// `ListModule`), with `<'T, 'U>` appended when generic.
+///
+/// The dotted part comes from
+/// [`AssemblyEnv::entity_full_name`](borzoi_sema::AssemblyEnv::entity_full_name),
+/// which walks the enclosing chain: a *nested* ECMA TypeDef declares no
+/// namespace of its own, so composing the name from `Entity::namespace` alone
+/// drops every enclosing entity and leaves a bare `Choice1Of2` naming nothing a
+/// reader could look up.
+///
+/// The type parameters are the entity's *own*, which for a nested type are the
+/// ones it re-declares from its enclosing type, so they land on the last segment
+/// (`Choice.Choice1Of2<'T1, 'T2>`) rather than on the entity that introduced
+/// them. This is a context line rather than source, so that reads acceptably;
+/// distributing parameters across the chain is a further refinement.
 fn entity_fqn(env: &AssemblyEnv, handle: EntityHandle) -> String {
     let entity = env.entity(handle);
     let typars: Vec<&str> = entity
@@ -702,23 +713,15 @@ fn entity_fqn(env: &AssemblyEnv, handle: EntityHandle) -> String {
         .iter()
         .map(|p| p.name.as_str())
         .collect();
-    render_fqn(
-        &entity.namespace,
-        entity.source_name.as_deref().unwrap_or(&entity.name),
-        &typars,
-    )
+    append_typars(env.entity_full_name(handle), &typars)
 }
 
-/// Join a namespace, simple name, and (bare) type-parameter names into an
-/// F#-flavoured FQN: `System.Collections.Generic.List<'T>`. Type parameters
-/// take the F# leading-apostrophe convention.
-fn render_fqn(namespace: &[String], name: &str, typars: &[&str]) -> String {
-    let mut s = String::new();
-    for segment in namespace {
-        s.push_str(segment);
-        s.push('.');
-    }
-    s.push_str(name);
+/// Append (bare) type-parameter names to a dotted name in the F# leading-
+/// apostrophe convention: `System.Collections.Generic.List` + `["T"]` →
+/// `System.Collections.Generic.List<'T>`. A non-generic entity gets the name
+/// back unchanged.
+fn append_typars(name: String, typars: &[&str]) -> String {
+    let mut s = name;
     if !typars.is_empty() {
         s.push('<');
         for (i, typar) in typars.iter().enumerate() {
@@ -842,10 +845,6 @@ mod tests {
         Version,
     };
 
-    fn ns(segments: &[&str]) -> Vec<String> {
-        segments.iter().map(|s| s.to_string()).collect()
-    }
-
     fn method(is_extension_method: bool) -> Member {
         Member::Method(MethodLike {
             definition_range: None,
@@ -960,34 +959,23 @@ mod tests {
     }
 
     #[test]
-    fn render_fqn_joins_namespace_and_simple_name() {
+    fn append_typars_uses_the_apostrophe_convention() {
         assert_eq!(
-            render_fqn(&ns(&["System"]), "Console", &[]),
-            "System.Console"
-        );
-        assert_eq!(
-            render_fqn(&ns(&["Microsoft", "FSharp", "Core"]), "Operators", &[]),
-            "Microsoft.FSharp.Core.Operators"
-        );
-    }
-
-    #[test]
-    fn render_fqn_uses_apostrophe_typars() {
-        assert_eq!(
-            render_fqn(&ns(&["System", "Collections", "Generic"]), "List", &["T"]),
+            append_typars("System.Collections.Generic.List".to_string(), &["T"]),
             "System.Collections.Generic.List<'T>"
         );
         assert_eq!(
-            render_fqn(&ns(&["NS"]), "Map", &["TKey", "TValue"]),
+            append_typars("NS.Map".to_string(), &["TKey", "TValue"]),
             "NS.Map<'TKey, 'TValue>"
         );
     }
 
     #[test]
-    fn render_fqn_handles_empty_namespace() {
-        // Nested types carry an empty namespace: the simple name renders alone.
-        assert_eq!(render_fqn(&[], "Inner", &[]), "Inner");
-        assert_eq!(render_fqn(&[], "Box", &["T"]), "Box<'T>");
+    fn append_typars_leaves_a_non_generic_name_alone() {
+        assert_eq!(
+            append_typars("System.Console".to_string(), &[]),
+            "System.Console"
+        );
     }
 
     #[test]

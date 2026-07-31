@@ -648,6 +648,35 @@ fn member_hover_label_renders_signature_declaring_type_and_provenance() {
     );
 }
 
+/// A member of a **nested** type names the whole enclosing chain, not the bare
+/// innermost name. A nested ECMA TypeDef declares no namespace of its own, so
+/// building the context line from `Entity::namespace` alone drops everything
+/// above it: `Choice`'s carrier reported `in Choice1Of2<'T1, 'T2>`, which names
+/// no type a reader could look up.
+///
+/// The type parameters are the entity's own, which for a nested type are the
+/// ones it re-declares from its enclosing type — so they render on the last
+/// segment (`Choice.Choice1Of2<'T1, 'T2>`) rather than on the `Choice` that
+/// introduced them. That is a rendering nicety; the chain is the fact.
+#[test]
+fn member_of_a_nested_type_names_its_enclosing_chain() {
+    let env = fsharp_core_env();
+    let choice = env
+        .lookup_type(&ns(&["Microsoft", "FSharp", "Core"]), "Choice", 2)
+        .expect("Choice<'T1,'T2> resolves");
+    let case = env
+        .nested(choice, "Choice1Of2", 2)
+        .expect("the Choice1Of2 carrier");
+    let item = env
+        .member(case, "Item")
+        .expect("the carrier's Item property");
+    let body = member_hover_label(&env, case, item);
+    assert!(
+        body.contains("\n\nin Microsoft.FSharp.Core.Choice.Choice1Of2<'T1, 'T2>\n\n"),
+        "expected the enclosing chain on the context line, got:\n{body}"
+    );
+}
+
 #[test]
 fn rqa_attribute_renders_on_non_module_kinds() {
     // FSharp.Core ships its own `DynamicallyAccessedMemberTypes` enum carrying
