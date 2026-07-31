@@ -868,34 +868,190 @@ fn later_application_does_not_monomorphise_an_earlier_binder() {
     assert_binder_sound(annotated);
 }
 
-/// A generic annotation still defers, at every head. [`Ty::Named`] can *carry*
-/// arguments now, but nothing in `annotation_ty` builds one: the bridge from a
-/// written `Type::App` to an applied `Ty` needs a generated sweep against this
-/// oracle before it can be trusted, because the safe subset turned out to be
-/// far narrower than it looks. Four separate shapes were measured diverging —
-/// a source-renamed head (`Result`, compiled `FSharpResult`), a tycon FCS
-/// canonicalises structurally (`System.Tuple<int, string>` renders
-/// `System.Int32 * System.String`), a tuple or function anywhere in an
-/// argument's tree, and an unsatisfied generic constraint
-/// (`System.Nullable<string>`, which FCS reports as `System.Object`).
+/// An **F#-only constraint** on the head defers, and its unconstrained twin
+/// does not.
 ///
-/// This pins the silence so the bridge lands as a visible, reviewed change
-/// rather than by accident.
+/// The pair is the whole point. `when 'T : comparison` has no IL encoding —
+/// `Constrained<'T>` and `Free<'T>` emit byte-identical `GenericParam` rows —
+/// so a bridge that declined both would look correct while having seen only
+/// "this head is generic". Committing `Free<int>` beside declining
+/// `Constrained<int>` is what makes the decline attributable to the constraint.
+///
+/// It has to be a fixture: every constrained head in the shipped FSharp.Core is
+/// *also* excluded by an unrelated guard (`Map` and `Set` are source-renamed,
+/// `System.Nullable`'s constraint is IL-visible), so a constraint-blind bridge
+/// passes every library-only test.
+///
+/// F# rejects `Constrained<int -> int>` outright and recovers the binder to
+/// `System.Object`, so committing the written type is a wrong answer, not merely
+/// a commit on an erroring line — which is why the deferral is unconditional
+/// rather than argument-dependent: nothing here checks a constraint against an
+/// argument.
 #[test]
-fn a_generic_annotation_still_defers() {
+fn a_constrained_head_defers_but_its_twin_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet f : ConstrainedFixture.Free<int> = failwith \"\"\n",
+            "f"
+        )
+        .as_deref(),
+        Some("ConstrainedFixture.Free<System.Int32>"),
+        "the unconstrained twin commits — so the head itself is reachable, and a \
+         decline on its constrained sibling is about the constraint"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet c : ConstrainedFixture.Constrained<int> = failwith \"\"\n",
+            "c"
+        ),
+        None,
+        "an F#-only constraint has no IL encoding and nothing here checks one, so \
+         the head declines at every argument"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet k : ConstrainedFixture.ConstrainedKey<int, string> = failwith \"\"\n",
+            "k"
+        ),
+        None,
+        "a constraint on any one position declines the whole application"
+    );
+}
+
+/// A **generic application** annotation grounds its binder. Before this the
+/// annotation deferred, the binder published nothing, and every member access on
+/// such a receiver was silence — the single largest coverage gap in the member
+/// wake.
+///
+/// The currency is the compiled BCL FQN with angle brackets and `", "`-joined
+/// arguments. FCS's canonical rendering strips every abbreviation layer, so the
+/// comparison is against the compiled spelling and never the F# display one.
+/// Every string here was read off the oracle, and each case also rides the
+/// certain-implies-exact sweep.
+#[test]
+fn a_generic_application_grounds_its_binder() {
+    for (source, name, expected) in [
+        (
+            "module M\nlet k : System.Collections.Generic.KeyValuePair<int, string> = System.Collections.Generic.KeyValuePair<int, string>()\n",
+            "k",
+            "System.Collections.Generic.KeyValuePair<System.Int32, System.String>",
+        ),
+        (
+            "module M\nlet f : System.Func<int, bool> = failwith \"\"\n",
+            "f",
+            "System.Func<System.Int32, System.Boolean>",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name).as_deref(),
+            Some(expected),
+            "binder `{name}` in {source:?}"
+        );
+        assert_eq!(assert_binder_sound(source), 1, "in {source:?}");
+    }
+}
+
+/// The argument list is a real recursion, not a one-level special case: an
+/// argument that is itself an application, an array, a tuple or a function all
+/// render through, and all agree with FCS exactly.
+///
+/// A tuple or function *argument* is deliberately **not** parenthesised. Unlike
+/// a tuple element or an array element, a comma-separated argument list has
+/// nothing to regroup — `Func<int -> string, bool>` is a two-argument
+/// application, checked against the F# compiler rather than asserted.
+#[test]
+fn a_generic_argument_may_be_structured() {
+    for (source, name, expected) in [
+        (
+            "module M\nlet a : System.Collections.Generic.KeyValuePair<int[], string> = System.Collections.Generic.KeyValuePair<int[], string>()\n",
+            "a",
+            "System.Collections.Generic.KeyValuePair<System.Int32[], System.String>",
+        ),
+        (
+            "module M\nlet e : System.Collections.Generic.KeyValuePair<System.Collections.Generic.KeyValuePair<int, string>, bool> = failwith \"\"\n",
+            "e",
+            "System.Collections.Generic.KeyValuePair<System.Collections.Generic.KeyValuePair<System.Int32, System.String>, System.Boolean>",
+        ),
+        (
+            "module M\nlet p : System.Collections.Generic.KeyValuePair<int * string, bool> = failwith \"\"\n",
+            "p",
+            "System.Collections.Generic.KeyValuePair<System.Int32 * System.String, System.Boolean>",
+        ),
+        (
+            "module M\nlet q : System.Func<int -> string, bool> = failwith \"\"\n",
+            "q",
+            "System.Func<System.Int32 -> System.String, System.Boolean>",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name).as_deref(),
+            Some(expected),
+            "binder `{name}` in {source:?}"
+        );
+        assert_eq!(assert_binder_sound(source), 1, "in {source:?}");
+    }
+}
+
+/// The heads a generic application still defers on. Each is a *decline*, so each
+/// is sound; together they are why `int option` does not type yet.
+///
+/// - an **abbreviation** head (`int option`, `int list`): an alias may permute or
+///   fix its target's arguments (`type Swap<'a, 'b> = Map<'b, 'a>`), so applying
+///   the written arguments positionally to the chased tycon can produce a
+///   different type, and arity alone does not rule it out;
+/// - a **source-renamed** head (`Result`, compiled `FSharpResult`; `Map`,
+///   compiled `FSharpMap`): [`Ty`] carries one path and this needs two — the
+///   compiled name is FCS's canonical currency, the source name is what hover
+///   must show, and no alias table recovers one from the other;
+/// - a tycon FCS canonicalises **structurally**: `System.Tuple<int, string>`
+///   renders `System.Int32 * System.String`, `FSharpFunc<a, b>` renders `a -> b`,
+///   `array<int>` renders `System.Int32[]`, and `System.ValueTuple<…>` renders
+///   `struct (…)` — a shape `Ty` cannot represent at all. Measured off the
+///   annotation sweep, not reasoned out;
+/// - a head with an **F#-only constraint** (`comparison`, `equality`, SRTP),
+///   which has no IL encoding. Nothing here checks a constraint against an
+///   argument, so a head that declares one at any position declines: F# rejects
+///   `Constrained<int -> int>` and recovers the binder to `System.Object`, so
+///   committing the written type is a wrong answer, not a commit on an erroring
+///   line.
+#[test]
+fn the_heads_a_generic_application_defers_on() {
     for (source, name) in [
         ("module M\nlet x : int option = None\n", "x"),
         ("module M\nlet l : int list = []\n", "l"),
         ("module M\nlet r : Result<int, string> = Ok 1\n", "r"),
         (
-            "module M\nlet k : System.Collections.Generic.KeyValuePair<int, string> = System.Collections.Generic.KeyValuePair<int, string>()\n",
-            "k",
+            "module M\nlet t : System.Tuple<int, string> = System.Tuple<int, string>(1, \"a\")\n",
+            "t",
         ),
+        (
+            "module M\nlet v : System.ValueTuple<int, string> = failwith \"\"\n",
+            "v",
+        ),
+        (
+            "module M\nlet g : Microsoft.FSharp.Core.FSharpFunc<int, bool> = failwith \"\"\n",
+            "g",
+        ),
+        ("module M\nlet a : array<int> = [||]\n", "a"),
     ] {
         assert_eq!(
             binder_render(source, name),
             None,
-            "binder `{name}` in {source:?}"
+            "binder `{name}` in {source:?} must defer"
         );
         // Whatever else the snippet types, nothing it *does* emit may disagree.
         assert_binder_sound(source);
