@@ -384,7 +384,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_assembly::{EntityKind, Primitive, TypeRef};
+use borzoi_assembly::{EntityKind, FSharpConstraints, Primitive, TypeRef};
 use borzoi_cst::syntax::{
     AppExpr, AstNode, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr, ImplFile, LetDecl,
     LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat, SyntaxKind, SyntaxNode, SyntaxToken,
@@ -1369,6 +1369,32 @@ impl<'a> Gen<'a> {
                 elem: Box::new(self.annotation_ty(&a.element_type()?)?),
                 rank: u32::try_from(a.rank()).ok()?,
             }),
+            // A generic application. The CST has already normalised the two
+            // surface spellings — postfix `int list` and prefix
+            // `Dictionary<int, string>` — into a head plus an ordered argument
+            // list, so only one shape arrives here. A `Type::LongIdentApp`
+            // (`Dictionary<int, string>.KeyCollection`) is a different shape
+            // that `Ty` cannot spell and stays deferred.
+            Type::App(app) => {
+                let Type::LongIdent(li) = &app.type_name()? else {
+                    return None;
+                };
+                let li = li.long_ident()?;
+                if li.active_pat_names().next().is_some() {
+                    return None;
+                }
+                let last = li.idents().last()?;
+                let Some(Resolution::Entity(handle)) =
+                    self.resolved.resolution_at(last.text_range())
+                else {
+                    return None;
+                };
+                let mut args = Vec::new();
+                for arg in app.type_args() {
+                    args.push(self.annotation_ty(&arg)?);
+                }
+                self.applied_annotation_ty(handle, args)
+            }
             _ => None,
         }
     }
@@ -1432,6 +1458,80 @@ impl<'a> Gen<'a> {
             return None;
         }
         Some(Ty::named_path(path))
+    }
+
+    /// Bridge a **generic application** whose head resolved to `handle` and
+    /// whose written arguments are `args`, under the nullary bridge's
+    /// conventions plus three of its own.
+    ///
+    /// The head must declare **exactly as many generic parameters as the
+    /// application writes**. A partial application is not a type, and a count
+    /// mismatch means the head is not the tycon we think it is.
+    ///
+    /// An **abbreviation** head defers, unlike the nullary bridge which chases
+    /// it. A generic alias may permute or fix its target's arguments
+    /// (`type Swap<'a, 'b> = Map<'b, 'a>`, `type IntMap<'V> = Map<int, 'V>`), so
+    /// applying the written arguments positionally to the chased tycon can
+    /// silently produce a different type, and arity alone does not rule that out
+    /// — `Swap` preserves it. Recovering the common aliases needs a chase that
+    /// reports the target's argument *structure*, which
+    /// [`AbbreviationTarget`](borzoi_assembly::AbbreviationTarget) models but
+    /// [`AssemblyEnv::resolve_abbreviation_target`] does not return.
+    ///
+    /// A head **constraining any of its parameters** defers — see
+    /// [`constrained_parameter`]. Nothing here checks a constraint against an
+    /// argument, so the only sound reading of one is to decline, and that is not
+    /// a coverage nicety: F# rejects both `System.Nullable<string[]>` (IL
+    /// `struct`/`new()`) and `Constrained<int -> int>` (F# `comparison`) and
+    /// recovers the annotated binder to `System.Object`, so committing the
+    /// written type is a wrong answer rather than a commit on an erroring line.
+    ///
+    /// Four heads name a shape FCS canonicalises **structurally** rather than as
+    /// an application, so committing the application form would be a wrong
+    /// string for the right type. Measured off `infer_annotation_shape_gen_diff`,
+    /// not reasoned out. The set is closed because what it enumerates is closed:
+    /// three are [`Ty`]'s own structural variants, one head each, and the fourth
+    /// is the struct tuple, which `Ty` cannot represent at all — which is why
+    /// [`Self::annotation_ty`] already declines a written `struct (a * b)`.
+    fn applied_annotation_ty(&self, handle: EntityHandle, args: Vec<Ty>) -> Option<Ty> {
+        let entity = self.env.entity(handle);
+        if entity.generic_parameters.len() != args.len() {
+            return None;
+        }
+        if matches!(
+            entity.kind,
+            EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
+        ) {
+            return None;
+        }
+        if entity.generic_parameters.iter().any(constrained_parameter) {
+            return None;
+        }
+        // Neither NESTED nor source-RENAMED, the same combined test the nullary
+        // bridge applies and for the same second reason: `Ty` carries one path
+        // and a renamed entity needs two — FCS's canonical currency is the
+        // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
+        // [`Ty::render_fsharp`] must show the source name a user can write
+        // (`Result`), which no alias table recovers from the compiled one.
+        // Committing the compiled path would make hover display a name that does
+        // not resolve in F# source.
+        let mut path: Vec<String> = entity.namespace.clone();
+        path.push(entity.name.clone());
+        if self.env.entity_full_name(handle) != path.join(".") {
+            return None;
+        }
+        if matches!(
+            path.iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["System", "Tuple"]
+                | ["System", "ValueTuple"]
+                | ["Microsoft", "FSharp", "Core", "FSharpFunc"]
+        ) {
+            return None;
+        }
+        Some(Ty::Named { path, args })
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -3324,6 +3424,33 @@ fn trivial_typed_head(paren: &ParenPat) -> Option<(NamedPat, Type)> {
         return None;
     };
     Some((named, ty))
+}
+
+/// Whether a generic parameter constrains what may be substituted for it, in
+/// any way this crate can see.
+///
+/// Nothing in the annotation bridge *checks* a constraint against an argument,
+/// so the only sound reading of one is to decline the whole application. That
+/// makes presence the entire question, and it has to be asked of every channel
+/// at once: the IL flags and named type constraints
+/// (`System.Nullable<'T>`'s `struct` + `new()`), and the F#-only ones
+/// ([`FSharpConstraints`]), which have no IL encoding at all. Reading one
+/// channel and not the other is how `System.Nullable<string[]>` — which F#
+/// rejects — gets published.
+///
+/// [`FSharpConstraints::Unknowable`] counts as constrained for the same reason:
+/// an unread pickle means unread constraints, not absent ones.
+///
+/// `allows_ref_struct` is deliberately absent: it *widens* what may be
+/// substituted rather than narrowing it, so it never makes an application
+/// illegal. `nullability` is an annotation, not a constraint.
+fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
+    p.reference_type_constraint
+        || p.value_type_constraint
+        || p.default_constructor_constraint
+        || p.is_unmanaged
+        || !p.type_constraints.is_empty()
+        || p.fsharp_constraints != FSharpConstraints::Free
 }
 
 fn contains_param(ty: &Ty) -> bool {
