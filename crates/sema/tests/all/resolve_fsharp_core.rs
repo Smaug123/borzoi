@@ -258,13 +258,7 @@ fn qualified_path_through_microsoft_fsharp_open_resolves() {
     let env = fsharp_core_env();
     let src = "let test () = Collections.List.map id []\n";
     let rf = resolve(src, &env);
-    let list_module = env
-        .lookup_type(
-            &["Microsoft".into(), "FSharp".into(), "Collections".into()],
-            "List",
-            0,
-        )
-        .expect("real FSharp.Core must declare the List module");
+    let list_module = list_module(&env);
     match rf.resolution_at(at(src, "Collections.List.map")) {
         Some(Resolution::Member { parent, idx }) => {
             assert_eq!(parent, list_module, "map resolves into the List module");
@@ -283,13 +277,7 @@ fn qualified_path_through_microsoft_open_resolves() {
     let env = fsharp_core_env();
     let src = "let test () = FSharp.Collections.List.map id []\n";
     let rf = resolve(src, &env);
-    let list_module = env
-        .lookup_type(
-            &["Microsoft".into(), "FSharp".into(), "Collections".into()],
-            "List",
-            0,
-        )
-        .expect("real FSharp.Core must declare the List module");
+    let list_module = list_module(&env);
     match rf.resolution_at(at(src, "FSharp.Collections.List.map")) {
         Some(Resolution::Member { parent, idx }) => {
             assert_eq!(parent, list_module, "map resolves into the List module");
@@ -299,14 +287,102 @@ fn qualified_path_through_microsoft_open_resolves() {
     }
 }
 
-/// The real, shipped FSharp.Core `Microsoft.FSharp.Collections.List` module.
+/// `Microsoft.FSharp.Collections.List` names **two** entities at arity 0 — a
+/// type and a module — and both are reachable.
+///
+/// This is the ordinary F# companion pattern, and FCS binds both spellings: a
+/// type annotation `Microsoft.FSharp.Collections.List` checks cleanly, and
+/// `FSharp.Collections.List.map` resolves into the module. It is pinned because
+/// the type half only became visible once source names were keyed by arity —
+/// before that the type row was nameless, so the arity-0 slot held the module
+/// alone and every consumer of that slot got a module by default.
+///
+/// [`AssemblyEnv::lookup_type`] is the **type**-position slot, so a caller
+/// wanting the module must ask for a module (see [`list_module`]) rather than
+/// rely on which occupant the index happens to hold first.
+#[test]
+fn the_list_name_holds_both_a_type_and_a_module() {
+    let env = fsharp_core_env();
+    let ns = [
+        "Microsoft".to_string(),
+        "FSharp".to_string(),
+        "Collections".to_string(),
+    ];
+
+    let module_handle = list_module(&env);
+    assert!(env.is_module(module_handle), "the module half is a module");
+
+    let type_handle = env
+        .lookup_type(&ns, "List", 0)
+        .expect("the arity-0 `List` slot is occupied");
+    assert_ne!(
+        type_handle, module_handle,
+        "the type-position slot and the module are distinct entities"
+    );
+    assert!(
+        !env.is_module(type_handle),
+        "the type-position slot holds the non-generic `List` type, not the module"
+    );
+
+    // The generic twin is a third entity again, and keeps its own source name.
+    let list_of_t = env
+        .lookup_type(&ns, "List", 1)
+        .expect("`'T list` is declared at arity 1");
+    assert_ne!(list_of_t, type_handle);
+    assert_eq!(
+        env.entity_full_name(list_of_t),
+        "Microsoft.FSharp.Collections.List"
+    );
+}
+
+/// `open`ing the `List` module by its qualified path still lands its members in
+/// bare scope, even though a *type* now shares that path at arity 0.
+///
+/// Pinned because the failure would be silent: an `open` that resolved to the
+/// same-named type would contribute nothing, and the bare `map` would become an
+/// ordinary deferral rather than an error. The module open reaches its target
+/// through a different door than [`AssemblyEnv::lookup_type`] — which now
+/// answers with the type — so this asserts the two stay distinct rather than
+/// asserting which door either uses.
+#[test]
+fn opening_the_list_module_by_path_still_binds_its_members() {
+    let env = fsharp_core_env();
+    let src = "open Microsoft.FSharp.Collections.List
+let test () = map id []
+";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "map")) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(
+                parent,
+                list_module(&env),
+                "`map` binds into the List module, not into the same-named type"
+            );
+            assert_eq!(il_name(env.member_at(parent, idx)), "Map");
+        }
+        other => panic!("expected `map` to bind through the open, got {other:?}"),
+    }
+}
+
+/// The real, shipped FSharp.Core `Microsoft.FSharp.Collections.List` **module**.
+///
+/// Found by asking for a module rather than through
+/// [`AssemblyEnv::lookup_type`], which is the *type*-position slot: FSharp.Core
+/// declares a non-generic type `List` beside the module (FCS binds
+/// `Microsoft.FSharp.Collections.List` as a type cleanly), so both occupy
+/// `(namespace, "List", arity 0)` and a type-position lookup may legitimately
+/// answer with the type.
 fn list_module(env: &AssemblyEnv) -> borzoi_sema::EntityHandle {
-    env.lookup_type(
-        &["Microsoft".into(), "FSharp".into(), "Collections".into()],
-        "List",
-        0,
-    )
-    .expect("real FSharp.Core must declare the List module")
+    let candidates: Vec<_> = env
+        .all_handles()
+        .filter(|&h| {
+            env.is_module(h) && env.entity_full_name(h) == "Microsoft.FSharp.Collections.List"
+        })
+        .collect();
+    match candidates.as_slice() {
+        [only] => *only,
+        other => panic!("expected exactly one `List` module in FSharp.Core, got {other:?}"),
+    }
 }
 
 #[test]
