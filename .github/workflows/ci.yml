@@ -214,6 +214,10 @@ jobs:
     name: Test cst
     needs: [changes, fcs-dump]
     runs-on: ubuntu-latest
+# The corpus gate below drives FCS over ~6.3k files twice (~6 min locally,
+# several times that on a shared runner). Bounded explicitly so a wedged
+# oracle fails in an hour and a half rather than burning the 6-hour default.
+    timeout-minutes: 90
     steps:
       - name: Check gate
         id: gate
@@ -271,6 +275,24 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-cst --verbose
 
+      - name: Gate on the parser corpus sweeps
+        if: steps.gate.outputs.run == 'true'
+        # `stats.yml` sweeps this same corpus and publishes the divergence
+        # buckets, but a series only records: nothing asserts on it at a
+        # decision point. These are the ratcheted halves — the lossless
+        # round-trip invariant and the AST-vs-FCS floors — so they gate here,
+        # on the pull request, where a regression can still be stopped.
+        # `lexfilter_corpus` is deliberately absent: its FCS side costs ~1.65 s
+        # per file, hours over the corpus, and it is a histogram rather than an
+        # assertion.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            parser_corpus:: -- --ignored --nocapture
+          nix develop --command cargo test -p borzoi-cst --test all \
+            parser_corpus_diff:: -- --ignored --nocapture
+
   test-msbuild:
     name: Test msbuild
     needs: changes
@@ -321,6 +343,8 @@ jobs:
     name: Test nuget
     needs: changes
     runs-on: ubuntu-latest
+# Adds the fresh-seed soaks, which drive the resident NuGet oracle.
+    timeout-minutes: 45
     steps:
       # The differential tests build tools/nuget-oracle themselves via
       # `dotnet build` (offline, against the devshell's pinned NuGet store);
@@ -364,6 +388,25 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: |
           nix develop --command cargo test -p borzoi-nuget --verbose
+
+      - name: Gate on the fresh-seed differential soaks
+        if: steps.gate.outputs.run == 'true'
+        # The committed diff corpora are fixed *for reproducibility*, which
+        # means a clean pass proves nothing about shapes their seed never
+        # produced — the soak's own docstring records a real bug that got past
+        # them. Its seed is the wall clock, so running it per commit is what
+        # buys the coverage: every run explores somewhere new, and a failure
+        # prints the seed to reproduce with `BORZOI_NUGET_SOAK_SEED`.
+        #
+        # The flip side of a fresh seed is that a failure here need not be
+        # caused by the diff in front of you: it can be a latent bug this run
+        # happened to reach first. Reproduce with the printed seed before
+        # concluding anything about the change.
+        run: |
+          nix develop --command cargo test -p borzoi-nuget --test soak \
+            -- --ignored --nocapture
+          nix develop --command cargo test -p borzoi-nuget --test resolver_diff \
+            randomised_soundness_soak -- --ignored --nocapture
 
   test-astgen:
     name: Test astgen
@@ -528,6 +571,8 @@ jobs:
     name: Test sema
     needs: [changes, fcs-dump]
     runs-on: ubuntu-latest
+# Two FCS-driven corpus gates below; bounded for the same reason as test-cst.
+    timeout-minutes: 90
     steps:
       # sema's differential suite (~1.2k tests) drives fcs-dump, so it downloads
       # the bundle. sema depends on cst + assembly, so a change to either can
@@ -589,10 +634,38 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-sema --verbose
 
+      - name: Gate on the resolution corpus sweep
+        if: steps.gate.outputs.run == 'true'
+        # The ratcheted half of what `stats.yml` publishes as
+        # `resolution-divergence`: the soundness gate
+        # (`MAX_RESOLUTION_DIVERGENCES = 0`) and the B1 completeness floor. The
+        # report generator records those numbers; only this asserts on them.
+        # Same stride as the series, so the two see the same sample.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            resolve_corpus_diff:: -- --ignored --nocapture
+
+      - name: Gate on attribute resolution over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # The generative attribute matrix runs in the crate's ordinary suite;
+        # this is the same certain-implies-exact property over real code, where
+        # every attribute in the corpus is a test point for free. It carries its
+        # own commit floor, so it cannot decay into wholesale deferral and
+        # report that as a pass.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            attr_resolution_sweep:: -- --ignored --nocapture
+
   test-lsp:
     name: Test lsp
     needs: [changes, fcs-dump]
     runs-on: ubuntu-latest
+# Adds the LSP corpus sweep; bounded for the same reason as test-cst.
+    timeout-minutes: 90
     steps:
       # Also runs on `sema` (lsp depends on it) and `sidecar`:
       # `crates/lsp/build.rs` bundles `tools/csharp-sidecar/`, and
@@ -656,6 +729,18 @@ jobs:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
           nix develop --command cargo test -p borzoi --verbose
+
+      - name: Gate on the LSP parser corpus sweep
+        if: steps.gate.outputs.run == 'true'
+        # The "a server stays alive whatever the user opens" guarantee: the raw
+        # parser may panic on real F#, and `parse_diagnostics` must catch every
+        # one. It walks `BORZOI_CORPUS`, which `nix develop` sets, so it really
+        # sweeps here rather than skipping for want of a sibling checkout.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi --test all \
+            parser_corpus_sweep:: -- --ignored --nocapture
 
   test-sidecar:
     name: Test csharp-sidecar (xUnit)
@@ -819,7 +904,8 @@ jobs:
   corpus-diff:
     name: Whole-project resolution
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Raised from 60 when the whole-assembly projection sweep joined this job.
+    timeout-minutes: 75
     # Deliberately ungated by `changes`: the runtime path this exercises spans
     # cst, sema, assembly, msbuild, nuget and lsp together, so a filter narrow
     # enough to be worth having would be one wrong entry away from skipping the
@@ -889,6 +975,24 @@ jobs:
             echo "only $comparable of $BORZOI_PROJECT_PINNED pinned projects became comparable" >&2
             exit 1
           fi
+
+      - name: Gate on whole-assembly projection losses
+        # This sweep wants a populated package cache rather than a fixture,
+        # which is why it had been left a local ratchet — but the step above
+        # has just restored the pinned corpus into exactly one, so the input it
+        # needs already exists on this runner and costs nothing more to reach.
+        #
+        # A whole-assembly skip is the grade of failure that invalidates
+        # readings into *other* assemblies too (the missing one could declare a
+        # colliding type or an assembly-level `[<AutoOpen>]`), so any loss
+        # without a named exemption fails. Losses are identified by the file's
+        # bytes, never its path, so the cache layout here cannot perturb a
+        # verdict.
+        run: |
+          nix develop --command env \
+            BORZOI_DLL_SWEEP_ROOT="$RUNNER_TEMP/project-corpus-packages" \
+            cargo test -p borzoi-assembly --test all projection_skip_sweep:: \
+            -- --ignored --nocapture
 
   all-required-checks-complete:
     if: ${{ always() }}

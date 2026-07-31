@@ -485,7 +485,10 @@ impl CensusUse {
 }
 
 /// What machinery a resolver needs for a use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordered so `(tag, bucket)` pairs can live in a `BTreeSet` — the census tag
+/// enumeration compares the whole pairing, not just the names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Bucket {
     /// Lexical: scope / import / path / assembly-index. No type inference.
     B1,
@@ -593,14 +596,49 @@ pub const B1_TAGS: [&str; 13] = [
     "value:module-or-import",
 ];
 
-/// [`B1_TAGS`] is the whole of what [`classify`] can produce for
-/// [`Bucket::B1`], established by enumeration rather than by reading the match.
+/// Every sub-tag [`classify`] can produce, in every bucket — the superset of
+/// [`B1_TAGS`], paired with the bucket each tag belongs to.
 ///
-/// `classify` reads eleven inputs — the symbol class and ten flags — so the
-/// space is 8,192 shapes and searching it exhaustively is cheaper than
-/// arguing about which arms are reachable.
-#[test]
-fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
+/// The uses census publishes a `by_tag` histogram over the *whole* taxonomy
+/// rather than the B1 slice, and it needs the same treatment for the same
+/// reason: a key that appears only when it is non-zero is not a metric. The
+/// bucket travels with the tag because the census also publishes per-bucket
+/// totals, and deriving one from the other beats keeping two lists in step.
+///
+/// `"definition-occurrence"` is deliberately absent: `classify` returns it with
+/// bucket `None`, and a defining occurrence is not a name to resolve, so it sits
+/// outside the census denominator rather than in a bucket.
+/// [`census_tags_are_exactly_what_classify_can_produce`] pins the list.
+pub const CENSUS_TAGS: [(&str, Bucket); 19] = [
+    ("active-pattern-case", Bucket::B1),
+    ("active-pattern-fn", Bucket::B1),
+    ("constructor", Bucket::B1),
+    ("constructor:overloaded", Bucket::B3),
+    ("entity:module", Bucket::B1),
+    ("entity:namespace", Bucket::B1),
+    ("entity:type", Bucket::B1),
+    ("instance-member:overloaded", Bucket::B3),
+    ("instance-member:simple", Bucket::B2),
+    ("member:extension", Bucket::B3),
+    ("other", Bucket::Other),
+    ("parameter", Bucket::B1),
+    ("record/class-field", Bucket::B2),
+    ("static-member", Bucket::B1),
+    ("static-member:overloaded(group)", Bucket::B1),
+    ("type-parameter", Bucket::B1),
+    ("union-case", Bucket::B1),
+    ("value:local-or-param", Bucket::B1),
+    ("value:module-or-import", Bucket::B1),
+];
+
+/// Every shape [`classify`] can be handed: the symbol class crossed with all
+/// 1,024 settings of the ten flags it reads, 8,192 in total.
+///
+/// Enumerating the input space is how both tag lists below are established —
+/// searching it exhaustively is cheaper than arguing about which arms of the
+/// match are reachable, and it cannot go stale when an arm is added.
+#[cfg(test)]
+fn classify_probe_space() -> Vec<CensusUse> {
     const CLASSES: [&str; 8] = [
         "Entity",
         "GenericParameter",
@@ -624,7 +662,7 @@ fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
         "IsOverloaded",
     ];
 
-    let mut produced = std::collections::BTreeSet::new();
+    let mut probes = Vec::with_capacity(CLASSES.len() << FLAGS.len());
     for class in CLASSES {
         for bits in 0..(1u32 << FLAGS.len()) {
             let mut fields = serde_json::Map::new();
@@ -645,16 +683,69 @@ fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
             for flag in ["IsProperty", "IsValue", "IsFunction"] {
                 fields.insert(flag.into(), serde_json::json!(false));
             }
-            let probe: CensusUse = serde_json::from_value(serde_json::Value::Object(fields))
-                .expect("the probe carries every field the census use needs");
-            if let (Some(Bucket::B1), tag) = classify(&probe) {
-                produced.insert(tag);
-            }
+            probes.push(
+                serde_json::from_value(serde_json::Value::Object(fields))
+                    .expect("the probe carries every field the census use needs"),
+            );
+        }
+    }
+    probes
+}
+
+/// [`B1_TAGS`] is the whole of what [`classify`] can produce for
+/// [`Bucket::B1`], established by enumeration rather than by reading the match.
+#[test]
+fn b1_tags_are_exactly_the_tags_classify_pairs_with_b1() {
+    let mut produced = std::collections::BTreeSet::new();
+    for probe in classify_probe_space() {
+        if let (Some(Bucket::B1), tag) = classify(&probe) {
+            produced.insert(tag);
         }
     }
 
     assert_eq!(
         produced,
+        B1_TAGS
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+}
+
+/// [`CENSUS_TAGS`] is the whole of what [`classify`] can produce, bucket
+/// included — the same enumeration as
+/// [`b1_tags_are_exactly_the_tags_classify_pairs_with_b1`], lifted off the B1
+/// filter so the uses census can seed its histogram with every key.
+///
+/// Checking the *pairing* and not just the names matters: the census derives
+/// its per-bucket totals from this table, so a tag filed under the wrong bucket
+/// would move counts between B1/B2/B3 — the census's headline split — while
+/// every key stayed present and every total stayed the same.
+#[test]
+fn census_tags_are_exactly_what_classify_can_produce() {
+    let mut produced: std::collections::BTreeSet<(&str, Bucket)> =
+        std::collections::BTreeSet::new();
+    for probe in classify_probe_space() {
+        if let (Some(bucket), tag) = classify(&probe) {
+            produced.insert((tag, bucket));
+        }
+    }
+
+    assert_eq!(
+        produced,
+        CENSUS_TAGS
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>()
+    );
+
+    // The B1 slice of the whole must be exactly the B1 list, so the two
+    // constants cannot drift into disagreeing about a shared tag.
+    let b1_of_census: std::collections::BTreeSet<&str> = CENSUS_TAGS
+        .into_iter()
+        .filter(|(_, bucket)| *bucket == Bucket::B1)
+        .map(|(tag, _)| tag)
+        .collect();
+    assert_eq!(
+        b1_of_census,
         B1_TAGS
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>()

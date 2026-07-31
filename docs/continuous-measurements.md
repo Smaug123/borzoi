@@ -1,16 +1,23 @@
 # Continuous measurements
 
 `.github/workflows/stats.yml` runs the expensive parser, name-resolution,
-find-references, and whole-project corpus reports after every push to `main`
-(and on manual dispatch from `main`). It is an observational workflow, not a
-merge gate.
+find-references, scoping-census, overload-coverage and whole-project corpus
+reports after every push to `main` (and on manual dispatch from `main`). It is
+an observational workflow, not a merge gate.
 
-The first three sweep files in isolation against a pinned F# compiler source
-tree. The fourth, `project-corpus-diff`, loads real restored projects through
-the LSP's own runtime chain and diffs them against FCS; see [Two corpora] below
-for why it is set up differently from the other three.
+Five of them sweep files in isolation against a pinned F# compiler source tree:
+`parser-divergence`, `resolution-divergence`, `find-references-differential`,
+`uses-census` and `types-census`. `project-corpus-diff` loads real restored
+projects through the LSP's own runtime chain and diffs them against FCS.
+`overload-coverage` walks neither — its matrix is generated from this
+repository. See [Three corpora] below for why the three are set up differently.
 
-[Two corpora]: #two-corpora
+[Three corpora]: #three-corpora
+
+Every measurement here has a **gate counterpart** that asserts on the same
+machinery in `ci.yml`, before the commit lands; see [Gates and measurements].
+
+[Gates and measurements]: #gates-and-measurements
 
 The workflow has four distinct products:
 
@@ -35,6 +42,122 @@ The project-corpus measurement runs in its own job because it reaches
 nuget.org and several external repositories, so it can fail for reasons that
 say nothing about Borzoi. When it does, `persist` still publishes the three
 measurements that succeeded rather than losing the commit's whole observation.
+
+## Gates and measurements
+
+A sweep can *assert* or it can *record*, and the two want opposite failure
+behaviour. An assertion belongs where a red run stops something: on the pull
+request, in `ci.yml`. A measurement must not fail on what it found, because
+that would withhold the observation in exactly the run that found something —
+the argument [Measurement, not gate] makes for the project corpus, applied
+everywhere.
+
+Both halves exist for every axis, and the split is:
+
+| axis | gate (`ci.yml`) | measurement (`stats.yml`) |
+|---|---|---|
+| parser | `parser_corpus`, `parser_corpus_diff` | `parser-divergence` |
+| in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
+| attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
+| find references | the crate's own suite | `find-references-differential` |
+| whole project | `corpus-diff` job | `project-corpus-diff` |
+| assembly projection | `projection_skip_sweep` | — |
+| LSP robustness | `parser_corpus_sweep` | — |
+| NuGet parsers | `soak`, `randomised_soundness_soak` | — |
+| scoping | — | `uses-census`, `types-census` |
+| overload engine | `overload_corpus_diff` | `overload-coverage` |
+| MSBuild on real projects | *not wired — see below* | — |
+
+`fsproj_msbuild_corpus_diff` is the one sweep this table cannot yet claim. It
+runs, and it **fails on `main`**, which is why it is named here rather than
+quietly omitted: an unwired sweep with no entry is indistinguishable from one
+nobody thought of. Over a six-project sample of the pinned corpus it finds two
+divergences:
+
+- `FSharp.Build.fsproj` — MSBuild reports `Link = NullHelpers.fs` on a `Compile`
+  item whose `Include` escapes the project cone (`..\Compiler\Utilities\`); the
+  `.fsproj` carries no `<Link>`, so the SDK synthesises it and we do not model
+  that. A fidelity gap in a facet nothing here consumes: the Compile fold reads
+  order and path.
+- `FSharp.ProjectSystem.FSharp.fsproj` — we commit
+  `DefineConstants = …;NETSTANDARD;FX_NO_WINFORMS`, MSBuild does not.
+  `FSharp.Profiles.props` gates them on a `<Choose>` whose `When` tests
+  `'$(TargetFrameworkIdentifier)' == '.NETFramework'`. That property is
+  *derived* by the common targets from `$(TargetFramework)`; we do not derive
+  it, an undefined property expands to empty and is trusted, so the `Otherwise`
+  arm wins and a wrong value is **committed** rather than declined.
+
+The second is the one that matters, and not because `net472` is a target worth
+serving — it is not (see AGENTS.md). It matters because `define_constants` is
+consumed: it decides which `#if` branch the whole semantic layer sees. The shape
+is the trust question the five generative differentials are structurally blind
+to, since they evaluate both sides under the same property table; only a real
+project with a derived property nobody wrote down exhibits it.
+
+So the gate stays unwired until that is fixed, and fixing it is an evaluator
+change with a trust audit attached (the `msbuild-trust-audit` skill: audit all
+ten entries, do not patch the one) rather than a workflow line. Wiring it with
+`BORZOI_MSBUILD_MAX_DIVERGENCES=2` was the alternative and is worse than
+nothing: it would ratify a known-wrong committed value as the expected state,
+which is how a differential stops being one.
+
+### The rest, and why they are not here
+
+Three more `#[ignore]`d sweeps exist and are deliberately left off both
+workflows. Recording the reason is the point — "nobody got to it" and "it does
+not belong" look identical from a workflow file.
+
+- `uses_census_project` (the isolation-bias probe) **cannot move in response to
+  a Borzoi commit**. It runs the corpus one file at a time and then as one
+  project, and both passes are FCS; the delta calibrates how much the two
+  censuses above understate, but nothing we write changes it. A series that only
+  moves when the corpus pin does is a constant with extra steps. Run it by hand
+  when a pin changes.
+- `lexfilter_corpus` is a divergence *histogram*, not an assertion, and its FCS
+  side costs ~1.65 s per file — hours over the corpus. It points at the next
+  LexFilter arm worth porting, which is a question you ask deliberately.
+- The per-area report generators (`tier_order_diff`, `companion_head_diff`,
+  `classify_diff`, `classify_assembly_diff`, `extension_shadow_diff`,
+  `fsharp_member_diff`, `member_hiding_diff`) are worklists whose value is the
+  text they print. There is no number in them to trend, and a worklist that
+  regenerates itself unread is just a slower way to store the corpus.
+
+The parser and resolution rows are the ones worth understanding, because they
+were the gap this table closed. `stats.yml` swept both corpora and published
+the divergence buckets from the start, but the *ratcheted* halves — the lossless
+round-trip invariant, the AST-match floors, `MAX_RESOLUTION_DIVERGENCES = 0` —
+ran nowhere at all. A series that only records is a number nobody has a reason
+to establish the meaning of; the same lesson [Measurement, not gate] draws from
+#200–#204, reached by a different route.
+
+What that cost is measurable. `MIN_CLEAN_PARSES` had been measured once, in June
+2026, and sat 2,401 files below the truth by the time anything ran it again — a
+regression could have un-parsed a third of the corpus and still passed. The
+resolution ratchets, which *were* maintained (other work re-ran them by hand),
+were current to within a few hundred. That is the difference a gate makes, and
+it is why the ratchets are now pinned to their exact measured values rather than
+left with slack nobody re-measures.
+
+Two things follow for anyone adding a sweep:
+
+- **A gate that never runs is not a gate**, and a stale floor is worse than no
+  floor: it reads as a check while asserting something the code passed years
+  ago. If you write a ratchet, wire it into `ci.yml` in the same commit.
+- **A sweep that skips itself must not report green.** `parser_corpus_sweep`
+  read a sibling `../fsharp` checkout that no runner has, so it would have
+  returned success having swept nothing. It reads `BORZOI_CORPUS` first for
+  exactly that reason. The generator contract's *"every key, every run, always a
+  number"* rule is the same principle one layer up.
+
+The NuGet soaks are the odd row: they gate, but they are not ratchets. Their
+seed is the wall clock, so each run explores somewhere the committed fixed-seed
+corpora never reach — running them per commit is the whole point, and the fixed
+corpora remain the reviewable field-by-field pin. The flip side is that a
+failure there need not be caused by the diff in front of you; it can be a latent
+bug that run happened to reach first. Reproduce with the printed seed
+(`BORZOI_NUGET_SOAK_SEED`) before concluding anything about the change.
+
+[Measurement, not gate]: #measurement-not-gate
 
 ## Generator contract
 
@@ -243,20 +366,36 @@ liveness is read off the observations themselves, so it needs no declaration to
 be right. The label and the check are two halves of one fact — the label makes
 an absence legible, the check makes it deliberate.
 
-## Two corpora
+## Three corpora
 
 A corpus is identified by `corpus.source` (an `OWNER/NAME` label) and
 `corpus.revision` (40 hex characters). The revision is what enters the series
 digest; the source does not, because a measurement walks exactly one corpus and
 the measurement name is already digested.
 
-| | `dotnet/fsharp` | `<repo>-project-corpus` |
-|---|---|---|
-| measurements | parser, resolution, find-references | `project-corpus-diff` |
-| what it is | one pinned F# compiler tree | several pinned real projects |
-| pinned by | the `fsharp-src` flake input | `nix/project-corpus.json` |
-| revision | that input's locked commit | a digest over every pin |
-| needs restoring | no | yes, from nuget.org |
+| | `dotnet/fsharp` | `<repo>-project-corpus` | `<repo>-overload-matrix` |
+|---|---|---|---|
+| measurements | parser, resolution, find-references, uses census, types census | `project-corpus-diff` | `overload-coverage` |
+| what it is | one pinned F# compiler tree | several pinned real projects | a matrix this repo generates |
+| pinned by | the `fsharp-src` flake input | `nix/project-corpus.json` | nothing — it is generated |
+| revision | that input's locked commit | a digest over every pin | a digest over the generated sources |
+| needs restoring | no | yes, from nuget.org | no |
+
+The third is the odd one, and the reason is worth stating: its corpus is not
+checked out, it is *emitted* by `crates/sema/tests/all/common/overload_corpus.rs`
+at run time. Neither of the other two revisions identifies it — the F# tree's
+commit would restart the series every time `fsharp-src` was bumped, for a
+measurement that never reads that tree, and would hold it fixed across an edit
+to the matrix itself, which is exactly backwards. So the generator hashes the
+two sources it renders and publishes the digest in `configuration`, and the
+workflow passes that as the observation's corpus revision. Editing the matrix
+starts a new series; editing anything else does not.
+
+The digest is length-prefixed across the two sources, so moving a declaration
+from the C# side to the F# side cannot leave it unchanged —
+`the_matrix_digest_is_a_40_hex_identity_of_the_generated_sources` pins that,
+along with determinism, which a seeded generator would break and which every
+rerun depends on.
 
 The project corpus is pinned as data rather than as flake inputs because only
 this workflow consumes it — `nix develop` has no use for it, and vendoring five

@@ -321,3 +321,30 @@ Note `oracle-harness`'s `batch_recovers_from_a_transient_wedge` hardcodes a
 300 ms child deadline and flakes on a loaded machine (e.g. sibling worktrees
 building concurrently). If it is the *only* failure, check `uptime` before
 blaming your diff — it fails on `main` too under load.
+
+### The corpus sweeps gate on the pull request
+
+`cargo test` does not run them: they are `#[ignore]`d because they walk the
+whole pinned corpus. `ci.yml` runs them anyway, gated by the same change filters
+as the crate they belong to, so a change to `cst` or `sema` will have its
+ratchets checked whether or not you ran them locally. Run the affected ones
+before pushing rather than discovering it in CI:
+
+```sh
+nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --ignored  #  ~30 s
+nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
+nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
+nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored
+nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
+nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
+```
+
+Their floors are pinned to exact measured values, so **improving the code fails
+them**: a parser change that cleanly parses one more file pushes
+`MIN_CLEAN_PARSES` past its constant. That is the intended direction — bump the
+constant in the same commit, with the date and the new figure, exactly as the
+existing comments do. What must never happen is loosening one to make a red run
+green without establishing which direction it moved.
+
+`docs/continuous-measurements.md` has the full gate/measurement split, including
+the one sweep that is deliberately still unwired and why.

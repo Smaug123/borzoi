@@ -75,6 +75,42 @@ jobs:
             handlers_references_corpus_diff::every_reported_corpus_reference_is_the_cursor_symbol_according_to_fcs \
             -- --ignored --nocapture
 
+      - name: Generate the uses census
+        # The name-axis scoping census: what machinery each symbol use needs
+        # (B1 lexical / B2 shallow inference / B3 hard pile). Pin the sampling
+        # knobs explicitly, as above — they are part of the series identity, so
+        # a moved default must start a new series rather than join unlike
+        # points onto the old one.
+        run: |
+          nix develop --command env \
+            BORZOI_USES_CENSUS_OUT="$RUNNER_TEMP/reports/uses-census" \
+            BORZOI_CENSUS_STRIDE=13 \
+            cargo test -p borzoi-sema --test all \
+            uses_census::uses_bucket_census -- --ignored --nocapture
+
+      - name: Generate the types census
+        # The expression-type axis: the same population read through what it
+        # takes to *type* an expression rather than to resolve a name. Its
+        # stride is pinned separately from the uses census even though both
+        # default to 13, so moving one cannot silently move the other.
+        run: |
+          nix develop --command env \
+            BORZOI_TYPES_CENSUS_OUT="$RUNNER_TEMP/reports/types-census" \
+            BORZOI_CENSUS_STRIDE=13 \
+            cargo test -p borzoi-sema --test all \
+            types_census::types_bucket_census -- --ignored --nocapture
+
+      - name: Generate the overload-engine coverage measurement
+        # OV-9(b): the commit rate over the generated overload matrix, split by
+        # why each deferral happened. Its corpus is generated from this
+        # repository rather than walked from a pinned tree, so the observation's
+        # corpus revision is a digest the generator emits — see the record step.
+        run: |
+          nix develop --command env \
+            BORZOI_OVERLOAD_COVERAGE_OUT="$RUNNER_TEMP/reports/overload-coverage" \
+            cargo test -p borzoi-sema --test all \
+            overload_corpus_diff::coverage_report -- --ignored --nocapture
+
       - name: Add the current summaries to the workflow page
         run: |
           {
@@ -87,6 +123,18 @@ jobs:
             echo '## Find references differential'
             echo '```json'
             jq . "$RUNNER_TEMP/reports/find-references-differential/summary.json"
+            echo '```'
+            echo '## Uses census'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/uses-census/summary.json"
+            echo '```'
+            echo '## Types census'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/types-census/summary.json"
+            echo '```'
+            echo '## Overload-engine coverage'
+            echo '```json'
+            jq . "$RUNNER_TEMP/reports/overload-coverage/summary.json"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -288,6 +336,44 @@ jobs:
           "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
             --summary "$RUNNER_TEMP/reports/find-references-differential/summary.json" \
             "${common[@]}"
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/uses-census/summary.json" \
+            "${common[@]}"
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
+            --summary "$RUNNER_TEMP/reports/types-census/summary.json" \
+            "${common[@]}"
+
+      - name: Record the overload-coverage observation
+        env:
+          HISTORY_DIR: ${{ runner.temp }}/stats-history
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        # A third corpus, and the only generated one: the overload matrix is
+        # emitted by `common/overload_corpus.rs`, so neither the pinned F# tree's
+        # commit nor the project-corpus digest identifies it. The generator
+        # publishes a digest of the two sources it renders, and that is what
+        # makes two observations comparable — editing the matrix starts a new
+        # series, editing anything else does not.
+        run: |
+          summary="$RUNNER_TEMP/reports/overload-coverage/summary.json"
+          matrix_digest="$(jq -er '.configuration.matrix_digest' "$summary")"
+          flake_lock_hash="$(sha256sum flake.lock | cut -d ' ' -f 1)"
+          measured_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          "$GITHUB_WORKSPACE/target/debug/borzoi-stats" record \
+            --summary "$summary" \
+            --history "$HISTORY_DIR" \
+            --repository "$REPOSITORY" \
+            --commit "$COMMIT" \
+            --measured-at "$measured_at" \
+            --run-id "$RUN_ID" \
+            --run-number "$RUN_NUMBER" \
+            --run-attempt "$RUN_ATTEMPT" \
+            --corpus-source "$REPOSITORY-overload-matrix" \
+            --corpus-revision "$matrix_digest" \
+            --flake-lock-hash "$flake_lock_hash"
 
       - name: Record the whole-project observation
         if: ${{ needs.measure-project-corpus.result == 'success' }}

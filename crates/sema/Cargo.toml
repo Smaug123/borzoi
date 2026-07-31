@@ -41,3 +41,7 @@ borzoi-sema = { path = ".", features = ["test-support"] }
 proptest = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The overload-coverage measurement identifies its corpus by digesting the
+# matrix it generates: that corpus is repo source rather than a pinned external
+# tree, so nothing else can say when two observations measured the same thing.
+sha1 = "0.10"

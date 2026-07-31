@@ -10,12 +10,18 @@
 //!   byte-dropping bug, never a "feature not implemented yet" gap, so it is a
 //!   hard assertion for every file the parser returns from.
 //! * **Graduating ratchets.** The parser is intentionally incomplete, so most
-//!   real files still produce parse errors (and a few constructs still panic
-//!   the raw parser). Rather than an unwieldy multi-thousand-entry allow-list,
-//!   we ratchet on counts: at least [`MIN_CLEAN_PARSES`] files must parse with
-//!   zero errors, and at most [`MAX_PANICS`] may panic. As the parser grows,
-//!   bump the floor up / the ceiling down — the corpus is content-addressed
-//!   (pinned in `flake.nix`), so these counts are stable across machines.
+//!   real files still produce parse errors. Rather than an unwieldy
+//!   multi-thousand-entry allow-list, we ratchet on counts: at least
+//!   [`MIN_CLEAN_PARSES`] files must parse with zero errors, and at most
+//!   [`MAX_NON_UTF8_SOURCES`] may be skipped as non-UTF-8. As the parser grows,
+//!   bump the floor up — the corpus is content-addressed (pinned in
+//!   `flake.nix`), so these counts are stable across machines.
+//!
+//!   The ratchets are pinned to their *exact* measured values, so improving the
+//!   parser fails this test: parse one more file cleanly and the floor is
+//!   passed. Bump it, with the date and the new figure. The alternative — slack
+//!   nobody re-measures — is what let the floor sit 2,401 files below the truth
+//!   while this sweep ran nowhere.
 //!
 //! Symbols are empty (plain [`parse`]), matching the lexer corpus test: every
 //! `#if <ident>` is false, so the `#else` / post-`#endif` branch is active.
@@ -41,15 +47,21 @@ use crate::common::{
 /// A drop below this is a regression (some construct stopped parsing cleanly).
 ///
 /// Measured 2026-06-19 against the pinned corpus: 3227 / 6367 (50.7%).
-const MIN_CLEAN_PARSES: usize = 3227;
+/// 2026-07-31: 5628 / 6344 (88.7%). The floor had sat 2401 files below the
+/// truth because nothing ran this sweep — a regression could have un-parsed
+/// a third of the corpus and still passed. It is a CI gate now, so the number
+/// is worth keeping honest.
+const MIN_CLEAN_PARSES: usize = 5628;
 
-/// Upper bound on files whose raw parse **panics**. The LSP wraps the parser in
-/// `catch_unwind` so a panic never kills the server (see
-/// `crates/lsp/tests/all/parser_corpus_sweep.rs`), but a panic is still a latent
-/// bug; this ceiling ratchets down as they are fixed.
-///
-/// Measured 2026-06-19 against the pinned corpus: 7 files.
-const MAX_PANICS: usize = 7;
+// The raw parser panicking on a corpus file used to be ratcheted (`MAX_PANICS`,
+// 7 when it was last measured in June 2026). It reaches zero on the pinned
+// corpus, so the ceiling became an invariant and is asserted as one below: at
+// zero a `<=` bound states nothing a `is_empty()` does not, and leaving slack
+// nobody re-measures is what let the clean-parse floor drift 2,401 files.
+//
+// The LSP wraps the parser in `catch_unwind` so a panic never kills the server
+// (see `crates/lsp/tests/all/parser_corpus_sweep.rs`, which asserts exactly
+// that); a panic here is still a latent bug worth failing on.
 
 /// Upper bound on corpus files that are real F# fixtures but not UTF-8 source.
 /// These are explicit skips because the CST parser takes `&str`; I/O failures
@@ -176,11 +188,11 @@ fn parse_fsharp_corpus() {
             .join("\n"),
     );
     assert!(
-        tally.panics.len() <= MAX_PANICS,
-        "raw parser panicked on {} files (ceiling is MAX_PANICS = {}). New \
-         panics regressed in; investigate or raise the ceiling deliberately.\n{}",
+        tally.panics.is_empty(),
+        "raw parser panicked on {} files. The corpus panics none of it today, so \
+         this is a construct that regressed in — investigate rather than \
+         restoring a ceiling.\n{}",
         tally.panics.len(),
-        MAX_PANICS,
         tally
             .panics
             .iter()
