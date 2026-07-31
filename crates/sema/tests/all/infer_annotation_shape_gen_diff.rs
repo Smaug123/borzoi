@@ -83,6 +83,28 @@
 //! `a * b`, because `Ty::Tuple` is a *reference* tuple and there is nothing for
 //! it to collide with. Reasoning by analogy from `System.Tuple` over-defers it.
 //!
+//! # Two properties the three arms structurally cannot check
+//!
+//! Both concern the *reference*, and neither can be seen by comparing against a
+//! subject that defers — which is every generic shape today. So a green sweep is
+//! not evidence for either, and they are asserted separately.
+//!
+//! [`an_alias_and_its_expansion_render_identically`] is the load-bearing one. A
+//! canonical string can be in the right currency and still name the wrong type,
+//! by losing a grouping: a renderer that recurses into an expanded shape while
+//! asking the *unexpanded* one whether to parenthesise emits
+//! `System.Int32 * System.String[]` for `PairAlias[]` — a 2-tuple of `int` and
+//! `string[]`, not an array of pairs. An alias is what makes that reachable at
+//! all, since it is the one way to put a tuple or a function somewhere the writer
+//! could not have parenthesised it. Writing the same type both ways and demanding
+//! one string catches it without any knowledge of which shapes are at risk.
+//!
+//! The second is the absence of the **display-currency fallback**. `go`'s
+//! fallthrough (`try renderType with _ -> renderExprType`) silently switches to
+//! FCS's display form for the whole type from the root, and the shapes that
+//! trigger it — a struct tuple, a byref — are invisible from the head. Every arm
+//! now recurses instead, and no row in the enumerated space reaches the fallback.
+//!
 //! # What it is green on today
 //!
 //! The structural half genuinely compares — over a hundred cases where we commit
@@ -567,5 +589,123 @@ fn annotation_shapes_agree_with_fcs() {
             ))
             .collect::<Vec<_>>()
             .join("\n")
+    );
+}
+
+/// Source-declared aliases whose targets are *precedence-sensitive* shapes, with
+/// the parenthesised spelling that denotes the same type.
+///
+/// An alias is the only way to put a tuple or a function somewhere the writer
+/// cannot parenthesise it, which is exactly where a renderer that inspects the
+/// **unexpanded** type loses the grouping.
+/// The struct-tuple target is parenthesised in the *declaration* too: a bare
+/// `type T = struct (…)` is read as a struct class definition, not as a struct
+/// tuple, and the resulting syntax error cascades through the whole file.
+const ALIASES: [(&str, &str, &str); 3] = [
+    ("PairAlias", "int * string", "(int * string)"),
+    ("FunAlias", "int -> string", "(int -> string)"),
+    (
+        "StructPairAlias",
+        "(struct (int * string))",
+        "(struct (int * string))",
+    ),
+];
+
+/// The contexts an alias is placed in — each one a position where `Ty::render`
+/// and the oracle both have to decide grouping. `{}` takes the spelling.
+const ALIAS_CONTEXTS: [&str; 8] = [
+    "{}",
+    "{}[]",
+    "{}[][]",
+    "{} * int",
+    "int * {}",
+    "{} -> int",
+    "int -> {}",
+    "option<{}>",
+];
+
+/// **Alias invariance**: an annotation written through an alias and the same
+/// annotation written out denote *one type*, so the oracle must render them to
+/// one string.
+///
+/// This is a property of the reference alone — our side defers a source-declared
+/// alias head, so no comparison against `Ty` could see it. It catches the defect
+/// class that the three-arm sweep structurally cannot: a canonical rendering that
+/// is wrong about the *type* rather than merely in a different currency. A
+/// renderer that recurses into an expanded shape while asking the unexpanded one
+/// whether to parenthesise emits `System.Int32 * System.String[]` for
+/// `PairAlias[]` — a well-formed canonical string denoting an entirely different
+/// type, which every string comparison against a deferring subject passes.
+///
+/// It is also spelling-agnostic by construction, so it keeps holding for shapes
+/// nobody enumerated: any future arm whose output depends on how the user wrote
+/// the type rather than on what the type is fails here.
+#[test]
+fn an_alias_and_its_expansion_render_identically() {
+    let mut src = "module AliasInvariance\n".to_owned();
+    for (name, target, _) in ALIASES {
+        let _ = writeln!(src, "type {name} = {target}");
+    }
+    // Each case emits the alias spelling and the expansion on consecutive lines,
+    // so the pair is recoverable from the line numbers alone.
+    let mut cases: Vec<(String, String, u32, u32)> = Vec::new();
+    for (name, _, parenthesised) in ALIASES {
+        for ctx in ALIAS_CONTEXTS {
+            let aliased = ctx.replace("{}", name);
+            let expanded = ctx.replace("{}", parenthesised);
+            let i = cases.len();
+            let alias_line = u32::try_from(src.lines().count() + 1).expect("line fits u32");
+            let _ = writeln!(src, "let a{i} : {aliased} = failwith \"\"");
+            let expanded_line = u32::try_from(src.lines().count() + 1).expect("line fits u32");
+            let _ = writeln!(src, "let b{i} : {expanded} = failwith \"\"");
+            cases.push((aliased, expanded, alias_line, expanded_line));
+        }
+    }
+
+    let path = temp_fs_file("alias_invariance", &src);
+    let json = invoke_fcs_dump("binder-types", &path);
+    let _ = std::fs::remove_file(&path);
+    let (fcs, errors) = parse_fcs_binder_types_with_errors(&json, &src);
+    let by_line: HashMap<u32, String> = fcs
+        .into_iter()
+        .map(|((start, _), ty)| (line_of(&src, start), ty))
+        .collect();
+
+    let mut compared = 0usize;
+    let mut mismatches = Vec::new();
+    for (aliased, expanded, alias_line, expanded_line) in &cases {
+        // A line FCS rejected makes no claim — the property is about two
+        // successful renderings of one type.
+        if errors
+            .iter()
+            .any(|e| e.line == *alias_line || e.line == *expanded_line)
+        {
+            continue;
+        }
+        let (Some(via_alias), Some(written_out)) =
+            (by_line.get(alias_line), by_line.get(expanded_line))
+        else {
+            continue;
+        };
+        compared += 1;
+        if via_alias != written_out {
+            mismatches.push(format!(
+                "  `{aliased}` rendered {via_alias}\n  `{expanded}` rendered {written_out}"
+            ));
+        }
+    }
+
+    assert!(
+        compared >= cases.len() / 2,
+        "vacuous: only {compared} of {} alias pairs produced two clean renderings, so the \
+         property compared almost nothing",
+        cases.len()
+    );
+    assert!(
+        mismatches.is_empty(),
+        "{} alias/expansion pair(s) render differently — the oracle's canonical string \
+         depends on how the type was spelled, not on what it is:\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
     );
 }

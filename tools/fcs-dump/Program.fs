@@ -6064,14 +6064,30 @@ let private renderTypeCanonical (t: FSharpType) : string =
             let i = rename.Count
             rename.[name] <- i
             canonicalTyparName i
+    // Strip every abbreviation layer. Grouping is a property of the *type*, not
+    // of how it was spelled, so each precedence test below asks the stripped
+    // type: an alias is the one way to put a tuple or a function somewhere the
+    // writer could not parenthesise it (`type Pair = int * string` then
+    // `Pair[]`), and testing the unexpanded type there emits
+    // `System.Int32 * System.String[]` — a well-formed canonical string denoting
+    // a *different* type. `an_alias_and_its_expansion_render_identically` is the
+    // property that holds this.
+    let rec strip (t: FSharpType) : FSharpType =
+        if t.IsAbbreviation then strip t.AbbreviatedType else t
+    // Whether `t` must be parenthesised where ` * `, `[]` or a tuple join would
+    // otherwise regroup it. A *struct* tuple renders in application form
+    // (`System.ValueTuple<…>`), so it needs no parens.
+    let needsGrouping (t: FSharpType) : bool =
+        let t = strip t
+        (t.IsTupleType && not t.IsStructTupleType) || t.IsFunctionType
     let rec go (t: FSharpType) : string =
-        // An abbreviation names the same type as its target, and the canonical
-        // currency is the *compiled* tycon (`Microsoft.FSharp.Core.FSharpOption`,
-        // not `option`), so strip every layer before dispatching — the same first
-        // step [`renderTypeInScope`] takes, hoisted here so every branch below
-        // sees the stripped type rather than only the fallthrough.
+        // The canonical currency names the *compiled* tycon
+        // (`Microsoft.FSharp.Core.FSharpOption`, not `option`), so strip before
+        // dispatching — the same first step [`renderTypeInScope`] takes, hoisted
+        // here so every branch below sees the stripped type rather than only the
+        // fallthrough.
         if t.IsAbbreviation then
-            go t.AbbreviatedType
+            go (strip t)
         elif t.IsTupleType && not t.IsStructTupleType then
             t.GenericArguments
             |> Seq.map (fun a ->
@@ -6080,11 +6096,17 @@ let private renderTypeCanonical (t: FSharpType) : string =
                 // stays unambiguous, matching `Ty::render`'s `render_tuple`
                 // (`* ` binds tighter than `->`, so a bare function element would
                 // be mis-grouped as `a -> (b * c)`).
-                if (a.IsTupleType && not a.IsStructTupleType) || a.IsFunctionType then
-                    sprintf "(%s)" s
-                else
-                    s)
+                if needsGrouping a then sprintf "(%s)" s else s)
             |> String.concat " * "
+        elif t.IsTupleType then
+            // A **struct** tuple. FCS exposes it structurally — no
+            // `TypeDefinition` — so the generic-application arm below cannot see
+            // it, and without this arm an argument that makes the metadata
+            // renderer throw drops the whole type into display currency. Render
+            // the compiled `System.ValueTuple<…>` shape [`renderTypeInScope`]
+            // emits, recursing so the currency holds under the elements.
+            let args = t.GenericArguments |> Seq.map go |> String.concat ", "
+            sprintf "System.ValueTuple<%s>" args
         elif t.IsFunctionType then
             // `dom -> ran`, matching `Ty::render`'s `render_fun`: `->` is right-
             // associative and looser than `*`, so the range is never parenthesised
@@ -6094,7 +6116,7 @@ let private renderTypeCanonical (t: FSharpType) : string =
             let args = t.GenericArguments |> Seq.toArray
             if args.Length = 2 then
                 let dom = go args.[0]
-                let dom = if args.[0].IsFunctionType then sprintf "(%s)" dom else dom
+                let dom = if (strip args.[0]).IsFunctionType then sprintf "(%s)" dom else dom
                 sprintf "%s -> %s" dom (go args.[1])
             else
                 try renderType t with _ -> renderExprType t
@@ -6119,12 +6141,18 @@ let private renderTypeCanonical (t: FSharpType) : string =
             // be parenthesised or it denotes a different type. This is the same
             // rule the tuple branch applies to its own elements.
             let rendered =
-                if (elem.IsTupleType && not elem.IsStructTupleType) || elem.IsFunctionType then
+                if needsGrouping elem then
                     sprintf "(%s)" rendered
                 else
                     rendered
             let commas = String.replicate (t.TypeDefinition.ArrayRank - 1) ","
             sprintf "%s[%s]" rendered commas
+        elif isRealByref t && t.GenericArguments.Count = 1 then
+            // `T&`, as [`renderTypeInScope`] spells it, recursing for the same
+            // reason every other arm does — the metadata renderer throws on a
+            // function or typar pointee and drops the whole type into display
+            // currency.
+            sprintf "%s&" (go t.GenericArguments.[0])
         elif t.HasTypeDefinition && not (isRealByref t) && t.GenericArguments.Count > 0 then
             // A generic application: `Head<a, b>`, recursing into the arguments
             // for the same reason the array branch recurses into its element —
