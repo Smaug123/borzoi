@@ -239,9 +239,9 @@ struct EntityOverlayTarget {
     /// The entity's `entity_range`, resolved to a source range. `None` on a bad
     /// file index or the degenerate `"unknown"` file.
     definition_range: Option<FsharpSourceRange>,
-    /// The leaf's CLR generic arity — its pickled typar count, which *is* its
-    /// arity for a measure-free entity. `None` for a measure-bearing one, whose
-    /// erased typars make the two disagree, so no arity claim can be made.
+    /// The leaf's CLR generic arity ([`pickled_clr_arity`]) — its pickled typars
+    /// minus the erased `[<Measure>]` ones. `None` only when a typar index does
+    /// not resolve, where a count would be a guess.
     arity: Option<usize>,
 }
 
@@ -326,7 +326,7 @@ pub(crate) fn apply_entity_overlay(
                     },
                     is_module_or_type,
                     definition_range: resolve_entity_range(pickled, entity),
-                    arity: is_measure_free(pickled, entity).then_some(entity.typars.len()),
+                    arity: pickled_clr_arity(pickled, entity),
                 });
             }
             Ok(())
@@ -345,10 +345,11 @@ pub(crate) fn apply_entity_overlay(
     // reading `source_name.unwrap_or(name)` as "what a user writes" then
     // resolves a name F# rejects.
     //
-    // A measure-bearing target makes no arity claim — its typars are erased from
-    // IL, so the counts disagree — and is skipped rather than assigned by name
-    // alone: an unassigned row keeps the projector's IL-name reading, the
-    // conservative direction.
+    // A `[<Measure>]` typar is erased individually, so a measure-bearing entity
+    // still has a CLR arity — counting the non-measure typars gives it. Skipping
+    // such an entity would strip a legitimately renamed measure type of its
+    // source name, which is the very failure this is fixing. Only an unresolvable
+    // typar index declines, where the count would be a guess.
     for target in &targets {
         let (true, Some(arity)) = (target.is_module_or_type, target.arity) else {
             continue;
@@ -2676,15 +2677,44 @@ fn clr_name(entity: &PickledEntity) -> String {
 /// index is treated as a measure — declining (the safe direction) rather than
 /// trusting a `typars.len()` match we cannot validate.
 fn is_measure_free(pickled: &PickledCcu, entity: &PickledEntity) -> bool {
-    const TYPAR_KIND_MASK: i64 = 0b00001000100000000;
-    const TYPAR_KIND_MEASURE: i64 = 0b00000000100000000;
     entity.typars.iter().all(|&ti| {
         pickled
             .tables
             .typars
             .get(ti as usize)
-            .is_some_and(|t| t.flags & TYPAR_KIND_MASK != TYPAR_KIND_MEASURE)
+            .is_some_and(|t| !is_measure_typar(t.flags))
     })
+}
+
+/// FCS `TyparFlags.Kind` (`TypedTree.fs`): a typar is a measure iff
+/// `flags &&& 0b00001000100000000 == 0b00000000100000000`.
+fn is_measure_typar(flags: i64) -> bool {
+    const TYPAR_KIND_MASK: i64 = 0b00001000100000000;
+    const TYPAR_KIND_MEASURE: i64 = 0b00000000100000000;
+    flags & TYPAR_KIND_MASK == TYPAR_KIND_MEASURE
+}
+
+/// The entity's **CLR generic arity**: its pickled typars minus the
+/// `[<Measure>]` ones, which are erased individually and emit no
+/// `GenericParam` row. `type U<[<Measure>] 'u>` is arity 0; `type V<'T,
+/// [<Measure>] 'u>` is arity 1.
+///
+/// `None` when a typar index does not resolve — the count would be a guess, and
+/// a wrong arity here addresses the wrong row.
+///
+/// Distinct from [`is_measure_free`], which asks whether `typars.len()` may be
+/// *trusted as* the arity. A caller that only needs to address the right ECMA
+/// row wants this: a measure-bearing entity still has one, and declining it
+/// would strip a legitimately renamed type of its source name.
+fn pickled_clr_arity(pickled: &PickledCcu, entity: &PickledEntity) -> Option<usize> {
+    let mut arity = 0;
+    for &ti in &entity.typars {
+        let typar = pickled.tables.typars.get(ti as usize)?;
+        if !is_measure_typar(typar.flags) {
+            arity += 1;
+        }
+    }
+    Some(arity)
 }
 
 /// Render an FQN for error-message formatting. Matches the
@@ -5829,6 +5859,63 @@ mod tests {
             constraints: Vec::new(),
             xmldoc: PickledXmlDoc { lines: Vec::new() },
         }
+    }
+
+    /// A `[<Measure>]` typar is erased from IL *individually*, so an entity that
+    /// has one still has a CLR arity — and still needs its source name.
+    ///
+    /// `[<CompiledName("ClrQ")>] type SourceQ<[<Measure>] 'u>` is the shape:
+    /// arity 0 in metadata, renamed, and perfectly ordinary F#. Keying the
+    /// source-name overlay on "is this measure-free?" would skip it and leave
+    /// the row spelled `ClrQ`, a name F# rejects — the same defect the arity
+    /// keying exists to fix, reintroduced at a different door.
+    #[test]
+    fn a_renamed_measure_type_still_gets_its_source_name() {
+        let mut ccu = make_ccu(Vec::new(), Vec::new(), 0);
+        ccu.tables.typars = vec![make_typar(MEASURE_TYPAR_FLAGS), make_typar(0)];
+
+        let mut measure_only = make_entity("A", PickledTyconRepr::NoRepr, empty_modul_typ());
+        measure_only.typars = vec![0];
+        assert_eq!(
+            pickled_clr_arity(&ccu, &measure_only),
+            Some(0),
+            "a lone measure typar emits no GenericParam row"
+        );
+
+        let mut mixed = make_entity("B", PickledTyconRepr::NoRepr, empty_modul_typ());
+        mixed.typars = vec![1, 0];
+        assert_eq!(
+            pickled_clr_arity(&ccu, &mixed),
+            Some(1),
+            "only the non-measure typar counts"
+        );
+
+        let mut dangling = make_entity("C", PickledTyconRepr::NoRepr, empty_modul_typ());
+        dangling.typars = vec![99];
+        assert_eq!(
+            pickled_clr_arity(&ccu, &dangling),
+            None,
+            "an unresolvable typar declines rather than guessing a count"
+        );
+    }
+
+    /// End to end: the renamed measure type's ECMA row takes its source name.
+    #[test]
+    fn the_source_name_overlay_reaches_a_renamed_measure_type() {
+        let mut renamed = typed_entity_with_typars("SourceQ", vec![0]);
+        renamed.compiled_name = Some("ClrQ".to_string());
+        let [root, ns] = root_and_namespace(vec![2]);
+        let mut ccu = make_ccu(vec![root, ns, renamed], Vec::new(), 0);
+        ccu.tables.typars = vec![make_typar(MEASURE_TYPAR_FLAGS)];
+
+        // The metadata row: arity 0, because the measure typar is erased.
+        let mut owned = vec![make_ecma_entity(vec!["N"], "ClrQ", EntityKind::Class)];
+        apply_entity_overlay(&mut owned, &ccu).expect("overlay");
+        assert_eq!(
+            owned[0].source_name.as_deref(),
+            Some("SourceQ"),
+            "the row keeps the name F# source writes, not the compiled one"
+        );
     }
 
     #[test]

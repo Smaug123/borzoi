@@ -335,6 +335,35 @@ fn the_list_name_holds_both_a_type_and_a_module() {
     );
 }
 
+/// `open`ing the `List` module by its qualified path still lands its members in
+/// bare scope, even though a *type* now shares that path at arity 0.
+///
+/// Pinned because the failure would be silent: an `open` that resolved to the
+/// same-named type would contribute nothing, and the bare `map` would become an
+/// ordinary deferral rather than an error. The module open reaches its target
+/// through a different door than [`AssemblyEnv::lookup_type`] — which now
+/// answers with the type — so this asserts the two stay distinct rather than
+/// asserting which door either uses.
+#[test]
+fn opening_the_list_module_by_path_still_binds_its_members() {
+    let env = fsharp_core_env();
+    let src = "open Microsoft.FSharp.Collections.List
+let test () = map id []
+";
+    let rf = resolve(src, &env);
+    match rf.resolution_at(at(src, "map")) {
+        Some(Resolution::Member { parent, idx }) => {
+            assert_eq!(
+                parent,
+                list_module(&env),
+                "`map` binds into the List module, not into the same-named type"
+            );
+            assert_eq!(il_name(env.member_at(parent, idx)), "Map");
+        }
+        other => panic!("expected `map` to bind through the open, got {other:?}"),
+    }
+}
+
 /// The real, shipped FSharp.Core `Microsoft.FSharp.Collections.List` **module**.
 ///
 /// Found by asking for a module rather than through
