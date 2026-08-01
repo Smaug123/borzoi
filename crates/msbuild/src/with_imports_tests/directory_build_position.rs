@@ -149,3 +149,53 @@ fn an_sdkless_project_still_gets_the_explicit_splice() {
         Some("body;dbt=[from-body]")
     );
 }
+
+#[test]
+fn a_gate_the_sdk_flips_after_its_import_point_does_not_reopen_the_fallback() {
+    // `ImportDirectoryBuildTargets=false` in the body, flipped back to `true`
+    // by `Sdk.targets` *after* the position `Microsoft.Common.targets` would
+    // have imported the file. MSBuild never retries an import it has already
+    // passed, so the file stays unimported — and the fallback must not read the
+    // flipped-back value and import it.
+    //
+    // This is what makes the change purely subtractive: the gate and the path
+    // are decided at the same point as before, and walking `Sdk.targets` first
+    // only ever *removes* a splice (when the chain did it), never adds one.
+    let tmp = TempDir::new().unwrap();
+    let (sdk_dir, props, targets) = write_synthetic_sdk(
+        tmp.path(),
+        "Flip.Sdk",
+        "<Project></Project>",
+        r#"<Project>
+  <PropertyGroup>
+    <FromSdkTargets>written</FromSdkTargets>
+    <ImportDirectoryBuildTargets>true</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project Sdk="Flip.Sdk">
+  <PropertyGroup>
+    <Trace>body</Trace>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+</Project>"#,
+    );
+    write_at(tmp.path(), "Directory.Build.targets", TRACE);
+
+    let result = parse_file_with_sdk(&project_path, |_name| {
+        Ok(SdkPaths {
+            root: sdk_dir.clone(),
+            props: props.clone(),
+            targets: targets.clone(),
+        })
+    });
+    assert_eq!(
+        result.properties.get("Trace").map(String::as_str),
+        Some("body"),
+        "the body opted out, so the file must not be imported — a gate the SDK \
+         flips after the import point has already gone past cannot revive it"
+    );
+}

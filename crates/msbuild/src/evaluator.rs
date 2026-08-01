@@ -516,26 +516,37 @@ fn walk_once<'r>(
     // The explicit splice stays as the fallback for chains that never import it
     // themselves — no SDK at all, or an SDK whose targets never reach
     // `Microsoft.Common.targets` — which would otherwise lose the file entirely.
-    if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
-        walk_external_file(targets, span.clone(), &mut state);
-    }
+    //
+    // The path and the gate are resolved **here**, before `Sdk.targets` runs, so
+    // the reorder is purely *subtractive*: every splice it performs is one the
+    // pre-reorder walker also performed, and walking `Sdk.targets` first only
+    // ever removes one (when the chain did it itself). Deciding them afterwards
+    // instead would let a value `Sdk.targets` writes *past* the real import
+    // point revive a splice MSBuild has already declined to make — an
+    // `ImportDirectoryBuildTargets` the body set to `false` and the SDK later
+    // sets back to `true` is never retried by MSBuild, because
+    // `Microsoft.Common.targets` has gone by.
     let targets_to_import = resolve_directory_build_path(
         &state,
         "DirectoryBuildTargetsPath",
         implicit_targets,
         project_dir,
     );
+    let targets_gate_open = should_import_default_true(
+        state
+            .lookup
+            .get_unescaped("ImportDirectoryBuildTargets")
+            .as_deref(),
+        state.is_sticky_global("ImportDirectoryBuildTargets"),
+    );
+    if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
+        walk_external_file(targets, span.clone(), &mut state);
+    }
     if let Some(Resolution { path, source }) = targets_to_import.as_ref()
+        && targets_gate_open
         && !state
             .walked_files
             .contains(&canonicalise_or_normalise(path))
-        && should_import_default_true(
-            state
-                .lookup
-                .get_unescaped("ImportDirectoryBuildTargets")
-                .as_deref(),
-            state.is_sticky_global("ImportDirectoryBuildTargets"),
-        )
     {
         if matches!(source, ResolutionSource::Fallback) {
             seed_directory_build_path(&mut state, "DirectoryBuildTargetsPath", path);
