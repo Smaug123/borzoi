@@ -316,6 +316,22 @@ fn evaluate_item_definition_group(node: Node<'_, '_>, state: &mut State<'_>) {
     if item_definition_defines_project_reference_metadata(node, state) {
         state.project_references_uncertain = true;
     }
+    // A `<Compile>` definition supplies `Link` to every Compile item that does
+    // not declare one — before or after it in document order, and with no cone
+    // test (probed, dotnet 10.0.301). We do not thread item-definition defaults
+    // into the capture, so the published `Link` would be absent where MSBuild
+    // has a value (`State::document_writes_compile_link`).
+    if !state.in_sdk_subtree
+        && node
+            .children()
+            .filter(Node::is_element)
+            .filter(|child| {
+                modelled_item_kind_for_element(*child).is_some_and(is_compile_item_kind)
+            })
+            .any(|child| item_element_writes_metadata(child, "Link"))
+    {
+        state.document_writes_compile_link = true;
+    }
     record_helper_item_definition_defaults(node, state);
 }
 
@@ -787,6 +803,13 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     if is_compile_item_kind(kind) && is_metadata_only_item_update(node) {
         if kind == ItemKind::Compile && compile_item_sets_compile_order(node) {
             apply_compile_order_update(node, state);
+        }
+        // The update's *other* metadata is not applied. That is fine for
+        // everything the compile fold reads, but `Link` is published, so
+        // silently keeping the pre-update value would state something MSBuild
+        // contradicts (`State::document_writes_compile_link`).
+        if !state.in_sdk_subtree && item_element_writes_metadata(node, "Link") {
+            state.document_writes_compile_link = true;
         }
         return;
     }
@@ -2903,6 +2926,19 @@ fn package_item_kind_for_element(node: Node<'_, '_>) -> Option<PackageItemKind> 
     } else {
         None
     }
+}
+
+/// Whether an item element writes `name` at all, in either spelling MSBuild
+/// accepts: an attribute, or a child element. The *value* is deliberately not
+/// inspected — a writer that sets `Link` to empty is still a writer (probed: it
+/// clears a declared link), so presence is the whole question.
+fn item_element_writes_metadata(node: Node<'_, '_>, name: &str) -> bool {
+    node.attributes()
+        .any(|attr| attr.name().eq_ignore_ascii_case(name))
+        || node
+            .children()
+            .filter(Node::is_element)
+            .any(|child| child.tag_name().name().eq_ignore_ascii_case(name))
 }
 
 fn is_metadata_only_item_update(node: Node<'_, '_>) -> bool {

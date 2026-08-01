@@ -1,11 +1,27 @@
 //! Differential test: the `Link` metadatum on `Compile` items, against the
 //! real evaluator.
 //!
-//! ## The rule being diffed
+//! ## The rules being diffed
 //!
-//! `Link` has two writers and only one of them is in the document. The .NET
-//! SDK's `Microsoft.NET.Sdk.DefaultItems.targets` carries a metadata-bearing
-//! group
+//! `Link` has more writers than an item element's own metadata, and the ones
+//! that bite are the ones that are not where you are looking. Three, all probed
+//! against dotnet 10.0.301:
+//!
+//! 1. the SDK's cone-gated synthesis, below;
+//! 2. a metadata-only `<Compile Update="…">`, which reaches the item **whatever
+//!    the cone** and **whatever the document order**, and overwrites a
+//!    *declared* `Link` as readily as an absent one;
+//! 3. an `<ItemDefinitionGroup><Compile><Link>` default, which reaches every
+//!    item that declares none — again regardless of order — and loses to a
+//!    declared `Link`.
+//!
+//! Only the first was in this file's original axes. A review round pointed at
+//! the other two; adding a `Writer` axis turned up **228** wrong commits where
+//! the pre-existing axes had shown none, which is the argument for widening the
+//! generator over fixing the named instance.
+//!
+//! The .NET SDK's `Microsoft.NET.Sdk.DefaultItems.targets` carries a
+//! metadata-bearing group
 //!
 //! ```xml
 //! <ItemGroup Condition="'$(SetLinkMetadataAutomatically)' != 'false'">
@@ -42,8 +58,16 @@
 //! The crate's usual one, at the field: we commit a `Link`
 //! (`ItemMetadataValue::Known`) ⟹ MSBuild evaluates the same document at the
 //! same path to the byte-identical value; we decline (`Unknown`) ⟹ no claim;
-//! MSBuild rejects the project ⟹ we committed nothing. Plus the anti-vacuity
-//! floors at the bottom, without which declining everything scores perfect.
+//! MSBuild rejects the project ⟹ we committed nothing.
+//!
+//! One-sided contracts need an anti-vacuity guard, and here a *threshold* on
+//! the commit count is the wrong one: declining is always sound, so widening
+//! the product with declining shapes silently stops the threshold binding —
+//! which is exactly what adding `Writer` did, taking commits from 216 to 100
+//! while the sweep got strictly better. [`Point::must_commit`] is the guard
+//! instead: it names the points where a decline would be giving up on
+//! something fully in view (in the cone, no second writer, an evaluable
+//! declaration) and fails on each individually.
 //!
 //! ## Glob includes, and why the resolver is handed the answer
 //!
@@ -235,6 +259,75 @@ impl Form {
     }
 }
 
+/// A second `Link` writer in the *document*, beyond the item element's own
+/// metadata.
+///
+/// The SDK's group is not the only thing that writes this metadatum, and the
+/// others are not gated on the project cone at all — which is what makes them a
+/// separate axis rather than a variation on `Decl`. All four are probed against
+/// real MSBuild: an `Update` overwrites a *declared* `Link` as readily as an
+/// absent one, and an `<ItemDefinitionGroup>` default loses to a declared one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Writer {
+    /// No second writer: the item element's own metadata is the whole story.
+    None,
+    /// `<Compile Update="…" Link="…" />` — the attribute form.
+    UpdateAttribute,
+    /// `<Compile Update="…"><Link>…</Link></Compile>` — the child-element form,
+    /// which is what the SDK itself uses.
+    UpdateChild,
+    /// `<Compile Update="…" Link="" />`: a writer that *clears*. Distinct from
+    /// absence — it must be able to turn a declared link back off.
+    UpdateClearing,
+    /// `<ItemDefinitionGroup><Compile><Link>…</Link></Compile>` — a default that
+    /// applies to every item regardless of document order, and loses to a
+    /// declared `Link`.
+    Definition,
+}
+
+impl Writer {
+    fn label(self) -> &'static str {
+        match self {
+            Writer::None => "no-writer",
+            Writer::UpdateAttribute => "update-attr",
+            Writer::UpdateChild => "update-child",
+            Writer::UpdateClearing => "update-clearing",
+            Writer::Definition => "item-definition",
+        }
+    }
+
+    /// The extra XML this writer contributes, and where it goes.
+    fn item_group(self, spec: &str) -> String {
+        match self {
+            Writer::None => String::new(),
+            Writer::UpdateAttribute => format!(
+                "  <ItemGroup>\n    <Compile Update=\"{spec}\" Link=\"Updated/Attr.fs\" />\n  \
+                 </ItemGroup>\n"
+            ),
+            Writer::UpdateChild => format!(
+                "  <ItemGroup>\n    <Compile Update=\"{spec}\">\n      \
+                 <Link>Updated/Child.fs</Link>\n    </Compile>\n  </ItemGroup>\n"
+            ),
+            Writer::UpdateClearing => {
+                format!(
+                    "  <ItemGroup>\n    <Compile Update=\"{spec}\" Link=\"\" />\n  </ItemGroup>\n"
+                )
+            }
+            Writer::Definition => String::new(),
+        }
+    }
+
+    fn definition_group(self) -> &'static str {
+        match self {
+            Writer::Definition => {
+                "  <ItemDefinitionGroup>\n    <Compile>\n      \
+                 <Link>FromDefinition.fs</Link>\n    </Compile>\n  </ItemDefinitionGroup>\n"
+            }
+            _ => "",
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Point {
     sdk: Sdk,
@@ -242,18 +335,32 @@ struct Point {
     decl: Decl,
     gate: Gate,
     form: Form,
+    writer: Writer,
 }
 
 impl Point {
     fn label(self) -> String {
         format!(
-            "{}/{}/{}/{}/{}",
+            "{}/{}/{}/{}/{}/{}",
             self.sdk.label(),
             self.placement.label(),
             self.decl.label(),
             self.gate.label(),
             self.form.label(),
+            self.writer.label(),
         )
+    }
+
+    /// Points where a decline would be the evaluator giving up on something it
+    /// can see the whole of: the item is inside the project cone (so the SDK's
+    /// synthesis rule cannot reach it), no second writer exists in the
+    /// document, and the declaration evaluates. This is the anti-vacuity guard
+    /// with teeth — declining everything is sound, so only a per-point
+    /// obligation stops the sweep from passing while measuring nothing.
+    fn must_commit(self) -> bool {
+        self.writer == Writer::None
+            && matches!(self.placement, Placement::InDir | Placement::SubDir)
+            && !matches!(self.decl, Decl::Unevaluable)
     }
 
     fn document(self) -> String {
@@ -266,6 +373,10 @@ impl Point {
         // legal on POSIX, so spell them that way: it is what real `.fsproj`
         // files carry, including the corpus project that motivated this file.
         let include = include.replace('/', "\\");
+        // `Update` matches on the item's *identity* under path normalisation,
+        // so the literal spelling reaches the item whichever form the `Include`
+        // took — a glob-expanded item's identity is the same relative path.
+        let update_spec = literal.replace('/', "\\");
         let sdk_attr = match self.sdk {
             Sdk::Real => r#" Sdk="Microsoft.NET.Sdk""#,
             Sdk::None => "",
@@ -277,41 +388,77 @@ impl Point {
         format!(
             "<Project{sdk_attr}>\n  <PropertyGroup>\n{tfm}    \
              <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n{}  \
-             </PropertyGroup>\n  <ItemGroup>\n    <Compile Include=\"{include}\"{} />\n  \
-             </ItemGroup>\n</Project>\n",
+             </PropertyGroup>\n{}  <ItemGroup>\n    <Compile Include=\"{include}\"{} />\n  \
+             </ItemGroup>\n{}</Project>\n",
             self.gate.property(),
+            self.writer.definition_group(),
             self.decl.attributes(),
+            self.writer.item_group(&update_spec),
         )
     }
 }
 
+const PLACEMENTS: [Placement; 5] = [
+    Placement::InDir,
+    Placement::SubDir,
+    Placement::Outside,
+    Placement::OutsideDeep,
+    Placement::PrefixSibling,
+];
+
+const WRITERS: [Writer; 5] = [
+    Writer::None,
+    Writer::UpdateAttribute,
+    Writer::UpdateChild,
+    Writer::UpdateClearing,
+    Writer::Definition,
+];
+
+/// The swept product, plus a short tail for the axes that do not need to
+/// multiply against everything.
+///
+/// Two axes are held down in the main product rather than dropped. `Gate` is
+/// swept over its on/off pair, with the two remaining spellings (`true`, and
+/// the case-variant `FALSE` that proves MSBuild's `!=` is case-insensitive)
+/// covered in the tail; `Decl`'s two `LinkBase` shapes likewise. Neither
+/// interacts with `Writer`, which is the axis this product exists to cross —
+/// crossing everything with everything costs minutes for points that differ in
+/// a spelling.
 fn points() -> Vec<Point> {
     let mut out = Vec::new();
     for sdk in [Sdk::Real, Sdk::None] {
-        for placement in [
-            Placement::InDir,
-            Placement::SubDir,
-            Placement::Outside,
-            Placement::OutsideDeep,
-            Placement::PrefixSibling,
-        ] {
-            for decl in [
-                Decl::Bare,
-                Decl::Explicit,
-                Decl::LinkBase,
-                Decl::LinkBaseSlash,
-                Decl::Unevaluable,
-            ] {
-                for gate in [Gate::Unset, Gate::False, Gate::True, Gate::FalseUpper] {
+        for placement in PLACEMENTS {
+            for decl in [Decl::Bare, Decl::Explicit, Decl::Unevaluable] {
+                for gate in [Gate::Unset, Gate::False] {
                     for form in [Form::Literal, Form::Glob] {
-                        out.push(Point {
-                            sdk,
-                            placement,
-                            decl,
-                            gate,
-                            form,
-                        });
+                        for writer in WRITERS {
+                            out.push(Point {
+                                sdk,
+                                placement,
+                                decl,
+                                gate,
+                                form,
+                                writer,
+                            });
+                        }
                     }
+                }
+            }
+        }
+    }
+    // The tail: the spellings held down above, against both cone sides.
+    for placement in PLACEMENTS {
+        for decl in [Decl::LinkBase, Decl::LinkBaseSlash] {
+            for gate in [Gate::Unset, Gate::True, Gate::FalseUpper] {
+                for form in [Form::Literal, Form::Glob] {
+                    out.push(Point {
+                        sdk: Sdk::Real,
+                        placement,
+                        decl,
+                        gate,
+                        form,
+                        writer: Writer::None,
+                    });
                 }
             }
         }
@@ -431,6 +578,21 @@ fn check(
                 if their_link.is_empty() {
                     census.declined_where_msbuild_had_none += 1;
                 }
+                // Declining is always *sound*, which is exactly why a floor on
+                // the commit count rots: widen the product with declining
+                // shapes and the floor stops binding without anyone noticing.
+                // So name the points that must not decline and fail on them
+                // individually — a property, not a threshold.
+                if point.must_commit() {
+                    return Some(Divergence {
+                        label: point.label(),
+                        detail: format!(
+                            "{identity}: declined, but an in-cone item with no \
+                             second writer and an evaluable declaration has \
+                             nothing to decline about (msbuild {their_link:?})"
+                        ),
+                    });
+                }
             }
             ItemMetadataValue::Known(link) => {
                 census.committed += 1;
@@ -470,6 +632,7 @@ struct Census {
 }
 
 #[test]
+#[ignore = "sweeps ~660 real-SDK evaluations through the oracle; gated in ci.yml"]
 fn link_metadata_is_exact_or_declined_across_the_matrix() {
     let mut oracle = Oracle::spawn();
     let tmp = TempDir::new().unwrap();
@@ -509,15 +672,23 @@ fn link_metadata_is_exact_or_declined_across_the_matrix() {
             .join("\n"),
     );
 
-    // Anti-vacuity. Declining every point satisfies the contract perfectly, and
-    // so does an evaluator that stopped resolving items at all — floor both the
-    // commits and the *interesting* commits, the ones where MSBuild put a
-    // non-empty value in and we had to match it rather than agree on "".
+    // Anti-vacuity. The load-bearing guard is `Point::must_commit`, checked
+    // per point above: declining is always sound, so a *threshold* on the
+    // commit count stops binding the moment the product grows a declining axis
+    // — which is exactly what happened when `Writer` was added and four fifths
+    // of the points became legitimate declines. The two floors below are the
+    // weaker backstop for the other direction: that the sweep still reaches
+    // shapes where MSBuild puts a non-empty value in and we have to match it,
+    // rather than agreeing on "" everywhere.
+    // `must_commit` is only a guard if the product contains such points at all
+    // — an axis change that stopped generating them would silence it exactly
+    // like the threshold it replaced.
+    let obligations = points.iter().filter(|p| p.must_commit()).count();
     assert!(
-        census.committed >= 200,
-        "only {} commits — the evaluator may have started declining `Link` \
-         wholesale, which passes vacuously",
-        census.committed
+        obligations >= 50,
+        "only {obligations} points carry a commit obligation — the product no \
+         longer generates the in-cone, writer-free shapes that make \
+         `must_commit` bind"
     );
     assert!(
         census.committed_non_empty >= 40,

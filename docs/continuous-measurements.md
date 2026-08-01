@@ -103,11 +103,17 @@ the same property table. Neither of these was reachable that way:
   The `.fsproj` carries no `<Link>`; the SDK's
   `Microsoft.NET.Sdk.DefaultItems.targets` synthesises one at evaluation time
   through a metadata-bearing `<Compile Update="@(Compile)">`, which this
-  evaluator does not execute. Fixed by *declining* rather than modelling: an
-  out-of-cone item's `Link` is now `ItemMetadataValue::Unknown`, so the facet
-  compares kind, path and order and makes no claim about a value it did not
-  compute. `tests/fsproj_link_metadata_diff.rs` sweeps the axes and found 36
-  wrong commits of that shape, against the corpus's one.
+  evaluator does not execute. Fixed by *declining* rather than modelling, so
+  the facet compares kind, path and order and makes no claim about a value it
+  did not compute. `tests/fsproj_link_metadata_diff.rs` sweeps the axes: 36
+  wrong commits of the cone-gated shape against the corpus's one, and then —
+  once a review round added the axis for the `Link` writers that are *not*
+  cone-gated (a metadata-only `<Compile Update>`, an `<ItemDefinitionGroup>`
+  default) — a further 228. Neither of those two writers occurs in the six
+  corpus projects at all. That is the honest limit of a corpus this size, and
+  the reason the generative sweep gates *beside* this one rather than instead
+  of it: one picks its inputs and can be exhaustive, the other cannot pick and
+  is therefore the only one that meets what people actually write.
 
 The pattern in both: a real project read something nobody wrote down. That is
 what an un-chosen input buys, and why this row is worth a gate rather than a

@@ -357,6 +357,18 @@ jobs:
           nix develop --command cargo test -p borzoi-msbuild \
             --test fsproj_msbuild_corpus_diff -- --ignored --nocapture
 
+      - name: Gate on the Link metadata differential
+        if: steps.gate.outputs.run == 'true'
+        # ~660 real-SDK evaluations through the resident oracle, so it is
+        # `#[ignore]`d rather than sitting in the crate's inner loop. It stays a
+        # gate because `Link` has writers outside the document — the SDK's
+        # cone-gated synthesis, a metadata-only `<Compile Update>`, an
+        # `<ItemDefinitionGroup>` default — and each one, unmodelled, turns a
+        # published value into a silent wrong answer rather than a loud one.
+        run: |
+          nix develop --command cargo test -p borzoi-msbuild \
+            --test fsproj_link_metadata_diff -- --ignored --nocapture
+
   test-nuget:
     name: Test nuget
     needs: changes
