@@ -294,15 +294,33 @@ mod diagnostics_version_dependence {
     /// The common case, and the reason this is a flag rather than a blanket
     /// refusal: ordinary code reports the same diagnostics at every version, so
     /// a consumer may trust the reading even when the version is a guess.
+    ///
+    /// Each case pins whether it errors, because "invariant" must cover erroring
+    /// input too: a verdict that only ever agreed on *empty* diagnostic sets
+    /// would satisfy a table of clean sources alone. The `#if`/`#else` case is
+    /// here to pin the boundary of the `#elif` gate — the directive family is
+    /// not what makes a source version-dependent, `#elif` specifically is.
     #[test]
     fn ordinary_source_is_version_invariant() {
-        for source in [
-            "module M\nlet v : System.String = failwith \"\"\n",
-            "module M\nlet v : System.String. = failwith \"\"\n",
-            "module M\n#if FOO\nlet a = 1\n#else\nlet a = 2\n#endif\n",
+        for (source, errors) in [
+            ("module M\nlet v : System.String = failwith \"\"\n", false),
+            ("module M\nlet v : System.String. = failwith \"\"\n", true),
+            (
+                "module M\n#if FOO\nlet a = 1\n#else\nlet a = 2\n#endif\n",
+                false,
+            ),
         ] {
             let p = parse_at(source, LanguageVersion::Preview);
-            assert!(!version_dependent(source), "{source:?} must be version-invariant");
+            assert_eq!(
+                !p.errors.is_empty(),
+                errors,
+                "{source:?} must {} report errors",
+                if errors { "" } else { "not" }
+            );
+            assert!(
+                !version_dependent(source),
+                "{source:?} must be version-invariant"
+            );
         }
     }
 }

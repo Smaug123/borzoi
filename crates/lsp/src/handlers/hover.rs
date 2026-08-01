@@ -23,11 +23,11 @@
 //! hover (annotated/function-binder types, XML doc summary) is tracked in
 //! `docs/hover-signature-plan.md`.
 
-use borzoi_cst::parser::FileKind;
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
     format_entity_header, format_fsharp_name, format_member, join_quoted,
 };
+use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
