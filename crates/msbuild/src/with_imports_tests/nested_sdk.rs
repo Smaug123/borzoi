@@ -882,3 +882,67 @@ fn directory_build_props_cannot_suppress_nested_sdk_detection() {
         "Directory.Build.props must still contribute, fired at the nested Sdk.props; got: {paths:?}",
     );
 }
+
+#[test]
+fn nested_sdk_deferred_dbp_gate_declines_when_the_body_write_is_undecidable() {
+    // The deferred-splice counterpart of the gate trust check. This path
+    // resolves and imports `Directory.Build.props` directly rather than through
+    // `fire_entry_directory_build_props_splice`, so it needs the splice
+    // decision's trust check of its own — otherwise an undecidable body write
+    // of the gate leaves the deferred import (and its Compile items) published
+    // as exact.
+    //
+    // `'$(X.Substring(0,1))' == 'a'` is ordinary MSBuild we do not model, and
+    // the oracle says it is **true** (dotnet 10.0.301, 2026-08-01) — so the
+    // real build writes `false` and skips the file, while we take the default
+    // and import it.
+    let tmp = TempDir::new().unwrap();
+    let (root, props, targets) =
+        write_synthetic_sdk(tmp.path(), "MySdk", "<Project/>", "<Project/>");
+    write_at(
+        tmp.path(),
+        "Directory.Build.props",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="from-dirbuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "nested.targets",
+        r#"<Project Sdk="MySdk">
+  <ItemGroup>
+    <Compile Include="nested-body.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildProps Condition="'$(X.Substring(0,1))' == 'a'">false</ImportDirectoryBuildProps>
+  </PropertyGroup>
+  <Import Project="nested.targets" />
+</Project>"#,
+    );
+    let result = parse_file_with_sdk(&project_path, |name| {
+        if name == "MySdk" {
+            Ok(SdkPaths {
+                root: root.clone(),
+                props: props.clone(),
+                targets: targets.clone(),
+            })
+        } else {
+            Err(SdkResolveError::NotFound)
+        }
+    });
+    assert!(
+        result.items_uncertain,
+        "the deferred splice's gate could not be decided, so the item set must \
+         not be published as exact; items: {:?}",
+        paths_of(&result.items),
+    );
+}
