@@ -33,3 +33,11 @@ pub fn substitute(input: &str, props: &PropertyMap) -> (String, Vec<Issue>) {
     let (value, issues) = crate::properties::substitute(input, props);
     (value.unescape(), issues)
 }
+
+/// Every property name `raw` references — the input to every trust scan in the
+/// crate, exposed so `tests/property_reference_scan.rs` can hold it to the one
+/// obligation that matters: it must never under-report relative to what
+/// expansion actually reads.
+pub fn property_references(raw: &str) -> Vec<&str> {
+    crate::properties::property_references(raw).collect()
+}

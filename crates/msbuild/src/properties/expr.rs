@@ -194,6 +194,73 @@ pub(crate) fn is_referenceable_name(name: &str) -> bool {
     (first.is_ascii_alphabetic() || first == b'_') && bytes.all(is_name_byte)
 }
 
+/// Every property name `raw` references through a `$(…)` span.
+///
+/// This is the input to every trust/uncertainty scan in the crate: a write's
+/// value body, an item spec, a condition leaf. It must **never under-report** —
+/// a name it misses is a property whose untrustworthiness fails to reach the
+/// value derived from it, which commits a value we cannot stand behind. Over-
+/// reporting only costs a spurious decline, so every uncertain path here errs
+/// towards reporting.
+///
+/// The scan is **the same parser evaluation uses** ([`parse`]), walked for its
+/// receiver rather than evaluated. That identity is the whole design: a
+/// hand-rolled recogniser of `$(…)` has to be kept in step with the grammar by
+/// hand, and the moment it drifts — a member the evaluator learned and the
+/// recogniser did not — taint stops propagating through exactly the shapes the
+/// evaluator newly understands. Sharing the parser makes the drift
+/// unrepresentable.
+///
+/// Note this deliberately does **not** consult evaluation *order*: it is a
+/// syntactic walk, so a short-circuited condition arm still contributes its
+/// references. `condition.rs` depends on that.
+pub(crate) fn property_references(raw: &str) -> impl Iterator<Item = &str> {
+    let mut refs = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_idx) = raw[search_from..].find("$(") {
+        let open = search_from + relative_idx + 2;
+        // Always resume just past this opener: each iteration then makes
+        // progress regardless of what follows, and a nested `$(…)` inside an
+        // argument is reached as a span in its own right rather than by
+        // recursing through the argument slices.
+        search_from = open;
+        let after = &raw[open..];
+        // An unclosed `$(` has no interior to speak of; scan what follows, which
+        // the fallback below reads conservatively.
+        let inner = match find_close(after) {
+            Some(close) => &after[..close],
+            None => after,
+        };
+        push_references(inner, &mut refs);
+    }
+    refs.into_iter()
+}
+
+/// Record the property `inner` (one `$(…)` interior) reads as its receiver.
+fn push_references<'a>(inner: &'a str, out: &mut Vec<&'a str>) {
+    // MSBuild tolerates whitespace inside `$( … )`, and the condition tokeniser
+    // trims it before resolving the reference, so trim before parsing — else a
+    // legal spelling reads as unparseable and drops to the fallback.
+    let trimmed = inner.trim_matches(|c: char| c.is_ascii_whitespace());
+    if let Some(expr) = parse(trimmed) {
+        // A static root (`$([Type]::Member(…))`) reads no property itself; any
+        // `$(…)` in its arguments is a span the caller's scan reaches directly.
+        if let Root::Property(name) = expr.root {
+            out.push(name);
+        }
+        return;
+    }
+    // Outside the grammar. Report the leading name anyway: the shape declines
+    // at evaluation today, but a decline is a claim about *this* value, not
+    // about whether a caller may trust the property it names — and if the
+    // grammar later grows to cover the shape, under-reporting here would be
+    // the original defect returning. Over-reporting only costs a decline.
+    let name_len = trimmed.bytes().take_while(|&b| is_name_byte(b)).count();
+    if name_len > 0 {
+        out.push(&trimmed[..name_len]);
+    }
+}
+
 /// Parse a `$(…)` interior into an [`Expr`], or `None` if it doesn't fit the
 /// grammar (whereupon the caller leaves it literal + [`Issue::Unsupported`]).
 /// The whole of `inner` must be consumed.
@@ -2512,5 +2579,35 @@ mod tests {
             ),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod property_reference_tests {
+    use super::property_references;
+
+    fn refs(raw: &str) -> Vec<&str> {
+        property_references(raw).collect()
+    }
+
+    #[test]
+    fn plain_and_method_references_are_extracted() {
+        assert_eq!(refs("$(Foo)"), vec!["Foo"]);
+        assert_eq!(refs("$(A)/$(B)"), vec!["A", "B"]);
+        assert_eq!(refs("$(V.TrimStart('vV'))"), vec!["V"]);
+        assert_eq!(refs("$(V.Split('-')[0])"), vec!["V"]);
+        assert_eq!(refs("$(P.Contains('{'))"), vec!["P"]);
+        assert_eq!(refs("$(P.contains('{'))"), vec!["P"]);
+    }
+
+    #[test]
+    fn interior_whitespace_is_tolerated() {
+        // MSBuild-legal `$( … )` spellings must still expose the receiver so
+        // the taint/unpinned scans that share this extractor stay in sync
+        // with the whitespace-trimming condition tokeniser.
+        assert_eq!(refs("$( Foo )"), vec!["Foo"]);
+        assert_eq!(refs("$(  Foo)"), vec!["Foo"]);
+        assert_eq!(refs("$(P.Contains ('x'))"), vec!["P"]);
+        assert_eq!(refs("$( P.Contains('x') )"), vec!["P"]);
     }
 }

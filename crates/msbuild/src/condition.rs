@@ -232,10 +232,10 @@ fn refs_outside_empty_comparison(expr: &BoolExpr, out: &mut Vec<String>) {
             refs_outside_empty_comparison(rhs, out);
         }
         BoolExpr::Exists(raw) | BoolExpr::HasTrailingSlash(raw) => {
-            out.extend(super::evaluator::simple_property_references(raw).map(str::to_string))
+            out.extend(super::properties::property_references(raw).map(str::to_string))
         }
         BoolExpr::MsbuildVersionFunction(inner) => {
-            out.extend(super::evaluator::simple_property_references(inner).map(str::to_string))
+            out.extend(super::properties::property_references(inner).map(str::to_string))
         }
         // A standalone scalar coerced to bool is a genuine branch decision
         // on its value, never the is-it-set idiom.
@@ -259,14 +259,14 @@ fn scalar_refs_outside_empty_comparison(scalar: &ScalarExpr, out: &mut Vec<Strin
     match scalar {
         ScalarExpr::Bare(_) => {}
         ScalarExpr::String(raw) | ScalarExpr::Property(raw) => {
-            out.extend(super::evaluator::simple_property_references(raw).map(str::to_string))
+            out.extend(super::properties::property_references(raw).map(str::to_string))
         }
         // The raw `Parse(...)` argument may hold `$(X)` — including under
         // the `.Split('-')[0]` idiom, whose base property
-        // `simple_property_references` extracts like every other
+        // `property_references` extracts like every other
         // taint/reference scan.
         ScalarExpr::SystemVersionPart { arg, .. } => {
-            out.extend(super::evaluator::simple_property_references(arg).map(str::to_string))
+            out.extend(super::properties::property_references(arg).map(str::to_string))
         }
     }
 }
@@ -988,7 +988,7 @@ fn expand_scalar_for_condition(
 /// argument: returns the property name when the (trimmed, quote-stripped)
 /// argument is exactly a `$(...)` reference carrying that `.Split` call.
 /// The taint-side counterpart lives in
-/// [`super::evaluator::simple_property_references`], which extracts the base
+/// [`super::properties::property_references`], which extracts the base
 /// property of any `.Split` call so uncertainty scans see what this resolves.
 fn split_dash_zero_property(raw: &str) -> Option<&str> {
     let raw = raw.trim();
@@ -1481,6 +1481,46 @@ mod tests {
             eval.undefined_properties.is_empty(),
             "{:?}",
             eval.undefined_properties
+        );
+    }
+
+    /// The reference scan feeding the *taint* channels is a walk of the whole
+    /// parsed tree, deliberately blind to evaluation order — unlike the
+    /// undefined-collection above, which rides evaluation and so legitimately
+    /// misses a short-circuited arm.
+    ///
+    /// The distinction is load-bearing and easy to erase by "simplifying" both
+    /// onto one mechanism. Taint asks *could this branch have depended on the
+    /// property*, which a short-circuit does not answer: we skipped the arm
+    /// because of what **our** property table said, and the real build's table
+    /// may differ precisely because the property is untrustworthy. So a name in
+    /// an arm we never evaluated must still be reported.
+    #[test]
+    fn the_reference_scan_sees_a_short_circuited_arm() {
+        fn refs_of(cond: &str) -> Vec<String> {
+            let tokens = super::tokenise(cond).expect("tokenises");
+            let mut parser = super::Parser {
+                tokens: &tokens,
+                pos: 0,
+            };
+            let expr = parser.parse_or().expect("parses");
+            let mut out = Vec::new();
+            super::refs_outside_empty_comparison(&expr, &mut out);
+            out
+        }
+
+        // `'$(A)' == 'x'` decides the `Or`, so `B`'s arm is never evaluated.
+        let scanned = refs_of("'$(A)' == 'x' Or '$(B)' == 'y'");
+        assert!(
+            scanned.iter().any(|r| r == "B"),
+            "a short-circuited arm's reference must still be scanned; got {scanned:?}"
+        );
+
+        // Same for `And`, and through a member access on the unreached side.
+        let scanned = refs_of("'$(A)' == 'no' And '$(B.Length)' == '3'");
+        assert!(
+            scanned.iter().any(|r| r == "B"),
+            "a short-circuited arm's receiver must still be scanned; got {scanned:?}"
         );
     }
 
