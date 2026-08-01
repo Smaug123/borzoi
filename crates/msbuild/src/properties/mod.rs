@@ -36,7 +36,7 @@ pub(crate) mod path_fixup;
 
 use escaping::Escaped;
 
-pub(crate) use expr::is_referenceable_name;
+pub(crate) use expr::{is_referenceable_name, property_references};
 
 const MAX_TARGET_FRAMEWORK_VERSION_PARTS: usize = 4;
 

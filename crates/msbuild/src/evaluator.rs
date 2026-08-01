@@ -2774,7 +2774,7 @@ impl<'r> State<'r> {
     }
 
     fn sdk_package_taint_for_raw(&self, raw: &str) -> Option<SdkPackagePropertyTaint> {
-        simple_property_references(raw).find_map(|name| {
+        properties::property_references(raw).find_map(|name| {
             self.sdk_package_tainted_properties
                 .get(&name.to_ascii_lowercase())
                 .cloned()
@@ -2788,7 +2788,7 @@ impl<'r> State<'r> {
     /// The root cause behind the first unpinned property `raw` references,
     /// if any (see [`Self::unpinned_value_properties`]).
     fn unpinned_root_for_raw(&self, raw: &str) -> Option<UnpinnedRoot> {
-        simple_property_references(raw).find_map(|name| {
+        properties::property_references(raw).find_map(|name| {
             self.unpinned_value_properties
                 .get(&name.to_ascii_lowercase())
                 .cloned()
@@ -2977,7 +2977,7 @@ impl<'r> State<'r> {
             .cloned()
             .map(UnpinnedRoot::Undefined);
         let mut surfaced: Vec<UnpinnedRoot> = Vec::new();
-        for reference in simple_property_references(raw) {
+        for reference in properties::property_references(raw) {
             let Some(root) = self
                 .unpinned_value_properties
                 .get(&reference.to_ascii_lowercase())
@@ -4098,7 +4098,7 @@ fn evaluate_condition_with_exemptions(
     // see them; downstream maybe-wrong detection (which watches the
     // diagnostics emitted here) then treats the gate accordingly.
     let mut unpinned_roots: Vec<UnpinnedRoot> = Vec::new();
-    for reference in simple_property_references(cond) {
+    for reference in properties::property_references(cond) {
         let Some(root) = state
             .unpinned_value_properties
             .get(&reference.to_ascii_lowercase())
@@ -4605,61 +4605,6 @@ fn mark_property_group_children_provenance(
             },
         );
     }
-}
-
-pub(crate) fn simple_property_references(raw: &str) -> impl Iterator<Item = &str> {
-    let is_ws = |c: char| c.is_ascii_whitespace();
-    let mut refs = Vec::new();
-    let mut search_from = 0;
-    while let Some(relative_idx) = raw[search_from..].find("$(") {
-        let open = search_from + relative_idx + 2;
-        // Always resume just past this opener: each iteration then makes
-        // progress regardless of what follows, and the whitespace-tolerant
-        // scan below no longer has to compute an exact skip offset.
-        search_from = open;
-        // MSBuild tolerates whitespace inside `$( … )` — around the name and
-        // before the `(`/`)` — and the condition tokeniser trims it before
-        // resolving the reference. Trim here too so a gate like
-        // `$( MaybeUnpinned )` is seen by every taint/unpinned scan that
-        // shares this extractor; otherwise a shape readable by evaluation
-        // but invisible here would let an untrustworthy property gate a
-        // construct without flagging it.
-        let after = raw[open..].trim_start_matches(is_ws);
-        let id_len = after
-            .bytes()
-            .take_while(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-'))
-            .count();
-        if id_len == 0 {
-            continue;
-        }
-        let id = &after[..id_len];
-        let rest = after[id_len..].trim_start_matches(is_ws);
-        if rest.starts_with(')') {
-            refs.push(id);
-        } else if rest.starts_with('(') {
-            // Method-call shapes whose base property the condition/property
-            // layers can actually resolve: `$(X.TrimStart(…))`, the
-            // `$(X.Split('-')[0])` idiom, and the `$(X.Contains/StartsWith/
-            // EndsWith(…))` string predicates. Member names match
-            // case-insensitively, mirroring the evaluators.
-            if let Some(property) = id.strip_suffix(".TrimStart")
-                && !property.is_empty()
-            {
-                refs.push(property);
-            } else if let Some(base) = [".Split", ".Contains", ".StartsWith", ".EndsWith"]
-                .into_iter()
-                .find_map(|method| {
-                    id.len()
-                        .checked_sub(method.len())
-                        .filter(|&cut| cut > 0 && id[cut..].eq_ignore_ascii_case(method))
-                        .map(|cut| &id[..cut])
-                })
-            {
-                refs.push(base);
-            }
-        }
-    }
-    refs.into_iter()
 }
 
 fn diagnose_item_op(node: Node<'_, '_>, attr: &str, state: &mut State<'_>) -> bool {
@@ -5998,35 +5943,5 @@ mod orchestrator_tests {
         assert!(!deferred_pass_can_change_result(true, true));
         assert!(!deferred_pass_can_change_result(false, false));
         assert!(!deferred_pass_can_change_result(true, false));
-    }
-}
-
-#[cfg(test)]
-mod simple_property_references_tests {
-    use super::simple_property_references;
-
-    fn refs(raw: &str) -> Vec<&str> {
-        simple_property_references(raw).collect()
-    }
-
-    #[test]
-    fn plain_and_method_references_are_extracted() {
-        assert_eq!(refs("$(Foo)"), vec!["Foo"]);
-        assert_eq!(refs("$(A)/$(B)"), vec!["A", "B"]);
-        assert_eq!(refs("$(V.TrimStart('vV'))"), vec!["V"]);
-        assert_eq!(refs("$(V.Split('-')[0])"), vec!["V"]);
-        assert_eq!(refs("$(P.Contains('{'))"), vec!["P"]);
-        assert_eq!(refs("$(P.contains('{'))"), vec!["P"]);
-    }
-
-    #[test]
-    fn interior_whitespace_is_tolerated() {
-        // MSBuild-legal `$( … )` spellings must still expose the receiver so
-        // the taint/unpinned scans that share this extractor stay in sync
-        // with the whitespace-trimming condition tokeniser.
-        assert_eq!(refs("$( Foo )"), vec!["Foo"]);
-        assert_eq!(refs("$(  Foo)"), vec!["Foo"]);
-        assert_eq!(refs("$(P.Contains ('x'))"), vec!["P"]);
-        assert_eq!(refs("$( P.Contains('x') )"), vec!["P"]);
     }
 }
