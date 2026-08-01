@@ -73,6 +73,13 @@ const RECOVERED: &[&str] = &[
     "System.String ->",
     // An unmatched opener.
     "(System.String",
+    // Junk that recovery hoists into a *node* rather than loose tokens, so the
+    // extent stops dead at it and the error lands on exactly the boundary
+    // offset: `LET_DECL@9..30`, `EXPR_DECL@30..45`, error at `30..31`. The
+    // ambiguity — this declaration's failure, or the next one's first token? —
+    // is resolved towards declining.
+    "System.String(",
+    "System.String{",
     // A postfix application whose head is missing.
     "System.String option.",
 ];
@@ -226,5 +233,110 @@ fn a_well_formed_annotation_still_publishes() {
         missing.len(),
         CLEAN.len(),
         missing.join("\n  ")
+    );
+}
+
+/// The alphabet of characters a half-written annotation can end on. Each is
+/// appended to a well-formed base, which is how the shapes that defeat a
+/// tree-local guard arise: some become loose sibling tokens, some get hoisted
+/// into a whole sibling *node*, and some are swallowed back into the annotation.
+const TRAILING: &[&str] = &[
+    ".", "..", "(", ")", "[", "]", "<", ">", ",", "*", "->", "{", "}", "&", "^", "'", ":", "|",
+];
+
+/// Well-formed annotations to perturb. Kept small and structurally varied — a
+/// bare path, a dotted path, a generic application, a suffix, and an operator —
+/// since the generator multiplies them.
+const BASES: &[&str] = &[
+    "System.String",
+    "System.Collections.Generic.KeyValuePair<int, string>",
+    "System.String[]",
+    "System.String * System.Int32",
+];
+
+/// The generated half of the instrument: every prefix of every base, and every
+/// base with every trailing character appended.
+///
+/// [`RECOVERED`] is a hand-written table, and a hand-written table enumerates
+/// the shapes its author thought of. It listed the junk-as-loose-tokens case and
+/// missed junk **hoisted into a sibling node** (`System.String(`), where the
+/// declaration closes early and the diagnostic lands on exactly the boundary
+/// offset — a distinct structural class, not a straggler. Truncation is also
+/// literally what an editor buffer holds between keystrokes, so this is the
+/// realistic input, not an exotic one.
+///
+/// The contract is the same three arms. Almost every case here is arm 3 (FCS
+/// rejects, we must be silent); the ones that happen to be legal exercise arm 1,
+/// which is why the check is not simply "commit nothing".
+#[test]
+fn every_truncation_and_trailing_character_agrees_or_is_silent() {
+    let mut cases: Vec<String> = Vec::new();
+    for base in BASES {
+        // Every proper prefix, on char boundaries. `1..` skips the empty
+        // annotation, which is not a recovery case but a different grammar
+        // production.
+        for end in 1..base.len() {
+            if base.is_char_boundary(end) {
+                cases.push(base[..end].to_owned());
+            }
+        }
+        for tail in TRAILING {
+            cases.push(format!("{base}{tail}"));
+        }
+    }
+
+    let mut wrong = Vec::new();
+    let mut rejected = 0usize;
+    let mut agreed = 0usize;
+    for annotation in &cases {
+        let source = file_for(annotation);
+        let ours = ours(&source);
+        match fcs(&source) {
+            Err(diagnostic) => {
+                rejected += 1;
+                if let Some(ours) = ours {
+                    wrong.push(format!(
+                        "`{annotation}`: FCS rejects it ({diagnostic}) but we publish `{ours}`"
+                    ));
+                }
+            }
+            Ok(Some(fcs)) => match ours {
+                Some(ours) if ours != fcs => wrong.push(format!(
+                    "`{annotation}`: ours=`{ours}` FCS=`{fcs}` (FCS checked the line cleanly)"
+                )),
+                Some(_) => agreed += 1,
+                None => {}
+            },
+            Ok(None) => {
+                if let Some(ours) = ours {
+                    wrong.push(format!(
+                        "`{annotation}`: we publish `{ours}` where FCS emitted neither a binder \
+                         record nor an error"
+                    ));
+                }
+            }
+        }
+    }
+
+    assert!(
+        wrong.is_empty(),
+        "{} of {} generated annotations published a type FCS does not hold:\n  {}",
+        wrong.len(),
+        cases.len(),
+        wrong.join("\n  ")
+    );
+    // Floors, both one-sided and both about the sweep still having a subject:
+    // most of the space must still be rejected (else the generator has drifted
+    // out of the adversarial domain), and some of it must still be agreed (else
+    // the guard has switched the feature off and every arm is vacuous).
+    assert!(
+        rejected >= cases.len() / 2,
+        "only {rejected} of {} generated spellings are rejected by FCS",
+        cases.len()
+    );
+    assert!(
+        agreed > 0,
+        "no generated spelling was checked cleanly *and* committed — the positive \
+         direction is untested"
     );
 }

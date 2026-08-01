@@ -95,13 +95,35 @@ impl SyntaxRecovery {
             SyntaxRecovery::Reported(spans) => spans,
         };
         let extent = declaration_extent(node);
-        // An error is *this* declaration's when it starts inside the extent.
-        // Half-open at the top on purpose: the extent ends where the next
-        // declaration node begins, and an error reported at that first offset
-        // belongs to that declaration, not this one.
+        // An error is *this* declaration's when it starts anywhere in the
+        // extent — **closed** at the top, because the boundary offset is
+        // genuinely ambiguous and the ambiguity resolves towards declining.
+        //
+        // Recovery does not always flush junk as loose tokens. It can also
+        // hoist it into a fresh sibling *node*, which stops the extent dead at
+        // exactly the offset the error is reported at:
+        //
+        // ```text
+        // let v : System.String( = failwith ""
+        //   LET_DECL@9..30            // `let v : System.String`
+        //   ERROR@30..30 ""
+        //   EXPR_DECL@30..45          // `( = failwith ""` — the junk, as a node
+        // ```
+        //
+        // with the error at `30..31`. Read half-open, that error belongs to the
+        // `EXPR_DECL` and the binding looks intact; read closed, the binding
+        // declines, which is what FCS's FS0010 says it should. The same offset
+        // also carries an end-of-file diagnostic when the junk runs to the end
+        // of the source.
+        //
+        // The price is the mirror case — a following declaration whose *own*
+        // first token errors also condemns its predecessor. That is a decline,
+        // never a commitment, and it is narrow: an error at a declaration's
+        // opening offset is overwhelmingly this same hoisted-junk shape rather
+        // than an independent failure.
         !spans
             .iter()
-            .any(|s| extent.start() <= s.start() && s.start() < extent.end())
+            .any(|s| extent.start() <= s.start() && s.start() <= extent.end())
     }
 }
 

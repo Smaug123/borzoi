@@ -1507,6 +1507,14 @@ fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv)
 /// built on this can never serve a resolution from the wrong tree.
 fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
     prev.qnof == new.qnof
+        // The same tree read with a different [`SyntaxRecovery`] is not the same
+        // input: recovery is an argument to `resolve_file`, and it decides
+        // whether the file's annotations may be believed at all. One tree can
+        // carry two readings — a rowan handle clones freely, and the
+        // bare-`ImplFile` entry points supply `Unretained` for trees a
+        // [`ProjectFile`] caller gives a real reading — so identity alone would
+        // reuse a resolution the cold fold would not produce.
+        && prev.recovery == new.recovery
         && match (&prev.file, &new.file) {
             (SourceFile::Impl(a), SourceFile::Impl(b)) => a.syntax() == b.syntax(),
             (SourceFile::Sig(a), SourceFile::Sig(b)) => a.syntax() == b.syntax(),
@@ -1523,7 +1531,7 @@ fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
 /// Returns exactly what a cold [`resolve_project`] of `new_files` would — the
 /// `resolve_incremental_diff.rs` differential asserts `incremental ≡ batch` over
 /// generated edit sequences. Reuse is sound because `resolve_file`'s output is a
-/// pure function of `(file, preceding, assemblies)`:
+/// pure function of `(file, preceding, assemblies, recovery)`:
 ///
 /// - **`prev_files`/`prev` must pair up:** `prev` must be the result of folding
 ///   `prev_files` (in that order) against `assemblies`. The LSP stores them
