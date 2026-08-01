@@ -187,7 +187,7 @@ fn single_file_unavailable(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
+    let recovery = SyntaxRecovery::without_inference();
     let file = ImplFile::cast(parse.root)?;
     let resolved = resolve_file(
         &file,

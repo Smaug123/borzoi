@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc cf17c736da29916e72eeb570ae74cee01144396062103e02ea0e081d72b6557e # shrinks to src = "match x with\n"
+cc aaed783df41682fcec605265da06ea86e3b29501d6e25ee844ae480a5810cd4b # shrinks to src = "match)..\n"

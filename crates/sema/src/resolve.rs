@@ -2686,6 +2686,64 @@ mod export_decl_tests {
         )
     }
 
+    /// Resolution never *reads* the recovery reading — it threads it through to
+    /// inference, whose annotation gate is its only consumer. So a caller that
+    /// stops at resolution gets the same answer under any reading, which is what
+    /// licenses the LSP's resolution-only handlers to pass
+    /// [`SyntaxRecovery::without_inference`] instead of buying the two extra
+    /// parses [`SyntaxRecovery::of_guessed_version`] costs.
+    ///
+    /// Stated over `ResolvedFile`'s whole modelled content rather than over the
+    /// handlers, so it covers every such caller at once — and so a future read
+    /// of the reading from inside resolution fails here rather than silently
+    /// making those handlers version-sensitive.
+    #[test]
+    fn resolution_ignores_the_recovery_reading() {
+        let sources = [
+            "module M\nlet x = 1\nlet y = x\n",
+            "module M\ntype T = { a : int }\nlet f (t : T) = t.a\n",
+            // Malformed, so the two readings genuinely differ.
+            "module M\nlet v : System.String. = failwith \"\"\n",
+            "module M\nlet f (x : int[ ) = x\n",
+            "module M\ntype Outer =\n    type Nested = int\n",
+        ];
+        let mut saw_a_difference = false;
+        for src in sources {
+            let parsed = parse(src);
+            let reported = SyntaxRecovery::of(&parsed);
+            if !matches!(&reported, SyntaxRecovery::Reported(s) if s.is_empty()) {
+                saw_a_difference = true;
+            }
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let of_parse = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &reported,
+            );
+            let mut without = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &SyntaxRecovery::without_inference(),
+            );
+            assert_eq!(
+                without.recovery,
+                SyntaxRecovery::Unretained,
+                "the stored field is the one thing that must differ"
+            );
+            without.recovery = of_parse.recovery.clone();
+            assert_eq!(
+                of_parse, without,
+                "resolution of {src:?} must not depend on the recovery reading"
+            );
+        }
+        assert!(
+            saw_a_difference,
+            "every source parsed clean, so the two readings never actually differed"
+        );
+    }
+
     fn segs(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|s| s.to_string()).collect()
     }

@@ -22,7 +22,6 @@
 //! an error), so a stale "Find Usages" panel clears cleanly rather than
 //! sticking with the previous answer.
 
-use borzoi_cst::parser::FileKind;
 use std::collections::{HashMap, HashSet};
 
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
@@ -361,7 +360,7 @@ fn single_file_references(
     let Some(parse) = parse_with_symbols(text, &symbols, lang) else {
         return empty("parse_error");
     };
-    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
+    let recovery = SyntaxRecovery::without_inference();
     let Some(file) = ImplFile::cast(parse.root) else {
         return empty("unsupported_file");
     };

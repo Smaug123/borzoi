@@ -111,6 +111,23 @@ impl SyntaxRecovery {
         }
     }
 
+    /// The reading for a path that resolves names but never infers types.
+    ///
+    /// [`declaration_is_intact`](Self::declaration_is_intact) has exactly one
+    /// consumer — the annotation gate in `infer` — so a handler that stops at
+    /// resolution reads this value not at all, and asking
+    /// [`of_guessed_version`](Self::of_guessed_version) there would buy its two
+    /// extra parses per request for an answer nobody looks at.
+    ///
+    /// [`Unretained`](Self::Unretained) rather than [`of`](Self::of) because the
+    /// two differ only if inference is later added to such a path, and there the
+    /// directions are not symmetric: this one declines every annotation, costing
+    /// results, while `of` would hand inference a reading taken at a *guessed*
+    /// version — which is the wrong answer this type exists to prevent.
+    pub const fn without_inference() -> Self {
+        SyntaxRecovery::Unretained
+    }
+
     /// Whether the declaration enclosing `node` parsed with no recovery — the
     /// question a consumer must answer *yes* to before committing anything it
     /// read out of that declaration's syntax.

@@ -69,7 +69,7 @@ impl LanguageVersion {
     /// becomes available at some version and stays available — so a producer
     /// that agrees at both ends agrees at every version between them. That is
     /// what lets
-    /// [`Parse::diagnostics_depend_on_language_version`](crate::parser::Parse::diagnostics_depend_on_language_version)
+    /// [`diagnostics_are_version_invariant`](crate::parser::diagnostics_are_version_invariant)
     /// be decided by two evaluations instead of nine.
     pub const MAX: LanguageVersion = LanguageVersion::Preview;
 
