@@ -1,0 +1,806 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-346d176c0dd6-fc2529bf34cc",
+  "repository": "Smaug123/borzoi",
+  "commit": "c95382e403682053374242cdd62be46fd2195a64",
+  "measured_at": "2026-08-01T11:56:05Z",
+  "workflow": {
+    "run_id": 30698260148,
+    "run_number": 81,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/30698260148"
+  },
+  "corpus": {
+    "source": "Smaug123/borzoi-project-corpus",
+    "revision": "346d176c0dd66cafec34a907d1501b1154ea43a3"
+  },
+  "flake_lock_hash": "f27a8220b9ba57001e2e9025876c45078da8fe6f5d81d34471f569582813a136",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "project-corpus-diff",
+    "configuration": {
+      "build_properties": {},
+      "selection": {
+        "max_files": null,
+        "source": "list"
+      }
+    },
+    "statistics": {
+      "coverage": {
+        "basis_points": 4624
+      },
+      "decline_census": {
+        "assembly": {
+          "attributed": 1584,
+          "by_cause": {
+            "abbreviation_opaque": 0,
+            "alias_companion_module": 0,
+            "alias_owned_tail": 0,
+            "alias_target_unchaseable": 59,
+            "assembly_auto_open_shadow": 0,
+            "assembly_case_head_contends": 0,
+            "attribute_in_file_unreliable": 0,
+            "attribute_opaque_leaf": 0,
+            "attribute_unrulable": 101,
+            "authoritative_module_leaf": 0,
+            "case_pattern_head_occupied": 348,
+            "case_qualifier_head": 0,
+            "contested_rooting": 0,
+            "descends_into_nested_module": 0,
+            "dropped_type_could_root": 0,
+            "global_marker_head": 0,
+            "head_slot_unordered": 0,
+            "incomplete_assemblies": 0,
+            "manifest_surface_arity_fallback": 0,
+            "manifest_surface_contest": 0,
+            "manifest_surface_uncertain": 0,
+            "opaque_open": 874,
+            "opaque_value_head": 179,
+            "project_auto_open_shadow": 0,
+            "project_path_shadow": 0,
+            "project_type_path_shadow": 0,
+            "project_type_shadow": 0,
+            "qualified_attribute": 0,
+            "recursive_module_active": 0,
+            "recursive_module_head": 0,
+            "same_file_auto_open_type": 0,
+            "same_file_case_shadow": 0,
+            "self_module_shadowed": 0,
+            "signature_screened": 0,
+            "unknowable_abbreviation_shadow": 0,
+            "unmodelled_open_root": 0,
+            "value_evicted": 2,
+            "wrong_arity_occupant": 21
+          },
+          "by_pair": {
+            "abbreviation_opaque": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_companion_module": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_owned_tail": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_target_unchaseable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 9,
+              "implicit_open": 50,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "assembly_auto_open_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "assembly_case_head_contends": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_in_file_unreliable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_opaque_leaf": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_unrulable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 101,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "authoritative_module_leaf": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "case_pattern_head_occupied": {
+              "enclosing_namespace": 0,
+              "explicit_open": 348,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "case_qualifier_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "contested_rooting": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "descends_into_nested_module": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "dropped_type_could_root": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "global_marker_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "head_slot_unordered": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "incomplete_assemblies": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_arity_fallback": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_contest": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_uncertain": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "opaque_open": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 874,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "opaque_value_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 179,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_auto_open_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_path_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_type_path_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_type_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "qualified_attribute": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "recursive_module_active": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "recursive_module_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "same_file_auto_open_type": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "same_file_case_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "self_module_shadowed": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "signature_screened": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "unknowable_abbreviation_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "unmodelled_open_root": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "value_evicted": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 2,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "wrong_arity_occupant": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 21
+            }
+          },
+          "by_tier": {
+            "enclosing_namespace": 0,
+            "explicit_open": 357,
+            "implicit_open": 50,
+            "pre_walk": 1156,
+            "root": 0,
+            "whole_walk": 21
+          },
+          "unattributed": 6804
+        },
+        "project": {
+          "attributed": 2919,
+          "by_cause": {
+            "abbreviation_opaque": 0,
+            "alias_companion_module": 0,
+            "alias_owned_tail": 0,
+            "alias_target_unchaseable": 0,
+            "assembly_auto_open_shadow": 0,
+            "assembly_case_head_contends": 13,
+            "attribute_in_file_unreliable": 0,
+            "attribute_opaque_leaf": 0,
+            "attribute_unrulable": 0,
+            "authoritative_module_leaf": 0,
+            "case_pattern_head_occupied": 0,
+            "case_qualifier_head": 0,
+            "contested_rooting": 0,
+            "descends_into_nested_module": 4,
+            "dropped_type_could_root": 0,
+            "global_marker_head": 0,
+            "head_slot_unordered": 0,
+            "incomplete_assemblies": 0,
+            "manifest_surface_arity_fallback": 0,
+            "manifest_surface_contest": 0,
+            "manifest_surface_uncertain": 0,
+            "opaque_open": 1218,
+            "opaque_value_head": 767,
+            "project_auto_open_shadow": 730,
+            "project_path_shadow": 15,
+            "project_type_path_shadow": 172,
+            "project_type_shadow": 0,
+            "qualified_attribute": 0,
+            "recursive_module_active": 0,
+            "recursive_module_head": 0,
+            "same_file_auto_open_type": 0,
+            "same_file_case_shadow": 0,
+            "self_module_shadowed": 0,
+            "signature_screened": 0,
+            "unknowable_abbreviation_shadow": 0,
+            "unmodelled_open_root": 0,
+            "value_evicted": 0,
+            "wrong_arity_occupant": 0
+          },
+          "by_pair": {
+            "abbreviation_opaque": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_companion_module": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_owned_tail": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "alias_target_unchaseable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "assembly_auto_open_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "assembly_case_head_contends": {
+              "enclosing_namespace": 0,
+              "explicit_open": 13,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_in_file_unreliable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_opaque_leaf": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "attribute_unrulable": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "authoritative_module_leaf": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "case_pattern_head_occupied": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "case_qualifier_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "contested_rooting": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "descends_into_nested_module": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 4,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "dropped_type_could_root": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "global_marker_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "head_slot_unordered": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "incomplete_assemblies": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_arity_fallback": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_contest": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "manifest_surface_uncertain": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "opaque_open": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 1218,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "opaque_value_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 767,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_auto_open_shadow": {
+              "enclosing_namespace": 692,
+              "explicit_open": 38,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "project_path_shadow": {
+              "enclosing_namespace": 8,
+              "explicit_open": 3,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 4,
+              "whole_walk": 0
+            },
+            "project_type_path_shadow": {
+              "enclosing_namespace": 92,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 80,
+              "whole_walk": 0
+            },
+            "project_type_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "qualified_attribute": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "recursive_module_active": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "recursive_module_head": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "same_file_auto_open_type": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "same_file_case_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "self_module_shadowed": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "signature_screened": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "unknowable_abbreviation_shadow": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "unmodelled_open_root": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "value_evicted": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            },
+            "wrong_arity_occupant": {
+              "enclosing_namespace": 0,
+              "explicit_open": 0,
+              "implicit_open": 0,
+              "pre_walk": 0,
+              "root": 0,
+              "whole_walk": 0
+            }
+          },
+          "by_tier": {
+            "enclosing_namespace": 792,
+            "explicit_open": 54,
+            "implicit_open": 0,
+            "pre_walk": 1989,
+            "root": 84,
+            "whole_walk": 0
+          },
+          "unattributed": 9944
+        }
+      },
+      "deferrals": {
+        "assembly": 8388,
+        "project": 12863,
+        "total": 21251
+      },
+      "divergences": {
+        "assembly": 0,
+        "project": 0,
+        "reverse": 0,
+        "total": 0
+      },
+      "files_compared": 140,
+      "matches": {
+        "assembly": 3977,
+        "project": 14304,
+        "total": 18281
+      },
+      "project_assets_by_status": {
+        "dotnet_root_unavailable": 0,
+        "missing": 0,
+        "not_checked": 0,
+        "project_directory_unavailable": 0,
+        "resolution_failed": 0,
+        "resolved": 6
+      },
+      "projects": {
+        "comparable": 6,
+        "discovered": 6,
+        "discovery_errors": 0,
+        "skipped": 0,
+        "skipped_basis_points": 0,
+        "visited": 6
+      },
+      "skipped_uses": {
+        "ambiguous_oracle_range": 138,
+        "compiler_generated": 35,
+        "definitions": 8200,
+        "no_oracle_declaration": 0,
+        "non_project_declarations": 0,
+        "out_of_project_declarations": 0,
+        "shadowed_constructor_use": 534,
+        "total": 8919,
+        "zero_width": 12
+      },
+      "unoracled_definitions": 0,
+      "unoracled_or_pattern_aliases": 5,
+      "uses": {
+        "assembly_considered": 12365,
+        "attribute_commits_compared": 165,
+        "fcs_reported": 48451,
+        "member_commits_compared": 0,
+        "project_considered": 27167,
+        "total_considered": 39532
+      }
+    }
+  }
+}
