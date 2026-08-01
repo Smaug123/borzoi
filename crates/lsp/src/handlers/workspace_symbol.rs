@@ -25,6 +25,7 @@
 //! slot is inert in Stage 1 of `docs/fsi-signature-restriction-plan.md`). The CST parser runs under `catch_unwind`, so a buffer that
 //! panics the parser contributes nothing rather than crashing the server.
 
+use borzoi_cst::parser::FileKind;
 use borzoi_sema::SyntaxRecovery;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -162,7 +163,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         let Some(parse) = parse_with_symbols(&src.text, &symbols, lang) else {
             continue;
         };
-        let recovery = SyntaxRecovery::of_guessed_version(&parse);
+        let recovery = SyntaxRecovery::of_guessed_version(&parse, &src.text, &symbols, FileKind::Impl);
         let Some(file) = ImplFile::cast(parse.root) else {
             continue;
         };

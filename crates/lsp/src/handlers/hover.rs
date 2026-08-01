@@ -23,6 +23,7 @@
 //! hover (annotated/function-binder types, XML doc summary) is tracked in
 //! `docs/hover-signature-plan.md`.
 
+use borzoi_cst::parser::FileKind;
 use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
     format_entity_header, format_fsharp_name, format_member, join_quoted,
@@ -186,7 +187,7 @@ fn single_file_unavailable(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of_guessed_version(&parse);
+    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
     let file = ImplFile::cast(parse.root)?;
     let resolved = resolve_file(
         &file,
@@ -319,7 +320,7 @@ fn single_file_hover(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of_guessed_version(&parse);
+    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
     let file = ImplFile::cast(parse.root)?;
     // Single-file (orphan) hover: no project, so no referenced assemblies —
     // member-access typing has no env to resolve into and simply defers.

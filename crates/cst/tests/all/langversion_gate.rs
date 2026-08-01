@@ -200,6 +200,15 @@ mod diagnostics_version_dependence {
     use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
     use std::collections::HashSet;
 
+    /// The verdict for a source, under the harness's fixed symbols/file kind.
+    fn version_dependent(source: &str) -> bool {
+        !borzoi_cst::parser::diagnostics_are_version_invariant(
+            source,
+            &HashSet::new(),
+            FileKind::Impl,
+        )
+    }
+
     fn parse_at(source: &str, lang: LanguageVersion) -> borzoi_cst::parser::Parse {
         parse_with_options(
             source,
@@ -229,8 +238,7 @@ mod diagnostics_version_dependence {
             "so the shape flag cannot be the signal"
         );
         assert!(!old.errors.is_empty() && new.errors.is_empty());
-        assert!(old.diagnostics_depend_on_language_version);
-        assert!(new.diagnostics_depend_on_language_version);
+        assert!(version_dependent(source));
     }
 
     /// A nullness annotation is gated the same way, through the *node-surface*
@@ -246,8 +254,41 @@ mod diagnostics_version_dependence {
             new.errors.is_empty(),
             "the nullness surface gate must actually fire across this boundary"
         );
-        assert!(old.diagnostics_depend_on_language_version);
-        assert!(new.diagnostics_depend_on_language_version);
+        assert!(version_dependent(source));
+    }
+
+    /// A diagnostic that is *suppressed* at the parsed version but appears at
+    /// another one. The FS0058 nested-type gate fires at F# 10 and is silent
+    /// below, so a per-producer flag computed from what this run *emitted* reads
+    /// invariant — the run has nothing to look at. Found by review; it is the
+    /// reason the verdict compares whole diagnostic sets across the ladder
+    /// instead of asking each producer.
+    #[test]
+    fn a_suppressed_diagnostic_still_counts_as_version_dependence() {
+        let source = "module M\ntype Outer =\n    type Nested = int\n";
+        let below = parse_at(source, LanguageVersion::V9_0);
+        let at = parse_at(source, LanguageVersion::V10_0);
+        assert_ne!(
+            below.errors.len(),
+            at.errors.len(),
+            "the nested-type gate must actually differ across this boundary"
+        );
+        assert!(version_dependent(source));
+    }
+
+    /// A depth-limited parse collapses its diagnostics to one error — whose
+    /// *span* still moves when version-sensitive layout changes where the breach
+    /// happens. The early return cannot claim invariance either.
+    #[test]
+    fn a_depth_limited_parse_is_not_assumed_invariant() {
+        let source = format!("module M\nif true then\nlet x =\n{}", "(".repeat(600));
+        let lo = parse_at(&source, LanguageVersion::V4_6);
+        let hi = parse_at(&source, LanguageVersion::V10_0);
+        assert_ne!(
+            lo.errors, hi.errors,
+            "the depth error must actually move across this boundary"
+        );
+        assert!(version_dependent(&source));
     }
 
     /// The common case, and the reason this is a flag rather than a blanket
@@ -261,10 +302,7 @@ mod diagnostics_version_dependence {
             "module M\n#if FOO\nlet a = 1\n#else\nlet a = 2\n#endif\n",
         ] {
             let p = parse_at(source, LanguageVersion::Preview);
-            assert!(
-                !p.diagnostics_depend_on_language_version,
-                "{source:?} must be version-invariant"
-            );
+            assert!(!version_dependent(source), "{source:?} must be version-invariant");
         }
     }
 }

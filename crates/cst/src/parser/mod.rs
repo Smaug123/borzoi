@@ -207,25 +207,6 @@ pub struct Parse {
     /// diagnostics can still differ by version (FS0058 severity, `#elif`
     /// legality) — only the *shape* guarantee is claimed.
     pub shape_depends_on_language_version: bool,
-    /// Whether the *diagnostics* in [`Self::errors`] / [`Self::warnings`]
-    /// depend on [`Self::lang`] — the counterpart to
-    /// [`Self::shape_depends_on_language_version`], which answers the same
-    /// question about the tree.
-    ///
-    /// A version-gated legality check reports a feature error and then parses
-    /// the construct anyway, so it changes the diagnostics **without touching a
-    /// byte of the tree**. A consumer that reads "no errors here" as proof the
-    /// source is well-formed therefore cannot rely on the shape flag: an
-    /// `#elif` under a guessed F# 10 is an error and under a guessed preview is
-    /// silent, from the same green nodes.
-    ///
-    /// `false` **proves** the diagnostic set is identical at every
-    /// [`LanguageVersion`]. It is computed exactly rather than approximated —
-    /// every version-gated producer is a pure function of data the parse
-    /// already holds, so both extremes are evaluated and compared, with no
-    /// second parse. Each gate is a monotone threshold in the version, so
-    /// agreement at the extremes implies agreement everywhere between.
-    pub diagnostics_depend_on_language_version: bool,
 }
 
 /// A parse-time problem. `span` is a byte range into the input source.
@@ -309,6 +290,41 @@ pub struct ParseOptions<'a> {
 /// [`LanguageVersion`] (e.g. an `.fsproj` `<LangVersion>` pin).
 pub fn parse_with_options(source: &str, opts: ParseOptions<'_>) -> Parse {
     parse_inner(source, opts.symbols, opts.file_kind, opts.lang)
+}
+
+/// Whether `source`'s reported diagnostics are the same at every
+/// [`LanguageVersion`].
+///
+/// Deliberately a *function of the source* rather than a field on [`Parse`]:
+/// answering it costs two extra parses, and a field would charge every parse in
+/// the workspace for a verdict almost none of them read.
+///
+/// Decided by **re-parsing at both ends of the ladder and comparing the whole
+/// diagnostic output**, deliberately rather than by asking each version-gated
+/// producer whether it fired. Two review rounds each found a producer such an
+/// enumeration had missed — a gate whose diagnostic is *suppressed* at the
+/// parsed version emits nothing for the run to notice, and a depth-limited
+/// parse collapses its errors to one whose span still moves — and an
+/// enumeration that has to be complete to be sound is the wrong shape for a
+/// claim consumers read as proof. Comparing outputs cannot miss a producer,
+/// because it never names one.
+///
+/// Two points suffice because every version gate is a monotone threshold: a
+/// feature becomes available at some version and stays available. That is an
+/// argument rather than a mechanism, so it is checked by a property over *all*
+/// versions (`shape_sensitivity::unset_diagnostics_flag_proves_version_invariance`).
+///
+/// Costs two extra parses, so a caller that does not need the verdict should
+/// not ask: it is worth paying only where a commitment rests on the diagnostics
+/// being the real build's, and the version is a guess.
+pub fn diagnostics_are_version_invariant(
+    source: &str,
+    symbols: &HashSet<String>,
+    file_kind: FileKind,
+) -> bool {
+    let lo = parse_inner(source, symbols, file_kind, LanguageVersion::MIN);
+    let hi = parse_inner(source, symbols, file_kind, LanguageVersion::MAX);
+    lo.errors == hi.errors && lo.warnings == hi.warnings
 }
 
 fn parse_inner(
@@ -412,9 +428,6 @@ fn parse_inner(
             warnings: Vec::new(),
             lang,
             shape_depends_on_language_version,
-            // A depth breach collapses the diagnostics to one characterised
-            // error, which no legality gate contributes to.
-            diagnostics_depend_on_language_version: false,
         };
     }
     // Build the root now: the node-surface gate below walks it for typed-node
@@ -430,32 +443,12 @@ fn parse_inner(
     errors.extend(tab_errors);
     errors.extend(langversion_errors);
     errors.extend(node_surface_diagnostics(&root, lang));
-    // Version-invariance of the diagnostic set, decided by evaluating the
-    // gated producers at both extremes of the version ladder. Both are pure
-    // functions of data already in hand (`elif_directives` is a side-channel
-    // the driver recorded; the node-surface gate walks the finished tree), so
-    // this costs two cheap re-evaluations rather than a re-parse.
-    //
-    // An offside diagnostic resolves both its *severity* (the F# 8
-    // strict-indentation boundary decides error vs warning) and its message
-    // text ("set the language version to F# 7") from `lang`, so its presence
-    // alone makes the set version-dependent. That arm is exact rather than an
-    // over-approximation, and it is the one that fires: 189 of the 5,202 `.fs`
-    // files in the pinned corpus (3.6%) set this flag, nearly all through
-    // indentation rather than a legality gate.
-    let diagnostics_depend_on_language_version = !offside_diagnostics.is_empty()
-        || langversion_diagnostics(&elif_directives, LanguageVersion::MIN)
-            != langversion_diagnostics(&elif_directives, LanguageVersion::MAX)
-        || node_surface_diagnostics(&root, LanguageVersion::MIN)
-            != node_surface_diagnostics(&root, LanguageVersion::MAX);
-    // Warnings come from the productions and (once the emission stages land) the
-    // lex-filter's offside diagnostics; directive/tab/langversion problems are
-    // all errors.
+    // Warnings come from the productions and the lex-filter's offside
+    // diagnostics; directive/tab/langversion problems are all errors.
     let mut warnings = parser.warnings;
     warnings.extend(reserved_warnings);
     // The lex-filter's offside / indentation diagnostics (FS0058), split by the
-    // severity it resolved from `lang`. Empty until the emission stages of
-    // `docs/offside-diagnostics-plan.md`.
+    // severity it resolved from `lang`.
     for diag in offside_diagnostics {
         let err = ParseError {
             message: diag.message,
@@ -480,7 +473,6 @@ fn parse_inner(
         warnings,
         lang,
         shape_depends_on_language_version,
-        diagnostics_depend_on_language_version,
     }
 }
 

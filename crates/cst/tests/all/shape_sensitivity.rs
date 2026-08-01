@@ -172,10 +172,14 @@ proptest! {
             LanguageVersion::V11_0,
             LanguageVersion::Preview,
         ];
-        let baseline = parse_at(&src, LanguageVersion::DEFAULT);
-        if baseline.diagnostics_depend_on_language_version {
+        if !borzoi_cst::parser::diagnostics_are_version_invariant(
+            &src,
+            &HashSet::new(),
+            FileKind::Impl,
+        ) {
             return Ok(());
         }
+        let baseline = parse_at(&src, LanguageVersion::DEFAULT);
         for &lang in VERSIONS {
             let p = parse_at(&src, lang);
             prop_assert_eq!(
@@ -191,11 +195,6 @@ proptest! {
                 "unset flag must prove the warnings are version-invariant, but {:?} differs at {}",
                 src,
                 lang
-            );
-            prop_assert_eq!(
-                p.diagnostics_depend_on_language_version,
-                baseline.diagnostics_depend_on_language_version,
-                "every run must reach the same verdict"
             );
         }
     }

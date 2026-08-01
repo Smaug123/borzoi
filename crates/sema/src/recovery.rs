@@ -19,7 +19,9 @@
 
 use std::sync::Arc;
 
-use borzoi_cst::parser::Parse;
+use std::collections::HashSet;
+
+use borzoi_cst::parser::{FileKind, Parse};
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
 use rowan::{TextRange, TextSize};
 
@@ -83,21 +85,29 @@ impl SyntaxRecovery {
     /// A version-gated legality check reports a feature error and parses the
     /// construct anyway, so a guess landing on the wrong side of a feature
     /// threshold turns a rejected file into a clean-looking one *from the same
-    /// tree*: an `#elif` is an error at F# 10 and silent at preview, and a
-    /// nullness annotation likewise across F# 9. Reading the guess's empty
-    /// error list as proof would then license exactly the commitment this type
-    /// exists to withhold.
+    /// tree*: `#elif` is an error at F# 10 and silent at preview, and the
+    /// nested-type FS0058 fires at F# 10 and is silent below. Reading the
+    /// guess's empty error list as proof would license exactly the commitment
+    /// this type exists to withhold.
     ///
-    /// So the parse is asked whether its diagnostics depend on the version at
-    /// all. Almost no file's do, which is why this is a per-file question
-    /// rather than a blanket [`Unretained`](Self::Unretained) for every
-    /// untrusted project — and untrusted is the *normal* state, since every
-    /// real SDK project's conditional `LangVersion` default taints provenance.
-    pub fn of_guessed_version(parse: &Parse) -> Self {
-        if parse.diagnostics_depend_on_language_version {
-            SyntaxRecovery::Unretained
-        } else {
+    /// So the source is asked whether its diagnostics depend on the version at
+    /// all — by comparing whole diagnostic sets across the version ladder, which
+    /// costs two extra parses and is why this is not the default constructor.
+    /// Almost no file's diagnostics do depend on it, which is what makes this a
+    /// per-file question rather than a blanket
+    /// [`Unretained`](Self::Unretained) for every untrusted project: untrusted
+    /// is the *normal* state, since every real SDK project's conditional
+    /// `LangVersion` default taints provenance.
+    pub fn of_guessed_version(
+        parse: &Parse,
+        source: &str,
+        symbols: &HashSet<String>,
+        file_kind: FileKind,
+    ) -> Self {
+        if borzoi_cst::parser::diagnostics_are_version_invariant(source, symbols, file_kind) {
             SyntaxRecovery::of(parse)
+        } else {
+            SyntaxRecovery::Unretained
         }
     }
 

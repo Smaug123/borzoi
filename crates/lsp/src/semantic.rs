@@ -11,6 +11,7 @@
 //! invalidates strictly by project path; sema's prefix-monotone fold makes
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
+use borzoi_cst::parser::FileKind;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -1339,7 +1340,16 @@ fn build_parses(
         // version-gated — the tree is identical either side of the threshold,
         // so the shape gate above never fires on it.
         let recovery = if lang_version_untrusted {
-            SyntaxRecovery::of_guessed_version(&parse)
+            SyntaxRecovery::of_guessed_version(
+                &parse,
+                &text,
+                &symbols,
+                if signature {
+                    FileKind::Sig
+                } else {
+                    FileKind::Impl
+                },
+            )
         } else {
             SyntaxRecovery::of(&parse)
         };
@@ -3489,7 +3499,7 @@ mod tests {
         );
 
         assert_eq!(
-            SyntaxRecovery::of_guessed_version(&guessed),
+            SyntaxRecovery::of_guessed_version(&guessed, source, &HashSet::new(), FileKind::Impl),
             SyntaxRecovery::Unretained,
             "a guessed version proves nothing about a version-gated file"
         );
@@ -3504,7 +3514,12 @@ mod tests {
             },
         );
         assert_eq!(
-            SyntaxRecovery::of_guessed_version(&ordinary),
+            SyntaxRecovery::of_guessed_version(
+                &ordinary,
+                "module M\nlet v : System.String = failwith \"\"\n",
+                &HashSet::new(),
+                FileKind::Impl,
+            ),
             SyntaxRecovery::Reported([].into()),
         );
     }
