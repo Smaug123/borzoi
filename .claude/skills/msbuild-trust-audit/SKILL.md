@@ -1,6 +1,6 @@
 ---
 name: msbuild-trust-audit
-description: How to decide whether an MSBuild-evaluated value may be trusted, and the complete ten-entry checklist an item capture must consult before committing to a value. Use when adding or changing a consumer of a `borzoi-msbuild` evaluated item or property (ProjectReference edges, TargetFramework, output-file names, DefineConstants), when adding a `*_uncertain` flag or any trust gate, and when a reviewer flags one untrusted gate or value flow — audit all ten entries in that one round instead of patching the one.
+description: How to decide whether an MSBuild-evaluated value may be trusted, and the complete eleven-entry checklist an item capture must consult before committing to a value. Use when adding or changing a consumer of a `borzoi-msbuild` evaluated item or property (ProjectReference edges, TargetFramework, output-file names, DefineConstants), when adding a `*_uncertain` flag or any trust gate, and when a reviewer flags one untrusted gate or value flow — audit all eleven entries in that one round instead of patching the one.
 ---
 
 # Trusting an MSBuild-evaluated value
@@ -13,11 +13,11 @@ Two distinct jobs, often confused:
 - **Fold gates** — "refuse to analyse this project at all". The generic seam is
   **unusable** here alone. See §2.
 
-## 1. The ten-entry item-trust checklist
+## 1. The eleven-entry item-trust checklist
 
 When making a captured MSBuild item list trustworthy, *every* one of these must
 consult trust state. A reviewer finds exactly one missing entry per round; each
-looks like a one-off and is the same family. Sweep all ten at once.
+looks like a one-off and is the same family. Sweep all eleven at once.
 
 1. The element's own `Condition` — **both directions**: an untrusted-false may
    skip a mutation that really runs; an untrusted-true may capture a phantom
@@ -40,7 +40,19 @@ looks like a one-off and is the same family. Sweep all ten at once.
    significant. For `ProjectReference`: `BuildReference`, `Targets`, and the
    `Set*` / property-list mutators. Unrecognised names are inert (probed), so
    this is a closed deny-list, not a catch-all.
-10. Any **property the consumer locates artifacts by**. The output *file* name is
+10. **Metadata-only `<Compile Update="…">`.** It is skipped wholesale at the
+    compile-order seam because it cannot change the item *set* — but it does
+    change item *metadata*, whatever the document order and whichever items the
+    spec reaches, and it overwrites a value the element declared as readily as
+    an absent one (probed, dotnet 10.0.301). So any metadatum you publish must
+    decline once one of these carrying that name has been seen. This is the
+    same family as entry 5 seen from the other side: 5 is the default that
+    arrives before the item, 10 is the mutation that arrives after it, and both
+    are invisible to a reader that only inspects the declaring element.
+    `ResolvedItem::link` shipped wrong on exactly this, and the sweep that
+    found it (`tests/fsproj_link_metadata_diff.rs`) reported **228** wrong
+    commits from an axis its author had not thought to generate.
+11. Any **property the consumer locates artifacts by**. The output *file* name is
     `$(TargetName)` (defaulting to `$(AssemblyName)`; padding is preserved
     verbatim in the filename — probed), exposed as `ParsedProject::target_name`
     with `ItemMetadataValue` trust semantics. NuGet's assets record the

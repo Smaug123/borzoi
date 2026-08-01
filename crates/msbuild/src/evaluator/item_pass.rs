@@ -284,6 +284,19 @@ fn evaluate_item_definition_group(node: Node<'_, '_>, state: &mut State<'_>) {
         node.range(),
     );
     state.compile_context = prev_compile;
+    // Before the gate: a `<Compile><Link>` default we do not thread into the
+    // capture is a reason to decline whether or not we believe its condition.
+    if !state.in_sdk_subtree
+        && node
+            .children()
+            .filter(Node::is_element)
+            .filter(|child| {
+                modelled_item_kind_for_element(*child).is_some_and(is_compile_item_kind)
+            })
+            .any(|child| item_element_writes_metadata(child, "Link"))
+    {
+        state.document_writes_compile_link = true;
+    }
     if !may_run {
         return;
     }
@@ -315,22 +328,6 @@ fn evaluate_item_definition_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // `ReferenceSourceTarget`) must not poison the list.
     if item_definition_defines_project_reference_metadata(node, state) {
         state.project_references_uncertain = true;
-    }
-    // A `<Compile>` definition supplies `Link` to every Compile item that does
-    // not declare one — before or after it in document order, and with no cone
-    // test (probed, dotnet 10.0.301). We do not thread item-definition defaults
-    // into the capture, so the published `Link` would be absent where MSBuild
-    // has a value (`State::document_writes_compile_link`).
-    if !state.in_sdk_subtree
-        && node
-            .children()
-            .filter(Node::is_element)
-            .filter(|child| {
-                modelled_item_kind_for_element(*child).is_some_and(is_compile_item_kind)
-            })
-            .any(|child| item_element_writes_metadata(child, "Link"))
-    {
-        state.document_writes_compile_link = true;
     }
     record_helper_item_definition_defaults(node, state);
 }
@@ -552,6 +549,17 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // list operations; work out what its children could do before deciding
     // the gate, so each arm below can poison the list appropriately.
     let reference_risk = project_reference_group_risk(node, state);
+    // The same question for `Link`: a metadata-only `<Compile Update>` child is
+    // a writer we do not execute, so the group's gate deciding *against* it is
+    // not the end of the matter — an untrusted false may run in the real build.
+    let link_writer_risk = !state.in_sdk_subtree
+        && node
+            .children()
+            .filter(Node::is_element)
+            .any(|child| element_is_document_link_writer(child, state));
+    if link_writer_risk {
+        state.document_writes_compile_link = true;
+    }
     let group_reads_untrusted = state.condition_reads_untrusted_value(node);
     state.compile_context = prev || (!state.in_sdk_subtree && item_group_has_compile_child(node));
     state.package_context = prev_pkg || has_package_child;
@@ -771,6 +779,17 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
         && modelled_item_list_operation_may_change_list(node, kind)
         && state.condition_reads_untrusted_value(node);
     let is_mutation = node.attribute("Update").is_some() || node.attribute("Remove").is_some();
+    // A `Link` writer we do not execute, decided against by *this element's*
+    // own gate: the same two directions as the reference-list operations above.
+    // Set *before* the gate is consulted, and regardless of how it lands. The
+    // gate arms are the routes this kept being found missing from — the
+    // element's own condition, the enclosing group's, an undecided `<Choose>`
+    // — and each fix invited the next. A writer we do not execute is a reason
+    // to decline whether or not we believe its gate, so the trigger is the
+    // writer's *presence*, which has no arms.
+    if element_is_document_link_writer(node, state) {
+        state.document_writes_compile_link = true;
+    }
     match evaluate_item_condition(node, state) {
         CondGate::Run => {
             // Kept only on an untrusted true: an Include the real build may
@@ -803,13 +822,6 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     if is_compile_item_kind(kind) && is_metadata_only_item_update(node) {
         if kind == ItemKind::Compile && compile_item_sets_compile_order(node) {
             apply_compile_order_update(node, state);
-        }
-        // The update's *other* metadata is not applied. That is fine for
-        // everything the compile fold reads, but `Link` is published, so
-        // silently keeping the pre-update value would state something MSBuild
-        // contradicts (`State::document_writes_compile_link`).
-        if !state.in_sdk_subtree && item_element_writes_metadata(node, "Link") {
-            state.document_writes_compile_link = true;
         }
         return;
     }
@@ -2926,6 +2938,20 @@ fn package_item_kind_for_element(node: Node<'_, '_>) -> Option<PackageItemKind> 
     } else {
         None
     }
+}
+
+/// Whether this element is a *document-authored* `Link` writer this evaluator
+/// does not execute: a metadata-only `<Compile Update=…>` carrying `Link`.
+///
+/// Document-authored is the whole point — the SDK's own
+/// `Microsoft.NET.Sdk.DefaultItems.targets` carries exactly this shape, and
+/// counting it would decline every Compile `Link` on every SDK project
+/// (`State::document_writes_compile_link`).
+fn element_is_document_link_writer(node: Node<'_, '_>, state: &State<'_>) -> bool {
+    !state.in_sdk_subtree
+        && modelled_item_kind_for_element(node).is_some_and(is_compile_item_kind)
+        && is_metadata_only_item_update(node)
+        && item_element_writes_metadata(node, "Link")
 }
 
 /// Whether an item element writes `name` at all, in either spelling MSBuild

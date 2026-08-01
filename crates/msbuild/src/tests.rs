@@ -9515,3 +9515,118 @@ mod escaped_leaf_boundaries {
         );
     }
 }
+
+/// The remaining entries of the item-trust checklist, audited against `Link` in
+/// one round rather than one review at a time.
+///
+/// `ResolvedItem::link` is published, so every route by which a `Link` write can
+/// reach an item without this evaluator applying it must leave either the item
+/// set untrusted or the link declined. Entries 5 and 10 (an
+/// `<ItemDefinitionGroup>` default, a metadata-only `<Compile Update>`) are
+/// handled at their own sites; these are the three that reach the same writers
+/// through a *gate* rather than directly, where the obligation is easy to
+/// believe satisfied and worth checking instead.
+mod link_trust_audit {
+    use super::*;
+
+    /// Every captured Compile item either declines its link or belongs to an
+    /// item set already marked untrustworthy.
+    fn no_link_is_committed_behind_a_gate(p: &ParsedProject) -> bool {
+        p.items_uncertain
+            || p.items
+                .iter()
+                .all(|item| item.link == ItemMetadataValue::Unknown)
+    }
+
+    #[test]
+    fn a_link_update_in_an_undecided_choose_branch_commits_nothing() {
+        // Entry 3. The `When` reads carved-out `TargetFramework`, so we cannot
+        // pin the branch and do not descend — meaning the `Update` inside it is
+        // never seen, and the flag it would have set is never set.
+        let src = r#"<Project>
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+  <Choose>
+    <When Condition="'$(TargetFramework)' == 'Bar'">
+      <ItemGroup><Compile Update="A.fs" Link="Hidden.fs" /></ItemGroup>
+    </When>
+  </Choose>
+</Project>"#;
+        let p = parse(src);
+        assert!(
+            no_link_is_committed_behind_a_gate(&p),
+            "a Link update in an undecided branch left a committed link: {:?}",
+            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_link_update_behind_an_undecided_item_group_gate_commits_nothing() {
+        // Entry 1/2 on the mutation side: an untrusted-false gate may run in the
+        // real build, applying an `Update` we skipped.
+        let src = r#"<Project>
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+  <ItemGroup Condition="'$(TargetFramework)' == 'Bar'">
+    <Compile Update="A.fs" Link="Hidden.fs" />
+  </ItemGroup>
+</Project>"#;
+        let p = parse(src);
+        assert!(
+            no_link_is_committed_behind_a_gate(&p),
+            "a Link update behind an undecided gate left a committed link: {:?}",
+            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_link_definition_behind_an_undecided_gate_commits_nothing() {
+        // Entry 5 reached through entry 1: the default applies to every item
+        // regardless of order, so a gate we cannot decide leaves it in play.
+        let src = r#"<Project>
+  <ItemDefinitionGroup Condition="'$(TargetFramework)' == 'Bar'">
+    <Compile><Link>FromDefinition.fs</Link></Compile>
+  </ItemDefinitionGroup>
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+</Project>"#;
+        let p = parse(src);
+        assert!(
+            no_link_is_committed_behind_a_gate(&p),
+            "a Link definition behind an undecided gate left a committed link: {:?}",
+            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_link_writer_inside_an_unresolvable_import_commits_nothing() {
+        // Entry 4, and the one route the presence-based trigger cannot see: a
+        // file we never walk cannot have its writers scanned. The obligation
+        // has to be met by the import machinery marking the capture untrusted
+        // instead.
+        let src = r#"<Project>
+  <Import Project="$(TargetFramework)/other.props" />
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+</Project>"#;
+        let p = parse(src);
+        assert!(
+            no_link_is_committed_behind_a_gate(&p),
+            "an unresolvable import left a committed link: {:?}",
+            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_include_whose_path_cannot_be_pinned_commits_no_link() {
+        // Entry 6. The cone test is a function of the resolved path, so an
+        // include we cannot pin down is an item we cannot place on either side
+        // of the project boundary — and the SDK's synthesis rule turns on
+        // exactly that.
+        let src = r#"<Project>
+  <ItemGroup><Compile Include="$(TargetFramework)/A.fs" /></ItemGroup>
+</Project>"#;
+        let p = parse(src);
+        assert!(
+            no_link_is_committed_behind_a_gate(&p),
+            "an unpinnable include left a committed link: {:?}",
+            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
+        );
+    }
+}
