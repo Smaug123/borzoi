@@ -61,7 +61,7 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Which span of the probe a case is about.
@@ -260,8 +260,9 @@ fn our_targets(env: &AssemblyEnv, src: &str, plant: &Plant) -> BTreeMap<Site, Ou
         plant.name,
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("probe is an impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), env);
+    let rf = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let render = |res: Option<Resolution>| match res {
         Some(Resolution::Entity(h)) => Ours::Committed(Target {
             assembly: env.entity(h).assembly.name.clone(),

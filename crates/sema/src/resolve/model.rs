@@ -7,6 +7,7 @@
 //! resolver state; the walk that produces them lives in the parent
 //! [`resolve`](super) module.
 
+use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -2764,6 +2765,20 @@ pub struct ResolvedFile {
     /// contribution ([`Self::same_export_contribution`]): a `.fsi` edit that
     /// changes the surface must invalidate the incremental fold's suffix.
     pub(super) sig_exports: Vec<SigExport>,
+    /// What the parser had to recover from in this file.
+    ///
+    /// Unlike [`Self::decline_sites`] and [`Self::resolution_trace`], which are
+    /// documented as purely diagnostic, this one is **load-bearing**:
+    /// [`crate::infer_file`] reads it to decide whether a declaration's syntax
+    /// may be believed, so a caller that supplies
+    /// [`SyntaxRecovery::Unretained`] gets a quieter answer, not merely a
+    /// thinner report.
+    ///
+    /// It is deliberately *not* part of
+    /// [`Self::same_export_contribution`]: recovery gates what this file
+    /// commits about itself, never what it exports, so a later file's fold
+    /// slot cannot observe it.
+    pub(super) recovery: SyntaxRecovery,
 }
 
 /// Build the end-offset index a token classifier queries, from a set of
@@ -2924,6 +2939,10 @@ impl ResolvedFile {
             export_decls: Vec::new(),
             sig_screen: Some(screen),
             sig_exports,
+            // A signature file's slot contributes a screen and exports, never
+            // an inferred type — nothing reads this — so the value that claims
+            // the least is the right one.
+            recovery: SyntaxRecovery::Unretained,
         }
     }
 
@@ -3056,6 +3075,11 @@ impl ResolvedFile {
     /// [`Resolution`] at `range` is what it would be were no census kept.
     pub fn decline_site(&self, range: TextRange) -> Option<DeclineSite> {
         self.decline_sites.get(&range).copied()
+    }
+
+    /// What the parser had to recover from, as supplied to [`crate::resolve_file`].
+    pub fn recovery(&self) -> &SyntaxRecovery {
+        &self.recovery
     }
 
     /// Every recorded decline, in arbitrary order — for a census that counts

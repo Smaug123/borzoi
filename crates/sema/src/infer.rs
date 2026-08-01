@@ -382,6 +382,7 @@
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
+use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 
 use borzoi_assembly::{EntityKind, Primitive, TypeRef};
@@ -1299,6 +1300,23 @@ impl<'a> Gen<'a> {
     /// its own soundness argument in `docs/completed/r2-annotation-typing-plan.md`
     /// first.
     fn annotation_ty(&self, ty: &Type) -> Option<Ty> {
+        // An annotation is only worth reading if the parser understood the
+        // declaration it was written in. Recovery *drops* what it cannot parse,
+        // so `let v : System.String. = …` and `let v : System.String[ = …`
+        // leave behind trees whose surviving children are indistinguishable
+        // from well-formed ones — and FCS rejects both, recovering the binder
+        // to whatever it likes (`System.String` for the first, `System.Object`
+        // for a rejected generic application). Which of those it picks is not a
+        // rule we can reproduce, so the only sound answer on a declaration that
+        // did not parse is silence.
+        //
+        // Asked here rather than at the callers so a new entry point into
+        // annotation reading cannot miss it; a clean parse answers without
+        // touching the tree, so the recursion costs a discriminant test per
+        // node.
+        if !self.resolved.recovery().declaration_is_intact(ty.syntax()) {
+            return None;
+        }
         match ty {
             Type::Paren(p) => self.annotation_ty(&p.inner()?),
             Type::LongIdent(li) => {
@@ -3609,6 +3627,7 @@ mod tests {
     use borzoi_cst::syntax::{AstNode, ImplFile};
 
     use super::{ExtensionScope, Gen};
+    use crate::recovery::SyntaxRecovery;
     use crate::resolve::ResolvedFile;
     use crate::ty::Ty;
     use crate::{AssemblyEnv, ProjectItems, resolve_file};
@@ -3787,9 +3806,10 @@ mod tests {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = super::infer_file(&file, &resolved, &env);
         inferred
             .def_types()
@@ -3808,9 +3828,10 @@ mod tests {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = super::infer_file(&file, &resolved, &env);
         inferred.types().values().map(super::Ty::render).collect()
     }
@@ -4681,9 +4702,10 @@ mod tests {
         // legitimately appear elsewhere — `f`'s body use of `x` — so the
         // assertion is range-keyed, not a blanket render scan.)
         let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         let env = primitive_env();
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = super::infer_file(&file, &resolved, &env);
         // Key on the exact one-byte `y` token range: the tuple node itself
         // starts at the same offset (its parens are a separate wrapper).
@@ -4822,6 +4844,7 @@ mod tests {
         for lit in kinds {
             let src = format!("module M\nlet v = {lit}\n");
             let parsed = parse(&src);
+            let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
             // Find the `ConstExpr` in the RHS.
             let cst = file
@@ -4903,8 +4926,14 @@ mod tests {
         use borzoi_cst::parser::parse;
 
         let parsed = parse("module M\n");
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     #[test]

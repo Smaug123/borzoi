@@ -30,7 +30,14 @@ use crate::common::{
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{ProjectItems, resolve_file};
+use borzoi_sema::{ProjectItems, SyntaxRecovery, resolve_file};
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 /// One generated cell of the matrix.
 struct Case {
@@ -204,8 +211,9 @@ fn generative_matrix_agrees_with_fcs() {
             p.errors,
             case.src
         );
+        let recovery = SyntaxRecovery::of(&p);
         let file = ImplFile::cast(p.root).expect("impl file");
-        let rf = resolve_file(&file, &ProjectItems::default(), &env);
+        let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
         let clean = entry.oracle.errors.is_empty();
         let cell_commits = check_attrs_agree(&case.src, &env, &rf, &entry.oracle, clean);
@@ -305,7 +313,7 @@ fn corpus_attributes_agree_with_fcs() {
             skipped += 1;
             continue;
         };
-        let rf = resolve_file(&file, &ProjectItems::default(), &env);
+        let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery_of(&src));
         fcs_attrs += entry.oracle.attrs.len();
         // Reverse direction off: a corpus file checked in isolation errors
         // freely (missing project siblings), and those errors can suppress

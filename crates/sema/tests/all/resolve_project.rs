@@ -11,7 +11,8 @@
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, SemanticClass, resolve_file, resolve_project,
+    AssemblyEnv, ProjectItems, Resolution, SemanticClass, SyntaxRecovery, resolve_file,
+    resolve_project,
 };
 use rowan::TextRange;
 
@@ -199,7 +200,15 @@ fn single_file_through_the_fold_matches_resolve_file() {
     let src = "let foo = 1\nlet bar = foo\n";
     let f = impl_file(src);
     let via_project = resolve_project(std::slice::from_ref(&f), &AssemblyEnv::default());
-    let direct = resolve_file(&f, &ProjectItems::default(), &AssemblyEnv::default());
+    // `resolve_project` takes bare trees, so its slot is `Unretained`; the
+    // direct call is given the same reading, else the two sides would differ on
+    // recovery alone.
+    let direct = resolve_file(
+        &f,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &SyntaxRecovery::Unretained,
+    );
     assert_eq!(
         via_project.file(0).resolutions(),
         direct.resolutions(),

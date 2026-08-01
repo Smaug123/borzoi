@@ -19,7 +19,7 @@
 //! concern this layer intentionally does not predict).
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile};
+use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile, SyntaxRecovery};
 use rowan::{TextRange, TextSize};
 
 use super::{
@@ -263,8 +263,14 @@ mod tests {
     /// syntax root (owned, so it outlives the parse).
     fn resolve(src: &str) -> (ResolvedFile, SyntaxNode) {
         let parse = borzoi_cst::parser::parse(src);
+        let recovery = SyntaxRecovery::of(&parse);
         let file = ImplFile::cast(parse.root).expect("source parses as an impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let resolved = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
         (resolved, file.syntax().clone())
     }
 

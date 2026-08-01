@@ -15,7 +15,9 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 use rowan::{TextRange, TextSize};
 
 fn resolve(src: &str) -> ResolvedFile {
@@ -25,8 +27,14 @@ fn resolve(src: &str) -> ResolvedFile {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// The byte range of the `ident` **token** located inside the (unique)

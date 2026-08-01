@@ -27,7 +27,7 @@ use crate::common::generator::{RefKind, generate, seed_tape};
 use crate::common::{invoke_fcs_dump, parse_fcs_uses};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Snippets within the parser subset whose every in-file name resolves.
@@ -339,8 +339,14 @@ fn assert_matches_fcs(source: &str) -> HashSet<TextRange> {
         "snippet has parse errors (outside the subset?): {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let rf = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
 
     // FCS oracle.
     let path = temp_fs_file(source);
@@ -517,8 +523,14 @@ fn member_scope_collisions_never_wrong_resolve() {
                     if !parsed.errors.is_empty() {
                         continue;
                     }
+                    let recovery = SyntaxRecovery::of(&parsed);
                     let file = ImplFile::cast(parsed.root).expect("impl file");
-                    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+                    let rf = resolve_file(
+                        &file,
+                        &ProjectItems::default(),
+                        &AssemblyEnv::default(),
+                        &recovery,
+                    );
                     checked += 1;
 
                     let path = temp_fs_file(&s);

@@ -46,6 +46,7 @@
 //! per correctness-over-availability we decline. The dropped non-case heads are
 //! a coverage gap, never a wrong answer.
 
+use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -93,6 +94,7 @@ pub fn resolve_file(
     file: &ImplFile,
     preceding: &ProjectItems,
     assemblies: &AssemblyEnv,
+    recovery: &SyntaxRecovery,
 ) -> ResolvedFile {
     // Coarse phase spans (otel only) so a slow `resolve_file` on a large file
     // splits into resolver setup / the declaration walk / finish. Each guard is
@@ -101,6 +103,7 @@ pub fn resolve_file(
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolver_new").entered();
     let mut r = Resolver::new(preceding, assemblies);
+    r.recovery = recovery.clone();
     #[cfg(feature = "otel")]
     drop(_phase);
     #[cfg(feature = "otel")]
@@ -668,11 +671,20 @@ fn header_long_id_path(fragment: &ModuleOrNamespace) -> Option<Vec<String>> {
 pub struct ProjectFile {
     pub file: SourceFile,
     pub qnof: QualifiedNameOfFile,
+    /// What the parser had to recover from in this file — see
+    /// [`SyntaxRecovery`]. Threaded to the file's [`ResolvedFile`] and read by
+    /// [`crate::infer_file`], so a caller that supplies
+    /// [`SyntaxRecovery::Unretained`] gets a quieter answer for this file.
+    pub recovery: SyntaxRecovery,
 }
 
 impl ProjectFile {
-    pub fn new(file: SourceFile, qnof: QualifiedNameOfFile) -> Self {
-        ProjectFile { file, qnof }
+    pub fn new(file: SourceFile, qnof: QualifiedNameOfFile, recovery: SyntaxRecovery) -> Self {
+        ProjectFile {
+            file,
+            qnof,
+            recovery,
+        }
     }
 
     /// Wrap an implementation file for an impl-only fold. Pairing starts at a
@@ -682,6 +694,12 @@ impl ProjectFile {
         ProjectFile {
             file: SourceFile::Impl(file),
             qnof: QualifiedNameOfFile::placeholder(),
+            // The bare-`ImplFile` entry points take trees without the parses
+            // that produced them, so nothing here can prove a clean parse. The
+            // cost is inference declining every annotation in the fold; a
+            // caller that wants those must go through
+            // [`resolve_project_files`] with a real [`SyntaxRecovery`].
+            recovery: SyntaxRecovery::Unretained,
         }
     }
 }
@@ -1355,7 +1373,7 @@ fn resolve_project_files_impl(
                     )
                     .entered()
                 };
-                let mut rf = resolve_file(file, &preceding, assemblies);
+                let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
                 rf.preceding_declares_extension_source = ext.wholesale;
                 rf.preceding_augmentation_instance_names = ext.instance_names.clone();
                 rf.preceding_augmentation_static_names = ext.static_names.clone();
@@ -1728,7 +1746,7 @@ fn resolve_project_files_incremental_impl(
                     )
                 }
                 SourceFile::Impl(file) => {
-                    let mut rf = resolve_file(file, &preceding, assemblies);
+                    let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
                     rf.preceding_declares_extension_source = ext.wholesale;
                     rf.preceding_augmentation_instance_names = ext.instance_names.clone();
                     rf.preceding_augmentation_static_names = ext.static_names.clone();
@@ -1893,6 +1911,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
@@ -2124,6 +2143,7 @@ impl<'a> Resolver<'a> {
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),
+            recovery: self.recovery.clone(),
         }
     }
 
@@ -2456,8 +2476,14 @@ mod contribution_tests {
             "parse errors in {src:?}: {:?}",
             p.errors
         );
+        let recovery = SyntaxRecovery::of(&p);
         let file = ImplFile::cast(p.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     /// A body-only edit that adds a *local* binder must not count as an export
@@ -2521,8 +2547,14 @@ mod trace_tests {
             "snippet has parse errors {src:?}: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     #[test]
@@ -2623,15 +2655,27 @@ mod export_decl_tests {
             "snippet has parse errors {src:?}: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     /// Resolve `src` tolerating parse errors — for recovery / malformed cases.
     fn resolve_lenient(src: &str) -> ResolvedFile {
         let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     fn segs(parts: &[&str]) -> Vec<String> {

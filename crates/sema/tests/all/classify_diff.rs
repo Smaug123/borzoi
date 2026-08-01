@@ -63,7 +63,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 use crate::common::{CensusUse, LineIndex, invoke_fcs_dump_census, parse_census_jsonl};
@@ -308,8 +308,14 @@ fn committed_classifications(source: &str) -> Vec<(String, SemanticClass)> {
         "snippet has parse errors (outside the subset?): {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let rf = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
 
     let idx = LineIndex::new(source);
     // Group FCS's uses by byte range. FCS can report *several* symbols at one
@@ -531,8 +537,14 @@ fn token_classifier_resolves_qualified_tails() {
     for (source, head, head_class, tail_class) in cases {
         let parsed = parse(source);
         assert!(parsed.errors.is_empty(), "parse errors in {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let rf = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
         let classify = rf.token_classifier();
 
         // The qualified use is `<head>.Red`; locate that occurrence.
@@ -575,8 +587,14 @@ fn self_referential_single_case_union_rhs_is_not_committed_as_type() {
     let source = "type Ap = Ap\nlet z = Ap\n";
     let parsed = parse(source);
     assert!(parsed.errors.is_empty(), "parse errors in {source:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let rf = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
 
     // `type Ap = Ap`: the LHS name at 5..7, the RHS at 10..12.
     let lhs = span(5, 7);
@@ -613,8 +631,14 @@ fn active_pattern_body_case_does_not_commit_shadowed_value() {
                   let (|UNone|USome|) x = if x > 0 then USome x else UNone\n";
     let parsed = parse(source);
     assert!(parsed.errors.is_empty(), "parse errors in {source:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let rf = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
 
     let usome_body = {
         let base = source.find("then USome").expect("the case construction") + "then ".len();
@@ -659,8 +683,14 @@ fn dump_fcs_ground_truth() {
     for source in CORPUS {
         println!("\n=== {source:?} ===");
         let parsed = parse(source);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let rf = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
         let idx = LineIndex::new(source);
         for u in fcs_census(source) {
             let (s, e) = u.use_range_bytes(&idx);

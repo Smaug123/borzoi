@@ -102,7 +102,9 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Resolution, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, InferredFile, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
+};
 
 /// The cells that commit an answer, exactly. A two-sided ratchet: a cell that
 /// starts answering and a cell that stops are both a diff here, so neither
@@ -219,8 +221,9 @@ fn run() -> Run {
         "the generated probe must parse cleanly: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let starts = line_starts(&corpus.probe);

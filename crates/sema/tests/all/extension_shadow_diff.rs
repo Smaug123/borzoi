@@ -53,7 +53,9 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
+};
 
 /// The hiding-corpus cells this sweep re-probes with an extension in scope: one
 /// per shape the wake distinguishes, chosen so that both its answering and its
@@ -259,8 +261,9 @@ fn run(kind: ExtKind) -> (Vec<Probe>, Vec<(Answer, Answer)>, HashSet<usize>) {
         "the probe file must parse cleanly: {:?}\n{src}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let starts = line_starts(&src);

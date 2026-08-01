@@ -42,6 +42,7 @@ mod infer;
 mod member_ty;
 mod overload;
 mod qnof;
+mod recovery;
 mod resolve;
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -59,6 +60,7 @@ pub use diagnostics::{SemaDiagnostic, SemaDiagnosticKind};
 pub use infer::{InferredFile, infer_file};
 pub use overload::{ArityWindow, arity_window};
 pub use qnof::{QualifiedNameOfFile, qualified_names};
+pub use recovery::SyntaxRecovery;
 pub use resolve::{
     ActivePatternShape, CaseKind, DeclineCause, DeclineSite, DeclineTier, DeferredReason,
     ExportedItem, ExportedItems, ItemId, OpenOpacity, OpenTrace, ProjectFile, ProjectItems,

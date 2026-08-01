@@ -22,7 +22,7 @@ use borzoi_assembly::{Ecma335Assembly, EcmaView, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// The fixture's assembly simple name (its `<AssemblyName>`), which FCS reports
@@ -89,8 +89,9 @@ fn assert_matches_fcs(src: &str, expected: usize) {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &env);
+    let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
     // FCS oracle, with the fixture as a reference.
     let path = temp_fs_file("asm_diff", src);
@@ -159,8 +160,9 @@ fn sweep_sound(src: &str) -> (usize, usize) {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &env);
+    let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
     let path = temp_fs_file("asm_sweep", src);
     let json = invoke_fcs_dump_with_refs("uses", &path, &[fixture]);
@@ -611,8 +613,9 @@ fn assert_use_complete(
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &env);
+    let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
     // FCS oracle: pick the occurrence of `needle` that FCS resolves *into the
     // fixture* as `expected_full`. Choosing by the oracle (not the first textual

@@ -85,7 +85,9 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, DeclineSite, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, DeclineSite, ProjectItems, Resolution, SyntaxRecovery, resolve_file,
+};
 use rowan::TextRange;
 
 /// Which assembly the probe references first. FCS imports references in this
@@ -2855,8 +2857,9 @@ fn our_target(env: &AssemblyEnv, src: &str, plant: &Plant) -> Ours {
         plant.name,
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("probe is an impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), env);
+    let rf = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let (start, end) = tier_corpus::probe_use_span(src, plant);
     // The census keys a path decline at the **whole written path**, which for a
     // dotted probe is not the leaf both oracles report the use at.

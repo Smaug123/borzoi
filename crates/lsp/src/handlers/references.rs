@@ -26,7 +26,8 @@ use std::collections::{HashMap, HashSet};
 
 use borzoi_cst::syntax::{AppExpr, AstNode, Expr, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, resolve_file,
+    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, ResolvedProject, SyntaxRecovery,
+    resolve_file,
 };
 use lsp_types::{Location, ReferenceParams, Url};
 use rowan::TextRange;
@@ -359,10 +360,16 @@ fn single_file_references(
     let Some(parse) = parse_with_symbols(text, &symbols, lang) else {
         return empty("parse_error");
     };
+    let recovery = SyntaxRecovery::of(&parse);
     let Some(file) = ImplFile::cast(parse.root) else {
         return empty("unsupported_file");
     };
-    let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let resolved = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     let Some((target_range, target_res)) = smallest_resolution_with_range(&resolved, byte) else {
         return empty("none");
     };

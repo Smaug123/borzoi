@@ -20,7 +20,9 @@ use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, Impor
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
-use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile};
+use borzoi_sema::{
+    AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
+};
 use lsp_types::Url;
 
 use crate::assembly_cache::AssemblyCache;
@@ -181,6 +183,12 @@ struct CachedParse {
     /// The reusable parsed file — impl or signature, per the path's extension
     /// (a rowan handle; a hit clones it — an `Arc` bump, not a re-parse).
     file: SourceFile,
+    /// What the parser had to recover from in `file`. Cached beside the tree
+    /// because the `Parse` that produced both is dropped here, and a hit that
+    /// served the tree without it would leave the fold unable to prove any
+    /// declaration parsed cleanly — silently costing every annotation in the
+    /// file its type.
+    recovery: SyntaxRecovery,
 }
 
 /// The previous Compile-order fold of a project, kept so the *next* fold can be
@@ -1208,6 +1216,7 @@ fn build_parses(
     let mut files = Vec::with_capacity(includes.len());
     let mut paths = Vec::with_capacity(includes.len());
     let mut texts = Vec::with_capacity(includes.len());
+    let mut recoveries = Vec::with_capacity(includes.len());
 
     let _parse_all_span =
         tracing::info_span!("parse_compile_items", count = includes.len()).entered();
@@ -1246,12 +1255,13 @@ fn build_parses(
                         && c.symbols == symbols
                         && *c.text == *text
                 })
-                .map(|c| (c.file.clone(), Arc::clone(&c.text)))
+                .map(|c| (c.file.clone(), Arc::clone(&c.text), c.recovery.clone()))
         }) {
-            let (source_file, text) = hit;
+            let (source_file, text, recovery) = hit;
             files.push(source_file);
             paths.push(include);
             texts.push(text);
+            recoveries.push(recovery);
             continue;
         }
         // A `.fsi` Compile item parses under the signature grammar
@@ -1321,6 +1331,9 @@ fn build_parses(
                 return None;
             }
         }
+        // Before `parse.root` is moved into the `SourceFile`: the errors and the
+        // tree describe the same parse, and only here are both still in hand.
+        let recovery = SyntaxRecovery::of(&parse);
         let source_file = if signature {
             match SigFile::cast(parse.root) {
                 Some(sig) => SourceFile::Sig(sig),
@@ -1356,6 +1369,7 @@ fn build_parses(
             lang_version_untrusted,
             text: Arc::clone(&text),
             file: source_file.clone(),
+            recovery: recovery.clone(),
         };
         let variants = file_parses.entry(include.clone()).or_default();
         if let Some(slot) = variants.iter_mut().find(|c| {
@@ -1370,6 +1384,7 @@ fn build_parses(
         files.push(source_file);
         paths.push(include);
         texts.push(text);
+        recoveries.push(recovery);
     }
     drop(_parse_all_span);
 
@@ -1380,7 +1395,8 @@ fn build_parses(
     let files = files
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .zip(recoveries)
+        .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
         .collect();
 
     Some(ProjectParses {
@@ -3450,6 +3466,7 @@ mod tests {
                 .expect("an impl Compile item"),
             &ProjectItems::default(),
             &AssemblyEnv::default(),
+            &parses.files[0].recovery,
         );
         let names: Vec<_> = resolved
             .exports()

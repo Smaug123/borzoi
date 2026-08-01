@@ -51,7 +51,9 @@ use crate::common::{ensure_assembly_fixture_built, ensure_system_runtime_dll};
 use borzoi_assembly::{Ecma335Assembly, EcmaView, Entity};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
+};
 
 /// Every source snippet the oracle runs, chosen to reach inference's distinct
 /// assembly-type doors: a literal receiver (the path inference writes down
@@ -142,8 +144,9 @@ fn entities() -> Vec<Entity> {
 fn published(env: &AssemblyEnv, src: &str) -> HashMap<String, String> {
     let parsed = parse(src);
     assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
 
     let mut out = HashMap::new();

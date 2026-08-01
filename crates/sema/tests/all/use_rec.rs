@@ -18,7 +18,9 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, LetOrUseExpr};
-use borzoi_sema::{AssemblyEnv, ProjectItems, SemaDiagnostic, SemaDiagnosticKind, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, SemaDiagnostic, SemaDiagnosticKind, SyntaxRecovery, resolve_file,
+};
 use proptest::prelude::*;
 use rowan::TextRange;
 
@@ -35,8 +37,14 @@ fn diagnostics(source: &str) -> Vec<SemaDiagnostic> {
         "unexpected parse errors for {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("root is an impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let resolved = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     resolved.diagnostics().to_vec()
 }
 

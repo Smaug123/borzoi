@@ -25,7 +25,9 @@ use crate::common::{ensure_system_runtime_dll, invoke_fcs_dump, parse_fcs_types,
 use borzoi_assembly::{Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
-use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Resolution, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, InferredFile, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
+};
 use rowan::TextRange;
 
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so `System.String`
@@ -49,8 +51,9 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types = inferred
         .def_types()
@@ -71,8 +74,9 @@ fn assert_sound(src: &str) -> usize {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let path = temp_fs_file("static_call_diff", src);
@@ -104,6 +108,7 @@ fn assert_sound(src: &str) -> usize {
 /// The text range of the first `IDENT_TOK` spelling `name` in `src`.
 fn ident_range(src: &str, name: &str) -> TextRange {
     let parsed = parse(src);
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     file.syntax()
         .descendants_with_tokens()
@@ -576,8 +581,9 @@ fn infer_with(env: &AssemblyEnv, src: &str) -> InferredFile {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     infer_file(&file, &resolved, env)
 }
 

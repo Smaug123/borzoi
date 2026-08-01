@@ -127,7 +127,9 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{InferredFile, ProjectItems, ResolvedFile, infer_file, resolve_file};
+use borzoi_sema::{
+    InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, infer_file, resolve_file,
+};
 
 /// Resolve and infer a generated chunk over the shared real FSharp.Core + BCL
 /// closure — the same env the `binder-types` differential uses, and the honest
@@ -141,9 +143,10 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
          silences its whole chunk: {:?}\n{source}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = crate::common::constrained_fixture_env();
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred)
 }

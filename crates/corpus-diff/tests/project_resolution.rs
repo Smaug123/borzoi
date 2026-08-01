@@ -24,7 +24,8 @@ use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BatchChild;
 use borzoi_sema::{
-    AssemblyEnv, ProjectFile, Resolution, SourceFile, qualified_names, resolve_project_files,
+    AssemblyEnv, ProjectFile, Resolution, SourceFile, SyntaxRecovery, qualified_names,
+    resolve_project_files,
 };
 use lsp_types::Position;
 use tempfile::TempDir;
@@ -127,6 +128,7 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let srcs = vec![SourceFile::Impl(file)];
     let paths = vec![path];
@@ -134,7 +136,7 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
     let files: Vec<ProjectFile> = srcs
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
         .collect();
     let env = Arc::new(env);
     let resolved = Arc::new(resolve_project_files(&files, env.as_ref()));
@@ -187,7 +189,7 @@ fn synthetic_multi_file_project(items: &[(&str, &str)]) -> LoadedProject {
     let files: Vec<ProjectFile> = srcs
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
         .collect();
     let env = Arc::new(AssemblyEnv::default());
     let resolved = Arc::new(resolve_project_files(&files, env.as_ref()));

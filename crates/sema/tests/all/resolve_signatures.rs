@@ -33,8 +33,9 @@ use borzoi_cst::parser::{parse, parse_sig};
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
-    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, qualified_names,
-    resolve_project_files, resolve_project_files_incremental, resolve_project_files_prefix,
+    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
+    qualified_names, resolve_project_files, resolve_project_files_incremental,
+    resolve_project_files_prefix,
 };
 use rowan::TextRange;
 
@@ -69,7 +70,7 @@ pub(crate) fn project(files: &[(&str, &str)]) -> Vec<ProjectFile> {
     let qnofs = qualified_names(&srcs, &paths);
     srcs.into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
         .collect()
 }
 
@@ -662,7 +663,11 @@ fn incremental_matches_cold_across_signature_edits() {
     // Sig-content edit: reparse only the sig; reuse the impl trees verbatim.
     let v2_sig = source_file("/p/A.fsi", "module A\n\nval hidden: int\n");
     let mut new_files = prev_files.clone();
-    new_files[0] = ProjectFile::new(v2_sig, new_files[0].qnof.clone());
+    new_files[0] = ProjectFile::new(
+        v2_sig,
+        new_files[0].qnof.clone(),
+        SyntaxRecovery::Unretained,
+    );
     let (incr, reused) = resolve_project_files_incremental(&prev_files, &prev, &new_files, &env);
     let cold = resolve_project_files(&new_files, &env);
     assert_eq!(incr, cold, "incremental ≡ batch after a .fsi edit");
@@ -677,7 +682,11 @@ fn incremental_matches_cold_across_signature_edits() {
         "module A\n\nlet shown = (let t = 1 in t)\nlet hidden = 2\n",
     );
     let mut new_files3 = prev_files.clone();
-    new_files3[1] = ProjectFile::new(v3_impl, new_files3[1].qnof.clone());
+    new_files3[1] = ProjectFile::new(
+        v3_impl,
+        new_files3[1].qnof.clone(),
+        SyntaxRecovery::Unretained,
+    );
     let (incr3, reused3) = resolve_project_files_incremental(&prev_files, &prev, &new_files3, &env);
     assert_eq!(
         incr3,
@@ -756,7 +765,7 @@ pub(crate) fn assert_sig_matches_fcs(p: &SigProject) {
     let input: Vec<ProjectFile> = srcs
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
         .collect();
     let env = if p.refs.is_empty() {
         AssemblyEnv::default()
@@ -1179,7 +1188,9 @@ fn signature_matrix_agrees_with_fcs_per_reference() {
                     let input: Vec<ProjectFile> = srcs
                         .into_iter()
                         .zip(qnofs)
-                        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                        .map(|(file, qnof)| {
+                            ProjectFile::new(file, qnof, SyntaxRecovery::Unretained)
+                        })
                         .collect();
                     let env = if collision {
                         &reflib_environment

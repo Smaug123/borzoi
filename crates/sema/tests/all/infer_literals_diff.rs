@@ -25,14 +25,23 @@
 use crate::common::{invoke_fcs_dump, parse_fcs_types, temp_fs_file};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Ty, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, InferredFile, ProjectItems, SyntaxRecovery, Ty, infer_file, resolve_file,
+};
 use proptest::prelude::*;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 /// Resolve `file` (single-file: empty project + no referenced assemblies, which
 /// is all within-file value-reference typing needs) and infer it.
-fn infer(file: &ImplFile) -> InferredFile {
+fn infer(file: &ImplFile, recovery: &SyntaxRecovery) -> InferredFile {
     let env = AssemblyEnv::default();
-    let resolved = resolve_file(file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(file, &ProjectItems::default(), &env, recovery);
     infer_file(file, &resolved, &env)
 }
 
@@ -44,8 +53,9 @@ fn infer_src(source: &str) -> InferredFile {
         "snippet has parse errors (outside the subset?): {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    infer(&file)
+    infer(&file, &recovery)
 }
 
 /// Infer `source`, run the FCS `types` oracle over it, and assert the D5
@@ -709,8 +719,9 @@ proptest! {
         ] {
             let parsed = parse(&src);
             prop_assume!(parsed.errors.is_empty());
+            let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
-            let inf = infer(&file);
+            let inf = infer(&file, &recovery);
             prop_assert_eq!(inf.len(), 1, "exactly one literal in {:?}", src);
             let got = inf.types().values().next().expect("one type").render();
             prop_assert_eq!(got, want.to_string(), "src={:?}", src);
@@ -736,8 +747,9 @@ proptest! {
             let src = format!("module M\nlet x = {n}{sfx}\n");
             let parsed = parse(&src);
             prop_assume!(parsed.errors.is_empty());
+            let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
-            let inf = infer(&file);
+            let inf = infer(&file, &recovery);
             prop_assert_eq!(inf.len(), 1, "exactly one literal in {:?}", src);
             let got = inf.types().values().next().expect("one type").render();
             prop_assert_eq!(got, ty.to_string(), "src={:?}", src);
@@ -755,11 +767,12 @@ proptest! {
         let src = format!("module M\nlet x : int64 = {n}\n");
         let parsed = parse(&src);
         prop_assume!(parsed.errors.is_empty());
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         // The full BCL env: `int64` types through FSharp.Core's abbreviation
         // marker and the target chase, not a hard-coded alias table.
         let env = crate::common::full_bcl_env();
-        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery_of(&src));
         let inferred = infer_file(&file, &resolved, env);
         prop_assert!(
             inferred.types().is_empty(),
@@ -781,8 +794,9 @@ proptest! {
         let src = format!("module M\nlet rec x = {n}\nand y = x\n");
         let parsed = parse(&src);
         prop_assume!(parsed.errors.is_empty());
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        prop_assert!(infer(&file).is_empty(), "should defer rec {:?}", src);
+        prop_assert!(infer(&file, &recovery).is_empty(), "should defer rec {:?}", src);
     }
 
     /// A use of an `int`-bound value is itself `System.Int32`, for any value —
@@ -794,8 +808,9 @@ proptest! {
         let src = format!("module M\nlet x = {n}\nlet y = x\n");
         let parsed = parse(&src);
         prop_assume!(parsed.errors.is_empty());
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let inf = infer(&file);
+        let inf = infer(&file, &recovery);
         prop_assert_eq!(inf.len(), 2, "literal RHS + the use of `x`: {:?}", src);
         for ty in inf.types().values() {
             prop_assert_eq!(ty.render(), "System.Int32".to_string(), "src={:?}", src);

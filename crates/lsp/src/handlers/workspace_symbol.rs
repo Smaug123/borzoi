@@ -25,6 +25,7 @@
 //! slot is inert in Stage 1 of `docs/fsi-signature-restriction-plan.md`). The CST parser runs under `catch_unwind`, so a buffer that
 //! panics the parser contributes nothing rather than crashing the server.
 
+use borzoi_sema::SyntaxRecovery;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -138,6 +139,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
                     &query,
                     parses.texts[i].as_ref(),
                     impl_file,
+                    &parses.files[i].recovery,
                     &uri,
                 );
             }
@@ -160,10 +162,13 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         let Some(parse) = parse_with_symbols(&src.text, &symbols, lang) else {
             continue;
         };
+        let recovery = SyntaxRecovery::of(&parse);
         let Some(file) = ImplFile::cast(parse.root) else {
             continue;
         };
-        collect_matching(&mut out, &mut seen, &query, &src.text, &file, &src.uri);
+        collect_matching(
+            &mut out, &mut seen, &query, &src.text, &file, &recovery, &src.uri,
+        );
     }
 
     Some(WorkspaceSymbolResponse::Flat(out))
@@ -185,9 +190,10 @@ fn collect_matching(
     lower_query: &str,
     text: &str,
     file: &ImplFile,
+    recovery: &SyntaxRecovery,
     uri: &Url,
 ) {
-    for (name, kind, range) in file_export_symbols(text, file) {
+    for (name, kind, range) in file_export_symbols(text, file, recovery) {
         if !lower_query.is_empty() && !name.to_lowercase().contains(lower_query) {
             continue;
         }

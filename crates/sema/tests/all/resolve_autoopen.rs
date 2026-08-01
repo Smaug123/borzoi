@@ -21,9 +21,16 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, OpenFoldSpace, OpenFoldTarget, ProjectItems, Resolution,
-    ResolvedFile, resolve_file, resolve_project,
+    ResolvedFile, SyntaxRecovery, resolve_file, resolve_project,
 };
 use rowan::TextRange;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 /// Build the auto-open fixture once per test binary and return the `.dll` path.
 ///
@@ -83,7 +90,12 @@ fn impl_file(src: &str) -> ImplFile {
 }
 
 fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
-    resolve_file(&impl_file(src), &ProjectItems::default(), env)
+    resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        env,
+        &recovery_of(src),
+    )
 }
 
 /// Range of `needle`'s only occurrence in `hay`.

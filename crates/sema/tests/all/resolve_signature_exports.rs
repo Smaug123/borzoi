@@ -17,8 +17,8 @@
 use std::path::{Path, PathBuf};
 
 use borzoi_sema::{
-    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, qualified_names,
-    resolve_project_files, resolve_project_files_incremental,
+    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
+    qualified_names, resolve_project_files, resolve_project_files_incremental,
 };
 
 use crate::common::{
@@ -460,7 +460,11 @@ fn incremental_matches_cold_when_sig_gains_a_val() {
     ];
     let v2_sig = source_file("/p/A.fsi", v2[0].1);
     let mut new_files = prev_files.clone();
-    new_files[0] = ProjectFile::new(v2_sig, new_files[0].qnof.clone());
+    new_files[0] = ProjectFile::new(
+        v2_sig,
+        new_files[0].qnof.clone(),
+        SyntaxRecovery::Unretained,
+    );
     let (incr, reused) = resolve_project_files_incremental(&prev_files, &prev, &new_files, &env);
     let cold = resolve_project_files(&new_files, &env);
     assert_eq!(incr, cold, "incremental ≡ batch after exposing a new val");
@@ -728,7 +732,7 @@ fn intervening_collision_agrees_with_fcs() {
     let input: Vec<ProjectFile> = srcs
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
         .collect();
     let proj = resolve_project_files(&input, &reflib_env());
     let _ = std::fs::remove_dir_all(&root);
@@ -1320,7 +1324,7 @@ fn fragment_interleaving_matrix_agrees_with_fcs() {
                 let input: Vec<ProjectFile> = srcs
                     .into_iter()
                     .zip(qnofs)
-                    .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                    .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
                     .collect();
                 let proj = resolve_project_files(&input, &AssemblyEnv::default());
                 let _ = std::fs::remove_dir_all(&root);
@@ -2990,7 +2994,7 @@ fn accessibility_matrix_agrees_with_fcs() {
                 let input: Vec<ProjectFile> = srcs
                     .into_iter()
                     .zip(qnofs)
-                    .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                    .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
                     .collect();
                 let env = if collision {
                     reflib_env()
@@ -3164,7 +3168,9 @@ fn auto_open_type_matrix_agrees_with_fcs() {
                     let input: Vec<ProjectFile> = srcs
                         .into_iter()
                         .zip(qnofs)
-                        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+                        .map(|(file, qnof)| {
+                            ProjectFile::new(file, qnof, SyntaxRecovery::Unretained)
+                        })
                         .collect();
                     let env = if collision {
                         reflib_env()
