@@ -102,12 +102,48 @@ already speaks about that same inner build — and it is pinned in both directio
 by `served_region_follows_the_served_tfm`, which asserts each gate shape against
 both columns rather than leaving the tradeoff to prose.
 
+**What it costs.** Measured on a real SDK-resolved two-TFM project, release
+profile: one pass 7.5 ms, two passes 36.4 ms. The extra 29 ms is the *inner*
+build's evaluation, not the second parse as such — a seeded evaluation walks far
+more of the SDK's targets chain than the outer dispatch build does, so even a
+hypothetical single-pass implementation that went straight to the seeded
+evaluation would pay it. Single-TFM, body-pinned and no-TFM projects pay nothing:
+they never reach `TfmChoice::Reseed`.
+
+`diagnostics_for` is deliberately left uncached. It runs per publish and, via
+`workspace/diagnostic`, once per discovered `.fsproj` per sweep — but that sweep
+also parses and semantically analyses every `<Compile>` item in every project, so
+36 ms per *project* is not where its time goes. The lever if that ever changes is
+a memo on `(path, text, build globals)`, which is sound because the function is
+pure in exactly those; reaching for the workspace's cached evaluation instead
+would only be correct when buffer == disk, and is what
+`the_served_tfm_comes_from_the_buffer_not_from_disk` exists to catch.
+
 **What guards it.** `buffer_diagnostics_follow_the_workspace_served_tfm` is E5's
 coherence invariant extended to this third surface: for a buffer matching disk,
 the branch the diagnostics evaluate is exactly the branch
 `Workspace::target_framework_for_project` serves — no more, no fewer. Nothing
 asserted that before, which is how this path could diverge for two whole stages
 without a test going red; the property is the durable half of the change.
+
+It immediately earned itself. A seeded `TargetFramework` global is read-only to
+the document *unless* the document says otherwise with `<Project
+TreatAsLocalProperty="TargetFramework">`, and a body write gated on the seed
+being non-empty then fires in pass 2 only — invisible to pass 1, so the policy
+never sees it. `select_target_framework` published the seed it asked for rather
+than the value pass 2 evaluated under, so since 3.3c-1
+`target_framework_for_project` had been naming a branch the parse did not take:
+defines and Compile items from one TFM, assets selection from another. The E7
+work did not introduce that; it made it *observable*, because a second surface
+finally existed to disagree with. Both now read the effective value out of pass
+2's property table, which is where MSBuild puts an override — pinned
+certain-implies-exact by `fsproj_global_perturbation_diff`'s
+`TreatAsLocalProperty` corner.
+
+The generator axes (`treat_as_local`, `seed_conditional`) exist because that
+shape is not one a reviewer should have to think of twice. A property whose
+generator cannot build a shape agrees vacuously on it; widening the axes is the
+fix, not adding case N+1.
 
 ## Out of scope
 

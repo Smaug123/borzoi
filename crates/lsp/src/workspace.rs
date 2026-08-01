@@ -1364,7 +1364,22 @@ fn select_target_framework(
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
-        Some(pass2) => (pass2, Some(seed)),
+        // Publish what pass 2 *evaluated as*, not what we asked it to evaluate
+        // as. A seeded global is read-only to the document — unless the
+        // document says otherwise with `<Project
+        // TreatAsLocalProperty="TargetFramework">`, which lets a body write
+        // (typically gated on the seed being non-empty, so pass 1 never sees
+        // it) overwrite the seed. Reporting the seed there would name a branch
+        // the parse did not take, which is exactly the E5 incoherence: the
+        // defines and Compile items would come from one TFM while the assembly
+        // env selected another TFM's assets. `body_target_framework` reads the
+        // property table, which holds a `TargetFramework` entry only when such
+        // an override actually happened — a suppressed body write leaves no
+        // trace there — so the normal case falls through to the seed.
+        Some(pass2) => {
+            let effective = tfm_policy::body_target_framework(&pass2).unwrap_or(seed);
+            (pass2, Some(effective))
+        }
         // Same source, same resolver, and the seed key can't collide (a
         // caller-owned global never yields `Reseed`) — so this arm shouldn't
         // be reachable. Degrade to the unseeded view rather than failing the

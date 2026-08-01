@@ -210,6 +210,12 @@ fn parse_buffer(
 /// A pass-2 parse failure degrades to pass 1: same text and resolver, so it
 /// should be unreachable, and reporting a parse error the user cannot see in
 /// their buffer would be worse than a stale-but-valid diagnostic set.
+///
+/// Cost, measured release-profile on a real SDK-resolved two-TFM project: 7.5 ms
+/// one pass, 36.4 ms two. Nearly all of the difference is the *inner* build's
+/// evaluation — it walks far more of the SDK's targets chain — so it is the
+/// price of the answer, not of the extra call. Only `TfmChoice::Reseed` pays it.
+/// See `docs/fsproj-tfm-selection-plan.md` E7 for why this path stays uncached.
 fn serve_chosen_tfm(
     pass1: borzoi_msbuild::ParsedProject,
     text: &str,
@@ -1165,6 +1171,8 @@ mod tests {
         fn buffer_diagnostics_follow_the_workspace_served_tfm(
             tfms in proptest::collection::vec("net(1[0-2]|[5-9])\\.0", 1..4),
             body_pinned in proptest::option::of(0usize..3),
+            seed_conditional in proptest::bool::ANY,
+            treat_as_local in proptest::bool::ANY,
         ) {
             let mut seen = HashSet::new();
             let tfms: Vec<String> = tfms.into_iter().filter(|t| seen.insert(t.clone())).collect();
@@ -1174,14 +1182,32 @@ mod tests {
                 .collect();
             // A body `<TargetFramework>` out-ranks the declared list (MSBuild's
             // inner-build gate), so this axis exercises `BodyPinned` as well as
-            // `Reseed`.
+            // `Reseed`. Gating that write on the seed being non-empty instead
+            // makes it invisible to pass 1 — it fires only in the *seeded*
+            // pass, and only when the document also opts out of the global's
+            // read-only-ness, which is the `TreatAsLocalProperty` axis below.
             let pinned = body_pinned.and_then(|i| tfms.get(i)).cloned();
             let singular = pinned
                 .as_ref()
-                .map(|t| format!("    <TargetFramework>{t}</TargetFramework>\n"))
+                .map(|t| {
+                    let gate = if seed_conditional {
+                        " Condition=\"'$(TargetFramework)' != ''\""
+                    } else {
+                        ""
+                    };
+                    format!("    <TargetFramework{gate}>{t}</TargetFramework>\n")
+                })
                 .unwrap_or_default();
+            // `TreatAsLocalProperty` lets the document overwrite a global that
+            // is otherwise read-only, so pass 2 can end up evaluated under a
+            // TFM other than the one it was seeded with.
+            let local = if treat_as_local {
+                " TreatAsLocalProperty=\"TargetFramework\""
+            } else {
+                ""
+            };
             let text = format!(
-                "<Project>\n  <PropertyGroup>\n    <TargetFrameworks>{}</TargetFrameworks>\n{singular}  </PropertyGroup>\n{groups}</Project>",
+                "<Project{local}>\n  <PropertyGroup>\n    <TargetFrameworks>{}</TargetFrameworks>\n{singular}  </PropertyGroup>\n{groups}</Project>",
                 tfms.join(";")
             );
 
