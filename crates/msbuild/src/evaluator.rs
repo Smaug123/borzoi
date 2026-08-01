@@ -542,8 +542,13 @@ fn walk_once<'r>(
     if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
         walk_external_file(targets, span.clone(), &mut state);
     }
+    // The splice stands down entirely once the chain has reached its own import
+    // point; only a chain that never got there leaves the decision to the
+    // pre-`Sdk.targets` snapshot, which is the SDK-less and inert-SDK case the
+    // splice exists for.
     if let Some(Resolution { path, source }) = targets_to_import.as_ref()
         && targets_gate_open
+        && !state.sdk_reached_directory_build_targets_import
         && !state
             .walked_files
             .contains(&canonicalise_or_normalise(path))
@@ -1334,6 +1339,21 @@ struct State<'r> {
     directory_build_props_splice_pending: bool,
     directory_build_props_path_written_by_splice: bool,
     directory_build_targets_path_written_by_splice: bool,
+    /// The SDK chain reached its own `Directory.Build.targets` import point
+    /// (`Microsoft.Common.targets`), whatever that import then decided.
+    ///
+    /// A chain that declares the import point owns the decision outright, and
+    /// the explicit splice must stand down — its answer is MSBuild's answer,
+    /// including every way of saying no: the gate turned off by a
+    /// `CustomBeforeDirectoryBuildTargets` hook, a path the discovery group
+    /// never computed because the gate was off when *it* ran, or simply no such
+    /// file on disk. None of those are retried by MSBuild, and all of them are
+    /// indistinguishable from each other at the import itself, which is why
+    /// this is one flag rather than a model of the discovery sequence.
+    ///
+    /// Probed on SDK 10.0.109: a chain declaring the import with no discovery
+    /// behind it imports nothing, rather than falling back to the file on disk.
+    sdk_reached_directory_build_targets_import: bool,
     /// The entry project's `Directory.Build.props` import, deferred from
     /// its usual before-body position. `Some` only on the orchestrator's
     /// second pass (`defer_directory_build_props = true`) and only
@@ -1927,6 +1947,7 @@ impl<'r> State<'r> {
             directory_build_props_splice_pending: false,
             directory_build_props_path_written_by_splice: false,
             directory_build_targets_path_written_by_splice: false,
+            sdk_reached_directory_build_targets_import: false,
             pending_directory_build_props: None,
             in_entry_body: false,
             resolved_sdk_root: None,
@@ -2244,6 +2265,7 @@ impl<'r> State<'r> {
             directory_build_props_splice_pending: _,
             directory_build_props_path_written_by_splice: _,
             directory_build_targets_path_written_by_splice: _,
+            sdk_reached_directory_build_targets_import: _,
             pending_directory_build_props: _,
             in_entry_body: _,
             resolved_sdk_root,
@@ -4652,6 +4674,18 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     if state.import_site_span.is_none() && state.hoisted_sdk_imports.contains(&node.range()) {
         return;
     }
+    // Reaching the chain's own `Directory.Build.targets` import point retires
+    // the explicit splice, **whatever the import decides**. The splice exists
+    // only for chains that never reach this point at all; once MSBuild's
+    // `Microsoft.Common.targets` has evaluated the import, its answer is the
+    // answer — including a clean "no", which MSBuild never revisits. Recording
+    // only a *successful* walk would let a hook that turns
+    // `ImportDirectoryBuildTargets` off from inside `Sdk.targets` (via
+    // `CustomBeforeDirectoryBuildTargets`, which runs before this point) fall
+    // through to the splice and import a file the real build skips.
+    if is_sdk_directory_build_targets_import_point(node, state) {
+        state.sdk_reached_directory_build_targets_import = true;
+    }
     if is_sdk_directory_build_rediscovery_import(node, current_file_dir, state) {
         // This IS MSBuild's real `Directory.Build.props` import position
         // (inside `Microsoft.Common.props`, notably *before* the
@@ -5173,17 +5207,45 @@ fn fire_entry_directory_build_props_splice(state: &mut State<'_>) {
     state.import_site_span = saved_import_site_span;
 }
 
+/// Is `node` the SDK chain's own `Directory.Build.targets` import — the
+/// `<Import Project="$(DirectoryBuildTargetsPath)" Condition="… exists(…)"/>`
+/// in `Microsoft.Common.targets`?
+///
+/// Recognised by shape rather than by path, and deliberately the same shape
+/// test [`is_sdk_directory_build_rediscovery_import`] uses for the props side,
+/// so an SDK that reuses the property name for a custom import of its own is
+/// not mistaken for the well-known point.
+fn is_sdk_directory_build_targets_import_point(node: Node<'_, '_>, state: &State<'_>) -> bool {
+    state.in_sdk_subtree
+        && node
+            .attribute("Project")
+            .and_then(simple_property_reference)
+            .is_some_and(|name| {
+                name.eq_ignore_ascii_case("DirectoryBuildTargetsPath")
+                    && condition_has_exists_for_property(node.attribute("Condition"), name)
+            })
+}
+
 fn is_sdk_directory_build_rediscovery_import(
     node: Node<'_, '_>,
     current_file_dir: &Path,
     state: &State<'_>,
 ) -> bool {
-    // The SDK's Microsoft.Common.* files rediscover Directory.Build.* through
-    // these path properties. This walker already owns that import point and
-    // splices those files explicitly, so following the SDK rediscovery import
-    // would double-walk user props/targets files. Keep this narrow: an SDK can
-    // also use these property names for its own custom imports, and those must
-    // still go through normal condition/path evaluation.
+    // The SDK's Microsoft.Common.props rediscovers `Directory.Build.props`
+    // through its path property. The walker owns *that* import point — it
+    // splices the file before the body, because the body is where the `<Import>`
+    // elements that would tell us otherwise live — so following the SDK's
+    // rediscovery would double-walk it. Keep this narrow: an SDK can also use
+    // the property name for its own custom imports, and those must still go
+    // through normal condition/path evaluation.
+    //
+    // The **targets** side is deliberately not suppressed here. The walker does
+    // not own that import point: it walks `Sdk.targets` first precisely so
+    // `Microsoft.Common.targets` can place the import where MSBuild places it,
+    // and only splices when the chain did not. Suppressing the chain's import
+    // would defeat that and hand the file back to the fallback, which runs after
+    // *all* of `Sdk.targets` — past `CustomAfterDirectoryBuildTargets`, so a
+    // redirected `Directory.Build.targets` came out in the wrong order.
     if !state.in_sdk_subtree {
         return false;
     }
@@ -5196,17 +5258,17 @@ fn is_sdk_directory_build_rediscovery_import(
     if !condition_has_exists_for_property(node.attribute("Condition"), property_name) {
         return false;
     }
+    let is_targets = property_name.eq_ignore_ascii_case("DirectoryBuildTargetsPath");
     let (splice_path, written_by_splice) =
         if property_name.eq_ignore_ascii_case("DirectoryBuildPropsPath") {
             (
                 state.directory_build_props_splice_path.as_ref(),
                 state.directory_build_props_path_written_by_splice,
             )
-        } else if property_name.eq_ignore_ascii_case("DirectoryBuildTargetsPath") {
-            (
-                state.directory_build_targets_splice_path.as_ref(),
-                state.directory_build_targets_path_written_by_splice,
-            )
+        } else if is_targets {
+            // Not consulted below — see the targets carve-out. Kept resolving
+            // so the unset-path arm still classifies this import.
+            (None, false)
         } else {
             return false;
         };
@@ -5221,6 +5283,10 @@ fn is_sdk_directory_build_rediscovery_import(
         // point, so treat it as the rediscovery it is.
         return true;
     };
+    if is_targets {
+        // The chain owns this import point; let it run.
+        return false;
+    }
     if written_by_splice {
         return true;
     }
