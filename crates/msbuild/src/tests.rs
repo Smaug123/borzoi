@@ -4793,6 +4793,67 @@ fn untrusted_property_provenance_is_queryable() {
     assert!(!p.property_provenance_untrusted("NeverWritten"));
 }
 
+/// A member access must not launder its receiver's provenance. The reference
+/// scan reads the receiver off the same parse tree evaluation uses, so the
+/// member applied to it is irrelevant — which is the point: no list of members
+/// needs maintaining for this to hold.
+#[test]
+fn a_member_access_does_not_launder_an_untrusted_receiver() {
+    for member in ["Length", "ToString()", "TrimStart('x')", "Contains('n')"] {
+        let src = format!(
+            r#"<Project>
+  <PropertyGroup Condition="'$(TargetFramework)' == ''">
+    <Marked>net8.0</Marked>
+  </PropertyGroup>
+  <PropertyGroup>
+    <Derived>$(Marked.{member})</Derived>
+  </PropertyGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(
+            p.property_provenance_untrusted("Marked"),
+            "{member}: the receiver must be untrusted for this case to test anything"
+        );
+        assert!(
+            p.property_provenance_untrusted("Derived"),
+            "{member}: a value derived from an untrusted property through a member \
+             access must not read as trusted"
+        );
+    }
+}
+
+/// The same laundering route, one severity up: through a gate that decides
+/// whether a Compile item exists. The item set is what the LSP folds over, so
+/// publishing it as certain while it depends on a property we do not trust is
+/// a certain-implies-exact violation on the value that matters most.
+#[test]
+fn a_gate_reading_an_untrusted_property_through_a_member_marks_items_uncertain() {
+    for gate in [
+        "'$(Marked.Length)' == '6'",
+        "'$(Marked.ToString())' == 'net8.0'",
+        "'$(Marked.Contains(`net`))' == 'True'",
+        "'$(Marked)' == 'net8.0'",
+    ] {
+        let src = format!(
+            r#"<Project>
+  <PropertyGroup Condition="'$(TargetFramework)' == ''">
+    <Marked>net8.0</Marked>
+  </PropertyGroup>
+  <ItemGroup Condition="{gate}">
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert!(
+            p.items_uncertain,
+            "gate {gate}: the Compile set depends on an untrusted property, so it \
+             cannot be published as certain"
+        );
+    }
+}
+
 #[test]
 fn exact_undefined_child_gate_is_not_unpinned_by_an_unpinned_group() {
     // `mark_property_group_children_provenance` skips a child whose own

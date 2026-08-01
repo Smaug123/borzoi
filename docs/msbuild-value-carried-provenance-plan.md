@@ -1,7 +1,9 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** planning. No stage landed. Stage P0 is a *failing* test that
-> pins a confirmed soundness hole; land it red-then-green before anything else.
+> **Status:** **P0 + P1 landed.** The reference scan is now a walk of the same
+> parse tree evaluation uses, so a member access can no longer launder its
+> receiver's provenance, and the five-method allow-list is gone. P1′, P2, P2′,
+> P3 and P4 remain — see "Stages".
 
 ## The rule
 
@@ -211,7 +213,7 @@ problem, and `simple_property_references` is only the **leaf extractor** applied
 to each leaf's raw text. So the tree walk is right and must stay; the leaf
 extractor is broken in both buckets. That is what makes one fix serve both.
 
-### P0 — the failing test (red first)
+### P0 — the failing test (red first) — **landed**
 
 Two properties, one per bucket — not one, because they have opposite safety
 directions:
@@ -232,7 +234,7 @@ fixture set so it can be tightened toward equality for Bucket A once P1 lands.
 
 **Sized:** small. No production change.
 
-### P1 — delete the second parser, don't build a third channel
+### P1 — delete the second parser, don't build a third channel — **landed**
 
 The crate already has a parser for `$( … )`: `expr::parse` (`expr.rs:200`),
 producing `Root` / `Link` / `Member`. `simple_property_references` is a
@@ -260,6 +262,16 @@ for Bucket B at all. The parse-tree walk is one function body, no signature
 churn, and closes the confirmed hole everywhere.
 
 **Sized:** small-to-medium. One function replaced, one fallback added.
+
+**As landed.** `simple_property_references` moved from `evaluator.rs` into
+`properties/expr.rs` beside the parser it approximated, and its body became a
+walk of `parse`'s tree: report `Root::Property`'s name, ignore a `Root::Static`
+(its arguments' `$(…)` are spans the outer scan reaches in their own right),
+and on a parse failure fall back to the leading name run. Interiors are trimmed
+before parsing, because MSBuild tolerates `$( Foo )` and the condition tokeniser
+resolves it. Both the observed failures — `$(X.Length)` yielding the bogus key
+`"X.Length"`, and `$(X.ToString())` yielding nothing — are gone, and no member
+list is left to maintain.
 
 ### P1′ — exact reads (precision, not soundness) — deferred
 
