@@ -66,48 +66,68 @@ Both halves exist for every axis, and the split is:
 | NuGet parsers | `soak`, `randomised_soundness_soak` | — |
 | scoping | — | `uses-census`, `types-census` |
 | overload engine | `overload_corpus_diff` | `overload-coverage` |
-| MSBuild on real projects | *not wired — see below* | — |
+| MSBuild on real projects | `fsproj_msbuild_corpus_diff` | — |
 
-`fsproj_msbuild_corpus_diff` is the one sweep this table cannot yet claim. It
-runs, and it **fails on `main`**, which is why it is named here rather than
-quietly omitted: an unwired sweep with no entry is indistinguishable from one
-nobody thought of. Over a six-project sample of the pinned corpus it reports
-`compared_projects=6 matched_facets=30 skipped_facets=11 divergences=1
-error_projects=0`, and the single divergence is:
+`fsproj_msbuild_corpus_diff` gates at the strict defaults —
+`BORZOI_MSBUILD_MAX_DIVERGENCES=0`, `BORZOI_MSBUILD_MAX_ERRORS=0` — over a
+six-project sample of the pinned corpus, currently
+`compared_projects=6 matched_facets=31 skipped_facets=11 divergences=0
+error_projects=0`. Evaluation is pre-execution, so it needs no restore and
+costs seconds; it rides in `test-msbuild` under the same change filter as the
+crate.
 
-- `FSharp.Build.fsproj` — MSBuild reports `Link = NullHelpers.fs` on a `Compile`
-  item whose `Include` escapes the project cone (`..\Compiler\Utilities\`); the
-  `.fsproj` carries no `<Link>`, so it is synthesised and we do not model that.
-  A fidelity gap in a facet nothing here consumes: the Compile fold reads order
-  and path.
+It was the last row to be wired, and the reason is worth keeping. A ceiling set
+to the divergence count you happen to have ratifies a known-wrong value as the
+expected state, which is how a differential stops being one — so the row stayed
+*unwired and named* while two known divergences stood, rather than being
+green-lit at `MAX_DIVERGENCES=2` or quietly omitted. An unwired sweep with no
+entry is indistinguishable from one nobody thought of.
 
-That is the *whole* remaining distance, and it is a much weaker reason to stay
-unwired than the one it replaced — so the argument has to be made on its own
-terms rather than inherited. Wiring with `BORZOI_MSBUILD_MAX_DIVERGENCES=1` is
-still worse than nothing, for the reason it always was: a ceiling set to the
-count you currently have ratifies a known-wrong committed value as the expected
-state, which is how a differential stops being one. The gate is worth having at
-`0` or not at all.
+Both of those divergences were the same species, and it is the species this
+sweep exists for. Every other MSBuild differential in the crate is
+**generative**: it authors a document and diffs it. Such a harness can only find
+defects in shapes someone thought to generate, and it evaluates both sides under
+the same property table. Neither of these was reachable that way:
 
-What the sweep no longer finds is the case that made it matter. Until
-[PR #260] we committed `DefineConstants = …;NETSTANDARD;FX_NO_WINFORMS` on
-`FSharp.ProjectSystem.FSharp.fsproj` and MSBuild did not, because
-`FSharp.Profiles.props` gates those symbols on a `<Choose>` testing
-`'$(TargetFrameworkIdentifier)' == '.NETFramework'` — a property the common
-targets *derive*, which we read as empty and trusted, so the `Otherwise` arm
-won and a wrong value was **committed** rather than declined. That project now
-matches MSBuild on every facet with none skipped.
+- `DefineConstants = …;NETSTANDARD;FX_NO_WINFORMS` on
+  `FSharp.ProjectSystem.FSharp.fsproj` ([PR #260]) — `FSharp.Profiles.props`
+  gates those symbols on a `<Choose>` testing
+  `'$(TargetFrameworkIdentifier)' == '.NETFramework'`, a property the common
+  targets *derive*. We read it as empty and trusted, so the `Otherwise` arm won
+  and a wrong value was **committed**. This is the one that mattered, and not
+  because `net472` is a target worth serving (it is not — see AGENTS.md):
+  `define_constants` is *consumed*, deciding which `#if` branch the whole
+  semantic layer sees.
+- `Link = NullHelpers.fs` on `FSharp.Build.fsproj` ([PR #263]) — a `Compile`
+  item whose `Include` escapes the project cone (`..\Compiler\Utilities\`).
+  The `.fsproj` carries no `<Link>`; the SDK's
+  `Microsoft.NET.Sdk.DefaultItems.targets` synthesises one at evaluation time
+  through a metadata-bearing `<Compile Update="@(Compile)">`, which this
+  evaluator does not execute.
 
-It is worth recording why it was the one that mattered, because the same shape
-will recur: not because `net472` is a target worth serving (it is not — see
-AGENTS.md), but because `define_constants` is *consumed*, deciding which `#if`
-branch the whole semantic layer sees. The five generative differentials are
-structurally blind to it, since they evaluate both sides under the same property
-table; only a real project reading a property nobody wrote down exhibits it.
-That is this sweep's distinctive yield, and the argument for wiring it once the
-`Link` gap closes.
+The pattern in both: a real project read something nobody wrote down. That is
+what an un-chosen input buys, and why this row is worth a gate rather than a
+series.
+
+The second one resolved by **deletion**, which is worth recording because the
+obvious fixes were both wrong. Modelling the rule would have duplicated SDK
+logic in Rust; declining the value (`ItemMetadataValue::Unknown` for anything a
+writer we skip could reach) was implemented and worked, but review then found
+two more writers that are not cone-gated at all — a metadata-only `<Compile
+Update>` and an `<ItemDefinitionGroup>` default — and after those, an
+`<ItemGroup Condition>` route to the same writers. Each fix invited the next.
+
+What ended it was asking what reads the value: nothing does. `Link` positions a
+file in an IDE's *project tree*; it never reaches fsc (checked against
+`FSharp.Build/Fsc.fs` — `Fsc.Sources` comes from `ItemSpec`), and LSP has no
+surface for a display path. So `ResolvedItem::link` was removed, and the facet
+now compares kind, path and order — the three things anything actually consumes.
+The generative harness went with it. Its finding did not: the case is entry 10
+of the `msbuild-trust-audit` checklist, which is where the next published
+metadatum will meet the same three writers.
 
 [PR #260]: https://github.com/Smaug123/borzoi/pull/260
+[PR #263]: https://github.com/Smaug123/borzoi/pull/263
 
 ### The rest, and why they are not here
 

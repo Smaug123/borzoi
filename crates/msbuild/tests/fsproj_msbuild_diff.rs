@@ -81,15 +81,6 @@
 //! `$(FsYaccOutputFolder)…` / `$(FsLexOutputFolder)…` generated sources
 //! (12 of 381 Compile items).
 //!
-//! ## `Link` separator normalisation
-//!
-//! Our parser preserves `<Link>` metadata verbatim from the project
-//! source, where authors usually write Windows-style backslashes
-//! (`Driver\AssemblyResolveHandler.fs`). MSBuild's `-getItem:` JSON
-//! output normalises these to forward slashes. Since `<Link>` is a
-//! logical *path* — the choice of separator carries no semantic
-//! information — we normalise both sides to forward slashes for the
-//! comparison.
 
 mod common;
 
@@ -660,17 +651,13 @@ fn compare_kind(
             (Some(o), Some(t)) => {
                 let our_canon = std::fs::canonicalize(&o.include);
                 let their_canon = std::fs::canonicalize(Path::new(&t.full_path));
-                let our_link = normalize_link(o.link.as_deref().unwrap_or(""));
-                let their_link = normalize_link(t.link.as_str());
                 match (our_canon, their_canon) {
                     (Ok(oc), Ok(tc)) => {
-                        if oc != tc || our_link != their_link {
+                        if oc != tc {
                             mismatches.push(format!(
-                                "  [{i}] ours={} link={:?}\n      theirs={} link={:?}",
+                                "  [{i}] ours={}\n      theirs={}",
                                 oc.display(),
-                                our_link,
                                 tc.display(),
-                                their_link,
                             ));
                         }
                     }
@@ -693,27 +680,20 @@ fn compare_kind(
                         // didn't either.
                         mismatches.push(format!(
                             "  [{i}] canonicalize disagreement\n\
-                                   ours={} canonicalize={:?} link={:?}\n\
-                                   theirs={} canonicalize={:?} link={:?}",
+                                   ours={} canonicalize={:?}\n\
+                                   theirs={} canonicalize={:?}",
                             o.include.display(),
                             oc.as_ref().err().map(|e| e.to_string()),
-                            our_link,
                             t.full_path,
                             tc.as_ref().err().map(|e| e.to_string()),
-                            their_link,
                         ));
                     }
                 }
             }
-            (Some(o), None) => mismatches.push(format!(
-                "  [{i}] ours-only: {} link={:?}",
-                o.include.display(),
-                o.link.as_deref().unwrap_or(""),
-            )),
-            (None, Some(t)) => mismatches.push(format!(
-                "  [{i}] msbuild-only: {} link={:?}",
-                t.full_path, t.link,
-            )),
+            (Some(o), None) => {
+                mismatches.push(format!("  [{i}] ours-only: {}", o.include.display()))
+            }
+            (None, Some(t)) => mismatches.push(format!("  [{i}] msbuild-only: {}", t.full_path)),
             (None, None) => unreachable!(),
         }
     }
@@ -744,14 +724,6 @@ fn compare_kind(
              verified, contents not"
         );
     }
-}
-
-/// Normalise a `<Link>` value's path separator for comparison: MSBuild
-/// emits forward slashes regardless of how the project authored them,
-/// our parser preserves the source verbatim. The Link is semantically
-/// a path, so this difference is cosmetic.
-fn normalize_link(link: &str) -> String {
-    link.replace('\\', "/")
 }
 
 fn has_substitution_diagnostic(diagnostics: &[Diagnostic]) -> bool {
@@ -795,10 +767,6 @@ struct MsbuildProperties {
 struct MsbuildItem {
     #[serde(rename = "FullPath")]
     full_path: String,
-    /// Empty string when the item carried no `<Link>` metadata (MSBuild
-    /// emits the key with an empty value rather than omitting it).
-    #[serde(default, rename = "Link")]
-    link: String,
 }
 
 impl MsbuildOutput {

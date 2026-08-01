@@ -339,6 +339,24 @@ jobs:
         run: |
           nix develop --command cargo test -p borzoi-msbuild --verbose
 
+      - name: Gate on the MSBuild corpus differential
+        if: steps.gate.outputs.run == 'true'
+        # The crate's own suite is generative: it authors documents and diffs
+        # them against the real evaluator. This is the one sweep that does not
+        # get to choose its input — it evaluates real `.fsproj` files from the
+        # pinned corpus, which is the only place a property nobody wrote down
+        # shows up. Both defects it has caught were of that shape, and neither
+        # was reachable by a generated document.
+        #
+        # The ratchets stay at their strict defaults (`MAX_DIVERGENCES=0`,
+        # `MAX_ERRORS=0`): a ceiling set to the count you currently have
+        # ratifies a known-wrong value as expected, which is how a differential
+        # stops being one. Evaluation is pre-execution, so this needs no
+        # restore and costs seconds.
+        run: |
+          nix develop --command cargo test -p borzoi-msbuild \
+            --test fsproj_msbuild_corpus_diff -- --ignored --nocapture
+
   test-nuget:
     name: Test nuget
     needs: changes

@@ -326,27 +326,6 @@ fn globbed_items_carry_compile_node_span() {
 }
 
 #[test]
-fn link_applied_to_each_globbed_item() {
-    let tmp = TempDir::new().unwrap();
-    let dir = canon(tmp.path());
-    let project_path = write_at(
-        tmp.path(),
-        "Demo.fsproj",
-        r#"<Project>
-  <ItemGroup>
-    <Compile Include="*.fs" Link="Linked" />
-  </ItemGroup>
-</Project>"#,
-    );
-    let out = vec![dir.join("a.fs"), dir.join("b.fs")];
-    let (result, _) = parse_file_capturing_glob(&project_path, out);
-    assert_eq!(result.items.len(), 2);
-    for item in &result.items {
-        assert_eq!(item.link.as_deref(), Some("Linked"));
-    }
-}
-
-#[test]
 fn exclude_item_reference_skips_whole_item() {
     // We can't know what an unresolved `@(...)` exclude removes, and
     // excluding nothing would over-include — so the whole item is
@@ -419,7 +398,6 @@ fn project_reference_glob_routes_through_resolver() {
     assert_eq!(paths_of(&result.project_references), out);
     for pr in &result.project_references {
         assert_eq!(pr.kind, ItemKind::ProjectReference);
-        assert_eq!(pr.link, None);
     }
 }
 
@@ -518,7 +496,6 @@ struct GlobCase {
     include_frags: Vec<IncludeFrag>,
     exclude_frags: Vec<String>,
     resolver_out: Vec<String>,
-    link: Option<String>,
 }
 
 const GLOB_KINDS: [ItemKind; 4] = [
@@ -563,14 +540,12 @@ fn glob_case_strategy() -> impl Strategy<Value = GlobCase> {
         0..3,
     );
     let out = prop::collection::vec((0u8..6).prop_map(|i| format!("out{i}.fs")), 0..5);
-    let link = prop::option::of((0u8..4).prop_map(|i| format!("link{i}")));
-    (0usize..4, include, exclude, out, link).prop_map(
-        |(kind_idx, include_frags, exclude_frags, resolver_out, link)| GlobCase {
+    (0usize..4, include, exclude, out).prop_map(
+        |(kind_idx, include_frags, exclude_frags, resolver_out)| GlobCase {
             kind_idx,
             include_frags,
             exclude_frags,
             resolver_out,
-            link,
         },
     )
 }
@@ -601,11 +576,6 @@ fn run_glob_case(
     let mut element = format!("<{tag} Include=\"{include_attr}\"");
     if !case.exclude_frags.is_empty() {
         element += &format!(" Exclude=\"{}\"", case.exclude_frags.join(";"));
-    }
-    if kind != ItemKind::ProjectReference
-        && let Some(l) = &case.link
-    {
-        element += &format!(" Link=\"{l}\"");
     }
     element += " />";
     let source = format!("<Project>\n  <ItemGroup>\n    {element}\n  </ItemGroup>\n</Project>");
@@ -654,14 +624,8 @@ proptest! {
             };
         prop_assert!(other.is_empty(), "wrong bucket received items: {:?}", other);
         prop_assert_eq!(paths_of(bucket), out);
-        let expected_link = if kind == ItemKind::ProjectReference {
-            None
-        } else {
-            case.link.clone()
-        };
         for item in bucket {
             prop_assert_eq!(item.kind, kind);
-            prop_assert_eq!(&item.link, &expected_link);
             prop_assert_eq!(item.span.clone(), span.clone());
         }
 

@@ -265,12 +265,6 @@ pub struct ResolvedItem {
     /// joining; the result is *not* canonicalised (no filesystem touch),
     /// so `..` components may be present.
     pub include: PathBuf,
-    /// `<Link>` metadata if present (as an attribute or child element).
-    /// Display-only (it never changes what compiles or is referenced), so —
-    /// unlike the asset-control metadata below — an unevaluable write
-    /// degrades to `None` rather than carrying
-    /// [`ItemMetadataValue::Unknown`].
-    pub link: Option<String>,
     /// `ReferenceOutputAssembly` metadata (attribute or child element),
     /// `$(...)`-expanded, kept raw. Only populated for
     /// [`ItemKind::ProjectReference`] items — MSBuild treats a (trimmed,
@@ -416,9 +410,7 @@ pub struct ParsedProject {
     /// `<ProjectReference Include="...">` items in document order.
     /// Each `include` is the path to a referenced project file (csproj,
     /// fsproj, etc.), resolved against the entry project's directory
-    /// the same way `<Compile>` includes are. The
-    /// [`ResolvedItem::link`] field is always `None` here — MSBuild
-    /// does not treat `<Link>` as meaningful on a ProjectReference.
+    /// the same way `<Compile>` includes are.
     pub project_references: Vec<ResolvedItem>,
     /// `true` if [`Self::project_references`] may diverge from MSBuild's
     /// evaluated item list. Consumers deriving *reference semantics* from
