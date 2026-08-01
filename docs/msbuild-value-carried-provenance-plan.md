@@ -432,15 +432,23 @@ Also required, per the "perturbation floors must exclude swept inputs" note: the
 floor must be on the *derived complement* (values that read `P`), not on `P`
 itself, or it is circular.
 
-### Change what the census ratchet measures
+### The census ratchet — resolved by construction, not by a change
 
-Whichever stage lands the fix must also change `sdk_chain_expression_census.rs`.
-It currently ratchets on *coverage of `expr.rs`'s supported members*, with no
-check that the reference scanner stayed in step — so the next contributor to add
-`Replace` (31 SDK occurrences waiting) re-arms the bug **and the ratchet
-applauds them for it**. Re-point it at "zero disagreement sites between the
-reference scanner and the real evaluator", or the fix decays exactly as the
-"commit-count floors rot when the product grows" note predicts.
+This section originally required re-pointing `sdk_chain_expression_census.rs`
+from *coverage of `expr.rs`'s supported members* to *zero disagreement between
+the scanner and the evaluator*, on the grounds that the coverage ratchet rewards
+exactly the change that arms the bug.
+
+**P1 makes that moot, and it is worth being explicit about why**, since the
+reasoning is the argument for having deleted the parser rather than fixed it:
+there is no longer a second list to disagree with. Teaching `expr.rs` `Replace`
+now makes `property_references` report the receiver *in the same edit*, because
+both read one parse tree. The ratchet cannot arm a trap that no longer exists.
+
+Had P1 instead extended the allow-list — the obvious small fix — this section
+would still be required, permanently, as the standing guard on a coupling no
+type enforces. That difference is the whole return on choosing the structural
+fix over the local one.
 
 ## Consultation record
 
