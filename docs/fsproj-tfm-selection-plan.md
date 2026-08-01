@@ -171,11 +171,25 @@ arrangement an untrusted *body* write already had — `chosen_tfm` set,
 `ServedTfm::Untrusted` published — which is a good sign the model is right rather
 than patched.
 
-The two remaining pass-1 captures are deliberate and were re-checked when this
-family closed. `declared_tfms` is the *outer* build's declaration list, which is
-what the TFM-invariant intersection wants; and `body_target_framework` feeds
-`resolve_node_uncached`, which reads the (now widened) `tfm_untrusted` and
-degrades an override to `NodeTfm::Unresolved`.
+`declared_tfms` stays a pass-1 capture deliberately: it is the *outer* build's
+declaration list, which is what the TFM-invariant intersection wants. But
+`resolve_node_uncached`'s single-target arm was labelling the node from that list
+rather than from the evaluation its edges came from — the same value except under
+an override, and then a consumer's output locator would search a TFM directory
+the project was never evaluated for, where a stale DLL may be waiting. It now
+reads `chosen_tfm`, which makes it identical to the caller-owned arm above it.
+
+**Three surfaces publish a TFM**, and that is the durable lesson here rather than
+any one fix: what the parse ran under, what the assembly env may key assets
+selection on, and how a graph node is labelled for a consumer locating its
+output. `TreatAsLocalProperty` is cross-cutting, and each surface read it wrongly
+in a different way — found one review round at a time, four rounds in all.
+`every_tfm_surface_agrees_on_a_pass_two_override` is a table over all three
+against one fixture, so the next such shape costs one round instead of four.
+"Agrees" there is commit-or-decline, not equality: each surface may decline, and
+the graph declines a *multi*-targeted node outright absent a restore seed
+whatever the override did. What none may do is commit to a TFM other than the one
+the parse ran under.
 
 The generator axes (`treat_as_local`, `seed_conditional`, `untrusted_gate`,
 `override_empty`) exist because these shapes are not ones a reviewer should have

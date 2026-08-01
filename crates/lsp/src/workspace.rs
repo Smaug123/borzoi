@@ -999,10 +999,17 @@ fn resolve_node_uncached(
     if declared.len() <= 1 {
         // Single-target (or no TFM declared at all): there is only one build
         // the project can produce; the seed adds nothing.
+        //
+        // Label the node from the evaluation its edges came from, not from the
+        // declaration. The two are the same value here except when a
+        // `TreatAsLocalProperty` document overwrote the seed in pass 2 — and
+        // then naming the declaration would send a consumer's output locator
+        // to a TFM directory the project was never evaluated for, where a
+        // stale DLL may be waiting.
         return NodeResult::Resolved {
             edges: outer_edges,
-            tfm: match declared.first() {
-                Some(sole) => NodeTfm::Known(sole.clone()),
+            tfm: match &outer.chosen_tfm {
+                Some(tfm) => NodeTfm::Known(tfm.clone()),
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
@@ -2104,7 +2111,7 @@ mod tests {
     /// read-only-ness and overwrites it once the seed is non-empty — a write
     /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
     /// write in a group the evaluator cannot pin.
-    fn fsproj_pass2_override(outer_gate: bool, value: &str) -> String {
+    fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
         let (open, close) = if outer_gate {
             (
                 "<PropertyGroup Condition=\"'$(DefineConstants)' == ''\">",
@@ -2116,7 +2123,7 @@ mod tests {
         format!(
             r#"<Project TreatAsLocalProperty="TargetFramework">
               <PropertyGroup>
-                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+                <TargetFrameworks>{declared}</TargetFrameworks>
               </PropertyGroup>
               {open}
                 <TargetFramework Condition="'$(TargetFramework)' != ''">{value}</TargetFramework>
@@ -2132,42 +2139,109 @@ mod tests {
     /// fires unconditionally for real SDK projects, so an unguarded consult
     /// would decline every multi-targeted project — `msbuild-trust-audit` §2).
     ///
-    /// All three arms matter. Without the first this would pass on an
-    /// implementation that declined every override; without the second, on the
-    /// behaviour that trusted every override; without the third, on one that
-    /// reads the override through a value-shaped helper and so cannot tell an
-    /// override that *cleared* the TFM from no override at all — which
-    /// publishes the seed for a parse that ran under nothing.
+    /// Every surface that publishes a TFM must publish the *same* one for the
+    /// same document, because they are all describing one evaluation. There are
+    /// three: what the parse ran under, what the assembly env may key assets
+    /// selection on, and how the project-graph node is labelled for a consumer
+    /// locating its output.
+    ///
+    /// "Agrees" is commit-or-decline, not equality. Each surface may decline —
+    /// and the graph declines a *multi*-targeted node outright absent a restore
+    /// seed, whatever any override did, because which TFM a consumer would
+    /// reference is genuinely open (rows 1-3, and equally true of a plain
+    /// multi-targeted project). What none of them may do is commit to a TFM
+    /// other than the one the parse ran under.
+    ///
+    /// This is deliberately a table over all three rather than three tests.
+    /// `TreatAsLocalProperty="TargetFramework"` is a cross-cutting shape — it
+    /// lets a document overwrite the inner-build seed — and each surface read
+    /// it wrongly in a different way, discovered one review round at a time. A
+    /// per-surface test would have found them one at a time again; enumerating
+    /// the surfaces against one fixture is what makes the next such shape cost
+    /// one round instead of four.
+    ///
+    /// Every row matters. Without the first this would pass on an
+    /// implementation that declined every override; without the second, on one
+    /// that trusted every override; without the third, on one that reads the
+    /// override through a value-shaped helper and so cannot tell an override
+    /// that *cleared* the TFM from no override at all; without the fourth, on
+    /// one whose graph node keeps naming pass 1's sole declaration.
     #[test]
-    fn a_pass_two_override_is_served_on_its_own_provenance() {
-        // (outer gate, override value, served verdict, TFM the parse ran under)
-        let cases: &[(bool, &str, ServedTfm, Option<&str>)] = &[
-            (
-                false,
-                "net10.0",
-                ServedTfm::Tfm("net10.0".to_string()),
-                Some("net10.0"),
-            ),
-            (true, "net10.0", ServedTfm::Untrusted, Some("net10.0")),
-            (false, "", ServedTfm::Untrusted, None),
+    fn every_tfm_surface_agrees_on_a_pass_two_override() {
+        struct Case {
+            declared: &'static str,
+            outer_gate: bool,
+            value: &'static str,
+            served: ServedTfm,
+            /// The TFM the parse ran under — what the defines, the Compile
+            /// items and the `.fsproj` buffer diagnostics describe (plan E7).
+            /// Withholding *trust* is a separate axis from what was evaluated.
+            ran_under: Option<&'static str>,
+            node: NodeTfm,
+        }
+        let cases = [
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: false,
+                value: "net10.0",
+                served: ServedTfm::Tfm("net10.0".to_string()),
+                ran_under: Some("net10.0"),
+                node: NodeTfm::Unresolved,
+            },
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: true,
+                value: "net10.0",
+                served: ServedTfm::Untrusted,
+                ran_under: Some("net10.0"),
+                node: NodeTfm::Unresolved,
+            },
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: false,
+                value: "",
+                served: ServedTfm::Untrusted,
+                ran_under: None,
+                node: NodeTfm::Unresolved,
+            },
+            // A *sole* declaration takes the graph's single-target arm, which
+            // labelled the node from the declaration rather than from the
+            // evaluation its edges came from.
+            Case {
+                declared: "net8.0",
+                outer_gate: false,
+                value: "net10.0",
+                served: ServedTfm::Tfm("net10.0".to_string()),
+                ran_under: Some("net10.0"),
+                node: NodeTfm::Known("net10.0".to_string()),
+            },
         ];
-        for (outer_gate, value, expected, ran_under) in cases {
+        for case in cases {
             let tmp = TempDir::new().unwrap();
             let proj = tmp.path().join("Sample.fsproj");
-            write_file(&proj, &fsproj_pass2_override(*outer_gate, value));
+            write_file(
+                &proj,
+                &fsproj_pass2_override(case.declared, case.outer_gate, case.value),
+            );
             let mut ws = Workspace::default();
-            let label = format!("outer_gate={outer_gate} value={value:?}");
+            let label = format!(
+                "declared={} outer_gate={} value={:?}",
+                case.declared, case.outer_gate, case.value
+            );
 
-            assert_eq!(ws.served_tfm_for_project(&proj), *expected, "{label}");
-            // The parse ran under the override whatever the verdict — that is
-            // what its defines and Compile items came from, and what the
-            // `.fsproj` buffer diagnostics describe (plan E7). Withholding
-            // *trust* is a separate axis from what was evaluated.
+            assert_eq!(ws.served_tfm_for_project(&proj), case.served, "{label}");
             assert_eq!(
                 ws.parsed_tfm_for_project(&proj).as_deref(),
-                *ran_under,
+                case.ran_under,
                 "{label}"
             );
+            let graph = ws.project_graph(&proj);
+            let node = graph
+                .nodes
+                .iter()
+                .find(|n| paths_equal(&n.path, &proj))
+                .unwrap_or_else(|| panic!("entry node missing: {label}"));
+            assert_eq!(node.tfm, case.node, "{label}");
         }
     }
 
