@@ -323,6 +323,139 @@ argument, not P2's.
 **Then re-run the SDK census and decide P3's priority from residual risk**,
 rather than committing to it up front.
 
+#### P2′ findings so far
+
+The audit is under way. Two defects out, both confirmed against the oracle
+before any code changed.
+
+1. **The gates read MSBuild booleans as strings** (#266, landed as its own
+   change). `'$(ImportDirectoryBuildProps)' == 'true'` is an MSBuild `==`, so
+   `on`/`yes`/`!false` open it; three sites decided such comparisons with
+   `eq_ignore_ascii_case("true")`. The reachable half was
+   `ManagePackageVersionsCentrally`, where reading an opted-in project as
+   opted-out skips `package_references_uncertain` entirely.
+2. **The gates do not consult trust at all** — P2″ below.
+
+### P2″ — an undecided gate write leaves the item set wrongly certain
+
+The confirmed repro. `Directory.Build.targets` contributes a Compile item; the
+entry project writes the gate under a condition we cannot evaluate:
+
+```xml
+<PropertyGroup>
+  <X>abc</X>
+  <ImportDirectoryBuildTargets Condition="'$(X.Substring(0,1))' == 'a'">false</ImportDirectoryBuildTargets>
+</PropertyGroup>
+```
+
+MSBuild evaluates that condition to `true` (oracle-confirmed), so it writes the
+gate `false` and **skips** `Directory.Build.targets`. We cannot evaluate
+`Substring`, so we never write the gate, read it as absent, default it to true,
+import the file, and publish its Compile item with `items_uncertain = false`.
+
+That is a wrong *item set* — the thing the LSP folds over — and it is worse
+than the boolean defect it was found next to: it needs no exotic spelling, only
+a property function in a condition, and it is reachable on ordinary SDK
+projects.
+
+#### The measurement that says this is affordable
+
+The obvious fear is the `msbuild-trust-audit` skill's §2: *never gate a fold on
+the generic provenance seam*, because it fires for essentially every real SDK
+project. Probed before designing anything (real `Microsoft.NET.Sdk` project,
+dotnet 10.0.301, both `Directory.Build.*` files present):
+
+| property | `property_provenance_untrusted` | value |
+|---|---|---|
+| `ImportDirectoryBuildProps` | false | `true` |
+| `ImportDirectoryBuildTargets` | false | `true` |
+| `DirectoryBuildPropsPath` | false | *(the real path)* |
+| `DirectoryBuildTargetsPath` | false | *(the real path)* |
+| `ImportDirectoryPackagesProps` | false | `true` |
+
+**85 other properties on that same project are untrusted; none of these are.**
+The SDK writes the gate names cleanly. So a trust-consulting gate does not
+collapse into a wholesale decline, and this does *not* need the bespoke
+consequence-side mechanism `LangVersion` needed. That is the single fact which
+makes P2″ a small change rather than a research project, and it is why the
+probe comes before the design.
+
+#### The fix follows an existing pattern rather than inventing one
+
+The walker already has the concept, twice over, and the splice is simply not
+wired into either.
+
+**For imports.** An ordinary `<Import>` whose gate we could not decide already
+latches opacity, with both directions named
+(`evaluator.rs`, the import-gate block):
+
+> An import gate we could not decide exactly … may bring in — or omit — a whole
+> file of property writes, whichever way we resolved it: Skip may hide writes
+> the real build performs, Run may perform writes the real build skips.
+
+**For significant property names.** `State::push` flips an uncertainty flag
+when a diagnostic is raised while a *context* is set, and there are already
+four: `compile_context`, `define_context`, `package_context`,
+`import_gate_context`. Each is set while walking a write whose name matters to
+that consumer — `is_cpm_flag_property_name` is the closest model, set around
+the CPM flags' own condition and value.
+
+So P2″ is: **set a context around writes of the four
+`Directory.Build.*`-deciding names**, so that a diagnostic raised evaluating
+such a write's condition or value flips `items_uncertain` and latches
+`walk_opaque`. `import_gate_context` already flips `items_uncertain` in `push`,
+so the item side needs no new plumbing — only the write site does.
+
+Both directions must flag, per checklist entry 1: an undecided write that we
+resolve as "no write" imports a file the real build may skip, and an undecided
+write we resolve as "written false" skips one it may import.
+
+#### The one open question — do not tolerate inside the SDK subtree by reflex
+
+`define_context` is deliberately set only when `!in_sdk_subtree`, and
+`compile_context` tolerance is justified by "an SDK sub-import we can't follow
+never drops a *hand-written* source". **That justification does not transfer**:
+a wrongly-skipped `Directory.Build.props` drops hand-written Compile items by
+construction. The measurement above suggests not tolerating is affordable —
+the SDK writes these names cleanly — so the sequence is: implement without
+tolerance, run the suite and the corpus differential, and only add tolerance
+if something real flags. Adding it up front would silently reintroduce the
+defect for every project whose SDK conditions the gate.
+
+#### Sweep the siblings in the same change
+
+Per the checklist's "a reviewer finds exactly one missing entry per round"
+discipline, the other direct reads with the same shape go in the same PR:
+
+- `DirectoryPackagesPropsPath` (`evaluator.rs:~596`) decides
+  `redirected_central_file_walked`, which **suppresses**
+  `package_references_uncertain`. An untrusted value there wrongly clears
+  uncertainty — the same defect one consumer over.
+- `MSBuildDisableFeaturesFromVersion` (`properties/expr.rs:~1006`) changes
+  expansion semantics for every subsequent value.
+
+#### The systematic gate
+
+A unit test per gate name is what this codebase already tried; the boolean
+defect sat behind one. The generative shape instead: **for each property name
+the walker reads directly, a case that writes it under an undecidable
+condition, asserting the consumer's uncertainty flag is set.** The name list is
+closed and already exists in the source (`is_cpm_flag_property_name` and the
+gate names), so the sweep can be driven off it rather than hand-maintained —
+which means adding a new directly-read name to the walker without also
+declaring it forces a failure.
+
+Note what a whole-project differential cannot do here, learned from #266:
+MSBuild agrees with us on the *value* of a gate property in all these cases;
+the divergence is in what we then *do* with it. A value-witness harness is
+blind to it, exactly as `fsproj_derived_tfm_diff` is blind to a moved import.
+The oracle's role is to establish the ground truth for the fixture (as it did
+for `Substring` above), not to be the assertion.
+
+**Sized:** small — one context flag, four names, ~5 call sites, plus the two
+siblings. Strictly smaller than P3, and it closes the *reachable* half of what
+P3 would close.
+
 ### P3 — value-carried
 
 `PropertyMap`'s `Entry` gains `trust: Trust` beside its `Escaped` value.
