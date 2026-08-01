@@ -36,6 +36,13 @@
 //!   `1.0-BETA` still equals `1.0-beta`. `eq_strict` implies `==`.
 //!
 //! The differential test pins each side to its own oracle field.
+//!
+//! That `Compare` really is a *total* order — in particular transitive
+//! across the numeric/alphanumeric label split, the place a mixed rule like
+//! this usually isn't — is checked exhaustively over every triple of an
+//! adversarial pool in `tests/version_properties.rs`; `tests/version_diff.rs`
+//! checks NuGet's agreement with us on every *pair* of the same pool, which
+//! carries the conclusion over to `VersionComparer.Default` itself.
 
 use std::cmp::Ordering;
 use std::fmt;

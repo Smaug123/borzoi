@@ -364,6 +364,86 @@ pub fn gen_range_string(rng: &mut SplitMix64) -> String {
     }
 }
 
+/// Version spellings chosen to exercise every corner of
+/// `VersionComparer.Default`'s ordering rule: numeric release labels
+/// including negative ones, labels that overflow `Int32` (which silently
+/// degrade to string comparison), labels differing only in ASCII case,
+/// multi-segment label lists, 3- versus 4-part numeric sections, build
+/// metadata, and whitespace-bearing spellings of a value spelled plainly
+/// elsewhere in the pool.
+///
+/// Small and heavily overlapping *on purpose*. `version_properties.rs`
+/// checks the total-order laws over every triple drawn from this pool; a
+/// wide-alphabet pool would satisfy transitivity's antecedent (`a < b &&
+/// b < c`) so rarely that the check would pass vacuously. `version_diff.rs`
+/// compares every *pair* from it against `NuGet.Versioning`, so the two
+/// together say something the properties alone cannot: our comparator is a
+/// total order, and NuGet agrees with it on every pair here, therefore
+/// NuGet's own comparator is a total order on this domain — which is what
+/// the resolver's `Iterator::max` over candidate versions, and
+/// `VersionRange`'s bound comparisons, need in order to have a
+/// well-defined answer at all.
+pub const COMPARATOR_POOL: &[&str] = &[
+    // Numeric section: partial, padded, legacy 4-part, and re-spellings of
+    // one value (all four of these are the same version).
+    "1",
+    "1.0",
+    "1.0.0",
+    "1.0.0.0",
+    " 1. 0.0 ",
+    "1.0.0+a",
+    "1.0.0+b",
+    "1.0.0.1",
+    "1.0.1",
+    "2.0.0",
+    "0.0.0",
+    "2147483647.0.0",
+    // Numeric labels, including the negatives `int.TryParse` accepts and the
+    // leading-zero spellings that are legal only because `-` makes the label
+    // not-all-digits.
+    "1.0.0-0",
+    "1.0.0--0",
+    "1.0.0--00",
+    "1.0.0-1",
+    "1.0.0--1",
+    "1.0.0--01",
+    "1.0.0-2",
+    "1.0.0-10",
+    "1.0.0-2147483647",
+    "1.0.0--2147483648",
+    // Just past `Int32` at each end, plus far past it: these look numeric but
+    // compare as strings, which is the shape that would break transitivity if
+    // the numeric/string split were not uniform.
+    "1.0.0-2147483648",
+    "1.0.0--2147483649",
+    "1.0.0-99999999999999999999",
+    // Alphanumeric labels, including case pairs and dash-bearing ones.
+    "1.0.0-a",
+    "1.0.0-A",
+    "1.0.0-b",
+    "1.0.0-Z",
+    "1.0.0--",
+    "1.0.0--a",
+    "1.0.0-a-b",
+    "1.0.0-a1",
+    "1.0.0-1a",
+    "1.0.0-alpha",
+    "1.0.0-ALPHA",
+    "1.0.0-beta",
+    // Multi-segment label lists: prefix-sharing, and mixed numeric/alpha
+    // segments so the per-segment rule meets the length tie-break.
+    "1.0.0-a.b",
+    "1.0.0-a.1",
+    "1.0.0-a.-1",
+    "1.0.0-1.a",
+    "1.0.0-a.b.c",
+    "1.0.0-2147483648.a",
+    "1.0.0-a.2147483648",
+    // A prerelease on a legacy 4-part version.
+    "1.0.0.1-a",
+    "1.0.0.1-2147483648",
+];
+
 /// The TFM zoo: every framework family NuGet's mappings know, in short,
 /// long, platformed, portable, and historical forms — plus adversarial
 /// spellings.
