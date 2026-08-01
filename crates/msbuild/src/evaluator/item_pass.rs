@@ -284,19 +284,6 @@ fn evaluate_item_definition_group(node: Node<'_, '_>, state: &mut State<'_>) {
         node.range(),
     );
     state.compile_context = prev_compile;
-    // Before the gate: a `<Compile><Link>` default we do not thread into the
-    // capture is a reason to decline whether or not we believe its condition.
-    if !state.in_sdk_subtree
-        && node
-            .children()
-            .filter(Node::is_element)
-            .filter(|child| {
-                modelled_item_kind_for_element(*child).is_some_and(is_compile_item_kind)
-            })
-            .any(|child| item_element_writes_metadata(child, "Link"))
-    {
-        state.document_writes_compile_link = true;
-    }
     if !may_run {
         return;
     }
@@ -549,17 +536,6 @@ fn evaluate_item_group(node: Node<'_, '_>, state: &mut State<'_>) {
     // list operations; work out what its children could do before deciding
     // the gate, so each arm below can poison the list appropriately.
     let reference_risk = project_reference_group_risk(node, state);
-    // The same question for `Link`: a metadata-only `<Compile Update>` child is
-    // a writer we do not execute, so the group's gate deciding *against* it is
-    // not the end of the matter — an untrusted false may run in the real build.
-    let link_writer_risk = !state.in_sdk_subtree
-        && node
-            .children()
-            .filter(Node::is_element)
-            .any(|child| element_is_document_link_writer(child, state));
-    if link_writer_risk {
-        state.document_writes_compile_link = true;
-    }
     let group_reads_untrusted = state.condition_reads_untrusted_value(node);
     state.compile_context = prev || (!state.in_sdk_subtree && item_group_has_compile_child(node));
     state.package_context = prev_pkg || has_package_child;
@@ -779,17 +755,6 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
         && modelled_item_list_operation_may_change_list(node, kind)
         && state.condition_reads_untrusted_value(node);
     let is_mutation = node.attribute("Update").is_some() || node.attribute("Remove").is_some();
-    // A `Link` writer we do not execute, decided against by *this element's*
-    // own gate: the same two directions as the reference-list operations above.
-    // Set *before* the gate is consulted, and regardless of how it lands. The
-    // gate arms are the routes this kept being found missing from — the
-    // element's own condition, the enclosing group's, an undecided `<Choose>`
-    // — and each fix invited the next. A writer we do not execute is a reason
-    // to decline whether or not we believe its gate, so the trigger is the
-    // writer's *presence*, which has no arms.
-    if element_is_document_link_writer(node, state) {
-        state.document_writes_compile_link = true;
-    }
     match evaluate_item_condition(node, state) {
         CondGate::Run => {
             // Kept only on an untrusted true: an Include the real build may
@@ -861,17 +826,12 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     let Some(include) = node.attribute("Include") else {
         return;
     };
-    // `<Link>` metadata is meaningful for Compile items (it controls
-    // the path shown in IDEs / solution explorers); MSBuild does not
-    // treat it as significant for `<ProjectReference>`, and exposing
-    // a `Some(...)` link there would invite consumers to use a value
-    // that has no effect on a real build. Conversely
     // `ReferenceOutputAssembly` / `ExcludeAssets` shape what a
     // `<ProjectReference>` contributes to the consumer's reference set and
-    // are meaningless on Compile items.
+    // are meaningless on Compile items, which carry no modelled metadata:
+    // nothing downstream reads anything but their kind, path and order.
     let metadata = match kind {
         ItemKind::ProjectReference => ItemMetadata {
-            link: ItemMetadataValue::ABSENT,
             reference_output_assembly: resolve_string_metadata(
                 node,
                 state,
@@ -884,26 +844,13 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
                 node, state,
             ),
         },
-        ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter => {
-            // `<Link>` controls only the display path, never which file
-            // compiles — clear `compile_context` so an undefined property in
-            // the link doesn't mark the (already-known) Compile item uncertain.
-            // The verdict still rides on the item: display-only is a reason not
-            // to *poison* the Compile set, not a licence to state a value we
-            // could not evaluate (`ResolvedItem::link`).
-            let saved = state.compile_context;
-            state.compile_context = false;
-            let link = resolve_string_metadata(node, state, "Link");
-            state.compile_context = saved;
-            ItemMetadata {
-                link,
-                reference_output_assembly: ItemMetadataValue::ABSENT,
-                exclude_assets: ItemMetadataValue::ABSENT,
-                include_assets: ItemMetadataValue::ABSENT,
-                private_assets: ItemMetadataValue::ABSENT,
-                unmodelled_reference_metadata: false,
-            }
-        }
+        ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter => ItemMetadata {
+            reference_output_assembly: ItemMetadataValue::ABSENT,
+            exclude_assets: ItemMetadataValue::ABSENT,
+            include_assets: ItemMetadataValue::ABSENT,
+            private_assets: ItemMetadataValue::ABSENT,
+            unmodelled_reference_metadata: false,
+        },
     };
     // Substitute $(...) FIRST, then split on ';'. Property values are
     // allowed to be semicolon-delimited lists in MSBuild, so
@@ -945,7 +892,6 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
 /// Per-element item metadata, resolved once and copied onto every
 /// [`ResolvedItem`] the element's `Include` expands to.
 struct ItemMetadata {
-    link: ItemMetadataValue,
     reference_output_assembly: ItemMetadataValue,
     exclude_assets: ItemMetadataValue,
     include_assets: ItemMetadataValue,
@@ -2675,7 +2621,6 @@ fn route_item_through_resolver(
             ResolvedItem {
                 kind,
                 include: path,
-                link: metadata.link.clone(),
                 reference_output_assembly: metadata.reference_output_assembly.clone(),
                 exclude_assets: metadata.exclude_assets.clone(),
                 include_assets: metadata.include_assets.clone(),
@@ -2760,7 +2705,6 @@ fn push_include_entry(
         ResolvedItem {
             kind,
             include: path,
-            link: metadata.link.clone(),
             reference_output_assembly: metadata.reference_output_assembly.clone(),
             exclude_assets: metadata.exclude_assets.clone(),
             include_assets: metadata.include_assets.clone(),
@@ -2801,51 +2745,10 @@ fn bucket_for_compile_effect<'s, 'r>(
     }
 }
 
-fn push_resolved_item(state: &mut State<'_>, placement: ItemPlacement, mut item: ResolvedItem) {
-    if item.link == ItemMetadataValue::ABSENT
-        && matches!(
-            item.kind,
-            ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter
-        )
-        && !link_is_ours_to_state(&item.include, &state.entry_project_dir)
-    {
-        item.link = ItemMetadataValue::Unknown;
-    }
+fn push_resolved_item(state: &mut State<'_>, placement: ItemPlacement, item: ResolvedItem) {
     let order = state.next_item_order;
     state.next_item_order += 1;
     bucket_for_placement(state, placement).push(OrderedResolvedItem { order, item });
-}
-
-/// Whether an item with no `Link` written in the document provably has none.
-///
-/// The .NET SDK's `Microsoft.NET.Sdk.DefaultItems.targets` carries a
-/// metadata-bearing `<Compile Update="@(Compile)">` group that fills an unset
-/// `Link` in with `%(LinkBase)%(RecursiveDir)%(Filename)%(Extension)` for every
-/// item whose full path escapes `$(MSBuildProjectDirectory)`. This evaluator
-/// does not execute metadata-bearing `Update` groups, so for an out-of-cone
-/// item the real build's `Link` is not ours to state and the caller records
-/// [`ItemMetadataValue::Unknown`]. In-cone items are unreachable by that rule
-/// whether or not the group ran, so their absent `Link` stays `Known`.
-///
-/// The verdict is *lexical and total*: an SDK-less project gets the same
-/// decline even though nothing would synthesise a link for it. That
-/// over-declines rather than reaching for a recogniser ("did we walk the SDK
-/// file that declares the rule?"), which would have to be right about a rule we
-/// are not executing — and a decline costs nothing here, since nothing in the
-/// workspace reads `link`.
-fn link_is_ours_to_state(include: &Path, project_dir: &Path) -> bool {
-    // MSBuild compares the item's *normalised* full path against
-    // `EnsureTrailingSlash($(MSBuildProjectDirectory))` as a string prefix, so a
-    // sibling sharing a textual prefix (`/proj-extra/a.fs` against `/proj/`) is
-    // outside the cone. Component-wise `starts_with` agrees with that on
-    // normalised paths and does not need the trailing slash spelled out.
-    //
-    // Collapsing `.`/`..` lexically rather than canonicalising is load-bearing:
-    // `include` is joined but never canonicalised, and touching the filesystem
-    // would make the verdict depend on which files happen to exist — including
-    // for a symlinked source tree, where MSBuild does not resolve the link
-    // either.
-    crate::imports::normalise(include).starts_with(crate::imports::normalise(project_dir))
 }
 
 fn evaluate_item_condition(node: Node<'_, '_>, state: &mut State<'_>) -> CondGate {
@@ -2938,33 +2841,6 @@ fn package_item_kind_for_element(node: Node<'_, '_>) -> Option<PackageItemKind> 
     } else {
         None
     }
-}
-
-/// Whether this element is a *document-authored* `Link` writer this evaluator
-/// does not execute: a metadata-only `<Compile Update=…>` carrying `Link`.
-///
-/// Document-authored is the whole point — the SDK's own
-/// `Microsoft.NET.Sdk.DefaultItems.targets` carries exactly this shape, and
-/// counting it would decline every Compile `Link` on every SDK project
-/// (`State::document_writes_compile_link`).
-fn element_is_document_link_writer(node: Node<'_, '_>, state: &State<'_>) -> bool {
-    !state.in_sdk_subtree
-        && modelled_item_kind_for_element(node).is_some_and(is_compile_item_kind)
-        && is_metadata_only_item_update(node)
-        && item_element_writes_metadata(node, "Link")
-}
-
-/// Whether an item element writes `name` at all, in either spelling MSBuild
-/// accepts: an attribute, or a child element. The *value* is deliberately not
-/// inspected — a writer that sets `Link` to empty is still a writer (probed: it
-/// clears a declared link), so presence is the whole question.
-fn item_element_writes_metadata(node: Node<'_, '_>, name: &str) -> bool {
-    node.attributes()
-        .any(|attr| attr.name().eq_ignore_ascii_case(name))
-        || node
-            .children()
-            .filter(Node::is_element)
-            .any(|child| child.tag_name().name().eq_ignore_ascii_case(name))
 }
 
 fn is_metadata_only_item_update(node: Node<'_, '_>) -> bool {

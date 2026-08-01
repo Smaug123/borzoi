@@ -338,7 +338,6 @@ nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- -
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
-nix develop -c cargo test -p borzoi-msbuild --test fsproj_link_metadata_diff -- --ignored   # ~2.5 min
 ```
 
 `parser_corpus`'s `CLEAN_PARSES` is **two-sided**, so **improving the parser

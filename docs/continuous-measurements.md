@@ -103,21 +103,28 @@ the same property table. Neither of these was reachable that way:
   The `.fsproj` carries no `<Link>`; the SDK's
   `Microsoft.NET.Sdk.DefaultItems.targets` synthesises one at evaluation time
   through a metadata-bearing `<Compile Update="@(Compile)">`, which this
-  evaluator does not execute. Fixed by *declining* rather than modelling, so
-  the facet compares kind, path and order and makes no claim about a value it
-  did not compute. `tests/fsproj_link_metadata_diff.rs` sweeps the axes: 36
-  wrong commits of the cone-gated shape against the corpus's one, and then —
-  once a review round added the axis for the `Link` writers that are *not*
-  cone-gated (a metadata-only `<Compile Update>`, an `<ItemDefinitionGroup>`
-  default) — a further 228. Neither of those two writers occurs in the six
-  corpus projects at all. That is the honest limit of a corpus this size, and
-  the reason the generative sweep gates *beside* this one rather than instead
-  of it: one picks its inputs and can be exhaustive, the other cannot pick and
-  is therefore the only one that meets what people actually write.
+  evaluator does not execute.
 
 The pattern in both: a real project read something nobody wrote down. That is
 what an un-chosen input buys, and why this row is worth a gate rather than a
 series.
+
+The second one resolved by **deletion**, which is worth recording because the
+obvious fixes were both wrong. Modelling the rule would have duplicated SDK
+logic in Rust; declining the value (`ItemMetadataValue::Unknown` for anything a
+writer we skip could reach) was implemented and worked, but review then found
+two more writers that are not cone-gated at all — a metadata-only `<Compile
+Update>` and an `<ItemDefinitionGroup>` default — and after those, an
+`<ItemGroup Condition>` route to the same writers. Each fix invited the next.
+
+What ended it was asking what reads the value: nothing does. `Link` positions a
+file in an IDE's *project tree*; it never reaches fsc (checked against
+`FSharp.Build/Fsc.fs` — `Fsc.Sources` comes from `ItemSpec`), and LSP has no
+surface for a display path. So `ResolvedItem::link` was removed, and the facet
+now compares kind, path and order — the three things anything actually consumes.
+The generative harness went with it. Its finding did not: the case is entry 10
+of the `msbuild-trust-audit` checklist, which is where the next published
+metadatum will meet the same three writers.
 
 [PR #260]: https://github.com/Smaug123/borzoi/pull/260
 [PR #263]: https://github.com/Smaug123/borzoi/pull/263

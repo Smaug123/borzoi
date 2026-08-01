@@ -49,9 +49,13 @@ looks like a one-off and is the same family. Sweep all eleven at once.
     same family as entry 5 seen from the other side: 5 is the default that
     arrives before the item, 10 is the mutation that arrives after it, and both
     are invisible to a reader that only inspects the declaring element.
-    `ResolvedItem::link` shipped wrong on exactly this, and the sweep that
-    found it (`tests/fsproj_link_metadata_diff.rs`) reported **228** wrong
-    commits from an axis its author had not thought to generate.
+    `ResolvedItem::link` shipped wrong on exactly this; a generative sweep
+    reported **228** wrong commits from an axis its author had not thought to
+    generate, across this entry, entry 5, and an `<ItemGroup Condition>` route
+    to both. The field was ultimately **deleted** — nothing read it — which is
+    the other lesson: before paying for a trust verdict on a published value,
+    check that the value has a consumer. A metadatum nothing reads is cheaper
+    to remove than to make honest.
 11. Any **property the consumer locates artifacts by**. The output *file* name is
     `$(TargetName)` (defaulting to `$(AssemblyName)`; padding is preserved
     verbatim in the filename — probed), exposed as `ParsedProject::target_name`

@@ -67,7 +67,6 @@ fn single_compile_resolves_relative_to_project_dir() {
     assert_eq!(p.items.len(), 1);
     assert_eq!(p.items[0].kind, ItemKind::Compile);
     assert_eq!(p.items[0].include, PathBuf::from("/repo/proj/Program.fs"));
-    assert_eq!(p.items[0].link, ItemMetadataValue::ABSENT);
     assert!(p.diagnostics.is_empty());
 }
 
@@ -339,34 +338,34 @@ fn item_definition_compile_order_default_marks_items_uncertain() {
 }
 
 #[test]
-fn link_metadata_attribute_form() {
+fn metadata_attribute_form() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="prim-types.fs" Link="Primitives/prim-types.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="compile" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.project_references.len(), 1);
     assert_eq!(
-        p.items[0].link,
-        ItemMetadataValue::known("Primitives/prim-types.fs")
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
     );
 }
 
 #[test]
-fn link_metadata_child_element_form() {
+fn metadata_child_element_form() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="prim-types.fs">
-      <Link>Primitives/prim-types.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>compile</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.project_references.len(), 1);
     assert_eq!(
-        p.items[0].link,
-        ItemMetadataValue::known("Primitives/prim-types.fs")
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
     );
 }
 
@@ -1289,12 +1288,6 @@ fn semicolon_list_in_include_splits_into_items() {
             Path::new("/repo/proj/C.fs"),
         ]
     );
-    // Link metadata applies to every entry.
-    assert!(
-        p.items
-            .iter()
-            .all(|i| i.link == ItemMetadataValue::known("Shared"))
-    );
     assert!(p.diagnostics.is_empty());
 }
 
@@ -1927,49 +1920,61 @@ fn property_value_expanding_to_semicolon_list_creates_multiple_items() {
 }
 
 #[test]
-fn substitution_applies_to_link_attribute() {
+fn substitution_applies_to_a_metadata_attribute() {
     let src = r#"<Project>
   <PropertyGroup>
-    <Folder>Shared</Folder>
+    <Which>compile</Which>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Mod.fs" Link="$(Folder)/Mod.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(Which)" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link, ItemMetadataValue::known("Shared/Mod.fs"));
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
-fn substitution_applies_to_link_child_element() {
+fn substitution_applies_to_a_metadata_child_element() {
     let src = r#"<Project>
   <PropertyGroup>
-    <Folder>Shared</Folder>
+    <Which>compile</Which>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Mod.fs">
-      <Link>$(Folder)/Mod.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>$(Which)</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link, ItemMetadataValue::known("Shared/Mod.fs"));
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
-fn link_with_inexact_property_drops_link_keeps_item() {
-    // The Include itself was fine; only the Link decoration failed to
+fn metadata_with_inexact_property_declines_but_keeps_the_item() {
+    // The Include itself was fine; only the metadata value failed to
     // substitute (`TargetFramework` is carved out, never provably unset).
-    // We strip the Link rather than dropping the whole item, since the
-    // file is still being compiled — just without the IDE grouping hint.
+    // The item stands — it is still a reference — but the value we could not
+    // evaluate is `Unknown` rather than a plausible-looking string.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="Mod.fs" Link="$(TargetFramework)/Mod.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(TargetFramework)" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(paths(&p.items), [Path::new("/repo/proj/Mod.fs")]);
-    assert_eq!(p.items[0].link, ItemMetadataValue::Unknown);
+    assert_eq!(
+        paths(&p.project_references),
+        [Path::new("/repo/proj/../Lib/Lib.fsproj")]
+    );
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::Unknown
+    );
     assert_eq!(
         diag_kinds(&p.diagnostics),
         [&DiagnosticKind::UndefinedProperty {
@@ -2633,20 +2638,23 @@ fn property_text_split_by_comment_concatenates_full_value() {
 }
 
 #[test]
-fn link_child_text_split_by_comment_concatenates_full_value() {
-    // The same trap exists for `<Link>` child elements: we read its
-    // text via `Node::text()`, so comments inside the Link child would
-    // truncate the metadata. Make sure the full inner text survives.
+fn metadata_child_text_split_by_comment_concatenates_full_value() {
+    // The same trap exists for metadata child elements: we read their text via
+    // `Node::text()`, so a comment inside would truncate the value. Make sure
+    // the full inner text survives.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs">
-      <Link>src/<!-- bucket -->A.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>com<!-- bucket -->pile</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link, ItemMetadataValue::known("src/A.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 
@@ -3026,21 +3034,20 @@ fn property_group_unsupported_condition_skips_unprotected_writes_and_diagnoses()
 }
 
 #[test]
-fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
-    // After $(...) expansion, a Link value may still contain `@(...)`
+fn metadata_attribute_with_metadata_reference_is_diagnosed_and_declined() {
+    // After $(...) expansion, a metadata value may still contain `@(...)`
     // or `%(...)` — neither of which we evaluate. Quietly returning
-    // the literal exposes unevaluated MSBuild syntax in
-    // ResolvedItem::link with `is_partial=false`; the symmetric
-    // treatment (drop + diagnose) matches Include and PropertyGroup.
+    // the literal would expose unevaluated MSBuild syntax with
+    // `is_partial=false`; the symmetric treatment (decline + diagnose)
+    // matches Include and PropertyGroup.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs" Link="$(LinkPattern)" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(AssetPattern)" />
   </ItemGroup>
 </Project>"#;
-    let extras: HashMap<String, String> =
-        [("LinkPattern".to_string(), "%(Filename).fs".to_string())]
-            .into_iter()
-            .collect();
+    let extras: HashMap<String, String> = [("AssetPattern".to_string(), "%(Filename)".to_string())]
+        .into_iter()
+        .collect();
     let p = parse_fsproj(
         src,
         Path::new("/repo/proj/Demo.fsproj"),
@@ -3048,11 +3055,11 @@ fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
         &HashMap::new(),
     )
     .expect("well-formed XML parses");
-    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.project_references.len(), 1);
     assert!(
-        p.items[0].link == ItemMetadataValue::Unknown,
-        "link should be dropped, got {:?}",
-        p.items[0].link
+        p.project_references[0].exclude_assets == ItemMetadataValue::Unknown,
+        "the value should be declined, got {:?}",
+        p.project_references[0].exclude_assets
     );
     assert!(
         p.diagnostics
@@ -3065,17 +3072,20 @@ fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
 }
 
 #[test]
-fn link_child_with_item_reference_is_diagnosed_and_dropped() {
+fn metadata_child_with_item_reference_is_diagnosed_and_declined() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs">
-      <Link>@(OtherItems)</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>@(OtherItems)</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link, ItemMetadataValue::Unknown);
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::Unknown
+    );
     assert!(
         p.diagnostics
             .iter()
@@ -3133,7 +3143,6 @@ fn project_reference_lands_in_project_references_bucket() {
         p.project_references[0].include,
         PathBuf::from("/repo/proj/../lib/Lib.csproj"),
     );
-    assert_eq!(p.project_references[0].link, ItemMetadataValue::ABSENT);
     assert!(p.diagnostics.is_empty());
 }
 
@@ -4390,7 +4399,6 @@ fn project_reference_link_attribute_is_ignored() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.project_references.len(), 1);
-    assert_eq!(p.project_references[0].link, ItemMetadataValue::ABSENT);
 }
 
 #[test]
@@ -6065,23 +6073,6 @@ fn sdk_shorthand_without_a_resolver_is_items_uncertain() {
         p.items_uncertain,
         "an unevaluated SDK leaves the Compile set incomplete"
     );
-}
-
-#[test]
-fn link_metadata_inexact_property_does_not_make_items_uncertain() {
-    // `<Link>` is display-only; an inexact property read there (carved-out
-    // `TargetFramework`, never provably unset) must not flag the Compile
-    // item, whose include (A.fs) is fully known.
-    let p = parse(
-        r#"<Project>
-  <ItemGroup>
-    <Compile Include="A.fs" Link="$(TargetFramework)/A.fs" />
-  </ItemGroup>
-</Project>"#,
-    );
-    assert_eq!(paths(&p.items), [Path::new("/repo/proj/A.fs")]);
-    assert!(p.is_partial, "the inexact property read still diverges");
-    assert!(!p.items_uncertain, "but which file compiles is known");
 }
 
 #[test]
@@ -9108,18 +9099,23 @@ fn package_reference_version_sees_property_defined_later_in_document() {
 }
 
 #[test]
-fn compile_link_metadata_sees_property_defined_later_in_document() {
+fn item_metadata_sees_a_property_defined_later_in_the_document() {
+    // The item pass runs over the FINAL property table, so a metadata value
+    // reading a property written below it in document order still resolves.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs" Link="$(LinkDir)/A.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(Which)" />
   </ItemGroup>
   <PropertyGroup>
-    <LinkDir>shown</LinkDir>
+    <Which>compile</Which>
   </PropertyGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link, ItemMetadataValue::known("shown/A.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 
@@ -9512,121 +9508,6 @@ mod escaped_leaf_boundaries {
             file_names(&p.items),
             vec!["z.fs", "a b.fs"],
             "the Update must find the item its escape names"
-        );
-    }
-}
-
-/// The remaining entries of the item-trust checklist, audited against `Link` in
-/// one round rather than one review at a time.
-///
-/// `ResolvedItem::link` is published, so every route by which a `Link` write can
-/// reach an item without this evaluator applying it must leave either the item
-/// set untrusted or the link declined. Entries 5 and 10 (an
-/// `<ItemDefinitionGroup>` default, a metadata-only `<Compile Update>`) are
-/// handled at their own sites; these are the three that reach the same writers
-/// through a *gate* rather than directly, where the obligation is easy to
-/// believe satisfied and worth checking instead.
-mod link_trust_audit {
-    use super::*;
-
-    /// Every captured Compile item either declines its link or belongs to an
-    /// item set already marked untrustworthy.
-    fn no_link_is_committed_behind_a_gate(p: &ParsedProject) -> bool {
-        p.items_uncertain
-            || p.items
-                .iter()
-                .all(|item| item.link == ItemMetadataValue::Unknown)
-    }
-
-    #[test]
-    fn a_link_update_in_an_undecided_choose_branch_commits_nothing() {
-        // Entry 3. The `When` reads carved-out `TargetFramework`, so we cannot
-        // pin the branch and do not descend — meaning the `Update` inside it is
-        // never seen, and the flag it would have set is never set.
-        let src = r#"<Project>
-  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
-  <Choose>
-    <When Condition="'$(TargetFramework)' == 'Bar'">
-      <ItemGroup><Compile Update="A.fs" Link="Hidden.fs" /></ItemGroup>
-    </When>
-  </Choose>
-</Project>"#;
-        let p = parse(src);
-        assert!(
-            no_link_is_committed_behind_a_gate(&p),
-            "a Link update in an undecided branch left a committed link: {:?}",
-            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_link_update_behind_an_undecided_item_group_gate_commits_nothing() {
-        // Entry 1/2 on the mutation side: an untrusted-false gate may run in the
-        // real build, applying an `Update` we skipped.
-        let src = r#"<Project>
-  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
-  <ItemGroup Condition="'$(TargetFramework)' == 'Bar'">
-    <Compile Update="A.fs" Link="Hidden.fs" />
-  </ItemGroup>
-</Project>"#;
-        let p = parse(src);
-        assert!(
-            no_link_is_committed_behind_a_gate(&p),
-            "a Link update behind an undecided gate left a committed link: {:?}",
-            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_link_definition_behind_an_undecided_gate_commits_nothing() {
-        // Entry 5 reached through entry 1: the default applies to every item
-        // regardless of order, so a gate we cannot decide leaves it in play.
-        let src = r#"<Project>
-  <ItemDefinitionGroup Condition="'$(TargetFramework)' == 'Bar'">
-    <Compile><Link>FromDefinition.fs</Link></Compile>
-  </ItemDefinitionGroup>
-  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
-</Project>"#;
-        let p = parse(src);
-        assert!(
-            no_link_is_committed_behind_a_gate(&p),
-            "a Link definition behind an undecided gate left a committed link: {:?}",
-            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_link_writer_inside_an_unresolvable_import_commits_nothing() {
-        // Entry 4, and the one route the presence-based trigger cannot see: a
-        // file we never walk cannot have its writers scanned. The obligation
-        // has to be met by the import machinery marking the capture untrusted
-        // instead.
-        let src = r#"<Project>
-  <Import Project="$(TargetFramework)/other.props" />
-  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
-</Project>"#;
-        let p = parse(src);
-        assert!(
-            no_link_is_committed_behind_a_gate(&p),
-            "an unresolvable import left a committed link: {:?}",
-            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn an_include_whose_path_cannot_be_pinned_commits_no_link() {
-        // Entry 6. The cone test is a function of the resolved path, so an
-        // include we cannot pin down is an item we cannot place on either side
-        // of the project boundary — and the SDK's synthesis rule turns on
-        // exactly that.
-        let src = r#"<Project>
-  <ItemGroup><Compile Include="$(TargetFramework)/A.fs" /></ItemGroup>
-</Project>"#;
-        let p = parse(src);
-        assert!(
-            no_link_is_committed_behind_a_gate(&p),
-            "an unpinnable include left a committed link: {:?}",
-            p.items.iter().map(|i| &i.link).collect::<Vec<_>>()
         );
     }
 }

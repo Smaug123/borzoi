@@ -1429,25 +1429,6 @@ struct State<'r> {
     /// MSBuild (an unmodelled `Update`/`Remove` mutation). Accumulates into
     /// [`ParsedProject::project_references_uncertain`].
     project_references_uncertain: bool,
-    /// A *document-authored* writer of `Link` metadata that this evaluator does
-    /// not execute: a metadata-only `<Compile Update=…>` carrying `Link`, or an
-    /// `<ItemDefinitionGroup>` supplying one as a default. Both reach items
-    /// regardless of the project cone and regardless of document order, and an
-    /// `Update` overwrites a *declared* `Link` as readily as an absent one
-    /// (probed, dotnet 10.0.301) — so once one is seen, no Compile item's
-    /// `Link` is ours to state and every one of them declines.
-    ///
-    /// "Document-authored" is the load-bearing word, and it is the same
-    /// user-authored-only channel `compile_order_default_affecting` draws:
-    /// the SDK's own `Microsoft.NET.Sdk.DefaultItems.targets` carries exactly
-    /// this shape, so counting it here would decline every Compile `Link` on
-    /// every SDK project and make the metadatum vacuous. That one rule is
-    /// instead modelled conservatively by the cone test in
-    /// `item_pass::link_is_ours_to_state`, which is pinned against the real
-    /// evaluator. An SDK-subtree writer *other* than that group would slip
-    /// through here; `fsproj_msbuild_corpus_diff` over real projects is what
-    /// would catch it.
-    document_writes_compile_link: bool,
     /// Whether the captured package/framework-reference set may diverge from
     /// MSBuild. Accumulates into [`ParsedProject::package_references_uncertain`].
     package_references_uncertain: bool,
@@ -1983,7 +1964,6 @@ impl<'r> State<'r> {
             compile_item_uncertainties: Vec::new(),
             package_context: false,
             project_references_uncertain: false,
-            document_writes_compile_link: false,
             package_references_uncertain: false,
             package_reference_uncertainties: Vec::new(),
             sdk_package_tainted_properties: HashMap::new(),
@@ -2302,7 +2282,6 @@ impl<'r> State<'r> {
             compile_item_uncertainties,
             package_context: _,
             project_references_uncertain,
-            document_writes_compile_link,
             package_references_uncertain,
             package_reference_uncertainties,
             sdk_package_tainted_properties: _,
@@ -2362,15 +2341,6 @@ impl<'r> State<'r> {
         items.extend(into_resolved_items(compile_after));
         items.extend(into_resolved_items(explicit_compile_after));
         items.extend(into_resolved_items(compile_last));
-        // A document-authored `Link` writer we do not execute reaches items
-        // regardless of the cone and regardless of document order, so it can
-        // only be answered once the whole set is in hand — including items
-        // captured *before* the writer was seen.
-        if document_writes_compile_link {
-            for item in &mut items {
-                item.link = ItemMetadataValue::Unknown;
-            }
-        }
         let project_references = into_resolved_items(project_references);
         // `properties` is documented as "what the project wrote". Use
         // the project's canonical casing as recorded in `written` for

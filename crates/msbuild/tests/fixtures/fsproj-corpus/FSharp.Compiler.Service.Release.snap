@@ -107,10 +107,10 @@ items (381):
   Compile       AbstractIL/ilx.fs
   Compile       AbstractIL/ilascii.fsi
   Compile       AbstractIL/ilascii.fs
-  Compile       /ilpars.fsi link=AbstractIL\FsYaccOut\ilpars.fsi
-  Compile       /ilpars.fs link=AbstractIL\FsYaccOut\ilpars.fs
-  Compile       /illex.fsi link=AbstractIL\FsLexOut\illex.fsi
-  Compile       /illex.fs link=AbstractIL\FsLexOut\illex.fs
+  Compile       /ilpars.fsi
+  Compile       /ilpars.fs
+  Compile       /illex.fsi
+  Compile       /illex.fs
   Compile       AbstractIL/ilprint.fsi
   Compile       AbstractIL/ilprint.fs
   Compile       AbstractIL/ilmorph.fsi
@@ -149,16 +149,16 @@ items (381):
   Compile       SyntaxTree/LexerStore.fs
   Compile       SyntaxTree/ParseHelpers.fsi
   Compile       SyntaxTree/ParseHelpers.fs
-  Compile       /pppars.fsi link=SyntaxTree\FsYaccOutput\pppars.fsi
-  Compile       /pppars.fs link=SyntaxTree\FsYaccOutput\pppars.fs
-  Compile       /pars.fsi link=SyntaxTree\FsYaccOutput\pars.fsi
-  Compile       /pars.fs link=SyntaxTree\FsYaccOutput\pars.fs
-  Compile       SyntaxTree/LexHelpers.fsi link=SyntaxTree\LexHelpers.fsi
-  Compile       SyntaxTree/LexHelpers.fs link=SyntaxTree\LexHelpers.fs
-  Compile       /pplex.fsi link=SyntaxTree\FsLexOutput\pplex.fsi
-  Compile       /pplex.fs link=SyntaxTree\FsLexOutput\pplex.fs
-  Compile       //lex.fsi link=SyntaxTree\FsLexOutput\lex.fsi
-  Compile       //lex.fs link=SyntaxTree\FsLexOutput\lex.fs
+  Compile       /pppars.fsi
+  Compile       /pppars.fs
+  Compile       /pars.fsi
+  Compile       /pars.fs
+  Compile       SyntaxTree/LexHelpers.fsi
+  Compile       SyntaxTree/LexHelpers.fs
+  Compile       /pplex.fsi
+  Compile       /pplex.fs
+  Compile       //lex.fsi
+  Compile       //lex.fs
   Compile       SyntaxTree/LexFilter.fsi
   Compile       SyntaxTree/LexFilter.fs
   Compile       TypedTree/tainted.fsi
@@ -286,12 +286,12 @@ items (381):
   Compile       CodeGen/IlxGen.fs
   Compile       Driver/FxResolver.fsi
   Compile       Driver/FxResolver.fs
-  Compile       DependencyManager/AssemblyResolveHandler.fsi link=Driver\AssemblyResolveHandler.fsi
-  Compile       DependencyManager/AssemblyResolveHandler.fs link=Driver\AssemblyResolveHandler.fs
-  Compile       DependencyManager/NativeDllResolveHandler.fsi link=Driver\NativeDllResolveHandler.fsi
-  Compile       DependencyManager/NativeDllResolveHandler.fs link=Driver\NativeDllResolveHandler.fs
-  Compile       DependencyManager/DependencyProvider.fsi link=Driver\DependencyProvider.fsi
-  Compile       DependencyManager/DependencyProvider.fs link=Driver\DependencyProvider.fs
+  Compile       DependencyManager/AssemblyResolveHandler.fsi
+  Compile       DependencyManager/AssemblyResolveHandler.fs
+  Compile       DependencyManager/NativeDllResolveHandler.fsi
+  Compile       DependencyManager/NativeDllResolveHandler.fs
+  Compile       DependencyManager/DependencyProvider.fsi
+  Compile       DependencyManager/DependencyProvider.fs
   Compile       Driver/CompilerConfig.fsi
   Compile       Driver/CompilerConfig.fs
   Compile       Driver/CompilerImports.fsi
