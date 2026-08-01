@@ -1,8 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc c702574957b9f891caae3d605b10d655b89397d0cea142897e0a3c795700ba16 # shrinks to tfms = ["net10.0", "net5.0"], body_pinned = None
-cc e8c6067dacf5239e93001e50b89e10af2717da921022f14881a8cdb553b05144 # shrinks to tfms = ["net10.0", "net11.0", "net12.0"], body_pinned = Some(1), seed_conditional = true, treat_as_local = true

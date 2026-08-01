@@ -309,6 +309,26 @@ impl Workspace {
         }
     }
 
+    /// The target framework the project's evaluation actually **ran under** —
+    /// the one its `DefineConstants` and Compile items came from.
+    ///
+    /// Distinct from [`Workspace::served_tfm_for_project`], and the distinction
+    /// is load-bearing. That one answers "may the *assembly env* key assets
+    /// selection on this?", and declines an untrusted TFM outright; this one
+    /// answers "which inner build did we parse?", which has an answer even
+    /// then, because the parse still had to pick something (the untrusted arm
+    /// keeps pass 1 and lets each read flip its own `*_uncertain` flag). The
+    /// two agree whenever the verdict is [`ServedTfm::Tfm`].
+    ///
+    /// This is the currency the *parse-side* coherence invariant is stated in
+    /// (plan E7): the `.fsproj`-buffer diagnostics must describe this
+    /// evaluation, not the publish-side verdict — see
+    /// `buffer_diagnostics_follow_the_workspace_parsed_tfm`.
+    pub fn parsed_tfm_for_project(&mut self, project_path: &Path) -> Option<String> {
+        self.evaluated(project_path)
+            .and_then(|e| e.chosen_tfm.clone())
+    }
+
     /// The full served-TFM verdict for the project at `project_path` — the
     /// input the assembly-env layer keys its assets-target selection on
     /// (fsproj 3.3d round 19). [`ServedTfm`] documents the three states and
@@ -1311,8 +1331,8 @@ fn evaluate_project(
     // which an outer-gated `<TargetFrameworks>` may no longer exist).
     let declared_tfms = target_frameworks(&parsed);
     let body_target_framework = tfm_policy::body_target_framework(&parsed);
-    let tfm_untrusted = tfm_policy::tfm_untrusted(&parsed);
-    let (parsed, chosen_tfm) = select_target_framework(
+    let pass1_untrusted = tfm_policy::tfm_untrusted(&parsed);
+    let served = select_target_framework(
         parsed,
         &source,
         project_path,
@@ -1320,6 +1340,11 @@ fn evaluate_project(
         &env.build_environment,
         disc.as_ref(),
     );
+    let parsed = served.parsed;
+    let chosen_tfm = served.chosen_tfm;
+    // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
+    // so a `TreatAsLocalProperty` override widens it.
+    let tfm_untrusted = pass1_untrusted || served.override_untrusted;
     // The evaluator reports the `SdkPaths::root` of the entry project's own SDK
     // (`ParsedProject::resolved_sdk_root`); recover the install root from it.
     // This is the single source of truth for an entry-SDK project — see
@@ -1341,9 +1366,22 @@ fn evaluate_project(
     })
 }
 
+/// The evaluation to serve for one project, and what is known about the TFM it
+/// ran under. Produced by [`select_target_framework`].
+struct ServedEvaluation {
+    parsed: ParsedProject,
+    /// The TFM `parsed` was evaluated under — what its defines and Compile
+    /// items came from. Published as [`EvaluatedProject::chosen_tfm`].
+    chosen_tfm: Option<String>,
+    /// A pass-2 `TreatAsLocalProperty` override fired *and* its write has
+    /// untrusted provenance. Pass 1 cannot see such a write at all, so its own
+    /// verdict does not cover this and the caller must widen with it.
+    override_untrusted: bool,
+}
+
 /// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
 /// with the chosen TFM seeded when the decision asks for it, and return the
-/// evaluation to serve alongside the TFM it was served under.
+/// evaluation to serve alongside what is known about its TFM.
 ///
 /// The policy itself — which TFM, and when a second pass is needed — lives in
 /// [`tfm_policy`], shared with the `.fsproj`-buffer diagnostics path so the two
@@ -1355,36 +1393,55 @@ fn select_target_framework(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
-) -> (ParsedProject, Option<String>) {
+) -> ServedEvaluation {
     let choice = tfm_policy::tfm_choice(&pass1, extras);
     let Some(seed) = choice.reseed() else {
-        return (pass1, choice.served().map(str::to_string));
+        let chosen_tfm = choice.served().map(str::to_string);
+        return ServedEvaluation {
+            parsed: pass1,
+            chosen_tfm,
+            override_untrusted: false,
+        };
     };
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
-        // Publish what pass 2 *evaluated as*, not what we asked it to evaluate
+        // Report what pass 2 *evaluated as*, not what we asked it to evaluate
         // as. A seeded global is read-only to the document — unless the
         // document says otherwise with `<Project
         // TreatAsLocalProperty="TargetFramework">`, which lets a body write
         // (typically gated on the seed being non-empty, so pass 1 never sees
-        // it) overwrite the seed. Reporting the seed there would name a branch
-        // the parse did not take, which is exactly the E5 incoherence: the
-        // defines and Compile items would come from one TFM while the assembly
-        // env selected another TFM's assets. `body_target_framework` reads the
-        // property table, which holds a `TargetFramework` entry only when such
-        // an override actually happened — a suppressed body write leaves no
-        // trace there — so the normal case falls through to the seed.
-        Some(pass2) => {
-            let effective = tfm_policy::body_target_framework(&pass2).unwrap_or(seed);
-            (pass2, Some(effective))
-        }
+        // it) overwrite the seed. Naming the seed there would name a branch the
+        // parse did not take. `body_target_framework` reads the property table,
+        // which holds a `TargetFramework` entry only when such an override
+        // actually happened — a suppressed body write leaves no trace there —
+        // so the ordinary case falls through to the seed and never consults
+        // pass 2's provenance at all. That matters: the generic provenance seam
+        // fires unconditionally for real SDK projects, so consulting it
+        // unguarded would decline every multi-targeted project (see the
+        // `msbuild-trust-audit` skill, §2).
+        Some(pass2) => match tfm_policy::body_target_framework(&pass2) {
+            Some(overridden) => ServedEvaluation {
+                override_untrusted: tfm_policy::tfm_untrusted(&pass2),
+                chosen_tfm: Some(overridden),
+                parsed: pass2,
+            },
+            None => ServedEvaluation {
+                parsed: pass2,
+                chosen_tfm: Some(seed),
+                override_untrusted: false,
+            },
+        },
         // Same source, same resolver, and the seed key can't collide (a
         // caller-owned global never yields `Reseed`) — so this arm shouldn't
         // be reachable. Degrade to the unseeded view rather than failing the
         // whole project.
-        None => (pass1, None),
+        None => ServedEvaluation {
+            parsed: pass1,
+            chosen_tfm: None,
+            override_untrusted: false,
+        },
     }
 }
 
@@ -2046,6 +2103,68 @@ mod tests {
             ws.target_framework_for_project(&proj),
             Some("net10.0".to_string())
         );
+    }
+
+    /// A multi-targeted project that opts `TargetFramework` out of global
+    /// read-only-ness and overwrites it once the seed is non-empty — a write
+    /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
+    /// write in a group the evaluator cannot pin.
+    fn fsproj_pass2_override(outer_gate: bool) -> String {
+        let (open, close) = if outer_gate {
+            (
+                "<PropertyGroup Condition=\"'$(DefineConstants)' == ''\">",
+                "</PropertyGroup>",
+            )
+        } else {
+            ("<PropertyGroup>", "</PropertyGroup>")
+        };
+        format!(
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              {open}
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              {close}
+            </Project>"#
+        )
+    }
+
+    /// A pass-2 `TreatAsLocalProperty` override is served like any other body
+    /// write: on its own provenance. Pass 1's verdict cannot cover it — the
+    /// write does not exist there — so `evaluate_project` widens with pass 2's,
+    /// and *only* when an override actually fired (the generic provenance seam
+    /// fires unconditionally for real SDK projects, so an unguarded consult
+    /// would decline every multi-targeted project — `msbuild-trust-audit` §2).
+    ///
+    /// Both arms matter. Without the trusted one this would pass on an
+    /// implementation that declined every override; without the untrusted one,
+    /// on the pre-existing behaviour that trusted every override.
+    #[test]
+    fn a_pass_two_override_is_served_on_its_own_provenance() {
+        for (outer_gate, expected) in [
+            (false, ServedTfm::Tfm("net10.0".to_string())),
+            (true, ServedTfm::Untrusted),
+        ] {
+            let tmp = TempDir::new().unwrap();
+            let proj = tmp.path().join("Sample.fsproj");
+            write_file(&proj, &fsproj_pass2_override(outer_gate));
+            let mut ws = Workspace::default();
+
+            assert_eq!(
+                ws.served_tfm_for_project(&proj),
+                expected,
+                "outer_gate={outer_gate}"
+            );
+            // Either way the parse ran under the override — that is what its
+            // defines and Compile items came from, and what the `.fsproj`
+            // buffer diagnostics describe (plan E7).
+            assert_eq!(
+                ws.parsed_tfm_for_project(&proj),
+                Some("net10.0".to_string()),
+                "outer_gate={outer_gate}"
+            );
+        }
     }
 
     proptest! {

@@ -1160,19 +1160,29 @@ mod tests {
         /// The coherence invariant E5 states for parse-vs-env, extended to the
         /// third surface (plan E7): for a buffer that matches disk, the branch
         /// the `.fsproj` diagnostics evaluate is exactly the branch the
-        /// workspace serves — no more, no fewer.
+        /// workspace's *evaluation ran under* — no more, no fewer.
         ///
-        /// Nothing asserted this before, which is how the buffer path could
-        /// diverge from `Workspace::target_framework_for_project` for two whole
-        /// stages without a test going red. The positive half (the served
-        /// TFM's witness *must* fire) is what keeps it from passing vacuously
-        /// on an implementation that evaluates nothing.
+        /// The currency is `parsed_tfm_for_project`, not
+        /// `served_tfm_for_project`, and the difference is the whole point.
+        /// The served verdict additionally declines an untrusted TFM, because
+        /// the assembly env must not key assets selection on it; but the parse
+        /// still ran under *something*, and the buffer describes the parse. A
+        /// property stated in the served currency would demand the buffer
+        /// diagnose no branch for a project whose parse legitimately took one.
+        /// The second assertion pins the two together where they must agree.
+        ///
+        /// Nothing asserted any of this before, which is how the buffer path
+        /// could diverge for two whole stages without a test going red. The
+        /// positive half (the parsed TFM's witness *must* fire) is what keeps
+        /// it from passing vacuously on an implementation that evaluates
+        /// nothing.
         #[test]
-        fn buffer_diagnostics_follow_the_workspace_served_tfm(
+        fn buffer_diagnostics_follow_the_workspace_parsed_tfm(
             tfms in proptest::collection::vec("net(1[0-2]|[5-9])\\.0", 1..4),
             body_pinned in proptest::option::of(0usize..3),
             seed_conditional in proptest::bool::ANY,
             treat_as_local in proptest::bool::ANY,
+            untrusted_gate in proptest::bool::ANY,
         ) {
             let mut seen = HashSet::new();
             let tfms: Vec<String> = tfms.into_iter().filter(|t| seen.insert(t.clone())).collect();
@@ -1195,7 +1205,20 @@ mod tests {
                     } else {
                         ""
                     };
-                    format!("    <TargetFramework{gate}>{t}</TargetFramework>\n")
+                    let write = format!("<TargetFramework{gate}>{t}</TargetFramework>");
+                    // Wrapping the write in a group whose own gate reads a
+                    // property the evaluator cannot pin makes its provenance
+                    // untrusted — the same idiom `workspace`'s
+                    // `served_tfm_tracks_body_write_provenance` uses. Combined
+                    // with `seed_conditional`, this is a write that is both
+                    // invisible to pass 1 *and* unproven in pass 2.
+                    if untrusted_gate {
+                        format!(
+                            "  </PropertyGroup>\n  <PropertyGroup Condition=\"'$(DefineConstants)' == ''\">\n    {write}\n"
+                        )
+                    } else {
+                        format!("    {write}\n")
+                    }
                 })
                 .unwrap_or_default();
             // `TreatAsLocalProperty` lets the document overwrite a global that
@@ -1216,15 +1239,22 @@ mod tests {
             fs::write(&project, &text).unwrap();
 
             let mut ws = crate::workspace::Workspace::with_env(SdkDiscoveryEnv::default());
-            let served = ws.target_framework_for_project(&project);
+            let parsed_tfm = ws.parsed_tfm_for_project(&project);
+            let served = ws.served_tfm_for_project(&project);
             let diags = diagnostics_for(&text, &project, ws.env(), &ws.build_properties());
 
             for tfm in &tfms {
                 prop_assert_eq!(
                     witness_fired(&diags, &witness_name(tfm)),
-                    served.as_deref() == Some(tfm.as_str()),
-                    "tfm {} vs served {:?}: {:#?}", tfm, served, diags
+                    parsed_tfm.as_deref() == Some(tfm.as_str()),
+                    "tfm {} vs parsed {:?}: {:#?}", tfm, parsed_tfm, diags
                 );
+            }
+            // Where the env is willing to trust a TFM, it must be the one the
+            // parse ran under — otherwise defines come from one inner build
+            // and assemblies from another, which is the E5 incoherence itself.
+            if let crate::workspace::ServedTfm::Tfm(t) = &served {
+                prop_assert_eq!(parsed_tfm.as_deref(), Some(t.as_str()));
             }
         }
     }
