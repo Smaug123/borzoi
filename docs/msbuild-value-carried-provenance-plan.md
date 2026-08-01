@@ -58,8 +58,25 @@ Two parsers of one syntax must agree. Nothing makes them, and **they do not**.
 `simple_property_references` recognises a method-call receiver via a hardcoded
 five-method allow-list — `.TrimStart`, `.Split`, `.Contains`, `.StartsWith`,
 `.EndsWith` — while `expr.rs::evaluate` supports more instance members than
-that, including `Length` and `ToString`. A receiver outside the allow-list
-yields **no reference at all**, so the taint scan sees nothing to propagate.
+that, including `Length` and `ToString`.
+
+It fails in **two structurally different ways**, and neither is a mere coverage
+gap:
+
+- **Paren-less member (`$(Marked.Length)`)** — the identifier scan at
+  `evaluator.rs:4591` accepts `.` as an identifier character, so it folds the
+  member into the name and pushes the **bogus key `"Marked.Length"`**. That key
+  then 404s against `unpinned_value_properties` forever, because a property
+  name can never contain a dot (`properties/mod.rs:254-258` says so
+  explicitly — inside `$(…)` a dot is always member access). A silent
+  mis-parse, not a miss.
+- **Parenthesised member outside the allow-list (`$(Marked.ToString())`)** —
+  falls to the `rest.starts_with('(')` branch, matches no allow-list entry, and
+  pushes **nothing at all**.
+
+So the scanner is a hand-rolled approximation of a parser the crate already
+has, and it is wrong in two different directions at once. That framing matters
+for the fix: extending the allow-list would not even repair the first case.
 
 Its own doc comment states the obligation it cannot discharge: *"otherwise a
 shape readable by evaluation but invisible here would let an untrustworthy
@@ -160,50 +177,96 @@ unrepresentable.
 
 Each stage is an independently reviewable PR that is green on its own.
 
+### The two buckets — read this before touching any call site
+
+The ~8 `simple_property_references` call sites are **not interchangeable**.
+They split along a boundary that decides what a correct fix looks like:
+
+- **Bucket A — value bodies (safe to make exact).** The evaluator write-time
+  sites (`unpinned_root_for_raw`/`sdk_package_taint_for_raw` at ~2738/2752,
+  and the inline scans at ~2941 and ~4062) scan the raw text of a *single value
+  body*. `substitute_impl` processes every `$(` in that text unconditionally in
+  a `while` loop with no branching; within a block, `eval_root` always reads the
+  root property before walking the member chain, and the chain walk is a linear
+  `for link in &expr.links`. Nothing is computed then discarded. Here an
+  evaluation-order read set is genuinely exact.
+
+- **Bucket B — conditions (must stay over-approximate).**
+  `condition.rs:206`'s `refs_outside_empty_comparison` walks the **whole parsed
+  boolean tree**, and its comment states exactly why: *"evaluation above
+  short-circuits (`'$(X)' == '' Or '$(X)' == 'x'` never expands the second arm
+  when the first is true), so evaluation-order records would under-report
+  non-default uses."* This is a **control-dependency** problem sitting *above*
+  the expansion layer: the skip happens in `eval_bool`'s `And`/`Or` handling,
+  before `expand_for_condition` is ever called on the untaken arm.
+
+**Consequence: replacing Bucket B's scan with "names actually read" would
+reintroduce precisely the under-reporting that code was written to prevent.**
+The related `short_circuit_skips_undefined_collection_on_decided_branch` test
+(`condition.rs:1469`) already pins the correct behaviour for the sibling
+undefined-collection question.
+
+Note the layering: in Bucket B the *tree walk* solves the branch-context
+problem, and `simple_property_references` is only the **leaf extractor** applied
+to each leaf's raw text. So the tree walk is right and must stay; the leaf
+extractor is broken in both buckets. That is what makes one fix serve both.
+
 ### P0 — the failing test (red first)
 
-The cheapest statement of the obligation the code leaves implicit, as a
-one-sided containment:
+Two properties, one per bucket — not one, because they have opposite safety
+directions:
 
-> For every expression shape the generator produces,
-> `simple_property_references(s)` ⊇ { names `substitute` actually looked up }.
+- **A:** for a value body `s`, every name `substitute` actually looks up is
+  present in the syntactic scan of `s`. Fails today on `.Length` and
+  `.ToString()`.
+- **B:** for a condition `c`, `refs_outside_empty_comparison(c)` is a superset
+  of every name *any* branch could read, short-circuited or not. Passes today —
+  land it as a **regression** test so the P1 work cannot quietly break it.
 
-Over-approximation is the safe direction for taint, so containment (not
-equality) is the property. It fails today on `.Length` and `.ToString()`.
+Plus the three concrete cases from the measured table above.
 
-Land it `#[ignore]`d-red or as a documented expected-failure, whichever the
-crate's convention supports, plus the three concrete regression cases from the
-table above. **Sized:** small. No production change.
+A caveat on shape: containment is the right assertion *today*, but a pure
+containment test can never catch a future regression in which the scan starts
+under-reporting — which is the direction that actually matters. Design the
+fixture set so it can be tightened toward equality for Bucket A once P1 lands.
 
-### P1 — exactness at the source
+**Sized:** small. No production change.
 
-Make expansion report the set of property names it **actually looked up**.
-This is far cheaper than it sounds: there are exactly **two** `props.get` call
-sites in the whole crate — the fast path in `substitute_impl`
-(`properties/mod.rs:266`) and `Root::Property` in `expr.rs:512`. Both already
-sit inside functions that thread a `Vec<Issue>` out, so the read-set rides the
-same channel.
+### P1 — delete the second parser, don't build a third channel
 
-- `substitute` / `substitute_with_fs` return the read-set alongside
-  `(Escaped, Vec<Issue>)`.
-- `expr::Evaluated` gains the read-set next to `value` / `issues`.
-- Every `simple_property_references`-based taint rescan consumes the reported
-  set instead.
-- `simple_property_references` is deleted, or demoted to a diagnostics-only
-  helper with no taint consumer.
+The crate already has a parser for `$( … )`: `expr::parse` (`expr.rs:200`),
+producing `Root` / `Link` / `Member`. `simple_property_references` is a
+hand-rolled re-implementation of it that is wrong in two directions. The fix is
+to **delete the hand-rolled one and walk the real parse tree**:
 
-**Open design question — exact vs over-approximate.** The reported set is
-*exact*; the syntactic scan is an *over-approximation*, and for taint
-over-approximation is the safe direction. Where evaluation bails out (an
-unsupported expression whose residual text still references a tainted
-property), or short-circuits, an exact read-set is *smaller* than the truth.
-The likely formulation is
-`(names actually read) ∪ (names syntactically referenced inside any
-sub-expression not fully evaluated)` — exactness where we evaluated,
-over-approximation where we did not. **This is under review; see "Consultation"
-below.**
+for every `$(…)` span, parse it; if the root is `Root::Property(name)`, record
+`name`; recurse into every `Link::Member` argument list and every
+`Root::Static` argument list for nested `$(…)`.
 
-**Sized:** medium. ~8 taint call sites, 2 read sites, 2 return types.
+This is purely **syntactic** — no evaluation needs to succeed — so it stays in
+the safe over-approximating direction and is immune to the short-circuit
+hazard. Which means **it serves both buckets**, unlike exact-reads plumbing.
+
+**Caveat: `expr::parse` returns `Option`, so it is partial.** A shape it cannot
+parse must not silently yield an empty reference set — that is the current bug
+in a new costume. The `None` arm needs a deliberately crude fallback (every
+identifier-shaped token following a `$(` in the span, dots split at the first
+`.`), documented as intentionally over-approximate.
+
+Why this replaces the "report what was actually read" design I first drafted:
+that plumbing changes `substitute`'s and `expr::evaluate`'s return types and so
+moves a share of the ~21.6k lines of dependent tests, while *not* being usable
+for Bucket B at all. The parse-tree walk is one function body, no signature
+churn, and closes the confirmed hole everywhere.
+
+**Sized:** small-to-medium. One function replaced, one fallback added.
+
+### P1′ — exact reads (precision, not soundness) — deferred
+
+Threading the actually-read set out of `substitute` / `expr::evaluate` remains
+worth doing *for Bucket A only*, but its benefit is **fewer spurious declines**,
+not soundness, once P1 lands. Re-sequenced after P2/P3 and explicitly labelled
+a precision improvement so nobody reviews it as a fix.
 
 ### P2 — one lattice instead of two maps
 
@@ -230,6 +293,24 @@ the only one that matters.
 
 **Sized:** medium. Mechanical; churn concentrated in `evaluator.rs`.
 
+### P2′ — audit the twelve direct-read sites (small, standalone)
+
+Before committing to P3's blast radius, close the *known* instance of the
+direct-read route cheaply: audit the twelve named `get_unescaped` sites against
+the eleven-entry `msbuild-trust-audit` checklist, in one PR, touching no types.
+
+A second instance of the same class, found while planning:
+`seed_toolset_properties` (`evaluator.rs:~2149-2158`) calls `insert_computed`
+with **no** matching `apply_property_provenance`. It is harmless today only
+because of the `if get(name).is_none()` fresh-insert guard. Note what this
+proves about P2: pairing the two channels in one struct forces both to be named
+*at the call site that already remembers to call it* — it does nothing to stop
+a different write path from skipping the call entirely. That gap is P3's
+argument, not P2's.
+
+**Then re-run the SDK census and decide P3's priority from residual risk**,
+rather than committing to it up front.
+
 ### P3 — value-carried
 
 `PropertyMap`'s `Entry` gains `trust: Trust` beside its `Escaped` value.
@@ -249,6 +330,24 @@ trust-discarding accessor named to say so (`get_unescaped_ignoring_trust`), so
 the migration is mechanical and each remaining call site is a visible,
 greppable decision rather than a silent default.
 
+**Two questions to settle before starting P3, not during:**
+
+1. **Trust is not a substitute for consequence-side flags.** The
+   `msbuild-trust-audit` skill warns *never gate a fold on the generic
+   provenance seam* — `property_provenance_untrusted` fires for essentially
+   every real SDK project, which is why `LangVersion`'s fold-safety today uses
+   a bespoke consequence-side mechanism (`shape_depends_on_language_version`)
+   instead. So P3 must say, per site, whether carried `Trust` **replaces** or
+   **coexists with** the bespoke signal. At least one of the twelve needs
+   coexistence. A uniform "P3 closes all twelve the same way" is wrong.
+2. **`Provenanced<Escaped>` must not create a new way to strip either
+   guarantee.** `Escaped` is deliberately crate-internal so "no consumer
+   outside the evaluator can pick the wrong one". A bare `.value` field access
+   that silently discards `Trust` would be the escaped-value hole re-created one
+   level up. Whatever `Provenanced` looks like, leaving trust must be as
+   explicit as leaving the escape domain — that symmetry is the design
+   constraint, since this plan is explicitly modelled on that one.
+
 ### P4 — the same treatment for items and metadata
 
 `tainted_item_lists`, `untracked_item_lists`, `HelperMetadataUncertainty`, and
@@ -263,9 +362,20 @@ narrowed.
 Per `CLAUDE.md`: what structural testing would have made noticing this
 unnecessary?
 
-**Metamorphic taint-closure property**, in the mould of `borzoi-assembly`'s
-`modifier_metamorphic` probe (decorate every signature node and re-project;
-a `modopt` must move nothing). Here:
+**Metamorphic taint-closure property.** This is not speculative — the precedent
+is this branch's own immediately-preceding commit. `dc3cdc20` ("a Compile
+item's `Link` carries a knowability verdict") fixed a structurally identical
+*absent-vs-unread* conflation, guarded by `tests/fsproj_link_metadata_diff.rs`,
+a generative differential over
+{SDK kind × placement × declaration × gate × include form}. Its commit message
+records the payoff exactly:
+
+> It reports **36 wrong commits** without this change, against the single
+> instance the whole-project corpus sweep had shown — which is the argument for
+> sweeping the axes rather than fixing the instance.
+
+That is the same argument, one layer down, and it is in-repo evidence rather
+than analogy. Here:
 
 > For a generated project document `D` and a property `P` that `D` writes:
 > wrapping `P`'s write in an unsupported gate must make **every** value whose
@@ -310,10 +420,39 @@ Also required, per the "perturbation floors must exclude swept inputs" note: the
 floor must be on the *derived complement* (values that read `P`), not on `P`
 itself, or it is circular.
 
-## Consultation
+### Change what the census ratchet measures
 
-Design review requested from a second model on: whether P1's exact read-set is
-sound versus the current over-approximation (bail-out, short-circuit, discarded
-sub-expressions, `Exists()`); whether P3 earns its cost once P1+P2 land; the
-vacuity failure modes of the metamorphic gate; and the staging cut. Findings to
-be folded in before P0 is written.
+Whichever stage lands the fix must also change `sdk_chain_expression_census.rs`.
+It currently ratchets on *coverage of `expr.rs`'s supported members*, with no
+check that the reference scanner stayed in step — so the next contributor to add
+`Replace` (31 SDK occurrences waiting) re-arms the bug **and the ratchet
+applauds them for it**. Re-point it at "zero disagreement sites between the
+reference scanner and the real evaluator", or the fix decays exactly as the
+"commit-count floors rot when the product grows" note predicts.
+
+## Consultation record
+
+Reviewed by a second model against the code. Three findings changed the plan:
+
+1. **The original P1 was unsound as scoped** — it would have replaced
+   `condition.rs`'s deliberately over-approximating whole-tree scan with an
+   under-approximating evaluation-order read set, regressing a short-circuit
+   safety property the codebase had already built on purpose. Verified against
+   `condition.rs:202-206` and the comment stating the reason. This produced the
+   two-bucket split, which is now the plan's central structural claim.
+2. **A smaller fix dominates the one I drafted** — reusing `expr::parse` for
+   the leaf extractor closes both buckets with no signature churn, where
+   exact-reads plumbing closes one bucket at the cost of test churn. Exact
+   reads demoted to P1′ and relabelled a precision improvement. (Reviewer
+   called the parse walk "total"; it is not — `expr::parse` returns `Option`,
+   hence the mandatory fallback noted in P1.)
+3. **P3 was asserted rather than justified** — the twelve direct-read sites can
+   be audited cheaply and standalone (P2′), so P3's marginal value is
+   *durability against the thirteenth site*, which should be priced after the
+   audit rather than assumed. P3 also inherits two unresolved design questions
+   now recorded against it.
+
+The `.Length` failure was also mis-described in the first draft as "no
+reference extracted"; it is a mis-parse producing the bogus key
+`"Marked.Length"`. Corrected above, because it changes the fix: extending the
+allow-list would not have repaired it.
