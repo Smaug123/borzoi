@@ -1929,8 +1929,8 @@ fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> HashSet<Str
 
 /// Read one item metadata value — a `Name="..."` attribute or a
 /// `<Name>...</Name>` child element — with `$(…)` substitution applied and
-/// surrounding whitespace trimmed. Unlike `<Link>`, no path normalisation:
-/// version and asset-list strings are opaque to this crate.
+/// surrounding whitespace trimmed. No path normalisation is applied: version
+/// and asset-list strings are opaque to this crate.
 ///
 /// The private return type distinguishes "absent, inherit source-item
 /// metadata" from "present but empty/unresolvable, clear source-item metadata".
@@ -3008,11 +3008,10 @@ pub(super) fn item_group_has_package_child(node: Node<'_, '_>) -> bool {
         .any(|c| package_item_kind_for_element(c).is_some())
 }
 
-/// Resolve one string-valued item metadatum (`<Link>`,
-/// `<ReferenceOutputAssembly>`, `<ExcludeAssets>`, …) from either an
-/// attribute on the item or a child element with text content. In either
-/// form, $(...) substitution applies —
-/// `Link="$(Configuration)/$(MSBuildProjectName).fs"` is legal MSBuild.
+/// Resolve one string-valued item metadatum (`<ReferenceOutputAssembly>`,
+/// `<ExcludeAssets>`, …) from either an attribute on the item or a child
+/// element with text content. In either form, $(...) substitution applies —
+/// `ExcludeAssets="$(Configuration)"` is legal MSBuild.
 ///
 /// MSBuild item-metadata semantics: names compare **case-insensitively**,
 /// the attribute form is the *first* assignment, and child elements are

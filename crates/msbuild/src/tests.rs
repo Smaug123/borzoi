@@ -4387,11 +4387,11 @@ fn project_reference_obeys_condition_gating() {
 }
 
 #[test]
-fn project_reference_link_attribute_is_ignored() {
-    // `<Link>` is meaningful for Compile but MSBuild does not treat it
-    // as significant for ProjectReference; our parser drops it on the
-    // floor (rather than surfacing a value with no effect on a real
-    // build).
+fn an_unmodelled_metadata_attribute_does_not_disturb_the_item() {
+    // Metadata this crate does not model is inert: it neither drops the item
+    // nor surfaces a value. `Link` is the example because MSBuild really does
+    // define it — it positions the file in an IDE project tree — and nothing
+    // downstream of this crate reads it.
     let src = r#"<Project>
   <ItemGroup>
     <ProjectReference Include="../lib/Lib.csproj" Link="renamed/Lib.csproj" />
