@@ -1365,10 +1365,16 @@ impl<'a> Gen<'a> {
                 }
                 Some(Ty::Tuple(elems))
             }
-            Type::Array(a) => Some(Ty::Array {
-                elem: Box::new(self.annotation_ty(&a.element_type()?)?),
-                rank: u32::try_from(a.rank()).ok()?,
-            }),
+            Type::Array(a) => {
+                let rank = u32::try_from(a.rank()).ok()?;
+                if rank > MAX_ARRAY_RANK {
+                    return None;
+                }
+                Some(Ty::Array {
+                    elem: Box::new(self.annotation_ty(&a.element_type()?)?),
+                    rank,
+                })
+            }
             // A generic application. The CST has already normalised the two
             // surface spellings — postfix `int list` and prefix
             // `Dictionary<int, string>` — into a head plus an ordered argument
@@ -1437,6 +1443,12 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
+        // Asked of the marker *and* of the chased terminal below: either being
+        // error-obsolete is enough for F# to reject the annotation, and an
+        // abbreviation carries its own attributes.
+        if error_obsolete(entity) {
+            return None;
+        }
         let (handle, entity) = if entity.kind == EntityKind::Abbreviation {
             let terminal = self.env.resolve_abbreviation_target(handle)?;
             (terminal, self.env.entity(terminal))
@@ -1444,6 +1456,9 @@ impl<'a> Gen<'a> {
             (handle, entity)
         };
         if !entity.generic_parameters.is_empty() {
+            return None;
+        }
+        if error_obsolete(entity) {
             return None;
         }
         if matches!(
@@ -1519,6 +1534,12 @@ impl<'a> Gen<'a> {
     fn applied_annotation_ty(&self, handle: EntityHandle, args: Vec<Ty>) -> Option<Ty> {
         let entity = self.env.entity(handle);
         if entity.is_byref_like {
+            return None;
+        }
+        // An error-obsolete *argument* is caught by the recursion, which reaches
+        // this bridge or the nullary one for every written argument; this covers
+        // the head.
+        if error_obsolete(entity) {
             return None;
         }
         if entity.generic_parameters.len() != args.len() {
@@ -3517,6 +3538,31 @@ fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
         || p.is_unmanaged
         || !p.type_constraints.is_empty()
         || p.fsharp_constraints != FSharpConstraints::Free
+}
+
+/// The highest array rank F# accepts in an annotation.
+///
+/// Our parser reads any rank the brackets spell, so the limit has to be applied
+/// here or a rank the language rejects reaches [`Ty::Array`]. Measured against
+/// the `binder-types` oracle rather than read off a spec: `int[,…]` at rank 32
+/// types as itself, and at rank 33 FCS reports the annotation and recovers the
+/// binder to `System.Object` — in argument position (`System.Func<int[…], bool>`)
+/// exactly as in bare position, which is why the check sits on the shared array
+/// arm rather than in either bridge.
+const MAX_ARRAY_RANK: u32 = 32;
+
+/// Whether an entity is marked `[<Obsolete(_, true)>]` — obsolete **as an
+/// error** rather than as a warning.
+///
+/// F# rejects an annotation naming one (FS0101) and recovers the binder to
+/// `System.Object`, so committing the written type is a wrong answer rather than
+/// a commit on an erroring line. The `is_error` flag is the whole discriminator,
+/// measured: `[<Obsolete("…", false)>] Warn<int>` types as `Warn<System.Int32>`
+/// while `[<Obsolete("…", true)>] Old<int>` types as `System.Object`, and an
+/// error-obsolete type used as a generic *argument* sinks the whole application
+/// the same way.
+fn error_obsolete(entity: &borzoi_assembly::Entity) -> bool {
+    entity.obsolete.as_ref().is_some_and(|o| o.is_error)
 }
 
 fn contains_param(ty: &Ty) -> bool {

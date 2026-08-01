@@ -959,6 +959,117 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
     );
 }
 
+/// An **error-obsolete** head or argument declines; its warning-obsolete twin
+/// does not.
+///
+/// F# rejects an annotation naming an `[<Obsolete(_, true)>]` type (FS0101) and
+/// recovers the binder to `System.Object`, so committing the written type is a
+/// wrong answer, not a commit on an erroring line. Measured against the
+/// `binder-types` oracle: `Old<int>` types as `System.Object` while
+/// `Warn<int>` types as itself, and `System.Func<Old<int>, bool>` sinks whole.
+///
+/// The warning-obsolete twin is what makes the decline attributable to the
+/// `IsError` flag: a bridge that declined on *any* `Obsolete` attribute would
+/// pass a table containing only the error case, while losing types F# accepts.
+#[test]
+fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet w : ConstrainedFixture.WarnObsolete<int> = failwith \"\"\n",
+            "w"
+        )
+        .as_deref(),
+        Some("ConstrainedFixture.WarnObsolete<System.Int32>"),
+        "obsolete-as-a-warning is a type F# accepts, so declining it would lose a \
+         result — this is what makes the error case attributable"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet e : ConstrainedFixture.ErrorObsolete<int> = failwith \"\"\n",
+            "e"
+        ),
+        None,
+        "an error-obsolete head is rejected by F#, which recovers to System.Object"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet a : ConstrainedFixture.ErrorObsoleteAtom = failwith \"\"\n",
+            "a"
+        ),
+        None,
+        "the nullary bridge reaches an error-obsolete type too"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet g : System.Func<ConstrainedFixture.ErrorObsoleteAtom, bool> = failwith \"\"\n",
+            "g"
+        ),
+        None,
+        "an error-obsolete *argument* sinks the application, via the recursion \
+         rather than the head check"
+    );
+}
+
+/// An array rank above what F# accepts declines, in every position.
+///
+/// Our parser reads whatever rank the brackets spell, so without a check the
+/// written type reaches [`Ty::Array`] and is published. Measured: rank 32 types
+/// as itself and rank 33 recovers to `System.Object` — bare and as a generic
+/// argument alike, which is why the check sits on the shared array arm.
+///
+/// Rank 32 is asserted alongside so the decline is attributable to the limit
+/// rather than to arrays-of-high-rank being unsupported generally.
+#[test]
+fn an_array_rank_above_the_limit_defers() {
+    let commas = |n: usize| ",".repeat(n);
+    let at_limit = format!("module M\nlet a : int[{}] = failwith \"\"\n", commas(31));
+    let over_limit = format!("module M\nlet b : int[{}] = failwith \"\"\n", commas(32));
+    let arg_at_limit = format!(
+        "module M\nlet c : System.Func<int[{}], bool> = failwith \"\"\n",
+        commas(31)
+    );
+    let arg_over_limit = format!(
+        "module M\nlet d : System.Func<int[{}], bool> = failwith \"\"\n",
+        commas(32)
+    );
+
+    assert_eq!(
+        binder_render(&at_limit, "a").as_deref(),
+        Some("System.Int32[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]"),
+        "rank 32 is accepted by F#, so declining it would lose a result"
+    );
+    assert_eq!(
+        binder_render(&over_limit, "b"),
+        None,
+        "rank 33 is rejected by F#, which recovers the binder to System.Object"
+    );
+    assert_eq!(
+        binder_render(&arg_at_limit, "c").as_deref(),
+        Some("System.Func<System.Int32[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,], System.Boolean>"),
+        "and the same limit applies in argument position"
+    );
+    assert_eq!(
+        binder_render(&arg_over_limit, "d"),
+        None,
+        "an over-rank argument sinks the whole application"
+    );
+}
+
 /// A **generic application** annotation grounds its binder. Before this the
 /// annotation deferred, the binder published nothing, and every member access on
 /// such a receiver was silence — the single largest coverage gap in the member

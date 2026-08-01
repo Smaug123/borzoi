@@ -164,8 +164,8 @@ fn line_of(source: &str, offset: usize) -> u32 {
 enum Ann {
     /// A type with no arguments: a primitive, an F# alias, or a typar.
     Atom(&'static str),
-    /// `T[]`.
-    Array(Box<Ann>),
+    /// `T[]`, or `T[,…]` at a rank above 1.
+    Array(Box<Ann>, usize),
     /// `a * b`.
     Tuple(Box<Ann>, Box<Ann>),
     /// `a -> b`.
@@ -181,7 +181,15 @@ impl Ann {
     }
 
     fn array(t: Ann) -> Ann {
-        Ann::Array(Box::new(t))
+        Ann::Array(Box::new(t), 1)
+    }
+
+    /// An array of a rank the generator would not otherwise reach. F# caps the
+    /// rank at 32 and recovers a higher one to `System.Object`, so a bridge that
+    /// reads whatever the brackets spell publishes a rejected type — a shape the
+    /// rank-1-only alphabet made unbuildable, and so unmeasurable.
+    fn array_ranked(t: Ann, rank: usize) -> Ann {
+        Ann::Array(Box::new(t), rank)
     }
 
     fn tuple(a: Ann, b: Ann) -> Ann {
@@ -196,7 +204,9 @@ impl Ann {
     fn render(&self) -> String {
         match self {
             Ann::Atom(s) => (*s).to_owned(),
-            Ann::Array(t) => format!("{}[]", t.render_nested()),
+            Ann::Array(t, rank) => {
+                format!("{}[{}]", t.render_nested(), ",".repeat(rank - 1))
+            }
             Ann::Tuple(a, b) => format!("{} * {}", a.render_nested(), b.render_nested()),
             Ann::Fun(a, b) => format!("{} -> {}", a.render_nested(), b.render_nested()),
             Ann::App(head, args) => {
@@ -224,7 +234,7 @@ impl Ann {
     fn has_typar(&self) -> bool {
         match self {
             Ann::Atom(s) => s.starts_with('\''),
-            Ann::Array(t) => t.has_typar(),
+            Ann::Array(t, _) => t.has_typar(),
             Ann::Tuple(a, b) | Ann::Fun(a, b) => a.has_typar() || b.has_typar(),
             Ann::App(_, args) => args.iter().any(Ann::has_typar),
         }
@@ -233,7 +243,7 @@ impl Ann {
 
 /// Arity-1 heads. Each is here for a distinct reason the projection could get
 /// wrong; see the module docs.
-const HEADS1: [&str; 12] = [
+const HEADS1: [&str; 14] = [
     "option",
     "list",
     "ResizeArray",
@@ -258,6 +268,17 @@ const HEADS1: [&str; 12] = [
     // on `Constrained` attributable to the constraint rather than to genericity.
     "ConstrainedFixture.Constrained",
     "ConstrainedFixture.Free",
+    // The **obsolescence** dimension, from the same fixture. F# rejects an
+    // annotation naming an `[<Obsolete(_, true)>]` type (FS0101) and recovers
+    // the binder to `System.Object`, so a bridge that reads the attribute not at
+    // all commits a type FCS positively disagrees with. `WarnObsolete` carries
+    // the same attribute with `IsError = false` and is a type F# *accepts*, so
+    // it is what makes a decline on the former attributable to the flag rather
+    // than to the attribute's presence — the same twin discipline `Free` serves
+    // for constraints. No head in the shipped BCL or FSharp.Core is
+    // error-obsolete, so this dimension needs the fixture too.
+    "ConstrainedFixture.ErrorObsolete",
+    "ConstrainedFixture.WarnObsolete",
 ];
 
 /// Arity-2 heads.
@@ -289,6 +310,12 @@ const HEADS2: [&str; 10] = [
 /// that diverge are structural, and a third atom multiplies the space without
 /// reaching a new one.
 const ATOMS: [&str; 2] = ["int", "string"];
+
+/// The highest array rank F# accepts; above it the annotation is rejected and
+/// the binder recovers to `System.Object`. Mirrors `infer`'s own limit, spelled
+/// here so the sweep straddles the boundary from the outside rather than
+/// inheriting whatever the subject believes.
+const MAX_RANK: usize = 32;
 
 /// Every **structural** annotation — array, tuple, function — to depth 3 over
 /// [`ATOMS`], each nesting level combined against the atoms.
@@ -337,6 +364,11 @@ fn generic_args() -> Vec<Ann> {
         // lands on declares no constraint at all, so the constraint dimension
         // cannot see this: it is a fact about the *argument* and its position.
         Ann::atom(BYREF_LIKE),
+        // An **error-obsolete** argument. F# rejects the whole annotation, so
+        // this is the argument-position half of the obsolescence dimension —
+        // reached by the bridge's recursion rather than by its head check, which
+        // a head-only alphabet cannot exercise.
+        Ann::atom(ERROR_OBSOLETE_ATOM),
     ];
     out.extend(structural.iter().step_by(11).cloned());
     out
@@ -346,6 +378,11 @@ fn generic_args() -> Vec<Ann> {
 /// head-side guard can catch. `Span<'T>` is the BCL's canonical one, and it is
 /// generic, so it also exercises an application *inside* an application.
 const BYREF_LIKE: &str = "System.Span<int>";
+
+/// A **non-generic** error-obsolete type, from `tests/fixtures/constrained_env`.
+/// Non-generic so it reaches the nullary bridge, and so it can stand as a
+/// generic argument — the position no head-side guard can catch.
+const ERROR_OBSOLETE_ATOM: &str = "ConstrainedFixture.ErrorObsoleteAtom";
 
 /// A type nested inside a **non-generic** one. The oracle's metadata renderer
 /// normalises FCS's `+` separator to `/`, but this one arrives already dotted, so
@@ -412,6 +449,22 @@ fn enumerate() -> Vec<Ann> {
         Ann::array(Ann::atom(NESTED_IN_GENERIC)),
         Ann::App("option", vec![Ann::atom(NESTED_IN_GENERIC)]),
     ];
+    // Array **ranks**, which the rank-1-only structural alphabet cannot build.
+    // F# accepts up to 32 and recovers a higher rank to `System.Object`, so the
+    // pair straddles the limit in each position a rank can occupy: bare, as a
+    // generic argument, and under a second former. Without the over-limit
+    // member the sweep agrees vacuously — the shape it would disagree on is one
+    // it never generates.
+    let ranked = [2usize, MAX_RANK, MAX_RANK + 1]
+        .into_iter()
+        .flat_map(|rank| {
+            [
+                Ann::array_ranked(Ann::atom("int"), rank),
+                Ann::App("option", vec![Ann::array_ranked(Ann::atom("int"), rank)]),
+                Ann::tuple(Ann::array_ranked(Ann::atom("int"), rank), Ann::atom("bool")),
+            ]
+        })
+        .collect::<Vec<_>>();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for a in structural
@@ -419,6 +472,7 @@ fn enumerate() -> Vec<Ann> {
         .chain(applications)
         .chain(nested)
         .chain(nested_in_generic)
+        .chain(ranked)
     {
         if seen.insert(a.render()) {
             out.push(a);
