@@ -7,7 +7,8 @@ use std::path::Path;
 
 use borzoi_cst::syntax::ImplFile;
 use borzoi_sema::{
-    AssemblyEnv, DefKind, InferredFile, ProjectItems, Resolution, ResolvedFile, Ty, resolve_file,
+    AssemblyEnv, DefKind, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, Ty,
+    resolve_file,
 };
 use lsp_types::{Location, Range, SymbolInformation, SymbolKind, Url};
 use rowan::{TextRange, TextSize};
@@ -44,8 +45,17 @@ pub fn range_to_lsp(text: &str, range: TextRange) -> Range {
 /// because a file's *outline* — the names it declares and where — does not
 /// depend on what those names resolve to elsewhere. Cross-file / cross-assembly
 /// enrichment changes resolution, not the outline.
-pub fn file_export_symbols(text: &str, file: &ImplFile) -> Vec<(String, SymbolKind, Range)> {
-    let resolved = resolve_file(file, &ProjectItems::default(), &AssemblyEnv::default());
+pub fn file_export_symbols(
+    text: &str,
+    file: &ImplFile,
+    recovery: &SyntaxRecovery,
+) -> Vec<(String, SymbolKind, Range)> {
+    let resolved = resolve_file(
+        file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        recovery,
+    );
     resolved
         .exports()
         .iter()

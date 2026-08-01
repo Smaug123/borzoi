@@ -16,7 +16,8 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_oracle_harness::BoundedCommand;
 use borzoi_sema::{
-    AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, resolve_file,
+    AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery,
+    resolve_file,
 };
 use rowan::{TextRange, TextSize};
 
@@ -147,8 +148,9 @@ fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), env)
+    resolve_file(&file, &ProjectItems::default(), env, &recovery)
 }
 
 fn at(hay: &str, needle: &str) -> TextRange {

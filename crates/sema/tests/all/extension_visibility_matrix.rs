@@ -53,7 +53,7 @@ use crate::common::{
 use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Build the F# auto-open fixture (which carries the `Demo.ExtMatrix` shapes) once.
@@ -523,8 +523,9 @@ fn our_resolved(env: &AssemblyEnv, src: &str, probe: TextRange) -> Resolved {
     }
     let parsed = parse(src);
     assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), env);
+    let rf = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     match rf.resolution_at(probe) {
         Some(Resolution::Entity(h)) => {
             let e = env.entity(h);

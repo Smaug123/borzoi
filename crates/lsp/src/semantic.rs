@@ -11,6 +11,7 @@
 //! invalidates strictly by project path; sema's prefix-monotone fold makes
 //! sub-project incrementality a later optimisation, not a v1 requirement.
 
+use borzoi_cst::parser::FileKind;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -20,7 +21,9 @@ use borzoi_assembly::{AssemblyIdentity, Ecma335Assembly, EcmaView, Entity, Impor
 use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::syntax::{AstNode, ImplFile, SigFile};
 use borzoi_msbuild::ItemKind;
-use borzoi_sema::{AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile};
+use borzoi_sema::{
+    AbbreviationVisibility, AssemblyEnv, ProjectFile, ResolvedProject, SourceFile, SyntaxRecovery,
+};
 use lsp_types::Url;
 
 use crate::assembly_cache::AssemblyCache;
@@ -181,6 +184,12 @@ struct CachedParse {
     /// The reusable parsed file — impl or signature, per the path's extension
     /// (a rowan handle; a hit clones it — an `Arc` bump, not a re-parse).
     file: SourceFile,
+    /// What the parser had to recover from in `file`. Cached beside the tree
+    /// because the `Parse` that produced both is dropped here, and a hit that
+    /// served the tree without it would leave the fold unable to prove any
+    /// declaration parsed cleanly — silently costing every annotation in the
+    /// file its type.
+    recovery: SyntaxRecovery,
 }
 
 /// The previous Compile-order fold of a project, kept so the *next* fold can be
@@ -1208,6 +1217,7 @@ fn build_parses(
     let mut files = Vec::with_capacity(includes.len());
     let mut paths = Vec::with_capacity(includes.len());
     let mut texts = Vec::with_capacity(includes.len());
+    let mut recoveries = Vec::with_capacity(includes.len());
 
     let _parse_all_span =
         tracing::info_span!("parse_compile_items", count = includes.len()).entered();
@@ -1246,12 +1256,13 @@ fn build_parses(
                         && c.symbols == symbols
                         && *c.text == *text
                 })
-                .map(|c| (c.file.clone(), Arc::clone(&c.text)))
+                .map(|c| (c.file.clone(), Arc::clone(&c.text), c.recovery.clone()))
         }) {
-            let (source_file, text) = hit;
+            let (source_file, text, recovery) = hit;
             files.push(source_file);
             paths.push(include);
             texts.push(text);
+            recoveries.push(recovery);
             continue;
         }
         // A `.fsi` Compile item parses under the signature grammar
@@ -1321,6 +1332,27 @@ fn build_parses(
                 return None;
             }
         }
+        // Before `parse.root` is moved into the `SourceFile`: the errors and the
+        // tree describe the same parse, and only here are both still in hand.
+        //
+        // Under untrusted `LangVersion` provenance the version is a guess, and
+        // a guess cannot prove a clean read of a file whose diagnostics are
+        // version-gated — the tree is identical either side of the threshold,
+        // so the shape gate above never fires on it.
+        let recovery = if lang_version_untrusted {
+            SyntaxRecovery::of_guessed_version(
+                &parse,
+                &text,
+                &symbols,
+                if signature {
+                    FileKind::Sig
+                } else {
+                    FileKind::Impl
+                },
+            )
+        } else {
+            SyntaxRecovery::of(&parse)
+        };
         let source_file = if signature {
             match SigFile::cast(parse.root) {
                 Some(sig) => SourceFile::Sig(sig),
@@ -1356,6 +1388,7 @@ fn build_parses(
             lang_version_untrusted,
             text: Arc::clone(&text),
             file: source_file.clone(),
+            recovery: recovery.clone(),
         };
         let variants = file_parses.entry(include.clone()).or_default();
         if let Some(slot) = variants.iter_mut().find(|c| {
@@ -1370,6 +1403,7 @@ fn build_parses(
         files.push(source_file);
         paths.push(include);
         texts.push(text);
+        recoveries.push(recovery);
     }
     drop(_parse_all_span);
 
@@ -1380,7 +1414,8 @@ fn build_parses(
     let files = files
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof))
+        .zip(recoveries)
+        .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
         .collect();
 
     Some(ProjectParses {
@@ -3380,6 +3415,115 @@ mod tests {
         assert_eq!(parses.paths.len(), 1);
     }
 
+    /// A cache *hit* serves the recovery record beside the tree it serves.
+    ///
+    /// The `Parse` dies inside [`build_parses`], so a hit that returned only the
+    /// tree would hand the fold [`SyntaxRecovery::Unretained`] — and nothing
+    /// would go red, because `Unretained` is the safe reading: the file's
+    /// annotations would simply stop producing types, on the second request and
+    /// every one after it. That is the whole failure mode of caching a
+    /// knowability, so it is pinned rather than argued.
+    #[test]
+    fn a_cache_hit_still_carries_the_parse_errors() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        let file = tmp.path().join("Lib.fs");
+        write(&proj, &fsproj(&["Lib.fs"]));
+        // Clean: the point is that `Reported` survives, and `Reported([])` is
+        // the reading that licenses a commitment.
+        write(&file, "module M\nlet v : System.String = failwith \"\"\n");
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let cold = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("first parses")
+            .files[0]
+            .recovery
+            .clone();
+        // Invalidate the *project* memo so the rebuild runs, while leaving the
+        // per-file `CachedParse` table intact and the text untouched — which is
+        // what makes the rebuild take the hit branch rather than re-parse.
+        sema.invalidate_project(&proj);
+        let hit = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("rebuilt parses")
+            .files[0]
+            .recovery
+            .clone();
+
+        assert_eq!(
+            cold,
+            SyntaxRecovery::Reported([].into()),
+            "a clean file must prove itself clean on a cold parse"
+        );
+        assert_eq!(hit, cold, "the cache hit must serve the same reading");
+    }
+
+    /// A guessed language version cannot prove a clean read of a file whose
+    /// diagnostics are version-gated.
+    ///
+    /// `#elif` is an error below F# 11 and silent at or above it, from a
+    /// byte-identical tree — so the version-boundary gate, which compares tree
+    /// *shape*, never fires and the guessed parse records `Reported([])`. Read
+    /// as proof, that licenses publishing a type for an annotation the real
+    /// build rejects. The file must read `Unretained` instead.
+    #[test]
+    fn a_version_gated_diagnostic_is_unretained_under_a_guessed_version() {
+        use borzoi_cst::language_version::LanguageVersion;
+        use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+
+        // The premise, restated locally so this test fails loudly if the gate
+        // ever stops being version-dependent rather than passing vacuously.
+        let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
+        let parse = |lang| {
+            parse_with_options(
+                source,
+                ParseOptions {
+                    file_kind: FileKind::Impl,
+                    symbols: &HashSet::new(),
+                    lang,
+                },
+            )
+        };
+        let guessed = parse(LanguageVersion::Preview);
+        assert!(guessed.errors.is_empty(), "clean at the guessed version");
+        assert!(
+            !parse(LanguageVersion::V10_0).errors.is_empty(),
+            "and rejected one threshold down"
+        );
+        assert_eq!(
+            guessed.root.green(),
+            parse(LanguageVersion::V10_0).root.green(),
+            "with the same tree, which is why the shape gate cannot see it"
+        );
+
+        assert_eq!(
+            SyntaxRecovery::of_guessed_version(&guessed, source, &HashSet::new(), FileKind::Impl),
+            SyntaxRecovery::Unretained,
+            "a guessed version proves nothing about a version-gated file"
+        );
+        // The contrast: ordinary source is version-invariant, so a guess is
+        // still proof and the feature stays on for it.
+        let ordinary = parse_with_options(
+            "module M\nlet v : System.String = failwith \"\"\n",
+            ParseOptions {
+                file_kind: FileKind::Impl,
+                symbols: &HashSet::new(),
+                lang: LanguageVersion::Preview,
+            },
+        );
+        assert_eq!(
+            SyntaxRecovery::of_guessed_version(
+                &ordinary,
+                "module M\nlet v : System.String = failwith \"\"\n",
+                &HashSet::new(),
+                FileKind::Impl,
+            ),
+            SyntaxRecovery::Reported([].into()),
+        );
+    }
+
     #[test]
     fn caches_until_invalidated() {
         let tmp = TempDir::new().unwrap();
@@ -3450,6 +3594,7 @@ mod tests {
                 .expect("an impl Compile item"),
             &ProjectItems::default(),
             &AssemblyEnv::default(),
+            &parses.files[0].recovery,
         );
         let names: Vec<_> = resolved
             .exports()

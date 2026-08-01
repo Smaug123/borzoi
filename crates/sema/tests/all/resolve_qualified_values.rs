@@ -11,7 +11,8 @@
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, resolve_file, resolve_project,
+    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+    resolve_project,
 };
 use rowan::TextRange;
 
@@ -22,10 +23,12 @@ fn resolve(src: &str) -> ResolvedFile {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     resolve_file(
         &ImplFile::cast(parsed.root).expect("impl file"),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery,
     )
 }
 

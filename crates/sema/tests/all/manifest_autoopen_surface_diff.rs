@@ -31,7 +31,7 @@ use crate::common::{
 use borzoi_assembly::{Access, Ecma335Assembly, Entity, EntityKind, Member, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// The fixture's `<AssemblyName>`, as FCS reports declaring assemblies.
@@ -142,8 +142,9 @@ fn sweep_sound(src: &str) -> (usize, usize) {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &env);
+    let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
     let path = temp_fs_file("manifest_surface", src);
     let json = invoke_fcs_dump_with_refs("uses", &path, &[fixture]);

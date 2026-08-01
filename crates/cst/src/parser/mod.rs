@@ -292,6 +292,59 @@ pub fn parse_with_options(source: &str, opts: ParseOptions<'_>) -> Parse {
     parse_inner(source, opts.symbols, opts.file_kind, opts.lang)
 }
 
+/// Whether `source`'s reported diagnostics are the same at every
+/// [`LanguageVersion`].
+///
+/// Deliberately a *function of the source* rather than a field on [`Parse`]:
+/// answering it costs two extra parses, and a field would charge every parse in
+/// the workspace for a verdict almost none of them read.
+///
+/// Decided by **re-parsing at both ends of the ladder and comparing the whole
+/// diagnostic output**, deliberately rather than by asking each version-gated
+/// producer whether it fired. Two review rounds each found a producer such an
+/// enumeration had missed — a gate whose diagnostic is *suppressed* at the
+/// parsed version emits nothing for the run to notice, and a depth-limited
+/// parse collapses its errors to one whose span still moves — and an
+/// enumeration that has to be complete to be sound is the wrong shape for a
+/// claim consumers read as proof. Comparing outputs cannot miss a producer,
+/// because it never names one.
+///
+/// Two points suffice because every version gate is a monotone threshold: a
+/// feature becomes available at some version and stays available. That is an
+/// argument rather than a mechanism, so it is checked by a property over *all*
+/// versions (`shape_sensitivity::unset_diagnostics_flag_proves_version_invariance`).
+///
+/// Costs two extra parses, so a caller that does not need the verdict should
+/// not ask: it is worth paying only where a commitment rests on the diagnostics
+/// being the real build's, and the version is a guess.
+///
+/// Both endpoint parses run under [`catch_unwind`](std::panic::catch_unwind),
+/// and a panic reads as version-*dependent*. This parses at versions the caller
+/// never asked for, so a buffer the caller's own version handles can still fire
+/// one of the parser's invariant guards at an endpoint — `"match)..\n"` does,
+/// at `MIN` only. Containing it here rather than at the call site is what makes
+/// the containment hold for every caller: the LSP wraps its own parses
+/// (`borzoi::cst_panic_safe`), but `borzoi_sema::SyntaxRecovery::of_guessed_version`
+/// calls straight in. A panic is also exactly the reading this returns `false`
+/// for on its merits — it proves nothing about the other versions, so the
+/// caller must retain no diagnostics.
+pub fn diagnostics_are_version_invariant(
+    source: &str,
+    symbols: &HashSet<String>,
+    file_kind: FileKind,
+) -> bool {
+    let at = |lang| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            parse_inner(source, symbols, file_kind, lang)
+        }))
+        .ok()
+    };
+    let (Some(lo), Some(hi)) = (at(LanguageVersion::MIN), at(LanguageVersion::MAX)) else {
+        return false;
+    };
+    lo.errors == hi.errors && lo.warnings == hi.warnings
+}
+
 fn parse_inner(
     source: &str,
     symbols: &HashSet<String>,
@@ -408,14 +461,12 @@ fn parse_inner(
     errors.extend(tab_errors);
     errors.extend(langversion_errors);
     errors.extend(node_surface_diagnostics(&root, lang));
-    // Warnings come from the productions and (once the emission stages land) the
-    // lex-filter's offside diagnostics; directive/tab/langversion problems are
-    // all errors.
+    // Warnings come from the productions and the lex-filter's offside
+    // diagnostics; directive/tab/langversion problems are all errors.
     let mut warnings = parser.warnings;
     warnings.extend(reserved_warnings);
     // The lex-filter's offside / indentation diagnostics (FS0058), split by the
-    // severity it resolved from `lang`. Empty until the emission stages of
-    // `docs/offside-diagnostics-plan.md`.
+    // severity it resolved from `lang`.
     for diag in offside_diagnostics {
         let err = ParseError {
             message: diag.message,

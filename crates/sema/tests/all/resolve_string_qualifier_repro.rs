@@ -37,7 +37,7 @@ use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll};
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// An [`AssemblyEnv`] over the real, shipped `FSharp.Core.dll` **and** a real BCL
@@ -82,10 +82,11 @@ fn string_qualifier_of_static_call_resolves_to_the_bcl_type_not_the_fsharp_core_
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
 
     let env = fsharp_core_plus_bcl_env();
-    let rf = resolve_file(&file, &ProjectItems::default(), &env);
+    let rf = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
 
     // The `String` qualifier token of `String.Equals`.
     let head = at(src, "String");

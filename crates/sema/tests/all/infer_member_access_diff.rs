@@ -30,7 +30,8 @@ use borzoi_assembly::{Augmentation, Ecma335Assembly, EcmaView, UnionCases};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind};
 use borzoi_sema::{
-    AssemblyEnv, InferredFile, ProjectItems, Resolution, ResolvedFile, infer_file, resolve_file,
+    AssemblyEnv, InferredFile, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, infer_file,
+    resolve_file,
 };
 use rowan::TextRange;
 
@@ -105,8 +106,9 @@ fn fsharp_core_env_no_longer_defers_unrelated_overload_names() {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = infer_file(&file, &resolved, &env);
         let def_types: HashMap<String, String> = inferred
             .def_types()
@@ -219,8 +221,9 @@ fn open_of_extension_bearing_namespace_defers_only_colliding_names() {
             "parse errors in {src:?}: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = infer_file(&file, &resolved, &env);
         let def_types: HashMap<String, String> = inferred
             .def_types()
@@ -276,8 +279,9 @@ fn open_of_namespace_with_a_dropped_prefix_split_is_unknowable() {
     // Control: with no drop, the open is name-keyed to the exact namespace.
     let clean_env = build_env();
     let parsed = parse(src);
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let clean = resolve_file(&file, &ProjectItems::default(), &clean_env);
+    let clean = resolve_file(&file, &ProjectItems::default(), &clean_env, &recovery);
     assert!(
         !clean.open_extension_unknowable(),
         "a clean `open <namespace>` is name-keyed, not unknowable"
@@ -293,7 +297,7 @@ fn open_of_namespace_with_a_dropped_prefix_split_is_unknowable() {
     // `names_uncovered_dropped_path` alone would not catch it.
     let mut dropped_env = build_env();
     dropped_env.mark_namespace_dropped_type(vec!["Demo".to_owned(), "Sub".to_owned()]);
-    let dropped = resolve_file(&file, &ProjectItems::default(), &dropped_env);
+    let dropped = resolve_file(&file, &ProjectItems::default(), &dropped_env, &recovery);
     assert!(
         dropped.open_extension_unknowable(),
         "a dropped type at a prefix split of the opened namespace must defer the whole file"
@@ -309,8 +313,9 @@ fn infer_bcl(src: &str) -> (InferredFile, HashMap<String, String>) {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types = inferred
         .def_types()
@@ -332,8 +337,9 @@ fn assert_sound(src: &str) -> usize {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let path = temp_fs_file("member_diff", src);
@@ -534,8 +540,9 @@ fn infer_core_full(src: &str) -> (InferredFile, ResolvedFile) {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     (inferred, resolved)
 }
@@ -550,8 +557,9 @@ fn infer_bcl_full(src: &str) -> (InferredFile, ResolvedFile) {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     (inferred, resolved)
 }
@@ -1065,8 +1073,9 @@ fn unproven_object_base_edge_sinks_the_chain_rather_than_capping() {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
         let inferred = infer_file(&file, &resolved, env);
         inferred
             .def_types()
@@ -1107,8 +1116,9 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -1125,8 +1135,9 @@ fn enclosing_namespace_extension_defers_the_overload_gate() {
     // scope) commits the intrinsic `Substring(int)`.
     let control = "namespace Other\nmodule M =\n    let s = \"hi\"\n    let n = s.Substring(1)\n";
     let cparsed = parse(control);
+    let recovery = SyntaxRecovery::of(&cparsed);
     let cfile = ImplFile::cast(cparsed.root).expect("impl file");
-    let cresolved = resolve_file(&cfile, &ProjectItems::default(), &env);
+    let cresolved = resolve_file(&cfile, &ProjectItems::default(), &env, &recovery);
     let cinferred = infer_file(&cfile, &cresolved, &env);
     let ctypes: HashMap<String, String> = cinferred
         .def_types()
@@ -1207,8 +1218,9 @@ fn single_params_method_routes_through_the_matcher() {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = infer_file(&file, &resolved, &env);
         inferred
             .def_types()
@@ -1346,8 +1358,9 @@ fn interface_receiver_method_call_defers() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     assert_eq!(
         inferred.member_resolution_at(ident_range(src, "M")),
@@ -1451,8 +1464,9 @@ fn infer_two_param_method_call(agc: Option<usize>) -> Option<String> {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     inferred
         .types()
@@ -1574,8 +1588,9 @@ fn skipped_member_in_scope_defers_the_overload_gate() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -1599,8 +1614,9 @@ fn dropped_type_uncertainty_is_namespace_scoped() {
     // ~38 namespaced generic types, none in root.)
     let commit = |env: &AssemblyEnv, src: &str| -> Option<String> {
         let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
         let inferred = infer_file(&file, &resolved, env);
         inferred
             .def_types()
@@ -1686,8 +1702,9 @@ fn dropped_type_in_the_receiver_namespace_defers_the_member() {
                 "parse errors: {:?}",
                 parsed.errors
             );
+            let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
-            let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+            let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
             let inferred = infer_file(&file, &resolved, &env);
             let def_types: HashMap<String, String> = inferred
                 .def_types()
@@ -1745,8 +1762,9 @@ fn annotated_receiver_door_is_sealed_by_the_resolver() {
             "parse errors: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
         let inferred = infer_file(&file, &resolved, env);
         inferred
             .def_types()
@@ -1783,8 +1801,9 @@ fn unknowable_auto_opens_defer_the_overload_gate() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -1814,8 +1833,9 @@ fn root_namespace_extension_defers_the_overload_gate() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2124,8 +2144,9 @@ fn trailing_comma_argument_list_defers() {
         !parsed.errors.is_empty(),
         "the trailing comma is a parse error"
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2277,8 +2298,9 @@ fn void_method_call_defers_type_but_records_resolution() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     // The identity is recorded so hover / go-to-def works on the method name…
@@ -2380,8 +2402,9 @@ fn omitted_out_parameter_single_candidate_defers() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2411,8 +2434,9 @@ fn omitted_out_parameter_fully_supplied_also_defers() {
     let src = "module M\nlet s = \"hi\"\nlet n = s.Probe(1)\n";
     let (inferred, _) = {
         let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
         let inferred = infer_file(&file, &resolved, &env);
         (inferred, resolved)
     };
@@ -2591,8 +2615,9 @@ fn non_extension_attribute_no_longer_defers_the_overload() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2632,8 +2657,9 @@ fn a_real_extension_attribute_still_defers_the_overload() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2663,8 +2689,9 @@ fn augmentation_defers_only_its_own_member_names() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2693,8 +2720,9 @@ fn augmentation_defers_only_its_own_member_names() {
     let src = "module M\ntype System.String with\n    member this.Substring (x: bool) = 7.0\nlet s = \"hi\"\nlet a = s.Substring(1)\n";
     let parsed = parse(src);
     assert!(parsed.errors.is_empty());
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2720,8 +2748,9 @@ fn augmentation_with_unnameable_member_defers_everything() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2884,8 +2913,9 @@ fn assert_sound_core(src: &str) -> HashMap<String, String> {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let path = temp_fs_file("ao1_commit", src);
@@ -2953,8 +2983,9 @@ fn auto_open_module_augmentation_defers_only_its_member_names() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()
@@ -2982,8 +3013,9 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types: HashMap<String, String> = inferred
         .def_types()

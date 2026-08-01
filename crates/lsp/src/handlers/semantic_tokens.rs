@@ -42,7 +42,7 @@
 
 use borzoi_cst::lexer::{Token, lex};
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, SemanticClass, SyntaxRecovery, resolve_file};
 use lsp_types::{
     SemanticToken, SemanticTokenType, SemanticTokens, SemanticTokensLegend, SemanticTokensParams,
     SemanticTokensResult, Url,
@@ -466,8 +466,14 @@ fn single_file_tokens(state: &mut State, uri: &Url) -> Option<Vec<SemanticToken>
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(&text, &symbols, lang)?;
+    let recovery = SyntaxRecovery::without_inference();
     let file = ImplFile::cast(parse.root)?;
-    let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let resolved = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     let classify = resolved.token_classifier();
     Some(sema_tokens(&text, classify))
 }
@@ -710,8 +716,14 @@ mod tests {
     fn qualified_leaf_and_head_are_both_classified() {
         let text = "type Color = Red = 0 | Green = 1\nlet c = Color.Red\n";
         let parse = borzoi_cst::parser::parse(text);
+        let recovery = SyntaxRecovery::without_inference();
         let file = ImplFile::cast(parse.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let resolved = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
         let toks = decode(&sema_tokens(text, resolved.token_classifier()));
         // Line 1: `Color` (cols 8..13) is the type; `Red` (cols 14..17) the case.
         assert!(

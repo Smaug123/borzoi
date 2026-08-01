@@ -5,6 +5,7 @@
 //! parent [`resolve`](super) module; the fields here are `pub(super)` so those
 //! impl blocks (anywhere in the `resolve` module subtree) can reach them.
 
+use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 
 use rowan::TextRange;
@@ -1452,6 +1453,12 @@ pub(super) struct Resolver<'a> {
     /// from this list; a decl is appended at the same program point each legacy
     /// export writer fires, so the derivations reproduce today's ordering.
     pub(super) export_decls: Vec<ExportDecl>,
+    /// What the parser had to recover from in the file being walked, moved into
+    /// [`ResolvedFile::recovery`](super::model::ResolvedFile). Set by
+    /// [`resolve_file`](super::resolve_file) from its caller's parse;
+    /// [`SyntaxRecovery::Unretained`] until then, which is the reading that
+    /// claims nothing.
+    pub(super) recovery: SyntaxRecovery,
 }
 
 /// What the binders interned so far in **one** pattern walk resolved to, so an

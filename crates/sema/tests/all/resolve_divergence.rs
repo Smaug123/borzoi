@@ -82,7 +82,7 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Where the report is written. Defaults to `resolve-divergence/` at the
@@ -325,11 +325,13 @@ fn sweep_file(file: &FileCensus, report: &mut Report) {
         if !parsed.errors.is_empty() {
             return None; // "our errors" — signalled without panicking
         }
+        let recovery = SyntaxRecovery::of(&parsed);
         let impl_file = ImplFile::cast(parsed.root)?;
         Some(resolve_file(
             &impl_file,
             &ProjectItems::default(),
             &AssemblyEnv::default(),
+            &recovery,
         ))
     }));
     let rf = match resolved {

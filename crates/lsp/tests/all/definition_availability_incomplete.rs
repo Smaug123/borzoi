@@ -17,7 +17,7 @@
 use borzoi::handlers::definition_availability::{UnavailableReason, classify, explanation_range};
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxNode};
 use borzoi_sema::{
-    AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, infer_file, resolve_file,
+    AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, infer_file, resolve_file,
 };
 
 use crate::common::{ensure_fsharp_core_dll, ensure_system_runtime_dll};
@@ -43,8 +43,9 @@ fn complete_and_incomplete() -> (AssemblyEnv, AssemblyEnv) {
 
 fn analyse(src: &str, env: &AssemblyEnv) -> (ResolvedFile, InferredFile, SyntaxNode) {
     let parse = borzoi_cst::parser::parse(src);
+    let recovery = SyntaxRecovery::of(&parse);
     let file = ImplFile::cast(parse.root).expect("source parses as an impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred, file.syntax().clone())
 }

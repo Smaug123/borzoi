@@ -25,8 +25,17 @@ use std::path::Path;
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 use rowan::TextRange;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 fn ensure_fixture_built() -> &'static Path {
     crate::common::ensure_active_pattern_fixture_built()
@@ -52,7 +61,12 @@ fn impl_file(src: &str) -> ImplFile {
 }
 
 fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
-    resolve_file(&impl_file(src), &ProjectItems::default(), env)
+    resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        env,
+        &recovery_of(src),
+    )
 }
 
 /// The byte range of the `n`th (0-based) occurrence of `needle` in `src`.

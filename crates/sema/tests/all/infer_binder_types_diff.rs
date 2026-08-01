@@ -17,7 +17,9 @@
 use crate::common::{invoke_fcs_dump, parse_fcs_binder_types, temp_fs_file};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{InferredFile, ProjectItems, ResolvedFile, Ty, infer_file, resolve_file};
+use borzoi_sema::{
+    InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, Ty, infer_file, resolve_file,
+};
 
 /// Resolve and infer `source` (single-file, over the shared
 /// [`crate::common::full_bcl_env`] — the real FSharp.Core + BCL closure the
@@ -34,9 +36,10 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
         "snippet has parse errors (outside the subset?): {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = crate::common::full_bcl_env();
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred)
 }

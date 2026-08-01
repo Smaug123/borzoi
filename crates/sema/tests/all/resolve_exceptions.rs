@@ -13,7 +13,9 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 use rowan::TextRange;
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
@@ -25,8 +27,14 @@ fn resolve(src: &str) -> ResolvedFile {
         "snippet has parse errors: {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// The byte range of the `n`th (0-based) occurrence of `needle` in `src`.

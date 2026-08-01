@@ -27,10 +27,11 @@ use borzoi_assembly::{
     AssemblyIdentity, Augmentation, Entity, EntityKind, Experimental, Member, Obsolete,
     format_entity_header, format_fsharp_name, format_member, join_quoted,
 };
+use borzoi_cst::parser::FileKind;
 use borzoi_cst::syntax::{AstNode, ImplFile, SyntaxKind, SyntaxNode};
 use borzoi_sema::{
     AssemblyEnv, DefKind, EntityHandle, InferredFile, MemberIndex, ProjectItems, Resolution,
-    ResolvedFile, ResolvedProject, SemanticClass, Ty, infer_file, resolve_file,
+    ResolvedFile, ResolvedProject, SemanticClass, SyntaxRecovery, Ty, infer_file, resolve_file,
 };
 use lsp_types::{Hover, HoverContents, HoverParams, MarkupContent, MarkupKind};
 use rowan::TextRange;
@@ -186,8 +187,14 @@ fn single_file_unavailable(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
+    let recovery = SyntaxRecovery::without_inference();
     let file = ImplFile::cast(parse.root)?;
-    let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let resolved = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     // No project, so no assembly env worth inferring against: the member
     // side-table would be empty anyway.
     unavailable_hover(&resolved, None, file.syntax(), text, byte, true)
@@ -313,11 +320,12 @@ fn single_file_hover(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
+    let recovery = SyntaxRecovery::of_guessed_version(&parse, text, &symbols, FileKind::Impl);
     let file = ImplFile::cast(parse.root)?;
     // Single-file (orphan) hover: no project, so no referenced assemblies —
     // member-access typing has no env to resolve into and simply defers.
     let env = AssemblyEnv::default();
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     // Name resolution first (locals / same-file top-level bindings), enriched

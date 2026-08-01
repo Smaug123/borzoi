@@ -183,3 +183,144 @@ proptest! {
         prop_assert_eq!(elif_diagnostics(&parse_at(&src, LanguageVersion::Preview)), 0);
     }
 }
+
+/// Whether the *diagnostics* this parse reports could differ at another
+/// language version — the counterpart to
+/// [`Parse::shape_depends_on_language_version`](borzoi_cst::parser::Parse::shape_depends_on_language_version),
+/// which answers the same question about the tree.
+///
+/// A consumer that reads "this file reported no errors" as proof a declaration
+/// parsed cleanly needs it: the language version can be a *guess* (an untrusted
+/// `LangVersion` provenance, which is every real SDK project), and a guess that
+/// lands on the wrong side of a feature threshold turns a rejected file into a
+/// clean-looking one **without changing the tree at all** — so the shape flag
+/// cannot see it.
+mod diagnostics_version_dependence {
+    use borzoi_cst::language_version::LanguageVersion;
+    use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+    use std::collections::HashSet;
+
+    /// The verdict for a source, under the harness's fixed symbols/file kind.
+    fn version_dependent(source: &str) -> bool {
+        !borzoi_cst::parser::diagnostics_are_version_invariant(
+            source,
+            &HashSet::new(),
+            FileKind::Impl,
+        )
+    }
+
+    fn parse_at(source: &str, lang: LanguageVersion) -> borzoi_cst::parser::Parse {
+        parse_with_options(
+            source,
+            ParseOptions {
+                file_kind: FileKind::Impl,
+                symbols: &HashSet::new(),
+                lang,
+            },
+        )
+    }
+
+    /// The motivating case: `#elif` needs F# 11, so it errors at 10 and is clean
+    /// at preview — with a byte-identical tree, and the shape flag `false`.
+    #[test]
+    fn an_elif_makes_the_diagnostics_version_dependent() {
+        let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
+        let old = parse_at(source, LanguageVersion::V10_0);
+        let new = parse_at(source, LanguageVersion::Preview);
+
+        assert_eq!(
+            old.root.green(),
+            new.root.green(),
+            "the legality gate never alters the tree"
+        );
+        assert!(
+            !old.shape_depends_on_language_version,
+            "so the shape flag cannot be the signal"
+        );
+        assert!(!old.errors.is_empty() && new.errors.is_empty());
+        assert!(version_dependent(source));
+    }
+
+    /// A nullness annotation is gated the same way, through the *node-surface*
+    /// producer rather than the directive side-channel — so the flag must not be
+    /// spelled "contains an `#elif`".
+    #[test]
+    fn a_nullness_annotation_makes_the_diagnostics_version_dependent() {
+        let source = "module M\nlet f (x : System.String | null) = 1\n";
+        let old = parse_at(source, LanguageVersion::V8_0);
+        let new = parse_at(source, LanguageVersion::Preview);
+        assert_ne!(
+            old.errors.is_empty(),
+            new.errors.is_empty(),
+            "the nullness surface gate must actually fire across this boundary"
+        );
+        assert!(version_dependent(source));
+    }
+
+    /// A diagnostic that is *suppressed* at the parsed version but appears at
+    /// another one. The FS0058 nested-type gate fires at F# 10 and is silent
+    /// below, so a per-producer flag computed from what this run *emitted* reads
+    /// invariant — the run has nothing to look at. Found by review; it is the
+    /// reason the verdict compares whole diagnostic sets across the ladder
+    /// instead of asking each producer.
+    #[test]
+    fn a_suppressed_diagnostic_still_counts_as_version_dependence() {
+        let source = "module M\ntype Outer =\n    type Nested = int\n";
+        let below = parse_at(source, LanguageVersion::V9_0);
+        let at = parse_at(source, LanguageVersion::V10_0);
+        assert_ne!(
+            below.errors.len(),
+            at.errors.len(),
+            "the nested-type gate must actually differ across this boundary"
+        );
+        assert!(version_dependent(source));
+    }
+
+    /// A depth-limited parse collapses its diagnostics to one error — whose
+    /// *span* still moves when version-sensitive layout changes where the breach
+    /// happens. The early return cannot claim invariance either.
+    #[test]
+    fn a_depth_limited_parse_is_not_assumed_invariant() {
+        let source = format!("module M\nif true then\nlet x =\n{}", "(".repeat(600));
+        let lo = parse_at(&source, LanguageVersion::V4_6);
+        let hi = parse_at(&source, LanguageVersion::V10_0);
+        assert_ne!(
+            lo.errors, hi.errors,
+            "the depth error must actually move across this boundary"
+        );
+        assert!(version_dependent(&source));
+    }
+
+    /// The common case, and the reason this is a flag rather than a blanket
+    /// refusal: ordinary code reports the same diagnostics at every version, so
+    /// a consumer may trust the reading even when the version is a guess.
+    ///
+    /// Each case pins whether it errors, because "invariant" must cover erroring
+    /// input too: a verdict that only ever agreed on *empty* diagnostic sets
+    /// would satisfy a table of clean sources alone. The `#if`/`#else` case is
+    /// here to pin the boundary of the `#elif` gate — the directive family is
+    /// not what makes a source version-dependent, `#elif` specifically is.
+    #[test]
+    fn ordinary_source_is_version_invariant() {
+        for (source, errors) in [
+            ("module M\nlet v : System.String = failwith \"\"\n", false),
+            ("module M\nlet v : System.String. = failwith \"\"\n", true),
+            (
+                "module M\n#if FOO\nlet a = 1\n#else\nlet a = 2\n#endif\n",
+                false,
+            ),
+        ] {
+            let p = parse_at(source, LanguageVersion::Preview);
+            assert_eq!(
+                !p.errors.is_empty(),
+                errors,
+                "{source:?} must {} report errors",
+                if errors { "" } else { "not" }
+            );
+            assert!(
+                !version_dependent(source),
+                "{source:?} must be version-invariant"
+            );
+        }
+    }
+}

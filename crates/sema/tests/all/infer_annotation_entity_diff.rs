@@ -21,7 +21,7 @@ use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, infer_file, resolve_file,
+    AssemblyEnv, InferredFile, ProjectItems, ResolvedFile, SyntaxRecovery, infer_file, resolve_file,
 };
 
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so
@@ -41,9 +41,10 @@ fn resolve_and_infer(source: &str) -> (ResolvedFile, InferredFile) {
         "snippet has parse errors (outside the subset?): {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = bcl_env();
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     (resolved, inferred)
 }

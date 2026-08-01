@@ -12,6 +12,7 @@
 //! change required.
 
 use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_sema::SyntaxRecovery;
 use lsp_types::{
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, SymbolInformation, SymbolKind,
 };
@@ -36,8 +37,9 @@ pub fn handle(state: &mut State, params: DocumentSymbolParams) -> Option<Documen
     let symbols = state.symbols_for_uri(&uri);
     let lang = state.lang_version_for_uri(&uri);
     let parse = parse_with_symbols(&text, &symbols, lang)?;
+    let recovery = SyntaxRecovery::without_inference();
     let file = ImplFile::cast(parse.root)?;
-    let exports = file_export_symbols(&text, &file);
+    let exports = file_export_symbols(&text, &file, &recovery);
 
     if state.supports_hierarchical_document_symbols() {
         let outline: Vec<DocumentSymbol> = exports

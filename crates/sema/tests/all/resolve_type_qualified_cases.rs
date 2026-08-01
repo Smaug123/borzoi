@@ -20,7 +20,8 @@ use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file, resolve_project,
+    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+    resolve_project,
 };
 use rowan::{TextRange, TextSize};
 
@@ -31,10 +32,12 @@ fn resolve(src: &str) -> ResolvedFile {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     resolve_file(
         &ImplFile::cast(parsed.root).expect("impl file"),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery,
     )
 }
 
@@ -1506,10 +1509,12 @@ fn module_qualified_case_resolves_past_an_assembly_open_lacking_the_residual() {
         "parse errors: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let rf = resolve_file(
         &ImplFile::cast(parsed.root).expect("impl file"),
         &ProjectItems::default(),
         &env,
+        &recovery,
     );
     let whole = rf
         .resolution_at(nth(src, "Sub.Color.Red", 0))

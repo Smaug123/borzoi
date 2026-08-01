@@ -38,7 +38,8 @@ use borzoi_assembly::Member;
 use borzoi_assembly::pdb::embedded_portable_pdb;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, EntityHandle, MemberIndex, ProjectItems, Resolution, infer_file, resolve_file,
+    AssemblyEnv, EntityHandle, MemberIndex, ProjectItems, Resolution, SyntaxRecovery, infer_file,
+    resolve_file,
 };
 use lsp_types::{GotoDefinitionParams, GotoDefinitionResponse, Location, Position, Range, Url};
 
@@ -692,8 +693,14 @@ fn single_file_definition(
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(text, &symbols, lang)?;
+    let recovery = SyntaxRecovery::without_inference();
     let file = ImplFile::cast(parse.root)?;
-    let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let resolved = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     let res = smallest_resolution_at(&resolved, byte)?;
     let def = resolved.resolved_def(res)?;
     Some(Location {

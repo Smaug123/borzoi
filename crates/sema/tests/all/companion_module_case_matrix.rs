@@ -32,11 +32,12 @@
 //! *that* site. Deferring makes no claim. Non-vacuity floors keep the matrix
 //! from passing by declining everything.
 
+use borzoi_cst::parser::parse;
 use std::path::{Path, PathBuf};
 
 use borzoi_sema::{
-    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, qualified_names,
-    resolve_project_files,
+    AssemblyEnv, ProjectFile, Resolution, ResolvedProject, SourceFile, SyntaxRecovery,
+    qualified_names, resolve_project_files,
 };
 use rowan::TextRange;
 
@@ -224,13 +225,18 @@ fn companion_module_case_matrix_agrees_with_fcs() {
         let json = invoke_fcs_dump_project_with_refs(&paths, &[]);
         let fcs_files = parse_fcs_uses_project(&json, &written);
 
+        let recoveries: Vec<SyntaxRecovery> = files
+            .iter()
+            .map(|(_, s)| SyntaxRecovery::of(&parse(s)))
+            .collect();
         let srcs: Vec<SourceFile> = files.iter().map(|(rel, s)| source_file(rel, s)).collect();
         let full_paths: Vec<PathBuf> = written.iter().map(|(p, _)| p.clone()).collect();
         let qnofs = qualified_names(&srcs, &full_paths);
         let input: Vec<ProjectFile> = srcs
             .into_iter()
             .zip(qnofs)
-            .map(|(file, qnof)| ProjectFile::new(file, qnof))
+            .zip(recoveries)
+            .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
             .collect();
         let proj = resolve_project_files(&input, &AssemblyEnv::default());
 

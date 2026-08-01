@@ -18,10 +18,17 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AbbreviationVisibility, AssemblyEnv, AssemblyProjectionInput, EntityHandle, ProjectItems,
-    Resolution, ResolvedFile, SemanticClass, resolve_file, resolve_project,
+    Resolution, ResolvedFile, SemanticClass, SyntaxRecovery, resolve_file, resolve_project,
 };
 use rowan::TextRange;
 use std::path::PathBuf;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 fn fixture_env() -> AssemblyEnv {
     let bytes = std::fs::read(ensure_assembly_fixture_built()).expect("read fixture dll");
@@ -40,7 +47,12 @@ fn impl_file(src: &str) -> ImplFile {
 }
 
 fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
-    resolve_file(&impl_file(src), &ProjectItems::default(), env)
+    resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        env,
+        &recovery_of(src),
+    )
 }
 
 fn span(start: usize, len: usize) -> TextRange {
@@ -779,7 +791,12 @@ fn overloaded_static_via_open_is_not_overridden_by_a_lower_tier() {
     assert!(env.static_member(root_calc_h, "Twice").is_some()); // unique
 
     let src = "module Mod\nopen Demo\nlet x = Calc.Twice\n";
-    let rf = resolve_file(&impl_file(src), &ProjectItems::default(), &env);
+    let rf = resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        &env,
+        &recovery_of(src),
+    );
 
     assert_eq!(
         rf.resolution_at(at(src, "Calc")),

@@ -256,15 +256,21 @@ fn identifier_token_range(root: &SyntaxNode, byte: usize) -> Option<TextRange> {
 mod tests {
     use super::*;
     use borzoi_cst::syntax::{AstNode, ImplFile};
-    use borzoi_sema::{AssemblyEnv, ProjectItems, resolve_file};
+    use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
     use proptest::prelude::*;
 
     /// Parse + single-file-resolve `src`, returning the resolved file and its
     /// syntax root (owned, so it outlives the parse).
     fn resolve(src: &str) -> (ResolvedFile, SyntaxNode) {
         let parse = borzoi_cst::parser::parse(src);
+        let recovery = SyntaxRecovery::of(&parse);
         let file = ImplFile::cast(parse.root).expect("source parses as an impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let resolved = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
         (resolved, file.syntax().clone())
     }
 
