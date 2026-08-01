@@ -1,0 +1,141 @@
+{
+  "observation_schema_version": 1,
+  "series": "v1-c3c01c991d17-2c2a04da1694",
+  "repository": "Smaug123/borzoi",
+  "commit": "de1ae4ba462c1a19c11ff79a5132ff4a781b41bd",
+  "measured_at": "2026-08-01T19:59:51Z",
+  "workflow": {
+    "run_id": 30715523238,
+    "run_number": 87,
+    "run_attempt": 1,
+    "url": "https://github.com/Smaug123/borzoi/actions/runs/30715523238"
+  },
+  "corpus": {
+    "source": "dotnet/fsharp",
+    "revision": "c3c01c991d17643700d343cee5c5a1e20c06ce03"
+  },
+  "flake_lock_hash": "f27a8220b9ba57001e2e9025876c45078da8fe6f5d81d34471f569582813a136",
+  "generator": {
+    "schema_version": 1,
+    "measurement": "uses-census",
+    "configuration": {
+      "corpus": "fsharp-src",
+      "file_extensions": [
+        ".fs"
+      ],
+      "limit": null,
+      "scope": "file-isolated",
+      "stride": 13
+    },
+    "statistics": {
+      "buckets": {
+        "b1": 44348,
+        "b2": 2454,
+        "b3": 678,
+        "other": 52
+      },
+      "by_area": {
+        "other": {
+          "buckets": {
+            "b1": 802,
+            "b2": 20,
+            "b3": 9,
+            "other": 0
+          },
+          "files": 3,
+          "needs_inference": {
+            "basis_points": 348,
+            "denominator": 831,
+            "numerator": 29
+          },
+          "non_definition": 831
+        },
+        "src": {
+          "buckets": {
+            "b1": 27378,
+            "b2": 1680,
+            "b3": 422,
+            "other": 7
+          },
+          "files": 32,
+          "needs_inference": {
+            "basis_points": 712,
+            "denominator": 29487,
+            "numerator": 2102
+          },
+          "non_definition": 29487
+        },
+        "tests": {
+          "buckets": {
+            "b1": 16168,
+            "b2": 754,
+            "b3": 247,
+            "other": 45
+          },
+          "files": 365,
+          "needs_inference": {
+            "basis_points": 581,
+            "denominator": 17214,
+            "numerator": 1001
+          },
+          "non_definition": 17214
+        },
+        "vsintegration": {
+          "buckets": {
+            "b1": 0,
+            "b2": 0,
+            "b3": 0,
+            "other": 0
+          },
+          "files": 0,
+          "needs_inference": {
+            "basis_points": 0,
+            "denominator": 0,
+            "numerator": 0
+          },
+          "non_definition": 0
+        }
+      },
+      "by_tag": {
+        "active-pattern-case": 450,
+        "active-pattern-fn": 0,
+        "constructor": 1308,
+        "constructor:overloaded": 224,
+        "entity:module": 1008,
+        "entity:namespace": 1905,
+        "entity:type": 5830,
+        "instance-member:overloaded": 418,
+        "instance-member:simple": 1630,
+        "member:extension": 36,
+        "other": 52,
+        "parameter": 37,
+        "record/class-field": 824,
+        "static-member": 374,
+        "static-member:overloaded(group)": 421,
+        "type-parameter": 790,
+        "union-case": 4009,
+        "value:local-or-param": 16067,
+        "value:module-or-import": 12149
+      },
+      "files": {
+        "sampled": 401,
+        "type_checked_ok": 400
+      },
+      "hard_pile_share": {
+        "basis_points": 2164,
+        "denominator": 3132,
+        "numerator": 678
+      },
+      "needs_inference": {
+        "basis_points": 658,
+        "denominator": 47532,
+        "numerator": 3132
+      },
+      "uses": {
+        "definition_occurrences": 18218,
+        "non_definition": 47532,
+        "total": 65750
+      }
+    }
+  }
+}
