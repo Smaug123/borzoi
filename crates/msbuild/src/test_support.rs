@@ -20,6 +20,19 @@ pub use crate::properties::escaping::{escape, unescape};
 pub use crate::properties::path_fixup::worlds as path_fixup_worlds;
 pub use crate::properties::{Issue, PropertyMap};
 
+/// The walker's hand-rolled stand-in for an SDK `'$(Prop)' == 'true'` gate.
+///
+/// Exposed because a *reimplementation* of an MSBuild comparison is only as
+/// good as the comparison it reproduces, and nothing about its call sites makes
+/// that checkable: the walker reaches this predicate exactly when the SDK chain
+/// is unavailable, which is exactly when there is no whole-project oracle to
+/// diff against. Diffing the predicate itself against MSBuild's `==` is
+/// therefore the only route — see `fsproj_directory_build_import_diff.rs`'s
+/// `the_gate_predicate_matches_msbuild_equality`.
+pub fn is_msbuild_true(value: &str) -> bool {
+    crate::evaluator::is_msbuild_true(value)
+}
+
 /// Expand a property body and take the result to its **point of use** — i.e.
 /// the string MSBuild's `Project.GetPropertyValue` hands back, which is
 /// `UnescapeAll` of the value it stored (`ProjectProperty.cs:89`). That is the
