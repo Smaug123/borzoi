@@ -71,35 +71,43 @@ Both halves exist for every axis, and the split is:
 `fsproj_msbuild_corpus_diff` is the one sweep this table cannot yet claim. It
 runs, and it **fails on `main`**, which is why it is named here rather than
 quietly omitted: an unwired sweep with no entry is indistinguishable from one
-nobody thought of. Over a six-project sample of the pinned corpus it finds two
-divergences:
+nobody thought of. Over a six-project sample of the pinned corpus it reports
+`compared_projects=6 matched_facets=30 skipped_facets=11 divergences=1
+error_projects=0`, and the single divergence is:
 
 - `FSharp.Build.fsproj` — MSBuild reports `Link = NullHelpers.fs` on a `Compile`
   item whose `Include` escapes the project cone (`..\Compiler\Utilities\`); the
-  `.fsproj` carries no `<Link>`, so the SDK synthesises it and we do not model
-  that. A fidelity gap in a facet nothing here consumes: the Compile fold reads
-  order and path.
-- `FSharp.ProjectSystem.FSharp.fsproj` — we commit
-  `DefineConstants = …;NETSTANDARD;FX_NO_WINFORMS`, MSBuild does not.
-  `FSharp.Profiles.props` gates them on a `<Choose>` whose `When` tests
-  `'$(TargetFrameworkIdentifier)' == '.NETFramework'`. That property is
-  *derived* by the common targets from `$(TargetFramework)`; we do not derive
-  it, an undefined property expands to empty and is trusted, so the `Otherwise`
-  arm wins and a wrong value is **committed** rather than declined.
+  `.fsproj` carries no `<Link>`, so it is synthesised and we do not model that.
+  A fidelity gap in a facet nothing here consumes: the Compile fold reads order
+  and path.
 
-The second is the one that matters, and not because `net472` is a target worth
-serving — it is not (see AGENTS.md). It matters because `define_constants` is
-consumed: it decides which `#if` branch the whole semantic layer sees. The shape
-is the trust question the five generative differentials are structurally blind
-to, since they evaluate both sides under the same property table; only a real
-project with a derived property nobody wrote down exhibits it.
+That is the *whole* remaining distance, and it is a much weaker reason to stay
+unwired than the one it replaced — so the argument has to be made on its own
+terms rather than inherited. Wiring with `BORZOI_MSBUILD_MAX_DIVERGENCES=1` is
+still worse than nothing, for the reason it always was: a ceiling set to the
+count you currently have ratifies a known-wrong committed value as the expected
+state, which is how a differential stops being one. The gate is worth having at
+`0` or not at all.
 
-So the gate stays unwired until that is fixed, and fixing it is an evaluator
-change with a trust audit attached (the `msbuild-trust-audit` skill: audit all
-ten entries, do not patch the one) rather than a workflow line. Wiring it with
-`BORZOI_MSBUILD_MAX_DIVERGENCES=2` was the alternative and is worse than
-nothing: it would ratify a known-wrong committed value as the expected state,
-which is how a differential stops being one.
+What the sweep no longer finds is the case that made it matter. Until
+[PR #260] we committed `DefineConstants = …;NETSTANDARD;FX_NO_WINFORMS` on
+`FSharp.ProjectSystem.FSharp.fsproj` and MSBuild did not, because
+`FSharp.Profiles.props` gates those symbols on a `<Choose>` testing
+`'$(TargetFrameworkIdentifier)' == '.NETFramework'` — a property the common
+targets *derive*, which we read as empty and trusted, so the `Otherwise` arm
+won and a wrong value was **committed** rather than declined. That project now
+matches MSBuild on every facet with none skipped.
+
+It is worth recording why it was the one that mattered, because the same shape
+will recur: not because `net472` is a target worth serving (it is not — see
+AGENTS.md), but because `define_constants` is *consumed*, deciding which `#if`
+branch the whole semantic layer sees. The five generative differentials are
+structurally blind to it, since they evaluate both sides under the same property
+table; only a real project reading a property nobody wrote down exhibits it.
+That is this sweep's distinctive yield, and the argument for wiring it once the
+`Link` gap closes.
+
+[PR #260]: https://github.com/Smaug123/borzoi/pull/260
 
 ### The rest, and why they are not here
 
