@@ -80,10 +80,10 @@ impl SyntaxRecovery {
     /// question a consumer must answer *yes* to before committing anything it
     /// read out of that declaration's syntax.
     ///
-    /// The region checked is the enclosing declaration's [recovery
-    /// extent](declaration_extent), not its node range: recovery flushes what
-    /// it could not parse *out* of the declaration it broke out of, so the
-    /// range alone misses precisely the junk that makes the declaration
+    /// The region checked is the enclosing declaration's *recovery extent* (see
+    /// `declaration_extent`), not its node range: recovery flushes what it
+    /// could not parse *out* of the declaration it broke out of, so the range
+    /// alone misses precisely the junk that makes the declaration
     /// untrustworthy.
     pub fn declaration_is_intact(&self, node: &SyntaxNode) -> bool {
         let spans = match self {
