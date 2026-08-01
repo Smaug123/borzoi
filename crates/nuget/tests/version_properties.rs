@@ -247,7 +247,10 @@ impl Coverage {
 ///   case-insensitive for string labels, `int.TryParse` value for numeric
 ///   ones, so `1.0--0 == 1.0-0` and `1.0-A == 1.0-a`.
 /// - **`Ord`/`Eq` consistency** and **`Hash`/`Eq` consistency**, the two
-///   contracts `BTreeMap` and `HashMap` respectively rely on.
+///   contracts `BTreeMap` and `HashMap` respectively rely on, plus
+///   **`PartialOrd`/`Ord` consistency** in full (`partial_cmp == Some(cmp)`,
+///   not just agreement about equality — see the assertion for what agreeing
+///   only about equality would let through).
 /// - **Normalisation preserves the order**: reparsing both sides'
 ///   `to_normalized_string()` gives the same verdict. Normalisation drops
 ///   metadata and a zero revision, so this says the dropped parts really are
@@ -306,6 +309,17 @@ fn check_laws(cases: &[Case]) -> Coverage {
                 x.cmp(y) == Ordering::Equal,
                 x == y,
                 "Ord/Eq disagree for {sa:?} vs {sb:?}"
+            );
+            // `Ord` requires `partial_cmp == Some(cmp)` outright, not merely
+            // that the two agree about equality. Without this, a `PartialOrd`
+            // returning the *reverse* non-equal ordering would satisfy every
+            // other law here — trichotomy still picks exactly one arm, and
+            // the reverse of a total order is a total order — while `<` and
+            // `.cmp()` contradicted each other at every call site.
+            assert_eq!(
+                x.partial_cmp(y),
+                Some(x.cmp(y)),
+                "PartialOrd/Ord disagree for {sa:?} vs {sb:?}"
             );
             if x == y {
                 assert_eq!(
