@@ -431,7 +431,6 @@ fn compare_compile(parsed: &ParsedProject, msbuild: &MsbuildOutput) -> FacetRepo
         .map(|item| CompileView {
             kind: item_kind_name(item.kind).to_string(),
             path: path_key(&item.include),
-            link: normalize_link(item.link.as_deref().unwrap_or("")),
         })
         .collect();
     let theirs = msbuild.compile_views();
@@ -952,10 +951,6 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
-fn normalize_link(link: &str) -> String {
-    link.replace('\\', "/")
-}
-
 fn to_forward_slashes(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
@@ -1217,8 +1212,6 @@ struct MsbuildItem {
     full_path: String,
     #[serde(default, rename = "Identity")]
     identity: String,
-    #[serde(default, rename = "Link")]
-    link: String,
     #[serde(flatten)]
     metadata: BTreeMap<String, String>,
 }
@@ -1228,7 +1221,6 @@ impl MsbuildItem {
         CompileView {
             kind: kind.to_string(),
             path: path_key(Path::new(&self.full_path)),
-            link: normalize_link(&self.link),
         }
     }
 }
@@ -1237,7 +1229,6 @@ impl MsbuildItem {
 struct CompileView {
     kind: String,
     path: String,
-    link: String,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]

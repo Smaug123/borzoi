@@ -67,7 +67,6 @@ fn single_compile_resolves_relative_to_project_dir() {
     assert_eq!(p.items.len(), 1);
     assert_eq!(p.items[0].kind, ItemKind::Compile);
     assert_eq!(p.items[0].include, PathBuf::from("/repo/proj/Program.fs"));
-    assert!(p.items[0].link.is_none());
     assert!(p.diagnostics.is_empty());
 }
 
@@ -339,29 +338,35 @@ fn item_definition_compile_order_default_marks_items_uncertain() {
 }
 
 #[test]
-fn link_metadata_attribute_form() {
+fn metadata_attribute_form() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="prim-types.fs" Link="Primitives/prim-types.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="compile" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("Primitives/prim-types.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
-fn link_metadata_child_element_form() {
+fn metadata_child_element_form() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="prim-types.fs">
-      <Link>Primitives/prim-types.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>compile</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("Primitives/prim-types.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
@@ -1283,8 +1288,6 @@ fn semicolon_list_in_include_splits_into_items() {
             Path::new("/repo/proj/C.fs"),
         ]
     );
-    // Link metadata applies to every entry.
-    assert!(p.items.iter().all(|i| i.link.as_deref() == Some("Shared")));
     assert!(p.diagnostics.is_empty());
 }
 
@@ -1917,49 +1920,61 @@ fn property_value_expanding_to_semicolon_list_creates_multiple_items() {
 }
 
 #[test]
-fn substitution_applies_to_link_attribute() {
+fn substitution_applies_to_a_metadata_attribute() {
     let src = r#"<Project>
   <PropertyGroup>
-    <Folder>Shared</Folder>
+    <Which>compile</Which>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Mod.fs" Link="$(Folder)/Mod.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(Which)" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link.as_deref(), Some("Shared/Mod.fs"));
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
-fn substitution_applies_to_link_child_element() {
+fn substitution_applies_to_a_metadata_child_element() {
     let src = r#"<Project>
   <PropertyGroup>
-    <Folder>Shared</Folder>
+    <Which>compile</Which>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="Mod.fs">
-      <Link>$(Folder)/Mod.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>$(Which)</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link.as_deref(), Some("Shared/Mod.fs"));
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
 }
 
 #[test]
-fn link_with_inexact_property_drops_link_keeps_item() {
-    // The Include itself was fine; only the Link decoration failed to
+fn metadata_with_inexact_property_declines_but_keeps_the_item() {
+    // The Include itself was fine; only the metadata value failed to
     // substitute (`TargetFramework` is carved out, never provably unset).
-    // We strip the Link rather than dropping the whole item, since the
-    // file is still being compiled — just without the IDE grouping hint.
+    // The item stands — it is still a reference — but the value we could not
+    // evaluate is `Unknown` rather than a plausible-looking string.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="Mod.fs" Link="$(TargetFramework)/Mod.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(TargetFramework)" />
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(paths(&p.items), [Path::new("/repo/proj/Mod.fs")]);
-    assert!(p.items[0].link.is_none());
+    assert_eq!(
+        paths(&p.project_references),
+        [Path::new("/repo/proj/../Lib/Lib.fsproj")]
+    );
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::Unknown
+    );
     assert_eq!(
         diag_kinds(&p.diagnostics),
         [&DiagnosticKind::UndefinedProperty {
@@ -2623,20 +2638,23 @@ fn property_text_split_by_comment_concatenates_full_value() {
 }
 
 #[test]
-fn link_child_text_split_by_comment_concatenates_full_value() {
-    // The same trap exists for `<Link>` child elements: we read its
-    // text via `Node::text()`, so comments inside the Link child would
-    // truncate the metadata. Make sure the full inner text survives.
+fn metadata_child_text_split_by_comment_concatenates_full_value() {
+    // The same trap exists for metadata child elements: we read their text via
+    // `Node::text()`, so a comment inside would truncate the value. Make sure
+    // the full inner text survives.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs">
-      <Link>src/<!-- bucket -->A.fs</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>com<!-- bucket -->pile</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("src/A.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 
@@ -3016,21 +3034,20 @@ fn property_group_unsupported_condition_skips_unprotected_writes_and_diagnoses()
 }
 
 #[test]
-fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
-    // After $(...) expansion, a Link value may still contain `@(...)`
+fn metadata_attribute_with_metadata_reference_is_diagnosed_and_declined() {
+    // After $(...) expansion, a metadata value may still contain `@(...)`
     // or `%(...)` — neither of which we evaluate. Quietly returning
-    // the literal exposes unevaluated MSBuild syntax in
-    // ResolvedItem::link with `is_partial=false`; the symmetric
-    // treatment (drop + diagnose) matches Include and PropertyGroup.
+    // the literal would expose unevaluated MSBuild syntax with
+    // `is_partial=false`; the symmetric treatment (decline + diagnose)
+    // matches Include and PropertyGroup.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs" Link="$(LinkPattern)" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(AssetPattern)" />
   </ItemGroup>
 </Project>"#;
-    let extras: HashMap<String, String> =
-        [("LinkPattern".to_string(), "%(Filename).fs".to_string())]
-            .into_iter()
-            .collect();
+    let extras: HashMap<String, String> = [("AssetPattern".to_string(), "%(Filename)".to_string())]
+        .into_iter()
+        .collect();
     let p = parse_fsproj(
         src,
         Path::new("/repo/proj/Demo.fsproj"),
@@ -3038,11 +3055,11 @@ fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
         &HashMap::new(),
     )
     .expect("well-formed XML parses");
-    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.project_references.len(), 1);
     assert!(
-        p.items[0].link.is_none(),
-        "link should be dropped, got {:?}",
-        p.items[0].link
+        p.project_references[0].exclude_assets == ItemMetadataValue::Unknown,
+        "the value should be declined, got {:?}",
+        p.project_references[0].exclude_assets
     );
     assert!(
         p.diagnostics
@@ -3055,17 +3072,20 @@ fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
 }
 
 #[test]
-fn link_child_with_item_reference_is_diagnosed_and_dropped() {
+fn metadata_child_with_item_reference_is_diagnosed_and_declined() {
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs">
-      <Link>@(OtherItems)</Link>
-    </Compile>
+    <ProjectReference Include="../Lib/Lib.fsproj">
+      <ExcludeAssets>@(OtherItems)</ExcludeAssets>
+    </ProjectReference>
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert!(p.items[0].link.is_none());
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::Unknown
+    );
     assert!(
         p.diagnostics
             .iter()
@@ -3123,7 +3143,6 @@ fn project_reference_lands_in_project_references_bucket() {
         p.project_references[0].include,
         PathBuf::from("/repo/proj/../lib/Lib.csproj"),
     );
-    assert!(p.project_references[0].link.is_none());
     assert!(p.diagnostics.is_empty());
 }
 
@@ -4368,11 +4387,11 @@ fn project_reference_obeys_condition_gating() {
 }
 
 #[test]
-fn project_reference_link_attribute_is_ignored() {
-    // `<Link>` is meaningful for Compile but MSBuild does not treat it
-    // as significant for ProjectReference; our parser drops it on the
-    // floor (rather than surfacing a value with no effect on a real
-    // build).
+fn an_unmodelled_metadata_attribute_does_not_disturb_the_item() {
+    // Metadata this crate does not model is inert: it neither drops the item
+    // nor surfaces a value. `Link` is the example because MSBuild really does
+    // define it — it positions the file in an IDE project tree — and nothing
+    // downstream of this crate reads it.
     let src = r#"<Project>
   <ItemGroup>
     <ProjectReference Include="../lib/Lib.csproj" Link="renamed/Lib.csproj" />
@@ -4380,7 +4399,6 @@ fn project_reference_link_attribute_is_ignored() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.project_references.len(), 1);
-    assert!(p.project_references[0].link.is_none());
 }
 
 #[test]
@@ -6055,23 +6073,6 @@ fn sdk_shorthand_without_a_resolver_is_items_uncertain() {
         p.items_uncertain,
         "an unevaluated SDK leaves the Compile set incomplete"
     );
-}
-
-#[test]
-fn link_metadata_inexact_property_does_not_make_items_uncertain() {
-    // `<Link>` is display-only; an inexact property read there (carved-out
-    // `TargetFramework`, never provably unset) must not flag the Compile
-    // item, whose include (A.fs) is fully known.
-    let p = parse(
-        r#"<Project>
-  <ItemGroup>
-    <Compile Include="A.fs" Link="$(TargetFramework)/A.fs" />
-  </ItemGroup>
-</Project>"#,
-    );
-    assert_eq!(paths(&p.items), [Path::new("/repo/proj/A.fs")]);
-    assert!(p.is_partial, "the inexact property read still diverges");
-    assert!(!p.items_uncertain, "but which file compiles is known");
 }
 
 #[test]
@@ -9098,18 +9099,23 @@ fn package_reference_version_sees_property_defined_later_in_document() {
 }
 
 #[test]
-fn compile_link_metadata_sees_property_defined_later_in_document() {
+fn item_metadata_sees_a_property_defined_later_in_the_document() {
+    // The item pass runs over the FINAL property table, so a metadata value
+    // reading a property written below it in document order still resolves.
     let src = r#"<Project>
   <ItemGroup>
-    <Compile Include="A.fs" Link="$(LinkDir)/A.fs" />
+    <ProjectReference Include="../Lib/Lib.fsproj" ExcludeAssets="$(Which)" />
   </ItemGroup>
   <PropertyGroup>
-    <LinkDir>shown</LinkDir>
+    <Which>compile</Which>
   </PropertyGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("shown/A.fs"));
+    assert_eq!(p.project_references.len(), 1);
+    assert_eq!(
+        p.project_references[0].exclude_assets,
+        ItemMetadataValue::known("compile")
+    );
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 

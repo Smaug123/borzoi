@@ -337,6 +337,7 @@ nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --i
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
+nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
 ```
 
 `parser_corpus`'s `CLEAN_PARSES` is **two-sided**, so **improving the parser
@@ -352,5 +353,6 @@ The other sweeps' floors are one-sided and documented as such. What must never
 happen to any of them is loosening one to make a red run green without first
 establishing which direction it moved and why.
 
-`docs/continuous-measurements.md` has the full gate/measurement split, including
-the one sweep that is deliberately still unwired and why.
+`docs/continuous-measurements.md` has the full gate/measurement split, and the
+record of why the MSBuild-on-real-projects row stayed unwired-and-named while it
+had known divergences rather than being green-lit at a ceiling equal to them.
