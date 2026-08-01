@@ -337,12 +337,19 @@ fn tuple_containing_a_function_is_parenthesised() {
 /// Look up the canonical render of the binder named `name` in `inferred`.
 /// [`binder_render`] for a snippet that does **not** parse cleanly — the
 /// half-typed input an editor sees, where inference still runs over a recovery
-/// tree.
-fn binder_render_allowing_parse_errors(source: &str, name: &str) -> Option<String> {
+/// tree — under a **caller-supplied** recovery reading.
+///
+/// The reading is a parameter rather than taken off the parse because two gates
+/// decline such a snippet and a test that fixed it could not say which:
+/// [`SyntaxRecovery::of`] is what production passes, and the whole declaration
+/// declines under it; `Reported([])` is that gate deliberately switched off, so
+/// a decline under *it* is attributable to the syntax check on the application
+/// itself.
+fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> Option<String> {
     let parsed = parse(source);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = crate::common::full_bcl_env();
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, recovery);
     let inferred = infer_file(&file, &resolved, env);
     inferred
         .def_types()
@@ -912,8 +919,9 @@ fn a_constrained_head_defers_but_its_twin_does_not() {
     let render = |source: &str, name: &str| -> Option<String> {
         let parsed = parse(source);
         assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let resolved = resolve_file(&file, &ProjectItems::default(), env);
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
         let inferred = infer_file(&file, &resolved, env);
         inferred
             .def_types()
@@ -1092,14 +1100,30 @@ fn a_generic_application_defers_on_input_fsharp_rejects() {
     // inference still runs over a broken tree.
     let malformed =
         "module M\nlet c : System.Collections.Generic.KeyValuePair<int, string,> = failwith \"\"\n";
+    let parsed = parse(malformed);
     assert!(
-        !parse(malformed).errors.is_empty(),
+        !parsed.errors.is_empty(),
         "the malformed annotation really is a parse error, else this asserts nothing"
     );
     assert_eq!(
-        binder_render_allowing_parse_errors(malformed, "c"),
+        binder_render_under(malformed, "c", &SyntaxRecovery::of(&parsed)),
         None,
         "an application whose syntax did not parse cleanly commits nothing"
+    );
+    // ...and the application's own syntax check is what earns it, independently
+    // of the declaration-level gate. Asserted by switching that gate off — the
+    // reading a file with no reported errors produces — because two sufficient
+    // reasons for the same `None` are indistinguishable while both are on, and
+    // the one being tested here is the one that survives a parser that learns to
+    // recover this shape without reporting.
+    assert_eq!(
+        binder_render_under(
+            malformed,
+            "c",
+            &SyntaxRecovery::Reported(std::sync::Arc::from([]))
+        ),
+        None,
+        "the trailing comma is caught by the application's own syntax check"
     );
 }
 
