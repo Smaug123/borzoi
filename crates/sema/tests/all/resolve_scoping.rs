@@ -21,7 +21,9 @@ use std::collections::HashMap;
 use crate::common::generator::{Form, RefKind, generate, seed_tape};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 use proptest::prelude::*;
 use rowan::TextRange;
 
@@ -36,8 +38,14 @@ fn resolve(source: &str) -> ResolvedFile {
         "unexpected parse errors for {source:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("root is an impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// Byte range of the `n`-th (0-based) *whole-word* occurrence of `needle` in
@@ -605,8 +613,9 @@ proptest! {
             "generated program failed to parse: {:?}\nerrors: {:?}",
             g.src, parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default(), &recovery);
 
         // Every binder resolves to itself.
         for (uid, range) in &g.binder_ranges {

@@ -27,9 +27,16 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeferredReason, ProjectItems, Resolution, ResolvedFile, SemanticClass,
-    resolve_file, resolve_project,
+    SyntaxRecovery, resolve_file, resolve_project,
 };
 use rowan::TextRange;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 /// Build an [`AssemblyEnv`] over the real, shipped FSharp.Core (parsed once per
 /// test binary). `from_views` runs the single-CCU authoritative projection, so
@@ -53,7 +60,12 @@ fn impl_file(src: &str) -> ImplFile {
 }
 
 fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
-    resolve_file(&impl_file(src), &ProjectItems::default(), env)
+    resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        env,
+        &recovery_of(src),
+    )
 }
 
 /// Range of `needle`'s only occurrence in `hay`.

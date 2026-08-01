@@ -16,6 +16,8 @@ use borzoi_cst::language_version::LanguageVersion;
 use borzoi_cst::parser::{FileKind, Parse, ParseOptions, parse_with_options};
 use proptest::prelude::*;
 
+use crate::common::catch_unwind_silent;
+
 fn parse_at(src: &str, lang: LanguageVersion) -> Parse {
     let symbols = HashSet::new();
     parse_with_options(
@@ -93,6 +95,15 @@ fn snippet() -> impl Strategy<Value = String> {
     let line = (
         0usize..6,
         prop_oneof![
+            // Version-*gated* lines, so the diagnostics property below has a
+            // subject: `#elif` is a legality gate at F# 11 and a nullness
+            // annotation one at F# 9. Both leave the tree untouched, which is
+            // exactly why the shape flag cannot stand in for the diagnostics
+            // one.
+            Just("#if FOO"),
+            Just("#elif BAR"),
+            Just("#endif"),
+            Just("let g (x : System.String | null) = 1"),
             Just("let x = 1"),
             Just("let f () ="),
             Just("if true then"),
@@ -133,6 +144,172 @@ proptest! {
                 tree_shape(&v7),
                 tree_shape(&v10),
                 "an unset flag must prove the tree is version-invariant"
+            );
+        }
+    }
+}
+
+proptest! {
+    /// The diagnostics counterpart of [`unset_flag_proves_version_invariance`],
+    /// and the property the LSP's recovery reading trusts when a project's
+    /// `LangVersion` provenance is unknowable: an unset
+    /// `diagnostics_depend_on_language_version` must **prove** the reported
+    /// errors and warnings are identical at every language version.
+    ///
+    /// This is the guard the shape flag cannot be: a legality gate reports its
+    /// feature error and then parses the construct anyway, so the tree is
+    /// byte-identical across the threshold while the diagnostics are not.
+    /// Checking every version rather than the two extremes the flag itself
+    /// compares keeps the property independent of the monotonicity argument
+    /// that justifies looking at only two.
+    #[test]
+    fn unset_diagnostics_flag_proves_version_invariance(src in snippet()) {
+        const VERSIONS: &[LanguageVersion] = &[
+            LanguageVersion::V4_6,
+            LanguageVersion::V5_0,
+            LanguageVersion::V7_0,
+            LanguageVersion::V8_0,
+            LanguageVersion::V9_0,
+            LanguageVersion::V10_0,
+            LanguageVersion::V11_0,
+            LanguageVersion::Preview,
+        ];
+        if !borzoi_cst::parser::diagnostics_are_version_invariant(
+            &src,
+            &HashSet::new(),
+            FileKind::Impl,
+        ) {
+            return Ok(());
+        }
+        let baseline = parse_at(&src, LanguageVersion::DEFAULT);
+        for &lang in VERSIONS {
+            let p = parse_at(&src, lang);
+            prop_assert_eq!(
+                &p.errors,
+                &baseline.errors,
+                "unset flag must prove the errors are version-invariant, but {:?} differs at {}",
+                src,
+                lang
+            );
+            prop_assert_eq!(
+                &p.warnings,
+                &baseline.warnings,
+                "unset flag must prove the warnings are version-invariant, but {:?} differs at {}",
+                src,
+                lang
+            );
+        }
+    }
+}
+
+/// Punctuation soup over the characters that reach the parser's hand-written
+/// invariant guards — bracket and pipe openers, dotted heads, and the `match`
+/// keyword, which is where a const-payload guard lives. The
+/// [`snippet`] generator builds well-shaped *lines*, so it never reaches them;
+/// this one is deliberately not F#.
+fn adversarial_soup() -> impl Strategy<Value = String> {
+    let piece = prop_oneof![
+        Just(">"),
+        Just("("),
+        Just(")"),
+        Just("{"),
+        Just("}"),
+        Just("["),
+        Just("]"),
+        Just("|"),
+        Just("."),
+        Just(".."),
+        Just("match"),
+        Just("with"),
+        Just("let"),
+        Just("\n"),
+        Just(" "),
+    ];
+    proptest::collection::vec(piece, 1..12).prop_map(|ps| {
+        let mut s = ps.concat();
+        s.push('\n');
+        s
+    })
+}
+
+/// A parser panic at an endpoint version must not escape the verdict.
+///
+/// The parser is hand-written recursive descent whose invariant guards fire on
+/// some malformed input — a pre-existing hazard the LSP contains by wrapping
+/// every parse in `catch_unwind`. Asking for the verdict re-parses at versions
+/// the caller never requested, so a buffer that parses at the *asked-for*
+/// version can still panic at an endpoint, on a path with no wrapper around it
+/// (`borzoi_sema::SyntaxRecovery::of_guessed_version` calls straight in).
+///
+/// A panic proves nothing about version-invariance, so the conservative reading
+/// is the version-dependent one: the caller retains no diagnostics and commits
+/// nothing.
+#[test]
+fn an_endpoint_parser_panic_does_not_escape_the_verdict() {
+    let src = ">(match|.\n>\nmatch}..";
+    assert!(
+        catch_unwind_silent(|| parse_at(src, LanguageVersion::MIN)).is_err(),
+        "this buffer must still panic the bottom-of-ladder parse"
+    );
+    assert!(
+        catch_unwind_silent(|| parse_at(src, LanguageVersion::MAX)).is_ok(),
+        "...and must still be parsed by the top one, or the case proves nothing"
+    );
+
+    let verdict = catch_unwind_silent(|| {
+        borzoi_cst::parser::diagnostics_are_version_invariant(src, &HashSet::new(), FileKind::Impl)
+    });
+    assert_eq!(
+        verdict.ok(),
+        Some(false),
+        "a panicking endpoint must be contained, and read as version-dependent"
+    );
+}
+
+proptest! {
+    /// The generated form of [`an_endpoint_parser_panic_does_not_escape_the_verdict`]:
+    /// no input makes the verdict itself panic.
+    #[test]
+    fn the_verdict_never_escapes_a_parser_panic(src in adversarial_soup()) {
+        let verdict = catch_unwind_silent(|| {
+            borzoi_cst::parser::diagnostics_are_version_invariant(
+                &src,
+                &HashSet::new(),
+                FileKind::Impl,
+            )
+        });
+        prop_assert!(
+            verdict.is_ok(),
+            "the verdict must contain an endpoint panic, but {:?} escaped",
+            src
+        );
+    }
+
+    /// Two endpoints decide the verdict, and the monotone-threshold argument
+    /// covers *diagnostics* between them — it says nothing about a parser guard
+    /// firing at an interior version only. So an invariant verdict must also
+    /// mean no version panics; otherwise the caller trusts a reading assembled
+    /// from versions it never checked.
+    #[test]
+    fn an_invariant_verdict_means_no_version_panics(src in adversarial_soup()) {
+        let Ok(true) = catch_unwind_silent(|| {
+            borzoi_cst::parser::diagnostics_are_version_invariant(
+                &src,
+                &HashSet::new(),
+                FileKind::Impl,
+            )
+        }) else {
+            return Ok(());
+        };
+        let every_version = LanguageVersion::NUMBERED
+            .into_iter()
+            .chain([LanguageVersion::Preview]);
+        for lang in every_version {
+            prop_assert!(
+                catch_unwind_silent(|| parse_at(&src, lang)).is_ok(),
+                "verdict says invariant, but {:?} panics at {}",
+                src,
+                lang
             );
         }
     }

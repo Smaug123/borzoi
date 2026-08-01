@@ -737,3 +737,58 @@ fn export_edit_recomputes_the_suffix() {
     );
     assert_eq!(incr, resolve_project(&new_files, &env));
 }
+
+/// The same tree, read with a *different* [`SyntaxRecovery`], is not the same
+/// input — so it must not be reused.
+///
+/// `resolve_file`'s output is a pure function of `(file, preceding, assemblies,
+/// recovery)`, and recovery is load-bearing: `Unretained` makes every
+/// annotation in the file decline. Reuse keys on tree *identity*, and a tree is
+/// a rowan handle that can be cloned into two `ProjectFile`s carrying different
+/// readings — the bare-`ImplFile` fold entry points supply `Unretained` for the
+/// very trees `resolve_project_files` gives a real reading. Without recovery in
+/// the key the incremental fold serves the stale resolution and silently
+/// disagrees with a cold fold, which is the one equation this file exists to
+/// hold.
+#[test]
+fn a_different_recovery_reading_of_one_tree_is_not_reused() {
+    use borzoi_sema::{ProjectFile, SourceFile, SyntaxRecovery, resolve_project_files};
+
+    let env = AssemblyEnv::default();
+    let src = "module A\nlet v : System.String = failwith \"\"\n";
+    let parsed = parse(src);
+    let reported = SyntaxRecovery::of(&parsed);
+    // One tree, cloned — rowan equality is identity, so both files are the
+    // *same* tree as far as the reuse key is concerned.
+    let tree = ImplFile::cast(parsed.root).expect("impl file");
+    let qnof = borzoi_sema::qualified_names(
+        &[SourceFile::Impl(tree.clone())],
+        &[std::path::PathBuf::from("/p/A.fs")],
+    );
+
+    let prev_files = vec![ProjectFile::new(
+        SourceFile::Impl(tree.clone()),
+        qnof[0].clone(),
+        SyntaxRecovery::Unretained,
+    )];
+    let new_files = vec![ProjectFile::new(
+        SourceFile::Impl(tree),
+        qnof[0].clone(),
+        reported,
+    )];
+
+    let prev = resolve_project_files(&prev_files, &env);
+    let (incr, reused) =
+        borzoi_sema::resolve_project_files_incremental(&prev_files, &prev, &new_files, &env);
+
+    assert_eq!(
+        reused,
+        vec![false],
+        "the recovery reading changed, so the file must be recomputed"
+    );
+    assert_eq!(
+        incr,
+        resolve_project_files(&new_files, &env),
+        "incremental ≡ batch"
+    );
+}

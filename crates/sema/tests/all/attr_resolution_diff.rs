@@ -38,7 +38,9 @@ use crate::common::{
 use borzoi_assembly::{Ecma335Assembly, EcmaView};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 use rowan::TextRange;
 
 /// Dump and normalise the attribute resolutions FCS records for `src`.
@@ -239,8 +241,9 @@ pub(crate) fn resolve(src: &str, env: &AssemblyEnv) -> ResolvedFile {
         "parse errors in {src:?}: {:?}",
         p.errors
     );
+    let recovery = SyntaxRecovery::of(&p);
     let file = ImplFile::cast(p.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), env)
+    resolve_file(&file, &ProjectItems::default(), env, &recovery)
 }
 
 /// The `(assembly simple name, dotted full name)` an [`Resolution::Entity`]

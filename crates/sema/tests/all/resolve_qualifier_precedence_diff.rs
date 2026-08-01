@@ -47,7 +47,7 @@ use borzoi_assembly::{Ecma335Assembly, Member};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, EntityHandle, ProjectItems, Resolution, ResolvedFile, resolve_file,
+    AssemblyEnv, EntityHandle, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
 };
 use rowan::TextRange;
 
@@ -75,8 +75,9 @@ fn resolve_src(src: &str, env: &AssemblyEnv) -> ResolvedFile {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), env)
+    resolve_file(&file, &ProjectItems::default(), env, &recovery)
 }
 
 /// FCS symbol uses for `src`, with `refs` resolvable (`BORZOI_FCS_EXTRA_REFS`).

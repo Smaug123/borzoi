@@ -15,7 +15,7 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, ResolvedFile, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file};
 
 fn resolve(src: &str) -> ResolvedFile {
     let parsed = parse(src);
@@ -24,8 +24,14 @@ fn resolve(src: &str) -> ResolvedFile {
         "snippet has parse errors: {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// A file declaring an attribute and using it, so the attribute map is

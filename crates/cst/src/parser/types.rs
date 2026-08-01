@@ -815,11 +815,28 @@ impl<'src> Parser<'src> {
                 {
                     self.bump_into(SyntaxKind::COMMA_TOK);
                 }
-                if self
-                    .next_non_trivia_raw_at_pos()
-                    .is_some_and(|t| matches!(t, Token::RBrack))
-                {
+                // An array suffix whose `]` never arrives is not an array type,
+                // and the tree cannot say so: recovery keeps the `ARRAY_TYPE`
+                // (so the element type stays reachable for the rest of the
+                // walk) and the suffix's absence leaves no marker behind — a
+                // well-formed `int[]` and a truncated `int[` differ only in a
+                // token that is missing from both a `RBRACK_TOK` slot the AST
+                // does not require. The diagnostic is therefore the only
+                // record that the annotation in the tree is not the one in the
+                // source; FCS reports FS0010 on the same input.
+                let closing = self
+                    .next_non_trivia_raw_at_pos_with_span()
+                    .map(|(t, span)| (matches!(t, Token::RBrack), span));
+                if let Some((true, _)) = closing {
                     self.bump_into(SyntaxKind::RBRACK_TOK);
+                } else {
+                    let span = closing
+                        .map(|(_, span)| span)
+                        .unwrap_or_else(|| self.source.len()..self.source.len());
+                    self.errors.push(ParseError {
+                        message: "unterminated array type: expected `]`".to_string(),
+                        span,
+                    });
                 }
                 self.builder.finish_node();
             } else if next.is_some_and(raw_starts_postfix_app_head)

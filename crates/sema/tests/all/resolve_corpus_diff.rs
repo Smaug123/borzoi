@@ -65,7 +65,7 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Lower bound on in-file B1 uses where our resolution matches FCS exactly. Only
@@ -315,11 +315,13 @@ fn compare_file(file: &FileCensus, tally: &mut Tally) {
         if !parsed.errors.is_empty() {
             return None; // signal "our errors" without panicking
         }
+        let recovery = SyntaxRecovery::of(&parsed);
         let impl_file = ImplFile::cast(parsed.root)?;
         Some(resolve_file(
             &impl_file,
             &ProjectItems::default(),
             &AssemblyEnv::default(),
+            &recovery,
         ))
     }));
     let rf = match resolved {

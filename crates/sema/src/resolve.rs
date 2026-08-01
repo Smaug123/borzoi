@@ -46,6 +46,7 @@
 //! per correctness-over-availability we decline. The dropped non-case heads are
 //! a coverage gap, never a wrong answer.
 
+use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -93,6 +94,7 @@ pub fn resolve_file(
     file: &ImplFile,
     preceding: &ProjectItems,
     assemblies: &AssemblyEnv,
+    recovery: &SyntaxRecovery,
 ) -> ResolvedFile {
     // Coarse phase spans (otel only) so a slow `resolve_file` on a large file
     // splits into resolver setup / the declaration walk / finish. Each guard is
@@ -101,6 +103,7 @@ pub fn resolve_file(
     #[cfg(feature = "otel")]
     let _phase = tracing::info_span!("resolver_new").entered();
     let mut r = Resolver::new(preceding, assemblies);
+    r.recovery = recovery.clone();
     #[cfg(feature = "otel")]
     drop(_phase);
     #[cfg(feature = "otel")]
@@ -668,11 +671,20 @@ fn header_long_id_path(fragment: &ModuleOrNamespace) -> Option<Vec<String>> {
 pub struct ProjectFile {
     pub file: SourceFile,
     pub qnof: QualifiedNameOfFile,
+    /// What the parser had to recover from in this file — see
+    /// [`SyntaxRecovery`]. Threaded to the file's [`ResolvedFile`] and read by
+    /// [`crate::infer_file`], so a caller that supplies
+    /// [`SyntaxRecovery::Unretained`] gets a quieter answer for this file.
+    pub recovery: SyntaxRecovery,
 }
 
 impl ProjectFile {
-    pub fn new(file: SourceFile, qnof: QualifiedNameOfFile) -> Self {
-        ProjectFile { file, qnof }
+    pub fn new(file: SourceFile, qnof: QualifiedNameOfFile, recovery: SyntaxRecovery) -> Self {
+        ProjectFile {
+            file,
+            qnof,
+            recovery,
+        }
     }
 
     /// Wrap an implementation file for an impl-only fold. Pairing starts at a
@@ -682,6 +694,12 @@ impl ProjectFile {
         ProjectFile {
             file: SourceFile::Impl(file),
             qnof: QualifiedNameOfFile::placeholder(),
+            // The bare-`ImplFile` entry points take trees without the parses
+            // that produced them, so nothing here can prove a clean parse. The
+            // cost is inference declining every annotation in the fold; a
+            // caller that wants those must go through
+            // [`resolve_project_files`] with a real [`SyntaxRecovery`].
+            recovery: SyntaxRecovery::Unretained,
         }
     }
 }
@@ -1355,7 +1373,7 @@ fn resolve_project_files_impl(
                     )
                     .entered()
                 };
-                let mut rf = resolve_file(file, &preceding, assemblies);
+                let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
                 rf.preceding_declares_extension_source = ext.wholesale;
                 rf.preceding_augmentation_instance_names = ext.instance_names.clone();
                 rf.preceding_augmentation_static_names = ext.static_names.clone();
@@ -1489,6 +1507,14 @@ fn wholesale_extension_contribution(rf: &ResolvedFile, assemblies: &AssemblyEnv)
 /// built on this can never serve a resolution from the wrong tree.
 fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
     prev.qnof == new.qnof
+        // The same tree read with a different [`SyntaxRecovery`] is not the same
+        // input: recovery is an argument to `resolve_file`, and it decides
+        // whether the file's annotations may be believed at all. One tree can
+        // carry two readings — a rowan handle clones freely, and the
+        // bare-`ImplFile` entry points supply `Unretained` for trees a
+        // [`ProjectFile`] caller gives a real reading — so identity alone would
+        // reuse a resolution the cold fold would not produce.
+        && prev.recovery == new.recovery
         && match (&prev.file, &new.file) {
             (SourceFile::Impl(a), SourceFile::Impl(b)) => a.syntax() == b.syntax(),
             (SourceFile::Sig(a), SourceFile::Sig(b)) => a.syntax() == b.syntax(),
@@ -1505,7 +1531,7 @@ fn same_tree(prev: &ProjectFile, new: &ProjectFile) -> bool {
 /// Returns exactly what a cold [`resolve_project`] of `new_files` would — the
 /// `resolve_incremental_diff.rs` differential asserts `incremental ≡ batch` over
 /// generated edit sequences. Reuse is sound because `resolve_file`'s output is a
-/// pure function of `(file, preceding, assemblies)`:
+/// pure function of `(file, preceding, assemblies, recovery)`:
 ///
 /// - **`prev_files`/`prev` must pair up:** `prev` must be the result of folding
 ///   `prev_files` (in that order) against `assemblies`. The LSP stores them
@@ -1728,7 +1754,7 @@ fn resolve_project_files_incremental_impl(
                     )
                 }
                 SourceFile::Impl(file) => {
-                    let mut rf = resolve_file(file, &preceding, assemblies);
+                    let mut rf = resolve_file(file, &preceding, assemblies, &pf.recovery);
                     rf.preceding_declares_extension_source = ext.wholesale;
                     rf.preceding_augmentation_instance_names = ext.instance_names.clone();
                     rf.preceding_augmentation_static_names = ext.static_names.clone();
@@ -1893,6 +1919,7 @@ impl<'a> Resolver<'a> {
             decline_binding_head_param_exprs: false,
             diagnostics: Vec::new(),
             trace_opens: Vec::new(),
+            recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
         }
@@ -2124,6 +2151,7 @@ impl<'a> Resolver<'a> {
             export_decls: self.export_decls,
             sig_screen: None,
             sig_exports: Vec::new(),
+            recovery: self.recovery.clone(),
         }
     }
 
@@ -2456,8 +2484,14 @@ mod contribution_tests {
             "parse errors in {src:?}: {:?}",
             p.errors
         );
+        let recovery = SyntaxRecovery::of(&p);
         let file = ImplFile::cast(p.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     /// A body-only edit that adds a *local* binder must not count as an export
@@ -2521,8 +2555,14 @@ mod trace_tests {
             "snippet has parse errors {src:?}: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     #[test]
@@ -2623,15 +2663,85 @@ mod export_decl_tests {
             "snippet has parse errors {src:?}: {:?}",
             parsed.errors
         );
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
     }
 
     /// Resolve `src` tolerating parse errors — for recovery / malformed cases.
     fn resolve_lenient(src: &str) -> ResolvedFile {
         let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+        resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        )
+    }
+
+    /// Resolution never *reads* the recovery reading — it threads it through to
+    /// inference, whose annotation gate is its only consumer. So a caller that
+    /// stops at resolution gets the same answer under any reading, which is what
+    /// licenses the LSP's resolution-only handlers to pass
+    /// [`SyntaxRecovery::without_inference`] instead of buying the two extra
+    /// parses [`SyntaxRecovery::of_guessed_version`] costs.
+    ///
+    /// Stated over `ResolvedFile`'s whole modelled content rather than over the
+    /// handlers, so it covers every such caller at once — and so a future read
+    /// of the reading from inside resolution fails here rather than silently
+    /// making those handlers version-sensitive.
+    #[test]
+    fn resolution_ignores_the_recovery_reading() {
+        let sources = [
+            "module M\nlet x = 1\nlet y = x\n",
+            "module M\ntype T = { a : int }\nlet f (t : T) = t.a\n",
+            // Malformed, so the two readings genuinely differ.
+            "module M\nlet v : System.String. = failwith \"\"\n",
+            "module M\nlet f (x : int[ ) = x\n",
+            "module M\ntype Outer =\n    type Nested = int\n",
+        ];
+        let mut saw_a_difference = false;
+        for src in sources {
+            let parsed = parse(src);
+            let reported = SyntaxRecovery::of(&parsed);
+            if !matches!(&reported, SyntaxRecovery::Reported(s) if s.is_empty()) {
+                saw_a_difference = true;
+            }
+            let file = ImplFile::cast(parsed.root).expect("impl file");
+            let of_parse = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &reported,
+            );
+            let mut without = resolve_file(
+                &file,
+                &ProjectItems::default(),
+                &AssemblyEnv::default(),
+                &SyntaxRecovery::without_inference(),
+            );
+            assert_eq!(
+                without.recovery,
+                SyntaxRecovery::Unretained,
+                "the stored field is the one thing that must differ"
+            );
+            without.recovery = of_parse.recovery.clone();
+            assert_eq!(
+                of_parse, without,
+                "resolution of {src:?} must not depend on the recovery reading"
+            );
+        }
+        assert!(
+            saw_a_difference,
+            "every source parsed clean, so the two readings never actually differed"
+        );
     }
 
     fn segs(parts: &[&str]) -> Vec<String> {

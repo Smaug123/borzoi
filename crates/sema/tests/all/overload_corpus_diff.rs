@@ -65,8 +65,8 @@ use borzoi_assembly::{Ecma335Assembly, Member, MethodLike, Primitive, TypeRef};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, EntityHandle, InferredFile, ProjectItems, Resolution, Ty, arity_window,
-    infer_file, resolve_file,
+    AssemblyEnv, EntityHandle, InferredFile, ProjectItems, Resolution, SyntaxRecovery, Ty,
+    arity_window, infer_file, resolve_file,
 };
 
 /// Floor on the number of call sites we commit. Guards against the differential
@@ -139,8 +139,9 @@ fn run() -> Run {
         "the generated corpus must parse cleanly: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
     let def_types = inferred
         .def_types()

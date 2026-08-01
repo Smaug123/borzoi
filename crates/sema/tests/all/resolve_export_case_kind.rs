@@ -20,7 +20,9 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, CaseKind, ProjectItems, ResolvedFile, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, CaseKind, ProjectItems, ResolvedFile, SyntaxRecovery, resolve_file,
+};
 
 /// Parse `src` (asserting it is in the parser subset) and resolve it as a lone
 /// single file.
@@ -31,8 +33,14 @@ fn resolve(src: &str) -> ResolvedFile {
         "snippet has parse errors: {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// The [`CaseKind`] stored on the exported item named `name` (or `None` for an

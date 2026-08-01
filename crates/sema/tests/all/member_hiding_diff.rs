@@ -48,7 +48,9 @@ use crate::common::{
 use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, InferredFile, ProjectItems, Resolution, infer_file, resolve_file};
+use borzoi_sema::{
+    AssemblyEnv, InferredFile, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
+};
 
 /// The `SymbolKind`s FCS reports for a **data member** — the only answers that
 /// can confirm one of ours. A closed set on purpose: a kind outside it (a nested
@@ -216,8 +218,9 @@ fn run() -> Run {
         "the generated corpus must parse cleanly: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), &env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
     let inferred = infer_file(&file, &resolved, &env);
 
     let starts = line_starts(&corpus.fsharp);

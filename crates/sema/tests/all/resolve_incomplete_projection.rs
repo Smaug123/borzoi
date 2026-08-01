@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DeferredReason, InferredFile, ProjectItems, Resolution, ResolvedFile, Ty,
-    infer_file, resolve_file,
+    AssemblyEnv, DeferredReason, InferredFile, ProjectItems, Resolution, ResolvedFile,
+    SyntaxRecovery, Ty, infer_file, resolve_file,
 };
 use rowan::TextRange;
 
@@ -97,8 +97,9 @@ fn resolve_and_infer(src: &str, env: &AssemblyEnv) -> (ResolvedFile, InferredFil
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let resolved = resolve_file(&file, &ProjectItems::default(), env);
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
     let inferred = infer_file(&file, &resolved, env);
     (resolved, inferred)
 }

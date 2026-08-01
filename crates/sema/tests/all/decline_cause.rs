@@ -18,7 +18,7 @@ use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
     AssemblyEnv, DeclineCause, DeclineTier, DeferredReason, ProjectItems, Resolution, ResolvedFile,
-    resolve_file,
+    SyntaxRecovery, resolve_file,
 };
 
 fn resolve(src: &str) -> ResolvedFile {
@@ -28,8 +28,14 @@ fn resolve(src: &str) -> ResolvedFile {
         "snippet has parse errors: {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default())
+    resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    )
 }
 
 /// Every `(cause, tier)` the file recorded, deduplicated and sorted so a case

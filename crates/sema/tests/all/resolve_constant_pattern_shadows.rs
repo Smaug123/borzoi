@@ -38,9 +38,17 @@ use borzoi_assembly::Ecma335Assembly;
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
 use borzoi_sema::{
-    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, resolve_file, resolve_project,
+    AssemblyEnv, DefKind, ProjectItems, Resolution, ResolvedFile, SyntaxRecovery, resolve_file,
+    resolve_project,
 };
 use rowan::TextRange;
+
+/// The parse-recovery record for `src` — the counterpart to the tree-only
+/// `impl_file` helper beside it. Parsing is deterministic, so this describes
+/// exactly the tree that helper returns.
+fn recovery_of(src: &str) -> SyntaxRecovery {
+    SyntaxRecovery::of(&parse(src))
+}
 
 fn impl_file(src: &str) -> ImplFile {
     let p = parse(src);
@@ -154,6 +162,7 @@ fn in_file_later_literal_defers_the_case() {
         &impl_file(src),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery_of(src),
     );
     assert_defers(&rf, nth(src, "Red", 2), "bare `Red` after in-file literal");
 }
@@ -165,6 +174,7 @@ fn in_file_later_case_beats_the_earlier_literal() {
         &impl_file(src),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery_of(src),
     );
     let res = rf
         .resolution_at(nth(src, "Green", 2))
@@ -201,6 +211,7 @@ fn same_file_module_literal_defers_through_open_either_order() {
         &impl_file(src_a),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery_of(src_a),
     );
     assert_defers(&rf, nth(src_a, "Red", 2), "bare `Red` via same-file open");
 
@@ -209,6 +220,7 @@ fn same_file_module_literal_defers_through_open_either_order() {
         &impl_file(src_b),
         &ProjectItems::default(),
         &AssemblyEnv::default(),
+        &recovery_of(src_b),
     );
     assert_defers(
         &rf,
@@ -266,7 +278,12 @@ fn assembly_literal_defers_an_earlier_project_case() {
     let view = Ecma335Assembly::parse(&bytes).expect("parse active-pattern fixture dll");
     let env = AssemblyEnv::from_views(std::slice::from_ref(&view)).expect("build AssemblyEnv");
     let src = "module P\ntype C =\n    | Marker\n    | Other\nopen Demo.ApLiteral.Consts\nlet f (n: int) = match n with Marker -> 1 | _ -> 0\n";
-    let rf = resolve_file(&impl_file(src), &ProjectItems::default(), &env);
+    let rf = resolve_file(
+        &impl_file(src),
+        &ProjectItems::default(),
+        &env,
+        &recovery_of(src),
+    );
     assert_defers(
         &rf,
         nth(src, "Marker", 1),
