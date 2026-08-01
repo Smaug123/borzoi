@@ -17,6 +17,7 @@ use super::*;
 
 mod cycles_and_failures;
 mod directory_build;
+mod directory_build_position;
 mod explicit_imports;
 mod fsharp_core_netsdk_props;
 mod globs;

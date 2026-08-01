@@ -95,10 +95,49 @@ rediscovered as a bug.
 - **Modelling SDK-injected per-TFM defines** (`NET8_0`, `NETCOREAPP…`). Still the
   accepted `define_constants_uncertain` limitation; 3.3c resolves *user-authored*
   TFM-gated defines by seeding the property, not by running SDK targets.
-- **SDK-derived TFM properties in conditions.** Seeding `TargetFramework` fixes
-  only conditions written directly against `$(TargetFramework)`. A condition on
-  `$(TargetFrameworkIdentifier)` / `$(TargetFrameworkVersion)` (SDK-computed)
-  remains unevaluable, still flips the `*_uncertain` flags, and the project still
-  refuses to fold.
+
+## Settled: SDK-derived TFM properties in conditions
+
+A condition on `$(TargetFrameworkIdentifier)` / `$(TargetFrameworkVersion)` read
+from `Directory.Build.targets` used to see `''`, which made
+`'$(TargetFrameworkIdentifier)' == '.NETFramework'` *cleanly false* rather than
+undecidable — so the gate committed the wrong branch, and
+`FSharp.Profiles.props` in the pinned F# corpus published two `#if` symbols the
+real build never defines.
+
+The cause was **position, not a missing derivation**: the walker already
+computes the pair correctly, by walking the SDK's own
+`Microsoft.NET.TargetFrameworkInference.targets` (both intrinsics it needs are
+implemented). But `Directory.Build.targets` was spliced *before* `Sdk.targets`,
+i.e. before the inference — and the walk's duplicate-import skip then suppressed
+the real chain's import at the real position. So the file was walked exactly
+once, at the wrong time. Walking `Sdk.targets` first and splicing only when the
+chain did not import it for itself fixes it for every SDK-derived name at once,
+and the corpus project now matches MSBuild exactly.
+
+It cost coverage, honestly: reaching the F# repo's `Directory.Build.targets` at
+its real position also reaches an import gate that was previously false, pulling
+in constructs we cannot model, so `compile` and `define_constants` on two test
+projects moved from *matched* to *declined* (corpus facets 33→30, divergences
+2→1). Those declines have precise, actionable causes (`<Target>`,
+`Regex::Replace`) rather than being a blanket refusal; the previous matches were
+luck, not capability.
+
+Guarded by `tests/fsproj_derived_tfm_diff.rs` — a generative differential over
+{SDK kind × TFM spelling × pre-set pair × read position} against the real
+evaluator. It exists because three review rounds of hand-written fixtures each
+asserted behaviour real MSBuild does not have; see its module docs.
+- **`Directory.Build.props` for SDK-less projects.** MSBuild reaches
+  `Directory.Build.props` / `.targets` only through `Microsoft.Common.props` /
+  `.targets`, so a bare `<Project>` with no `Sdk` attribute and no `<Import>`
+  gets neither. The walker splices both unconditionally, and for such a document
+  therefore commits values MSBuild's property table does not contain — a wrong
+  commit, measured by `tests/fsproj_derived_tfm_diff.rs` (which excludes it by
+  not planting witnesses at those positions under its SDK-less arm, and says so).
+  The targets side was fixable by walking `Sdk.targets` first and splicing only
+  if the chain did not; the props side is not, because the splice has to happen
+  *before* the body that holds the `<Import>`s which would tell us. Old-style
+  projects import `Microsoft.Common.props` explicitly, so the splice is right for
+  them and wrong only for genuinely bare documents.
 - **RID selection** (`RuntimeIdentifier`) — orthogonal; the assets resolver
   already prefers the bare-TFM target over RID-qualified ones.
