@@ -491,6 +491,34 @@ fn walk_once<'r>(
     walk_doc_body(root, project_dir, &mut state);
     state.in_entry_body = false;
 
+    // `Sdk.targets` first, and `Directory.Build.targets` only if that walk did
+    // not already import it.
+    //
+    // MSBuild does not splice `Directory.Build.targets` after the body: it is
+    // imported from inside `Microsoft.Common.targets`, which the SDK's
+    // `Sdk.targets` chain reaches — and crucially *after*
+    // `Microsoft.NET.TargetFrameworkInference.targets` has computed
+    // `TargetFrameworkIdentifier` / `TargetFrameworkVersion`. Splicing it first
+    // put our copy at a position where that pair is still unset, and the walk's
+    // own duplicate-import skip then suppressed the real chain's import at the
+    // real position — so the file was walked exactly once, at the wrong time.
+    //
+    // The consequence was a wrong commit, not a decline: read from
+    // `Directory.Build.targets`, `'$(TargetFrameworkIdentifier)' ==
+    // '.NETFramework'` was *cleanly* false rather than undecidable, so the gate
+    // committed. That is how `FSharp.Profiles.props` in the pinned F# corpus
+    // published two `#if` symbols the real build never defines.
+    //
+    // Letting the chain place the import is better than moving our splice to
+    // after `Sdk.targets`: the position then comes from the real targets file
+    // rather than from a guess about where in `Sdk.targets` it sits, and it is
+    // right for every SDK-derived name at once, not just the framework pair.
+    // The explicit splice stays as the fallback for chains that never import it
+    // themselves — no SDK at all, or an SDK whose targets never reach
+    // `Microsoft.Common.targets` — which would otherwise lose the file entirely.
+    if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
+        walk_external_file(targets, span.clone(), &mut state);
+    }
     let targets_to_import = resolve_directory_build_path(
         &state,
         "DirectoryBuildTargetsPath",
@@ -498,6 +526,9 @@ fn walk_once<'r>(
         project_dir,
     );
     if let Some(Resolution { path, source }) = targets_to_import.as_ref()
+        && !state
+            .walked_files
+            .contains(&canonicalise_or_normalise(path))
         && should_import_default_true(
             state
                 .lookup
@@ -510,9 +541,6 @@ fn walk_once<'r>(
             seed_directory_build_path(&mut state, "DirectoryBuildTargetsPath", path);
         }
         walk_directory_build_file(path, 0..0, DirectoryBuildFile::Targets, &mut state);
-    }
-    if let Some((targets, span)) = sdk_targets_to_splice.as_ref() {
-        walk_external_file(targets, span.clone(), &mut state);
     }
 
     // The property pass is complete — every import has been followed and
