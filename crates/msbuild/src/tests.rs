@@ -67,7 +67,7 @@ fn single_compile_resolves_relative_to_project_dir() {
     assert_eq!(p.items.len(), 1);
     assert_eq!(p.items[0].kind, ItemKind::Compile);
     assert_eq!(p.items[0].include, PathBuf::from("/repo/proj/Program.fs"));
-    assert!(p.items[0].link.is_none());
+    assert_eq!(p.items[0].link, ItemMetadataValue::ABSENT);
     assert!(p.diagnostics.is_empty());
 }
 
@@ -347,7 +347,10 @@ fn link_metadata_attribute_form() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("Primitives/prim-types.fs"));
+    assert_eq!(
+        p.items[0].link,
+        ItemMetadataValue::known("Primitives/prim-types.fs")
+    );
 }
 
 #[test]
@@ -361,7 +364,10 @@ fn link_metadata_child_element_form() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("Primitives/prim-types.fs"));
+    assert_eq!(
+        p.items[0].link,
+        ItemMetadataValue::known("Primitives/prim-types.fs")
+    );
 }
 
 #[test]
@@ -1284,7 +1290,11 @@ fn semicolon_list_in_include_splits_into_items() {
         ]
     );
     // Link metadata applies to every entry.
-    assert!(p.items.iter().all(|i| i.link.as_deref() == Some("Shared")));
+    assert!(
+        p.items
+            .iter()
+            .all(|i| i.link == ItemMetadataValue::known("Shared"))
+    );
     assert!(p.diagnostics.is_empty());
 }
 
@@ -1927,7 +1937,7 @@ fn substitution_applies_to_link_attribute() {
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link.as_deref(), Some("Shared/Mod.fs"));
+    assert_eq!(p.items[0].link, ItemMetadataValue::known("Shared/Mod.fs"));
 }
 
 #[test]
@@ -1943,7 +1953,7 @@ fn substitution_applies_to_link_child_element() {
   </ItemGroup>
 </Project>"#;
     let p = parse(src);
-    assert_eq!(p.items[0].link.as_deref(), Some("Shared/Mod.fs"));
+    assert_eq!(p.items[0].link, ItemMetadataValue::known("Shared/Mod.fs"));
 }
 
 #[test]
@@ -1959,7 +1969,7 @@ fn link_with_inexact_property_drops_link_keeps_item() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(paths(&p.items), [Path::new("/repo/proj/Mod.fs")]);
-    assert!(p.items[0].link.is_none());
+    assert_eq!(p.items[0].link, ItemMetadataValue::Unknown);
     assert_eq!(
         diag_kinds(&p.diagnostics),
         [&DiagnosticKind::UndefinedProperty {
@@ -2636,7 +2646,7 @@ fn link_child_text_split_by_comment_concatenates_full_value() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("src/A.fs"));
+    assert_eq!(p.items[0].link, ItemMetadataValue::known("src/A.fs"));
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 
@@ -3040,7 +3050,7 @@ fn link_attribute_with_metadata_reference_is_diagnosed_and_dropped() {
     .expect("well-formed XML parses");
     assert_eq!(p.items.len(), 1);
     assert!(
-        p.items[0].link.is_none(),
+        p.items[0].link == ItemMetadataValue::Unknown,
         "link should be dropped, got {:?}",
         p.items[0].link
     );
@@ -3065,7 +3075,7 @@ fn link_child_with_item_reference_is_diagnosed_and_dropped() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.items.len(), 1);
-    assert!(p.items[0].link.is_none());
+    assert_eq!(p.items[0].link, ItemMetadataValue::Unknown);
     assert!(
         p.diagnostics
             .iter()
@@ -3123,7 +3133,7 @@ fn project_reference_lands_in_project_references_bucket() {
         p.project_references[0].include,
         PathBuf::from("/repo/proj/../lib/Lib.csproj"),
     );
-    assert!(p.project_references[0].link.is_none());
+    assert_eq!(p.project_references[0].link, ItemMetadataValue::ABSENT);
     assert!(p.diagnostics.is_empty());
 }
 
@@ -4380,7 +4390,7 @@ fn project_reference_link_attribute_is_ignored() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.project_references.len(), 1);
-    assert!(p.project_references[0].link.is_none());
+    assert_eq!(p.project_references[0].link, ItemMetadataValue::ABSENT);
 }
 
 #[test]
@@ -9109,7 +9119,7 @@ fn compile_link_metadata_sees_property_defined_later_in_document() {
 </Project>"#;
     let p = parse(src);
     assert_eq!(p.items.len(), 1);
-    assert_eq!(p.items[0].link.as_deref(), Some("shown/A.fs"));
+    assert_eq!(p.items[0].link, ItemMetadataValue::known("shown/A.fs"));
     assert!(p.diagnostics.is_empty(), "{:?}", p.diagnostics);
 }
 

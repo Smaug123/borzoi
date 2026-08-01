@@ -49,7 +49,7 @@ use borzoi_oracle_harness::BoundedCommand;
 mod common;
 
 use borzoi_msbuild::{
-    Diagnostic, GlobalJson, ItemKind, PackageRefOp, PackageReference,
+    Diagnostic, GlobalJson, ItemKind, ItemMetadataValue, PackageRefOp, PackageReference,
     PackageReferenceUncertaintyCause, PackageReferenceUncertaintyCauseKind, ParsedProject,
     SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion,
     StructuralPackageReferenceUncertainty, VersionSpec, find_global_json, parse_fsproj,
@@ -431,10 +431,25 @@ fn compare_compile(parsed: &ParsedProject, msbuild: &MsbuildOutput) -> FacetRepo
         .map(|item| CompileView {
             kind: item_kind_name(item.kind).to_string(),
             path: path_key(&item.include),
-            link: normalize_link(item.link.as_deref().unwrap_or("")),
+            link: match &item.link {
+                ItemMetadataValue::Known(link) => {
+                    Some(normalize_link(link.as_deref().unwrap_or("")))
+                }
+                ItemMetadataValue::Unknown => None,
+            },
         })
         .collect();
-    let theirs = msbuild.compile_views();
+    let mut theirs = msbuild.compile_views();
+    // A declined `Link` makes no claim, so blank the oracle's value at the same
+    // index rather than letting it count as a mismatch — the facet's load-bearing
+    // fields (kind, path, and the order they come in) still gate. Masking by
+    // index is sound because a *misaligned* pair diverges on `path` anyway, so
+    // this can only hide a link difference under a divergence already reported.
+    for (ours_item, theirs_item) in ours.iter().zip(theirs.iter_mut()) {
+        if ours_item.link.is_none() {
+            theirs_item.link = None;
+        }
+    }
     compare_vec("compile", ours, theirs)
 }
 
@@ -1228,7 +1243,7 @@ impl MsbuildItem {
         CompileView {
             kind: kind.to_string(),
             path: path_key(Path::new(&self.full_path)),
-            link: normalize_link(&self.link),
+            link: Some(normalize_link(&self.link)),
         }
     }
 }
@@ -1237,7 +1252,9 @@ impl MsbuildItem {
 struct CompileView {
     kind: String,
     path: String,
-    link: String,
+    /// `None` on our side means the evaluator declined to state a `Link`; the
+    /// oracle's value is masked to match, so the pair compares on the rest.
+    link: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]

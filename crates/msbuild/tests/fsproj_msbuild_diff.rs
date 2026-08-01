@@ -99,7 +99,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use borzoi_msbuild::{
-    Diagnostic, DiagnosticKind, ItemKind, ResolvedItem, parse_fsproj_with_imports,
+    Diagnostic, DiagnosticKind, ItemKind, ItemMetadataValue, ResolvedItem,
+    parse_fsproj_with_imports,
 };
 use borzoi_oracle_harness::BoundedCommand;
 use serde::Deserialize;
@@ -660,7 +661,12 @@ fn compare_kind(
             (Some(o), Some(t)) => {
                 let our_canon = std::fs::canonicalize(&o.include);
                 let their_canon = std::fs::canonicalize(Path::new(&t.full_path));
-                let our_link = normalize_link(o.link.as_deref().unwrap_or(""));
+                // A declined `Link` makes no claim, so compare the oracle's
+                // value against itself and let the path/order checks gate.
+                let our_link = match &o.link {
+                    ItemMetadataValue::Known(link) => normalize_link(link.as_deref().unwrap_or("")),
+                    ItemMetadataValue::Unknown => normalize_link(t.link.as_str()),
+                };
                 let their_link = normalize_link(t.link.as_str());
                 match (our_canon, their_canon) {
                     (Ok(oc), Ok(tc)) => {
@@ -708,7 +714,7 @@ fn compare_kind(
             (Some(o), None) => mismatches.push(format!(
                 "  [{i}] ours-only: {} link={:?}",
                 o.include.display(),
-                o.link.as_deref().unwrap_or(""),
+                o.link,
             )),
             (None, Some(t)) => mismatches.push(format!(
                 "  [{i}] msbuild-only: {} link={:?}",

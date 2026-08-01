@@ -836,7 +836,7 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     // are meaningless on Compile items.
     let metadata = match kind {
         ItemKind::ProjectReference => ItemMetadata {
-            link: None,
+            link: ItemMetadataValue::ABSENT,
             reference_output_assembly: resolve_string_metadata(
                 node,
                 state,
@@ -853,14 +853,12 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
             // `<Link>` controls only the display path, never which file
             // compiles — clear `compile_context` so an undefined property in
             // the link doesn't mark the (already-known) Compile item uncertain.
+            // The verdict still rides on the item: display-only is a reason not
+            // to *poison* the Compile set, not a licence to state a value we
+            // could not evaluate (`ResolvedItem::link`).
             let saved = state.compile_context;
             state.compile_context = false;
-            // Display-only metadata: an Unknown resolution degrades to "no
-            // link" rather than poisoning anything (ResolvedItem::link docs).
-            let link = match resolve_string_metadata(node, state, "Link") {
-                ItemMetadataValue::Known(value) => value,
-                ItemMetadataValue::Unknown => None,
-            };
+            let link = resolve_string_metadata(node, state, "Link");
             state.compile_context = saved;
             ItemMetadata {
                 link,
@@ -912,7 +910,7 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
 /// Per-element item metadata, resolved once and copied onto every
 /// [`ResolvedItem`] the element's `Include` expands to.
 struct ItemMetadata {
-    link: Option<String>,
+    link: ItemMetadataValue,
     reference_output_assembly: ItemMetadataValue,
     exclude_assets: ItemMetadataValue,
     include_assets: ItemMetadataValue,
@@ -2768,10 +2766,51 @@ fn bucket_for_compile_effect<'s, 'r>(
     }
 }
 
-fn push_resolved_item(state: &mut State<'_>, placement: ItemPlacement, item: ResolvedItem) {
+fn push_resolved_item(state: &mut State<'_>, placement: ItemPlacement, mut item: ResolvedItem) {
+    if item.link == ItemMetadataValue::ABSENT
+        && matches!(
+            item.kind,
+            ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter
+        )
+        && !link_is_ours_to_state(&item.include, &state.entry_project_dir)
+    {
+        item.link = ItemMetadataValue::Unknown;
+    }
     let order = state.next_item_order;
     state.next_item_order += 1;
     bucket_for_placement(state, placement).push(OrderedResolvedItem { order, item });
+}
+
+/// Whether an item with no `Link` written in the document provably has none.
+///
+/// The .NET SDK's `Microsoft.NET.Sdk.DefaultItems.targets` carries a
+/// metadata-bearing `<Compile Update="@(Compile)">` group that fills an unset
+/// `Link` in with `%(LinkBase)%(RecursiveDir)%(Filename)%(Extension)` for every
+/// item whose full path escapes `$(MSBuildProjectDirectory)`. This evaluator
+/// does not execute metadata-bearing `Update` groups, so for an out-of-cone
+/// item the real build's `Link` is not ours to state and the caller records
+/// [`ItemMetadataValue::Unknown`]. In-cone items are unreachable by that rule
+/// whether or not the group ran, so their absent `Link` stays `Known`.
+///
+/// The verdict is *lexical and total*: an SDK-less project gets the same
+/// decline even though nothing would synthesise a link for it. That
+/// over-declines rather than reaching for a recogniser ("did we walk the SDK
+/// file that declares the rule?"), which would have to be right about a rule we
+/// are not executing — and a decline costs nothing here, since nothing in the
+/// workspace reads `link`.
+fn link_is_ours_to_state(include: &Path, project_dir: &Path) -> bool {
+    // MSBuild compares the item's *normalised* full path against
+    // `EnsureTrailingSlash($(MSBuildProjectDirectory))` as a string prefix, so a
+    // sibling sharing a textual prefix (`/proj-extra/a.fs` against `/proj/`) is
+    // outside the cone. Component-wise `starts_with` agrees with that on
+    // normalised paths and does not need the trailing slash spelled out.
+    //
+    // Collapsing `.`/`..` lexically rather than canonicalising is load-bearing:
+    // `include` is joined but never canonicalised, and touching the filesystem
+    // would make the verdict depend on which files happen to exist — including
+    // for a symlinked source tree, where MSBuild does not resolve the link
+    // either.
+    crate::imports::normalise(include).starts_with(crate::imports::normalise(project_dir))
 }
 
 fn evaluate_item_condition(node: Node<'_, '_>, state: &mut State<'_>) -> CondGate {

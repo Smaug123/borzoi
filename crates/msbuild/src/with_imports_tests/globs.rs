@@ -342,7 +342,7 @@ fn link_applied_to_each_globbed_item() {
     let (result, _) = parse_file_capturing_glob(&project_path, out);
     assert_eq!(result.items.len(), 2);
     for item in &result.items {
-        assert_eq!(item.link.as_deref(), Some("Linked"));
+        assert_eq!(item.link, ItemMetadataValue::known("Linked"));
     }
 }
 
@@ -419,7 +419,7 @@ fn project_reference_glob_routes_through_resolver() {
     assert_eq!(paths_of(&result.project_references), out);
     for pr in &result.project_references {
         assert_eq!(pr.kind, ItemKind::ProjectReference);
-        assert_eq!(pr.link, None);
+        assert_eq!(pr.link, ItemMetadataValue::ABSENT);
     }
 }
 
@@ -654,10 +654,18 @@ proptest! {
             };
         prop_assert!(other.is_empty(), "wrong bucket received items: {:?}", other);
         prop_assert_eq!(paths_of(bucket), out);
+        // Every generated resolver path is a bare filename joined onto the
+        // project directory, so nothing here is out of the project cone and the
+        // absent case stays `Known(None)` rather than declining. That blindness
+        // is the generator's, not the property's: out-of-cone `Link` synthesis
+        // is swept by `tests/fsproj_link_metadata_diff.rs`.
         let expected_link = if kind == ItemKind::ProjectReference {
-            None
+            ItemMetadataValue::ABSENT
         } else {
-            case.link.clone()
+            match &case.link {
+                Some(link) => ItemMetadataValue::known(link.clone()),
+                None => ItemMetadataValue::ABSENT,
+            }
         };
         for item in bucket {
             prop_assert_eq!(item.kind, kind);

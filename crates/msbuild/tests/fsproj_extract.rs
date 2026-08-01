@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::{DiagnosticKind, ItemKind, parse_fsproj};
+use borzoi_msbuild::{DiagnosticKind, ItemKind, ItemMetadataValue, parse_fsproj};
 
 fn repo_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is `crates/lsp/`; `tools/` sits at the workspace
@@ -47,5 +47,5 @@ fn fcs_dump_fsproj_extracts_single_program_fs() {
     let actual: Vec<&Path> = project.items.iter().map(|i| i.include.as_path()).collect();
     assert_eq!(actual, [expected.as_path()]);
     assert_eq!(project.items[0].kind, ItemKind::Compile);
-    assert!(project.items[0].link.is_none());
+    assert_eq!(project.items[0].link, ItemMetadataValue::ABSENT);
 }

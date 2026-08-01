@@ -265,12 +265,26 @@ pub struct ResolvedItem {
     /// joining; the result is *not* canonicalised (no filesystem touch),
     /// so `..` components may be present.
     pub include: PathBuf,
-    /// `<Link>` metadata if present (as an attribute or child element).
-    /// Display-only (it never changes what compiles or is referenced), so —
-    /// unlike the asset-control metadata below — an unevaluable write
-    /// degrades to `None` rather than carrying
-    /// [`ItemMetadataValue::Unknown`].
-    pub link: Option<String>,
+    /// `<Link>` metadata (as an attribute or child element), or the value the
+    /// SDK synthesises for an item outside the project cone.
+    ///
+    /// Display-only: it never changes what compiles or is referenced, and
+    /// nothing in the workspace reads it — the Compile fold reads order and
+    /// path. It carries a knowability verdict anyway, because the alternative
+    /// is not "a harmless wrong value" but a *silent* one. Two writers set
+    /// this metadatum and only one of them is in the document: the SDK's
+    /// `Microsoft.NET.Sdk.DefaultItems.targets` carries a metadata-bearing
+    /// `<Compile Update="@(Compile)">` that fills an unset `Link` in for any
+    /// item whose full path escapes `$(MSBuildProjectDirectory)`. We do not
+    /// execute metadata-bearing `Update` groups, so for those items the real
+    /// build's value is not ours to state — see
+    /// [`ItemMetadataValue::Unknown`], which is what they get.
+    ///
+    /// `Known(None)` therefore means *provably no link*, not "we did not work
+    /// it out"; conflating the two is what let an out-of-cone item read as
+    /// `""` and disagree with MSBuild in the corpus sweep with no decline
+    /// anywhere to show for it.
+    pub link: ItemMetadataValue,
     /// `ReferenceOutputAssembly` metadata (attribute or child element),
     /// `$(...)`-expanded, kept raw. Only populated for
     /// [`ItemKind::ProjectReference`] items — MSBuild treats a (trimmed,

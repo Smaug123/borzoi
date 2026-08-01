@@ -3685,7 +3685,7 @@ mod tests {
         ResolvedItem {
             kind: ItemKind::ProjectReference,
             include: PathBuf::from("/proj/B/B.fsproj"),
-            link: None,
+            link: ItemMetadataValue::ABSENT,
             reference_output_assembly: match reference_output_assembly {
                 Some(v) => ItemMetadataValue::known(v),
                 None => ItemMetadataValue::ABSENT,
@@ -4162,7 +4162,7 @@ mod tests {
         ResolvedItem {
             kind: ItemKind::Compile,
             include,
-            link: None,
+            link: ItemMetadataValue::ABSENT,
             reference_output_assembly: ItemMetadataValue::ABSENT,
             exclude_assets: ItemMetadataValue::ABSENT,
             include_assets: ItemMetadataValue::ABSENT,

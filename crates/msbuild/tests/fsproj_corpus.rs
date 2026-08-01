@@ -26,7 +26,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::{ItemKind, ParsedProject, ResolvedItem, parse_fsproj};
+use borzoi_msbuild::{ItemKind, ItemMetadataValue, ParsedProject, ResolvedItem, parse_fsproj};
 
 fn fixtures_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fsproj-corpus")
@@ -151,8 +151,11 @@ fn render_snapshot(project: &ParsedProject, project_dir: &Path) -> String {
         };
         let path = to_forward_slashes(&rel);
         match &item.link {
-            Some(link) => writeln!(out, "  {kind} {path} link={link}").unwrap(),
-            None => writeln!(out, "  {kind} {path}").unwrap(),
+            ItemMetadataValue::Known(Some(link)) => {
+                writeln!(out, "  {kind} {path} link={link}").unwrap()
+            }
+            ItemMetadataValue::Known(None) => writeln!(out, "  {kind} {path}").unwrap(),
+            ItemMetadataValue::Unknown => writeln!(out, "  {kind} {path} link=<declined>").unwrap(),
         }
     }
 
