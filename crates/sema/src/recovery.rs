@@ -62,10 +62,14 @@ impl SyntaxRecovery {
                 .errors
                 .iter()
                 .map(|e| {
-                    TextRange::new(
-                        TextSize::new(u32::try_from(e.span.start).unwrap_or(u32::MAX)),
-                        TextSize::new(u32::try_from(e.span.end).unwrap_or(u32::MAX)),
-                    )
+                    // `TextRange::new` panics on an inverted span, and this runs
+                    // inside a language server on whatever the user is halfway
+                    // through typing — so the range is *normalised* rather than
+                    // trusted. Only the start is read, so an inverted or
+                    // saturated span still lands in the right declaration.
+                    let start = TextSize::new(u32::try_from(e.span.start).unwrap_or(u32::MAX));
+                    let end = TextSize::new(u32::try_from(e.span.end).unwrap_or(u32::MAX));
+                    TextRange::new(start.min(end), start.max(end))
                 })
                 .collect::<Vec<_>>()
                 .into(),

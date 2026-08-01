@@ -568,7 +568,6 @@ fn infer_bcl_full(src: &str) -> (InferredFile, ResolvedFile) {
 /// re-parsing (the same tree inference ran over). Panics if absent.
 fn ident_range(src: &str, name: &str) -> TextRange {
     let parsed = parse(src);
-    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     file.syntax()
         .descendants_with_tokens()
@@ -2001,7 +2000,6 @@ fn wrong_arity_method_call_defers() {
 /// followed by whitespace / `=`).
 fn receiver_range(src: &str) -> TextRange {
     let parsed = parse(src);
-    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let toks: Vec<_> = file
         .syntax()
@@ -2023,7 +2021,6 @@ fn receiver_range(src: &str) -> TextRange {
 /// `IDENT_TOK "t"` immediately followed by a `DOT_TOK`.
 fn arg_receiver_range(src: &str, name: &str) -> TextRange {
     let parsed = parse(src);
-    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let toks: Vec<_> = file
         .syntax()

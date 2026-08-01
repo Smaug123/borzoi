@@ -128,7 +128,6 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
-    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let srcs = vec![SourceFile::Impl(file)];
     let paths = vec![path];

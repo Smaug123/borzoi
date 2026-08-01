@@ -767,7 +767,6 @@ proptest! {
         let src = format!("module M\nlet x : int64 = {n}\n");
         let parsed = parse(&src);
         prop_assume!(parsed.errors.is_empty());
-        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
         // The full BCL env: `int64` types through FSharp.Core's abbreviation
         // marker and the target chase, not a hard-coded alias table.

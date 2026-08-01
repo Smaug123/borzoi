@@ -382,7 +382,6 @@
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
-use crate::recovery::SyntaxRecovery;
 use std::collections::{HashMap, HashSet};
 
 use borzoi_assembly::{EntityKind, Primitive, TypeRef};
@@ -1311,9 +1310,10 @@ impl<'a> Gen<'a> {
         // did not parse is silence.
         //
         // Asked here rather than at the callers so a new entry point into
-        // annotation reading cannot miss it; a clean parse answers without
-        // touching the tree, so the recursion costs a discriminant test per
-        // node.
+        // annotation reading cannot miss it. The recursion re-asks it per node,
+        // which is free on a clean parse (the empty-span case answers without
+        // touching the tree) and a short ancestor climb per node on a file that
+        // did error — where there is nothing to commit anyway.
         if !self.resolved.recovery().declaration_is_intact(ty.syntax()) {
             return None;
         }
@@ -4844,7 +4844,6 @@ mod tests {
         for lit in kinds {
             let src = format!("module M\nlet v = {lit}\n");
             let parsed = parse(&src);
-            let recovery = SyntaxRecovery::of(&parsed);
             let file = ImplFile::cast(parsed.root).expect("impl file");
             // Find the `ConstExpr` in the RHS.
             let cst = file

@@ -3396,6 +3396,51 @@ mod tests {
         assert_eq!(parses.paths.len(), 1);
     }
 
+    /// A cache *hit* serves the recovery record beside the tree it serves.
+    ///
+    /// The `Parse` dies inside [`build_parses`], so a hit that returned only the
+    /// tree would hand the fold [`SyntaxRecovery::Unretained`] — and nothing
+    /// would go red, because `Unretained` is the safe reading: the file's
+    /// annotations would simply stop producing types, on the second request and
+    /// every one after it. That is the whole failure mode of caching a
+    /// knowability, so it is pinned rather than argued.
+    #[test]
+    fn a_cache_hit_still_carries_the_parse_errors() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("P.fsproj");
+        let file = tmp.path().join("Lib.fs");
+        write(&proj, &fsproj(&["Lib.fs"]));
+        // Clean: the point is that `Reported` survives, and `Reported([])` is
+        // the reading that licenses a commitment.
+        write(&file, "module M\nlet v : System.String = failwith \"\"\n");
+
+        let mut ws = Workspace::default();
+        let mut sema = SemanticState::new();
+        let cold = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("first parses")
+            .files[0]
+            .recovery
+            .clone();
+        // Invalidate the *project* memo so the rebuild runs, while leaving the
+        // per-file `CachedParse` table intact and the text untouched — which is
+        // what makes the rebuild take the hit branch rather than re-parse.
+        sema.invalidate_project(&proj);
+        let hit = sema
+            .parses_for_project(&proj, &mut ws, &HashMap::new())
+            .expect("rebuilt parses")
+            .files[0]
+            .recovery
+            .clone();
+
+        assert_eq!(
+            cold,
+            SyntaxRecovery::Reported([].into()),
+            "a clean file must prove itself clean on a cold parse"
+        );
+        assert_eq!(hit, cold, "the cache hit must serve the same reading");
+    }
+
     #[test]
     fn caches_until_invalidated() {
         let tmp = TempDir::new().unwrap();

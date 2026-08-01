@@ -108,7 +108,6 @@ fn assert_sound(src: &str) -> usize {
 /// The text range of the first `IDENT_TOK` spelling `name` in `src`.
 fn ident_range(src: &str, name: &str) -> TextRange {
     let parsed = parse(src);
-    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     file.syntax()
         .descendants_with_tokens()

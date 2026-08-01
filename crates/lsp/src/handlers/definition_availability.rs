@@ -19,7 +19,7 @@
 //! concern this layer intentionally does not predict).
 
 use borzoi_cst::syntax::{SyntaxKind, SyntaxNode};
-use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile, SyntaxRecovery};
+use borzoi_sema::{DeferredReason, InferredFile, Resolution, ResolvedFile};
 use rowan::{TextRange, TextSize};
 
 use super::{
@@ -256,7 +256,7 @@ fn identifier_token_range(root: &SyntaxNode, byte: usize) -> Option<TextRange> {
 mod tests {
     use super::*;
     use borzoi_cst::syntax::{AstNode, ImplFile};
-    use borzoi_sema::{AssemblyEnv, ProjectItems, resolve_file};
+    use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, resolve_file};
     use proptest::prelude::*;
 
     /// Parse + single-file-resolve `src`, returning the resolved file and its
