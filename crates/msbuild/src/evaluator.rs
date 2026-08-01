@@ -961,12 +961,27 @@ fn resolve_directory_build_path(
 }
 
 /// Reproduce MSBuild's `Microsoft.Common.props` gate for
-/// `Directory.Build.*`: the property defaults to "true" when empty
-/// or unset, and the actual import only fires when the value (case-
-/// insensitively) equals "true". Anything else — `"false"`, `"0"`,
-/// `"no"`, a typo — skips the import. Treating "anything except
-/// false" as opt-in (our earlier rule) was too permissive and would
-/// import where MSBuild wouldn't.
+/// `Directory.Build.*`: the property defaults to "true" when empty or
+/// unset, and the import fires when the value is MSBuild-**true**.
+///
+/// The gate is a condition — `'$(ImportDirectoryBuildProps)' == 'true'`
+/// in `Microsoft.Common.props`, and the same shape for the targets side
+/// in `Microsoft.Common.targets` — so it is an MSBuild `==`, which
+/// coerces *both* operands through [`condition::parse_msbuild_bool`]
+/// before falling back to a string compare. Deciding it with a bare
+/// `== "true"` string test therefore skips files the real build
+/// imports: probed end-to-end (dotnet 10.0.301, 2026-08-01) `yes`, `on`
+/// and `!false` all import, while `no`, `off` and `0` do not. That
+/// shortfall is invisible downstream — a skipped import loses whatever
+/// properties and items the file contributes, and nothing marks the
+/// result uncertain — so the vocabulary must come from the one place
+/// that models it rather than be re-derived here.
+///
+/// A whitespace-only value takes the default-fill arm because MSBuild
+/// compares it equal to empty (`'   ' == ''` is true, oracle-pinned
+/// 2026-08-01). Padding around a *non-empty* value is not stripped, so
+/// `" true "` is not MSBuild-true — which is exactly
+/// [`condition::parse_msbuild_bool`]'s deliberately untrimmed contract.
 ///
 /// `is_sticky_global` distinguishes a read-only global from an
 /// unset/body-written value. MSBuild's default-fill
@@ -978,12 +993,23 @@ fn resolve_directory_build_path(
 fn should_import_default_true(value: Option<&str>, is_sticky_global: bool) -> bool {
     match value {
         // Read-only global: no default-fill, so the value is taken
-        // verbatim and only the literal "true" opens the gate.
-        Some(s) if is_sticky_global => s.eq_ignore_ascii_case("true"),
+        // verbatim and only an MSBuild-true spelling opens the gate.
+        Some(s) if is_sticky_global => is_msbuild_true(s),
         None => true,
         Some(s) if s.trim().is_empty() => true,
-        Some(s) => s.eq_ignore_ascii_case("true"),
+        Some(s) => is_msbuild_true(s),
     }
+}
+
+/// Does `value` satisfy an MSBuild `'$(Prop)' == 'true'` comparison?
+///
+/// `==` tries the boolean vocabulary before an ordinal-ignore-case string
+/// compare, and every string spelling that survives to the fallback and
+/// matches `true` is already in the vocabulary — so membership *is* the
+/// comparison. Oracle-pinned over the vocabulary and its neighbours by
+/// `msbuild_gate_boolean_diff`.
+pub(crate) fn is_msbuild_true(value: &str) -> bool {
+    condition::parse_msbuild_bool(value) == Some(true)
 }
 
 /// `TreatAsLocalProperty="Foo;Bar"` on `<Project>` is MSBuild's escape
@@ -2298,15 +2324,28 @@ impl<'r> State<'r> {
         // from `<PackageVersion>` items. Start conservative, then let the
         // inline CPM pass below clear the uncertainty only for the exact subset
         // it can prove from already-captured items.
+        // Both opt-in flags are read by MSBuild `==` comparisons in
+        // `NuGet.targets` (`'$(ManagePackageVersionsCentrally)' == 'true' AND
+        // '$(CentralPackageVersionsFileImported)' == 'true'`), so they take the
+        // boolean vocabulary, not string equality — see [`is_msbuild_true`].
         let manages_versions_centrally = lookup
             .get_unescaped("ManagePackageVersionsCentrally")
-            .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            .is_some_and(|v| is_msbuild_true(&v));
         let central_package_versions_file_imported = lookup
             .get_unescaped("CentralPackageVersionsFileImported")
-            .is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            .is_some_and(|v| is_msbuild_true(&v));
+        // `CentralPackageVersionOverrideEnabled` is different in kind: the SDK
+        // does not compare it, it forwards the raw value to the restore task,
+        // so the vocabulary is NuGet's C# rather than MSBuild's and this crate
+        // cannot ground-truth it with the condition oracle. Treat *either*
+        // reading's "false" as opting out, which is a superset of the literal
+        // spelling and therefore conservative under both: an opt-out keeps the
+        // reference unresolved (`all_includes_resolved = false`), so widening
+        // it can only retain uncertainty, never commit a version override the
+        // real restore would reject.
         let central_package_version_override_enabled = !lookup
             .get_unescaped("CentralPackageVersionOverrideEnabled")
-            .is_some_and(|v| v.eq_ignore_ascii_case("false"));
+            .is_some_and(|v| condition::parse_msbuild_bool(&v) == Some(false));
         // `package_references` is already the effective (Include + Update
         // collapsed) set, with versionless uncertainty detected on it, from the
         // item pass's `finalize_package_references`.

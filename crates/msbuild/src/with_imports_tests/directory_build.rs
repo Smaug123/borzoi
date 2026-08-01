@@ -236,14 +236,16 @@ fn project_property_disables_implicit_directory_build_targets() {
 
 #[test]
 fn non_true_value_disables_implicit_directory_build_props() {
-    // MSBuild's `Microsoft.Common.props` only imports
-    // `Directory.Build.props` when the gate property's value is
-    // (case-insensitively) "true" — empty/unset defaults to "true",
-    // but anything else suppresses the import. Pre-round-3 the
-    // walker treated "anything except 'false'" as opt-in, which
-    // would erroneously import for values like "0", "yes", or
-    // "no". This test pins the tightened semantics by using a
-    // value MSBuild treats as non-opt-in.
+    // MSBuild's `Microsoft.Common.props` imports `Directory.Build.props`
+    // under `'$(ImportDirectoryBuildProps)' == 'true'` — empty/unset
+    // defaults to "true", and a value outside MSBuild's *boolean
+    // vocabulary* suppresses the import. `"0"` is such a value: `==`
+    // coerces both sides through the vocabulary, which does not admit
+    // `0`/`1`, so the comparison falls through to a string compare and
+    // is false. Probed end-to-end (dotnet 10.0.301, 2026-08-01,
+    // `-p:ImportDirectoryBuildProps=0`): the file is not imported.
+    // The opt-*in* spellings are pinned by
+    // [`msbuild_boolean_gate_value_imports_directory_build_props`].
     let tmp = TempDir::new().unwrap();
     write_at(
         tmp.path(),
@@ -264,16 +266,66 @@ fn non_true_value_disables_implicit_directory_build_props() {
 </Project>"#,
     );
     let mut extras = HashMap::new();
-    // "0" is *not* "true" and MSBuild therefore skips the import,
-    // but the old `is_false` helper saw it as non-false → import.
     extras.insert("ImportDirectoryBuildProps".to_string(), "0".to_string());
     let result = parse_file_with_extras(&project_path, extras);
     let canon_root = canon(tmp.path());
     assert_eq!(
         paths_of(&result.items),
         vec![canon_root.join("Main.fs")],
-        "Directory.Build.props must be skipped for any non-true gate value",
+        "Directory.Build.props must be skipped for a gate value outside \
+         MSBuild's boolean vocabulary",
     );
+}
+
+#[test]
+fn msbuild_boolean_gate_value_imports_directory_build_props() {
+    // `'$(ImportDirectoryBuildProps)' == 'true'` is an MSBuild `==`, which
+    // coerces *both* sides through the boolean vocabulary before falling
+    // back to a string compare. So every spelling of true opens the gate,
+    // not just the literal word. Probed end-to-end against the real
+    // evaluator (dotnet 10.0.301, 2026-08-01, `Microsoft.NET.Sdk` project,
+    // `-p:ImportDirectoryBuildProps=<v>`, reading back `-getProperty` on a
+    // property only `Directory.Build.props` sets): `true`/`yes`/`on`/
+    // `!false` import it; `no`/`off`/`0` do not.
+    //
+    // Reading this gate with a bare `== "true"` string test skips a file
+    // the real build imports, which loses every property and item that
+    // file contributes — and the evaluator publishes the shortfall as
+    // certain, since nothing about the gate is recorded as uncertain.
+    for value in ["yes", "YES", "on", "!false"] {
+        let tmp = TempDir::new().unwrap();
+        write_at(
+            tmp.path(),
+            "Directory.Build.props",
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#,
+        );
+        let mut extras = HashMap::new();
+        extras.insert("ImportDirectoryBuildProps".to_string(), value.to_string());
+        let result = parse_file_with_extras(&project_path, extras);
+        let canon_root = canon(tmp.path());
+        assert_eq!(
+            paths_of(&result.items),
+            vec![
+                canon_root.join("FromDirBuild.fs"),
+                canon_root.join("Main.fs"),
+            ],
+            "gate value {value:?} is MSBuild-true, so Directory.Build.props \
+             must be imported",
+        );
+    }
 }
 
 #[test]

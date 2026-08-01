@@ -50,6 +50,31 @@
 //! Both are ordinary certain-implies-exact violations once the axis is swept.
 //! No new contract was needed, only a harness that varies what the other one
 //! holds fixed.
+//!
+//! ## The gate's *vocabulary*, and the one route with no project oracle
+//!
+//! The hooks above are swept with literal `true`/`false`. That leaves the
+//! comparison itself untested — `'$(ImportDirectoryBuild*)' == 'true'` is an
+//! MSBuild `==`, so `on`, `yes` and `!false` open it too. Two tests cover it,
+//! and the split between them is the point:
+//!
+//! - [`the_directory_build_props_gate_vocabulary_is_exact_or_declined`] sweeps
+//!   the vocabulary through a whole SDK-resolved evaluation. This is genuine
+//!   coverage of the composition, but it is **blind to the walker's own gate
+//!   predicate** — with the chain present, a wrongly-closed hand-rolled gate
+//!   just stops suppressing the chain's rediscovery import, and `condition.rs`
+//!   decides it correctly instead. The errors cancel.
+//! - [`the_gate_predicate_matches_msbuild_equality`] therefore diffs the
+//!   predicate against MSBuild's `==` directly. The predicate decides the
+//!   import only when the SDK chain is *absent* — which is exactly when
+//!   MSBuild cannot evaluate the project either, so no whole-project oracle
+//!   for that route can exist. Diffing the reimplemented comparison is what is
+//!   left, and it is enough.
+//!
+//! Both were checked by mutation (`is_msbuild_true` reverted to
+//! `eq_ignore_ascii_case("true")`): the first stays green, the second reports
+//! 54 divergences. A differential that cannot fail is worse than none, because
+//! it reads as coverage.
 
 mod common;
 
@@ -97,7 +122,40 @@ fn f(name: &str, body: String) -> (String, String) {
     (name.to_string(), body)
 }
 
+/// Gate values for `ImportDirectoryBuildProps`, as `(case name, value)`.
+///
+/// See [`the_directory_build_props_gate_vocabulary_is_exact_or_declined`] for
+/// why the sweep targets the *props* gate as a **global**, and why sweeping the
+/// targets gate instead cannot see the defect it exists for.
+///
+/// The alphabet is MSBuild's boolean vocabulary, its negations, its near-misses
+/// (`0`/`1`, which `==` does *not* admit as booleans), and the whitespace
+/// spellings — blank compares equal to empty, while a padded `" true "` does
+/// not compare true.
+const GATE_VALUES: &[(&str, &str)] = &[
+    ("gate-true", "true"),
+    ("gate-TRUE", "TRUE"),
+    ("gate-on", "on"),
+    ("gate-ON", "ON"),
+    ("gate-yes", "yes"),
+    ("gate-bang-false", "!false"),
+    ("gate-bang-off", "!off"),
+    ("gate-bang-no", "!no"),
+    ("gate-false", "false"),
+    ("gate-off", "off"),
+    ("gate-no", "no"),
+    ("gate-bang-true", "!true"),
+    ("gate-zero", "0"),
+    ("gate-one", "1"),
+    ("gate-double-bang", "!!true"),
+    ("gate-padded-true", " true "),
+    ("gate-blank", "   "),
+    ("gate-empty", ""),
+    ("gate-nonsense", "nonsense"),
+];
+
 /// The case list. Each is a documented MSBuild hook or a combination of them.
+/// The gate's *value* axis is swept separately, over [`GATE_VALUES`].
 fn cases() -> Vec<Case> {
     let dbt = tracer("dbt", "");
     vec![
@@ -290,6 +348,280 @@ fn evaluate(
         .project(PROJECT, &["Trace".to_string()], Some(&project_path), &[])
         .map(|t| t["Trace"].clone());
     (ours, theirs, project_path.display().to_string())
+}
+
+/// The project document the gate sweep uses. Unlike [`PROJECT`] the body
+/// appends to `Trace` itself, so the property exists on both sides whether or
+/// not `Directory.Build.props` was imported — the two outcomes are then
+/// `";dbp;body"` and `";body"` rather than a value-versus-absent comparison,
+/// which would confuse "not imported" with "declined".
+const GATE_PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Trace>$(Trace);body</Trace>
+  </PropertyGroup>
+</Project>
+"#;
+
+/// Evaluate the gate sweep's document under one global gate value.
+fn evaluate_gate(oracle: &mut Oracle, dir: &Path, value: &str) -> (Option<String>, Option<String>) {
+    if dir.exists() {
+        std::fs::remove_dir_all(dir).expect("clear case directory");
+    }
+    std::fs::create_dir_all(dir).expect("create case directory");
+    std::fs::write(dir.join("Directory.Build.props"), tracer("dbp", ""))
+        .expect("write Directory.Build.props");
+    let project_path = dir.join("Demo.fsproj");
+    std::fs::write(&project_path, GATE_PROJECT).expect("write project");
+
+    let dotnet_root = common::dotnet_root_from_env();
+    let (user_dotnet_root, overrides_present) = common::workload_env_from_process();
+    let resolver = |name: &str| {
+        resolve_sdk(
+            &dotnet_root,
+            None,
+            name,
+            None,
+            None,
+            &workloads::WorkloadEnvironment {
+                user_dotnet_root: user_dotnet_root.as_deref(),
+                overrides_present,
+                global_json_pins_workload_set: false,
+            },
+        )
+    };
+    let mut extras = HashMap::new();
+    extras.insert("ImportDirectoryBuildProps".to_string(), value.to_string());
+    let parsed = parse_fsproj_with_imports(
+        GATE_PROJECT,
+        &project_path,
+        &extras,
+        &common::oracle_environment(),
+        Some(&resolver as &borzoi_msbuild::SdkResolver<'_>),
+        None,
+    )
+    .expect("well-formed XML parses");
+
+    let ours = if parsed.property_provenance_untrusted("Trace") {
+        None
+    } else {
+        parsed.properties.get("Trace").cloned()
+    };
+    let globals = [("ImportDirectoryBuildProps".to_string(), value.to_string())];
+    let theirs = oracle
+        .project(
+            GATE_PROJECT,
+            &["Trace".to_string()],
+            Some(&project_path),
+            &globals,
+        )
+        .map(|t| t["Trace"].clone());
+    (ours, theirs)
+}
+
+/// Certain-implies-exact over MSBuild's **boolean vocabulary** at the
+/// `Directory.Build.props` gate, through a whole SDK-resolved evaluation.
+///
+/// ## What this does and does not cover
+///
+/// It covers the composition — gate value, rediscovery suppression, splice
+/// position, chain ownership — across the vocabulary rather than the two
+/// literal spellings the hook cases above use.
+///
+/// It does **not** cover `should_import_default_true`, the walker's own
+/// reimplementation of the gate, and cannot: with the SDK resolved, a closed
+/// hand-rolled gate simply stops suppressing the chain's own rediscovery
+/// import, so the real `Microsoft.Common.props` condition runs through
+/// `condition.rs` — which models the vocabulary correctly — and the two errors
+/// cancel exactly. Confirmed by mutation: replacing the predicate with
+/// `eq_ignore_ascii_case("true")` leaves this test green.
+///
+/// That is not a gap to be widened away. The predicate decides the import
+/// precisely when the SDK chain is *absent*, and a project whose SDK does not
+/// resolve is one the real MSBuild cannot evaluate either — so there is no
+/// whole-project oracle for the route that uses it, in principle and not just
+/// here. It is diffed directly instead, by
+/// [`the_gate_predicate_matches_msbuild_equality`].
+#[test]
+fn the_directory_build_props_gate_vocabulary_is_exact_or_declined() {
+    let mut oracle = Oracle::spawn();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path().join("proj");
+    let mut committed = 0usize;
+    let mut imported = 0usize;
+    let mut divergences = Vec::new();
+
+    for (name, value) in GATE_VALUES {
+        let (ours, theirs) = evaluate_gate(&mut oracle, &dir, value);
+        match (&ours, &theirs) {
+            (Some(ours), None) => divergences.push(format!(
+                "  {name} ({value:?}): MSBuild rejects the project, we committed {ours:?}"
+            )),
+            (Some(ours), Some(theirs)) if ours != theirs => {
+                committed += 1;
+                divergences.push(format!(
+                    "  {name} ({value:?}): ours {ours:?}  msbuild {theirs:?}"
+                ));
+            }
+            (Some(ours), Some(_)) => {
+                committed += 1;
+                if ours.contains("dbp") {
+                    imported += 1;
+                }
+            }
+            (None, _) => {}
+        }
+    }
+    eprintln!("directory-build props gate: {committed} committed, {imported} of them imported");
+
+    assert!(
+        divergences.is_empty(),
+        "certain-implies-exact violated in {} of the gate values:\n{}",
+        divergences.len(),
+        divergences.join("\n")
+    );
+    // Anti-vacuity, both directions. Declining every value satisfies the
+    // contract, and so does agreeing on a sweep where the gate never opens
+    // (or never closes) — the alphabet is only doing work if both outcomes
+    // are actually represented.
+    assert_eq!(
+        committed,
+        GATE_VALUES.len(),
+        "every gate value must be committed; declining hides the comparison"
+    );
+    assert!(
+        imported > 0 && imported < committed,
+        "the sweep must contain both opened and closed gates, got {imported} \
+         imported of {committed}"
+    );
+}
+
+/// A gate value drawn from the boolean vocabulary's neighbourhood: the words
+/// themselves under random casing, `!`-negations to arbitrary depth, padding,
+/// and near-miss junk built from the same letters. Hand-picking here is what
+/// let the defect through in the first place — `on`/`yes` are only obvious
+/// once you already know the answer.
+fn gen_gate_value(rng: &mut common::SplitMix64) -> String {
+    const WORDS: &[&str] = &["true", "false", "on", "off", "yes", "no", "0", "1", ""];
+    const LETTERS: &[char] = &[
+        't', 'r', 'u', 'e', 'f', 'a', 'l', 's', 'o', 'n', 'y', 'O', 'N',
+    ];
+    let mut value = if rng.below(4) == 0 {
+        // Junk over the same letters: catches a predicate that accepts a
+        // prefix, a substring, or anything else short of the whole word.
+        (0..1 + rng.below(5))
+            .map(|_| *rng.pick(LETTERS))
+            .collect::<String>()
+    } else {
+        let word = *rng.pick(WORDS);
+        // Random casing — the comparison is case-insensitive, so every
+        // spelling must agree with the canonical one.
+        word.chars()
+            .map(|c| {
+                if rng.below(2) == 0 {
+                    c.to_ascii_uppercase()
+                } else {
+                    c
+                }
+            })
+            .collect::<String>()
+    };
+    for _ in 0..rng.below(3) {
+        value.insert(0, '!');
+    }
+    match rng.below(8) {
+        0 => value.insert(0, ' '),
+        1 => value.push(' '),
+        _ => {}
+    }
+    value
+}
+
+/// Diff the walker's gate predicate directly against MSBuild's `==`.
+///
+/// This is the gate that catches the defect
+/// [`the_directory_build_props_gate_vocabulary_is_exact_or_declined`]
+/// structurally cannot (see its docs): `should_import_default_true` decides the
+/// import only when the SDK chain is absent, and a project with no resolvable
+/// SDK has no whole-project oracle. What *is* diffable is the comparison being
+/// reimplemented — `'$(Prop)' == 'true'`, the literal condition text from
+/// `Microsoft.Common.props` — so the predicate is checked against the real
+/// evaluator on that condition, value by value.
+///
+/// The obligation is equality, not implication. A gate predicate that is
+/// merely *conservative* is not safe in either direction here: reading true as
+/// false loses the file's properties and items, and reading false as true
+/// invents them, and neither shows up as an uncertainty.
+#[test]
+fn the_gate_predicate_matches_msbuild_equality() {
+    const CONDITION: &str = "'$(X)' == 'true'";
+    let mut oracle = Oracle::spawn();
+    let mut rng = common::SplitMix64(0x9a7d_e1f0_4c33_b105);
+    let mut divergences = Vec::new();
+    let mut seen: HashMap<String, ()> = HashMap::new();
+    let mut opened: Vec<String> = Vec::new();
+    let mut closed = 0usize;
+
+    // The vocabulary's own spellings, then a generated sweep of its
+    // neighbourhood.
+    let fixed = GATE_VALUES.iter().map(|(_, v)| (*v).to_string());
+    let generated = (0..4_000).map(|_| gen_gate_value(&mut rng));
+    for value in fixed.chain(generated.collect::<Vec<_>>()) {
+        if seen.insert(value.clone(), ()).is_some() {
+            continue;
+        }
+        let ours = borzoi_msbuild::test_support::is_msbuild_true(&value);
+        let props = [("X".to_string(), value.clone())];
+        let Some(theirs) = oracle.eval(CONDITION, &props) else {
+            // A quoted comparison over a property is always legal MSBuild, so
+            // a rejection means the harness fed something it should not have.
+            divergences.push(format!("  {value:?}: MSBuild rejected {CONDITION}"));
+            continue;
+        };
+        if ours != theirs {
+            divergences.push(format!("  {value:?}: ours {ours}, msbuild {theirs}"));
+        }
+        if theirs {
+            opened.push(value.clone());
+        } else {
+            closed += 1;
+        }
+    }
+    let total = opened.len() + closed;
+    eprintln!(
+        "gate predicate: {total} distinct values, {} true, {closed} false",
+        opened.len()
+    );
+
+    assert!(
+        divergences.is_empty(),
+        "the gate predicate disagrees with MSBuild `==` on {} of {total} values:\n{}",
+        divergences.len(),
+        divergences
+            .iter()
+            .take(40)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Anti-vacuity. A generator that only ever produced junk would agree
+    // trivially, since everything outside the vocabulary is false — so require
+    // that the sweep reaches truths *beyond the literal word*, which is
+    // precisely the region a string-equality predicate gets wrong. Stated as
+    // coverage of the region rather than as a count: the true-space here is
+    // small and closed (~70 distinct strings, being the vocabulary under
+    // arbitrary casing and `!`-negation), so any count floor would sit just
+    // under a ceiling the generator cannot exceed.
+    let beyond_the_literal_word: Vec<&String> = opened
+        .iter()
+        .filter(|v| !v.eq_ignore_ascii_case("true"))
+        .collect();
+    assert!(
+        !beyond_the_literal_word.is_empty(),
+        "every value that opened the gate was a spelling of \"true\" — the \
+         sweep never reached `on`/`yes`/`!false`, so it cannot see the defect \
+         it exists for"
+    );
 }
 
 /// Certain-implies-exact over the whole case list, reported as a worklist.

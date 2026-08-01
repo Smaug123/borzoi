@@ -8300,6 +8300,46 @@ fn inline_cpm_applies_central_version_and_clears_uncertainty() {
 }
 
 #[test]
+fn inline_cpm_reads_the_opt_in_flags_as_msbuild_booleans() {
+    // `NuGet.targets` enables Central Package Management under
+    // `'$(ManagePackageVersionsCentrally)' == 'true' AND
+    //  '$(CentralPackageVersionsFileImported)' == 'true'` — MSBuild `==`,
+    // so every boolean spelling opts in, not just the literal word
+    // (`'$(X)' == 'true'` is true for `on`/`yes`/`!false`; oracle-pinned
+    // 2026-08-01, and see `msbuild_gate_boolean_diff`).
+    //
+    // Reading these with a bare `== "true"` makes an opted-in project look
+    // opted-out, and the failure is silent in the dangerous direction: the
+    // versionless `<PackageReference>` below never gets its
+    // `package_references_uncertain` flag, so a version the real restore
+    // takes from `<PackageVersion>` is published as certainly absent.
+    for (manage, imported) in [("on", "true"), ("true", "yes"), ("!false", "!false")] {
+        let src = format!(
+            r#"<Project>
+  <PropertyGroup>
+    <CentralPackageVersionsFileImported>{imported}</CentralPackageVersionsFileImported>
+    <ManagePackageVersionsCentrally>{manage}</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" />
+  </ItemGroup>
+</Project>"#
+        );
+        let p = parse(&src);
+        assert_eq!(
+            only_package(&p).version.as_deref(),
+            Some("13.0.1"),
+            "CPM is on for ManagePackageVersionsCentrally={manage:?} / \
+             CentralPackageVersionsFileImported={imported:?}, so the central \
+             version must reach the versionless reference",
+        );
+    }
+}
+
+#[test]
 fn inline_cpm_tainted_manage_flag_stays_uncertain() {
     let src = r#"<Project>
   <PropertyGroup>
