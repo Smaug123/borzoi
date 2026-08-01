@@ -76,6 +76,31 @@ impl SyntaxRecovery {
         )
     }
 
+    /// The reading to use when the language version the tree was parsed
+    /// against is a **guess** rather than a known fact — an untrusted
+    /// `LangVersion` provenance, or a file with no project at all.
+    ///
+    /// A version-gated legality check reports a feature error and parses the
+    /// construct anyway, so a guess landing on the wrong side of a feature
+    /// threshold turns a rejected file into a clean-looking one *from the same
+    /// tree*: an `#elif` is an error at F# 10 and silent at preview, and a
+    /// nullness annotation likewise across F# 9. Reading the guess's empty
+    /// error list as proof would then license exactly the commitment this type
+    /// exists to withhold.
+    ///
+    /// So the parse is asked whether its diagnostics depend on the version at
+    /// all. Almost no file's do, which is why this is a per-file question
+    /// rather than a blanket [`Unretained`](Self::Unretained) for every
+    /// untrusted project — and untrusted is the *normal* state, since every
+    /// real SDK project's conditional `LangVersion` default taints provenance.
+    pub fn of_guessed_version(parse: &Parse) -> Self {
+        if parse.diagnostics_depend_on_language_version {
+            SyntaxRecovery::Unretained
+        } else {
+            SyntaxRecovery::of(parse)
+        }
+    }
+
     /// Whether the declaration enclosing `node` parsed with no recovery — the
     /// question a consumer must answer *yes* to before committing anything it
     /// read out of that declaration's syntax.

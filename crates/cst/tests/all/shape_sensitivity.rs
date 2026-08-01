@@ -93,6 +93,15 @@ fn snippet() -> impl Strategy<Value = String> {
     let line = (
         0usize..6,
         prop_oneof![
+            // Version-*gated* lines, so the diagnostics property below has a
+            // subject: `#elif` is a legality gate at F# 11 and a nullness
+            // annotation one at F# 9. Both leave the tree untouched, which is
+            // exactly why the shape flag cannot stand in for the diagnostics
+            // one.
+            Just("#if FOO"),
+            Just("#elif BAR"),
+            Just("#endif"),
+            Just("let g (x : System.String | null) = 1"),
             Just("let x = 1"),
             Just("let f () ="),
             Just("if true then"),
@@ -133,6 +142,60 @@ proptest! {
                 tree_shape(&v7),
                 tree_shape(&v10),
                 "an unset flag must prove the tree is version-invariant"
+            );
+        }
+    }
+}
+
+proptest! {
+    /// The diagnostics counterpart of [`unset_flag_proves_version_invariance`],
+    /// and the property the LSP's recovery reading trusts when a project's
+    /// `LangVersion` provenance is unknowable: an unset
+    /// `diagnostics_depend_on_language_version` must **prove** the reported
+    /// errors and warnings are identical at every language version.
+    ///
+    /// This is the guard the shape flag cannot be: a legality gate reports its
+    /// feature error and then parses the construct anyway, so the tree is
+    /// byte-identical across the threshold while the diagnostics are not.
+    /// Checking every version rather than the two extremes the flag itself
+    /// compares keeps the property independent of the monotonicity argument
+    /// that justifies looking at only two.
+    #[test]
+    fn unset_diagnostics_flag_proves_version_invariance(src in snippet()) {
+        const VERSIONS: &[LanguageVersion] = &[
+            LanguageVersion::V4_6,
+            LanguageVersion::V5_0,
+            LanguageVersion::V7_0,
+            LanguageVersion::V8_0,
+            LanguageVersion::V9_0,
+            LanguageVersion::V10_0,
+            LanguageVersion::V11_0,
+            LanguageVersion::Preview,
+        ];
+        let baseline = parse_at(&src, LanguageVersion::DEFAULT);
+        if baseline.diagnostics_depend_on_language_version {
+            return Ok(());
+        }
+        for &lang in VERSIONS {
+            let p = parse_at(&src, lang);
+            prop_assert_eq!(
+                &p.errors,
+                &baseline.errors,
+                "unset flag must prove the errors are version-invariant, but {:?} differs at {}",
+                src,
+                lang
+            );
+            prop_assert_eq!(
+                &p.warnings,
+                &baseline.warnings,
+                "unset flag must prove the warnings are version-invariant, but {:?} differs at {}",
+                src,
+                lang
+            );
+            prop_assert_eq!(
+                p.diagnostics_depend_on_language_version,
+                baseline.diagnostics_depend_on_language_version,
+                "every run must reach the same verdict"
             );
         }
     }

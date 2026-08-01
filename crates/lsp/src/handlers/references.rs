@@ -360,7 +360,7 @@ fn single_file_references(
     let Some(parse) = parse_with_symbols(text, &symbols, lang) else {
         return empty("parse_error");
     };
-    let recovery = SyntaxRecovery::of(&parse);
+    let recovery = SyntaxRecovery::of_guessed_version(&parse);
     let Some(file) = ImplFile::cast(parse.root) else {
         return empty("unsupported_file");
     };

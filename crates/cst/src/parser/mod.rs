@@ -207,6 +207,25 @@ pub struct Parse {
     /// diagnostics can still differ by version (FS0058 severity, `#elif`
     /// legality) — only the *shape* guarantee is claimed.
     pub shape_depends_on_language_version: bool,
+    /// Whether the *diagnostics* in [`Self::errors`] / [`Self::warnings`]
+    /// depend on [`Self::lang`] — the counterpart to
+    /// [`Self::shape_depends_on_language_version`], which answers the same
+    /// question about the tree.
+    ///
+    /// A version-gated legality check reports a feature error and then parses
+    /// the construct anyway, so it changes the diagnostics **without touching a
+    /// byte of the tree**. A consumer that reads "no errors here" as proof the
+    /// source is well-formed therefore cannot rely on the shape flag: an
+    /// `#elif` under a guessed F# 10 is an error and under a guessed preview is
+    /// silent, from the same green nodes.
+    ///
+    /// `false` **proves** the diagnostic set is identical at every
+    /// [`LanguageVersion`]. It is computed exactly rather than approximated —
+    /// every version-gated producer is a pure function of data the parse
+    /// already holds, so both extremes are evaluated and compared, with no
+    /// second parse. Each gate is a monotone threshold in the version, so
+    /// agreement at the extremes implies agreement everywhere between.
+    pub diagnostics_depend_on_language_version: bool,
 }
 
 /// A parse-time problem. `span` is a byte range into the input source.
@@ -393,6 +412,9 @@ fn parse_inner(
             warnings: Vec::new(),
             lang,
             shape_depends_on_language_version,
+            // A depth breach collapses the diagnostics to one characterised
+            // error, which no legality gate contributes to.
+            diagnostics_depend_on_language_version: false,
         };
     }
     // Build the root now: the node-surface gate below walks it for typed-node
@@ -408,6 +430,24 @@ fn parse_inner(
     errors.extend(tab_errors);
     errors.extend(langversion_errors);
     errors.extend(node_surface_diagnostics(&root, lang));
+    // Version-invariance of the diagnostic set, decided by evaluating the
+    // gated producers at both extremes of the version ladder. Both are pure
+    // functions of data already in hand (`elif_directives` is a side-channel
+    // the driver recorded; the node-surface gate walks the finished tree), so
+    // this costs two cheap re-evaluations rather than a re-parse.
+    //
+    // An offside diagnostic resolves both its *severity* (the F# 8
+    // strict-indentation boundary decides error vs warning) and its message
+    // text ("set the language version to F# 7") from `lang`, so its presence
+    // alone makes the set version-dependent. That arm is exact rather than an
+    // over-approximation, and it is the one that fires: 189 of the 5,202 `.fs`
+    // files in the pinned corpus (3.6%) set this flag, nearly all through
+    // indentation rather than a legality gate.
+    let diagnostics_depend_on_language_version = !offside_diagnostics.is_empty()
+        || langversion_diagnostics(&elif_directives, LanguageVersion::MIN)
+            != langversion_diagnostics(&elif_directives, LanguageVersion::MAX)
+        || node_surface_diagnostics(&root, LanguageVersion::MIN)
+            != node_surface_diagnostics(&root, LanguageVersion::MAX);
     // Warnings come from the productions and (once the emission stages land) the
     // lex-filter's offside diagnostics; directive/tab/langversion problems are
     // all errors.
@@ -440,6 +480,7 @@ fn parse_inner(
         warnings,
         lang,
         shape_depends_on_language_version,
+        diagnostics_depend_on_language_version,
     }
 }
 

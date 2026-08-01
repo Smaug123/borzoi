@@ -183,3 +183,88 @@ proptest! {
         prop_assert_eq!(elif_diagnostics(&parse_at(&src, LanguageVersion::Preview)), 0);
     }
 }
+
+/// Whether the *diagnostics* this parse reports could differ at another
+/// language version — the counterpart to
+/// [`Parse::shape_depends_on_language_version`](borzoi_cst::parser::Parse::shape_depends_on_language_version),
+/// which answers the same question about the tree.
+///
+/// A consumer that reads "this file reported no errors" as proof a declaration
+/// parsed cleanly needs it: the language version can be a *guess* (an untrusted
+/// `LangVersion` provenance, which is every real SDK project), and a guess that
+/// lands on the wrong side of a feature threshold turns a rejected file into a
+/// clean-looking one **without changing the tree at all** — so the shape flag
+/// cannot see it.
+mod diagnostics_version_dependence {
+    use borzoi_cst::language_version::LanguageVersion;
+    use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+    use std::collections::HashSet;
+
+    fn parse_at(source: &str, lang: LanguageVersion) -> borzoi_cst::parser::Parse {
+        parse_with_options(
+            source,
+            ParseOptions {
+                file_kind: FileKind::Impl,
+                symbols: &HashSet::new(),
+                lang,
+            },
+        )
+    }
+
+    /// The motivating case: `#elif` needs F# 11, so it errors at 10 and is clean
+    /// at preview — with a byte-identical tree, and the shape flag `false`.
+    #[test]
+    fn an_elif_makes_the_diagnostics_version_dependent() {
+        let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
+        let old = parse_at(source, LanguageVersion::V10_0);
+        let new = parse_at(source, LanguageVersion::Preview);
+
+        assert_eq!(
+            old.root.green(),
+            new.root.green(),
+            "the legality gate never alters the tree"
+        );
+        assert!(
+            !old.shape_depends_on_language_version,
+            "so the shape flag cannot be the signal"
+        );
+        assert!(!old.errors.is_empty() && new.errors.is_empty());
+        assert!(old.diagnostics_depend_on_language_version);
+        assert!(new.diagnostics_depend_on_language_version);
+    }
+
+    /// A nullness annotation is gated the same way, through the *node-surface*
+    /// producer rather than the directive side-channel — so the flag must not be
+    /// spelled "contains an `#elif`".
+    #[test]
+    fn a_nullness_annotation_makes_the_diagnostics_version_dependent() {
+        let source = "module M\nlet f (x : System.String | null) = 1\n";
+        let old = parse_at(source, LanguageVersion::V8_0);
+        let new = parse_at(source, LanguageVersion::Preview);
+        assert_ne!(
+            old.errors.is_empty(),
+            new.errors.is_empty(),
+            "the nullness surface gate must actually fire across this boundary"
+        );
+        assert!(old.diagnostics_depend_on_language_version);
+        assert!(new.diagnostics_depend_on_language_version);
+    }
+
+    /// The common case, and the reason this is a flag rather than a blanket
+    /// refusal: ordinary code reports the same diagnostics at every version, so
+    /// a consumer may trust the reading even when the version is a guess.
+    #[test]
+    fn ordinary_source_is_version_invariant() {
+        for source in [
+            "module M\nlet v : System.String = failwith \"\"\n",
+            "module M\nlet v : System.String. = failwith \"\"\n",
+            "module M\n#if FOO\nlet a = 1\n#else\nlet a = 2\n#endif\n",
+        ] {
+            let p = parse_at(source, LanguageVersion::Preview);
+            assert!(
+                !p.diagnostics_depend_on_language_version,
+                "{source:?} must be version-invariant"
+            );
+        }
+    }
+}

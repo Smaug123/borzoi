@@ -162,7 +162,7 @@ pub fn handle(state: &mut State, params: WorkspaceSymbolParams) -> Option<Worksp
         let Some(parse) = parse_with_symbols(&src.text, &symbols, lang) else {
             continue;
         };
-        let recovery = SyntaxRecovery::of(&parse);
+        let recovery = SyntaxRecovery::of_guessed_version(&parse);
         let Some(file) = ImplFile::cast(parse.root) else {
             continue;
         };

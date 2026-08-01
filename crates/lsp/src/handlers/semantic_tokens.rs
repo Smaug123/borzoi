@@ -466,7 +466,7 @@ fn single_file_tokens(state: &mut State, uri: &Url) -> Option<Vec<SemanticToken>
     let symbols = state.symbols_for_uri(uri);
     let lang = state.lang_version_for_uri(uri);
     let parse = parse_with_symbols(&text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of(&parse);
+    let recovery = SyntaxRecovery::of_guessed_version(&parse);
     let file = ImplFile::cast(parse.root)?;
     let resolved = resolve_file(
         &file,
@@ -716,7 +716,7 @@ mod tests {
     fn qualified_leaf_and_head_are_both_classified() {
         let text = "type Color = Red = 0 | Green = 1\nlet c = Color.Red\n";
         let parse = borzoi_cst::parser::parse(text);
-        let recovery = SyntaxRecovery::of(&parse);
+        let recovery = SyntaxRecovery::of_guessed_version(&parse);
         let file = ImplFile::cast(parse.root).expect("impl file");
         let resolved = resolve_file(
             &file,

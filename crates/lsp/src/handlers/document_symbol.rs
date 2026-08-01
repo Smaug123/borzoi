@@ -37,7 +37,7 @@ pub fn handle(state: &mut State, params: DocumentSymbolParams) -> Option<Documen
     let symbols = state.symbols_for_uri(&uri);
     let lang = state.lang_version_for_uri(&uri);
     let parse = parse_with_symbols(&text, &symbols, lang)?;
-    let recovery = SyntaxRecovery::of(&parse);
+    let recovery = SyntaxRecovery::of_guessed_version(&parse);
     let file = ImplFile::cast(parse.root)?;
     let exports = file_export_symbols(&text, &file, &recovery);
 

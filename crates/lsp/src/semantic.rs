@@ -1333,7 +1333,16 @@ fn build_parses(
         }
         // Before `parse.root` is moved into the `SourceFile`: the errors and the
         // tree describe the same parse, and only here are both still in hand.
-        let recovery = SyntaxRecovery::of(&parse);
+        //
+        // Under untrusted `LangVersion` provenance the version is a guess, and
+        // a guess cannot prove a clean read of a file whose diagnostics are
+        // version-gated — the tree is identical either side of the threshold,
+        // so the shape gate above never fires on it.
+        let recovery = if lang_version_untrusted {
+            SyntaxRecovery::of_guessed_version(&parse)
+        } else {
+            SyntaxRecovery::of(&parse)
+        };
         let source_file = if signature {
             match SigFile::cast(parse.root) {
                 Some(sig) => SourceFile::Sig(sig),
@@ -3439,6 +3448,65 @@ mod tests {
             "a clean file must prove itself clean on a cold parse"
         );
         assert_eq!(hit, cold, "the cache hit must serve the same reading");
+    }
+
+    /// A guessed language version cannot prove a clean read of a file whose
+    /// diagnostics are version-gated.
+    ///
+    /// `#elif` is an error below F# 11 and silent at or above it, from a
+    /// byte-identical tree — so the version-boundary gate, which compares tree
+    /// *shape*, never fires and the guessed parse records `Reported([])`. Read
+    /// as proof, that licenses publishing a type for an annotation the real
+    /// build rejects. The file must read `Unretained` instead.
+    #[test]
+    fn a_version_gated_diagnostic_is_unretained_under_a_guessed_version() {
+        use borzoi_cst::language_version::LanguageVersion;
+        use borzoi_cst::parser::{FileKind, ParseOptions, parse_with_options};
+
+        // The premise, restated locally so this test fails loudly if the gate
+        // ever stops being version-dependent rather than passing vacuously.
+        let source = "module M\n#if FOO\nlet a = 1\n#elif BAR\nlet a = 2\n#endif\n";
+        let parse = |lang| {
+            parse_with_options(
+                source,
+                ParseOptions {
+                    file_kind: FileKind::Impl,
+                    symbols: &HashSet::new(),
+                    lang,
+                },
+            )
+        };
+        let guessed = parse(LanguageVersion::Preview);
+        assert!(guessed.errors.is_empty(), "clean at the guessed version");
+        assert!(
+            !parse(LanguageVersion::V10_0).errors.is_empty(),
+            "and rejected one threshold down"
+        );
+        assert_eq!(
+            guessed.root.green(),
+            parse(LanguageVersion::V10_0).root.green(),
+            "with the same tree, which is why the shape gate cannot see it"
+        );
+
+        assert_eq!(
+            SyntaxRecovery::of_guessed_version(&guessed),
+            SyntaxRecovery::Unretained,
+            "a guessed version proves nothing about a version-gated file"
+        );
+        // The contrast: ordinary source is version-invariant, so a guess is
+        // still proof and the feature stays on for it.
+        let ordinary = parse_with_options(
+            "module M\nlet v : System.String = failwith \"\"\n",
+            ParseOptions {
+                file_kind: FileKind::Impl,
+                symbols: &HashSet::new(),
+                lang: LanguageVersion::Preview,
+            },
+        );
+        assert_eq!(
+            SyntaxRecovery::of_guessed_version(&ordinary),
+            SyntaxRecovery::Reported([].into()),
+        );
     }
 
     #[test]
