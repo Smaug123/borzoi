@@ -826,17 +826,12 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
     let Some(include) = node.attribute("Include") else {
         return;
     };
-    // `<Link>` metadata is meaningful for Compile items (it controls
-    // the path shown in IDEs / solution explorers); MSBuild does not
-    // treat it as significant for `<ProjectReference>`, and exposing
-    // a `Some(...)` link there would invite consumers to use a value
-    // that has no effect on a real build. Conversely
     // `ReferenceOutputAssembly` / `ExcludeAssets` shape what a
     // `<ProjectReference>` contributes to the consumer's reference set and
-    // are meaningless on Compile items.
+    // are meaningless on Compile items, which carry no modelled metadata:
+    // nothing downstream reads anything but their kind, path and order.
     let metadata = match kind {
         ItemKind::ProjectReference => ItemMetadata {
-            link: None,
             reference_output_assembly: resolve_string_metadata(
                 node,
                 state,
@@ -849,28 +844,13 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
                 node, state,
             ),
         },
-        ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter => {
-            // `<Link>` controls only the display path, never which file
-            // compiles — clear `compile_context` so an undefined property in
-            // the link doesn't mark the (already-known) Compile item uncertain.
-            let saved = state.compile_context;
-            state.compile_context = false;
-            // Display-only metadata: an Unknown resolution degrades to "no
-            // link" rather than poisoning anything (ResolvedItem::link docs).
-            let link = match resolve_string_metadata(node, state, "Link") {
-                ItemMetadataValue::Known(value) => value,
-                ItemMetadataValue::Unknown => None,
-            };
-            state.compile_context = saved;
-            ItemMetadata {
-                link,
-                reference_output_assembly: ItemMetadataValue::ABSENT,
-                exclude_assets: ItemMetadataValue::ABSENT,
-                include_assets: ItemMetadataValue::ABSENT,
-                private_assets: ItemMetadataValue::ABSENT,
-                unmodelled_reference_metadata: false,
-            }
-        }
+        ItemKind::Compile | ItemKind::CompileBefore | ItemKind::CompileAfter => ItemMetadata {
+            reference_output_assembly: ItemMetadataValue::ABSENT,
+            exclude_assets: ItemMetadataValue::ABSENT,
+            include_assets: ItemMetadataValue::ABSENT,
+            private_assets: ItemMetadataValue::ABSENT,
+            unmodelled_reference_metadata: false,
+        },
     };
     // Substitute $(...) FIRST, then split on ';'. Property values are
     // allowed to be semicolon-delimited lists in MSBuild, so
@@ -912,7 +892,6 @@ fn walk_item_child_inner(node: Node<'_, '_>, kind: ItemKind, state: &mut State<'
 /// Per-element item metadata, resolved once and copied onto every
 /// [`ResolvedItem`] the element's `Include` expands to.
 struct ItemMetadata {
-    link: Option<String>,
     reference_output_assembly: ItemMetadataValue,
     exclude_assets: ItemMetadataValue,
     include_assets: ItemMetadataValue,
@@ -1950,8 +1929,8 @@ fn resolve_exclude_set(node: Node<'_, '_>, state: &mut State<'_>) -> HashSet<Str
 
 /// Read one item metadata value — a `Name="..."` attribute or a
 /// `<Name>...</Name>` child element — with `$(…)` substitution applied and
-/// surrounding whitespace trimmed. Unlike `<Link>`, no path normalisation:
-/// version and asset-list strings are opaque to this crate.
+/// surrounding whitespace trimmed. No path normalisation is applied: version
+/// and asset-list strings are opaque to this crate.
 ///
 /// The private return type distinguishes "absent, inherit source-item
 /// metadata" from "present but empty/unresolvable, clear source-item metadata".
@@ -2642,7 +2621,6 @@ fn route_item_through_resolver(
             ResolvedItem {
                 kind,
                 include: path,
-                link: metadata.link.clone(),
                 reference_output_assembly: metadata.reference_output_assembly.clone(),
                 exclude_assets: metadata.exclude_assets.clone(),
                 include_assets: metadata.include_assets.clone(),
@@ -2727,7 +2705,6 @@ fn push_include_entry(
         ResolvedItem {
             kind,
             include: path,
-            link: metadata.link.clone(),
             reference_output_assembly: metadata.reference_output_assembly.clone(),
             exclude_assets: metadata.exclude_assets.clone(),
             include_assets: metadata.include_assets.clone(),
@@ -3031,11 +3008,10 @@ pub(super) fn item_group_has_package_child(node: Node<'_, '_>) -> bool {
         .any(|c| package_item_kind_for_element(c).is_some())
 }
 
-/// Resolve one string-valued item metadatum (`<Link>`,
-/// `<ReferenceOutputAssembly>`, `<ExcludeAssets>`, …) from either an
-/// attribute on the item or a child element with text content. In either
-/// form, $(...) substitution applies —
-/// `Link="$(Configuration)/$(MSBuildProjectName).fs"` is legal MSBuild.
+/// Resolve one string-valued item metadatum (`<ReferenceOutputAssembly>`,
+/// `<ExcludeAssets>`, …) from either an attribute on the item or a child
+/// element with text content. In either form, $(...) substitution applies —
+/// `ExcludeAssets="$(Configuration)"` is legal MSBuild.
 ///
 /// MSBuild item-metadata semantics: names compare **case-insensitively**,
 /// the attribute form is the *first* assignment, and child elements are

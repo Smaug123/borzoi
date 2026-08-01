@@ -150,10 +150,7 @@ fn render_snapshot(project: &ParsedProject, project_dir: &Path) -> String {
             }
         };
         let path = to_forward_slashes(&rel);
-        match &item.link {
-            Some(link) => writeln!(out, "  {kind} {path} link={link}").unwrap(),
-            None => writeln!(out, "  {kind} {path}").unwrap(),
-        }
+        writeln!(out, "  {kind} {path}").unwrap();
     }
 
     writeln!(
