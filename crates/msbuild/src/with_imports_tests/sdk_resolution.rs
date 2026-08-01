@@ -371,8 +371,22 @@ fn sdk_directory_build_props_rediscovery_import_is_suppressed() {
     );
 }
 
+/// A chain that declares the `Directory.Build.targets` import point **owns the
+/// decision**, even when it has no discovery machinery behind it: the path
+/// property is never set, `Exists('')` is false, and nothing is imported.
+///
+/// The walker used to splice the file itself and suppress this import to avoid
+/// double-walking. It no longer owns that point — it walks `Sdk.targets` first
+/// so `Microsoft.Common.targets` can place the import where MSBuild places it —
+/// so the suppression is gone and this SDK's own (empty) import stands.
+///
+/// The expectation was checked against the real evaluator rather than derived
+/// from the new design: an SDK-less document explicitly importing a file with
+/// exactly this `<Import Project="$(DirectoryBuildTargetsPath)"
+/// Condition="Exists(…)"/>` and no discovery evaluates to no import at all on
+/// SDK 10.0.109, with a `Directory.Build.targets` sitting next to it.
 #[test]
-fn sdk_directory_build_targets_rediscovery_import_is_suppressed() {
+fn sdk_directory_build_targets_rediscovery_import_owns_the_decision() {
     let tmp = TempDir::new().unwrap();
     write_at(
         tmp.path(),
@@ -408,11 +422,11 @@ fn sdk_directory_build_targets_rediscovery_import_is_suppressed() {
             Err(SdkResolveError::NotFound)
         }
     });
-    let dir = canon(tmp.path());
     assert_eq!(
         paths_of(&result.items),
-        vec![dir.join("FromTargets.fs")],
-        "Directory.Build.targets should be walked by the explicit splice only; diagnostics: {:?}",
+        Vec::<std::path::PathBuf>::new(),
+        "this SDK declares the import point with nothing computing the path, so \
+         `Exists('')` is false and MSBuild imports nothing; diagnostics: {:?}",
         result.diagnostics,
     );
 }
@@ -574,7 +588,7 @@ fn sdk_directory_build_props_rediscovery_ignores_path_retargeted_by_sdk_props() 
 }
 
 #[test]
-fn sdk_directory_build_targets_rediscovery_ignores_path_retargeted_by_spliced_file() {
+fn sdk_directory_build_targets_import_point_owns_a_retargeted_path_too() {
     let tmp = TempDir::new().unwrap();
     write_at(
         tmp.path(),
@@ -622,11 +636,12 @@ fn sdk_directory_build_targets_rediscovery_ignores_path_retargeted_by_spliced_fi
             Err(SdkResolveError::NotFound)
         }
     });
-    let dir = canon(tmp.path());
     assert_eq!(
         paths_of(&result.items),
-        vec![dir.join("FromTargets.fs")],
-        "SDK rediscovery should not re-import a DirectoryBuildTargetsPath retargeted by the spliced file; diagnostics: {:?}",
+        Vec::<std::path::PathBuf>::new(),
+        "same shape with the path retargeted by the spliced props file: the \
+         chain still owns its import point, and nothing computed a path for it \
+         to import; diagnostics: {:?}",
         result.diagnostics,
     );
 }
