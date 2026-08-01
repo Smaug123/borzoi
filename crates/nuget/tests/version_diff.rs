@@ -12,7 +12,7 @@
 mod common;
 
 use borzoi_nuget::NuGetVersion;
-use common::{Oracle, SplitMix64, gen_version_string};
+use common::{COMPARATOR_POOL, Oracle, SplitMix64, gen_version_string};
 
 /// Hand-picked corners: every historically-fiddly shape gets a guaranteed
 /// seat regardless of what the generator happens to produce.
@@ -105,6 +105,7 @@ fn oracle_bool(v: &serde_json::Value, field: &str) -> bool {
 #[test]
 fn parse_and_compare_agree_with_oracle() {
     let mut inputs: Vec<String> = CORNERS.iter().map(|s| s.to_string()).collect();
+    inputs.extend(COMPARATOR_POOL.iter().map(|s| s.to_string()));
     let mut rng = SplitMix64(0x5eed_0001);
     for _ in 0..6000 {
         inputs.push(gen_version_string(&mut rng));
@@ -203,6 +204,26 @@ fn parse_and_compare_agree_with_oracle() {
     assert!(n > 1000, "generator degenerated: only {n} parseable inputs");
     let mut pairs: Vec<(usize, usize)> = (0..n - 1).map(|i| (i, i + 1)).collect();
     pairs.extend((0..n).map(|i| (i, (i * 7 + 13) % n)));
+
+    // Every pair from the comparator pool, exhaustively. `version_properties.rs`
+    // proves *our* comparator is a total order over that pool by checking all
+    // of its triples; pairwise agreement here carries the conclusion across —
+    // a comparator that agrees with a total order on every pair of a set is a
+    // total order on that set. That is the claim the resolver's
+    // `Iterator::max` over candidate versions depends on, and it cannot be
+    // made from the sampled pairs above, which never cover a set exhaustively.
+    let pool: Vec<usize> = COMPARATOR_POOL
+        .iter()
+        .map(|spelling| {
+            parsed
+                .iter()
+                .position(|(s, _)| s == spelling)
+                .unwrap_or_else(|| {
+                    panic!("comparator pool entry {spelling:?} did not parse on both sides")
+                })
+        })
+        .collect();
+    pairs.extend(pool.iter().flat_map(|&i| pool.iter().map(move |&j| (i, j))));
 
     for (i, j) in pairs {
         let (sa, va) = &parsed[i];
