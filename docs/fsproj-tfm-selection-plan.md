@@ -6,14 +6,13 @@
 > (the *assets-side* producer-TFM resolver) and
 > [`csharp-sidecar-plan.md`](completed/csharp-sidecar-plan.md).
 >
-> **Status:** implemented (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in).
-> The LSP now picks one entry TFM per project (first-declared) and threads it
-> coherently through both the parse (defines + Compile items, so multi-targeted
-> projects fold at all) and the assembly env (assets-target selection +
-> platform-suffix recovery for C# refs). One documented follow-up remains: **E7**
-> — the `.fsproj`-buffer diagnostics path stays deliberately TFM-unseeded (detail
-> under [Still to do](#still-to-do)). The E-decision IDs below are referenced from
-> code comments (`workspace.rs` E1/E2, `lib.rs` E4).
+> **Status:** implemented (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in;
+> E7 last). The LSP picks one entry TFM per project (first-declared) and threads
+> it coherently through the parse (defines + Compile items, so multi-targeted
+> projects fold at all), the assembly env (assets-target selection +
+> platform-suffix recovery for C# refs), and the `.fsproj`-buffer diagnostics.
+> The E-decision IDs below are referenced from code comments (`tfm_policy.rs`
+> E1/E2/E7, `lib.rs` E4).
 
 ## Background (reference)
 
@@ -46,7 +45,8 @@ Settled decisions (IDs cited from code):
 - **E1** — Policy: serve the **first-declared** TFM (`target_frameworks()` returns
   document order). Deterministic and guess-free; matches VS/Ionide design-time
   convention. Override deferred (see [Out of scope](#out-of-scope)).
-- **E2** — Two-pass `evaluate_project` (`select_target_framework`): parse
+- **E2** — Two-pass `evaluate_project` (`select_target_framework`, deciding via
+  `tfm_policy::tfm_choice` since E7): parse
   TFM-unseeded to read `target_frameworks()`, then re-evaluate with
   `TargetFramework=<first>` seeded **only when it changes the answer** (caller
   didn't own the global; pass-1 evaluated `TargetFramework` empty; ≥1 TFM
@@ -68,24 +68,46 @@ Settled decisions (IDs cited from code):
 - **E6** — Under-resolve, never cross-resolve (D5): a stale restore missing the
   chosen TFM's target degrades to **empty for that TFM**, never another TFM's
   assemblies.
+- **E7** — The `.fsproj`-buffer diagnostics path serves the same inner build.
+  Detail below, because what it gives up is worth stating.
 
-## Still to do
+### E7 — Align the `.fsproj`-buffer diagnostics path
 
-### E7 — Align the `.fsproj`-buffer diagnostics path (documented follow-up)
+`fsproj_diagnostics.rs` evaluated the open `.fsproj` *buffer* with its own global
+seeds (`Configuration` + `Platform` only) and no `TargetFramework`, on the reading
+that the buffer describes the project file's evaluability *in general*. Measured,
+that reading did not hold. Unseeded, `$(TargetFramework)` reads empty, so **every**
+`'$(TargetFramework)' == 'netX'` gate is cleanly false and no inner build's content
+is evaluated at all: on a two-TFM fixture the buffer produced four
+`UndefinedProperty` warnings the real inner build never emits and diagnosed the
+content of neither branch. It was describing the outer dispatch build, which has
+no content.
 
-`fsproj_diagnostics.rs` evaluates the open `.fsproj` *buffer* with its own global
-seeds (`default_global_properties`: `Configuration` + `Platform` only) and **no**
-`TargetFramework`. This remains true post-3.3c, so the two surfaces diverge on
-`$(TargetFramework)` conditions: workspace resolution evaluates them cleanly while
-the buffer still shows the undefined-property diagnostic.
+The fix is a two-pass over the **buffer text** — never the workspace's
+disk-derived choice, so an unsaved `<TargetFrameworks>` edit takes effect
+immediately — sharing the decision, not the parse, with workspace resolution:
+`crates/lsp/src/tfm_policy.rs` holds `TfmChoice` and `tfm_choice`, and each
+surface performs its own re-evaluation. Only `TfmChoice::Reseed` (a multi-targeted
+project with no body singular and trusted provenance) costs a second parse.
+The same seam fixed a second divergence found on the way: `diagnostics_for` built
+its own defaults bag and ignored `Workspace::extra_build_properties` entirely, so
+a caller who pinned `Configuration=Release` saw it honoured in resolution and
+ignored in the squiggles. There is now one bag, `Workspace::build_properties`.
 
-v1 deliberately keeps the buffer path unseeded — it describes the project file's
-evaluability *in general*, it works on unsaved text (so the workspace's
-disk-derived `chosen_tfm` may not even match the buffer), and changing its
-diagnostics is not needed for coherent resolution. Aligning it is a two-pass over
-the buffer text (mirroring E2's `select_target_framework` but reading the buffer's
-own `target_frameworks()`); the divergence is recorded here so it isn't
-rediscovered as a bug.
+**What this gives up.** Seeding *moves* the diagnosed region rather than only
+adding to it. Content gated on `'$(TargetFramework)' == ''` or
+`!= '<served>'` was reached by the outer build and is not reached by the inner
+one. That is a deliberate consequence of serving one TFM — every other LSP surface
+already speaks about that same inner build — and it is pinned in both directions
+by `served_region_follows_the_served_tfm`, which asserts each gate shape against
+both columns rather than leaving the tradeoff to prose.
+
+**What guards it.** `buffer_diagnostics_follow_the_workspace_served_tfm` is E5's
+coherence invariant extended to this third surface: for a buffer matching disk,
+the branch the diagnostics evaluate is exactly the branch
+`Workspace::target_framework_for_project` serves — no more, no fewer. Nothing
+asserted that before, which is how this path could diverge for two whole stages
+without a test going red; the property is the durable half of the change.
 
 ## Out of scope
 

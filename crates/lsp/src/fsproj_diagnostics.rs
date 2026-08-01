@@ -43,6 +43,7 @@ use crate::paths::lexically_normalize;
 use crate::position::offset_to_position;
 use crate::project_graph::{ProjectGraph, ProjectKind, classify};
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::tfm_policy;
 
 /// Translate one fsproj buffer into LSP diagnostics. See module-level
 /// docs for severity/surfacing conventions.
@@ -51,41 +52,41 @@ use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
 /// it seeds MSBuild's path-derived reserved properties, anchors relative
 /// `<Import Project="…">` resolution, and is the starting point for the
 /// `global.json` walk inside [`SdkDiscovery::for_project`].
-pub fn diagnostics_for(text: &str, project_path: &Path, env: &SdkDiscoveryEnv) -> Vec<Diagnostic> {
-    let extras = default_global_properties();
+///
+/// `build_properties` is the workspace's build-global bag
+/// ([`crate::workspace::Workspace::build_properties`]), so the buffer is
+/// evaluated under the same `Configuration`/`Platform` the workspace resolves
+/// under.
+pub fn diagnostics_for(
+    text: &str,
+    project_path: &Path,
+    env: &SdkDiscoveryEnv,
+    build_properties: &HashMap<String, String>,
+) -> Vec<Diagnostic> {
     // The environment the *caller* declared, not the ambient process: a
     // workspace constructed with an explicit `SdkDiscoveryEnv` has asked not to
     // see host variables, and reading `std::env` here would leak them back into
     // `$(…)` evaluation. `SdkDiscoveryEnv::from_process_env` is what fills this
     // with the real environment for production callers.
     let environment = env.build_environment.clone();
-    // Glob resolution is independent of SDK discovery, so both arms get the
-    // filesystem-backed resolver. It borrows nothing, so it outlives the match.
-    let glob_resolver: &GlobResolver<'_> = &crate::glob_resolver::resolve;
-    let parse_result = match SdkDiscovery::for_project(project_path, env) {
-        Ok(disc) => {
-            // The closure borrows `disc`; both stay live until the
-            // match arm exits, which is after `parse_fsproj_with_imports`
-            // has finished using the resolver.
-            let resolver: &SdkResolver<'_> = &|name| disc.resolve(name);
-            parse_fsproj_with_imports(
-                text,
-                project_path,
-                &extras,
-                &environment,
-                Some(resolver),
-                Some(glob_resolver),
-            )
-        }
-        Err(_) => parse_fsproj_with_imports(
+    let disc = SdkDiscovery::for_project(project_path, env).ok();
+    let parse_result = parse_buffer(
+        text,
+        project_path,
+        build_properties,
+        &environment,
+        disc.as_ref(),
+    )
+    .map(|pass1| {
+        serve_chosen_tfm(
+            pass1,
             text,
             project_path,
-            &extras,
+            build_properties,
             &environment,
-            None,
-            Some(glob_resolver),
-        ),
-    };
+            disc.as_ref(),
+        )
+    });
     match parse_result {
         Ok(parsed) => {
             let mut diags: Vec<Diagnostic> = parsed
@@ -144,6 +145,86 @@ pub fn diagnostics_for(text: &str, project_path: &Path, env: &SdkDiscoveryEnv) -
         // call-site change doesn't silently swallow a real bug.
         Err(other) => vec![lsp_error_at_origin(format!("fsproj parse failed: {other}"))],
     }
+}
+
+/// Parse the buffer with or without an SDK resolver depending on whether
+/// `disc` is `Some`, keeping the resolver closure's borrow of `disc` bounded by
+/// the call itself (so it need not be boxed as a `dyn Fn`).
+///
+/// Unlike the workspace's counterpart this preserves the [`ParseError`]: a
+/// malformed buffer is the one thing this surface reports as an LSP `ERROR`.
+fn parse_buffer(
+    text: &str,
+    project_path: &Path,
+    extras: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    disc: Option<&SdkDiscovery>,
+) -> Result<borzoi_msbuild::ParsedProject, ParseError> {
+    // Glob resolution is independent of SDK discovery, so both arms get the
+    // filesystem-backed resolver. It borrows nothing, so it lives for the
+    // whole function.
+    let glob_resolver: &GlobResolver<'_> = &crate::glob_resolver::resolve;
+    match disc {
+        Some(d) => {
+            let resolver: &SdkResolver<'_> = &|name| d.resolve(name);
+            parse_fsproj_with_imports(
+                text,
+                project_path,
+                extras,
+                environment,
+                Some(resolver),
+                Some(glob_resolver),
+            )
+        }
+        None => parse_fsproj_with_imports(
+            text,
+            project_path,
+            extras,
+            environment,
+            None,
+            Some(glob_resolver),
+        ),
+    }
+}
+
+/// Re-evaluate the buffer under the target framework the LSP serves it as,
+/// when that differs from the unseeded pass (fsproj 3.3c, plan E7).
+///
+/// The served TFM is decided by [`tfm_policy::tfm_choice`] — the same function
+/// [`crate::workspace`] uses — but from **this buffer's** own declarations, not
+/// the workspace's disk-derived choice: the buffer may be unsaved, and a
+/// `<TargetFrameworks>` edit must take effect in the squiggles immediately.
+///
+/// This *moves* which region of the document is diagnosed rather than only
+/// adding to it. Unseeded, `$(TargetFramework)` reads empty, so **every**
+/// `'$(TargetFramework)' == 'netX'` gate is cleanly false and no inner build's
+/// content is evaluated at all — the diagnostics describe the outer dispatch
+/// build, which has no content, and every gate contributes an
+/// `UndefinedProperty` the real inner build never produces. Seeded, the served
+/// branch is evaluated and those warnings disappear. The cost is the
+/// complementary shapes — content gated on `'$(TargetFramework)' == ''` or
+/// `!= '<served>'` — which the outer build reached and the inner one does not.
+/// `served_region_follows_the_served_tfm` in this module's tests pins both
+/// directions.
+///
+/// A pass-2 parse failure degrades to pass 1: same text and resolver, so it
+/// should be unreachable, and reporting a parse error the user cannot see in
+/// their buffer would be worse than a stale-but-valid diagnostic set.
+fn serve_chosen_tfm(
+    pass1: borzoi_msbuild::ParsedProject,
+    text: &str,
+    project_path: &Path,
+    extras: &HashMap<String, String>,
+    environment: &HashMap<String, String>,
+    disc: Option<&SdkDiscovery>,
+) -> borzoi_msbuild::ParsedProject {
+    let choice = tfm_policy::tfm_choice(&pass1, extras);
+    let Some(seed) = choice.reseed() else {
+        return pass1;
+    };
+    let mut seeded = extras.clone();
+    tfm_policy::seed_target_framework_global(&mut seeded, seed);
+    parse_buffer(text, project_path, &seeded, environment, disc).unwrap_or(pass1)
 }
 
 /// Diagnostics for the buffer's own `<ProjectReference>` elements (consumer #3
@@ -369,27 +450,6 @@ fn restore_diagnostic(unrestored: bool) -> Option<Diagnostic> {
             .to_string(),
         ..Default::default()
     })
-}
-
-/// Seed MSBuild "global" properties matching the defaults `dotnet build`
-/// uses when invoked with no `-c`/`-p:Platform` flags. Without these,
-/// the most common condition shape in real `.fsproj` files —
-/// `Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'"` —
-/// emits an `UndefinedProperty` diagnostic on every clean buffer.
-///
-/// These are intentionally a tiny set. Each addition trades a class
-/// of false positives for the risk of evaluating user conditions
-/// against a value the user didn't pick. For an editor surface, the
-/// "what would `dotnet build` do?" defaults are the least surprising
-/// reading.
-fn default_global_properties() -> HashMap<String, String> {
-    let mut m = HashMap::new();
-    m.insert(
-        "Configuration".to_string(),
-        crate::BUILD_CONFIGURATION.to_string(),
-    );
-    m.insert("Platform".to_string(), "AnyCPU".to_string());
-    m
 }
 
 /// Snapshot of the server's process environment, handed to
@@ -685,6 +745,7 @@ fn describe_available(versions: &[SdkVersion]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
     use std::fs;
     use tempfile::TempDir;
 
@@ -830,6 +891,14 @@ mod tests {
         fs::write(sdk_root.join("Sdk.targets"), "<Project/>").unwrap();
     }
 
+    /// The build globals a default `Workspace` evaluates under — exactly what
+    /// the server hands [`diagnostics_for`] when the caller pinned nothing.
+    /// Reading them from `Workspace` rather than restating them here is what
+    /// keeps the buffer surface and workspace resolution on one bag (plan E7).
+    fn default_extras() -> HashMap<String, String> {
+        crate::workspace::Workspace::default().build_properties()
+    }
+
     /// Build an `SdkDiscoveryEnv` with every field `None` unless the
     /// caller sets it. Same pattern as `env_with` in
     /// `sdk_discovery/tests.rs` — keeps tests from leaking the host's
@@ -852,6 +921,288 @@ mod tests {
         fs::write(obj.join("project.assets.json"), "{}").unwrap();
     }
 
+    // ---- Served-TFM alignment (fsproj 3.3c, plan E7) ----
+
+    /// The witness item list a given TFM's gated group references.
+    fn witness_name(tfm: &str) -> String {
+        format!("Witness_{}", tfm.replace(['.', '-'], "_"))
+    }
+
+    /// A `<PropertyGroup>` gated on `condition` whose body references a witness
+    /// **item list**, `@(Witness_…)`. We have no item evaluator, so the
+    /// reference emits `UnresolvedItemReference` naming it — at the moment the
+    /// property is written, and never at all if the group's gate skipped it.
+    /// The diagnostic set therefore says precisely which gates ran.
+    ///
+    /// An undefined *property* read would not do. Two of the three shapes are
+    /// silent by design: a read in a property value is recorded as an
+    /// `UnpinnedRoot` and re-surfaced only when the written value is itself
+    /// read, and a read of a name written nowhere in the document is exact
+    /// under the evaluator's environment model, so it warns on neither side.
+    /// (`$(TargetFramework)` warns precisely because it is *not* in that class
+    /// — the SDK's inner build defines it, which is the false positive E7
+    /// removes.)
+    fn gated_group(condition: &str, witness: &str) -> String {
+        format!(
+            "  <PropertyGroup Condition=\"{condition}\">\n    <Gated>@({witness})</Gated>\n  </PropertyGroup>\n"
+        )
+    }
+
+    /// A multi-targeted fsproj with one `$(TargetFramework)`-gated group per
+    /// declared TFM, each carrying its own witness.
+    fn fsproj_multi_tfm_witnesses(tfms: &[&str]) -> String {
+        let groups: String = tfms
+            .iter()
+            .map(|tfm| {
+                gated_group(
+                    &format!("'$(TargetFramework)' == '{tfm}'"),
+                    &witness_name(tfm),
+                )
+            })
+            .collect();
+        format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFrameworks>{}</TargetFrameworks>\n  </PropertyGroup>\n{groups}</Project>",
+            tfms.join(";")
+        )
+    }
+
+    /// Whether any diagnostic reports `$(name)` as undefined.
+    fn warns_undefined(diags: &[Diagnostic], name: &str) -> bool {
+        let needle = format!("$({name}) is not defined");
+        diags.iter().any(|d| d.message.contains(&needle))
+    }
+
+    /// Whether the group carrying `witness` was evaluated — see [`gated_group`].
+    fn witness_fired(diags: &[Diagnostic], witness: &str) -> bool {
+        let needle = format!("@({witness})");
+        diags.iter().any(|d| d.message.contains(&needle))
+    }
+
+    /// A temp dir holding a restored project directory and a fake SDK.
+    fn multi_tfm_scaffold() -> (TempDir, PathBuf, SdkDiscoveryEnv) {
+        let tmp = TempDir::new().unwrap();
+        let dotnet = tmp.path().join("dotnet");
+        install_sdk(&dotnet, "8.0.401", "Microsoft.NET.Sdk");
+        let project_dir = tmp.path().join("proj");
+        fs::create_dir_all(&project_dir).unwrap();
+        mark_restored(&project_dir);
+        let project = project_dir.join("App.fsproj");
+        let env = env_with(|e| e.dotnet_root = Some(dotnet));
+        (tmp, project, env)
+    }
+
+    /// Build globals that pin `TargetFramework` to the **empty** string. That
+    /// is `TfmChoice::CallerOwned(None)` — an explicit "no TFM", the outer
+    /// dispatch build — so no second pass runs and the diagnostics are the
+    /// ones this surface produced before E7. Lets a test state both columns of
+    /// the move rather than asserting the new one in isolation.
+    fn outer_build_extras() -> HashMap<String, String> {
+        let mut extras = default_extras();
+        extras.insert("TargetFramework".to_string(), String::new());
+        extras
+    }
+
+    /// Plan E7: the buffer path serves the same inner build the workspace
+    /// does, so `$(TargetFramework)` is a *defined* global rather than the
+    /// empty outer-build read that produced a warning on every gate.
+    ///
+    /// The served branch's witness must fire: without it this test would pass
+    /// on an implementation that simply stopped evaluating conditions.
+    #[test]
+    fn multi_targeted_buffer_evaluates_the_served_inner_build() {
+        let (_tmp, project, env) = multi_tfm_scaffold();
+        let text = fsproj_multi_tfm_witnesses(&["net8.0", "net10.0"]);
+        fs::write(&project, &text).unwrap();
+
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
+
+        assert!(
+            !warns_undefined(&diags, "TargetFramework"),
+            "the served TFM is seeded, so it is not undefined: {diags:#?}"
+        );
+        assert!(
+            witness_fired(&diags, &witness_name("net8.0")),
+            "the first-declared TFM's gated group must be evaluated: {diags:#?}"
+        );
+        assert!(
+            !witness_fired(&diags, &witness_name("net10.0")),
+            "a TFM we do not serve must not be evaluated: {diags:#?}"
+        );
+    }
+
+    /// Plan E7: the served TFM is read from the **buffer**, never from the
+    /// workspace's disk-derived choice — the buffer may be unsaved. Disk
+    /// declares `net8.0` first; the buffer declares `net10.0` first.
+    #[test]
+    fn the_served_tfm_comes_from_the_buffer_not_from_disk() {
+        let (_tmp, project, env) = multi_tfm_scaffold();
+        fs::write(&project, fsproj_multi_tfm_witnesses(&["net8.0", "net10.0"])).unwrap();
+        let buffer = fsproj_multi_tfm_witnesses(&["net10.0", "net8.0"]);
+
+        let diags = diagnostics_for(&buffer, &project, &env, &default_extras());
+
+        assert!(
+            witness_fired(&diags, &witness_name("net10.0")),
+            "the buffer's own first-declared TFM must be served: {diags:#?}"
+        );
+        assert!(
+            !witness_fired(&diags, &witness_name("net8.0")),
+            "disk's first-declared TFM must not leak in: {diags:#?}"
+        );
+    }
+
+    /// Plan E7 **moves** the diagnosed region rather than only adding to it,
+    /// and this is the record of where it moved. Each row is a gate shape; the
+    /// columns are the two builds this surface can describe — the served inner
+    /// build (what it now describes) and the outer dispatch build (what it
+    /// described before).
+    ///
+    /// The two rows where `outer` is `true` and `served` is `false` are the
+    /// coverage this change gives up: content the outer build reached and the
+    /// inner build does not. They are a deliberate consequence of serving one
+    /// TFM, not an oversight — every other LSP surface already speaks about
+    /// that same inner build.
+    #[test]
+    fn served_region_follows_the_served_tfm() {
+        // (gate, fires in the served inner build, fires in the outer build)
+        let rows: &[(&str, bool, bool)] = &[
+            ("'$(TargetFramework)' == 'net8.0'", true, false),
+            ("'$(TargetFramework)' == 'net10.0'", false, false),
+            ("'$(TargetFramework)' == ''", false, true),
+            ("'$(TargetFramework)' != 'net8.0'", false, true),
+            ("'$(Configuration)' == 'Debug'", true, true),
+        ];
+        for (gate, expect_served, expect_outer) in rows {
+            let (_tmp, project, env) = multi_tfm_scaffold();
+            let text = format!(
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>\n  </PropertyGroup>\n{}</Project>",
+                gated_group(gate, "W")
+            );
+            fs::write(&project, &text).unwrap();
+
+            let served = diagnostics_for(&text, &project, &env, &default_extras());
+            let outer = diagnostics_for(&text, &project, &env, &outer_build_extras());
+
+            assert_eq!(
+                witness_fired(&served, "W"),
+                *expect_served,
+                "served inner build, gate {gate}: {served:#?}"
+            );
+            assert_eq!(
+                witness_fired(&outer, "W"),
+                *expect_outer,
+                "outer dispatch build, gate {gate}: {outer:#?}"
+            );
+        }
+    }
+
+    /// A body-pinned single-TFM project is already its own inner build
+    /// (`TfmChoice::BodyPinned`), so the gated group fires with no second
+    /// evaluation.
+    #[test]
+    fn a_body_pinned_tfm_needs_no_second_pass() {
+        let (_tmp, project, env) = multi_tfm_scaffold();
+        let text = format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n{}</Project>",
+            gated_group("'$(TargetFramework)' == 'net8.0'", "W")
+        );
+        fs::write(&project, &text).unwrap();
+
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
+
+        assert!(witness_fired(&diags, "W"), "{diags:#?}");
+        assert!(!warns_undefined(&diags, "TargetFramework"), "{diags:#?}");
+    }
+
+    /// A caller who pinned build globals on the `Workspace` must see them in
+    /// the buffer's squiggles too — the second divergence at this seam
+    /// (plan E7): `diagnostics_for` used to build its own default bag and
+    /// ignore the workspace's entirely.
+    #[test]
+    fn caller_pinned_build_globals_reach_the_buffer() {
+        let (_tmp, project, env) = multi_tfm_scaffold();
+        let text = format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n{}</Project>",
+            gated_group("'$(Configuration)' == 'Release'", "W")
+        );
+        fs::write(&project, &text).unwrap();
+
+        let mut release = HashMap::new();
+        release.insert("Configuration".to_string(), "Release".to_string());
+        let ws = crate::workspace::Workspace::with_env_and_extra_build_properties(
+            SdkDiscoveryEnv::default(),
+            release,
+        );
+
+        assert!(
+            witness_fired(
+                &diagnostics_for(&text, &project, &env, &ws.build_properties()),
+                "W"
+            ),
+            "a Release workspace must evaluate the Release-gated group"
+        );
+        assert!(
+            !witness_fired(
+                &diagnostics_for(&text, &project, &env, &default_extras()),
+                "W"
+            ),
+            "the default Debug workspace must not"
+        );
+    }
+
+    proptest! {
+        /// The coherence invariant E5 states for parse-vs-env, extended to the
+        /// third surface (plan E7): for a buffer that matches disk, the branch
+        /// the `.fsproj` diagnostics evaluate is exactly the branch the
+        /// workspace serves — no more, no fewer.
+        ///
+        /// Nothing asserted this before, which is how the buffer path could
+        /// diverge from `Workspace::target_framework_for_project` for two whole
+        /// stages without a test going red. The positive half (the served
+        /// TFM's witness *must* fire) is what keeps it from passing vacuously
+        /// on an implementation that evaluates nothing.
+        #[test]
+        fn buffer_diagnostics_follow_the_workspace_served_tfm(
+            tfms in proptest::collection::vec("net(1[0-2]|[5-9])\\.0", 1..4),
+            body_pinned in proptest::option::of(0usize..3),
+        ) {
+            let mut seen = HashSet::new();
+            let tfms: Vec<String> = tfms.into_iter().filter(|t| seen.insert(t.clone())).collect();
+            let groups: String = tfms
+                .iter()
+                .map(|t| gated_group(&format!("'$(TargetFramework)' == '{t}'"), &witness_name(t)))
+                .collect();
+            // A body `<TargetFramework>` out-ranks the declared list (MSBuild's
+            // inner-build gate), so this axis exercises `BodyPinned` as well as
+            // `Reseed`.
+            let pinned = body_pinned.and_then(|i| tfms.get(i)).cloned();
+            let singular = pinned
+                .as_ref()
+                .map(|t| format!("    <TargetFramework>{t}</TargetFramework>\n"))
+                .unwrap_or_default();
+            let text = format!(
+                "<Project>\n  <PropertyGroup>\n    <TargetFrameworks>{}</TargetFrameworks>\n{singular}  </PropertyGroup>\n{groups}</Project>",
+                tfms.join(";")
+            );
+
+            let tmp = TempDir::new().unwrap();
+            let project = tmp.path().join("Sample.fsproj");
+            fs::write(&project, &text).unwrap();
+
+            let mut ws = crate::workspace::Workspace::with_env(SdkDiscoveryEnv::default());
+            let served = ws.target_framework_for_project(&project);
+            let diags = diagnostics_for(&text, &project, ws.env(), &ws.build_properties());
+
+            for tfm in &tfms {
+                prop_assert_eq!(
+                    witness_fired(&diags, &witness_name(tfm)),
+                    served.as_deref() == Some(tfm.as_str()),
+                    "tfm {} vs served {:?}: {:#?}", tfm, served, diags
+                );
+            }
+        }
+    }
+
     #[test]
     fn clean_fsproj_no_diagnostics() {
         let tmp = TempDir::new().unwrap();
@@ -870,7 +1221,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(dotnet));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags.is_empty(),
             "expected no diagnostics for a clean fsproj, got {diags:#?}"
@@ -884,7 +1235,7 @@ mod tests {
         let text = "<Project this is not valid xml";
 
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         assert_eq!(diags.len(), 1, "{diags:#?}");
         let d = &diags[0];
@@ -908,7 +1259,7 @@ mod tests {
 </Project>"#;
 
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("empty-dotnet")));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         // At minimum one SdkNotFound warning; the exact count depends
         // on whether the parser surfaces additional cascaded diagnostics.
@@ -956,7 +1307,7 @@ mod tests {
                 "/somewhere/else/Sdks".to_string(),
             )]);
         });
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         let declined: Vec<_> = diags
             .iter()
@@ -986,7 +1337,7 @@ mod tests {
 </Project>"#;
 
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         let import_diags: Vec<_> = diags
             .iter()
@@ -1021,7 +1372,7 @@ mod tests {
         let text = "<Project>\n<!-- À🦀 -->\n<ItemGroup><Compile Include=\"$(TargetFramework).fs\" /></ItemGroup>\n</Project>";
 
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         let prop_diags: Vec<_> = diags
             .iter()
@@ -1079,7 +1430,7 @@ mod tests {
         // property and the test would silently pass.
         let mut producing = 0usize;
         for &src in inputs {
-            let diags = diagnostics_for(src, &project, &env);
+            let diags = diagnostics_for(src, &project, &env, &default_extras());
             if !diags.is_empty() {
                 producing += 1;
             }
@@ -1187,7 +1538,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(dotnet));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags.is_empty(),
             "Sdk.props internals must not surface as buffer diagnostics, got:\n{diags:#?}"
@@ -1224,7 +1575,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(dotnet));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags.is_empty(),
             "expected no diagnostics for a clean Debug/AnyCPU project, got:\n{diags:#?}"
@@ -1249,7 +1600,7 @@ mod tests {
   </ItemGroup>
 </Project>"#;
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-        let diags = diagnostics_for(with_item_ref, &project, &env);
+        let diags = diagnostics_for(with_item_ref, &project, &env, &default_extras());
         let item_diag = diags
             .iter()
             .find(|d| d.message.contains("item reference"))
@@ -1275,7 +1626,7 @@ mod tests {
     <BaseName>%(Filename)</BaseName>
   </PropertyGroup>
 </Project>"#;
-        let diags = diagnostics_for(with_meta_ref, &project, &env);
+        let diags = diagnostics_for(with_meta_ref, &project, &env, &default_extras());
         let meta_diag = diags
             .iter()
             .find(|d| d.message.contains("metadata reference"))
@@ -1322,7 +1673,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         let nested_fail: Vec<_> = diags
             .iter()
             .filter(|d| {
@@ -1350,7 +1701,7 @@ mod tests {
 </Project>"#;
 
         let env = env_with(|_| {}); // no dotnet_root, no search_path
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
 
         // The Sdk attribute survives as an UnsupportedConstruct since
         // no resolver was wired in.
@@ -1381,7 +1732,7 @@ mod tests {
         let text = fsproj_referencing("Lib/Lib.fsproj"); // not created
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(&text, &project, &env);
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
         let refs: Vec<_> = diags
             .iter()
             .filter(|d| d.message.contains("does not exist"))
@@ -1402,7 +1753,7 @@ mod tests {
         let text = fsproj_referencing("Cs/Cs.csproj"); // not created
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(&text, &project, &env);
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
         assert_eq!(
             diags
                 .iter()
@@ -1423,7 +1774,7 @@ mod tests {
         let text = fsproj_referencing("Lib/Lib.fsproj");
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(&text, &project, &env);
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
         assert!(
             diags.iter().all(|d| {
                 !d.message.contains("does not exist")
@@ -1443,7 +1794,7 @@ mod tests {
         let text = fsproj_referencing("Cs/Cs.csproj");
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(&text, &project, &env);
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
         assert!(
             diags.iter().all(|d| {
                 !d.message.contains("does not exist")
@@ -1486,7 +1837,7 @@ mod tests {
         let text = "<Project>\n  <ItemGroup Condition=\"'$(UseLib)' != 'false'\">\n    <ProjectReference Include=\"Gone/Gone.fsproj\" />\n  </ItemGroup>\n</Project>";
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags.iter().all(|d| !d.message.contains("does not exist")),
             "conditioned-out reference must not warn, got {diags:#?}"
@@ -1504,7 +1855,7 @@ mod tests {
         let text = "<Project xmlns:msb=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n  <ItemGroup>\n    <msb:ProjectReference Include=\"Gone/Gone.fsproj\" />\n  </ItemGroup>\n</Project>";
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert_eq!(
             diags
                 .iter()
@@ -1522,7 +1873,7 @@ mod tests {
         let text = fsproj_referencing("Legacy/Legacy.vbproj");
         let env = env_with(|e| e.dotnet_root = Some(tmp.path().join("dotnet")));
 
-        let diags = diagnostics_for(&text, &project, &env);
+        let diags = diagnostics_for(&text, &project, &env, &default_extras());
         let refs: Vec<_> = diags
             .iter()
             .filter(|d| d.message.contains("unsupported project reference"))
@@ -1567,7 +1918,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(dotnet));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         let restore: Vec<_> = diags
             .iter()
             .filter(|d| d.message.contains("obj/project.assets.json"))
@@ -1577,7 +1928,7 @@ mod tests {
 
         // Restoring (writing obj/project.assets.json) clears the warning.
         mark_restored(&project_dir);
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags
                 .iter()
@@ -1596,7 +1947,7 @@ mod tests {
         fs::write(&project, text).unwrap();
 
         let env = env_with(|_| {});
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags
                 .iter()
@@ -1631,7 +1982,7 @@ mod tests {
         fs::write(custom.join("project.assets.json"), "{}").unwrap();
 
         let env = env_with(|e| e.dotnet_root = Some(dotnet));
-        let diags = diagnostics_for(text, &project, &env);
+        let diags = diagnostics_for(text, &project, &env, &default_extras());
         assert!(
             diags
                 .iter()

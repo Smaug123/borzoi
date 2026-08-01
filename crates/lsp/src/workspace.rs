@@ -46,6 +46,7 @@ use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::tfm_policy::{self, caller_owns_target_framework, seed_target_framework_global};
 use borzoi_msbuild::ItemMetadataValue;
 
 const COMPILED: &str = "COMPILED";
@@ -256,6 +257,24 @@ impl Workspace {
     /// when the fsproj diagnostics fired.
     pub fn env(&self) -> &SdkDiscoveryEnv {
         &self.env
+    }
+
+    /// The MSBuild build-global bag every project evaluation in this workspace
+    /// starts from: the `dotnet build` defaults (`default_build_properties`)
+    /// overlaid with whatever the caller pinned at construction.
+    ///
+    /// Exposed for the same reason as [`Workspace::env`], and for the same
+    /// class of divergence (plan E7): the `.fsproj`-buffer diagnostic path
+    /// evaluates the *buffer* rather than the file, so it cannot go through
+    /// the project cache — but it must start from the identical globals, or a
+    /// caller who pinned `Configuration=Release` sees it honoured in
+    /// resolution and ignored in the squiggles.
+    ///
+    /// `TargetFramework` is deliberately absent: it is per-project, not
+    /// workspace-global, and each surface seeds it from its own evaluation via
+    /// `tfm_policy::tfm_choice`.
+    pub fn build_properties(&self) -> HashMap<String, String> {
+        build_properties(&self.extra_build_properties)
     }
 
     /// Drop every cached project evaluation, forcing re-evaluation from disk on
@@ -1288,24 +1307,11 @@ fn evaluate_project(
         disc.as_ref(),
     )?;
     // First-pass views, captured before any first-declared re-evaluation
-    // (`select_target_framework` case 3 replaces `parsed` with an inner-build
-    // pass in which an outer-gated `<TargetFrameworks>` may no longer exist).
+    // (a `TfmChoice::Reseed` replaces `parsed` with an inner-build pass in
+    // which an outer-gated `<TargetFrameworks>` may no longer exist).
     let declared_tfms = target_frameworks(&parsed);
-    let body_target_framework = lookup_property_ci(&parsed.properties, "TargetFramework")
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(String::from);
-    // Deliberately the singular only: an outer-gated PLURAL (the arcade
-    // idiom, `<TargetFrameworks Condition="'$(TargetFramework)' == ''">`)
-    // is unpinned by construction — its gate reads the then-undefined
-    // `TargetFramework` — yet the TFM-invariant intersection consumes the
-    // declared list without trusting any single branch, so distrusting it
-    // here would break the idiom for nothing. The body singular, by
-    // contrast, is consumed as an authoritative `NodeTfm::Known`.
-    let tfm_untrusted = parsed.property_provenance_untrusted("TargetFramework")
-        || body_target_framework
-            .as_deref()
-            .is_some_and(|v| v.contains("$("));
+    let body_target_framework = tfm_policy::body_target_framework(&parsed);
+    let tfm_untrusted = tfm_policy::tfm_untrusted(&parsed);
     let (parsed, chosen_tfm) = select_target_framework(
         parsed,
         &source,
@@ -1313,7 +1319,6 @@ fn evaluate_project(
         &extras,
         &env.build_environment,
         disc.as_ref(),
-        tfm_untrusted,
     );
     // The evaluator reports the `SdkPaths::root` of the entry project's own SDK
     // (`ParsedProject::resolved_sdk_root`); recover the install root from it.
@@ -1336,37 +1341,13 @@ fn evaluate_project(
     })
 }
 
-/// Pick the target framework to serve this project under, re-evaluating with
-/// it seeded when that changes the answer (fsproj 3.3c, plan E1/E2).
+/// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
+/// with the chosen TFM seeded when the decision asks for it, and return the
+/// evaluation to serve alongside the TFM it was served under.
 ///
-/// Policy: first-declared. Precisely, the chosen TFM is
-///
-/// 1. the caller-seeded `TargetFramework` global when present (any casing,
-///    any value — `None` when it's empty). The caller owns the choice: an
-///    empty read-only global is an explicit "no TFM", and re-seeding would
-///    both override that input and trip the evaluator's case-insensitive
-///    duplicate-key validation, failing the whole evaluation;
-/// 2. else the body-written `<TargetFramework>` when non-empty. MSBuild's
-///    outer/inner gate is `'$(TargetFrameworks)' != '' and
-///    '$(TargetFramework)' == ''`, so a non-empty singular is a single-target
-///    build even when the plural is also set. Pass 1 already evaluated under
-///    it — no second pass;
-/// 3. else the **first** `target_frameworks()` entry, under which the project
-///    is re-evaluated with `TargetFramework` seeded as a read-only global —
-///    exactly what an MSBuild inner build does — so `$(TargetFramework)`-gated
-///    defines and Compile items become evaluable instead of flipping the
-///    `*_uncertain` flags. NOT taken when pass 1's `TargetFramework` is
-///    `tfm_untrusted` (an unpinned empty singular alongside the plural): the
-///    real build may be a *single* build under a value we can't see, so
-///    seeding would evaluate the gated defines/items cleanly under a choice
-///    [`Workspace::target_framework_for_project`] declines to serve — pairing
-///    first-declared parses with whatever the env's no-TFM fallback selects
-///    (the E5 incoherence). Keeping pass 1 lets every read of the unpinned
-///    `TargetFramework` flip its own `*_uncertain` flag instead;
-/// 4. else `None` (no TFM declared anywhere): keep pass 1 unchanged.
-///
-/// The one extra parse in case 3 happens once per multi-targeted project and
-/// is cached with the evaluation.
+/// The policy itself — which TFM, and when a second pass is needed — lives in
+/// [`tfm_policy`], shared with the `.fsproj`-buffer diagnostics path so the two
+/// surfaces cannot drift (plan E5/E7). This function is only the effect.
 fn select_target_framework(
     pass1: ParsedProject,
     source: &str,
@@ -1374,84 +1355,37 @@ fn select_target_framework(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
-    tfm_untrusted: bool,
 ) -> (ParsedProject, Option<String>) {
-    if let Some(value) = lookup_property_ci(extras, "TargetFramework") {
-        let trimmed = value.trim();
-        let chosen = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        return (pass1, chosen);
-    }
-    let body_tf = lookup_property_ci(&pass1.properties, "TargetFramework")
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(String::from);
-    if body_tf.is_some() {
-        return (pass1, body_tf);
-    }
-    if tfm_untrusted {
-        return (pass1, None);
-    }
-    let declared = target_frameworks(&pass1);
-    let Some(first) = declared.first().cloned() else {
-        return (pass1, None);
+    let choice = tfm_policy::tfm_choice(&pass1, extras);
+    let Some(seed) = choice.reseed() else {
+        return (pass1, choice.served().map(str::to_string));
     };
     let mut seeded = extras.clone();
-    seeded.insert("TargetFramework".to_string(), first.clone());
+    tfm_policy::seed_target_framework_global(&mut seeded, seed);
+    let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
-        Some(pass2) => (pass2, Some(first)),
-        // Same source, same resolver, and the seed key can't collide (the
-        // caller-global case returned above) — so this arm shouldn't be
-        // reachable. Degrade to the unseeded view rather than failing the
+        Some(pass2) => (pass2, Some(seed)),
+        // Same source, same resolver, and the seed key can't collide (a
+        // caller-owned global never yields `Reseed`) — so this arm shouldn't
+        // be reachable. Degrade to the unseeded view rather than failing the
         // whole project.
         None => (pass1, None),
     }
-}
-
-/// Whether the caller's extra build properties pin a **non-empty**
-/// `TargetFramework` global — the caller then owns the TFM choice, and its
-/// value needs no provenance (globals out-rank body writes). An EMPTY
-/// caller-supplied `TargetFramework` is the outer (dispatch) build, not a
-/// TFM choice — the SDK's inner-build gate is exactly
-/// `'$(TargetFramework)' == ''` — so it does not count as ownership and
-/// falls through to the normal declared-TFM classification (in
-/// [`resolve_node_uncached`], reading it as ownership would classify a
-/// multi-targeted node `NoneDeclared` and let the output locator fold a
-/// lone stale variant). Shared between [`resolve_node_uncached`] and
-/// [`Workspace::target_framework_for_project`] so the graph-node and
-/// entry-side provenance gates cannot drift.
-fn caller_owns_target_framework(extra_build_properties: &HashMap<String, String>) -> bool {
-    extra_build_properties
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("TargetFramework") && !v.trim().is_empty())
-}
-
-/// Seed `TargetFramework` as a build global for an inner-build (per-TFM)
-/// evaluation, **replacing** any case-insensitively equal existing key.
-/// MSBuild global-property names compare OrdinalIgnoreCase and the
-/// evaluator's input validation rejects case-insensitive duplicates, so a
-/// caller-supplied differently-cased key (e.g. an explicitly empty
-/// `targetframework`, which deliberately falls through to per-TFM
-/// evaluation) must be displaced, not joined — a duplicate fails the whole
-/// branch evaluation and even TFM-invariant edges would vanish.
-fn seed_target_framework_global(map: &mut HashMap<String, String>, tfm: &str) {
-    map.retain(|k, _| !k.eq_ignore_ascii_case("TargetFramework"));
-    map.insert("TargetFramework".to_string(), tfm.to_string());
-}
-
-/// Case-insensitive property lookup (MSBuild property names compare
-/// OrdinalIgnoreCase; both `extra_properties` keys and
-/// [`ParsedProject::properties`] preserve the source spelling).
-fn lookup_property_ci<'a>(map: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
-    map.iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str())
 }
 
 /// MSBuild-default build globals used when evaluating a project for
 /// LSP diagnostics. The SDK's own `*.props` predicate `DefineConstants`
 /// on these (e.g. `DEBUG` is gated on `$(Configuration) == 'Debug'`),
 /// so passing an empty bag would silently drop those symbols and
-/// produce diagnostics against the wrong `#if` branches.
+/// produce diagnostics against the wrong `#if` branches. The
+/// `.fsproj`-buffer surface needs them for a second reason: without
+/// them the most common condition shape in real `.fsproj` files —
+/// `Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'"` —
+/// emits an `UndefinedProperty` diagnostic on every clean buffer.
+///
+/// Intentionally a tiny set. Each addition trades a class of false
+/// positives for the risk of evaluating user conditions against a value
+/// the user didn't pick.
 ///
 /// Today the LSP only ever evaluates as `Configuration=Debug,
 /// Platform=AnyCPU` — the F# editor flow most users want. A future
