@@ -1446,7 +1446,7 @@ impl<'a> Gen<'a> {
         // Asked of the marker *and* of the chased terminal below: either being
         // error-obsolete is enough for F# to reject the annotation, and an
         // abbreviation carries its own attributes.
-        if error_obsolete(entity) {
+        if rejected_by_attributes(entity) {
             return None;
         }
         let (handle, entity) = if entity.kind == EntityKind::Abbreviation {
@@ -1458,7 +1458,7 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
-        if error_obsolete(entity) {
+        if rejected_by_attributes(entity) {
             return None;
         }
         if matches!(
@@ -1539,7 +1539,7 @@ impl<'a> Gen<'a> {
         // An error-obsolete *argument* is caught by the recursion, which reaches
         // this bridge or the nullary one for every written argument; this covers
         // the head.
-        if error_obsolete(entity) {
+        if rejected_by_attributes(entity) {
             return None;
         }
         if entity.generic_parameters.len() != args.len() {
@@ -3551,6 +3551,29 @@ fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
 /// arm rather than in either bridge.
 const MAX_ARRAY_RANK: u32 = 32;
 
+/// Whether F# **rejects a use** of this entity on account of its attributes.
+///
+/// This reproduces the F# compiler's `CheckEntityAttributes`
+/// (`src/Compiler/Checking/AttributeChecking.fs`), which is the whole of what
+/// it consults at a type use, and is why the set is closed rather than however
+/// many channels a reviewer has thought of so far. It dispatches to
+/// `CheckILAttributes` (obsolescence, experimentality) or `CheckFSharpAttributes`
+/// (those plus compiler-message and unverifiability), and of the four only two
+/// can produce an **error**:
+///
+/// - `[<Obsolete(_, true)>]`, on either path;
+/// - `[<CompilerMessage(_, n, IsError = true)>]`, on the F#-tycon path.
+///
+/// Experimental and unverifiable warn and never reject, so neither is read.
+///
+/// Asking both of every entity — rather than gating the second on whether the
+/// entity came through F# signature data — costs only a decline on an IL type
+/// carrying an attribute F# would not consult there, which is not a shape a
+/// C# compiler emits.
+fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
+    error_obsolete(entity) || error_compiler_message(entity)
+}
+
 /// Whether an entity is marked `[<Obsolete(_, true)>]` — obsolete **as an
 /// error** rather than as a warning.
 ///
@@ -3563,6 +3586,24 @@ const MAX_ARRAY_RANK: u32 = 32;
 /// the same way.
 fn error_obsolete(entity: &borzoi_assembly::Entity) -> bool {
     entity.obsolete.as_ref().is_some_and(|o| o.is_error)
+}
+
+/// Whether an entity carries `[<CompilerMessage(_, n, IsError = true)>]` at a
+/// message number F# does not suppress.
+///
+/// F#'s `CheckCompilerMessageAttribute` errors when `IsError` holds, with two
+/// exemptions: number **3501** is suppressed outright (FSharp.Core's `nameof`
+/// marker), and 1204 is suppressed only while compiling FSharp.Core itself,
+/// which we never are. An *undecodable* marker is read as "not suppressed",
+/// so a payload we could not parse declines rather than commits.
+fn error_compiler_message(entity: &borzoi_assembly::Entity) -> bool {
+    /// FSharp.Core's `nameof` marker, which F# suppresses whatever `IsError`
+    /// says.
+    const NAMEOF_MARKER: i32 = 3501;
+    entity
+        .compiler_message
+        .as_ref()
+        .is_some_and(|m| m.is_error && m.marker != Some(NAMEOF_MARKER))
 }
 
 fn contains_param(ty: &Ty) -> bool {
@@ -4020,6 +4061,7 @@ mod tests {
             is_structural_comparison: false,
             is_allow_null_literal: false,
             obsolete: None,
+            compiler_message: None,
             experimental: None,
             default_member: None,
             compiler_feature_required: vec![],

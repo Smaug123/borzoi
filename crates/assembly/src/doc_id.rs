@@ -515,6 +515,7 @@ mod tests {
             is_structural_comparison: false,
             is_allow_null_literal: false,
             obsolete: None,
+            compiler_message: None,
             experimental: None,
             default_member: None,
             compiler_feature_required: Vec::new(),

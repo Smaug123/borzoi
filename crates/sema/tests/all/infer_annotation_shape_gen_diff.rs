@@ -243,7 +243,7 @@ impl Ann {
 
 /// Arity-1 heads. Each is here for a distinct reason the projection could get
 /// wrong; see the module docs.
-const HEADS1: [&str; 14] = [
+const HEADS1: [&str; 16] = [
     "option",
     "list",
     "ResizeArray",
@@ -279,6 +279,14 @@ const HEADS1: [&str; 14] = [
     // error-obsolete, so this dimension needs the fixture too.
     "ConstrainedFixture.ErrorObsolete",
     "ConstrainedFixture.WarnObsolete",
+    // The **compiler-message** dimension. F# consults
+    // `[<CompilerMessage(_, n, IsError = true)>]` on the F#-tycon path only, so
+    // no BCL head can exhibit it and the fixture is the only way to reach it —
+    // but the shape is not exotic: any third-party F# library type is read the
+    // same way, and `ConstrainedFixture.Free` already shows such a head
+    // committing. `WarnMessaged` is the twin at warning level, which F# accepts.
+    "ConstrainedFixture.ErrorMessaged",
+    "ConstrainedFixture.WarnMessaged",
 ];
 
 /// Arity-2 heads.
@@ -369,6 +377,7 @@ fn generic_args() -> Vec<Ann> {
         // reached by the bridge's recursion rather than by its head check, which
         // a head-only alphabet cannot exercise.
         Ann::atom(ERROR_OBSOLETE_ATOM),
+        Ann::atom(ERROR_MESSAGED_ATOM),
     ];
     out.extend(structural.iter().step_by(11).cloned());
     out
@@ -383,6 +392,10 @@ const BYREF_LIKE: &str = "System.Span<int>";
 /// Non-generic so it reaches the nullary bridge, and so it can stand as a
 /// generic argument — the position no head-side guard can catch.
 const ERROR_OBSOLETE_ATOM: &str = "ConstrainedFixture.ErrorObsoleteAtom";
+
+/// The compiler-message counterpart of [`ERROR_OBSOLETE_ATOM`], for the same
+/// argument-position reason.
+const ERROR_MESSAGED_ATOM: &str = "ConstrainedFixture.ErrorMessagedAtom";
 
 /// A type nested inside a **non-generic** one. The oracle's metadata renderer
 /// normalises FCS's `+` separator to `/`, but this one arrives already dotted, so

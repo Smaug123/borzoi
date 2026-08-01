@@ -38,3 +38,20 @@ type WarnObsolete<'T> = WObs of 'T
 /// head check.
 [<System.Obsolete("gone", true)>]
 type ErrorObsoleteAtom = EAtom of int
+
+/// F#'s own error-level diagnostic marker. `CheckEntityAttributes` consults it
+/// on the **F#-tycon** path only, so no BCL type can exhibit it and only an
+/// F#-authored reference — this fixture, or any third-party F# library — can.
+[<CompilerMessage("gone by message", 12001, IsError = true)>]
+type ErrorMessaged<'T> = EMsg of 'T
+
+/// The twin, carrying the same attribute at warning level. F# accepts a use, so
+/// this is what makes a decline on [`ErrorMessaged`] attributable to `IsError`
+/// rather than to the attribute's presence.
+[<CompilerMessage("just a note", 12002)>]
+type WarnMessaged<'T> = WMsg of 'T
+
+/// Non-generic, so it reaches the nullary bridge and can stand as a generic
+/// argument.
+[<CompilerMessage("gone by message", 12003, IsError = true)>]
+type ErrorMessagedAtom = EMsgAtom of int
