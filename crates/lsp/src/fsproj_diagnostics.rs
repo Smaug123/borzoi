@@ -1183,6 +1183,7 @@ mod tests {
             seed_conditional in proptest::bool::ANY,
             treat_as_local in proptest::bool::ANY,
             untrusted_gate in proptest::bool::ANY,
+            override_empty in proptest::bool::ANY,
         ) {
             let mut seen = HashSet::new();
             let tfms: Vec<String> = tfms.into_iter().filter(|t| seen.insert(t.clone())).collect();
@@ -1205,7 +1206,12 @@ mod tests {
                     } else {
                         ""
                     };
-                    let write = format!("<TargetFramework{gate}>{t}</TargetFramework>");
+                    // An override that *clears* the TFM is a distinct outcome
+                    // from no override at all — the parse then runs under no
+                    // TFM and no branch fires — and only a generator that can
+                    // emit an empty body reaches it.
+                    let value = if override_empty { "" } else { t.as_str() };
+                    let write = format!("<TargetFramework{gate}>{value}</TargetFramework>");
                     // Wrapping the write in a group whose own gate reads a
                     // property the evaluator cannot pin makes its provenance
                     // untrusted — the same idiom `workspace`'s

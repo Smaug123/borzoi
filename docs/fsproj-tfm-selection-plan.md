@@ -140,16 +140,34 @@ finally existed to disagree with. Both now read the effective value out of pass
 certain-implies-exact by `fsproj_global_perturbation_diff`'s
 `TreatAsLocalProperty` corner.
 
-The *provenance* half is the same defect one level down, and it arrived as the
-next review round: pass 1 cannot see a write it does not perform, so its
-untrusted verdict does not cover an override either. `ServedEvaluation` now
-returns all three outputs — the evaluation, the TFM it ran under, and whether an
-override's write was unpinnable — from the pass actually served, and
-`evaluate_project` widens `tfm_untrusted` with the last. It is consulted **only**
-when an override fired: the generic provenance seam fires unconditionally for
-real SDK projects, so an unguarded consult would decline every multi-targeted
-project (`msbuild-trust-audit` §2). An untrusted override then lands in exactly
-the arrangement an untrusted body write already had — `chosen_tfm` set,
+That took three review rounds, and the third is the one worth recording, because
+the first two were patches and the third named the actual defect. Round 1: the
+seed was published instead of the override's value. Round 2: pass 1's provenance
+verdict cannot cover a write pass 1 never performs. Round 3: an override that
+*clears* the TFM is indistinguishable from no override at all — once you are
+asking a value-shaped helper (`Option<String>`, empty filtered away) a
+presence-shaped question. That is the `absent-vs-unread` class: a field
+conflating "provably none" with "we did not look".
+
+So the classification is now one exhaustive function, `tfm_policy::reseed_outcome`,
+reading the property table **unfiltered**. Presence in that table *is* the
+override signal — a suppressed body write leaves no entry, an override leaves its
+value, and a clearing override leaves an empty string (all three probed, dotnet
+10.0.301) — and its three outcomes each map to exactly one `ServedEvaluation`:
+
+| outcome | TFM the parse ran under | trusted |
+|---|---|---|
+| `AsSeeded` | the seed | yes |
+| `Overridden(t)` | `t` | yes |
+| `OverriddenUntrusted { ran_under }` | `ran_under` (`None` when cleared) | no |
+
+Note the two axes are independent: *what was evaluated* and *whether a consumer
+may key on it*. Collapsing them is what made rounds 1–3 look like three separate
+bugs. `AsSeeded` never consults pass 2's provenance at all, which matters — the
+generic provenance seam fires unconditionally for real SDK projects, so an
+unguarded consult would decline every multi-targeted project
+(`msbuild-trust-audit` §2). An untrusted override lands in exactly the
+arrangement an untrusted *body* write already had — `chosen_tfm` set,
 `ServedTfm::Untrusted` published — which is a good sign the model is right rather
 than patched.
 
@@ -159,13 +177,15 @@ what the TFM-invariant intersection wants; and `body_target_framework` feeds
 `resolve_node_uncached`, which reads the (now widened) `tfm_untrusted` and
 degrades an override to `NodeTfm::Unresolved`.
 
-The generator axes (`treat_as_local`, `seed_conditional`, `untrusted_gate`) exist
-because these shapes are not ones a reviewer should have to think of twice. A
-property whose generator cannot build a shape agrees vacuously on it; widening
-the axes is the fix, not adding case N+1. The third axis also corrected the
-property itself — stated against `served_tfm_for_project` it demanded the buffer
-diagnose no branch for a project whose parse legitimately took one, which is why
-`parsed_tfm_for_project` exists and is the currency.
+The generator axes (`treat_as_local`, `seed_conditional`, `untrusted_gate`,
+`override_empty`) exist because these shapes are not ones a reviewer should have
+to think of twice. A property whose generator cannot build a shape agrees
+vacuously on it; widening the axes is the fix, not adding case N+1. Each round's
+axis reproduced that round's finding independently before it was fixed, and
+`untrusted_gate` additionally corrected the property itself — stated against
+`served_tfm_for_project` it demanded the buffer diagnose no branch for a project
+whose parse legitimately took one, which is why `parsed_tfm_for_project` exists
+and is the currency.
 
 ## Out of scope
 

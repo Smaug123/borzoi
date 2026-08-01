@@ -122,6 +122,55 @@ pub(crate) fn tfm_choice(pass1: &ParsedProject, extras: &HashMap<String, String>
     }
 }
 
+/// What the evaluation produced by honouring a [`TfmChoice::Reseed`] actually
+/// ran under — which is not necessarily what it was seeded with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ReseedOutcome {
+    /// The seed stood: the document did not touch the global.
+    AsSeeded,
+    /// The document overrode the seed with a pinned, non-empty value. Serve
+    /// pass 2 under this instead.
+    Overridden(String),
+    /// The document overrode the seed with something no consumer may key on:
+    /// a write we could not pin, or one that cleared the TFM outright.
+    /// `ran_under` is still what pass 2 evaluated as — `None` when cleared —
+    /// because the parse surfaces describe the parse either way; it is the
+    /// *trust* that is withheld.
+    OverriddenUntrusted { ran_under: Option<String> },
+}
+
+/// Classify what pass 2 ran under (fsproj 3.3c, plan E7).
+///
+/// A seeded `TargetFramework` global is read-only to the document unless it
+/// opts the name out with `<Project TreatAsLocalProperty="TargetFramework">`.
+/// **Presence in the property table is the override signal**: a suppressed body
+/// write leaves no entry at all, an override leaves its value, and an override
+/// that clears the TFM leaves an empty string (all three probed, dotnet
+/// 10.0.301).
+///
+/// So this reads the table *unfiltered*. [`body_target_framework`] cannot answer
+/// the question — it maps both "no override" and "overridden to empty" to
+/// `None`, and publishing the seed for the latter names a TFM the parse never
+/// ran under. Distinguishing absence from emptiness is the whole job.
+pub(crate) fn reseed_outcome(pass2: &ParsedProject) -> ReseedOutcome {
+    let Some(raw) = lookup_property_ci(&pass2.properties, "TargetFramework") else {
+        return ReseedOutcome::AsSeeded;
+    };
+    let value = raw.trim();
+    if value.is_empty() {
+        // Cleared while the project declares TFMs: no branch fired, and
+        // neither the seed nor the empty value is evidence of what the real
+        // build targets.
+        return ReseedOutcome::OverriddenUntrusted { ran_under: None };
+    }
+    if tfm_untrusted(pass2) {
+        return ReseedOutcome::OverriddenUntrusted {
+            ran_under: Some(value.to_string()),
+        };
+    }
+    ReseedOutcome::Overridden(value.to_string())
+}
+
 /// The project's own non-empty `<TargetFramework>` write, trimmed.
 ///
 /// Distinct from [`target_frameworks`], which folds the plural in: this is

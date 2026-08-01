@@ -1408,31 +1408,26 @@ fn select_target_framework(
     let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
         // Report what pass 2 *evaluated as*, not what we asked it to evaluate
-        // as. A seeded global is read-only to the document — unless the
-        // document says otherwise with `<Project
-        // TreatAsLocalProperty="TargetFramework">`, which lets a body write
-        // (typically gated on the seed being non-empty, so pass 1 never sees
-        // it) overwrite the seed. Naming the seed there would name a branch the
-        // parse did not take. `body_target_framework` reads the property table,
-        // which holds a `TargetFramework` entry only when such an override
-        // actually happened — a suppressed body write leaves no trace there —
-        // so the ordinary case falls through to the seed and never consults
-        // pass 2's provenance at all. That matters: the generic provenance seam
-        // fires unconditionally for real SDK projects, so consulting it
-        // unguarded would decline every multi-targeted project (see the
-        // `msbuild-trust-audit` skill, §2).
-        Some(pass2) => match tfm_policy::body_target_framework(&pass2) {
-            Some(overridden) => ServedEvaluation {
-                override_untrusted: tfm_policy::tfm_untrusted(&pass2),
-                chosen_tfm: Some(overridden),
+        // as: a `TreatAsLocalProperty` document can overwrite the seed, with a
+        // write pass 1 never sees. `reseed_outcome` owns that classification —
+        // including the distinction between "no override" and "overridden to
+        // empty", which a value-shaped answer cannot express. Note the ordinary
+        // case (`AsSeeded`) never consults pass 2's provenance at all, and that
+        // matters: the generic provenance seam fires unconditionally for real
+        // SDK projects, so an unguarded consult would decline every
+        // multi-targeted project (see the `msbuild-trust-audit` skill, §2).
+        Some(pass2) => {
+            let (chosen_tfm, override_untrusted) = match tfm_policy::reseed_outcome(&pass2) {
+                tfm_policy::ReseedOutcome::AsSeeded => (Some(seed), false),
+                tfm_policy::ReseedOutcome::Overridden(tfm) => (Some(tfm), false),
+                tfm_policy::ReseedOutcome::OverriddenUntrusted { ran_under } => (ran_under, true),
+            };
+            ServedEvaluation {
                 parsed: pass2,
-            },
-            None => ServedEvaluation {
-                parsed: pass2,
-                chosen_tfm: Some(seed),
-                override_untrusted: false,
-            },
-        },
+                chosen_tfm,
+                override_untrusted,
+            }
+        }
         // Same source, same resolver, and the seed key can't collide (a
         // caller-owned global never yields `Reseed`) — so this arm shouldn't
         // be reachable. Degrade to the unseeded view rather than failing the
@@ -2109,7 +2104,7 @@ mod tests {
     /// read-only-ness and overwrites it once the seed is non-empty — a write
     /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
     /// write in a group the evaluator cannot pin.
-    fn fsproj_pass2_override(outer_gate: bool) -> String {
+    fn fsproj_pass2_override(outer_gate: bool, value: &str) -> String {
         let (open, close) = if outer_gate {
             (
                 "<PropertyGroup Condition=\"'$(DefineConstants)' == ''\">",
@@ -2124,7 +2119,7 @@ mod tests {
                 <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
               </PropertyGroup>
               {open}
-                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">{value}</TargetFramework>
               {close}
             </Project>"#
         )
@@ -2137,32 +2132,41 @@ mod tests {
     /// fires unconditionally for real SDK projects, so an unguarded consult
     /// would decline every multi-targeted project — `msbuild-trust-audit` §2).
     ///
-    /// Both arms matter. Without the trusted one this would pass on an
-    /// implementation that declined every override; without the untrusted one,
-    /// on the pre-existing behaviour that trusted every override.
+    /// All three arms matter. Without the first this would pass on an
+    /// implementation that declined every override; without the second, on the
+    /// behaviour that trusted every override; without the third, on one that
+    /// reads the override through a value-shaped helper and so cannot tell an
+    /// override that *cleared* the TFM from no override at all — which
+    /// publishes the seed for a parse that ran under nothing.
     #[test]
     fn a_pass_two_override_is_served_on_its_own_provenance() {
-        for (outer_gate, expected) in [
-            (false, ServedTfm::Tfm("net10.0".to_string())),
-            (true, ServedTfm::Untrusted),
-        ] {
+        // (outer gate, override value, served verdict, TFM the parse ran under)
+        let cases: &[(bool, &str, ServedTfm, Option<&str>)] = &[
+            (
+                false,
+                "net10.0",
+                ServedTfm::Tfm("net10.0".to_string()),
+                Some("net10.0"),
+            ),
+            (true, "net10.0", ServedTfm::Untrusted, Some("net10.0")),
+            (false, "", ServedTfm::Untrusted, None),
+        ];
+        for (outer_gate, value, expected, ran_under) in cases {
             let tmp = TempDir::new().unwrap();
             let proj = tmp.path().join("Sample.fsproj");
-            write_file(&proj, &fsproj_pass2_override(outer_gate));
+            write_file(&proj, &fsproj_pass2_override(*outer_gate, value));
             let mut ws = Workspace::default();
+            let label = format!("outer_gate={outer_gate} value={value:?}");
 
+            assert_eq!(ws.served_tfm_for_project(&proj), *expected, "{label}");
+            // The parse ran under the override whatever the verdict — that is
+            // what its defines and Compile items came from, and what the
+            // `.fsproj` buffer diagnostics describe (plan E7). Withholding
+            // *trust* is a separate axis from what was evaluated.
             assert_eq!(
-                ws.served_tfm_for_project(&proj),
-                expected,
-                "outer_gate={outer_gate}"
-            );
-            // Either way the parse ran under the override — that is what its
-            // defines and Compile items came from, and what the `.fsproj`
-            // buffer diagnostics describe (plan E7).
-            assert_eq!(
-                ws.parsed_tfm_for_project(&proj),
-                Some("net10.0".to_string()),
-                "outer_gate={outer_gate}"
+                ws.parsed_tfm_for_project(&proj).as_deref(),
+                *ran_under,
+                "{label}"
             );
         }
     }
