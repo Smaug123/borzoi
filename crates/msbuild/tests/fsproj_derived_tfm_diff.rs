@@ -139,7 +139,7 @@ fn witness_name(pos: Position, derived: &str) -> String {
 /// Left as a gap on purpose: making the props splice conditional needs the
 /// document's own `<Import>`s walked first, and the props splice has to happen
 /// *before* the body that contains them — the trick that fixed the targets side
-/// does not transfer. `docs/fsproj-tfm-selection-plan.md` records it.
+/// does not transfer. `docs/completed/fsproj-tfm-selection-plan.md` records it.
 fn positions_for(sdk: Sdk) -> &'static [Position] {
     match sdk {
         Sdk::Real => &POSITIONS,

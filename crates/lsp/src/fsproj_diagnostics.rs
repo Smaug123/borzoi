@@ -215,7 +215,7 @@ fn parse_buffer(
 /// one pass, 36.4 ms two. Nearly all of the difference is the *inner* build's
 /// evaluation — it walks far more of the SDK's targets chain — so it is the
 /// price of the answer, not of the extra call. Only `TfmChoice::Reseed` pays it.
-/// See `docs/fsproj-tfm-selection-plan.md` E7 for why this path stays uncached.
+/// See `docs/completed/fsproj-tfm-selection-plan.md` E7 for why this path stays uncached.
 fn serve_chosen_tfm(
     pass1: borzoi_msbuild::ParsedProject,
     text: &str,

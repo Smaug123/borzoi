@@ -1,13 +1,14 @@
 # TFM selection & configuration policy (fsproj consumption 3.3c)
 
 > Detailed design for **Stage 3.3c** of
-> [`fsproj-project-graph-plan.md`](completed/fsproj-project-graph-plan.md). Sibling of the
-> completed [`multi-tfm-resolution-plan.md`](completed/multi-tfm-resolution-plan.md)
+> [`fsproj-project-graph-plan.md`](fsproj-project-graph-plan.md). Sibling of the
+> completed [`multi-tfm-resolution-plan.md`](multi-tfm-resolution-plan.md)
 > (the *assets-side* producer-TFM resolver) and
-> [`csharp-sidecar-plan.md`](completed/csharp-sidecar-plan.md).
+> [`csharp-sidecar-plan.md`](csharp-sidecar-plan.md).
 >
-> **Status:** implemented (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in;
-> E7 last). The LSP picks one entry TFM per project (first-declared) and threads
+> **Status:** complete — every decision below is implemented and no follow-up
+> remains (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in; E7 #272 last).
+> The LSP picks one entry TFM per project (first-declared) and threads
 > it coherently through the parse (defines + Compile items, so multi-targeted
 > projects fold at all), the assembly env (assets-target selection +
 > platform-suffix recovery for C# refs), and the `.fsproj`-buffer diagnostics.

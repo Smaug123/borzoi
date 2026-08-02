@@ -1,5 +1,5 @@
 //! Which target framework the LSP serves a project under, and the vocabulary
-//! for seeding it (fsproj 3.3c, `docs/fsproj-tfm-selection-plan.md` E1/E2/E7).
+//! for seeding it (fsproj 3.3c, `docs/completed/fsproj-tfm-selection-plan.md` E1/E2/E7).
 //!
 //! The policy is **first-declared**, and it is a *decision*, not an effect:
 //! [`tfm_choice`] reads a first-pass [`ParsedProject`] and returns which TFM to

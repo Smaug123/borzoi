@@ -303,7 +303,7 @@ fn compile_update_compile_order_matches_fsharp_source_code_compile_order() {
     assert_eq!(ours, theirs);
 }
 
-/// The fsproj-3.3c chosen-TFM oracle (`docs/fsproj-tfm-selection-plan.md`,
+/// The fsproj-3.3c chosen-TFM oracle (`docs/completed/fsproj-tfm-selection-plan.md`,
 /// stage 3.3c-1): evaluating with `TargetFramework` seeded as a global — what
 /// the LSP's second pass does for a `<TargetFrameworks>` (plural) project —
 /// must match `dotnet msbuild -p:TargetFramework=<first>` exactly, Compile

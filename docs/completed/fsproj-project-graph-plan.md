@@ -43,7 +43,7 @@
   env non-cacheable, every other failure degrades to under-resolution.
 - **3.3c** (#878/#879) — TFM and `$(Configuration)` selection policy, threaded
   through both the parse/defines side and the assembly env; full design in
-  [`fsproj-tfm-selection-plan.md`](../fsproj-tfm-selection-plan.md).
+  [`fsproj-tfm-selection-plan.md`](fsproj-tfm-selection-plan.md).
 - **3.3d** — graph-sourced reference edges: `semantic::graph_ref_targets` +
   `Workspace::project_graph_with_producer_tfms` derive the fold's edge sets from the
   *parsed* graph (E1), not stale assets — the transitive F# closure feeds the output

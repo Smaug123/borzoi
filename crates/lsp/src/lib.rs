@@ -28,7 +28,7 @@ pub mod workspace;
 mod test_trace;
 
 /// The `$(Configuration)` the LSP serves everything under
-/// (`docs/fsproj-tfm-selection-plan.md` E4). One policy value, four
+/// (`docs/completed/fsproj-tfm-selection-plan.md` E4). One policy value, four
 /// consumers that must agree — the evaluator's global seed
 /// ([`workspace`]), the C# sidecar's build configuration and the
 /// Debug-first preference when locating F# project-reference output DLLs

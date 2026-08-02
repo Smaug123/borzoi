@@ -124,7 +124,7 @@ struct EvaluatedProject {
     /// ([`Workspace::dotnet_root_for_project`]) then falls back to the probe.
     sdk_install_root: Option<PathBuf>,
     /// The target framework `parsed` was evaluated under (fsproj 3.3c,
-    /// `docs/fsproj-tfm-selection-plan.md` E1/E2): the caller-seeded or
+    /// `docs/completed/fsproj-tfm-selection-plan.md` E1/E2): the caller-seeded or
     /// body-written `TargetFramework` when non-empty, else the first-declared
     /// `<TargetFrameworks>` entry (under which the project was re-evaluated
     /// in a second pass), else `None` (no TFM declared). Recorded so the
@@ -1598,7 +1598,7 @@ fn select_target_framework(
 ///
 /// `TargetFramework` is *not* seeded here because it is per-project, not
 /// workspace-global: [`select_target_framework`] picks each project's
-/// served TFM (first-declared — `docs/fsproj-tfm-selection-plan.md` E1/E2)
+/// served TFM (first-declared — `docs/completed/fsproj-tfm-selection-plan.md` E1/E2)
 /// and re-evaluates with it seeded when the project multi-targets.
 fn default_build_properties() -> HashMap<String, String> {
     let mut p = HashMap::new();
