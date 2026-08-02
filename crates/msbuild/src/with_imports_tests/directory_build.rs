@@ -931,3 +931,517 @@ fn gated_out_implicit_props_import_does_not_seed_path_property() {
         result.properties,
     );
 }
+
+/// A `Directory.Build.*` gate written under a condition the walker cannot
+/// decide leaves the import — and therefore the item set — unknown.
+///
+/// `'$(X.Substring(0,1))' == 'a'` is ordinary MSBuild that we do not model.
+/// The oracle says it evaluates **true** (dotnet 10.0.301, 2026-08-01), so the
+/// real build writes the gate and acts on it; we skip the write and act on the
+/// default. Whichever way each side lands, the walker cannot claim the item set
+/// is exact — checklist entry 1, both directions.
+const UNDECIDABLE_TRUE: &str = "'$(X.Substring(0,1))' == 'a'";
+
+#[test]
+fn an_undecided_gate_write_leaves_the_item_set_uncertain() {
+    // MSBuild writes `false` and *skips* Directory.Build.targets. We never
+    // write the gate, read it as absent, default it to true, and import — so we
+    // publish a Compile item the real build does not have.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildTargets Condition="{UNDECIDABLE_TRUE}">false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(
+        result.items_uncertain,
+        "the gate write could not be decided, so the item set must not be \
+         published as exact; items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
+#[test]
+fn an_undecided_gate_write_that_would_re_enable_the_import_also_flags() {
+    // The mirror direction, and the more damaging one: a decided write turns
+    // the gate off, then an undecidable write turns it back on. MSBuild takes
+    // the second write and imports; we skip it, keep `false`, and **drop** the
+    // Compile item the real build has. A missing item is invisible to any
+    // consumer that trusts `items_uncertain`.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildTargets Condition="{UNDECIDABLE_TRUE}">true</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(
+        result.items_uncertain,
+        "an undecidable write that could re-enable the import must flag; \
+         items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
+#[test]
+fn an_undecided_path_redirect_leaves_the_item_set_uncertain() {
+    // The gate's sibling: `DirectoryBuildTargetsPath` chooses *which* file is
+    // imported, so an undecidable write to it is the same defect one property
+    // over — we import one file's items where the real build imports another's.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "Other.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromOther.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <DirectoryBuildTargetsPath Condition="{UNDECIDABLE_TRUE}">$(MSBuildThisFileDirectory)Other.targets</DirectoryBuildTargetsPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(
+        result.items_uncertain,
+        "an undecidable redirect must flag; items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
+/// A way of writing a gate property, as `(description, build the XML)`. The
+/// three that exist are the three places a `Condition` can decide whether the
+/// write happens: on the element, on its `<PropertyGroup>`, and on the
+/// `<When>` arm containing it.
+type Placement = (&'static str, fn(&str, &str) -> String);
+
+#[test]
+fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
+    // Placement × name, over the walker's declared directly-read set. The two
+    // halves of that set are consumed at *different* points in the walk, and
+    // the sweep has to say so, because the correct expectation differs:
+    //
+    //  * the targets pair is consumed after the body, so a body write decides
+    //    the import — an undecidable one must leave the item set uncertain;
+    //  * the props pair is consumed *before* the body, so a body write is
+    //    inert on both sides and must **not** cost a decline. Probed (dotnet
+    //    10.0.301, 2026-08-01): a body `<ImportDirectoryBuildProps>false</…>`
+    //    leaves `Directory.Build.props`'s `FromProps` reading `set` — MSBuild
+    //    imported it regardless.
+    //
+    // The names come from the splice constants the production code reads, so a
+    // pair added there is swept here rather than going untested.
+    let (targets_gate, targets_path) = crate::evaluator::DIRECTORY_BUILD_TARGETS_SPLICE;
+    let (props_gate, props_path) = crate::evaluator::DIRECTORY_BUILD_PROPS_SPLICE;
+    let consumed_after_body = [targets_gate, targets_path];
+    let consumed_before_body = [props_gate, props_path];
+
+    fn parse_with_body(body: &str) -> crate::ParsedProject {
+        let tmp = TempDir::new().unwrap();
+        write_at(
+            tmp.path(),
+            "Directory.Build.targets",
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            &format!(
+                r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+  </PropertyGroup>
+{body}
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+            ),
+        );
+        parse_file(&project_path)
+    }
+
+    // The three places a condition can decide whether the write happens —
+    // checklist entries 1, 2 and 3. Each is evaluated by different code, and
+    // the first cut of this change covered only the innermost.
+    let placements: &[Placement] = &[
+        ("on the write", |name, condition| {
+            format!(
+                "  <PropertyGroup>\n    <{name} Condition=\"{condition}\">true</{name}>\n  \
+                 </PropertyGroup>"
+            )
+        }),
+        ("on the enclosing group", |name, condition| {
+            format!(
+                "  <PropertyGroup Condition=\"{condition}\">\n    <{name}>true</{name}>\n  \
+                 </PropertyGroup>"
+            )
+        }),
+        ("on a Choose arm", |name, condition| {
+            format!(
+                "  <Choose>\n    <When Condition=\"{condition}\">\n      <PropertyGroup>\n        \
+                 <{name}>true</{name}>\n      </PropertyGroup>\n    </When>\n  </Choose>"
+            )
+        }),
+    ];
+
+    for (placement, build) in placements {
+        for name in consumed_after_body {
+            assert!(
+                parse_with_body(&build(name, UNDECIDABLE_TRUE)).items_uncertain,
+                "{name} written under an undecidable condition {placement} must \
+                 leave the item set uncertain",
+            );
+            // `'$(X)' == 'abc'` is inside the modelled grammar over a property
+            // the document defines, so the walker knows exactly whether the
+            // write happened and owes no decline. Without this arm, marking
+            // everything uncertain would pass the sweep perfectly.
+            assert!(
+                !parse_with_body(&build(name, "'$(X)' == 'abc'")).items_uncertain,
+                "{name} written under a cleanly-decided condition {placement} \
+                 must not cost a decline",
+            );
+        }
+        for name in consumed_before_body {
+            assert!(
+                !parse_with_body(&build(name, UNDECIDABLE_TRUE)).items_uncertain,
+                "{name} is consumed before the body, so a body write {placement} \
+                 cannot change the import on either side and must not cost a \
+                 decline",
+            );
+        }
+    }
+}
+
+#[test]
+fn a_body_read_before_the_gated_import_stays_exact() {
+    // The mirror of the item claim, and the reason the trust question is asked
+    // at the *splice* rather than at the write. MSBuild evaluates the body
+    // before importing `Directory.Build.targets`, so a body read of a name that
+    // file defines is exactly empty **whatever the gate decides** — probed
+    // (dotnet 10.0.301, 2026-08-01): with the file present and defining
+    // `FromDirBuild`, a body `<Reads>[$(FromDirBuild)]</Reads>` reads `[]`
+    // while the final `FromDirBuild` reads `set`.
+    //
+    // So an undecidable gate write must not degrade that read. Latching
+    // opacity at the write did exactly that, which is a spurious decline: the
+    // gate cannot retroactively change what the body already saw.
+    fn undefined_reads_for(condition: &str) -> Vec<String> {
+        let tmp = TempDir::new().unwrap();
+        write_at(
+            tmp.path(),
+            "Directory.Build.targets",
+            r#"<Project>
+  <PropertyGroup>
+    <FromDirBuild>set</FromDirBuild>
+  </PropertyGroup>
+</Project>"#,
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            &format!(
+                r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildTargets Condition="{condition}">false</ImportDirectoryBuildTargets>
+    <Reads>$(FromDirBuild)</Reads>
+  </PropertyGroup>
+</Project>"#
+            ),
+        );
+        parse_file(&project_path)
+            .diagnostics
+            .iter()
+            .filter_map(|d| match &d.kind {
+                DiagnosticKind::UndefinedProperty { name } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    for condition in [UNDECIDABLE_TRUE, "'$(X)' == 'abc'"] {
+        assert!(
+            !undefined_reads_for(condition)
+                .iter()
+                .any(|n| n == "FromDirBuild"),
+            "a body read before the gated import is exactly empty on both \
+             sides, so it owes no degrade (condition {condition:?})",
+        );
+    }
+}
+
+#[test]
+fn an_undecided_group_condition_over_a_gate_write_also_flags() {
+    // Checklist entries 2 and 3: the gate write itself is unconditional, but
+    // whether it *happens* is decided by the enclosing `<PropertyGroup>` — or
+    // by which `<Choose>` arm runs. Those conditions are evaluated before the
+    // walker ever reaches the property child, so a context scoped to the child
+    // alone cannot see them, and a skipped branch never reaches the child at
+    // all.
+    fn items_uncertain_for(body: &str) -> bool {
+        let tmp = TempDir::new().unwrap();
+        write_at(
+            tmp.path(),
+            "Directory.Build.targets",
+            r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            &format!(
+                r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+  </PropertyGroup>
+{body}
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+            ),
+        );
+        parse_file(&project_path).items_uncertain
+    }
+
+    assert!(
+        items_uncertain_for(&format!(
+            r#"  <PropertyGroup Condition="{UNDECIDABLE_TRUE}">
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>"#
+        )),
+        "an undecidable <PropertyGroup> condition over a gate write must flag",
+    );
+    assert!(
+        items_uncertain_for(&format!(
+            r#"  <Choose>
+    <When Condition="{UNDECIDABLE_TRUE}">
+      <PropertyGroup>
+        <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+      </PropertyGroup>
+    </When>
+  </Choose>"#
+        )),
+        "an undecidable <When> arm containing a gate write must flag",
+    );
+    // Control: a cleanly-decided group condition owes no decline, in both the
+    // branch-taken and branch-skipped directions.
+    assert!(
+        !items_uncertain_for(
+            r#"  <PropertyGroup Condition="'$(X)' == 'abc'">
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>"#
+        ),
+        "a cleanly-decided group condition must not cost a decline",
+    );
+    assert!(
+        !items_uncertain_for(
+            r#"  <PropertyGroup Condition="'$(X)' == 'nope'">
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>"#
+        ),
+        "a cleanly-skipped group condition must not cost a decline",
+    );
+}
+
+#[test]
+fn an_undecided_gate_costs_nothing_when_there_is_no_file_to_import() {
+    // The gate only matters if something could be imported. MSBuild's own
+    // import is `Condition="… and exists('$(DirectoryBuildTargetsPath)')"`, so
+    // with no `Directory.Build.targets` on disk and no redirect, both sides
+    // skip whatever the gate says — and an undecidable write to it therefore
+    // owes no decline.
+    //
+    // This matters because `items_uncertain` is not a small cost: the LSP
+    // stops folding the project. A trust check that fires where the decision
+    // cannot change the outcome spends that for nothing.
+    let tmp = TempDir::new().unwrap();
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildTargets Condition="{UNDECIDABLE_TRUE}">false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(
+        !result.items_uncertain,
+        "no Directory.Build.targets exists, so the gate cannot change the item \
+         set on either side and must not cost a decline",
+    );
+    assert_eq!(
+        paths_of(&result.items),
+        vec![canon(tmp.path()).join("Main.fs")],
+    );
+}
+
+#[test]
+fn an_undecided_path_redirect_flags_even_when_nothing_resolves_here() {
+    // The counterpart of
+    // [`an_undecided_gate_costs_nothing_when_there_is_no_file_to_import`], and
+    // the boundary between them is the whole subtlety.
+    //
+    // There is no `Directory.Build.targets` next to the project, so *our*
+    // resolution finds nothing. That proves nothing: the undecidable write
+    // redirects `DirectoryBuildTargetsPath` at a file that does exist, and
+    // MSBuild — which evaluates the condition — imports it. "Nothing resolved
+    // here" is only evidence when the path itself is exact.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Other.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromOther.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <DirectoryBuildTargetsPath Condition="{UNDECIDABLE_TRUE}">$(MSBuildThisFileDirectory)Other.targets</DirectoryBuildTargetsPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(
+        result.items_uncertain,
+        "the redirect target exists and MSBuild imports it, so the item set \
+         must not be published as exact; items: {:?}",
+        paths_of(&result.items),
+    );
+}
+
+#[test]
+fn an_undecided_gate_withdraws_every_item_facet_not_just_compile() {
+    // A `Directory.Build.*` file carries `<ProjectReference>` and
+    // `<PackageReference>` as readily as `<Compile>`, so an undecided splice
+    // has to withdraw all of them. Setting only `items_uncertain` would leave a
+    // consumer trusting a phantom project-graph edge or a missing dependency —
+    // the "one missing entry per round" shape the trust checklist exists to
+    // prevent.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <ProjectReference Include="Other.fsproj" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+    <ImportDirectoryBuildTargets Condition="{UNDECIDABLE_TRUE}">false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    let result = parse_file(&project_path);
+    assert!(result.items_uncertain, "Compile facet");
+    assert!(
+        result.project_references_uncertain,
+        "the governed file declares a <ProjectReference>, so the graph edges \
+         are unknown too; refs: {:?}",
+        result.project_references,
+    );
+    assert!(
+        result.package_references_uncertain,
+        "…and its <PackageReference> list with them; packages: {:?}",
+        result.package_references,
+    );
+}

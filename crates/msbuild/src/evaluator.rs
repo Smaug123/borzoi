@@ -532,6 +532,12 @@ fn walk_once<'r>(
         implicit_targets,
         project_dir,
     );
+    // Verdict on the snapshot, applied below only if the fallback splice is the
+    // decision that stands — see `directory_build_splice_is_untrusted`.
+    let snapshot_untrusted = state.directory_build_splice_is_untrusted(
+        DIRECTORY_BUILD_TARGETS_SPLICE,
+        targets_to_import.is_some(),
+    );
     let targets_gate_open = should_import_default_true(
         state
             .lookup
@@ -546,6 +552,14 @@ fn walk_once<'r>(
     // point; only a chain that never got there leaves the decision to the
     // pre-`Sdk.targets` snapshot, which is the SDK-less and inert-SDK case the
     // splice exists for.
+    if !state.sdk_reached_directory_build_targets_import && snapshot_untrusted {
+        // The chain never reached its own import point, so this snapshot is
+        // the decision — and it rested on a value we could not pin down.
+        // Only when a file actually resolves, though: with nothing to import,
+        // MSBuild's own `exists('')` is false whatever the gate says, so both
+        // sides skip and the claim stays exact.
+        state.note_directory_build_gate_uncertain(DIRECTORY_BUILD_TARGETS_SPLICE.1);
+    }
     if let Some(Resolution { path, source }) = targets_to_import.as_ref()
         && targets_gate_open
         && !state.sdk_reached_directory_build_targets_import
@@ -2036,6 +2050,120 @@ impl<'r> State<'r> {
             && !self.unevaluable_written.contains(&lower)
             && !self.sdk_package_property_is_tainted(name)
             && !is_toolset_initial_property_name(&lower)
+    }
+
+    /// Is the *current* value of `name` exactly what MSBuild holds at this
+    /// point in the walk? Asked at the `Directory.Build.*` splice, where the
+    /// answer decides whether a whole user-authored file joins the walk.
+    ///
+    /// Read-site, not write-site, and the distinction is load-bearing. The
+    /// analogous `define_context` / `package_context` machinery latches at the
+    /// *write*, which is equivalent for them because their values are consumed
+    /// at `into_project` — every write precedes the read. This value is
+    /// consumed **mid-walk**, so latching at the write is wrong twice over: a
+    /// later clean unconditional overwrite re-pins the value and the two sides
+    /// agree after all, and a body read that happens *before* the import sees
+    /// the same absence MSBuild sees (probed: a body `$(FromDirBuild)` reads
+    /// empty even when `Directory.Build.targets` does define it, because the
+    /// body is evaluated first). Both would be spurious declines.
+    ///
+    /// So the question is asked once, of the final value, at the moment the
+    /// splice consumes it.
+    fn gate_value_is_exact(&self, name: &str) -> bool {
+        // Deliberately the **name-keyed** channels only, and not
+        // [`Self::undefined_read_is_exact`], which folds in `walk_opaque`.
+        // Opacity is latched by ordinary SDK structure — an unfollowable
+        // sub-import, a `<Choose>` the chain gates on a property we don't
+        // model — and routing it here turned every such project's Compile set
+        // uncertain, which is exactly the wholesale decline the
+        // `msbuild-trust-audit` skill warns the generic seam causes. Six
+        // existing tests assert that SDK structural uncertainty must *not*
+        // reintroduce Compile uncertainty, and they were right to.
+        //
+        // What is left is precise: these three say a write *of this name* was
+        // undecided, refused, or rode SDK-tainted input. That is the question
+        // the splice actually needs answered, and it holds whether or not the
+        // name currently has a value — an undecided write that did not happen
+        // is recorded the same way as one that did.
+        let lower = name.to_ascii_lowercase();
+        !self.unpinned_value_properties.contains_key(&lower)
+            && !self.unevaluable_written.contains(&lower)
+            && !self.sdk_package_property_is_tainted(name)
+    }
+
+    /// Record that a `Directory.Build.*` splice decision rested on a value we
+    /// could not pin down. Both consequences follow from the same fact, and
+    /// both directions are covered: whichever way we resolved the gate, the
+    /// governed file may have been imported where the real build skips it, or
+    /// skipped where the real build imports it.
+    /// Ask [`Self::gate_value_is_exact`] of both names a splice decision rests
+    /// on — whether to import, and which file — and record uncertainty if
+    /// either is unpinned.
+    /// Two inputs decide the import, and they fail differently:
+    ///
+    /// * an unpinned **path** is uncertain *whatever* resolved, because the
+    ///   value we resolved from may not be the one MSBuild resolved from — so
+    ///   "nothing resolved here" is no proof that nothing is imported there;
+    /// * an unpinned **gate** only matters once a file has actually resolved.
+    ///   With an exact path resolving to nothing, MSBuild's own
+    ///   `exists('$(DirectoryBuild*Path)')` is false however the gate reads, so
+    ///   both sides skip and the claim is exact.
+    ///
+    /// Getting that asymmetry wrong costs in either direction: too eager and
+    /// `items_uncertain` stops the LSP folding a project it could have
+    /// analysed, too lax and a missing Compile item is published as fact.
+    fn note_directory_build_splice_decision(
+        &mut self,
+        splice: (&str, &str),
+        a_file_resolved: bool,
+    ) {
+        if self.directory_build_splice_is_untrusted(splice, a_file_resolved) {
+            self.note_directory_build_gate_uncertain(splice.1);
+        }
+    }
+
+    /// [`Self::note_directory_build_splice_decision`]'s verdict without
+    /// recording it, for the one decision taken from a *snapshot*: the
+    /// pre-`Sdk.targets` read in `walk_once` serves only the fallback splice,
+    /// and is discarded when the chain reaches its own import point. Recording
+    /// it there regardless would decline a project whose SDK cleanly re-pins
+    /// the gate before that point — the verdict has to travel to where it is
+    /// used, or not at all.
+    fn directory_build_splice_is_untrusted(
+        &self,
+        (gate_name, path_name): (&str, &str),
+        a_file_resolved: bool,
+    ) -> bool {
+        !self.gate_value_is_exact(path_name)
+            || (a_file_resolved && !self.gate_value_is_exact(gate_name))
+    }
+
+    fn note_directory_build_gate_uncertain(&mut self, path_name: &str) {
+        // The governed file's property writes are now neither reliably present
+        // nor reliably absent, so no *later* undefined read can claim
+        // exactness. Same conclusion an ordinary `<Import>`'s undecided gate
+        // reaches, reached at the same point in the walk.
+        self.walk_opaque = true;
+        // Every captured item facet, not just Compile. Routed through
+        // `mark_structural_skip` rather than setting `items_uncertain` by hand:
+        // a `Directory.Build.*` file holds `<ProjectReference>` and
+        // `<PackageReference>` as readily as `<Compile>`, and a bespoke flag
+        // would have left those facets trusted — this crate's recurring "one
+        // missing entry per round" defect. That helper already means "an import
+        // that could not be resolved to a definite decision", which is exactly
+        // this.
+        //
+        // Deliberately the *non*-tolerant helper even inside the SDK subtree.
+        // The tolerance in `mark_structural_skip_respecting_sdk_compile_tolerance`
+        // rests on "an SDK sub-import we can't follow never drops a
+        // *hand-written* source"; a wrongly-skipped `Directory.Build.props`
+        // drops hand-written sources by construction.
+        self.mark_structural_skip(
+            StructuralCompileItemUncertainty::ImportProjectUnresolved {
+                project: format!("$({path_name})"),
+            },
+            0..0,
+        );
     }
 
     /// Record the [`SdkPaths::root`] of the entry project's own SDK.
@@ -4538,6 +4666,23 @@ fn is_cpm_flag_property_name(name: &str) -> bool {
         || name.eq_ignore_ascii_case("CentralPackageVersionOverrideEnabled")
 }
 
+/// The `(gate, path)` property pair each `Directory.Build.*` splice decides
+/// from: whether to import, and which file to import.
+///
+/// Named here rather than spelled at the splice sites so there is one list of
+/// the properties the walker reads *directly* — those reads are invisible to
+/// every mechanism that keys off a `Condition`, which is the defect this
+/// stage exists to close. The sweep in
+/// `with_imports_tests::directory_build` enumerates these and asserts each is
+/// classified by when its value is consumed, so a pair added here without that
+/// decision fails rather than going untested.
+pub(crate) const DIRECTORY_BUILD_PROPS_SPLICE: (&str, &str) =
+    ("ImportDirectoryBuildProps", "DirectoryBuildPropsPath");
+/// The targets-side counterpart of [`DIRECTORY_BUILD_PROPS_SPLICE`], consumed
+/// *after* the project body rather than before it.
+pub(crate) const DIRECTORY_BUILD_TARGETS_SPLICE: (&str, &str) =
+    ("ImportDirectoryBuildTargets", "DirectoryBuildTargetsPath");
+
 /// Whether a property-group child could write at all if its group ran.
 /// `false` only on exact knowledge: the child's own condition evaluates
 /// cleanly false — defined properties, supported grammar, no unpinned
@@ -4668,6 +4813,25 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
     // `CustomBeforeDirectoryBuildTargets`, which runs before this point) fall
     // through to the splice and import a file the real build skips.
     if is_sdk_directory_build_targets_import_point(node, state) {
+        // The chain owns the import from here, so *this* is where its gate is
+        // consumed. The pre-`Sdk.targets` snapshot taken in `walk_once` is
+        // judged there for the fallback splice, but it cannot see a write the
+        // chain performs after it — and SDK diagnostics are Compile-tolerated,
+        // so such a write would otherwise move the import silently.
+        // …but only when a file actually resolves: the chain's own import is
+        // guarded by `exists('$(DirectoryBuildTargetsPath)')`, which is false
+        // on both sides when nothing resolves, so there is nothing to be
+        // uncertain about.
+        let resolved = resolve_directory_build_path(
+            state,
+            "DirectoryBuildTargetsPath",
+            None,
+            &state.entry_project_dir.clone(),
+        );
+        state.note_directory_build_splice_decision(
+            DIRECTORY_BUILD_TARGETS_SPLICE,
+            resolved.is_some(),
+        );
         state.sdk_reached_directory_build_targets_import = true;
     }
     if is_sdk_directory_build_rediscovery_import(node, current_file_dir, state) {
@@ -5167,6 +5331,13 @@ fn fire_entry_directory_build_props_splice(state: &mut State<'_>) {
         "DirectoryBuildPropsPath",
         fallback.as_deref(),
         &project_dir,
+    );
+    // Only once a file has resolved: with nothing to import, MSBuild's own
+    // `exists('')` is false whatever the gate says, so both sides skip and the
+    // claim stays exact.
+    state.note_directory_build_splice_decision(
+        DIRECTORY_BUILD_PROPS_SPLICE,
+        props_to_import.is_some(),
     );
     if let Some(Resolution { path, source }) = props_to_import.as_ref()
         && should_import_default_true(
@@ -5781,11 +5952,18 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
                 // `Sdk.props` (e.g. `ImportDirectoryBuildProps=false` or a
                 // redirected `DirectoryBuildPropsPath`) is honoured.
                 let project_dir = state.entry_project_dir.clone();
+                // This path resolves and imports directly rather than calling
+                // `fire_entry_directory_build_props_splice`, so it needs the
+                // splice decision's trust check of its own.
                 let resolved = resolve_directory_build_path(
                     state,
                     "DirectoryBuildPropsPath",
                     fallback.as_deref(),
                     &project_dir,
+                );
+                state.note_directory_build_splice_decision(
+                    DIRECTORY_BUILD_PROPS_SPLICE,
+                    resolved.is_some(),
                 );
                 if let Some(Resolution { path, source }) = resolved
                     && should_import_default_true(

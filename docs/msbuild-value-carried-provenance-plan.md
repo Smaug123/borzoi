@@ -1,9 +1,22 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** **P0 + P1 landed.** The reference scan is now a walk of the same
-> parse tree evaluation uses, so a member access can no longer launder its
-> receiver's provenance, and the five-method allow-list is gone. P1′, P2, P2′,
-> P3 and P4 remain — see "Stages".
+> **Status:** **P0, P1 and P2″ landed; P2′ mostly done.** The reference scan is
+> a walk of the same parse tree evaluation uses, so a member access can no
+> longer launder its receiver's provenance (#265); the gates read MSBuild
+> booleans rather than strings (#266); and an undecided `Directory.Build.*`
+> gate now withdraws every item facet instead of publishing a wrong one.
+>
+> **Open, in the order I would take them:**
+>
+> 1. Finish P2′ — record a verdict for the direct-read sites not yet written
+>    up (the `properties` output loop and `LangVersion` were checked and judged
+>    already-covered, but that is not in this document), and close the
+>    `seed_toolset_properties` gap below.
+> 2. Re-run the SDK census and decide P3's priority from residual risk, as P2′
+>    always said to do before committing to it.
+> 3. The three recorded **precision** items under P2″ — declines, not wrong
+>    answers, and each carries regression risk (see the fifth-round entry).
+> 4. P1′, P2, P3, P4.
 
 ## The rule
 
@@ -322,6 +335,270 @@ argument, not P2's.
 
 **Then re-run the SDK census and decide P3's priority from residual risk**,
 rather than committing to it up front.
+
+#### P2′ findings so far
+
+The audit is under way. Two defects out, both confirmed against the oracle
+before any code changed.
+
+1. **The gates read MSBuild booleans as strings** (#266, landed as its own
+   change). `'$(ImportDirectoryBuildProps)' == 'true'` is an MSBuild `==`, so
+   `on`/`yes`/`!false` open it; three sites decided such comparisons with
+   `eq_ignore_ascii_case("true")`. The reachable half was
+   `ManagePackageVersionsCentrally`, where reading an opted-in project as
+   opted-out skips `package_references_uncertain` entirely.
+2. **The gates do not consult trust at all** — P2″ below.
+
+### P2″ — an undecided gate write leaves the item set wrongly certain
+
+The confirmed repro. `Directory.Build.targets` contributes a Compile item; the
+entry project writes the gate under a condition we cannot evaluate:
+
+```xml
+<PropertyGroup>
+  <X>abc</X>
+  <ImportDirectoryBuildTargets Condition="'$(X.Substring(0,1))' == 'a'">false</ImportDirectoryBuildTargets>
+</PropertyGroup>
+```
+
+MSBuild evaluates that condition to `true` (oracle-confirmed), so it writes the
+gate `false` and **skips** `Directory.Build.targets`. We cannot evaluate
+`Substring`, so we never write the gate, read it as absent, default it to true,
+import the file, and publish its Compile item with `items_uncertain = false`.
+
+That is a wrong *item set* — the thing the LSP folds over — and it is worse
+than the boolean defect it was found next to: it needs no exotic spelling, only
+a property function in a condition, and it is reachable on ordinary SDK
+projects.
+
+#### The measurement that says this is affordable
+
+The obvious fear is the `msbuild-trust-audit` skill's §2: *never gate a fold on
+the generic provenance seam*, because it fires for essentially every real SDK
+project. Probed before designing anything (real `Microsoft.NET.Sdk` project,
+dotnet 10.0.301, both `Directory.Build.*` files present):
+
+| property | `property_provenance_untrusted` | value |
+|---|---|---|
+| `ImportDirectoryBuildProps` | false | `true` |
+| `ImportDirectoryBuildTargets` | false | `true` |
+| `DirectoryBuildPropsPath` | false | *(the real path)* |
+| `DirectoryBuildTargetsPath` | false | *(the real path)* |
+| `ImportDirectoryPackagesProps` | false | `true` |
+
+**85 other properties on that same project are untrusted; none of these are.**
+The SDK writes the gate names cleanly. So a trust-consulting gate does not
+collapse into a wholesale decline, and this does *not* need the bespoke
+consequence-side mechanism `LangVersion` needed. That is the single fact which
+makes P2″ a small change rather than a research project, and it is why the
+probe comes before the design.
+
+#### The fix is a **read-site** check, and two review rounds were needed to get there
+
+The first cut latched at the *write*, copying `define_context` /
+`package_context`: set a context around writes of the four gate names, and let
+`push` turn a diagnostic into `items_uncertain`. Review killed it, twice, and
+the second round is the instructive one.
+
+- **Round 1 — incomplete.** The context covered only the write's own condition.
+  An enclosing `<PropertyGroup Condition>` or `<When>` is evaluated *before* the
+  walker reaches the property child, and a skipped branch never reaches one at
+  all, so those routes still committed. (Checklist entries 2 and 3, found
+  exactly as the skill predicts: one missing entry per round.)
+- **Round 2 — wrong seam.** Write-site latching over-declines in two concrete
+  ways. A later clean unconditional overwrite re-pins the value, so both sides
+  make the same import decision and the decline is spurious. And a body read
+  that happens *before* the import is exactly empty on both sides regardless of
+  the gate — probed (dotnet 10.0.301, 2026-08-01): with
+  `Directory.Build.targets` present and defining `FromDirBuild`, a body
+  `<Reads>[$(FromDirBuild)]</Reads>` reads `[]` while the final `FromDirBuild`
+  reads `set`. A test written in round 1 asserted that spurious degrade *as a
+  requirement*; it was wrong and was replaced.
+
+Why the precedent misled: `define_context` and `package_context` latch at the
+write and that is *equivalent* for them, because their values are consumed at
+`into_project` — every write precedes the read. The gate is consumed
+**mid-walk**, so the two differ. Which is this plan's own rule, stated at the
+top and then not followed: *trust is produced by the code that **reads** the
+value*. The final design asks the question once, of the final value, at the
+moment the splice consumes it (`State::gate_value_is_exact` +
+`note_directory_build_splice_decision`).
+
+That collapses all three placements into one check — a group or `Choose`
+condition that could not be decided already leaves its writes unpinned, so the
+read site sees it without needing to know where the write was.
+
+#### The predicate is name-keyed, *not* the generic exactness question
+
+`gate_value_is_exact` deliberately consults only the three name-keyed channels
+(`unpinned_value_properties`, `unevaluable_written`, SDK package taint) and
+**not** `undefined_read_is_exact`, which folds in `walk_opaque`. Routing
+opacity in here made six existing tests fail with "SDK structural package
+uncertainty must not reintroduce Compile uncertainty" — opacity is latched by
+ordinary SDK structure, so this was the generic-seam wholesale decline arriving
+by a different route. The narrow question ("was a write *of this name*
+undecided, refused, or SDK-tainted?") is the one the splice needs, and it holds
+whether or not the name currently has a value.
+
+#### Every consumption point, and the two precision items left open
+
+The check sits at all four points a splice decision is made: the
+pre-`Sdk.targets` snapshot (which serves the fallback splice), the chain's own
+`Directory.Build.targets` import point, the entry props splice, and the
+deferred nested-SDK props splice — that last one resolves and imports directly
+rather than calling `fire_entry_directory_build_props_splice`, so it needed its
+own. Enumerating these by hand is what review kept catching, which is why the
+property names now live in two constants the production code reads and the
+sweep enumerates.
+
+A fourth round raised the sharpest of these and it *was* fixed: the
+pre-`Sdk.targets` snapshot's verdict was being recorded unconditionally, even
+though the snapshot is discarded when the chain reaches its own import point —
+so an SDK that cleanly re-pins the gate before that point would have declined a
+project for nothing. The verdict now travels to the fallback branch that
+actually uses it.
+
+A fifth round found more of that family, fixed — and then a **sixth round
+found that the fifth's fix had opened a soundness hole**, which is the useful
+part of this record. Guarding the verdict on "a file resolved" is wrong when
+the *path* is the unpinned input: our resolution finding nothing is no evidence
+when MSBuild resolved from a different value and imported something. The two
+inputs are not symmetric, and the rule is now stated as such —
+
+  * unpinned **path** ⇒ uncertain whatever resolved;
+  * unpinned **gate** ⇒ uncertain only once a file has actually resolved.
+
+That oscillation (too lax → too eager → too lax) is the signal that per-site
+reasoning about "can this decision change the outcome?" is the expensive part,
+not the plumbing. The regression is pinned by
+`an_undecided_path_redirect_flags_even_when_nothing_resolves_here`, which fails
+against the fifth round's shape.
+
+The sixth round also found the facet gap: the verdict set only
+`items_uncertain`, leaving `project_references_uncertain` and
+`package_references_uncertain` trusted, though a `Directory.Build.*` file
+declares `<ProjectReference>` and `<PackageReference>` as readily as
+`<Compile>`. It now routes through `mark_structural_skip`, the existing "an
+import that could not be resolved to a definite decision" primitive, which
+marks every facet and records a cause — rather than a bespoke flag pair, which
+is how the gap arose.
+
+What the fifth round was reaching for is still true and still applied, just
+correctly scoped: with an *exact* path resolving to nothing, MSBuild's own
+`exists('$(DirectoryBuild*Path)')` is false whatever the gate says, so both
+sides skip and no decline is owed. That `items_uncertain` is not a cheap flag —
+it stops the LSP folding the project — is what makes the distinction worth
+getting right rather than rounding to "always decline".
+
+Three **precision** items are knowingly left, none a wrong commit — they cost
+declines, not exactness. Given the fifth round's regression, the bar for
+chasing a decline is now "pin it with a test that fails against the looser
+shape", not "it looks unnecessary":
+
+- `unevaluable_written` is insert-only, never cleared by a later clean write,
+  so a refused write followed by a clean unconditional overwrite still declines
+  although the final value is exact. Clearing it on a clean write is the fix,
+  and it touches every consumer of that map, not just this one.
+- `is_sdk_directory_build_targets_import_point` also accepts an `Exists`-only
+  custom-SDK import, whose condition does not read `ImportDirectoryBuildTargets`
+  at all — so for that shape an undecidable write to the gate declines for
+  nothing. Deriving the checked inputs from the actual condition text would fix
+  it, and is more per-site reasoning of exactly the kind that produced the
+  fifth-round regression, so it is recorded rather than attempted.
+- An exactly-resolved file that was *already walked* makes both possible
+  decisions identical (import-dedup makes the duplicate a no-op), so the
+  verdict could be skipped there.
+- `note_directory_build_splice_decision` ORs the gate and path verdicts, so an
+  *exactly* `false` gate — which proves the file cannot be imported — still
+  declines if the path is untrusted, though the path is then irrelevant on both
+  sides. Basing the decision on the resolved outcome rather than on both inputs
+  would recover it.
+
+#### The props/targets asymmetry is real and is pinned
+
+A body write of `ImportDirectoryBuildProps` cannot change the props import on
+*either* side — `Directory.Build.props` is imported before the body. Probed:
+a body `<ImportDirectoryBuildProps>false</…>` still leaves the file's
+`FromProps` reading `set`. So the sweep asserts the targets pair *flags* on an
+undecidable body write and the props pair *does not*, with the partition
+asserted exhaustive against the declared name list — a name added to the
+walker's directly-read set without a decision about when it is consumed fails
+the test rather than going untested.
+
+#### The open question, settled by measurement: **no SDK-subtree tolerance**
+
+`define_context` is deliberately set only when `!in_sdk_subtree`, and
+`compile_context` tolerance is justified by "an SDK sub-import we can't follow
+never drops a *hand-written* source". **That justification does not transfer**:
+a wrongly-skipped `Directory.Build.props` drops hand-written Compile items by
+construction. No such exemption was added. Note this is a *different* question
+from the `walk_opaque` one above: the read-site predicate never asks the
+generic exactness question, so SDK noise does not reach it, and the strictness
+that remains is name-keyed. Measured rather than assumed:
+
+- the whole `borzoi-msbuild` suite passes unchanged;
+- a real `Microsoft.NET.Sdk` project still commits — `items_uncertain=false`,
+  its Compile item published, 85 properties untrusted as before;
+- the MSBuild corpus differential is **unchanged at `skipped_facets=11`,
+  `divergences=0`** (`matched_facets` 30→31 is #263's fix, not this change).
+
+So the strict reading costs nothing measurable, and tolerance stays out.
+Adding it would have silently reintroduced the defect for every project whose
+SDK conditions the gate.
+
+#### Sweep the siblings in the same change — **both resolved without code**
+
+Per the checklist's "a reviewer finds exactly one missing entry per round"
+discipline, the other direct reads with the same shape were swept too. Neither
+needed a change, and the reasons are worth keeping because they are the two
+standard ways this audit *should* terminate.
+
+- `DirectoryPackagesPropsPath` (`evaluator.rs:~596`) decides
+  `redirected_central_file_walked`, which **suppresses**
+  `package_references_uncertain` — so an untrusted value looks like the same
+  defect one consumer over. **It is not, because the consumer never commits.**
+  Probed on the real SDK chain with CPM enabled: `package_references_uncertain`
+  is `true` under an undecidable redirect, under a cleanly-decided-false one,
+  *and* under a cleanly-decided-true one. The inline CPM discharge does not
+  fire on a real SDK project at all, so there is no wrong commit to prevent.
+  This is `check-for-a-consumer-before-paying-for-a-trust-verdict` in its
+  literal form. **Landmine for later:** if the discharge is ever made to fire
+  on real projects, this trust verdict becomes load-bearing and must be added
+  with it.
+
+  The first attempt at a test for this was **vacuous** and was deleted rather
+  than shipped: in the SDK-less unit harness `Directory.Packages.props` is
+  never imported, so `package_references_uncertain` was `true` whatever the
+  condition said. It passed identically with the redirect decidable and
+  undecidable. Any test in this family needs its control arm run before it is
+  believed.
+
+- `MSBuildDisableFeaturesFromVersion` (`properties/expr.rs:~1006`) is
+  fail-safe by construction: it evaluates *only* when the table holds exactly
+  the `999.999` sentinel and returns `Unsupported` for every other reading,
+  including an untrusted one. Audited, no change.
+
+#### The systematic gate
+
+A unit test per gate name is what this codebase already tried; the boolean
+defect sat behind one. The generative shape instead: **for each property name
+the walker reads directly, a case that writes it under an undecidable
+condition, asserting the consumer's uncertainty flag is set.** The name list is
+closed and already exists in the source (`is_cpm_flag_property_name` and the
+gate names), so the sweep can be driven off it rather than hand-maintained —
+which means adding a new directly-read name to the walker without also
+declaring it forces a failure.
+
+Note what a whole-project differential cannot do here, learned from #266:
+MSBuild agrees with us on the *value* of a gate property in all these cases;
+the divergence is in what we then *do* with it. A value-witness harness is
+blind to it, exactly as `fsproj_derived_tfm_diff` is blind to a moved import.
+The oracle's role is to establish the ground truth for the fixture (as it did
+for `Substring` above), not to be the assertion.
+
+**Sized:** small — one context flag, four names, ~5 call sites, plus the two
+siblings. Strictly smaller than P3, and it closes the *reachable* half of what
+P3 would close.
 
 ### P3 — value-carried
 
