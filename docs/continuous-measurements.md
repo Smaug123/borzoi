@@ -57,6 +57,7 @@ Both halves exist for every axis, and the split is:
 | axis | gate (`ci.yml`) | measurement (`stats.yml`) |
 |---|---|---|
 | parser | `parser_corpus`, `parser_corpus_diff` | `parser-divergence` |
+| parser on adversarial input | `parser_panic_sweep` | — |
 | in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
 | find references | the crate's own suite | `find-references-differential` |

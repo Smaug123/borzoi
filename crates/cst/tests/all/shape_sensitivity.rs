@@ -202,11 +202,13 @@ proptest! {
     }
 }
 
-/// Punctuation soup over the characters that reach the parser's hand-written
-/// invariant guards — bracket and pipe openers, dotted heads, and the `match`
-/// keyword, which is where a const-payload guard lives. The
+/// Punctuation soup over the characters that reach the parser's recovery arms —
+/// bracket and pipe openers, dotted heads, and the `match` keyword, whose
+/// swallowed closer is what strands a range head in constant position. The
 /// [`snippet`] generator builds well-shaped *lines*, so it never reaches them;
-/// this one is deliberately not F#.
+/// this one is deliberately not F#. `parser_panic_sweep` searches the same
+/// space far more thoroughly; what this one adds is the *verdict* as the
+/// subject, rather than the parse.
 fn adversarial_soup() -> impl Strategy<Value = String> {
     let piece = prop_oneof![
         Just(">"),
@@ -232,43 +234,45 @@ fn adversarial_soup() -> impl Strategy<Value = String> {
     })
 }
 
-/// A parser panic at an endpoint version must not escape the verdict.
+/// The buffer that used to panic the bottom-of-ladder parse now yields a real
+/// verdict at both ends.
 ///
-/// The parser is hand-written recursive descent whose invariant guards fire on
-/// some malformed input — a pre-existing hazard the LSP contains by wrapping
-/// every parse in `catch_unwind`. Asking for the verdict re-parses at versions
-/// the caller never requested, so a buffer that parses at the *asked-for*
-/// version can still panic at an endpoint, on a path with no wrapper around it
-/// (`borzoi_sema::SyntaxRecovery::of_guessed_version` calls straight in).
+/// `adversarial_soup` found it, and it reached an invariant guard in the
+/// constant-literal dispatch that malformed input can enter — so the verdict
+/// was assembled from a parse that never completed. `parser_panic_sweep` is the
+/// standing check that no input does that; this case keeps the specific
+/// spelling, because it is the one that proved the hazard was reachable through
+/// a request path rather than only in principle.
 ///
-/// A panic proves nothing about version-invariance, so the conservative reading
-/// is the version-dependent one: the caller retains no diagnostics and commits
-/// nothing.
+/// The `catch_unwind` inside `diagnostics_are_version_invariant` stays: it is
+/// containment for a *future* guard, on a path
+/// (`borzoi_sema::SyntaxRecovery::of_guessed_version`) that has no wrapper of
+/// its own. The two properties below are what assert it still works.
 #[test]
-fn an_endpoint_parser_panic_does_not_escape_the_verdict() {
+fn the_former_endpoint_panic_now_yields_a_real_verdict() {
     let src = ">(match|.\n>\nmatch}..";
-    assert!(
-        catch_unwind_silent(|| parse_at(src, LanguageVersion::MIN)).is_err(),
-        "this buffer must still panic the bottom-of-ladder parse"
-    );
-    assert!(
-        catch_unwind_silent(|| parse_at(src, LanguageVersion::MAX)).is_ok(),
-        "...and must still be parsed by the top one, or the case proves nothing"
-    );
+    for lang in LanguageVersion::NUMBERED
+        .into_iter()
+        .chain([LanguageVersion::Preview])
+    {
+        let parse = catch_unwind_silent(|| parse_at(src, lang));
+        assert!(parse.is_ok(), "{src:?} must parse at {lang}");
+    }
 
     let verdict = catch_unwind_silent(|| {
         borzoi_cst::parser::diagnostics_are_version_invariant(src, &HashSet::new(), FileKind::Impl)
     });
-    assert_eq!(
-        verdict.ok(),
-        Some(false),
-        "a panicking endpoint must be contained, and read as version-dependent"
+    assert!(
+        verdict.is_ok(),
+        "the verdict must be computed, not contained"
     );
 }
 
 proptest! {
-    /// The generated form of [`an_endpoint_parser_panic_does_not_escape_the_verdict`]:
-    /// no input makes the verdict itself panic.
+    /// The generated form of [`the_former_endpoint_panic_now_yields_a_real_verdict`]:
+    /// no input makes the verdict itself panic. Holds by containment even if a
+    /// future guard fires at an endpoint, which is the point of asserting it
+    /// here rather than relying on the parser being panic-free.
     #[test]
     fn the_verdict_never_escapes_a_parser_panic(src in adversarial_soup()) {
         let verdict = catch_unwind_silent(|| {

@@ -508,7 +508,8 @@ pub(super) fn raw_starts_minus_expr(tok: &Token<'_>) -> bool {
         // not an `atomicExpr`, so `f upcast x` does not apply (FCS requires
         // `f (upcast x)`). **Must stay in lockstep with that dispatch**: admitting
         // the token here without the dispatch would fall through to
-        // `parse_const_payload`'s `unreachable!` and panic.
+        // `parse_const_payload`'s recovery arm, which consumes the keyword as a
+        // stray token under `ERROR` instead of parsing the expression it opens.
         Token::Upcast | Token::Downcast => true,
         // `lazy` / `assert` are `declExpr`-level keyword prefixes
         // (`pars.fsy:4346`/`:4349`, → `SynExpr.Lazy`/`SynExpr.Assert`) sitting at
@@ -519,7 +520,8 @@ pub(super) fn raw_starts_minus_expr(tok: &Token<'_>) -> bool {
         // `raw_starts_atomic_expr`: a `declExpr` is not an `atomicExpr`, so
         // `f lazy x` does not apply (FCS requires `f (lazy x)`). **Must stay in
         // lockstep with that dispatch** — admitting the token here without it
-        // would fall through to `parse_const_payload`'s `unreachable!`.
+        // would fall through to `parse_const_payload`'s recovery arm, which
+        // consumes the keyword as a stray token rather than parsing its operand.
         Token::Lazy | Token::Assert => true,
         // `fixed` is the `declExpr`-level pinning prefix (`pars.fsy:4624 FIXED
         // declExpr`, → `SynExpr.Fixed`). Like `lazy`/`if`/`new`, it belongs in
@@ -529,10 +531,11 @@ pub(super) fn raw_starts_minus_expr(tok: &Token<'_>) -> bool {
         // a `declExpr` is not an `atomicExpr`, so `f fixed x` does not apply (FCS
         // rejects it). **Must stay in lockstep with that dispatch** — admitting
         // the token here without it would fall through to `parse_const_payload`'s
-        // `unreachable!`. (Unlike `lazy`/`assert`, the dispatched producer parses
-        // the operand with the full `parse_expr`, not a tight Pratt frame — see
-        // [`Parser::parse_fixed`] — because `FIXED declExpr` has no `%prec` and
-        // its operand binds looser than every infix operator.)
+        // recovery arm, which consumes the keyword as a stray token rather than
+        // parsing its operand. (Unlike `lazy`/`assert`, the dispatched producer
+        // parses the operand with the full `parse_expr`, not a tight Pratt frame
+        // — see [`Parser::parse_fixed`] — because `FIXED declExpr` has no
+        // `%prec` and its operand binds looser than every infix operator.)
         Token::Fixed => true,
         // Same eligible set as `Parser::op_is_minus_expr_prefix` —
         // `IsValidPrefixOperatorUse`'s named PLUS_MINUS_OP cases plus

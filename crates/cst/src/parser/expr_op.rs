@@ -371,8 +371,8 @@ impl<'src> Parser<'src> {
             // The operand is a `minusExpr`, which excludes the open-lower range
             // `..e` (a `declExpr` only) — FCS rejects `- ..3`. Guarding on
             // `!peek_is_range_op` keeps a leading `..` out of the recursion, so
-            // it lands as a clean missing-operand error instead of reaching the
-            // atomic const parser's `unreachable!`. The bare `*` wildcard is an
+            // it lands as a clean missing-operand error instead of the atomic
+            // const parser's stray-token one. The bare `*` wildcard is an
             // atom (`parse_index_wildcard`), so it flows through as an operand
             // (`- *` → `App(~-, IndexRange(None,None))`); FCS offside-rejects the
             // top-level form, a lenient divergence (see the plan).
@@ -419,8 +419,8 @@ impl<'src> Parser<'src> {
         self.maybe_warn_keyword_after_prefix();
         // As with the `-`/`+`/`%` prefixes, the `&`/`&&` operand is a
         // `minusExpr`, so the open-lower range `..e` is excluded (FCS rejects
-        // `& ..3`) — guard it out of the recursion to keep the leading `..` away
-        // from the atomic const parser's `unreachable!`. The `*` wildcard is an
+        // `& ..3`) — guard it out of the recursion so the leading `..` records a
+        // missing operand rather than the atomic const parser's stray token. The `*` wildcard is an
         // atom and flows through (lenient on the FCS-offside-rejected `& *`).
         if self.peek_is_expr_start() && !self.peek_is_range_op() {
             self.parse_minus_expr();
@@ -435,8 +435,9 @@ impl<'src> Parser<'src> {
     /// [`SyntaxKind::INDEX_FROM_END_EXPR`]. The `^` is emitted as a
     /// [`SyntaxKind::HAT_TOK`]; the operand is a `minusExpr` (so `^3` is
     /// `IndexFromEnd 3`, `^a.b` is `IndexFromEnd a.b`). Like the `&`/`&&` prefix,
-    /// the open-lower range `..e` is excluded from the operand (keeping a leading
-    /// `..` away from the atomic const parser's `unreachable!`); a bare `^` with
+    /// the open-lower range `..e` is excluded from the operand (so a leading
+    /// `..` records a missing operand rather than the atomic const parser's
+    /// stray token); a bare `^` with
     /// no operand records a clean missing-operand error. Caller has verified the
     /// cursor is at `Token::Op("^")`.
     pub(super) fn parse_from_end_expr(&mut self) {
@@ -612,7 +613,7 @@ impl<'src> Parser<'src> {
             // The lazy-only leading open-lower range `..e` — a `declExpr` the
             // `parse_pratt_expr` path below would reject (it descends to
             // `parse_minus_expr`, whose `!peek_is_range_op` guard keeps a bare
-            // `..` out of the atomic const parser's `unreachable!`). FCS's
+            // `..` out of the atomic const parser's stray-token arm). FCS's
             // `LAZY declExpr` operand admits it, so parse it directly; `ASSERT
             // ..3` is rejected by FCS and falls through to the missing-operand
             // recovery below.
@@ -932,10 +933,10 @@ impl<'src> Parser<'src> {
     ///   doesn't model — `=` in `let x = 1` is the assignment of a
     ///   let-binding, followed by `Virtual::BlockBegin` rather than an
     ///   expression atom. Treating it as infix would dive into
-    ///   `parse_atomic_expr` on the virtual and hit
-    ///   `parse_const_expr`'s `unreachable!`. We bail here so the outer
-    ///   impl_file loop can absorb the `=` (and the rest of the
-    ///   binding) as recovery errors, keeping the tree lossless.
+    ///   `parse_atomic_expr` on the virtual, which has no arm for it and
+    ///   would consume it as a stray token under `parse_const_expr`. We bail
+    ///   here so the outer impl_file loop can absorb the `=` (and the rest of
+    ///   the binding) as recovery errors, keeping the tree lossless.
     pub(super) fn peek_infix_continuation(&self) -> Option<(u16, u16)> {
         let bp = self.peek_infix_op()?;
         // Swallowed-closer gate. LexFilter strips a paren expression's `)`
