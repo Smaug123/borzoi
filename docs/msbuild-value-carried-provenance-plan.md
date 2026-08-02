@@ -1,16 +1,21 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** **P0, P1, P2′ and P2″ landed.** The reference scan is
+> **Status:** **P0, P1, P2′, P2″ and P2‴ landed.** The reference scan is
 > a walk of the same parse tree evaluation uses, so a member access can no
 > longer launder its receiver's provenance (#265); the gates read MSBuild
-> booleans rather than strings (#266); and an undecided `Directory.Build.*`
-> gate now withdraws every item facet instead of publishing a wrong one.
+> booleans rather than strings (#266); an undecided `Directory.Build.*`
+> gate now withdraws every item facet instead of publishing a wrong one; and
+> the third forward-uncertainty channel is inside `PropertyProvenance` rather
+> than beside it, so it can no longer drift from the other two.
 >
 > **Open, in the order I would take them:**
 >
-> 1. The three recorded **precision** items under P2″ — declines, not wrong
+> 1. P2 — the lattice. P2‴ found the live evidence for it: the "forgot a
+>    channel" hazard had already happened, to a channel the struct did not
+>    name.
+> 2. The three remaining **precision** items under P2″ — declines, not wrong
 >    answers, and each carries regression risk (see the fifth-round entry).
-> 2. P1′, P2, P4.
+> 3. P1′, P4.
 >
 > **P3 is deferred on measurement, not on effort** — the census (re-run
 > 2026-08-02, zero wrong commits) shows we commit on 17% of the SDK's call
@@ -293,23 +298,30 @@ worth doing *for Bucket A only*, but its benefit is **fewer spurious declines**,
 not soundness, once P1 lands. Re-sequenced after P2/P3 and explicitly labelled
 a precision improvement so nobody reviews it as a fix.
 
-### P2 — one lattice instead of two maps
+### P2 — one lattice instead of three maps
 
-Replace the two parallel side maps with a single `Trust` value — a product of
-the two channels, since they have genuinely different downstream semantics and
+Replace the parallel side maps with a single `Trust` value — a *product* of the
+channels, since they have genuinely different downstream semantics and
 collapsing them would change behaviour:
 
 ```rust
 struct Trust {
     unpinned: Option<UnpinnedRoot>,
     sdk_package: Option<SdkPackagePropertyTaint>,
+    refused: bool,
 }
 ```
 
 with a sealed `join` (per channel, first cause wins — matching today's
-`find_map`). `PropertyProvenance`, `TaintOutcome` and `UnpinnedOutcome`
-collapse into it. The "forgot one channel" hazard becomes unrepresentable
-rather than convention-enforced.
+`find_map`). `PropertyProvenance`, `TaintOutcome`, `UnpinnedOutcome` and
+`RefusedOutcome` collapse into it. The "forgot one channel" hazard becomes
+unrepresentable rather than convention-enforced.
+
+There are **three** channels, not two, and P2‴ is why the count is written down
+here: `unevaluable_written` was outside `PropertyProvenance` and drifted from
+its siblings for as long as it was outside. That is the concrete instance of the
+hazard this stage abolishes, so P2 is no longer speculative tidying — it is the
+generalisation of a defect that has now actually happened.
 
 **Property-test the algebra:** `join` is associative, commutative, idempotent,
 with `Trust::CERTAIN` as identity, and *monotone* — `join` never returns
@@ -535,15 +547,17 @@ sides skip and no decline is owed. That `items_uncertain` is not a cheap flag �
 it stops the LSP folding the project — is what makes the distinction worth
 getting right rather than rounding to "always decline".
 
-Three **precision** items are knowingly left, none a wrong commit — they cost
+Four **precision** items were knowingly left, none a wrong commit — they cost
 declines, not exactness. Given the fifth round's regression, the bar for
 chasing a decline is now "pin it with a test that fails against the looser
-shape", not "it looks unnecessary":
+shape", not "it looks unnecessary". The first is **done** (see P2‴ below); the
+rest stand:
 
-- `unevaluable_written` is insert-only, never cleared by a later clean write,
+- ~~`unevaluable_written` is insert-only, never cleared by a later clean write,
   so a refused write followed by a clean unconditional overwrite still declines
-  although the final value is exact. Clearing it on a clean write is the fix,
-  and it touches every consumer of that map, not just this one.
+  although the final value is exact.~~ Fixed by P2‴ — and the interesting part
+  is that it was not a precision item at all, but the visible end of a third
+  channel sitting outside the discipline that exists to prevent exactly that.
 - `is_sdk_directory_build_targets_import_point` also accepts an `Exists`-only
   custom-SDK import, whose condition does not read `ImportDirectoryBuildTargets`
   at all — so for that shape an undecidable write to the gate declines for
@@ -644,6 +658,85 @@ for `Substring` above), not to be the assertion.
 **Sized:** small — one context flag, four names, ~5 call sites, plus the two
 siblings. Strictly smaller than P3, and it closes the *reachable* half of what
 P3 would close.
+
+### P2‴ — the third channel, brought under the discipline — **landed**
+
+The first precision item above turned out not to be a precision item. Chasing
+it asked the obvious question — *why is this map insert-only when its two
+siblings clear?* — and the answer is that it is not a sibling at all in the
+code: there are **three** name-keyed forward-uncertainty channels, and
+`PropertyProvenance`, the struct whose stated purpose is that "a new write path
+cannot update one map and silently forget the other", named only two.
+`unevaluable_written` was mutated by three hand-written `insert` calls that
+bypassed `apply_property_provenance` entirely — so the one rule the discipline
+was built to enforce could not apply to it, and the missing `Clear` is exactly
+the drift the struct exists to prevent, one level out.
+
+That is the same finding this plan opens with, applied to itself: *"a discipline
+patch on a representational problem."* A channel that is not in the type is not
+disciplined by the type.
+
+**The fix.** A third field, `refused: RefusedOutcome`, with `Set`/`Clear`/`Keep`
+like its siblings; the refusal sites name `Set` instead of inserting; and the
+clean-write
+site derives `Clear` from the sibling verdict:
+
+```rust
+fn after_write(unpinned: &UnpinnedOutcome) -> Self {
+    match unpinned {
+        UnpinnedOutcome::Clear => RefusedOutcome::Clear,   // clean value, clean gate
+        UnpinnedOutcome::Set(_) | UnpinnedOutcome::Keep => RefusedOutcome::Keep,
+    }
+}
+```
+
+The channels share the predicate but not a field, and the reason is worth
+stating because it is why a mechanical `derive`-style collapse would be wrong:
+the refusal sites record `Set` here while recording `UnpinnedOutcome::Clear`
+there, because they *remove* the binding rather than storing an unpinned value.
+Riding on `UnpinnedOutcome::Clear` is also the safety argument — that predicate
+("clean value under a clean gate re-pins") is already audited and pinned by
+existing tests, so no new judgement about when a write is trustworthy was
+invented here.
+
+**The test is a sweep over *why* a write is untrusted**, which is the axis the
+existing gate sweep does not vary (it varies *where* the deciding condition
+sits). Five kinds — undecidable condition on the write, on the group, and
+unevaluable value via expression / item reference / metadata reference — each
+asserted twice: left alone it must decline, cleanly overwritten it must commit
+*and* produce the right item set. Red before the fix on exactly the three
+value-kinds and green on the two condition-kinds, which is the asymmetry stated
+as a failure. Ground truth for all three (dotnet 10.0.301, 2026-08-02): MSBuild
+reports the overwrite, `false`, in every case — it evaluates `@(Foo)` and
+`%(Bar.Identity)` in a property body without complaint at a point where no item
+exists.
+
+**What it buys, measured before writing it.** Instrumenting the clean-write site
+and running the whole `borzoi-msbuild` suite: the refused-then-cleanly-rewritten
+shape occurs for exactly five names, all from the real SDK chain —
+`RootNamespace`, `OutputPath`, `IntermediateOutputPath`,
+`TargetFrameworkVersion`, `TargetFrameworkIdentifier` — and **none of them is a
+name either consumer asks about while the stale mark stands**
+(`undefined_read_is_exact` is only reached for a name with no binding, and
+`gate_value_is_exact` is asked only of the four splice properties). Both
+censuses are unchanged by the fix: 66/396 and 139/2758, still exactly on their
+floors.
+
+So the honest accounting is that this recovers **zero declines today**, and it
+is still the right change: the value is that the third channel can no longer
+drift from the other two, and the next person to add a write path is forced to
+say what it does to all three. A decline recovered would have been the smaller
+prize.
+
+Two of the newly-named outcomes are likewise **inert**, and are recorded as such
+rather than defended as fixes: the reserved-toolset seed now scrubs the refused
+mark alongside the other two (its own comment already promised to scrub "both
+provenance marks", and leaving one of three is the drift being fixed), and the
+unmodellable-body refusal now says `Set` where the unpinned root it already
+records declines for every consumer anyway. Neither is observable — a reserved
+name is never a splice property, and the unpinned root subsumes the refusal —
+so neither carries a test. Naming an outcome that cannot be wrong is the price
+of a struct that forces every write to name one.
 
 ### The census, re-run — and what it says about P3's priority
 

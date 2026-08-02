@@ -1076,6 +1076,38 @@ fn an_undecided_path_redirect_leaves_the_item_set_uncertain() {
 /// `<When>` arm containing it.
 type Placement = (&'static str, fn(&str, &str) -> String);
 
+/// A project whose body is `body`, beside a `Directory.Build.targets`
+/// contributing one Compile item. `X` is defined so a sweep can write
+/// conditions and values that read it.
+fn parse_with_body(body: &str) -> crate::ParsedProject {
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+  </PropertyGroup>
+{body}
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    parse_file(&project_path)
+}
+
 #[test]
 fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
     // Placement × name, over the walker's declared directly-read set. The two
@@ -1096,35 +1128,6 @@ fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
     let (props_gate, props_path) = crate::evaluator::DIRECTORY_BUILD_PROPS_SPLICE;
     let consumed_after_body = [targets_gate, targets_path];
     let consumed_before_body = [props_gate, props_path];
-
-    fn parse_with_body(body: &str) -> crate::ParsedProject {
-        let tmp = TempDir::new().unwrap();
-        write_at(
-            tmp.path(),
-            "Directory.Build.targets",
-            r#"<Project>
-  <ItemGroup>
-    <Compile Include="FromDirBuild.fs" />
-  </ItemGroup>
-</Project>"#,
-        );
-        let project_path = write_at(
-            tmp.path(),
-            "Demo.fsproj",
-            &format!(
-                r#"<Project>
-  <PropertyGroup>
-    <X>abc</X>
-  </PropertyGroup>
-{body}
-  <ItemGroup>
-    <Compile Include="Main.fs" />
-  </ItemGroup>
-</Project>"#
-            ),
-        );
-        parse_file(&project_path)
-    }
 
     // The three places a condition can decide whether the write happens —
     // checklist entries 1, 2 and 3. Each is evaluated by different code, and
@@ -1173,6 +1176,95 @@ fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
                 "{name} is consumed before the body, so a body write {placement} \
                  cannot change the import on either side and must not cost a \
                  decline",
+            );
+        }
+    }
+}
+
+/// A way of writing a gate property that the walker cannot trust, as
+/// `(description, build the XML)`. The kinds fall in two families, and the
+/// point of sweeping them together is that the *reason* a write is untrusted
+/// must not change what a later clean write does to it.
+type UntrustedWrite = (&'static str, fn(&str) -> String);
+
+#[test]
+fn a_clean_overwrite_re_pins_a_gate_however_the_earlier_write_was_untrusted() {
+    // Last write wins, in MSBuild and here: whatever we failed to make of an
+    // earlier write to the name, an unconditional clean write afterwards leaves
+    // both sides holding exactly that value, so the splice decision it feeds is
+    // exact and the item set must be published.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02) for each untrusted kind below,
+    // `<ImportDirectoryBuildTargets>` written twice with the clean `false`
+    // second: MSBuild reports `false` in every case — including the item and
+    // metadata references, which it evaluates without complaint at a point
+    // where no item exists.
+    //
+    // The two families are recorded by *different* channels — an undecided
+    // condition by the unpinned map, an unevaluable value by the refused-write
+    // set — so sweeping them together is what makes the property a property:
+    // the clean write must discharge the name whichever channel holds it.
+    let (targets_gate, targets_path) = crate::evaluator::DIRECTORY_BUILD_TARGETS_SPLICE;
+
+    let kinds: &[UntrustedWrite] = &[
+        ("an undecidable condition on the write", |name| {
+            format!(
+                "  <PropertyGroup>\n    <{name} Condition=\"{UNDECIDABLE_TRUE}\">true</{name}>\n  \
+                 </PropertyGroup>"
+            )
+        }),
+        ("an undecidable condition on the group", |name| {
+            format!(
+                "  <PropertyGroup Condition=\"{UNDECIDABLE_TRUE}\">\n    \
+                 <{name}>true</{name}>\n  </PropertyGroup>"
+            )
+        }),
+        ("an unevaluable expression in the value", |name| {
+            format!(
+                "  <PropertyGroup>\n    <{name}>$(X.Substring(0,1))</{name}>\n  </PropertyGroup>"
+            )
+        }),
+        ("an item reference in the value", |name| {
+            format!("  <PropertyGroup>\n    <{name}>@(Foo)</{name}>\n  </PropertyGroup>")
+        }),
+        ("a metadata reference in the value", |name| {
+            format!("  <PropertyGroup>\n    <{name}>%(Bar.Identity)</{name}>\n  </PropertyGroup>")
+        }),
+    ];
+
+    for name in [targets_gate, targets_path] {
+        for (description, build) in kinds {
+            // Without the overwrite the decline is owed — this arm is what
+            // stops "never record anything" passing the sweep.
+            assert!(
+                parse_with_body(&build(name)).items_uncertain,
+                "{name} written with {description} and left there must leave the \
+                 item set uncertain",
+            );
+            // `false` is a nonsense path and a false gate alike, so for both
+            // names the exact outcome is the same: no `Directory.Build.targets`
+            // joins the walk, and the project's own Compile item is all there
+            // is.
+            let overwritten = parse_with_body(&format!(
+                "{}\n  <PropertyGroup>\n    <{name}>false</{name}>\n  </PropertyGroup>",
+                build(name)
+            ));
+            assert!(
+                !overwritten.items_uncertain,
+                "{name} written with {description} and then cleanly overwritten \
+                 holds exactly the overwrite, so the splice it feeds is exact \
+                 and owes no decline; items: {:?}",
+                paths_of(&overwritten.items)
+            );
+            let names: Vec<String> = paths_of(&overwritten.items)
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(
+                names,
+                vec!["Main.fs".to_string()],
+                "{name} = false skips the implicit import, whatever {description} \
+                 did to the earlier write",
             );
         }
     }

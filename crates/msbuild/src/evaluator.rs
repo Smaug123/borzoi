@@ -1571,7 +1571,10 @@ struct State<'r> {
     /// expression, item reference, or metadata reference we can't
     /// evaluate, so the binding was removed rather than stored. The real
     /// build stores that value, so a later undefined read of the name is
-    /// not exact.
+    /// not exact, and neither is a splice decision that rests on it
+    /// ([`State::gate_value_is_exact`]). A later clean write under a clean
+    /// gate discharges the mark: last write wins on both sides. Mutated only
+    /// via [`Self::apply_property_provenance`].
     unevaluable_written: HashSet<String>,
 }
 
@@ -1704,11 +1707,23 @@ enum UnpinnedOutcome {
     Keep,
 }
 
+/// What a single property write does to the refused-write channel
+/// ([`State::unevaluable_written`]).
+enum RefusedOutcome {
+    /// Record the refusal — we stored no value, so the one the real build
+    /// stored is unknown to us.
+    Set,
+    /// Discharge any earlier refusal — this write re-pins the name.
+    Clear,
+    /// Leave the existing mark as-is.
+    Keep,
+}
+
 /// The provenance verdict for a single property write: what happens to
-/// **both** forward-uncertainty channels, applied through the one method
-/// ([`State::apply_property_provenance`]) that mutates either map.
+/// **all three** forward-uncertainty channels, applied through the one method
+/// ([`State::apply_property_provenance`]) that mutates any of them.
 ///
-/// The two channels stay deliberately separate — this type pairs them at
+/// The channels stay deliberately separate — this type pairs them at
 /// the *decision* point, not the concept:
 /// * [`State::unpinned_value_properties`] rides the diagnostic pipeline: a
 ///   read re-surfaces its root under the active context, so it can flip
@@ -1717,14 +1732,19 @@ enum UnpinnedOutcome {
 ///   only at package/item sites and propagates through *clean* reads; it
 ///   deliberately **never** reaches [`State::items_uncertain`] (Compile
 ///   evaluation tolerates SDK property machinery).
+/// * [`State::unevaluable_written`] records that we stored *no* value where
+///   the real build stored one, and is read where a name's current value
+///   decides something — [`State::undefined_read_is_exact`] and
+///   [`State::gate_value_is_exact`].
 ///
-/// Both union into [`ParsedProject::untrusted_properties`]
+/// The first two union into [`ParsedProject::untrusted_properties`]
 /// ([`State::property_provenance_untrusted`]). Because a write must name an
 /// outcome for each channel, a new write path cannot update one map and
-/// silently forget the other.
+/// silently forget the others.
 struct PropertyProvenance {
     taint: TaintOutcome,
     unpinned: UnpinnedOutcome,
+    refused: RefusedOutcome,
 }
 
 impl TaintOutcome {
@@ -1754,6 +1774,25 @@ impl UnpinnedOutcome {
             Some(root) => UnpinnedOutcome::Set(root),
             None if !write_condition_maybe_wrong => UnpinnedOutcome::Clear,
             None => UnpinnedOutcome::Keep,
+        }
+    }
+}
+
+impl RefusedOutcome {
+    /// A write that re-pins the unpinned channel — a clean value under a clean
+    /// gate — also discharges any earlier *refused* write to the same name:
+    /// last write wins on both sides, so whatever value the real build stored
+    /// for the write we declined to compute is now overwritten by one we
+    /// computed exactly. Any other write leaves the mark standing.
+    ///
+    /// The two channels share this predicate but not a field, because the
+    /// refusal sites are precisely the ones that record `Set` here while
+    /// recording [`UnpinnedOutcome::Clear`] there: they remove the binding
+    /// rather than storing an unpinned value.
+    fn after_write(unpinned: &UnpinnedOutcome) -> Self {
+        match unpinned {
+            UnpinnedOutcome::Clear => RefusedOutcome::Clear,
+            UnpinnedOutcome::Set(_) | UnpinnedOutcome::Keep => RefusedOutcome::Keep,
         }
     }
 }
@@ -2303,6 +2342,11 @@ impl<'r> State<'r> {
                 PropertyProvenance {
                     taint: TaintOutcome::Clear,
                     unpinned: UnpinnedOutcome::Clear,
+                    // MSB4004: the real build refuses a project write to a
+                    // reserved name and keeps its own value, which is the one
+                    // being seeded here. A refusal we recorded describes a
+                    // write no real evaluation performs.
+                    refused: RefusedOutcome::Clear,
                 },
             );
             self.reserved.insert(lower.clone());
@@ -2883,11 +2927,11 @@ impl<'r> State<'r> {
             .contains_key(&name.to_ascii_lowercase())
     }
 
-    /// The single point that mutates either forward-uncertainty channel:
-    /// apply a [`PropertyProvenance`] verdict to both maps. `name` keys the
+    /// The single point that mutates any forward-uncertainty channel:
+    /// apply a [`PropertyProvenance`] verdict to all three. `name` keys the
     /// taint map (lowercased internally, carrying the write span/origin);
-    /// `lower` keys the unpinned map. Every taint/unpinned mutation flows
-    /// through here so the two channels cannot drift at population time.
+    /// `lower` keys the unpinned map and the refused set. Every mutation flows
+    /// through here so the channels cannot drift at population time.
     fn apply_property_provenance(
         &mut self,
         name: &str,
@@ -2908,6 +2952,15 @@ impl<'r> State<'r> {
                 self.unpinned_value_properties.remove(lower);
             }
             UnpinnedOutcome::Keep => {}
+        }
+        match provenance.refused {
+            RefusedOutcome::Set => {
+                self.unevaluable_written.insert(lower.to_string());
+            }
+            RefusedOutcome::Clear => {
+                self.unevaluable_written.remove(lower);
+            }
+            RefusedOutcome::Keep => {}
         }
     }
 
@@ -3924,7 +3977,17 @@ fn walk_property_child_inner(
             } else {
                 UnpinnedOutcome::Keep
             };
-            state.apply_property_provenance(&name, &lower, PropertyProvenance { taint, unpinned });
+            state.apply_property_provenance(
+                &name,
+                &lower,
+                PropertyProvenance {
+                    taint,
+                    unpinned,
+                    // The write may or may not have happened; either way we
+                    // refused no value of our own.
+                    refused: RefusedOutcome::Keep,
+                },
+            );
             return;
         }
         CondGate::Unsupported => {
@@ -3940,6 +4003,7 @@ fn walk_property_child_inner(
                 PropertyProvenance {
                     taint: TaintOutcome::Set(node.range()),
                     unpinned,
+                    refused: RefusedOutcome::Keep,
                 },
             );
             emit_unsupported_condition(node, state);
@@ -3974,6 +4038,9 @@ fn walk_property_child_inner(
                 unpinned: UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(format!(
                     "<{name}> body"
                 ))),
+                // We stored no value; the unpinned root above already declines
+                // for every consumer, so this only says so in its own terms.
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4008,9 +4075,6 @@ fn walk_property_child_inner(
         // the tainted name doesn't appear in `properties`.
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4023,6 +4087,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4044,9 +4111,6 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4059,6 +4123,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4072,9 +4139,6 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4087,6 +4151,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4116,13 +4183,15 @@ fn walk_property_child_inner(
     // provenance is not a taint. Only `value_taints_property`'s targeted
     // conditions (an untrusted gate, tainted input, or an expansion issue
     // inside the SDK) poison the write.
+    let unpinned = UnpinnedOutcome::after_write(unpinned_by, write_condition_maybe_wrong);
     let provenance = PropertyProvenance {
         taint: TaintOutcome::after_write(
             value_taints_property,
             node.range(),
             preserve_existing_sdk_taint,
         ),
-        unpinned: UnpinnedOutcome::after_write(unpinned_by, write_condition_maybe_wrong),
+        refused: RefusedOutcome::after_write(&unpinned),
+        unpinned,
     };
     state.lookup.insert_escaped(name.clone(), expansion.value);
     state.written.insert(lower.clone(), name.clone());
@@ -4757,6 +4826,9 @@ fn mark_property_group_children_provenance(
                     Some(root) => UnpinnedOutcome::Set(root.clone()),
                     None => UnpinnedOutcome::Keep,
                 },
+                // A write we skipped rather than refused: we computed no value
+                // here, but neither did we drop one we had.
+                refused: RefusedOutcome::Keep,
             },
         );
     }
