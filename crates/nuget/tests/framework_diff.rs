@@ -214,6 +214,7 @@ fn get_nearest_agrees_with_oracle() {
     let mut rng = SplitMix64(0x5eed_0005);
     let mut mismatches: Vec<String> = Vec::new();
     let mut checked = 0usize;
+    let mut cross_family = 0usize;
 
     for _ in 0..2500 {
         let project = &projects[rng.below(projects.len())];
@@ -245,16 +246,12 @@ fn get_nearest_agrees_with_oracle() {
             .collect();
         let mine = NuGetFramework::get_nearest(&pf, &parsed);
 
-        // The precision envelope documented on `get_nearest`: the
+        // Two claims, both required for every candidate set: the
         // *correctness* invariant (pick iff a compatible candidate exists,
-        // and the pick is itself compatible) is required everywhere; the
-        // exact *choice* is pinned only on homogeneous candidate sets —
-        // every oracle-compatible candidate shares the project's framework
-        // identifier, the realistic shape of a package's `lib/` folders.
-        // Cross-family tie-break precedence on heterogeneous legacy mixes
-        // (a `uap` project ranking `wpa81`/`netcore` above `netstandard`)
-        // is NuGet-table-deep and documented-approximate; both picks are
-        // always compatible, so a disagreement there is an optimality gap.
+        // and the pick is itself compatible), and the exact *choice* among
+        // the compatible ones. The second is not weaker than the first — two
+        // compatible assets are two different DLLs, and which one is selected
+        // decides what surface a consumer reads.
         // (Compare by framework *value*, not index: distinct strings can
         // parse equal — "net45" vs ".NETFramework,Version=v4.5".)
         match (mine, their_index) {
@@ -266,19 +263,26 @@ fn get_nearest_agrees_with_oracle() {
                         cands[mi]
                     ));
                 }
-                let homogeneous = parsed
+                let compatible: Vec<&NuGetFramework> = parsed
                     .iter()
                     .filter(|c| NuGetFramework::is_compatible(&pf, c))
-                    .all(|c| c.framework().eq_ignore_ascii_case(pf.framework()));
+                    .collect();
+                if compatible.len() > 1
+                    && !compatible
+                        .iter()
+                        .all(|c| c.framework().eq_ignore_ascii_case(pf.framework()))
+                {
+                    cross_family += 1;
+                }
                 // Interchangeable picks (mutually compatible — equal
                 // frameworks, or distinct spellings/versions that normalise
                 // to the same, like uap8 ≡ uap) are both correct.
                 let interchangeable =
                     NuGetFramework::is_compatible(&parsed[mi], &parsed[ti as usize])
                         && NuGetFramework::is_compatible(&parsed[ti as usize], &parsed[mi]);
-                if homogeneous && !interchangeable {
+                if !interchangeable {
                     mismatches.push(format!(
-                        "getNearest({project:?}, {cands:?}): homogeneous, ours={:?} oracle={:?}",
+                        "getNearest({project:?}, {cands:?}): ours={:?} oracle={:?}",
                         cands[mi], cands[ti as usize]
                     ));
                 }
@@ -292,6 +296,13 @@ fn get_nearest_agrees_with_oracle() {
         }
     }
     assert!(checked > 1500, "nearest phase degenerated: {checked}");
+    // The choice is pinned exactly for every candidate set, which says nothing
+    // unless sets needing a cross-family choice occur. The seed is fixed, so
+    // this count is deterministic.
+    assert!(
+        cross_family > 100,
+        "nearest phase no longer exercises cross-family choices: {cross_family}"
+    );
 
     if !mismatches.is_empty() {
         let shown = mismatches.iter().take(30).cloned().collect::<Vec<_>>();
@@ -302,4 +313,59 @@ fn get_nearest_agrees_with_oracle() {
             shown.join("\n")
         );
     }
+}
+
+/// A PCL project choosing between two PCL assets, neither of which subsumes
+/// the other — the shape where a tie-break invented from profile *numbers*
+/// diverges from NuGet.
+///
+/// Profile numbers are catalogue identifiers, not a ranking, so "lower wins"
+/// agrees with NuGet only by coincidence. NuGet scores each candidate by how
+/// many of the project's own framework members find their nearest match inside
+/// it, which is a different order entirely: here `Profile7` (net45 + win8)
+/// prefers `Profile259`, whose members include net45, over the numerically
+/// lower `Profile136`, whose highest .NET member is net40.
+///
+/// The oracle is asked in-test rather than the index being written down, so
+/// the case cannot silently pin our own answer. It reproduces
+/// `BORZOI_NUGET_SOAK_SEED=1785528757427249586`.
+#[test]
+fn get_nearest_matches_the_oracle_between_two_incomparable_pcls() {
+    let mut oracle = Oracle::spawn();
+    let project = "portable-win8+net45";
+    let cands = [
+        "portable-net40+sl5+win8+wp8",
+        "dnx452",
+        "net5.0-windows10.0.19041.0",
+        "net45+win8",
+        "net8.0",
+        "portable-profile259",
+        ".NETCoreApp,Version=v3.1",
+    ];
+
+    let resp = oracle.request(&serde_json::json!({
+        "op": "getNearest", "project": project, "candidates": cands,
+    }));
+    assert!(oracle_bool(&resp, "ok"), "oracle understood the case");
+    let theirs = resp
+        .get("nearest")
+        .and_then(|x| x.as_i64())
+        .expect("nearest field");
+    assert!(theirs >= 0, "the oracle finds a compatible candidate");
+
+    let pf = NuGetFramework::parse(project).expect("project parses");
+    let parsed: Vec<NuGetFramework> = cands
+        .iter()
+        .map(|c| NuGetFramework::parse_folder(c).expect("candidate parses"))
+        .collect();
+    let mine = NuGetFramework::get_nearest(&pf, &parsed).expect("we find one too");
+
+    // Both candidates are compatible with the project, so a value comparison
+    // is what discriminates: an incompatible pick would be caught by the sweep
+    // above, and this case is about *which* compatible asset is nearest.
+    assert_eq!(
+        parsed[mine], parsed[theirs as usize],
+        "ours={:?} oracle={:?}",
+        cands[mine], cands[theirs as usize]
+    );
 }
