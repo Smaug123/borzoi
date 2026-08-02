@@ -2769,6 +2769,36 @@ fn a_shadowed_auto_open_attribute_folds_nothing() {
     );
 }
 
+/// The shadowed attribute suppresses the module's fold **everywhere**, not just
+/// at its own declaration position. A second `namespace` block reopening the
+/// same namespace folds its auto-open modules implicitly, and that fold reads a
+/// cross-block index — so a module recorded as auto-open on the *spelling*
+/// alone is imported there even though the declaring block already declined it.
+/// FCS reports `FS0039` for the bare `target` in the later block (fcs-dump
+/// `uses-project-batch` probe `TwoBlocks`), so committing it is a wrong target.
+///
+/// Found by codex review: the fold-back's own decline is position-local, and
+/// the implicit namespace fold is a different reader of the same fact.
+#[test]
+fn a_shadowed_attribute_also_suppresses_the_later_blocks_implicit_fold() {
+    let env = fixture_env();
+    let src = "namespace Demo.Two\n\ntype AutoOpenAttribute() =\n    \
+               inherit System.Attribute()\n\n[<AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nnamespace Demo.Two\n\nmodule B =\n    let y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the project's own `AutoOpenAttribute` makes `A` an ordinary module, so \
+         the later block's implicit fold brings in nothing; got {res:?}"
+    );
+}
+
 /// The **implicit namespace fold** must keep the same fragment identity the
 /// fold-back does: a plain `module M` fragment is not folded by a later
 /// `[<AutoOpen>] module M` at the same path, so a third block in the namespace
@@ -2987,6 +3017,37 @@ fn an_assembly_custom_auto_open_attribute_folds_nothing() {
     assert!(
         matches!(res, None | Some(Resolution::Deferred(_))),
         "the assembly's `AutoOpenAttribute` shadows FSharp.Core's, so `A` folds \
+         nothing and `target` is unbound; got {res:?}"
+    );
+}
+
+/// A **fully qualified** foreign attribute (`[<Demo.CustomAttr.AutoOpen>]`)
+/// needs no `open` to name somebody else's `AutoOpenAttribute`, so the fold
+/// must read the qualifier rather than the leaf. FCS reports `FS0039` for the
+/// bare use here exactly as it does for the opened spelling (fcs-dump
+/// `uses-project-batch` probe against this fixture).
+///
+/// The leaf is what [`attrs_auto_open`](borzoi_sema) matches, and the
+/// attribute resolver defers a multi-segment name — so neither the spelling
+/// test nor a committed verdict distinguishes this from FSharp.Core's. The
+/// written qualifier is the only evidence, and it is conclusive: a path
+/// naming any container but `Microsoft.FSharp.Core` cannot be FSharp.Core's
+/// attribute.
+#[test]
+fn a_qualified_foreign_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module Use\n\n[<Demo.CustomAttr.AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "a qualified foreign `AutoOpen` is an ordinary attribute, so `A` folds \
          nothing and `target` is unbound; got {res:?}"
     );
 }

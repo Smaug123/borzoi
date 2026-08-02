@@ -1692,7 +1692,15 @@ impl<'a> Resolver<'a> {
         self.record_project_name_shadow(segs.clone());
         let mut qualified = self.container_path.clone();
         qualified.extend(segs.iter().cloned());
-        let nm_auto_open = attrs_auto_open(nm.attributes());
+        // The *spelling* is not the attribute. A shadowed `[<AutoOpen>]` — the
+        // project's own `AutoOpenAttribute`, an assembly's, or a written foreign
+        // qualifier — is an ordinary attribute and the module is an ordinary
+        // module, so it must not enter the auto-open indices at all. Declining
+        // only at the fold-back's own position leaves this record standing, and
+        // a later `namespace` block reopening this namespace folds it in from
+        // here — committing a target FCS leaves unbound (codex review).
+        let nm_auto_open =
+            attrs_auto_open(nm.attributes()) && !self.auto_open_attribute_is_shadowed(nm);
         let nm_private = header_is_private(nm.syntax());
         // The module-only cross-file index ([`ProjectItems::real_nested_modules`]):
         // unlike the name-shadow set just recorded (which types, exceptions,
@@ -1932,6 +1940,23 @@ impl<'a> Resolver<'a> {
                 let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
                     return false;
                 };
+                // A *written* qualifier names the attribute's container
+                // outright, and the leaf test above cannot stand in for it:
+                // `[<Demo.CustomAttr.AutoOpen>]` needs no `open` to reach
+                // somebody else's attribute, and the attribute resolver defers
+                // every multi-segment name, so neither the spelling nor a
+                // verdict distinguishes it (FCS: `FS0039` for the bare use,
+                // fcs-dump `uses-project-batch`-probed). Only FSharp.Core's own
+                // path is proof. A *shortened* spelling (`[<Core.AutoOpen>]`
+                // under `open Microsoft.FSharp`) is FSharp.Core's too, but
+                // proving that needs the open set this test does not consult —
+                // so it declines, which costs a fold and never a wrong target.
+                let segs: Vec<&str> = toks.iter().map(|t| id_text(t.text())).collect();
+                if let Some((_, qualifier)) = segs.split_last()
+                    && !qualifier.is_empty()
+                {
+                    return qualifier != FSHARP_CORE_NS;
+                }
                 let range =
                     rowan::TextRange::new(first.text_range().start(), last.text_range().end());
                 match self.attribute_resolutions.get(&range) {
