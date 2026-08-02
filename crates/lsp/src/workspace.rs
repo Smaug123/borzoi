@@ -1000,16 +1000,17 @@ fn resolve_node_uncached(
         // Single-target (or no TFM declared at all): there is only one build
         // the project can produce; the seed adds nothing.
         //
-        // Label the node from the evaluation its edges came from, not from the
-        // declaration. The two are the same value here except when a
-        // `TreatAsLocalProperty` document overwrote the seed in pass 2 — and
-        // then naming the declaration would send a consumer's output locator
-        // to a TFM directory the project was never evaluated for, where a
-        // stale DLL may be waiting.
+        // The declaration, not `chosen_tfm`. They differ only when a
+        // `TreatAsLocalProperty` document overwrote the seed in pass 2, and
+        // such a document is untrusted wholesale — it returned `Unresolved`
+        // from the arm above and never arrives here. `chosen_tfm` would also
+        // be wrong for the *caller-supplied empty* global, which is an outer
+        // dispatch build (`chosen_tfm == None`) over a project that does
+        // declare its sole TFM.
         return NodeResult::Resolved {
             edges: outer_edges,
-            tfm: match &outer.chosen_tfm {
-                Some(tfm) => NodeTfm::Known(tfm.clone()),
+            tfm: match declared.first() {
+                Some(sole) => NodeTfm::Known(sole.clone()),
                 None => NodeTfm::NoneDeclared,
             },
             output_name: evaluated_output_name(path, &outer),
@@ -1426,7 +1427,6 @@ fn select_target_framework(
         Some(pass2) => {
             let (chosen_tfm, override_untrusted) = match tfm_policy::reseed_outcome(&pass2) {
                 tfm_policy::ReseedOutcome::AsSeeded => (Some(seed), false),
-                tfm_policy::ReseedOutcome::Overridden(tfm) => (Some(tfm), false),
                 tfm_policy::ReseedOutcome::OverriddenUntrusted { ran_under } => (ran_under, true),
             };
             ServedEvaluation {
@@ -2107,6 +2107,37 @@ mod tests {
         );
     }
 
+    /// A caller-supplied **empty** `TargetFramework` global is the outer
+    /// dispatch build, not a TFM choice, so `chosen_tfm` is `None` — but the
+    /// project still declares its sole TFM, and the graph node must say so.
+    /// Labelling it `NoneDeclared` would let the output locator fold any lone
+    /// stale TFM directory.
+    ///
+    /// This is why the single-target arm reads the declaration rather than
+    /// `chosen_tfm`: the two answer different questions, and only the
+    /// declaration answers this one.
+    #[test]
+    fn an_empty_tfm_global_keeps_the_sole_declaration_on_the_node() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            "<Project><PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks></PropertyGroup></Project>",
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), String::new())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+        let graph = ws.project_graph(&proj);
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(node.tfm, NodeTfm::Known("net8.0".to_string()));
+    }
+
     /// A multi-targeted project that opts `TargetFramework` out of global
     /// read-only-ness and overwrites it once the seed is non-empty — a write
     /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
@@ -2160,12 +2191,14 @@ mod tests {
     /// the surfaces against one fixture is what makes the next such shape cost
     /// one round instead of four.
     ///
-    /// Every row matters. Without the first this would pass on an
-    /// implementation that declined every override; without the second, on one
-    /// that trusted every override; without the third, on one that reads the
-    /// override through a value-shaped helper and so cannot tell an override
-    /// that *cleared* the TFM from no override at all; without the fourth, on
-    /// one whose graph node keeps naming pass 1's sole declaration.
+    /// Every override declines, whatever it wrote and however clean it looks —
+    /// see [`tfm_policy::reseed_outcome`] for why the final property-table
+    /// value cannot classify the pass. What the rows pin is that the decline is
+    /// uniform across the surfaces, and that `ran_under` still describes the
+    /// parse: the *trust* is withheld, not the fact of what was evaluated.
+    /// Without the third row this would pass on an implementation that reads
+    /// the override through a value-shaped helper and so cannot tell an
+    /// override that *cleared* the TFM from no override at all.
     #[test]
     fn every_tfm_surface_agrees_on_a_pass_two_override() {
         struct Case {
@@ -2184,7 +2217,7 @@ mod tests {
                 declared: "net8.0;net10.0",
                 outer_gate: false,
                 value: "net10.0",
-                served: ServedTfm::Tfm("net10.0".to_string()),
+                served: ServedTfm::Untrusted,
                 ran_under: Some("net10.0"),
                 node: NodeTfm::Unresolved,
             },
@@ -2211,9 +2244,9 @@ mod tests {
                 declared: "net8.0",
                 outer_gate: false,
                 value: "net10.0",
-                served: ServedTfm::Tfm("net10.0".to_string()),
+                served: ServedTfm::Untrusted,
                 ran_under: Some("net10.0"),
-                node: NodeTfm::Known("net10.0".to_string()),
+                node: NodeTfm::Unresolved,
             },
         ];
         for case in cases {

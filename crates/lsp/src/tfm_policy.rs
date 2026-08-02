@@ -128,14 +128,9 @@ pub(crate) fn tfm_choice(pass1: &ParsedProject, extras: &HashMap<String, String>
 pub(crate) enum ReseedOutcome {
     /// The seed stood: the document did not touch the global.
     AsSeeded,
-    /// The document overrode the seed with a pinned, non-empty value. Serve
-    /// pass 2 under this instead.
-    Overridden(String),
-    /// The document overrode the seed with something no consumer may key on:
-    /// a write we could not pin, or one that cleared the TFM outright.
-    /// `ran_under` is still what pass 2 evaluated as — `None` when cleared —
-    /// because the parse surfaces describe the parse either way; it is the
-    /// *trust* that is withheld.
+    /// The document overrode the seed. No consumer may key on the result;
+    /// `ran_under` is the value the property table ended at (`None` when the
+    /// override cleared it) purely so the parse surfaces can describe the parse.
     OverriddenUntrusted { ran_under: Option<String> },
 }
 
@@ -150,25 +145,29 @@ pub(crate) enum ReseedOutcome {
 ///
 /// So this reads the table *unfiltered*. [`body_target_framework`] cannot answer
 /// the question — it maps both "no override" and "overridden to empty" to
-/// `None`, and publishing the seed for the latter names a TFM the parse never
-/// ran under. Distinguishing absence from emptiness is the whole job.
+/// `None`, and treating the latter as "no override" would name the seed for a
+/// parse that ran under nothing. Distinguishing absence from emptiness is the
+/// whole job.
+///
+/// **Every override is untrusted, whatever it wrote.** The tempting third
+/// outcome — a pinned, non-empty override we serve on its own merits — is not
+/// soundly available, because the final table value does not classify the
+/// *pass*. MSBuild evaluates a document in order, so a `$(TargetFramework)`-gated
+/// `<PropertyGroup>` sitting above the override has already contributed the
+/// **seed's** defines and items; reporting the override's value would pair those
+/// with the other TFM's assets, which is precisely the incoherence E5 exists to
+/// prevent. Tracking which writes preceded the override would mean modelling
+/// per-property TFM provenance through the whole evaluation, for a document
+/// shape that overwrites its own inner-build seed. Declining costs a real
+/// project nothing we can identify and keeps the guarantee statable.
 pub(crate) fn reseed_outcome(pass2: &ParsedProject) -> ReseedOutcome {
     let Some(raw) = lookup_property_ci(&pass2.properties, "TargetFramework") else {
         return ReseedOutcome::AsSeeded;
     };
     let value = raw.trim();
-    if value.is_empty() {
-        // Cleared while the project declares TFMs: no branch fired, and
-        // neither the seed nor the empty value is evidence of what the real
-        // build targets.
-        return ReseedOutcome::OverriddenUntrusted { ran_under: None };
+    ReseedOutcome::OverriddenUntrusted {
+        ran_under: (!value.is_empty()).then(|| value.to_string()),
     }
-    if tfm_untrusted(pass2) {
-        return ReseedOutcome::OverriddenUntrusted {
-            ran_under: Some(value.to_string()),
-        };
-    }
-    ReseedOutcome::Overridden(value.to_string())
 }
 
 /// The project's own non-empty `<TargetFramework>` write, trimmed.

@@ -140,56 +140,57 @@ finally existed to disagree with. Both now read the effective value out of pass
 certain-implies-exact by `fsproj_global_perturbation_diff`'s
 `TreatAsLocalProperty` corner.
 
-That took three review rounds, and the third is the one worth recording, because
-the first two were patches and the third named the actual defect. Round 1: the
-seed was published instead of the override's value. Round 2: pass 1's provenance
-verdict cannot cover a write pass 1 never performs. Round 3: an override that
-*clears* the TFM is indistinguishable from no override at all — once you are
-asking a value-shaped helper (`Option<String>`, empty filtered away) a
-presence-shaped question. That is the `absent-vs-unread` class: a field
-conflating "provably none" with "we did not look".
+### The override that is not worth modelling
 
-So the classification is now one exhaustive function, `tfm_policy::reseed_outcome`,
-reading the property table **unfiltered**. Presence in that table *is* the
-override signal — a suppressed body write leaves no entry, an override leaves its
-value, and a clearing override leaves an empty string (all three probed, dotnet
-10.0.301) — and its three outcomes each map to exactly one `ServedEvaluation`:
+That took five review rounds, and the outcome is a *decline*, so the rounds are
+worth recording — the first four were attempts to model a shape the model cannot
+hold.
 
-| outcome | TFM the parse ran under | trusted |
-|---|---|---|
-| `AsSeeded` | the seed | yes |
-| `Overridden(t)` | `t` | yes |
-| `OverriddenUntrusted { ran_under }` | `ran_under` (`None` when cleared) | no |
+Round 1: the seed was published instead of the override's value. Round 2: pass
+1's provenance verdict cannot cover a write pass 1 never performs. Round 3: an
+override that *clears* the TFM is indistinguishable from no override at all, once
+you ask a value-shaped helper (`Option<String>`, empty filtered away) a
+presence-shaped question — the `absent-vs-unread` class. Round 4: the graph node's
+single-target arm named the declaration rather than the evaluation. Round 5
+carried a defect introduced by round 4's fix, and — decisively — pointed out that
+the final property-table value **cannot classify the pass at all**: MSBuild
+evaluates in document order, so a `$(TargetFramework)`-gated `<PropertyGroup>`
+above the override has already contributed the *seed's* defines and items. There
+is no single TFM such a pass "ran under".
 
-Note the two axes are independent: *what was evaluated* and *whether a consumer
-may key on it*. Collapsing them is what made rounds 1–3 look like three separate
-bugs. `AsSeeded` never consults pass 2's provenance at all, which matters — the
-generic provenance seam fires unconditionally for real SDK projects, so an
-unguarded consult would decline every multi-targeted project
-(`msbuild-trust-audit` §2). An untrusted override lands in exactly the
-arrangement an untrusted *body* write already had — `chosen_tfm` set,
-`ServedTfm::Untrusted` published — which is a good sign the model is right rather
-than patched.
+That is the answer, not another round: **every pass-2 override is untrusted**.
+`ReseedOutcome` has two arms, not three; there is no "clean override we serve on
+its own merits", because no property-table read can establish one. Modelling it
+properly would mean per-property TFM provenance through the whole evaluation, for
+a document that overwrites its own inner-build seed. Round 4's graph change was
+reverted with it — an override now returns `Unresolved` from the untrusted arm
+above and never reaches the single-target arm, so that arm reads the declaration
+again, which is also what a caller-supplied *empty* global needs
+(`an_empty_tfm_global_keeps_the_sole_declaration_on_the_node` pins it; making it
+read `chosen_tfm` was round 4's regression).
+
+What survives from the four rounds is the shape of the remaining code.
+`reseed_outcome` reads the property table **unfiltered**, because presence there
+*is* the override signal — a suppressed body write leaves no entry, an override
+leaves its value, a clearing override leaves an empty string (all three probed,
+dotnet 10.0.301). And `OverriddenUntrusted` still carries `ran_under`, because
+*what was evaluated* and *whether a consumer may key on it* are independent axes:
+the buffer must describe the parse even when the env refuses to trust it.
+Collapsing those two is what made rounds 1–4 look like separate bugs.
+
+**Three surfaces publish a TFM** — what the parse ran under, what the assembly
+env may key assets selection on, and how a graph node is labelled for a consumer
+locating its output — and `TreatAsLocalProperty` is cross-cutting, so each read it
+wrongly in a different way and each round found one.
+`every_tfm_surface_agrees_on_a_pass_two_override` is a table over all three
+against one fixture, so the next such shape costs one round instead of five.
+"Agrees" is commit-or-decline, not equality: each surface may decline, and the
+graph declines a *multi*-targeted node absent a restore seed whatever the
+override did. What none may do is commit to a TFM other than the one the parse
+ran under.
 
 `declared_tfms` stays a pass-1 capture deliberately: it is the *outer* build's
-declaration list, which is what the TFM-invariant intersection wants. But
-`resolve_node_uncached`'s single-target arm was labelling the node from that list
-rather than from the evaluation its edges came from — the same value except under
-an override, and then a consumer's output locator would search a TFM directory
-the project was never evaluated for, where a stale DLL may be waiting. It now
-reads `chosen_tfm`, which makes it identical to the caller-owned arm above it.
-
-**Three surfaces publish a TFM**, and that is the durable lesson here rather than
-any one fix: what the parse ran under, what the assembly env may key assets
-selection on, and how a graph node is labelled for a consumer locating its
-output. `TreatAsLocalProperty` is cross-cutting, and each surface read it wrongly
-in a different way — found one review round at a time, four rounds in all.
-`every_tfm_surface_agrees_on_a_pass_two_override` is a table over all three
-against one fixture, so the next such shape costs one round instead of four.
-"Agrees" there is commit-or-decline, not equality: each surface may decline, and
-the graph declines a *multi*-targeted node outright absent a restore seed
-whatever the override did. What none may do is commit to a TFM other than the one
-the parse ran under.
+declaration list, which is what the TFM-invariant intersection wants.
 
 The generator axes (`treat_as_local`, `seed_conditional`, `untrusted_gate`,
 `override_empty`) exist because these shapes are not ones a reviewer should have
