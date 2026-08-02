@@ -1514,8 +1514,13 @@ fn select_target_framework(
             tfm_policy::reseed_outcome(&pass1),
             tfm_policy::ReseedOutcome::Overridable
         );
-        let caller_seeded = tfm_policy::caller_owns_target_framework(extras);
-        if overridable && caller_seeded {
+        // Presence, not ownership: `caller_owns_target_framework` asks whether
+        // the caller made a TFM *choice*, and an empty global deliberately is
+        // not one — but it is still a global of that name for the opt-out to
+        // unprotect, and the document can overwrite it just the same.
+        let caller_supplied_global =
+            tfm_policy::lookup_property_ci(extras, "TargetFramework").is_some();
+        if overridable && caller_supplied_global {
             return ServedEvaluation {
                 parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
@@ -2509,6 +2514,33 @@ mod tests {
             parsed.project_references_uncertain,
             "nor its reference list"
         );
+    }
+
+    /// An **empty** caller-supplied global is still a global the document can
+    /// overwrite. `caller_owns_target_framework` is the wrong question here —
+    /// it asks "did the caller make a TFM *choice*", and an empty global is
+    /// deliberately not one — where what matters is only whether a global of
+    /// that name is present for `TreatAsLocalProperty` to unprotect.
+    ///
+    /// Without this the document overwrites the empty seed, the evaluation runs
+    /// under the write, and we report `NoneDeclared` with the items and defines
+    /// still marked certain.
+    #[test]
+    fn an_empty_caller_global_is_still_overwritable() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), String::new())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        let parsed = ws.project(&proj).expect("evaluates");
+        assert!(parsed.define_constants_uncertain);
+        assert!(parsed.items_uncertain);
     }
 
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
