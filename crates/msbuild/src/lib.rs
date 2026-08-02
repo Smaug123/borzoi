@@ -24,6 +24,7 @@ mod imports;
 mod properties;
 mod sdk_resolver;
 mod target_frameworks;
+mod trust;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;

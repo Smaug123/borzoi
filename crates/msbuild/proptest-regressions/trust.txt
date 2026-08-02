@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 716868e73dbb40b1ea6465afe0ff83b6fe9b43826bbb5ae1c87dba38cc61f46e # shrinks to a = Trust { unpinned: None, sdk_package: None, refused: false }, b = Trust { unpinned: None, sdk_package: None, refused: true }
+cc 67b63fab52995767bc760ee1f63d7f2a80e85318015098a7ab2cb828b786e95e # shrinks to a = Trust { unpinned: None, sdk_package: None, refused: true }
+cc 56ba5b3bd4b4a160962fd804f511fa74b2183ae820f39259641b7944ba6f982e # shrinks to a = Trust { unpinned: None, sdk_package: None, refused: false }, b = Trust { unpinned: None, sdk_package: None, refused: true }
+cc 33b8df992f89ba6185a5558b31fae6fb5a71a30ed8894d0d611736300ca5e42c # shrinks to parts = [Trust { unpinned: None, sdk_package: None, refused: true }]
+cc 855b6d32ff8958c00c75953c0843b9a118024849001e193128f3472ff0f2af70 # shrinks to a = Trust { unpinned: Some(Undefined("a")), sdk_package: None, refused: false }, b = Trust { unpinned: Some(UnsupportedCondition("a")), sdk_package: None, refused: false }
