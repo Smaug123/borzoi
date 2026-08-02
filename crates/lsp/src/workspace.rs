@@ -1093,6 +1093,17 @@ fn resolve_node_uncached(
             let mut map = extra_build_properties.clone();
             seed_target_framework_global(&mut map, current);
             return match evaluate_project(path, env, &map) {
+                // The label describes the evaluation, as everywhere else: this
+                // seeded pass may itself turn out not to be an inner build,
+                // and only *it* can tell us — a `TreatAsLocalProperty` reached
+                // through a `$(TargetFramework)`-conditioned import is
+                // invisible to the first-declared `outer` above.
+                Some(inner) if inner.not_an_inner_build => NodeResult::Resolved {
+                    edges: edges_of(&inner, purpose, is_entry),
+                    tfm: NodeTfm::Unresolved,
+                    output_name: None,
+                    references_uncertain: references_suppressed(&inner, purpose),
+                },
                 Some(inner) => NodeResult::Resolved {
                     edges: edges_of(&inner, purpose, is_entry),
                     tfm: NodeTfm::Known(current.clone()),
@@ -2370,6 +2381,59 @@ mod tests {
             node.output_name, None,
             "a TFM-unresolved node's per-TFM output name cannot be pinned either"
         );
+    }
+
+    /// A producer-seeded node is labelled by *its own* evaluation, so an
+    /// opt-out only that evaluation can see still declines.
+    ///
+    /// The first-declared pass (`outer`) cannot see this one: the
+    /// `TreatAsLocalProperty` root is imported behind a
+    /// `'$(TargetFramework)' == 'net10.0'` gate, so it is reached only when the
+    /// restore's producer TFM seeds `net10.0`. The node's TFM and output name
+    /// come from the seeded evaluation, so they must decline with it —
+    /// otherwise a restore selecting that TFM folds a DLL from a build whose
+    /// own seed was overwritten.
+    #[test]
+    fn a_producer_seeded_node_declines_on_its_own_evaluation() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join("Local.props"),
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net8.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project>
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <Import Project="Local.props" Condition="'$(TargetFramework)' == 'net10.0'" />
+            </Project>"#,
+        );
+        let ws = Workspace::default();
+        // The map's keys are *canonicalised* (`project_graph_impl`), which on
+        // macOS differs from lexical normalisation: `/tmp` is a symlink to
+        // `/private/tmp`, so a lexically-normalised key silently never matches
+        // and the node is walked unseeded.
+        let producers =
+            BTreeMap::from([(std::fs::canonicalize(&proj).unwrap(), "net10.0".to_string())]);
+
+        let graph = ws.project_graph_with_producer_tfms(&proj, &producers);
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(
+            node.tfm,
+            NodeTfm::Unresolved,
+            "the seeded evaluation overwrote its own seed"
+        );
+        assert_eq!(node.output_name, None, "declines with the TFM");
     }
 
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
