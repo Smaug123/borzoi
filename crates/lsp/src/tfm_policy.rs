@@ -131,8 +131,8 @@ pub(crate) enum ReseedOutcome {
     AsSeeded,
     /// The document overwrote the seed, so the pass is not any single TFM's
     /// build and must be discarded — see [`reseed_outcome`]. Deliberately
-    /// carries no value: the final table entry is not "the TFM it ran under",
-    /// which is what made this look reportable for four review rounds.
+    /// carries no value: the final table entry is the override's, not "the TFM
+    /// the pass ran under", and there is no such TFM to report.
     Overridden,
 }
 

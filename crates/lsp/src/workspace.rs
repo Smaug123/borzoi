@@ -1461,10 +1461,11 @@ fn select_target_framework(
             // at least internally consistent — and withhold every TFM-derived
             // conclusion (`EvaluatedProject::not_an_inner_build`).
             //
-            // Discarding pass 2 rather than flagging it is what ends this
-            // family: a flagged chimera has to be audited at each of the
-            // surfaces that read the evaluation, and six review rounds found
-            // six of them one at a time.
+            // Discarded rather than flagged, deliberately: a flagged chimera
+            // stays reachable, so every surface that reads the evaluation has
+            // to decide independently whether it may trust a mixture — the
+            // TFM, the output name, the node label, the reference list. A
+            // discarded one is unreachable and no such decision exists.
             tfm_policy::ReseedOutcome::Overridden => ServedEvaluation {
                 parsed: pass1,
                 chosen_tfm: None,
@@ -2274,13 +2275,13 @@ mod tests {
     /// multi-targeted project). What none of them may do is commit to a TFM
     /// other than the one the parse ran under.
     ///
-    /// This is deliberately a table over all three rather than three tests.
-    /// `TreatAsLocalProperty="TargetFramework"` is a cross-cutting shape — it
-    /// lets a document overwrite the inner-build seed — and each surface read
-    /// it wrongly in a different way, discovered one review round at a time. A
-    /// per-surface test would have found them one at a time again; enumerating
-    /// the surfaces against one fixture is what makes the next such shape cost
-    /// one round instead of six.
+    /// One table over all three rather than three per-surface tests, because
+    /// `TreatAsLocalProperty="TargetFramework"` is cross-cutting: it lets a
+    /// document overwrite the inner-build seed, and every surface downstream of
+    /// that seed has to answer for it. A per-surface test only ever asks one of
+    /// them, so it can pass while the others are wrong; enumerating the
+    /// surfaces against one fixture asks all of them at once, which is the
+    /// property worth having for the next cross-cutting shape.
     ///
     /// **Every override declines, on every surface, whatever it wrote.** The
     /// rows differ in what the document says and agree in what we serve, which
