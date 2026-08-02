@@ -377,6 +377,13 @@ impl Workspace {
             // degradation as "no TFM declared" (the pre-3.3c behaviour).
             None => ServedTfm::NoneDeclared,
             Some(e) => {
+                // The caller-owned immunity is about *provenance* — the
+                // caller's value needs none. It cannot extend to an evaluation
+                // the document was free to conduct under a different TFM than
+                // the one supplied, so `not_an_inner_build` declines either way.
+                if e.not_an_inner_build {
+                    return ServedTfm::Untrusted;
+                }
                 if e.tfm_untrusted && !caller_owns_tfm {
                     return ServedTfm::Untrusted;
                 }
@@ -1437,6 +1444,23 @@ fn select_target_framework(
 ) -> ServedEvaluation {
     let choice = tfm_policy::tfm_choice(&pass1, extras);
     let Some(seed) = choice.reseed() else {
+        // A *caller-supplied* global carries the name too, and the same opt-out
+        // lets the document overwrite it — so pass 1 already is the mixture,
+        // with no second pass involved. The caller's ownership of the choice is
+        // a reason to skip provenance checks on its value, not a reason to
+        // believe an evaluation that did not honour it.
+        let overridable = matches!(
+            tfm_policy::reseed_outcome(&pass1),
+            tfm_policy::ReseedOutcome::Overridable
+        );
+        let caller_seeded = tfm_policy::caller_owns_target_framework(extras);
+        if overridable && caller_seeded {
+            return ServedEvaluation {
+                parsed: pass1,
+                chosen_tfm: None,
+                not_an_inner_build: true,
+            };
+        }
         let chosen_tfm = choice.served().map(str::to_string);
         return ServedEvaluation {
             parsed: pass1,
@@ -2256,6 +2280,35 @@ mod tests {
         let mut ws = Workspace::default();
 
         assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
+    /// A *caller-supplied* `TargetFramework` global is subject to the same
+    /// opt-out as one we seed ourselves: `TreatAsLocalProperty` lets the
+    /// document overwrite whichever global carries the name, and the caller's
+    /// ownership of the choice is a reason to skip *provenance* checks, not a
+    /// reason to believe an evaluation that did not honour it.
+    ///
+    /// Otherwise the graph's producer-TFM seeding and any harness constructed
+    /// with `with_env_and_extra_build_properties` would report the TFM they
+    /// asked for while the defines and items came from another.
+    #[test]
+    fn a_caller_owned_tfm_declines_when_the_document_can_overwrite_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(
+            ws.served_tfm_for_project(&proj),
+            ServedTfm::Untrusted,
+            "the caller asked for net8.0 and the document wrote net10.0"
+        );
         assert_eq!(ws.parsed_tfm_for_project(&proj), None);
     }
 

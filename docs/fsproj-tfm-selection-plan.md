@@ -148,7 +148,7 @@ certain-implies-exact by `fsproj_global_perturbation_diff`'s
 
 A document may opt `TargetFramework` out of global read-only-ness with `<Project
 TreatAsLocalProperty="TargetFramework">` and then overwrite the very seed we set
-to serve its inner build. Eight review rounds went into serving such a document
+to serve its inner build. Nine review rounds went into serving such a document
 before the answer turned out to be that it cannot be served at all. The rounds
 are recorded because the sequence, not any one finding, is the lesson.
 
@@ -184,6 +184,16 @@ root — entry and imports alike — asked for with `TreatAsLocalProperty`, whic
 syntactic, gap-free, and says the same thing however the write is spelled or
 whether it fires at all. Every round before this one was reading downstream
 state to infer a fact the document states directly.
+
+With a sound trigger in hand the remaining entry point closed in one step
+(round 9): a **caller-supplied** `TargetFramework` global carries the same name
+and is overwritable the same way, so pass 1 is already the mixture with no
+second pass involved. The caller-owned immunity in `served_tfm_for_project` is
+about *provenance* — the caller's value needs none — and cannot extend to an
+evaluation the document was free to conduct under a different TFM, so
+`not_an_inner_build` declines ahead of it. `tfm_choice`'s four arms are now
+exhaustively accounted for: caller-owned and reseed consult the opt-out, and
+body-pinned and untrusted involve no global for it to act on.
 
 The reference list needs withholding *separately* from the TFM, which is the
 subtlety rounds 1–5 kept missing. `tfm_untrusted`'s consumers keep pass 1's edges
