@@ -40,7 +40,7 @@ use std::path::PathBuf;
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, resolve_file};
+use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::{TextRange, TextSize};
 
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
@@ -862,8 +862,14 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
         );
 
         let parsed = parse(&cell.src);
+        let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
-        let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+        let rf = resolve_file(
+            &file,
+            &ProjectItems::default(),
+            &AssemblyEnv::default(),
+            &recovery,
+        );
 
         for (probe, span) in &cell.probes {
             let key = format!("{}/{}", cell.label, probe.tag());
@@ -1142,8 +1148,14 @@ const NOTHING: &str = "None";
 fn resolutions(src: &str, probes: &[(Probe, TextRange)]) -> Vec<String> {
     let parsed = parse(src);
     assert!(parsed.errors.is_empty(), "parse errors in {src:?}");
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
-    let rf = resolve_file(&file, &ProjectItems::default(), &AssemblyEnv::default());
+    let rf = resolve_file(
+        &file,
+        &ProjectItems::default(),
+        &AssemblyEnv::default(),
+        &recovery,
+    );
     probes
         .iter()
         .map(|(_, span)| match rf.resolution_at(*span) {
