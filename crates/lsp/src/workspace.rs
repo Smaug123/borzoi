@@ -2543,6 +2543,37 @@ mod tests {
         assert!(parsed.items_uncertain);
     }
 
+    /// `TreatAsLocalProperty` may itself be computed: MSBuild expands `$(…)` in
+    /// the attribute and honours the result (probed, dotnet 10.0.301 — with
+    /// `LocalNames=TargetFramework` supplied as a global, the body write beats
+    /// the seed). We record the attribute's raw text, so an entry we cannot
+    /// resolve to a name is exactly the "we did not look" case, and it declines
+    /// like any other opt-out.
+    ///
+    /// Over-conservative when the property expands to some other name — but
+    /// only ever in the declining direction, and it costs nothing measurable:
+    /// no real project opts `TargetFramework` out at all, computed or literal.
+    #[test]
+    fn a_computed_opt_out_declines_because_we_cannot_read_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="$(LocalNames)">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let mut ws = Workspace::default();
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
         let (open, close) = if outer_gate {
             (

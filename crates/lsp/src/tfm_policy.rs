@@ -175,6 +175,20 @@ pub(crate) fn reseed_outcome(pass2: &ParsedProject) -> ReseedOutcome {
     {
         return ReseedOutcome::Overridable;
     }
+    // An entry we could not resolve to a name: MSBuild expands `$(…)` in the
+    // attribute and honours the result (probed, dotnet 10.0.301), while the
+    // field records the raw text. Absence of `targetframework` above therefore
+    // does not prove the seed is protected — the same absent-vs-unread gap the
+    // property table had — so an unreadable entry declines like any other
+    // opt-out. Over-conservative when it expands to a different name, and only
+    // ever in the declining direction.
+    if pass2
+        .locally_overridable_properties
+        .iter()
+        .any(|name| name.contains("$("))
+    {
+        return ReseedOutcome::Overridable;
+    }
     ReseedOutcome::AsSeeded
 }
 

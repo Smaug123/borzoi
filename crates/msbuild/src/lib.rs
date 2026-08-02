@@ -708,6 +708,15 @@ pub struct ParsedProject {
     /// reserved name *listed* by the document still appears here — this reports
     /// what the document asked for, not what the evaluator granted.
     ///
+    /// **Raw text, not expanded.** MSBuild expands `$(…)` in the attribute and
+    /// honours the result (probed, dotnet 10.0.301: `TreatAsLocalProperty="$(L)"`
+    /// with `L=TargetFramework` lets a body write beat the global). We do not,
+    /// here or in the protection the evaluator applies, so a computed attribute
+    /// arrives as e.g. `$(l)` and unprotects nothing. A consumer asking "may the
+    /// document overwrite my global?" must therefore treat an entry containing
+    /// `$(` as a possible yes — absence of the name it cares about proves the
+    /// name is absent from the *literal* list, not from the expanded one.
+    ///
     /// The consumer this exists for is a caller that supplies a global and then
     /// needs to know whether the evaluation it got back was really conducted
     /// under it: the LSP seeds `TargetFramework` to obtain an inner build, and a
