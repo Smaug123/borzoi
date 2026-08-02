@@ -210,27 +210,45 @@ impl<'a> Resolver<'a> {
     /// It is therefore the one place a caller may treat "we found nothing" as
     /// "there is nothing", rather than as "we did not look".
     ///
-    /// Which is why a **dropped TypeDef** counts as a rooting position. The
-    /// projector records the namespace it lost a type from but never the name,
-    /// so a drop in a namespace a split would have rooted *at* may be that very
-    /// entity — and an absence proof that ignores it is the standing
-    /// absent-versus-unread confusion
-    /// ([`Self::dropped_type_could_root_this_path`] is the type path's gate for
-    /// the same hazard). Real inputs make this nearly free: drops are rare
-    /// enough that the whole-project differential does not move.
+    /// Which is why the two **metadata-invisible** rootings count as rooting
+    /// positions, alongside the ones [`Self::rooting_candidates`] can see:
     ///
-    /// The drop is asked of **exactly the namespaces the rooting loop visits**,
-    /// not of every split of the path. A drop recorded in `names` entire is a
-    /// type *inside* the whole path — a child of the leaf, which no rooting
-    /// could be — and one shallower than `base` sits inside the reading prefix,
-    /// which this walk never roots at either. Widening past the loop's own range
-    /// would decline `List.rev` inside `namespace N; module List` on a drop in
-    /// `N.List.rev`, losing the fall-through to FSharp.Core for a type that
-    /// cannot occupy the terminal segment (codex review round 2).
+    /// - a **dropped TypeDef**. The projector records the namespace it lost a
+    ///   type from but never the name, so a drop in a namespace a split would
+    ///   have rooted *at* may be that very entity
+    ///   ([`Self::dropped_type_could_root_this_path`] is the type path's gate
+    ///   for the same hazard).
+    /// - an **unknowable abbreviation**. An assembly whose signature pickle
+    ///   failed to decode may declare a top-level alias of any name in the
+    ///   namespace, and an alias roots a path exactly as a type does
+    ///   ([`AssemblyEnv::unknowable_abbreviations_in_namespace`](crate::AssemblyEnv::unknowable_abbreviations_in_namespace)
+    ///   is the same question the per-tier veto asks).
+    ///
+    /// Both are the standing absent-versus-unread confusion, and both are
+    /// asked of **exactly the namespaces the rooting loop visits**, not of every
+    /// split of the path. One recorded at `names` entire describes an entity
+    /// *inside* the whole path — a child of the leaf, which no rooting could be
+    /// — and one shallower than `base` sits inside the reading prefix, which
+    /// this walk never roots at either. Widening past the loop's own range would
+    /// decline `List.rev` inside `namespace N; module List` on a drop in
+    /// `N.List.rev`, for an entity that cannot occupy the terminal segment
+    /// (codex review round 2).
+    ///
+    /// Unlike the per-tier veto, the abbreviation arm here is **not** restricted
+    /// to single-segment names. That restriction exists because a preemptive
+    /// veto ends the whole walk, root tier included, which would stop every
+    /// fully-qualified path in a file that references such an assembly; this
+    /// asks only whether *one* reading may root, and its `true` costs that
+    /// reading a self-module deferral rather than the walk. Real inputs make
+    /// both arms free: the whole-project differential does not move.
     fn any_rooting_position(&self, names: &[String], base: usize) -> bool {
         (base..names.len()).any(|k| {
-            !self.rooting_candidates(&names[..k], &names[k]).is_empty()
-                || self.assemblies.namespace_has_dropped_type(&names[..k])
+            let namespace = &names[..k];
+            !self.rooting_candidates(namespace, &names[k]).is_empty()
+                || self.assemblies.namespace_has_dropped_type(namespace)
+                || self
+                    .assemblies
+                    .unknowable_abbreviations_in_namespace(namespace)
         })
     }
 
@@ -873,6 +891,24 @@ impl<'a> Resolver<'a> {
             payload: recs,
             owns_path: true,
         }
+    }
+
+    /// Every open reading in scope, both strata, latest-first.
+    ///
+    /// The strata are **not adjacent** in the precedence ladder — the enclosing
+    /// namespace sits between them ([`Self::assembly_prefixes_by_priority`]) —
+    /// so this is not that ladder. Its one caller is
+    /// [`Self::opened_type_target`], whose own tier 1 still treats all opens as
+    /// one stratum above the enclosing nesting. That is the older, wrong order,
+    /// kept deliberately: correcting it there means selecting a non-module
+    /// candidate at an FQN whose first-wins slot holds a module, which
+    /// `assembly_type_path_core` does and this walk does not, and getting it
+    /// wrong publishes another assembly's statics under the opened name. It is
+    /// tracked with the rest of the enclosing-tier transparency work rather
+    /// than done here.
+    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        self.explicit_open_reading_prefixes()
+            .chain(self.implicit_open_reading_prefixes())
     }
 
     /// The open readings contributed by **explicit source `open`s** only —
@@ -1562,19 +1598,12 @@ impl<'a> Resolver<'a> {
     /// 1. **explicit opens** — `open Demo; open type Calc` ≡ `open type Demo.Calc`;
     /// 2. **enclosing namespace/module** nesting, innermost first — `open type
     ///    Calc` in `namespace Demo` binds `Demo.Calc`;
-    /// 3. the **implicit opens** — `FSharp.Core`'s seed and the manifest
-    ///    `[<assembly: AutoOpen>]` surfaces;
-    /// 4. **root / fully-qualified** — `open type Demo.Calc`, or a bare root type.
+    /// 3. **root / fully-qualified** — `open type Demo.Calc`, or a bare root type.
     ///
     /// An explicit `open` outranks the enclosing namespace, which outranks the
     /// root: in `namespace Demo` with `open Demo.Sub`, `open type Calc` binds
     /// `Demo.Sub.Calc` (the open), not `Demo.Calc`; and `open Demo; open type
     /// Calc` binds `Demo.Calc`, not a root `Calc`.
-    ///
-    /// This is [`Self::assembly_prefixes_by_priority`]'s ladder — one precedence
-    /// law, spelled here over the enclosing *nesting* rather than the single
-    /// enclosing namespace because an `open type` may be written relative to any
-    /// enclosing module. A tier that moves there moves here.
     ///
     /// Shadowing uses [`Self::open_type_target_shadowed`] — the type-namespace
     /// check (a project value of the same name does not shadow a type), widened
@@ -1588,48 +1617,26 @@ impl<'a> Resolver<'a> {
     /// could shorten the name through a path we cannot see; a fully-qualified
     /// path (tier 3) needs no open, so it is still honoured.
     pub(super) fn opened_type_target(&self, path: &[String]) -> Option<EntityHandle> {
-        // One open stratum's readings, in the shared order (latest-open-first;
-        // within an open relative-before-root), mirroring
-        // [`Self::resolve_assembly_path_tiered`]. So in `namespace Demo; open
-        // Sub`, an `open type` target only in the root `Sub` (`RootOnly`)
-        // resolves through the open's root reading — without it the open would
-        // wrongly go opaque and suppress later opened statics — while a
-        // colliding name takes the relative `Demo.Sub`. The latest open with a
-        // match wins. `Some(verdict)` is this stratum's answer and stops the
-        // walk; `None` means no reading here spoke.
-        // `open type` wants a **type**, and an F# module is not one — FCS rejects
-        // `open type M` for a module outright. [`Self::opened_assembly_type`]
-        // answers off `lookup_type`, whose bucket holds modules too, so the
-        // filter is here rather than there: other callers reach that lookup for
-        // a *container*, where a module is exactly what they want. Without it a
-        // module at a higher tier captures the target and this open would
-        // enumerate its statics — `open type Foo` inside `namespace N` with a
-        // referenced `module N.Foo` would publish `N.Foo`'s members under the
-        // name FCS binds to an implicitly-opened `Imp.Foo` (codex review round
-        // 4).
-        let type_target = |p: &[String]| {
-            self.opened_assembly_type(p)
-                .filter(|&h| !self.assemblies.is_authoritative_module(h))
-        };
-        let through_opens = |prefixes: &mut dyn Iterator<Item = (DeclineTier, &[String])>| {
-            for (_, prefix) in prefixes {
+        // The shortening tiers (explicit opens, enclosing namespace) only when no
+        // unmodelled open could invisibly provide the name.
+        if !self.unmodelled_open_active {
+            // Tier 1 — opens, in the shared [`Self::open_reading_prefixes`] order
+            // (latest-open-first; within an open relative-before-root), mirroring
+            // [`Self::resolve_assembly_path_tiered`]. So in `namespace Demo; open
+            // Sub`, an `open type` target only in the root `Sub` (`RootOnly`)
+            // resolves through the open's root reading — without it the open would
+            // wrongly go opaque and suppress later opened statics — while a
+            // colliding name takes the relative `Demo.Sub`. The latest open with a
+            // match wins.
+            for (_, prefix) in self.open_reading_prefixes() {
                 let mut full = prefix.to_vec();
                 full.extend_from_slice(path);
                 if self.open_type_target_shadowed(&full) {
-                    return Some(None); // an open routes it into project territory
+                    return None; // an open routes it into project territory
                 }
-                if let Some(handle) = type_target(&full) {
-                    return Some(Some(handle));
+                if let Some(handle) = self.opened_assembly_type(&full) {
+                    return Some(handle);
                 }
-            }
-            None
-        };
-        // The shortening tiers (opens, enclosing namespace) only when no
-        // unmodelled open could invisibly provide the name.
-        if !self.unmodelled_open_active {
-            // Tier 1 — explicit source opens.
-            if let Some(verdict) = through_opens(&mut self.explicit_open_reading_prefixes()) {
-                return verdict;
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first. The
             // assembly lookup runs *before* the shadow check because every prefix
@@ -1640,18 +1647,14 @@ impl<'a> Resolver<'a> {
             for k in (1..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(path);
-                if let Some(handle) = type_target(&full) {
+                if let Some(handle) = self.opened_assembly_type(&full) {
                     return (!self.open_type_target_shadowed(&full)).then_some(handle);
                 }
             }
-            // Tier 3 — the implicit opens, which the enclosing nesting outranks.
-            if let Some(verdict) = through_opens(&mut self.implicit_open_reading_prefixes()) {
-                return verdict;
-            }
         }
-        // Tier 4 — the path as written, from the root (a fully-qualified path, or
+        // Tier 3 — the path as written, from the root (a fully-qualified path, or
         // a bare root-namespace type). Lowest precedence, so a shortenable name
-        // resolves through tiers 1–3 first.
+        // resolves through tiers 1–2 first.
         //
         // Suppressed for a *bare* single-segment name inside an enclosing
         // namespace: a project type of that name declared in the namespace would
@@ -1659,7 +1662,7 @@ impl<'a> Resolver<'a> {
         // a cross-file `namespace Demo; type Calc` is invisible here. Resolving the
         // root type could therefore be wrong — decline (defer) rather than guess.
         let bare_in_namespace = path.len() == 1 && !self.container_path.is_empty();
-        if !bare_in_namespace && let Some(handle) = type_target(path) {
+        if !bare_in_namespace && let Some(handle) = self.opened_assembly_type(path) {
             return (!self.open_type_target_shadowed(path)).then_some(handle);
         }
         None
