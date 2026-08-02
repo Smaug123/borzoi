@@ -211,14 +211,20 @@ attribute opt out `RepoRoot` (15), `OutDir` (2), `WasmNativeWorkload` and
 alternative to declining is per-property TFM provenance through the whole
 evaluation, and no observed project would benefit.
 
-Round 4's graph change was reverted along the way: an override now returns
-`Unresolved` from the untrusted arm above and never reaches the single-target
-arm, so that arm reads the declaration again — which is also what a
-caller-supplied *empty* global needs
-(`an_empty_tfm_global_keeps_the_sole_declaration_on_the_node` pins it; reading
-`chosen_tfm` there was round 4's regression). `declared_tfms` likewise stays a
-pass-1 capture: it is the *outer* build's declaration list, which is what the
-TFM-invariant intersection wants.
+The graph node's single-target arm settled on one exhaustive rule rather than
+the per-case patching that rounds 4, 5 and 11 each produced: **the label
+describes the evaluation**. `chosen_tfm` present → `Known`; absent with TFMs
+declared → `Unresolved` (declared but not evaluated under — we cannot say);
+absent with none declared → `NoneDeclared`. Both of the other verdicts are wrong
+in opposite directions for the caller-supplied *empty* global, which is an outer
+dispatch build over a project that does declare a sole TFM: `NoneDeclared` tells
+the env its lone restored output is the one to fold, and `Known(sole)` pairs the
+inner build's identity with an `output_name` and reference list computed under
+the outer build, both of which may be TFM-gated. The output name declines with
+the TFM, as everywhere else.
+
+`declared_tfms` stays a pass-1 capture: it is the *outer* build's declaration
+list, which is what the TFM-invariant intersection wants.
 
 **Three surfaces publish a TFM** — what the parse ran under, what the assembly
 env may key assets selection on, and how a graph node is labelled for a consumer

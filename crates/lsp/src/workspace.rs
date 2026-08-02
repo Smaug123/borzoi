@@ -1047,22 +1047,30 @@ fn resolve_node_uncached(
     let declared = &outer.declared_tfms;
     if declared.len() <= 1 {
         // Single-target (or no TFM declared at all): there is only one build
-        // the project can produce; the seed adds nothing.
+        // the project can produce, so the seed adds nothing — *provided the
+        // evaluation in hand is that build*.
         //
-        // The declaration, not `chosen_tfm`. They differ only when a
-        // `TreatAsLocalProperty` document may overwrite the seed, and
-        // such a document is untrusted wholesale — it returned `Unresolved`
-        // from the arm above and never arrives here. `chosen_tfm` would also
-        // be wrong for the *caller-supplied empty* global, which is an outer
-        // dispatch build (`chosen_tfm == None`) over a project that does
-        // declare its sole TFM.
+        // The label therefore comes from `chosen_tfm`, which describes what the
+        // evaluation ran under, and never from the declaration alone. The two
+        // agree except when the caller pinned an explicitly **empty**
+        // `TargetFramework` global: that is the outer dispatch build, so a
+        // `Known(sole)` label would pair the inner build's identity with the
+        // outer build's `output_name` and reference list, both of which may be
+        // TFM-gated. A declared-but-not-evaluated TFM is `Unresolved` — we
+        // cannot say — rather than `NoneDeclared`, which would tell the env the
+        // project's sole restored output is the one to fold.
+        let tfm = match (&outer.chosen_tfm, declared.first()) {
+            (Some(chosen), _) => NodeTfm::Known(chosen.clone()),
+            (None, Some(_)) => NodeTfm::Unresolved,
+            (None, None) => NodeTfm::NoneDeclared,
+        };
+        let names_the_build = matches!(tfm, NodeTfm::Known(_) | NodeTfm::NoneDeclared);
         return NodeResult::Resolved {
             edges: outer_edges,
-            tfm: match declared.first() {
-                Some(sole) => NodeTfm::Known(sole.clone()),
-                None => NodeTfm::NoneDeclared,
-            },
-            output_name: evaluated_output_name(path, &outer),
+            output_name: names_the_build
+                .then(|| evaluated_output_name(path, &outer))
+                .flatten(),
+            tfm,
             references_uncertain: outer_suppressed,
         };
     }
@@ -2188,16 +2196,15 @@ mod tests {
     }
 
     /// A caller-supplied **empty** `TargetFramework` global is the outer
-    /// dispatch build, not a TFM choice, so `chosen_tfm` is `None` — but the
-    /// project still declares its sole TFM, and the graph node must say so.
-    /// Labelling it `NoneDeclared` would let the output locator fold any lone
-    /// stale TFM directory.
-    ///
-    /// This is why the single-target arm reads the declaration rather than
-    /// `chosen_tfm`: the two answer different questions, and only the
-    /// declaration answers this one.
+    /// dispatch build, not a TFM choice, so `chosen_tfm` is `None` while the
+    /// project still declares its sole TFM. The node is then `Unresolved`, and
+    /// both of the other two verdicts would be wrong in opposite directions:
+    /// `NoneDeclared` tells the env the project's lone restored output is the
+    /// one to fold, and `Known(sole)` pairs the inner build's identity with an
+    /// `output_name` and reference list computed under the *outer* build, both
+    /// of which may be TFM-gated.
     #[test]
-    fn an_empty_tfm_global_keeps_the_sole_declaration_on_the_node() {
+    fn an_empty_tfm_global_leaves_the_sole_declaration_unresolved() {
         let tmp = TempDir::new().unwrap();
         let proj = tmp.path().join("Sample.fsproj");
         write_file(
@@ -2215,7 +2222,8 @@ mod tests {
             .iter()
             .find(|n| paths_equal(&n.path, &proj))
             .expect("entry node");
-        assert_eq!(node.tfm, NodeTfm::Known("net8.0".to_string()));
+        assert_eq!(node.tfm, NodeTfm::Unresolved);
+        assert_eq!(node.output_name, None, "declines with the TFM");
     }
 
     /// An override document whose `<ProjectReference>` is gated on
