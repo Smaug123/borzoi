@@ -9650,3 +9650,48 @@ mod escaped_leaf_boundaries {
         );
     }
 }
+
+#[test]
+fn a_case_collision_whose_spellings_agree_still_has_a_knowable_value() {
+    // The complement of
+    // `a_self_default_over_an_unpromoted_environment_name_cannot_commit`. A
+    // case collision makes the *winner* unspecified, which is why promotion is
+    // dropped — but unspecified-winner is not unknowable-value. When every
+    // colliding spelling carries the same text, whichever one MSBuild picks
+    // yields that text, so the name is modellable after all and the default
+    // fill is exact.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02) with `SomeName=` and `somename=`
+    // both set: MSBuild reports `SomeName = fallback`, so the `== ''` gate
+    // fires and the item it guards is real. The same probe with
+    // `SomeName=` / `somename=REAL` reports `fallback` too, and with the
+    // values swapped reports `REAL` — the winner genuinely is unspecified,
+    // which is what makes "the spellings agree" the load-bearing condition
+    // rather than "one of them is empty".
+    let src = r#"<Project>
+  <PropertyGroup>
+    <SomeName Condition="'$(SomeName)' == ''">fallback</SomeName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+    <Compile Condition="'$(SomeName)' == 'fallback'" Include="Ghost.fs" />
+  </ItemGroup>
+</Project>"#;
+    let environment = HashMap::from([
+        ("SomeName".to_string(), String::new()),
+        ("somename".to_string(), String::new()),
+    ]);
+    let p = parse_with_environment(src, &environment);
+    assert!(
+        !p.items_uncertain,
+        "both spellings are empty, so `$(SomeName)` is empty whichever wins",
+    );
+    assert_eq!(
+        paths(&p.items),
+        [
+            Path::new("/repo/proj/Main.fs"),
+            Path::new("/repo/proj/Ghost.fs"),
+        ],
+        "the fallback fires on both sides, so the item it gates is real",
+    );
+}

@@ -1854,10 +1854,22 @@ impl<'r> State<'r> {
         // any of them could commit us to a value the real build
         // doesn't have. An unseeded name reads as undefined, which is
         // always conservative (diagnostic + unpinned value).
-        let mut env_name_counts: HashMap<String, usize> = HashMap::new();
-        for key in environment.keys() {
-            *env_name_counts.entry(key.to_ascii_lowercase()).or_default() += 1;
+        //
+        // The pick being unspecified is not the same as the *value* being
+        // unknowable, though, and the distinction is worth keeping: when every
+        // colliding spelling carries the same text, that text is the value
+        // whichever one wins. So the collision is judged on the set of distinct
+        // values, not the number of spellings — a name is dropped only when the
+        // spellings actually disagree.
+        let mut env_values_by_lower: HashMap<String, HashSet<String>> = HashMap::new();
+        for (key, value) in environment {
+            env_values_by_lower
+                .entry(key.to_ascii_lowercase())
+                .or_default()
+                .insert(value.clone());
         }
+        let spellings_disagree =
+            |lower: &str| env_values_by_lower.get(lower).is_none_or(|v| v.len() > 1);
         let mut env_extensions_path = EnvExtensionsPath::Absent;
         let mut env_property_names: HashSet<String> = HashSet::new();
         for (key, value) in environment {
@@ -1888,7 +1900,7 @@ impl<'r> State<'r> {
             // resolves declines rather than committing a version-specific
             // answer.
             if lower == "msbuildextensionspath" {
-                env_extensions_path = if env_name_counts[&lower] > 1 {
+                env_extensions_path = if spellings_disagree(&lower) {
                     EnvExtensionsPath::Unspecified
                 } else {
                     EnvExtensionsPath::Value(value.clone())
@@ -1907,8 +1919,9 @@ impl<'r> State<'r> {
             let unmodellable =
                 // The winner of a case-collision is unspecified — probed: with
                 // `OS=Windows_NT` and `os=lowercase` both set, `$(OS)` changed
-                // value when the environ order was reversed.
-                env_name_counts[&lower] > 1
+                // value when the environ order was reversed. Only the spellings
+                // disagreeing makes that unspecified pick reach the value.
+                spellings_disagree(&lower)
                 // MSBuild promotes it, then the toolset overwrites it with a
                 // host fact this crate cannot know.
                 || is_env_ignored_toolset_name(&lower);

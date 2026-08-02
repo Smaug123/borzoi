@@ -559,11 +559,16 @@ chasing a decline is now "pin it with a test that fails against the looser
 shape", not "it looks unnecessary". The first is **done** (see P2‴ below); the
 rest stand:
 
-- ~~`unevaluable_written` is insert-only, never cleared by a later clean write,
+- `unevaluable_written` is insert-only, never cleared by a later clean write,
   so a refused write followed by a clean unconditional overwrite still declines
-  although the final value is exact.~~ Fixed by P2‴ — and the interesting part
-  is that it was not a precision item at all, but the visible end of a third
-  channel sitting outside the discipline that exists to prevent exactly that.
+  although the final value is exact. **Still open, and now deliberately so.**
+  P2‴ set out to fix it, implemented the discharge, and then *withdrew* it: the
+  mark is consumed mid-walk by a reader that tolerates SDK-subtree opacity, and
+  opacity can latch on either side of the write, so no write-time condition can
+  make the discharge sound. It is a write-time answer to a read-time question,
+  and it becomes available under P3, not before. What P2‴ actually fixed is the
+  representational defect underneath it — the channel was outside the discipline
+  that exists to prevent exactly this kind of drift.
 - `is_sdk_directory_build_targets_import_point` also accepts an `Exists`-only
   custom-SDK import, whose condition does not read `ImportDirectoryBuildTargets`
   at all — so for that shape an undecidable write to the gate declines for
@@ -1082,6 +1087,45 @@ Had P1 instead extended the allow-list — the obvious small fix — this sectio
 would still be required, permanently, as the standing guard on a coupling no
 type enforces. That difference is the whole return on choosing the structural
 fix over the local one.
+
+### A sixth round: the withdrawal's own blast radius
+
+Withdrawing the discharge (`RefusedOutcome::Keep`) fixed the soundness
+question and quietly changed the *lifetime* of every mark in the channel, which
+invalidated a justification written two commits earlier.
+
+The unmodellable-body site (CDATA, entity-encoded whitespace) had gained a
+`Set` on the note "the unpinned root above already declines for every consumer,
+so this only says so in its own terms". True when written — the two channels
+were both dischargeable then. After the withdrawal they are not: the unpinned
+root still clears on a clean unconditional overwrite, and the refusal no longer
+does. So a CDATA body followed by a plain overwrite declined a
+`Directory.Build.*` splice whose final value MSBuild and this walker agree on
+exactly — a decline `main` did not have, bought for nothing. Probed
+(dotnet 10.0.301, 2026-08-02): the gate reads `true` and
+`Directory.Build.targets` joins. That site now records `Keep`.
+
+The general lesson is narrower than "check your comments": **a claim of the
+form "X is subsumed by Y" is a claim about two lifetimes, and stays true only
+while both lifetimes do.** Changing one channel's discharge rule silently
+re-scopes every subsumption argument that mentions it, and nothing in the type
+system connects the two.
+
+The same round found the environment half of `self_default_absence_is_a_fact`
+over-declining for a reason worth writing down, because it is a distinction the
+original probe elided. A case-collision makes MSBuild's *winner* unspecified —
+that much was probed and is why promotion drops the name. But an unspecified
+winner is not an unknowable value: when every colliding spelling carries the
+same text, that text is the value whichever one wins. The collision test is now
+on the set of distinct values rather than the count of spellings, which also
+lets `MSBuildExtensionsPath` keep an agreeing pair instead of parking it.
+
+Probed while fixing it, and the numbers argue for the sharper rule rather than
+the "all empty" special case the review suggested: with `SomeName=` and
+`somename=REAL`, MSBuild reported the **empty** one; with the values swapped it
+reported `REAL`. The winner really is unspecified in both directions, so
+"one of them is empty" would have been an unsound reading of the same evidence.
+Agreement between the spellings is the load-bearing condition.
 
 ## Consultation record
 
