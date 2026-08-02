@@ -847,35 +847,47 @@ a **P3** requirement. That is the first argument for P3 that does not rest on
 the committed fraction: a wrong answer reproducible today, not a durability
 hedge. The census trigger stands; this witness sits beside it.
 
-**But one clause of the review was right and is fixed.** A fourth round
-repeated the finding and added the part that *is* about this change: in the
-intersection — a refusal, then an overwrite whose value reads opaque-stale state
-— the stale mark was the only thing declining, and discharging it converts that
-decline into a wrong commit. The accounting there is plainly negative, because
-the discharge was measured to recover nothing. So the discharge is now withheld
-under `walk_opaque`:
+**But one clause of the review was right, and chasing it three times settled
+the design.** Rounds four and five both added the part that *is* about this
+change: in the intersection — a refusal, then a clean overwrite whose splice
+decision rests on opaque-stale state — the stale mark was the only thing
+declining, so discharging it converts that decline into a wrong commit. Round
+four's fix withheld the discharge under "opacity so far"; round five pointed
+out that opacity can latch *after* the overwrite and before the splice, so no
+write-time check can establish it.
 
-```rust
-fn after_write(unpinned: &UnpinnedOutcome, walk_opaque: bool) -> Self {
-    match unpinned {
-        UnpinnedOutcome::Clear if !walk_opaque => RefusedOutcome::Clear,
-        _ => RefusedOutcome::Keep,
-    }
-}
-```
+Round five is the right generalisation, and three rounds on one point is the
+signal to stop patching the precondition and re-read the shape:
 
-Not because the discharge is wrong — last write wins on both sides regardless —
-but because its *reader* tolerates opacity, and under opacity a "clean" value
-can come from a property hidden content redefined. Pinned by
-`an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal`, which fails
-against the unconditional form. Without opacity there is no hidden content and
-so no staleness, which is why the discharge sweep is unaffected.
+> A discharge is a **write-time answer to a read-time question.** The mark is
+> consumed mid-walk by a reader that tolerates opacity; opacity can arrive on
+> either side of the write; so no condition evaluated at the write can make the
+> discharge sound.
+
+So there is no discharge. `RefusedOutcome::Keep` at the clean-write site, with
+that reasoning recorded there. The accounting was never close: the discharge
+was measured to recover **zero** declines, and each round found another way it
+loses one. It becomes available when a value carries its own staleness rather
+than the walk carrying one flag for all of them — P3, again.
+
+`an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal` fails against a
+reintroduced discharge and is the regression guard. The mirror direction —
+opacity arriving *after* the overwrite — is argued rather than pinned: a
+synthetic SDK that omits `Microsoft.Common.props`'s `DirectoryBuildTargetsPath`
+computation makes the chain's import point legitimately claim nothing, so the
+fixture cannot be ground-truthed against MSBuild, and a test whose expected
+answer rests on that is worse than none. Recorded here instead of shipped.
+
+The sweep's overwrite arm is correspondingly stated as the **contract** —
+publish nothing, or publish the set MSBuild has — rather than as a commit
+claim. It keeps teeth: on the two condition kinds the walker does commit, so a
+wrong commit there still fails it.
 
 That is the general shape worth carrying forward: **before removing a
 conservative marker, ask what its readers tolerate.** In the exemption's case
-the reader's assumption was repairable and the marker went; here the reader's
-tolerance is load-bearing and measured, so the marker stays until values carry
-their own staleness.
+the reader's assumption was repairable, so the marker went and the bug behind
+it was fixed. Here the tolerance is load-bearing and measured, so the marker
+stays — and the thing to fix is the reader, which is P3.
 
 Two of the newly-named outcomes are likewise **inert**, and are recorded as such
 rather than defended as fixes: the reserved-toolset seed now scrubs the refused

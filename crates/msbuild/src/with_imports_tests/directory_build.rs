@@ -1182,28 +1182,32 @@ fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
 }
 
 /// A way of writing a gate property that the walker cannot trust, as
-/// `(description, build the XML)`. The kinds fall in two families, and the
-/// point of sweeping them together is that the *reason* a write is untrusted
-/// must not change what a later clean write does to it.
+/// `(description, build the XML)`. The kinds fall in two families — an
+/// undecidable condition, recorded by the unpinned map, and an unevaluable
+/// value, recorded by the refused-write set — and sweeping them together is
+/// what makes the assertion below a property rather than five cases.
 type UntrustedWrite = (&'static str, fn(&str) -> String);
 
 #[test]
-fn a_clean_overwrite_re_pins_a_gate_however_the_earlier_write_was_untrusted() {
-    // Last write wins, in MSBuild and here: whatever we failed to make of an
-    // earlier write to the name, an unconditional clean write afterwards leaves
-    // both sides holding exactly that value, so the splice decision it feeds is
-    // exact and the item set must be published.
+fn an_untrusted_gate_write_declines_and_a_clean_overwrite_never_lies() {
+    // Two claims, and the asymmetry between them is the point.
     //
-    // Probed (dotnet 10.0.301, 2026-08-02) for each untrusted kind below,
-    // `<ImportDirectoryBuildTargets>` written twice with the clean `false`
-    // second: MSBuild reports `false` in every case — including the item and
-    // metadata references, which it evaluates without complaint at a point
-    // where no item exists.
+    // Left alone, an untrusted write to a name the targets splice consumes must
+    // decline, whichever channel recorded it. That is the P2″ contract.
     //
-    // The two families are recorded by *different* channels — an undecided
-    // condition by the unpinned map, an unevaluable value by the refused-write
-    // set — so sweeping them together is what makes the property a property:
-    // the clean write must discharge the name whichever channel holds it.
+    // Overwritten cleanly, the *value* is exact on both sides — last write
+    // wins, and MSBuild reports the overwrite `false` for every kind below
+    // (probed, dotnet 10.0.301, 2026-08-02; it evaluates `@(Foo)` and
+    // `%(Bar.Identity)` in a property body without complaint at a point where
+    // no item exists). So the walker may publish. Whether it *does* is a
+    // separate question this test deliberately does not settle: the unpinned
+    // channel re-pins on a clean write and the refused-write set does not,
+    // because the latter's reader tolerates SDK opacity and a write-time
+    // discharge cannot account for opacity arriving later (see
+    // `RefusedOutcome` at its clean-write site). Asserting the contract rather
+    // than the decline keeps this honest under either behaviour — and it still
+    // has teeth: on the two condition kinds the walker does commit, so a wrong
+    // commit there fails here.
     let (targets_gate, targets_path) = crate::evaluator::DIRECTORY_BUILD_TARGETS_SPLICE;
 
     let kinds: &[UntrustedWrite] = &[
@@ -1249,36 +1253,36 @@ fn a_clean_overwrite_re_pins_a_gate_however_the_earlier_write_was_untrusted() {
                 "{}\n  <PropertyGroup>\n    <{name}>false</{name}>\n  </PropertyGroup>",
                 build(name)
             ));
-            assert!(
-                !overwritten.items_uncertain,
-                "{name} written with {description} and then cleanly overwritten \
-                 holds exactly the overwrite, so the splice it feeds is exact \
-                 and owes no decline; items: {:?}",
-                paths_of(&overwritten.items)
-            );
-            let names: Vec<String> = paths_of(&overwritten.items)
-                .iter()
-                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(
-                names,
-                vec!["Main.fs".to_string()],
-                "{name} = false skips the implicit import, whatever {description} \
-                 did to the earlier write",
-            );
+            if !overwritten.items_uncertain {
+                // `false` is a nonsense path and a false gate alike, so for
+                // both names the exact outcome is the same: no
+                // `Directory.Build.targets` joins the walk, and the project's
+                // own Compile item is all there is.
+                let names: Vec<String> = paths_of(&overwritten.items)
+                    .iter()
+                    .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec!["Main.fs".to_string()],
+                    "{name} = false skips the implicit import, whatever \
+                     {description} did to the earlier write",
+                );
+            }
         }
     }
 }
 
 #[test]
 fn an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal() {
-    // The boundary of the sweep above. A clean overwrite discharges a refusal
-    // because last write wins on both sides — but "clean" is judged by the
-    // unpinned channel, and under `walk_opaque` a value can be computed from a
-    // property that hidden content redefined, which that channel does not see.
-    // `gate_value_is_exact` deliberately tolerates SDK-subtree opacity, so the
-    // refusal is the only mark left; discharging it would publish a Compile set
-    // on a gate we cannot justify.
+    // The regression guard for a *write-time* discharge of the refused-write
+    // mark, in the form that looks safest: the value is clean, its gate is
+    // clean, and last write wins on both sides, so discharging looks like
+    // plain bookkeeping. It is not, because the mark's reader
+    // (`gate_value_is_exact`) consumes it mid-walk and deliberately tolerates
+    // SDK-subtree opacity — so under opacity a cleanly-computed value can rest
+    // on a property hidden content redefined, and this mark is all that stands
+    // between that and a published Compile set.
     //
     // Here the SDK's own `Sdk.props` gates an import on a condition outside the
     // modelled grammar. The oracle says that condition is *true*, so MSBuild
