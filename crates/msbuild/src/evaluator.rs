@@ -1571,7 +1571,15 @@ struct State<'r> {
     /// expression, item reference, or metadata reference we can't
     /// evaluate, so the binding was removed rather than stored. The real
     /// build stores that value, so a later undefined read of the name is
-    /// not exact.
+    /// not exact, and neither is a splice decision that rests on it
+    /// ([`State::gate_value_is_exact`]). The mark then stands for the rest of
+    /// the walk: a later clean write does *not* discharge it, because its
+    /// reader consumes it mid-walk and tolerates SDK-subtree opacity, under
+    /// which a cleanly-computed value can still rest on a property hidden
+    /// content redefined (see [`RefusedOutcome::Keep`] at the clean-write
+    /// site). The one clear is the reserved-toolset seed, which re-establishes
+    /// a name the real build refuses to let the document write at all.
+    /// Mutated only via [`Self::apply_property_provenance`].
     unevaluable_written: HashSet<String>,
 }
 
@@ -1704,11 +1712,23 @@ enum UnpinnedOutcome {
     Keep,
 }
 
+/// What a single property write does to the refused-write channel
+/// ([`State::unevaluable_written`]).
+enum RefusedOutcome {
+    /// Record the refusal — we stored no value, so the one the real build
+    /// stored is unknown to us.
+    Set,
+    /// Discharge any earlier refusal — this write re-pins the name.
+    Clear,
+    /// Leave the existing mark as-is.
+    Keep,
+}
+
 /// The provenance verdict for a single property write: what happens to
-/// **both** forward-uncertainty channels, applied through the one method
-/// ([`State::apply_property_provenance`]) that mutates either map.
+/// **all three** forward-uncertainty channels, applied through the one method
+/// ([`State::apply_property_provenance`]) that mutates any of them.
 ///
-/// The two channels stay deliberately separate — this type pairs them at
+/// The channels stay deliberately separate — this type pairs them at
 /// the *decision* point, not the concept:
 /// * [`State::unpinned_value_properties`] rides the diagnostic pipeline: a
 ///   read re-surfaces its root under the active context, so it can flip
@@ -1717,14 +1737,19 @@ enum UnpinnedOutcome {
 ///   only at package/item sites and propagates through *clean* reads; it
 ///   deliberately **never** reaches [`State::items_uncertain`] (Compile
 ///   evaluation tolerates SDK property machinery).
+/// * [`State::unevaluable_written`] records that we stored *no* value where
+///   the real build stored one, and is read where a name's current value
+///   decides something — [`State::undefined_read_is_exact`] and
+///   [`State::gate_value_is_exact`].
 ///
-/// Both union into [`ParsedProject::untrusted_properties`]
+/// The first two union into [`ParsedProject::untrusted_properties`]
 /// ([`State::property_provenance_untrusted`]). Because a write must name an
 /// outcome for each channel, a new write path cannot update one map and
-/// silently forget the other.
+/// silently forget the others.
 struct PropertyProvenance {
     taint: TaintOutcome,
     unpinned: UnpinnedOutcome,
+    refused: RefusedOutcome,
 }
 
 impl TaintOutcome {
@@ -1829,10 +1854,22 @@ impl<'r> State<'r> {
         // any of them could commit us to a value the real build
         // doesn't have. An unseeded name reads as undefined, which is
         // always conservative (diagnostic + unpinned value).
-        let mut env_name_counts: HashMap<String, usize> = HashMap::new();
-        for key in environment.keys() {
-            *env_name_counts.entry(key.to_ascii_lowercase()).or_default() += 1;
+        //
+        // The pick being unspecified is not the same as the *value* being
+        // unknowable, though, and the distinction is worth keeping: when every
+        // colliding spelling carries the same text, that text is the value
+        // whichever one wins. So the collision is judged on the set of distinct
+        // values, not the number of spellings — a name is dropped only when the
+        // spellings actually disagree.
+        let mut env_values_by_lower: HashMap<String, HashSet<String>> = HashMap::new();
+        for (key, value) in environment {
+            env_values_by_lower
+                .entry(key.to_ascii_lowercase())
+                .or_default()
+                .insert(value.clone());
         }
+        let spellings_disagree =
+            |lower: &str| env_values_by_lower.get(lower).is_none_or(|v| v.len() > 1);
         let mut env_extensions_path = EnvExtensionsPath::Absent;
         let mut env_property_names: HashSet<String> = HashSet::new();
         for (key, value) in environment {
@@ -1863,7 +1900,7 @@ impl<'r> State<'r> {
             // resolves declines rather than committing a version-specific
             // answer.
             if lower == "msbuildextensionspath" {
-                env_extensions_path = if env_name_counts[&lower] > 1 {
+                env_extensions_path = if spellings_disagree(&lower) {
                     EnvExtensionsPath::Unspecified
                 } else {
                     EnvExtensionsPath::Value(value.clone())
@@ -1882,8 +1919,9 @@ impl<'r> State<'r> {
             let unmodellable =
                 // The winner of a case-collision is unspecified — probed: with
                 // `OS=Windows_NT` and `os=lowercase` both set, `$(OS)` changed
-                // value when the environ order was reversed.
-                env_name_counts[&lower] > 1
+                // value when the environ order was reversed. Only the spellings
+                // disagreeing makes that unspecified pick reach the value.
+                spellings_disagree(&lower)
                 // MSBuild promotes it, then the toolset overwrites it with a
                 // host fact this crate cannot know.
                 || is_env_ignored_toolset_name(&lower);
@@ -2058,6 +2096,30 @@ impl<'r> State<'r> {
             && !self.unevaluable_written.contains(&lower)
             && !self.sdk_package_property_is_tainted(name)
             && !is_toolset_initial_property_name(&lower)
+    }
+
+    /// Is `name` reading as undefined because it *is* undefined in the real
+    /// build, or because the walk could not work out what it holds? Asked by
+    /// the default-fill exemption ([`evaluate_condition_with_exemptions`]),
+    /// whose whole justification is the former.
+    ///
+    /// That exemption deliberately over-commits on two axes — it believes the
+    /// environment model, and it believes an undefined read even under
+    /// [`Self::walk_opaque`] — because the SDK leans on the idiom pervasively
+    /// and flagging it would refuse every real project. Neither over-commitment
+    /// extends to a name the walk has **direct evidence** the real build gives
+    /// a value:
+    ///
+    /// * [`Self::unevaluable_written`] — a write we refused. Its emptiness here
+    ///   is our failure to compute, not a fact; MSBuild holds what it computed
+    ///   and takes the other branch.
+    /// * [`Self::env_property_names`] — an environment name promotion skipped
+    ///   (a case collision, a toolset overwrite). We dropped it from the lookup
+    ///   precisely because we cannot model its value, and "cannot model" is not
+    ///   "unset": the real build defines *something* non-empty.
+    fn self_default_absence_is_a_fact(&self, name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        !self.unevaluable_written.contains(&lower) && !self.env_property_names.contains(&lower)
     }
 
     /// Is the *current* value of `name` exactly what MSBuild holds at this
@@ -2303,6 +2365,11 @@ impl<'r> State<'r> {
                 PropertyProvenance {
                     taint: TaintOutcome::Clear,
                     unpinned: UnpinnedOutcome::Clear,
+                    // MSB4004: the real build refuses a project write to a
+                    // reserved name and keeps its own value, which is the one
+                    // being seeded here. A refusal we recorded describes a
+                    // write no real evaluation performs.
+                    refused: RefusedOutcome::Clear,
                 },
             );
             self.reserved.insert(lower.clone());
@@ -2883,11 +2950,11 @@ impl<'r> State<'r> {
             .contains_key(&name.to_ascii_lowercase())
     }
 
-    /// The single point that mutates either forward-uncertainty channel:
-    /// apply a [`PropertyProvenance`] verdict to both maps. `name` keys the
+    /// The single point that mutates any forward-uncertainty channel:
+    /// apply a [`PropertyProvenance`] verdict to all three. `name` keys the
     /// taint map (lowercased internally, carrying the write span/origin);
-    /// `lower` keys the unpinned map. Every taint/unpinned mutation flows
-    /// through here so the two channels cannot drift at population time.
+    /// `lower` keys the unpinned map and the refused set. Every mutation flows
+    /// through here so the channels cannot drift at population time.
     fn apply_property_provenance(
         &mut self,
         name: &str,
@@ -2908,6 +2975,15 @@ impl<'r> State<'r> {
                 self.unpinned_value_properties.remove(lower);
             }
             UnpinnedOutcome::Keep => {}
+        }
+        match provenance.refused {
+            RefusedOutcome::Set => {
+                self.unevaluable_written.insert(lower.to_string());
+            }
+            RefusedOutcome::Clear => {
+                self.unevaluable_written.remove(lower);
+            }
+            RefusedOutcome::Keep => {}
         }
     }
 
@@ -3924,7 +4000,17 @@ fn walk_property_child_inner(
             } else {
                 UnpinnedOutcome::Keep
             };
-            state.apply_property_provenance(&name, &lower, PropertyProvenance { taint, unpinned });
+            state.apply_property_provenance(
+                &name,
+                &lower,
+                PropertyProvenance {
+                    taint,
+                    unpinned,
+                    // The write may or may not have happened; either way we
+                    // refused no value of our own.
+                    refused: RefusedOutcome::Keep,
+                },
+            );
             return;
         }
         CondGate::Unsupported => {
@@ -3940,6 +4026,7 @@ fn walk_property_child_inner(
                 PropertyProvenance {
                     taint: TaintOutcome::Set(node.range()),
                     unpinned,
+                    refused: RefusedOutcome::Keep,
                 },
             );
             emit_unsupported_condition(node, state);
@@ -3974,6 +4061,16 @@ fn walk_property_child_inner(
                 unpinned: UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(format!(
                     "<{name}> body"
                 ))),
+                // The unpinned root above carries this refusal, and carries it
+                // with the *right lifetime*: a later clean unconditional
+                // overwrite discharges it, because the final value is then one
+                // we computed from ordinary text and the two sides agree.
+                // Recording it in the refused channel as well would outlive
+                // that discharge (see [`RefusedOutcome::Keep`] at the
+                // clean-write site) and decline a splice MSBuild decides the
+                // same way — the mark there answers a different question, about
+                // values that may rest on content the walk hid.
+                refused: RefusedOutcome::Keep,
             },
         );
         return;
@@ -4008,9 +4105,6 @@ fn walk_property_child_inner(
         // the tainted name doesn't appear in `properties`.
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4023,6 +4117,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4044,9 +4141,6 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4059,6 +4153,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4072,9 +4169,6 @@ fn walk_property_child_inner(
         );
         state.lookup.remove(&name);
         state.written.remove(&lower);
-        // The real build stores the value we refused to compute, so later
-        // undefined reads of this name are never exact (C.2b).
-        state.unevaluable_written.insert(lower.clone());
         state.record_directory_build_path_write(&name);
         let taint = TaintOutcome::after_write(
             value_taints_property || state.in_sdk_subtree,
@@ -4087,6 +4181,9 @@ fn walk_property_child_inner(
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
+                // The real build stores the value we refused to compute, so
+                // later reads that rest on this name are not exact (C.2b).
+                refused: RefusedOutcome::Set,
             },
         );
         return;
@@ -4123,6 +4220,20 @@ fn walk_property_child_inner(
             preserve_existing_sdk_taint,
         ),
         unpinned: UnpinnedOutcome::after_write(unpinned_by, write_condition_maybe_wrong),
+        // A clean value under a clean gate re-pins the *unpinned* channel, and
+        // by the same "last write wins on both sides" argument it looks like it
+        // should discharge a prior refusal too. It must not, and the reason is
+        // about the reader rather than the write:
+        // [`State::gate_value_is_exact`] consumes this mark *mid-walk* and
+        // deliberately tolerates SDK-subtree opacity (folding `walk_opaque`
+        // into it declines every real SDK project — measured, six tests).
+        // Under opacity a cleanly-computed value can rest on a property hidden
+        // content redefined, and opacity can latch either side of this write,
+        // so no write-time check can establish that it did not. A discharge is
+        // therefore a write-time answer to a read-time question. It becomes
+        // available when a value carries its own staleness instead of the walk
+        // carrying one flag for all of them — the plan's P3.
+        refused: RefusedOutcome::Keep,
     };
     state.lookup.insert_escaped(name.clone(), expansion.value);
     state.written.insert(lower.clone(), name.clone());
@@ -4186,6 +4297,13 @@ fn evaluate_property_group_condition(
 /// The SDK relies on this idiom pervasively (`NuGet.props` gates every
 /// `Directory.Packages.props` discovery property with it), and flagging
 /// it would leave those writes unpinned and the central import refused.
+///
+/// "Never written" is a precondition, not a description of the shape, so a
+/// name whose write the walk *refused* ([`State::unevaluable_written`]) is not
+/// exempt: there the emptiness is our failure to compute a value rather than a
+/// fact about the real build, and MSBuild — holding the value it did compute —
+/// takes the opposite branch of the very condition the exemption calls
+/// deterministic.
 fn evaluate_condition_with_exemptions(
     node: Node<'_, '_>,
     current_file_dir: &Path,
@@ -4219,6 +4337,7 @@ fn evaluate_condition_with_exemptions(
             || !self_default_names
                 .iter()
                 .any(|written| written.eq_ignore_ascii_case(name))
+            || !state.self_default_absence_is_a_fact(name)
     });
     // C.2b: an undefined name the walk can prove is undefined in the
     // real build too substitutes to exactly the "" the evaluation used —
@@ -4757,6 +4876,9 @@ fn mark_property_group_children_provenance(
                     Some(root) => UnpinnedOutcome::Set(root.clone()),
                     None => UnpinnedOutcome::Keep,
                 },
+                // A write we skipped rather than refused: we computed no value
+                // here, but neither did we drop one we had.
+                refused: RefusedOutcome::Keep,
             },
         );
     }

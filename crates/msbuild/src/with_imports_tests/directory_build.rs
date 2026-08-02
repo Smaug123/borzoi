@@ -1076,6 +1076,38 @@ fn an_undecided_path_redirect_leaves_the_item_set_uncertain() {
 /// `<When>` arm containing it.
 type Placement = (&'static str, fn(&str, &str) -> String);
 
+/// A project whose body is `body`, beside a `Directory.Build.targets`
+/// contributing one Compile item. `X` is defined so a sweep can write
+/// conditions and values that read it.
+fn parse_with_body(body: &str) -> crate::ParsedProject {
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromDirBuild.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        &format!(
+            r#"<Project>
+  <PropertyGroup>
+    <X>abc</X>
+  </PropertyGroup>
+{body}
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#
+        ),
+    );
+    parse_file(&project_path)
+}
+
 #[test]
 fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
     // Placement × name, over the walker's declared directly-read set. The two
@@ -1096,35 +1128,6 @@ fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
     let (props_gate, props_path) = crate::evaluator::DIRECTORY_BUILD_PROPS_SPLICE;
     let consumed_after_body = [targets_gate, targets_path];
     let consumed_before_body = [props_gate, props_path];
-
-    fn parse_with_body(body: &str) -> crate::ParsedProject {
-        let tmp = TempDir::new().unwrap();
-        write_at(
-            tmp.path(),
-            "Directory.Build.targets",
-            r#"<Project>
-  <ItemGroup>
-    <Compile Include="FromDirBuild.fs" />
-  </ItemGroup>
-</Project>"#,
-        );
-        let project_path = write_at(
-            tmp.path(),
-            "Demo.fsproj",
-            &format!(
-                r#"<Project>
-  <PropertyGroup>
-    <X>abc</X>
-  </PropertyGroup>
-{body}
-  <ItemGroup>
-    <Compile Include="Main.fs" />
-  </ItemGroup>
-</Project>"#
-            ),
-        );
-        parse_file(&project_path)
-    }
 
     // The three places a condition can decide whether the write happens —
     // checklist entries 1, 2 and 3. Each is evaluated by different code, and
@@ -1175,6 +1178,203 @@ fn every_declared_gate_name_is_swept_at_its_own_consumption_point() {
                  decline",
             );
         }
+    }
+}
+
+/// A way of writing a gate property that the walker cannot trust, as
+/// `(description, build the XML)`. The kinds fall in two families — an
+/// undecidable condition, recorded by the unpinned map, and an unevaluable
+/// value, recorded by the refused-write set — and sweeping them together is
+/// what makes the assertion below a property rather than five cases.
+type UntrustedWrite = (&'static str, fn(&str) -> String);
+
+#[test]
+fn an_untrusted_gate_write_declines_and_a_clean_overwrite_never_lies() {
+    // Two claims, and the asymmetry between them is the point.
+    //
+    // Left alone, an untrusted write to a name the targets splice consumes must
+    // decline, whichever channel recorded it. That is the P2″ contract.
+    //
+    // Overwritten cleanly, the *value* is exact on both sides — last write
+    // wins, and MSBuild reports the overwrite `false` for every kind below
+    // (probed, dotnet 10.0.301, 2026-08-02; it evaluates `@(Foo)` and
+    // `%(Bar.Identity)` in a property body without complaint at a point where
+    // no item exists). So the walker may publish. Whether it *does* is a
+    // separate question this test deliberately does not settle: the unpinned
+    // channel re-pins on a clean write and the refused-write set does not,
+    // because the latter's reader tolerates SDK opacity and a write-time
+    // discharge cannot account for opacity arriving later (see
+    // `RefusedOutcome` at its clean-write site). Asserting the contract rather
+    // than the decline keeps this honest under either behaviour — and it still
+    // has teeth: on the two condition kinds the walker does commit, so a wrong
+    // commit there fails here.
+    let (targets_gate, targets_path) = crate::evaluator::DIRECTORY_BUILD_TARGETS_SPLICE;
+
+    let kinds: &[UntrustedWrite] = &[
+        ("an undecidable condition on the write", |name| {
+            format!(
+                "  <PropertyGroup>\n    <{name} Condition=\"{UNDECIDABLE_TRUE}\">true</{name}>\n  \
+                 </PropertyGroup>"
+            )
+        }),
+        ("an undecidable condition on the group", |name| {
+            format!(
+                "  <PropertyGroup Condition=\"{UNDECIDABLE_TRUE}\">\n    \
+                 <{name}>true</{name}>\n  </PropertyGroup>"
+            )
+        }),
+        ("an unevaluable expression in the value", |name| {
+            format!(
+                "  <PropertyGroup>\n    <{name}>$(X.Substring(0,1))</{name}>\n  </PropertyGroup>"
+            )
+        }),
+        ("an item reference in the value", |name| {
+            format!("  <PropertyGroup>\n    <{name}>@(Foo)</{name}>\n  </PropertyGroup>")
+        }),
+        ("a metadata reference in the value", |name| {
+            format!("  <PropertyGroup>\n    <{name}>%(Bar.Identity)</{name}>\n  </PropertyGroup>")
+        }),
+    ];
+
+    for name in [targets_gate, targets_path] {
+        for (description, build) in kinds {
+            // Without the overwrite the decline is owed — this arm is what
+            // stops "never record anything" passing the sweep.
+            assert!(
+                parse_with_body(&build(name)).items_uncertain,
+                "{name} written with {description} and left there must leave the \
+                 item set uncertain",
+            );
+            // `false` is a nonsense path and a false gate alike, so for both
+            // names the exact outcome is the same: no `Directory.Build.targets`
+            // joins the walk, and the project's own Compile item is all there
+            // is.
+            let overwritten = parse_with_body(&format!(
+                "{}\n  <PropertyGroup>\n    <{name}>false</{name}>\n  </PropertyGroup>",
+                build(name)
+            ));
+            if !overwritten.items_uncertain {
+                // `false` is a nonsense path and a false gate alike, so for
+                // both names the exact outcome is the same: no
+                // `Directory.Build.targets` joins the walk, and the project's
+                // own Compile item is all there is.
+                let names: Vec<String> = paths_of(&overwritten.items)
+                    .iter()
+                    .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec!["Main.fs".to_string()],
+                    "{name} = false skips the implicit import, whatever \
+                     {description} did to the earlier write",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal() {
+    // The regression guard for a *write-time* discharge of the refused-write
+    // mark, in the form that looks safest: the value is clean, its gate is
+    // clean, and last write wins on both sides, so discharging looks like
+    // plain bookkeeping. It is not, because the mark's reader
+    // (`gate_value_is_exact`) consumes it mid-walk and deliberately tolerates
+    // SDK-subtree opacity — so under opacity a cleanly-computed value can rest
+    // on a property hidden content redefined, and this mark is all that stands
+    // between that and a published Compile set.
+    //
+    // Here the SDK's own `Sdk.props` gates an import on a condition outside the
+    // modelled grammar. The oracle says that condition is *true*, so MSBuild
+    // walks `Hidden.props`, reads `ThatProperty = true`, and imports
+    // `Directory.Build.targets`. We skip the import, keep the stale `false`,
+    // and would skip the file — so any committed item set here is the wrong
+    // one.
+    let tmp = TempDir::new().unwrap();
+    let (root, props, targets) = write_synthetic_sdk(
+        tmp.path(),
+        "MySdk",
+        &format!(
+            r#"<Project>
+  <PropertyGroup><X>abc</X><ThatProperty>false</ThatProperty></PropertyGroup>
+  <Import Project="Hidden.props" Condition="{UNDECIDABLE_TRUE}" />
+</Project>"#
+        ),
+        "<Project/>",
+    );
+    write_at(
+        &root,
+        "Hidden.props",
+        r#"<Project><PropertyGroup><ThatProperty>true</ThatProperty></PropertyGroup></Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project><ItemGroup><Compile Include="FromDirBuild.fs" /></ItemGroup></Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project Sdk="MySdk">
+  <PropertyGroup>
+    <ImportDirectoryBuildTargets>$(X.Substring(0,1))</ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildTargets>$(ThatProperty)</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="Main.fs" /></ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file_with_sdk(&project_path, |name| {
+        if name == "MySdk" {
+            Ok(SdkPaths {
+                root: root.clone(),
+                props: props.clone(),
+                targets: targets.clone(),
+            })
+        } else {
+            Err(SdkResolveError::NotFound)
+        }
+    });
+    assert!(
+        result.items_uncertain,
+        "the overwrite's value came from a property an opaque import may have \
+         redefined, so the refusal must stand; items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
+#[test]
+fn a_self_default_after_a_refused_write_cannot_certify_the_gate() {
+    // The default-fill idiom `<X Condition="'$(X)' == ''">…</X>` is exempted
+    // from the undefined-read carve-outs, on the stated ground that a name the
+    // walk never wrote is genuinely unset in the real build too. A *refused*
+    // write breaks that precondition rather than satisfying it: we dropped the
+    // binding because we could not compute the value, so `$(X)` reads empty
+    // here and non-empty in MSBuild, and the two sides take opposite branches
+    // of the very condition the exemption declared deterministic.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02): with `Y=false`, MSBuild evaluates
+    // `$(Y.Substring(0,5))` to `false`, so the default does not fire and it
+    // reports `ImportDirectoryBuildTargets = false` — it skips
+    // `Directory.Build.targets` where we would import it.
+    let result = parse_with_body(
+        "  <PropertyGroup>\n    <Y>false</Y>\n    \
+         <ImportDirectoryBuildTargets>$(Y.Substring(0,5))</ImportDirectoryBuildTargets>\n    \
+         <ImportDirectoryBuildTargets Condition=\"'$(ImportDirectoryBuildTargets)' == ''\">\
+         true</ImportDirectoryBuildTargets>\n  </PropertyGroup>",
+    );
+    // Stated as the contract rather than as a decline, because either half is
+    // an acceptable answer: commit the set MSBuild has, or claim nothing.
+    if !result.items_uncertain {
+        let names: Vec<String> = paths_of(&result.items)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Main.fs".to_string()],
+            "the gate holds `false` in the real build, so a committed item set \
+             must not carry Directory.Build.targets' item",
+        );
     }
 }
 
@@ -1443,5 +1643,41 @@ fn an_undecided_gate_withdraws_every_item_facet_not_just_compile() {
         result.package_references_uncertain,
         "…and its <PackageReference> list with them; packages: {:?}",
         result.package_references,
+    );
+}
+
+#[test]
+fn a_cdata_body_then_a_clean_overwrite_still_decides_the_splice() {
+    // An unmodellable body (CDATA, entity-encoded whitespace) is refused: we
+    // store no value and unpin the name. Both of those are dischargeable by a
+    // later clean unconditional overwrite — last write wins on both sides, and
+    // the final value is one we computed ourselves from ordinary text.
+    //
+    // That is *not* the SDK-opacity case guarded by
+    // `an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal`: here the
+    // refusal is about a body shape our reader cannot decode, not about a value
+    // that might rest on hidden content. Marking such a name permanently
+    // refused would decline a gate whose final value MSBuild and this walker
+    // agree on exactly.
+    let p = parse_with_body(
+        r#"  <PropertyGroup>
+    <ImportDirectoryBuildTargets><![CDATA[false]]></ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildTargets>true</ImportDirectoryBuildTargets>
+  </PropertyGroup>"#,
+    );
+    assert!(
+        !p.items_uncertain,
+        "the final gate value is plain text and unconditional, so the splice is \
+         decided exactly",
+    );
+    let names: Vec<String> = paths_of(&p.items)
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Main.fs".to_string(), "FromDirBuild.fs".to_string()],
+        "the gate ends up true, so Directory.Build.targets joins the walk — \
+         after the body, which is where it splices",
     );
 }

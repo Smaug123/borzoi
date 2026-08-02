@@ -2305,6 +2305,44 @@ fn undefined_only_property_value_is_still_stored_but_unpins_consumers() {
 }
 
 #[test]
+fn a_self_default_over_an_unpromoted_environment_name_cannot_commit() {
+    // The other half of the default-fill exemption's "never written, and absent
+    // from the environment" precondition. A case-collided environment variable
+    // is remembered in the environment snapshot but *dropped* from the lookup,
+    // because which spelling wins is unspecified — so the name reads undefined
+    // here while the real build has a value for it, and the default fires on
+    // one side only.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02) with `SomeName=real` and
+    // `somename=REAL` both in the environment: MSBuild reports
+    // `SomeName = real`, so its `== ''` gate is false and the write never
+    // happens. Ours would write `fallback` and gate an item on it.
+    let src = r#"<Project>
+  <PropertyGroup>
+    <SomeName Condition="'$(SomeName)' == ''">fallback</SomeName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+    <Compile Condition="'$(SomeName)' == 'fallback'" Include="Ghost.fs" />
+  </ItemGroup>
+</Project>"#;
+    let environment = HashMap::from([
+        ("SomeName".to_string(), "real".to_string()),
+        ("somename".to_string(), "REAL".to_string()),
+    ]);
+    let p = parse_with_environment(src, &environment);
+    // Stated as the contract: claim nothing, or claim the set MSBuild has.
+    if !p.items_uncertain {
+        assert_eq!(
+            paths(&p.items),
+            [Path::new("/repo/proj/Main.fs")],
+            "the real build's SomeName is non-empty, so a committed item set \
+             must not carry the item the fallback gates",
+        );
+    }
+}
+
+#[test]
 fn protected_write_with_unsupported_condition_emits_no_diagnostic() {
     // The standard SDK idiom for defaulting a global property:
     //   <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
@@ -9611,4 +9649,49 @@ mod escaped_leaf_boundaries {
             "the Update must find the item its escape names"
         );
     }
+}
+
+#[test]
+fn a_case_collision_whose_spellings_agree_still_has_a_knowable_value() {
+    // The complement of
+    // `a_self_default_over_an_unpromoted_environment_name_cannot_commit`. A
+    // case collision makes the *winner* unspecified, which is why promotion is
+    // dropped — but unspecified-winner is not unknowable-value. When every
+    // colliding spelling carries the same text, whichever one MSBuild picks
+    // yields that text, so the name is modellable after all and the default
+    // fill is exact.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02) with `SomeName=` and `somename=`
+    // both set: MSBuild reports `SomeName = fallback`, so the `== ''` gate
+    // fires and the item it guards is real. The same probe with
+    // `SomeName=` / `somename=REAL` reports `fallback` too, and with the
+    // values swapped reports `REAL` — the winner genuinely is unspecified,
+    // which is what makes "the spellings agree" the load-bearing condition
+    // rather than "one of them is empty".
+    let src = r#"<Project>
+  <PropertyGroup>
+    <SomeName Condition="'$(SomeName)' == ''">fallback</SomeName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+    <Compile Condition="'$(SomeName)' == 'fallback'" Include="Ghost.fs" />
+  </ItemGroup>
+</Project>"#;
+    let environment = HashMap::from([
+        ("SomeName".to_string(), String::new()),
+        ("somename".to_string(), String::new()),
+    ]);
+    let p = parse_with_environment(src, &environment);
+    assert!(
+        !p.items_uncertain,
+        "both spellings are empty, so `$(SomeName)` is empty whichever wins",
+    );
+    assert_eq!(
+        paths(&p.items),
+        [
+            Path::new("/repo/proj/Main.fs"),
+            Path::new("/repo/proj/Ghost.fs"),
+        ],
+        "the fallback fires on both sides, so the item it gates is real",
+    );
 }
