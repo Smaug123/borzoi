@@ -1,27 +1,28 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** **P0, P1, P2′, P2″ and P2‴ landed.** The reference scan is
+> **Status:** **P0, P1, P2, P2′, P2″ and P2‴ landed.** The reference scan is
 > a walk of the same parse tree evaluation uses, so a member access can no
 > longer launder its receiver's provenance (#265); the gates read MSBuild
 > booleans rather than strings (#266); an undecided `Directory.Build.*`
 > gate now withdraws every item facet instead of publishing a wrong one; and
 > the third forward-uncertainty channel is inside `PropertyProvenance` rather
-> than beside it, so it can no longer drift from the other two.
+> than beside it, so it can no longer drift from the other two; and the three
+> channels are now one `Trust` value with a property-tested join, so a fourth
+> would be a compile error rather than a review item.
 >
 > **Open, in the order I would take them:**
 >
-> 1. P2 — the lattice. P2‴ found the live evidence for it: the "forgot a
->    channel" hazard had already happened, to a channel the struct did not
->    name.
-> 2. The three remaining **precision** items under P2″ — declines, not wrong
+> 1. The three remaining **precision** items under P2″ — declines, not wrong
 >    answers, and each carries regression risk (see the fifth-round entry).
-> 3. P1′, P4.
+> 2. P1′, P4.
 >
 > **P3 is deferred on measurement, not on effort** — the census (re-run
 > 2026-08-02, zero wrong commits) shows we commit on 17% of the SDK's call
 > expressions and 5% of its conditions, so the surface a laundering defect
-> could reach is small. Its trigger is the committed fraction rising; see
-> "The census, re-run".
+> could reach is small. Its previously-stated trigger — "land trusted seeding" —
+> was **void**, and is corrected under "The census, re-run"; the seeding lever
+> reaches ~1.5% of the declines, and the work it named was never scheduled
+> ([`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md)).
 >
 > **Known wrong commit, reproducible, not fixed:** a `Directory.Build.*` gate
 > written from a property an opaque *SDK-subtree* import may have redefined
@@ -970,21 +971,41 @@ write code to do. Weigh that against what the census actually shows:
 2. **The residual risk P3 addresses is not currently realised.** P2′ audited
    all twelve direct-read sites: two were defects (both fixed), one TODO was
    bogus, the rest were already discharged. There is no known thirteenth site.
-3. **The declines are dominated by something else entirely.** Both census
-   comments record that the remaining declines are mostly undefined *reserved*
-   receivers, which trusted seeding turns on wholesale. That is the coverage
-   lever, and it is unrelated to trust plumbing.
+3. **The declines are dominated by something else entirely.** They are, but
+   not by what this section originally claimed. See the correction below.
 
-Point 3 is the interesting one, because it inverts the sequencing. **Seeding
-is exactly what makes P3 worth doing**: it multiplies the committed fraction,
-and the committed fraction *is* the blast radius. Doing P3 first pays for
-durability over a surface we mostly decline; doing it after seeding pays for
-durability over the surface that seeding just opened up.
+#### Correction (2026-08-02): the trigger this section set was void
 
-So: **P3 is deferred, and its trigger is the committed fraction rising** — i.e.
-land trusted seeding, re-run this census, and re-price P3 against the new
-numbers. Should either ratchet floor be raised for any other reason, that is
-the same signal.
+Point 3 read: "the remaining declines are mostly undefined *reserved*
+receivers, which trusted seeding turns on wholesale", and the trigger followed
+from it — land trusted seeding, re-run the census, re-price P3. Both halves
+were wrong, and
+[`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md) has the
+measurement.
+
+- **Seeding reaches ~1.5% of the declines**, not most of them: 6 of 330
+  expression declines and at most 54 of 2 619 condition withdrawals are blocked
+  by reserved names. 286 of the expression declines are property functions we do
+  not implement, which do not reduce however many operands are defined; 2 328 of
+  the condition withdrawals involve no reserved name at all.
+- **The claim came from misreading a histogram** bucketed by *function called*
+  as though it were bucketed by *cause*. The attribution is now its own
+  measurement (`sdk_chain_decline_attribution.rs`) with two-sided pins, so the
+  number is machine-kept rather than asserted in prose.
+- **The work the trigger named was never scheduled.** "Stage C.2's trusted
+  seeding" was forward-referenced from five test comments; the only plan owning
+  a Stage C is complete, with C.2a/b/c all landed.
+- **The census is the wrong instrument for this anyway.** It evaluates
+  context-free, so its undefined column partly measures how much of the SDK's
+  text depends on values the SDK itself sets later. A real walk resolves six of
+  its top blockers, none of them reserved.
+
+So: **P3 stays deferred, but on the two points that survive** — the committed
+surface is small (17%/5%), and no thirteenth direct-read site is known. Its
+trigger is the *modelling* lever rather than the seeding one: the property
+functions in the census's printed worklist are what would genuinely grow the
+committed surface, and therefore P3's blast radius. Re-price P3 when that
+surface grows, or when a new direct-read site appears.
 
 The one thing that would override this is a *new* direct-read site appearing
 without the audit noticing. The P2″ sweep is driven off the splice-property
