@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 /// put in a state where both sides agree on their value. Our side sees them
 /// undefined and declines — sound, just less covered. How much less is
 /// measured, not assumed: `sdk_chain_decline_attribution.rs` puts the
-/// reserved-blocked population at 6 expressions and 40 conditions, so seeding
-/// them would move the ratchets by single digits.
+/// reserved-blocked population at 13 expressions and 42 conditions — and those
+/// are upper bounds, since a real walk already supplies several of the names
+/// this table lacks.
 pub fn seeded_props() -> Vec<(String, String)> {
     [
         ("TargetFramework", "net10.0"),
