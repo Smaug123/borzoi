@@ -2616,7 +2616,12 @@ fn an_extern_after_a_same_named_case_declines_the_folded_case() {
 /// (fcs-dump probe `Frag` reports no use for it at all) while `current` binds.
 #[test]
 fn the_fold_back_brings_in_only_the_attributed_fragment() {
-    let env = fixture_env();
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
     let src = "namespace Demo.Frag\n\nmodule M =\n    let earlier = 1\n\n\
                namespace Demo.Frag\n\n[<AutoOpen>]\nmodule M =\n    let current = 2\n\n\
                module User =\n    let a = current\n    let b = earlier\n";
@@ -2661,9 +2666,27 @@ fn the_type_eviction_override_is_scoped_to_the_folded_fragment() {
         u32::try_from(start + "Tag".len()).unwrap().into(),
     );
     let res = rf.resolution_at(use_at);
+    // The property under test is that the *plain* fragment's `Tag` evicts
+    // nothing at the auto-open fragment's fold — and it still holds. What is no
+    // longer observable is the positive witness (naming `Demo.Auto.Extra.Tag`):
+    // [`fixture_env`] deliberately carries an unknowable auto-open surface, so
+    // the `[<AutoOpen>]` marker here is *unprovable*, and an unprovable marker
+    // declines rather than folding or not-folding
+    // ([`AutoOpenVerdict::Unproven`](borzoi_sema) — see the fold-back).
+    //
+    // So this asserts the half that survives: we must not commit the evicting
+    // type. Committing `Tag`'s *type* would be the wrong go-to-definition the
+    // eviction override exists to prevent, and a decline is not that.
     assert!(
-        matches!(res, Some(Resolution::Member { .. })),
+        matches!(
+            res,
+            Some(Resolution::Member { .. }) | Some(Resolution::Deferred(_))
+        ),
         "the other fragment's type evicts nothing here; got {res:?}"
+    );
+    assert!(
+        !matches!(res, Some(Resolution::Entity(_))),
+        "the plain fragment's type must never be committed here; got {res:?}"
     );
 }
 
@@ -2724,7 +2747,12 @@ fn a_later_enclosing_type_takes_a_folded_name() {
 /// on position rather than on the name being a type anywhere in the block.
 #[test]
 fn an_earlier_enclosing_type_does_not_take_a_folded_name() {
-    let env = fixture_env();
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
     let src = "module M\ntype Tag() = class end\n[<AutoOpen>]\nmodule Local =\n    let Tag = 1\n\
                let x = Tag\n";
     let rf = resolve(src, &env);
@@ -2806,7 +2834,12 @@ fn a_shadowed_attribute_also_suppresses_the_later_blocks_implicit_fold() {
 /// reports no use for `plainOnly` at all).
 #[test]
 fn the_namespace_fold_brings_in_only_the_attributed_same_file_fragment() {
-    let env = fixture_env();
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
     let src = "namespace Demo.NsFrag\n\nmodule M =\n    let plainOnly = 1\n\n\
                namespace Demo.NsFrag\n\n[<AutoOpen>]\nmodule M =\n    let autoOnly = 2\n\n\
                namespace Demo.NsFrag\n\nmodule User =\n    let a = autoOnly\n    let b = plainOnly\n";

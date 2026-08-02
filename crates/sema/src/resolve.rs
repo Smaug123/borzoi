@@ -436,6 +436,7 @@ pub fn resolve_file(
                     path.clone(),
                     header_private,
                     module.syntax().text_range(),
+                    model::AutoOpenVerdict::Proven,
                 );
             }
             // The export-decl-list twin of the two lines above: one top-level
@@ -449,7 +450,18 @@ pub fn resolve_file(
                 header_pos,
                 model::ExportDeclKind::Module {
                     header: true,
-                    auto_open: header_auto_open,
+                    // A top-level header's own attributes have not resolved at
+                    // this point — this runs before the walk that would resolve
+                    // them — so only the *spelling* is available, and this path
+                    // still folds on it. The nested-module path
+                    // ([`decls::Resolver::auto_open_verdict`]) is the one that
+                    // requires proof; closing the asymmetry means hoisting
+                    // header-attribute resolution the way the nested arm's was.
+                    auto_open: if header_auto_open {
+                        model::AutoOpenVerdict::Proven
+                    } else {
+                        model::AutoOpenVerdict::NotAutoOpen
+                    },
                     private: header_private,
                 },
             );
@@ -2044,9 +2056,12 @@ impl<'a> Resolver<'a> {
     /// `N.Auto.Foo`. The earlier-file half arrives already privacy-filtered by
     /// `finish()`.
     fn project_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
-        self.auto_open_module_paths.iter().any(|(p, private, _)| {
-            model::is_directly_in(p, namespace)
-                && (!private || self.container_path.starts_with(namespace))
+        // A VETO query: every recorded declaration counts, including one whose
+        // marker we could not prove. If it does open, resolving past the names
+        // it contributes commits the wrong binder.
+        self.auto_open_module_paths.iter().any(|d| {
+            model::is_directly_in(&d.path, namespace)
+                && (!d.private || self.container_path.starts_with(namespace))
         }) || self.preceding.has_auto_open_module_in_namespace(namespace)
     }
 
@@ -2059,8 +2074,14 @@ impl<'a> Resolver<'a> {
         path: Vec<String>,
         is_private: bool,
         range: TextRange,
+        verdict: model::AutoOpenVerdict,
     ) {
-        self.auto_open_module_paths.push((path, is_private, range));
+        self.auto_open_module_paths.push(state::AutoOpenModuleDecl {
+            path,
+            private: is_private,
+            range,
+            verdict,
+        });
     }
 
     /// Demote every **assembly-rooted** resolution this file recorded to
@@ -2843,7 +2864,7 @@ mod export_decl_tests {
                 &d.kind,
                 ExportDeclKind::Module {
                     header: true,
-                    auto_open: true,
+                    auto_open: model::AutoOpenVerdict::Proven,
                     private: true,
                 }
             )),
@@ -2867,7 +2888,7 @@ mod export_decl_tests {
                 &d.kind,
                 ExportDeclKind::Module {
                     header: true,
-                    auto_open: true,
+                    auto_open: model::AutoOpenVerdict::Proven,
                     private: false,
                 }
             )),

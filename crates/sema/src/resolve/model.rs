@@ -1533,10 +1533,26 @@ impl FileExportIndices {
                         // none.
                         let effective_auto_open = match screen {
                             None => *auto_open,
-                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                            Some(s) => {
+                                if s.roots.iter().any(|r| r.auto_open && r.path == decl.path) {
+                                    AutoOpenVerdict::Proven
+                                } else {
+                                    AutoOpenVerdict::NotAutoOpen
+                                }
+                            }
                         };
-                        if effective_auto_open && !*private {
+                        if effective_auto_open == AutoOpenVerdict::Proven && !*private {
                             fi.auto_open_module_paths.push(decl.path.clone());
+                        }
+                        // An unproven marker cannot be exported as an auto-open
+                        // path — we would be folding on a guess — but neither
+                        // may a later file treat the module as ordinary and let
+                        // its own enclosing binder take a name this module might
+                        // contribute. Marking the container hidden is the
+                        // cross-file "we cannot enumerate this": a consumer
+                        // defers on those names instead of resolving past them.
+                        if effective_auto_open == AutoOpenVerdict::Unproven && !*private {
+                            push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
                         }
                     }
                 }
@@ -1757,6 +1773,38 @@ pub(super) struct ExportDecl {
     pub(super) kind: ExportDeclKind,
 }
 
+/// What we were able to establish about a module header's `[<AutoOpen>]`
+/// marker.
+///
+/// Three-valued on purpose: **failing to prove the marker is not the same as
+/// proving its absence**, and only the second licenses an enclosing binder to
+/// win. `[<AutoOpen>]` is a *spelling*; the type it names is whatever the file's
+/// scope resolves `AutoOpen`/`AutoOpenAttribute` to, which a project type, an
+/// `open`ed assembly type, or an unknowable auto-open surface can all redirect.
+/// Collapsing this to a `bool` in either direction commits a wrong target:
+///
+/// - reading "not proven" as [`Self::NotAutoOpen`] makes the module ordinary,
+///   so an enclosing `open`'s same-named value wins where FCS binds the
+///   module's own member;
+/// - reading it as [`Self::Proven`] folds members FCS never brings into scope.
+///
+/// [`Self::Unproven`] is the answer that declines instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutoOpenVerdict {
+    /// A marker resolved to `Microsoft.FSharp.Core.AutoOpenAttribute`. The
+    /// module auto-opens.
+    Proven,
+    /// No `[<AutoOpen>]`-spelled marker at all, or every one present resolved to
+    /// some *other* type. Either way this is an ordinary module, and that is a
+    /// positive finding — an enclosing binder may take the name.
+    NotAutoOpen,
+    /// A marker is spelled `[<AutoOpen>]`, but the walk could not say which type
+    /// it names — so we can claim neither that the module opens nor that it does
+    /// not. Consumers must decline the names it would have contributed rather
+    /// than fall through to whatever was in scope before.
+    Unproven,
+}
+
 /// The typed payload of an [`ExportDecl`]. Each variant corresponds to a
 /// declaration nature and drives a documented set of derivations in
 /// [`ProjectItems::extend_with`].
@@ -1808,7 +1856,7 @@ pub(super) enum ExportDeclKind {
     /// `auto_open_module_paths` derives (non-private auto-open modules only).
     Module {
         header: bool,
-        auto_open: bool,
+        auto_open: AutoOpenVerdict,
         private: bool,
     },
     /// A module abbreviation `module P = Target`. `path` = container + P — both
@@ -2991,7 +3039,7 @@ impl ResolvedFile {
                     anonymous_root: false,
                     kind: ExportDeclKind::Module {
                         header: true,
-                        auto_open: false,
+                        auto_open: AutoOpenVerdict::NotAutoOpen,
                         private: false,
                     },
                 });

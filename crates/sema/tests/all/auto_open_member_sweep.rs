@@ -40,7 +40,7 @@ use std::path::PathBuf;
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::{TextRange, TextSize};
 
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
@@ -867,7 +867,7 @@ fn the_fold_agrees_with_fcs_over_every_member_pair() {
         let rf = resolve_file(
             &file,
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            crate::common::fsharp_core_env(),
             &recovery,
         );
 
@@ -1153,7 +1153,7 @@ fn resolutions(src: &str, probes: &[(Probe, TextRange)]) -> Vec<String> {
     let rf = resolve_file(
         &file,
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery,
     );
     probes

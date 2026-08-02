@@ -7,8 +7,8 @@ use borzoi_cst::syntax::{
 use crate::def::DefId;
 
 use super::model::{
-    CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, OpenOpacity, OpenTrace,
-    Resolution, SlotClass,
+    AutoOpenVerdict, CaseKind, DeferredReason, ExportDeclKind, ExportedItem, ItemId, OpenOpacity,
+    OpenTrace, Resolution, SlotClass,
 };
 use super::state::{
     AutoOpenTypeShadow, Frame, OpenGroup, OpenInterpretation, Resolver, ScopeEntry,
@@ -21,22 +21,10 @@ use super::{
 
 /// The one attribute whose presence means "fold this module's contents into the
 /// enclosing scope". Any other type of the same simple name is an ordinary
-/// attribute, whoever declares it — see
-/// [`Resolver::auto_open_attribute_is_shadowed`].
+/// attribute, whoever declares it — so the fold requires this exact identity
+/// rather than the `[<AutoOpen>]` spelling, which anyone may take
+/// ([`Resolver::auto_open_verdict`]).
 const FSHARP_CORE_AUTO_OPEN: &str = "Microsoft.FSharp.Core.AutoOpenAttribute";
-
-/// [`FSHARP_CORE_AUTO_OPEN`]'s namespace, as the segments an
-/// [`AssemblyEnv`](crate::AssemblyEnv) index is keyed by.
-const FSHARP_CORE_NS: &[&str] = &["Microsoft", "FSharp", "Core"];
-
-/// Whether `path` is [`FSHARP_CORE_NS`].
-fn is_fsharp_core_ns(path: &[String]) -> bool {
-    path.len() == FSHARP_CORE_NS.len()
-        && path
-            .iter()
-            .zip(FSHARP_CORE_NS)
-            .all(|(a, b)| a.as_str() == *b)
-}
 
 /// Whether `defn` carries a **type-header** `private` modifier (`type private
 /// Color` — the `ACCESS_TOK` *before* the name's `LONG_IDENT`). FCS does not
@@ -355,7 +343,19 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(&expr);
                 }
             }
-            ModuleDecl::NestedModule(nm) => self.nested_module(nm),
+            ModuleDecl::NestedModule(nm) => {
+                // The header's own attributes resolve in the ENCLOSING env, and
+                // the auto-open indices `nested_module` writes need their
+                // verdict: a module is auto-open only if its marker is provably
+                // FSharp.Core's ([`Self::auto_open_verdict`]).
+                // The enclosing env is the same before the body as after it —
+                // every field the body may touch is saved and restored — so
+                // this is a reordering of two independent steps, and the fold
+                // itself still runs last (post-dispatch), which is what FCS's
+                // "header attributes before contents" ordering requires.
+                self.resolve_attribute_lists(nm.attributes());
+                self.nested_module(nm);
+            }
             ModuleDecl::ModuleAbbrev(a) => {
                 // A module abbreviation `module X = Bar.Baz` (parser 8.5) aliases
                 // `X` to the module `Bar.Baz`. We resolve the RHS to its canonical
@@ -1631,7 +1631,8 @@ impl<'a> Resolver<'a> {
         // scope (type resolution does not see expression-level binders).
         match decl {
             ModuleDecl::NestedModule(nm) => {
-                self.resolve_attribute_lists(nm.attributes());
+                // The header attributes resolved when the walk reached the
+                // header, before the body (see the dispatch arm).
                 // …and only THEN does an `[<AutoOpen>]` module's surface join the
                 // enclosing scope. FCS checks a module's own header attributes
                 // before adding its contents to the environment, so the fold must
@@ -1699,8 +1700,7 @@ impl<'a> Resolver<'a> {
         // only at the fold-back's own position leaves this record standing, and
         // a later `namespace` block reopening this namespace folds it in from
         // here — committing a target FCS leaves unbound (codex review).
-        let nm_auto_open =
-            attrs_auto_open(nm.attributes()) && !self.auto_open_attribute_is_shadowed(nm);
+        let nm_auto_open = self.auto_open_verdict(nm);
         let nm_private = header_is_private(nm.syntax());
         // The module-only cross-file index ([`ProjectItems::real_nested_modules`]):
         // unlike the name-shadow set just recorded (which types, exceptions,
@@ -1708,11 +1708,15 @@ impl<'a> Resolver<'a> {
         // module at this path?" for a later file's open-target classification.
         // The same real-root guard as the shadow's cross-file half.
         if !self.anonymous_root {
-            if nm_auto_open {
+            // Recorded for an UNPROVEN marker too, and the verdict rides along:
+            // the veto consumers of this index must count a module that might
+            // auto-open, while the commit consumers filter to a proven one.
+            if nm_auto_open != AutoOpenVerdict::NotAutoOpen {
                 self.record_auto_open_module(
                     qualified.clone(),
                     nm_private,
                     nm.syntax().text_range(),
+                    nm_auto_open,
                 );
             }
             self.real_nested_module_exports.push(qualified.clone());
@@ -1901,109 +1905,85 @@ impl<'a> Resolver<'a> {
         self.augmentation_head_locals = saved_augmentation_locals;
     }
 
-    /// Whether `nm`'s `[<AutoOpen>]` header attribute provably names something
-    /// other than FSharp.Core's — a project type of that name, in this file or
-    /// a preceding one, which shadows it.
+    /// Whether `nm`'s `[<AutoOpen>]` header attribute is **provably**
+    /// FSharp.Core's `AutoOpenAttribute` — the fold's precondition stated as
+    /// the proof it needs, not as the hazards it must dodge.
     ///
-    /// A committed project verdict — `Resolution::Local` / `Item` — settles it:
-    /// the candidate reached a project type, so the attribute is not
-    /// FSharp.Core's.
+    /// The fold is the one consumer that cannot act on a *spelling*: it
+    /// commits members into the enclosing scope, and every way a foreign
+    /// `AutoOpenAttribute` can occupy that name — a type this file declares, a
+    /// preceding file's, an assembly's reached by `open` or by `open type`, a
+    /// written qualifier, an alias — makes FCS treat the attribute as ordinary
+    /// and bind none of them (`FS0039`, fcs-dump-probed for each shape).
+    /// Enumerating those routes is an allow-list by subtraction: three
+    /// consecutive review rounds each found another one, and the next reviewer
+    /// would have found the one after that.
     ///
-    /// A **deferral is not** the complement of that. The attribute resolver
-    /// defers `ShadowableType` in the ordinary case too (an opaque `open` could
-    /// supply a type of this name), so the cause cannot tell "a custom
-    /// `AutoOpenAttribute` is in play" from "nothing here shadows anything" —
-    /// declining on it would decline nearly every fold. Nor can it be ignored:
-    /// a custom `AutoOpenAttribute` declared in a *preceding* file and reached
-    /// through an `open` defers rather than committing, and FCS then treats
-    /// `[<AutoOpen>]` as an ordinary attribute (`FS0039` for the bare use,
-    /// fcs-dump `uses-project`-probed).
+    /// Requiring the positive verdict is route-independent. Anything the
+    /// attribute resolver could not pin to FSharp.Core's entity leaves the
+    /// fold without its premise, and *why* it could not stops mattering:
+    /// [`Self::resolve_attribute_type`] commits [`Resolution::Entity`] only for
+    /// a whole-path assembly leaf that survived every precedence tier and
+    /// shadow guard, so an in-file type, a deferral, and a name that resolves
+    /// nowhere all decline alike — costing a fold, never a wrong target.
     ///
-    /// So an uncommitted verdict asks the project directly, by name: if any
-    /// file declares a type that could *be* this attribute, the fold has no
-    /// proof of FSharp.Core's and declines. Name-keyed and scope-blind, so it
-    /// over-declines for a project that declares such a type but does not open
-    /// it — a deferral rather than a wrong target, on a shape no real project
-    /// has.
-    fn auto_open_attribute_is_shadowed(&self, nm: &NestedModuleDecl) -> bool {
-        nm.attributes()
+    /// One genuine marker suffices: a header carrying both
+    /// `[<Microsoft.FSharp.Core.AutoOpen>]` and a foreign lookalike is
+    /// auto-opened by FCS, so this asks whether *any* attribute proves the
+    /// premise rather than whether any fails it.
+    fn auto_open_verdict(&self, nm: &NestedModuleDecl) -> AutoOpenVerdict {
+        if !attrs_auto_open(nm.attributes()) {
+            return AutoOpenVerdict::NotAutoOpen;
+        }
+        let mut any_unproven = false;
+        for name in nm
+            .attributes()
             .flat_map(|list| list.attributes().collect::<Vec<_>>())
             .filter_map(|attr| attr.type_name())
-            .filter(|name| {
-                name.idents().last().is_some_and(|t| {
-                    let text = id_text(t.text());
-                    text == "AutoOpen" || text == "AutoOpenAttribute"
-                })
-            })
-            .any(|name| {
-                let toks: Vec<_> = name.idents().collect();
-                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
-                    return false;
-                };
-                // A *written* qualifier names the attribute's container
-                // outright, and the leaf test above cannot stand in for it:
-                // `[<Demo.CustomAttr.AutoOpen>]` needs no `open` to reach
-                // somebody else's attribute, and the attribute resolver defers
-                // every multi-segment name, so neither the spelling nor a
-                // verdict distinguishes it (FCS: `FS0039` for the bare use,
-                // fcs-dump `uses-project-batch`-probed). Only FSharp.Core's own
-                // path is proof. A *shortened* spelling (`[<Core.AutoOpen>]`
-                // under `open Microsoft.FSharp`) is FSharp.Core's too, but
-                // proving that needs the open set this test does not consult —
-                // so it declines, which costs a fold and never a wrong target.
-                let segs: Vec<&str> = toks.iter().map(|t| id_text(t.text())).collect();
-                if let Some((_, qualifier)) = segs.split_last()
-                    && !qualifier.is_empty()
+        {
+            let toks: Vec<_> = name.idents().collect();
+            let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                // A nameless attribute node tells us nothing about the marker,
+                // and one of the *other* attributes here is spelled
+                // `[<AutoOpen>]` — so this is uncertainty, not absence.
+                any_unproven = true;
+                continue;
+            };
+            let range = rowan::TextRange::new(first.text_range().start(), last.text_range().end());
+            match self.attribute_resolutions.get(&range) {
+                // One genuine marker suffices, and short-circuits: a header
+                // carrying both `[<Microsoft.FSharp.Core.AutoOpen>]` and a
+                // foreign lookalike is auto-opened by FCS, so a proof anywhere
+                // outranks another attribute's uncertainty.
+                Some(Resolution::Entity(h))
+                    if self.assemblies.entity_full_name(*h) == FSHARP_CORE_AUTO_OPEN =>
                 {
-                    return qualifier != FSHARP_CORE_NS;
+                    return AutoOpenVerdict::Proven;
                 }
-                let range =
-                    rowan::TextRange::new(first.text_range().start(), last.text_range().end());
-                match self.attribute_resolutions.get(&range) {
-                    Some(Resolution::Local(_) | Resolution::Item(_)) => true,
-                    // An assembly's. FSharp.Core's own attribute is the fold's
-                    // premise, so it alone is proof of *safety*; any other
-                    // assembly's `AutoOpenAttribute` is an ordinary attribute
-                    // and FCS opens nothing.
-                    Some(Resolution::Entity(h)) => {
-                        self.assemblies.entity_full_name(*h) != FSHARP_CORE_AUTO_OPEN
-                    }
-                    // No committed verdict. The attribute resolver defers in the
-                    // ordinary case too, so the deferral itself says nothing;
-                    // ask both halves of the reference set by name instead.
-                    _ => {
-                        self.project_type_named("AutoOpenAttribute")
-                            || self.project_type_named("AutoOpen")
-                            || self.an_open_supplies_a_foreign_auto_open_attribute()
-                    }
+                // Resolved, and to something else — a project type, an opened
+                // assembly type, another entity. This attribute is provably not
+                // the marker, and contributes no uncertainty.
+                Some(Resolution::Entity(_))
+                | Some(Resolution::Item(_))
+                | Some(Resolution::Local(_))
+                | Some(Resolution::Member { .. }) => {}
+                // A deferral is the whole point of the three-valued answer —
+                // the walk had no verdict, so neither do we.
+                Some(Resolution::Deferred(_)) | Some(Resolution::Unresolved) => {
+                    any_unproven = true;
                 }
-            })
-    }
-
-    /// Whether an `open` reaching this point brought in a referenced assembly's
-    /// own `AutoOpenAttribute` — somebody else's, not FSharp.Core's.
-    ///
-    /// FCS's name environment is last-write-wins, so such an `open` redirects a
-    /// bare `[<AutoOpen>]` to that type and the attribute becomes ordinary
-    /// (`FS0039` for a bare use of the module's contents; probed against this
-    /// crate's own auto-open fixture, which declares one). The attribute
-    /// resolver *defers* the candidate rather than committing it, so nothing
-    /// else names the hazard.
-    ///
-    /// Scoped to the opens actually seen — [`Resolver::open_shortening_prefixes`]
-    /// is the running list of containers an `open` has reached, so a namespace
-    /// nobody opened contributes nothing. A whole-reference-set scan would
-    /// instead disable the fold for every project that merely *references* an
-    /// assembly declaring such a type, which is a large availability loss for a
-    /// hazard that is not in scope.
-    fn an_open_supplies_a_foreign_auto_open_attribute(&self) -> bool {
-        self.open_shortening_prefixes.iter().any(|prefix| {
-            !is_fsharp_core_ns(&prefix.path)
-                && !self
-                    .assemblies
-                    .public_entities_named(&prefix.path, "AutoOpenAttribute")
-                    .is_empty()
-        })
+                // No record at all. FCS type-checks against FSharp.Core in every
+                // configuration, so a marker that resolved to *nothing* here
+                // means our reference set could not see the type — "we did not
+                // look", not "provably absent". Uncertainty, not a finding.
+                None => any_unproven = true,
+            }
+        }
+        if any_unproven {
+            AutoOpenVerdict::Unproven
+        } else {
+            AutoOpenVerdict::NotAutoOpen
+        }
     }
 
     /// An `[<AutoOpen>]` nested module's *values* fold into the enclosing frame
@@ -2016,17 +1996,16 @@ impl<'a> Resolver<'a> {
     /// enclosing ones) *and* after the module's own header attributes have
     /// resolved (FCS checks those before adding the module's contents).
     pub(super) fn fold_back_auto_open_module(&mut self, nm: &NestedModuleDecl) {
-        if !attrs_auto_open(nm.attributes()) {
-            return;
-        }
-        // `attrs_auto_open` reads the *spelling*. A file declaring its own
-        // `type AutoOpenAttribute` shadows FSharp.Core's, and FCS then treats
-        // `[<AutoOpen>]` as an ordinary attribute that opens nothing — so
-        // folding on the spelling alone commits this module's members where
-        // FCS keeps whatever was in scope before (fcs-dump-probed). The header
-        // attributes have already resolved by here, so use the verdict: a
-        // candidate that reached a project type is provably not FSharp.Core's.
-        if self.auto_open_attribute_is_shadowed(nm) {
+        // `attrs_auto_open` reads the *spelling*; [`Self::auto_open_verdict`]
+        // reads what the spelling resolved to. The header attributes have
+        // already resolved by here, so the verdict is available, and all three
+        // of its answers are distinct actions.
+        let verdict = self.auto_open_verdict(nm);
+        // A file declaring its own `type AutoOpenAttribute` shadows
+        // FSharp.Core's, and FCS then treats `[<AutoOpen>]` as an ordinary
+        // attribute that opens nothing (fcs-dump-probed) — so the enclosing
+        // scope keeps whatever was in it, and this fold does nothing.
+        if verdict == AutoOpenVerdict::NotAutoOpen {
             return;
         }
         let Some(li) = nm.long_id() else { return };
@@ -2034,6 +2013,13 @@ impl<'a> Resolver<'a> {
         if segs.is_empty() {
             return;
         }
+        // The two structural declines below are checked ahead of an *unproven*
+        // marker because each already says what happens to the contested names,
+        // and each says it for a reason that holds whether or not the module
+        // auto-opens. In particular the `rec` arm must not raise the generation
+        // barrier: inside a `rec` container the enclosing block's own bindings
+        // take the contest, and staling them would decline the very names FCS
+        // binds there.
         if self.recursive_module_active {
             // Inside a `rec` container FCS orders nothing by source position —
             // every declaration is visible to every other — so appending this
@@ -2051,6 +2037,18 @@ impl<'a> Resolver<'a> {
             // standing where FCS binds this module's. The generation barrier
             // declines instead: it stales every earlier opened entry, which is
             // exactly "we cannot say".
+            self.open_generation += 1;
+            return;
+        }
+        if verdict == AutoOpenVerdict::Unproven {
+            // We cannot fold (the marker might not be FSharp.Core's) and we
+            // cannot merely *decline to fold* either (it might be): returning
+            // here would leave an enclosing `open`'s same-named value standing
+            // and commit it, a wrong go-to-definition wherever FCS binds this
+            // module's member instead. The generation barrier is the "we cannot
+            // say" that covers both — it stales every earlier opened entry, so
+            // a contested name defers rather than resolving to the wrong side
+            // of a fold we could not adjudicate.
             self.open_generation += 1;
             return;
         }

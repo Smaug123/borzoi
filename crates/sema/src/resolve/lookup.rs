@@ -1184,11 +1184,15 @@ impl<'a> Resolver<'a> {
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private, _)| {
-                    super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                .filter(|d| {
+                    // A COMMIT consumer: an unproven marker is filtered out
+                    // here, and the fold-back's generation barrier is what
+                    // declines the names it would have contributed.
+                    d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _, _)| p.clone()),
+                .map(|d| d.path.clone()),
         );
         out
     }
@@ -1220,11 +1224,13 @@ impl<'a> Resolver<'a> {
         out.extend(
             self.auto_open_module_paths
                 .iter()
-                .filter(|(p, private, _)| {
-                    super::model::is_directly_in(p, container)
-                        && (!private || self.container_path.starts_with(container))
+                .filter(|d| {
+                    // A COMMIT consumer, as above.
+                    d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
                 })
-                .map(|(p, _, range)| (p.clone(), current, Some(*range))),
+                .map(|d| (d.path.clone(), current, Some(d.range))),
         );
         out
     }

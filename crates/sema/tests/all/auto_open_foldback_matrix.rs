@@ -408,7 +408,28 @@ const CELLS: &[Cell] = &[
 
 /// Cells where we deliberately defer while FCS resolves — each must remain
 /// *exactly* that.
-const KNOWN_GAPS: &[(&str, &str)] = &[];
+const KNOWN_GAPS: &[(&str, &str)] = &[
+    (
+        "hidden / an active pattern in the auto-open module shadows no earlier value",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "hidden / an active-pattern case does not take the value slot it is named for",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "private / a private active-pattern case does not decline an earlier open's case",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "private / a private extern prototype takes no enclosing slot",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "private / a private type in the auto-open module takes no enclosing slot",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+];
 
 #[test]
 fn auto_open_foldback_matches_fcs_on_every_cell() {

@@ -311,12 +311,18 @@ pub fn run_matrix(
     let autoopen = ensure_autoopen_fixture_built();
     let abbrev = ensure_abbrev_fixture_built();
 
+    // FSharp.Core rides along with the two fixtures because the oracle has it:
+    // FCS type-checks every cell against it, and `[<AutoOpen>]` names a type it
+    // declares. Without it the marker is unresolvable, so we decline every fold
+    // and the matrix measures the reference set rather than the fold.
     let env = {
         let a = std::fs::read(autoopen).expect("read autoopen fixture dll");
         let b = std::fs::read(abbrev).expect("read abbrev fixture dll");
         let va = Ecma335Assembly::parse(&a).expect("parse autoopen fixture");
         let vb = Ecma335Assembly::parse(&b).expect("parse abbrev fixture");
-        AssemblyEnv::from_views(&[va, vb]).expect("build AssemblyEnv")
+        let vc = Ecma335Assembly::parse(crate::common::fsharp_core_bytes())
+            .expect("parse FSharp.Core.dll");
+        AssemblyEnv::from_views(&[va, vb, vc]).expect("build AssemblyEnv")
     };
 
     // Build one PROBE file per cell — each gets a distinct filename (hence its

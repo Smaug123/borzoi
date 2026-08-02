@@ -15,9 +15,33 @@ use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId, OpenTrace,
-    ProjectItems, Resolution, SlotClass,
+    AutoOpenVerdict, DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId,
+    OpenTrace, ProjectItems, Resolution, SlotClass,
 };
+
+/// One `[<AutoOpen>]`-spelled module declaration in the file being resolved.
+///
+/// See [`Resolver::auto_open_module_paths`] for why `verdict` rides along
+/// rather than the declaration being filtered at record time.
+#[derive(Debug, Clone)]
+pub(super) struct AutoOpenModuleDecl {
+    /// The module's qualified path.
+    pub(super) path: Vec<String>,
+    /// Its `module private` bit.
+    pub(super) private: bool,
+    /// The declaration's own text range — its *fragment* identity.
+    pub(super) range: rowan::TextRange,
+    /// What we could establish about its marker.
+    pub(super) verdict: AutoOpenVerdict,
+}
+
+impl AutoOpenModuleDecl {
+    /// Whether this declaration may **commit** a fold: only a proven marker
+    /// names members FCS is guaranteed to have brought into scope.
+    pub(super) fn commits(&self) -> bool {
+        self.verdict == AutoOpenVerdict::Proven
+    }
+}
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
 /// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
@@ -1119,10 +1143,19 @@ pub(super) struct Resolver<'a> {
     /// filters the `private` ones out, since F# does not bring
     /// a `private` module into scope for another file's `open` of its
     /// namespace.
-    /// The third element is the declaration's own text range — the *fragment*
-    /// identity a fold needs when one file declares the same module path in
-    /// several blocks and only one carries `[<AutoOpen>]`.
-    pub(super) auto_open_module_paths: Vec<(Vec<String>, bool, rowan::TextRange)>,
+    /// `range` is the declaration's own text range — the *fragment* identity a
+    /// fold needs when one file declares the same module path in several blocks
+    /// and only one carries `[<AutoOpen>]`.
+    ///
+    /// Entries whose `verdict` is [`AutoOpenVerdict::Unproven`] are recorded
+    /// too, and the distinction is why this is a record rather than a path
+    /// list: a consumer that **vetoes** on the module's presence must count
+    /// them (an unprovable marker might open, so the names it would contribute
+    /// cannot be resolved past), while a consumer that **commits** a fold from
+    /// them must not (it might not open, so folding would name a binder FCS
+    /// never brings into scope). Uncertainty widens declines and narrows
+    /// commits; a single `bool` here can only do one of those.
+    pub(super) auto_open_module_paths: Vec<AutoOpenModuleDecl>,
     /// EX-2 (`docs/extension-scope-enumeration-plan.md`): the **assembly**
     /// namespace paths an explicit `open <namespace>` brings into scope, unioned
     /// across every `open` in the file. The overload engine's extension-absence

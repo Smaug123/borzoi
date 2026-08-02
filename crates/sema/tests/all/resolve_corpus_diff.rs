@@ -40,8 +40,14 @@
 //! Only the **B1 lexical** slice is checked: B2/B3 uses (`x.Length`, overloaded
 //! members) need inference we do not do, so they are skipped — not divergences.
 //! FCS type-checks each file *in isolation* (`uses-census-batch`). Our resolver
-//! runs single-file with empty `ProjectItems` / `AssemblyEnv`, exactly as
-//! `resolve_diff.rs` does.
+//! runs single-file with empty `ProjectItems` and an
+//! [`AssemblyEnv`](borzoi_sema::AssemblyEnv) holding
+//! exactly the real `FSharp.Core.dll` — the one assembly FCS references in
+//! every configuration, so an empty env here would not be "isolation" but an
+//! oracle mismatch. It is load-bearing: `[<AutoOpen>]` names a type FSharp.Core
+//! declares, and the fold acts only on a marker it can *prove* is that type, so
+//! without it every auto-open module in the corpus declines. Measured: 22446
+//! matches with it, 22073 without, 0 divergences either way.
 //!
 //! `#[ignore]`d like the parser sweep: it type-checks a corpus sample (slow).
 //! Run under `nix develop` (which sets `BORZOI_CORPUS`):
@@ -65,7 +71,7 @@ use crate::common::{
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, resolve_file};
+use borzoi_sema::{ProjectItems, Resolution, SyntaxRecovery, resolve_file};
 use rowan::TextRange;
 
 /// Lower bound on in-file B1 uses where our resolution matches FCS exactly. Only
@@ -320,7 +326,7 @@ fn compare_file(file: &FileCensus, tally: &mut Tally) {
         Some(resolve_file(
             &impl_file,
             &ProjectItems::default(),
-            &AssemblyEnv::default(),
+            crate::common::fsharp_core_env(),
             &recovery,
         ))
     }));
