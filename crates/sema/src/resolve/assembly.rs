@@ -96,10 +96,26 @@ impl<'a> Resolver<'a> {
                 || self
                     .self_qualified_member_path(source)
                     .is_some_and(|reconstructed| reconstructed == names);
-            return if shadow_is_the_self_module && self.self_module_shadow_only(source) {
+            if !(shadow_is_the_self_module && self.self_module_shadow_only(source)) {
+                return AssemblyPath::Occupied(cause);
+            }
+            // A self-qualifier declines only where there is something to be
+            // uncertain *about*. The verdict exists because an assembly entity at
+            // this reading may still answer the path — the project module and a
+            // referenced one can share an FQN, and `Calc.Zero()` inside
+            // `Demo.Calc` binds the assembly's `Demo.Calc.Zero` — which is a
+            // question the walk cannot decide. Where the assemblies hold no
+            // rooting position at all, there is no such reading: the self module
+            // is the only occupant, F# does not bind it (FS0039), and the reading
+            // is an ordinary no-match that lets the walk carry on. Declining
+            // instead would be an absence we never looked for, and it costs the
+            // `module List = …` augmentation idiom its fall-through to
+            // `Microsoft.FSharp.Collections` at every tier the self module reaches
+            // before the opens.
+            return if self.any_rooting_position(&names, base) {
                 AssemblyPath::SelfModuleShadowed
             } else {
-                AssemblyPath::Occupied(cause)
+                AssemblyPath::NoMatch
             };
         }
 
@@ -182,6 +198,19 @@ impl<'a> Resolver<'a> {
             }),
             owns_path: false,
         }
+    }
+
+    /// Whether any **rooting position** exists for this reading — the condition
+    /// [`Self::assembly_path_records`]'s walk calls `any_rooting`, asked without
+    /// walking the readings themselves.
+    ///
+    /// `false` is the strong answer: no split of `names` at or past `base` names
+    /// a public top-level entity, so no candidate exists for the walk to read
+    /// through and the reading cannot resolve, hold a partial, or be contested.
+    /// It is therefore the one place a caller may treat "we found nothing" as
+    /// "there is nothing", rather than as "we did not look".
+    fn any_rooting_position(&self, names: &[String], base: usize) -> bool {
+        (base..names.len()).any(|k| !self.rooting_candidates(&names[..k], &names[k]).is_empty())
     }
 
     /// The one owner a reading may commit, or `None` when the owners are
@@ -825,42 +854,19 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Every opened-namespace prefix in scope, in strict F# priority order:
-    /// opens **latest-first** (F# is latest-open-wins, not ambiguity), and within
-    /// one open its readings as the group orders them (relative before merged
-    /// root — see [`OpenGroup`](super::state::OpenGroup)). The one walk order for
-    /// every consumer of [`imports`](Self::imports), so a consumer cannot invert
-    /// the precedence.
+    /// The open readings contributed by **explicit source `open`s** only —
+    /// the top of the precedence ladder. Opens are yielded **latest-first**
+    /// (F# is latest-open-wins, not ambiguity), and within one open its readings
+    /// as the group orders them (relative before merged root — see
+    /// [`OpenGroup`](super::state::OpenGroup)). Explicit opens are appended after
+    /// the implicit seed, so the latest-first iteration yields them first;
+    /// `implicit_import_count` marks the split, and it is the same boundary
+    /// [`Self::implicit_open_reading_prefixes`] cuts at.
     ///
-    /// Each reading is tagged with the [`DeclineTier`] it belongs to. The
-    /// explicit/implicit split is `implicit_import_count` — the implicit seed is
-    /// pushed first, so every index below it is an implicit open — and it is the
-    /// same boundary [`Self::explicit_open_reading_prefixes`] cuts at. Tagging
-    /// here rather than at the consumers is what keeps the two from drifting.
-    pub(super) fn open_reading_prefixes(&self) -> impl Iterator<Item = (DeclineTier, &[String])> {
-        let implicit = self.implicit_import_count;
-        self.imports
-            .iter()
-            .enumerate()
-            .rev()
-            .flat_map(move |(i, open)| {
-                let tier = if i < implicit {
-                    DeclineTier::ImplicitOpen
-                } else {
-                    DeclineTier::ExplicitOpen
-                };
-                open.readings.iter().map(move |r| (tier, r.as_slice()))
-            })
-    }
-
-    /// The [`Self::open_reading_prefixes`] contributed by **explicit source
-    /// `open`s** only — the leading prefixes of that walk (explicit opens are
-    /// appended after the implicit seed, so the latest-first iteration yields
-    /// them first; `implicit_import_count` marks the split). The top of the
-    /// stratum that outranks a module-shaped manifest auto-open's surface:
-    /// that surface is opened at file start, so every explicit open is later
-    /// and wins — see [`Self::prefixes_outranking_the_manifest_surface`] for
-    /// the whole stratum.
+    /// This is also the stratum that outranks a module-shaped manifest
+    /// auto-open's surface: that surface is opened at file start, so every
+    /// explicit open is later and wins — see
+    /// [`Self::prefixes_outranking_the_manifest_surface`] for the whole stratum.
     pub(super) fn explicit_open_reading_prefixes(
         &self,
     ) -> impl Iterator<Item = (DeclineTier, &[String])> {
@@ -874,6 +880,36 @@ impl<'a> Resolver<'a> {
             })
     }
 
+    /// The open readings contributed by the **implicit** opens — `FSharp.Core`'s
+    /// seed and each namespace-shaped `[<assembly: AutoOpen>]` — which sit
+    /// *below* the enclosing namespace, not above it.
+    ///
+    /// That boundary is the compiler's, not a probe's inference:
+    /// `CheckDeclarations.fs` builds the initial environment by folding
+    /// `AddCcuToTcEnv` over the referenced assemblies (each one's root contents,
+    /// then its manifest `[<assembly: AutoOpen>]`s), and only afterwards, on
+    /// entering the file's namespace declaration group, runs
+    /// `ImplicitlyOpenOwnNamespace` — "Inside `namespace X.Y.Z` there is an
+    /// implicit open of `X.Y.Z`". FCS's name environment is last-write-wins, so
+    /// the later write outranks: enclosing namespace over every implicit open.
+    /// The file's own `open`s are later still.
+    ///
+    /// Ordering *within* this stratum is reference order, which we do not model
+    /// — see the `TNsRo`/`DNsRo` rows of `tier_order_diff`'s `KNOWN_DIVERGENCES`
+    /// for what that still costs at the boundary with the root tier.
+    pub(super) fn implicit_open_reading_prefixes(
+        &self,
+    ) -> impl Iterator<Item = (DeclineTier, &[String])> {
+        self.imports[..self.implicit_import_count]
+            .iter()
+            .rev()
+            .flat_map(|open| {
+                open.readings
+                    .iter()
+                    .map(|r| (DeclineTier::ImplicitOpen, r.as_slice()))
+            })
+    }
+
     /// Every reading that out-ranks a **module-shaped manifest auto-open's**
     /// imported surface, in priority order — what
     /// [`Resolver::decide_type_path`]'s manifest veto walks before deferring.
@@ -884,10 +920,12 @@ impl<'a> Resolver<'a> {
     /// explicit opens  >  enclosing namespace  >  manifest surface  >  root
     /// ```
     ///
-    /// so this is [`Self::assembly_prefixes_by_priority`] minus the implicit
-    /// opens (the manifest surface is one of them, and the rest are seeded
-    /// beside it at file start) and minus the ROOT tier, which the surface
-    /// out-ranks. All three boundaries are fsi-verified against the
+    /// so this is exactly the leading two tiers of
+    /// [`Self::assembly_prefixes_by_priority`] — everything above the implicit
+    /// opens, of which the manifest surface is one. Being a genuine *prefix* of
+    /// that sequence is what [`Self::resolve_assembly_path_over`] requires of
+    /// the prefixes it is handed, so the two cannot disagree about tier order.
+    /// All three boundaries are fsi-verified against the
     /// `autoopen_env` fixture's decoys — a `namespace global` type for the
     /// root boundary, `open SemaAutoOpen.ExplicitBeats` for the explicit-open
     /// one, and `namespace SemaAutoOpen.ExplicitBeats` for the
@@ -904,11 +942,17 @@ impl<'a> Resolver<'a> {
 
     /// Every prefix a dotted path may be read under, in strict F# precedence
     /// order — the readings [`Self::resolve_assembly_path_tiered`] walks:
-    /// 1. **opens** ([`Self::open_reading_prefixes`]);
+    /// 1. **explicit source `open`s** ([`Self::explicit_open_reading_prefixes`]);
     /// 2. the **current enclosing namespace** ([`Self::enclosing_namespace`]):
     ///    FS0039 — the current namespace's child, never an ancestor, never a
     ///    module segment past it;
-    /// 3. **root / as-written** (the empty prefix).
+    /// 3. the **implicit opens** ([`Self::implicit_open_reading_prefixes`]);
+    /// 4. **root / as-written** (the empty prefix).
+    ///
+    /// The enclosing namespace sits *between* the two open strata because that
+    /// is the order the compiler writes them in — the reasoning is on
+    /// [`Self::implicit_open_reading_prefixes`], which is where a reader looking
+    /// for "why is FSharp.Core below my own namespace?" will land.
     ///
     /// `pub(super)` so the unmodelled-open guard in `lookup.rs` iterates the
     /// same sequence — a tier added here must be visible to that guard too.
@@ -916,12 +960,13 @@ impl<'a> Resolver<'a> {
         &self,
     ) -> impl Iterator<Item = (DeclineTier, &[String])> {
         const ROOT: &[String] = &[];
-        self.open_reading_prefixes()
+        self.explicit_open_reading_prefixes()
             .chain(
                 Some(self.enclosing_namespace())
                     .filter(|e| !e.is_empty())
                     .map(|e| (DeclineTier::EnclosingNamespace, e)),
             )
+            .chain(self.implicit_open_reading_prefixes())
             .chain(std::iter::once((DeclineTier::Root, ROOT)))
     }
 
@@ -1496,12 +1541,19 @@ impl<'a> Resolver<'a> {
     /// 1. **explicit opens** — `open Demo; open type Calc` ≡ `open type Demo.Calc`;
     /// 2. **enclosing namespace/module** nesting, innermost first — `open type
     ///    Calc` in `namespace Demo` binds `Demo.Calc`;
-    /// 3. **root / fully-qualified** — `open type Demo.Calc`, or a bare root type.
+    /// 3. the **implicit opens** — `FSharp.Core`'s seed and the manifest
+    ///    `[<assembly: AutoOpen>]` surfaces;
+    /// 4. **root / fully-qualified** — `open type Demo.Calc`, or a bare root type.
     ///
     /// An explicit `open` outranks the enclosing namespace, which outranks the
     /// root: in `namespace Demo` with `open Demo.Sub`, `open type Calc` binds
     /// `Demo.Sub.Calc` (the open), not `Demo.Calc`; and `open Demo; open type
     /// Calc` binds `Demo.Calc`, not a root `Calc`.
+    ///
+    /// This is [`Self::assembly_prefixes_by_priority`]'s ladder — one precedence
+    /// law, spelled here over the enclosing *nesting* rather than the single
+    /// enclosing namespace because an `open type` may be written relative to any
+    /// enclosing module. A tier that moves there moves here.
     ///
     /// Shadowing uses [`Self::open_type_target_shadowed`] — the type-namespace
     /// check (a project value of the same name does not shadow a type), widened
@@ -1515,26 +1567,34 @@ impl<'a> Resolver<'a> {
     /// could shorten the name through a path we cannot see; a fully-qualified
     /// path (tier 3) needs no open, so it is still honoured.
     pub(super) fn opened_type_target(&self, path: &[String]) -> Option<EntityHandle> {
-        // The shortening tiers (explicit opens, enclosing namespace) only when no
-        // unmodelled open could invisibly provide the name.
-        if !self.unmodelled_open_active {
-            // Tier 1 — opens, in the shared [`Self::open_reading_prefixes`] order
-            // (latest-open-first; within an open relative-before-root), mirroring
-            // [`Self::resolve_assembly_path_tiered`]. So in `namespace Demo; open
-            // Sub`, an `open type` target only in the root `Sub` (`RootOnly`)
-            // resolves through the open's root reading — without it the open would
-            // wrongly go opaque and suppress later opened statics — while a
-            // colliding name takes the relative `Demo.Sub`. The latest open with a
-            // match wins.
-            for (_, prefix) in self.open_reading_prefixes() {
+        // One open stratum's readings, in the shared order (latest-open-first;
+        // within an open relative-before-root), mirroring
+        // [`Self::resolve_assembly_path_tiered`]. So in `namespace Demo; open
+        // Sub`, an `open type` target only in the root `Sub` (`RootOnly`)
+        // resolves through the open's root reading — without it the open would
+        // wrongly go opaque and suppress later opened statics — while a
+        // colliding name takes the relative `Demo.Sub`. The latest open with a
+        // match wins. `Some(verdict)` is this stratum's answer and stops the
+        // walk; `None` means no reading here spoke.
+        let through_opens = |prefixes: &mut dyn Iterator<Item = (DeclineTier, &[String])>| {
+            for (_, prefix) in prefixes {
                 let mut full = prefix.to_vec();
                 full.extend_from_slice(path);
                 if self.open_type_target_shadowed(&full) {
-                    return None; // an open routes it into project territory
+                    return Some(None); // an open routes it into project territory
                 }
                 if let Some(handle) = self.opened_assembly_type(&full) {
-                    return Some(handle);
+                    return Some(Some(handle));
                 }
+            }
+            None
+        };
+        // The shortening tiers (opens, enclosing namespace) only when no
+        // unmodelled open could invisibly provide the name.
+        if !self.unmodelled_open_active {
+            // Tier 1 — explicit source opens.
+            if let Some(verdict) = through_opens(&mut self.explicit_open_reading_prefixes()) {
+                return verdict;
             }
             // Tier 2 — enclosing namespace/module nesting, innermost first. The
             // assembly lookup runs *before* the shadow check because every prefix
@@ -1549,10 +1609,14 @@ impl<'a> Resolver<'a> {
                     return (!self.open_type_target_shadowed(&full)).then_some(handle);
                 }
             }
+            // Tier 3 — the implicit opens, which the enclosing nesting outranks.
+            if let Some(verdict) = through_opens(&mut self.implicit_open_reading_prefixes()) {
+                return verdict;
+            }
         }
-        // Tier 3 — the path as written, from the root (a fully-qualified path, or
+        // Tier 4 — the path as written, from the root (a fully-qualified path, or
         // a bare root-namespace type). Lowest precedence, so a shortenable name
-        // resolves through tiers 1–2 first.
+        // resolves through tiers 1–3 first.
         //
         // Suppressed for a *bare* single-segment name inside an enclosing
         // namespace: a project type of that name declared in the namespace would
