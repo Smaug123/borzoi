@@ -1,6 +1,6 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** **P0, P1 and P2″ landed; P2′ mostly done.** The reference scan is
+> **Status:** **P0, P1, P2′ and P2″ landed.** The reference scan is
 > a walk of the same parse tree evaluation uses, so a member access can no
 > longer launder its receiver's provenance (#265); the gates read MSBuild
 > booleans rather than strings (#266); and an undecided `Directory.Build.*`
@@ -8,15 +8,11 @@
 >
 > **Open, in the order I would take them:**
 >
-> 1. Finish P2′ — record a verdict for the direct-read sites not yet written
->    up (the `properties` output loop and `LangVersion` were checked and judged
->    already-covered, but that is not in this document), and close the
->    `seed_toolset_properties` gap below.
-> 2. Re-run the SDK census and decide P3's priority from residual risk, as P2′
+> 1. Re-run the SDK census and decide P3's priority from residual risk, as P2′
 >    always said to do before committing to it.
-> 3. The three recorded **precision** items under P2″ — declines, not wrong
+> 2. The three recorded **precision** items under P2″ — declines, not wrong
 >    answers, and each carries regression risk (see the fifth-round entry).
-> 4. P1′, P2, P3, P4.
+> 3. P1′, P2, P3, P4.
 
 ## The rule
 
@@ -318,28 +314,73 @@ the only one that matters.
 
 **Sized:** medium. Mechanical; churn concentrated in `evaluator.rs`.
 
-### P2′ — audit the twelve direct-read sites (small, standalone)
+### P2′ — audit the twelve direct-read sites — **landed**
 
 Before committing to P3's blast radius, close the *known* instance of the
 direct-read route cheaply: audit the twelve named `get_unescaped` sites against
 the eleven-entry `msbuild-trust-audit` checklist, in one PR, touching no types.
 
-A second instance of the same class, found while planning:
-`seed_toolset_properties` (`evaluator.rs:~2149-2158`) calls `insert_computed`
-with **no** matching `apply_property_provenance`. It is harmless today only
-because of the `if get(name).is_none()` fresh-insert guard. Note what this
-proves about P2: pairing the two channels in one struct forces both to be named
-*at the call site that already remembers to call it* — it does nothing to stop
-a different write path from skipping the call entirely. That gap is P3's
-argument, not P2's.
-
 **Then re-run the SDK census and decide P3's priority from residual risk**,
 rather than committing to it up front.
 
-#### P2′ findings so far
+#### The `seed_toolset_properties` "gap" is not one — the asymmetry is required
 
-The audit is under way. Two defects out, both confirmed against the oracle
-before any code changed.
+An earlier draft of this plan flagged that `seed_toolset_properties` calls
+`insert_computed` with no matching `apply_property_provenance`, "harmless today
+only because of the `if get(name).is_none()` fresh-insert guard", and filed it
+as evidence for P3. **That was wrong, and acting on it would have introduced a
+wrong commit.**
+
+The function seeds two groups and treats them differently on purpose:
+
+| group | names | seeded | provenance |
+| --- | --- | --- | --- |
+| reserved | `MSBuildToolsPath`, `MSBuildBinPath`, `MSBuildToolsVersion`, `MSBuildRuntimeType` | over anything | **scrubbed** |
+| overridable | `MSBuildSDKsPath`, `MSBuildExtensionsPath32`, `MSBuildExtensionsPath` | into an empty slot only | **left alone** |
+
+Ground truth (dotnet 10.0.301, probed 2026-08-02 — a plain `<Project>` writing
+each name, read back with `-getProperty`):
+
+```text
+<MSBuildToolsPath>/SPOOFED</…>          → error MSB4004: … reserved, and cannot be modified
+<MSBuildSDKsPath>/SPOOFED</…>           → "/SPOOFED"
+<MSBuildExtensionsPath32>/SPOOFED32</…> → "/SPOOFED32"
+```
+
+That is the whole explanation. A reserved name's accumulated value and taint
+describe a write real MSBuild *rejects*, so they describe nothing and are
+scrubbed. An overridable name's refused write may really have set the property
+in the real build, so our computed path is a **fallback, not the answer**, and
+the surviving mark is exactly right. Clearing it — the natural "tidy-up", and
+what the old TODO invited — turns a correct decline into the walker publishing
+its own guessed path as certain.
+
+Verified, not argued: `tests/toolset_seed_provenance.rs` pins both directions
+(refused write before any SDK resolves ⇒ overridable stays untrusted, reserved
+does not), and the tidy-up fails it.
+
+The general lesson is worth more than the case: **an omitted call is not
+evidence of an oversight.** Reading the two groups as one shape is what
+produced the bogus TODO.
+
+#### P2′ verdicts — the audit is closed
+
+Every direct-read site, with what it turned out to need. Two were defects, one
+was a bogus TODO, and the rest were already discharged — recorded here so the
+next reader does not re-derive them.
+
+| # | site | read | verdict |
+| ---: | --- | --- | --- |
+| 1–2, 9–11 | `evaluator.rs` ×5 | `ImportDirectoryBuild{Props,Targets}` | **defect, fixed** — read MSBuild booleans (#266); consult trust at the splice (P2″) |
+| 3 | `evaluator.rs` | `DirectoryPackagesPropsPath` | **no consumer to protect** — probed on a real SDK chain, CPM references are uncertain under an undecidable redirect *and* both cleanly-decided controls, because the inline discharge never fires there |
+| 4–5 | `evaluator.rs` | `ManagePackageVersionsCentrally`, `CentralPackageVersionsFileImported` | **defect, fixed** (#266); trust already covered at the write site by `package_context`, pinned by `inline_cpm_tainted_{manage_flag,import_marker}_stays_uncertain` |
+| 6 | `evaluator.rs` | `CentralPackageVersionOverrideEnabled` | **conservative by construction** — the SDK forwards it to the restore task rather than comparing it, so its vocabulary is NuGet's C# and this crate cannot ground-truth it; widened to treat either reading's `false` as opting out, which retains uncertainty under both |
+| 7 | `evaluator.rs` | the `written` loop building `ParsedProject::properties` | **already discharged** — published beside `untrusted_properties`, and both real consumers (`workspace.rs`, reading `TargetFramework`) compute `property_provenance_untrusted` and thread it |
+| 8 | `evaluator.rs` | `LangVersion` | **already discharged** — `semantic.rs` reads `property_provenance_untrusted("LangVersion")` into the fold's cache key, alongside the bespoke consequence-side `shape_depends_on_language_version` the `msbuild-trust-audit` skill describes |
+| 12 | `properties/expr.rs` | `MSBuildDisableFeaturesFromVersion` | **fail-safe by construction** — evaluates only when the table holds exactly the `999.999` sentinel, and returns `Unsupported` for every other reading including an untrusted one |
+| — | `evaluator.rs` | `seed_toolset_properties` | **not a gap** — see above; the omitted call is required |
+
+Two defects out, both confirmed against the oracle before any code changed.
 
 1. **The gates read MSBuild booleans as strings** (#266, landed as its own
    change). `'$(ImportDirectoryBuildProps)' == 'true'` is an MSBuild `==`, so
