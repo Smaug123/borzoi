@@ -1167,6 +1167,54 @@ mod tests {
         );
     }
 
+    /// The exact shape review flagged twice: a caller-supplied
+    /// `TargetFramework` global *and* an opt-out we cannot read
+    /// (`TreatAsLocalProperty="$(LocalNames)"`, which MSBuild expands and we do
+    /// not). The concern was that `tfm_choice` returns `CallerOwned` there, so
+    /// the buffer's early return never consults `reseed_outcome` while the
+    /// workspace does.
+    ///
+    /// Measured, the surfaces agree: both serve the outer pass, so they
+    /// diagnose the same document. What the workspace does additionally is
+    /// withhold *TFM-derived* outputs, which the buffer has none of. Pinned
+    /// deterministically because the coherence proptest reaches this
+    /// combination only by sampling — and it is the combination most argued
+    /// about.
+    #[test]
+    fn a_caller_seeded_unreadable_opt_out_keeps_both_surfaces_together() {
+        let (_tmp, project, env) = multi_tfm_scaffold();
+        let text = format!(
+            "<Project TreatAsLocalProperty=\"$(LocalNames)\">\n  <PropertyGroup>\n    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>\n  </PropertyGroup>\n{}{}</Project>",
+            gated_group("'$(TargetFramework)' == 'net8.0'", &witness_name("net8.0")),
+            gated_group(
+                "'$(TargetFramework)' == 'net10.0'",
+                &witness_name("net10.0")
+            ),
+        );
+        fs::write(&project, &text).unwrap();
+
+        let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
+        let mut ws =
+            crate::workspace::Workspace::with_env_and_extra_build_properties(env.clone(), extra);
+        let diags = diagnostics_for(&text, &project, ws.env(), &ws.build_properties());
+        let parsed = ws.project(&project).expect("evaluates").clone();
+
+        for tfm in ["net8.0", "net10.0"] {
+            let needle = format!("@({})", witness_name(tfm));
+            let in_workspace = parsed
+                .diagnostics
+                .iter()
+                .any(|d| format!("{:?}", d.kind).contains(&needle));
+            assert_eq!(
+                witness_fired(&diags, &witness_name(tfm)),
+                in_workspace,
+                "{tfm}: buffer and workspace must describe one evaluation"
+            );
+        }
+        // And the workspace withholds what only it publishes.
+        assert_eq!(ws.parsed_tfm_for_project(&project), None);
+    }
+
     proptest! {
         /// The coherence invariant E5 states for parse-vs-env, extended to the
         /// third surface (plan E7): for a buffer that matches disk, the branch
@@ -1192,7 +1240,10 @@ mod tests {
             tfms in proptest::collection::vec("net(1[0-2]|[5-9])\\.0", 1..4),
             body_pinned in proptest::option::of(0usize..3),
             seed_conditional in proptest::bool::ANY,
-            treat_as_local in proptest::bool::ANY,
+            // 0 = no opt-out; 1 = literal `TargetFramework`; 2 = *computed*
+            // (`$(…)`), which MSBuild expands and honours while we keep the raw
+            // text — a shape the literal spelling cannot reach.
+            treat_as_local in 0usize..3,
             untrusted_gate in proptest::bool::ANY,
             override_empty in proptest::bool::ANY,
             caller_seed in proptest::option::of("net(1[0-2]|[5-9])\\.0"),
@@ -1242,10 +1293,10 @@ mod tests {
             // `TreatAsLocalProperty` lets the document overwrite a global that
             // is otherwise read-only, so pass 2 can end up evaluated under a
             // TFM other than the one it was seeded with.
-            let local = if treat_as_local {
-                " TreatAsLocalProperty=\"TargetFramework\""
-            } else {
-                ""
+            let local = match treat_as_local {
+                1 => " TreatAsLocalProperty=\"TargetFramework\"",
+                2 => " TreatAsLocalProperty=\"$(LocalNames)\"",
+                _ => "",
             };
             let text = format!(
                 "<Project{local}>\n  <PropertyGroup>\n    <TargetFrameworks>{}</TargetFrameworks>\n{singular}  </PropertyGroup>\n{groups}</Project>",
