@@ -1645,3 +1645,39 @@ fn an_undecided_gate_withdraws_every_item_facet_not_just_compile() {
         result.package_references,
     );
 }
+
+#[test]
+fn a_cdata_body_then_a_clean_overwrite_still_decides_the_splice() {
+    // An unmodellable body (CDATA, entity-encoded whitespace) is refused: we
+    // store no value and unpin the name. Both of those are dischargeable by a
+    // later clean unconditional overwrite — last write wins on both sides, and
+    // the final value is one we computed ourselves from ordinary text.
+    //
+    // That is *not* the SDK-opacity case guarded by
+    // `an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal`: here the
+    // refusal is about a body shape our reader cannot decode, not about a value
+    // that might rest on hidden content. Marking such a name permanently
+    // refused would decline a gate whose final value MSBuild and this walker
+    // agree on exactly.
+    let p = parse_with_body(
+        r#"  <PropertyGroup>
+    <ImportDirectoryBuildTargets><![CDATA[false]]></ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildTargets>true</ImportDirectoryBuildTargets>
+  </PropertyGroup>"#,
+    );
+    assert!(
+        !p.items_uncertain,
+        "the final gate value is plain text and unconditional, so the splice is \
+         decided exactly",
+    );
+    let names: Vec<String> = paths_of(&p.items)
+        .iter()
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["Main.fs".to_string(), "FromDirBuild.fs".to_string()],
+        "the gate ends up true, so Directory.Build.targets joins the walk — \
+         after the body, which is where it splices",
+    );
+}

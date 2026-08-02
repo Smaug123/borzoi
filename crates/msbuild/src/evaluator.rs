@@ -4048,9 +4048,16 @@ fn walk_property_child_inner(
                 unpinned: UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(format!(
                     "<{name}> body"
                 ))),
-                // We stored no value; the unpinned root above already declines
-                // for every consumer, so this only says so in its own terms.
-                refused: RefusedOutcome::Set,
+                // The unpinned root above carries this refusal, and carries it
+                // with the *right lifetime*: a later clean unconditional
+                // overwrite discharges it, because the final value is then one
+                // we computed from ordinary text and the two sides agree.
+                // Recording it in the refused channel as well would outlive
+                // that discharge (see [`RefusedOutcome::Keep`] at the
+                // clean-write site) and decline a splice MSBuild decides the
+                // same way — the mark there answers a different question, about
+                // values that may rest on content the walk hid.
+                refused: RefusedOutcome::Keep,
             },
         );
         return;
