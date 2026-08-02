@@ -2776,6 +2776,16 @@ fn an_earlier_enclosing_type_does_not_take_a_folded_name() {
 /// the enclosing `marker` keeps its earlier binding (fcs-dump-probed). Folding
 /// on the attribute's *spelling* committed this module's `marker` instead
 /// (codex review of #49).
+///
+/// What this asserts is the half that survives: the module's `marker` must not
+/// be committed. The enclosing binder is no longer *named* here, because
+/// proving the attribute foreign needs more than "it resolved to a project
+/// type" — a project type may **abbreviate** the core marker, and then FCS
+/// folds after all (see
+/// [`a_local_abbreviation_of_the_core_marker_does_not_prove_the_attribute_foreign`]).
+/// Telling a class declaration from an abbreviation is decidable for a project
+/// type and would recover the positive answer; until then this declines, which
+/// is the safe side of the same question.
 #[test]
 fn a_shadowed_auto_open_attribute_folds_nothing() {
     let env = fixture_env();
@@ -2789,11 +2799,12 @@ fn a_shadowed_auto_open_attribute_folds_nothing() {
     );
     let res = rf.resolution_at(use_at);
     let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
-    let want = src.find("marker = 1").expect("the enclosing binder");
-    assert_eq!(
+    let folded = src.find("marker = 2").expect("the module's binder");
+    assert_ne!(
         def.map(|r| usize::from(r.start())),
-        Some(want),
-        "the shadowed attribute opens nothing, so the enclosing `marker` stands; got {res:?}"
+        Some(folded),
+        "the shadowed attribute opens nothing, so the module's `marker` must not \
+         be folded in; got {res:?}"
     );
 }
 
@@ -3082,5 +3093,75 @@ fn a_qualified_foreign_auto_open_attribute_folds_nothing() {
         matches!(res, None | Some(Resolution::Deferred(_))),
         "a qualified foreign `AutoOpen` is an ordinary attribute, so `A` folds \
          nothing and `target` is unbound; got {res:?}"
+    );
+}
+
+/// A **local abbreviation** of the core marker is not a foreign attribute.
+///
+/// `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute` makes
+/// `[<AutoOpen>]` resolve to a *project* type — but that type abbreviates
+/// FSharp.Core's, so FCS chases it and auto-opens the module. Probed: FCS binds
+/// the use to `M.A.target` (the fold, at A's closing position, outranking the
+/// earlier `let target = 99`), and `dotnet fsi --exec` accepts the file.
+///
+/// So a resolution that merely *is not* an assembly entity naming the core
+/// marker does not prove the attribute foreign. Grading it `NotAutoOpen` makes
+/// the module ordinary and leaves the enclosing `let` standing — a wrong
+/// go-to-definition. Only a proof either way is a finding
+/// ([`AutoOpenVerdict`](borzoi_sema)); this is neither, so it declines.
+#[test]
+fn a_local_abbreviation_of_the_core_marker_does_not_prove_the_attribute_foreign() {
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "module M\ntype AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\
+               let target = 99\n[<AutoOpen>]\nmodule A =\n    let target = 1\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let enclosing = src.find("target = 99").expect("the enclosing binder");
+    assert_ne!(
+        def.map(|r| usize::from(r.start())),
+        Some(enclosing),
+        "the enclosing `let target = 99` must not take the name — FCS binds the \
+         folded `M.A.target`; got {res:?}"
+    );
+}
+
+/// The **namespace** fold declines on an unprovable marker too, not just the
+/// same-file fold-back.
+///
+/// A later `namespace` block folds the auto-open modules declared directly in
+/// that namespace. The fold-back's generation barrier covers only the declaring
+/// block, so filtering an unproven module out of *this* consumer would let the
+/// direct case take the name — probed: FCS binds `N.A.X`, the module's value,
+/// not `N.H.X` (fsi-accepted). Committing the case would be a wrong
+/// go-to-definition.
+///
+/// [`fixture_env`] is the env in which the marker is unprovable (its unknowable
+/// auto-open surface makes every attribute candidate unrulable), which is
+/// exactly the condition under test.
+#[test]
+fn an_unprovable_marker_declines_the_namespace_fold_rather_than_taking_the_direct_case() {
+    let env = fixture_env();
+    let src = "namespace N\n\ntype H =\n    | X\n\nnamespace N\n\n[<AutoOpen>]\nmodule A =\n    \
+               let X = 1\n\nnamespace N\n\nmodule User =\n    let u = X\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind('X').expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + 1).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let direct_case = src.find("| X").map(|i| i + 2).expect("the direct case");
+    assert_ne!(
+        def.map(|r| usize::from(r.start())),
+        Some(direct_case),
+        "an unprovable marker must not let the direct case take the name — FCS \
+         binds the folded `N.A.X`; got {res:?}"
     );
 }

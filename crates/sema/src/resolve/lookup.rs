@@ -1179,6 +1179,27 @@ impl<'a> Resolver<'a> {
     /// lexical position — starts with `container` (the candidate's direct
     /// parent). `preceding`'s half needs no such check: it is already
     /// privacy-filtered at the file/export boundary.
+    /// Whether an `[<AutoOpen>]`-spelled module directly in `container` has an
+    /// **unprovable** marker.
+    ///
+    /// Such a module is filtered out of every fold list here — it might not open,
+    /// so folding it would name members FCS never brings into scope — but its
+    /// absence from the list is not the same as its absence from the program. It
+    /// might open, and then the names it contributes outrank the namespace's own
+    /// direct tier. So a fold that meets one must decline the contest rather than
+    /// proceed without it, or the direct tier takes a name FCS gives the module
+    /// (probed: FCS binds `N.A.X`, not the direct case `N.H.X`).
+    ///
+    /// The fold-back's generation barrier does not cover this: it protects the
+    /// declaring block only, and a later `namespace` block folds afresh.
+    pub(super) fn unproven_auto_open_fragment_in(&self, container: &[String]) -> bool {
+        self.auto_open_module_paths.iter().any(|d| {
+            !d.commits()
+                && super::model::is_directly_in(&d.path, container)
+                && (!d.private || self.container_path.starts_with(container))
+        })
+    }
+
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = self.preceding.auto_open_modules_directly_in(container);
         out.extend(
@@ -2785,6 +2806,15 @@ impl<'a> Resolver<'a> {
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None, None);
+        // An unprovable marker in this namespace makes the whole contest
+        // unadjudicable: the fragment is not in the list below (it might not
+        // open), but the direct tier just folded must not stand either (it
+        // might). Stale what has been pushed so far — the generation barrier is
+        // the same "we cannot say" the fold-back raises, applied where a later
+        // block folds afresh and the fold-back's barrier no longer reaches.
+        if self.unproven_auto_open_fragment_in(namespace) {
+            self.open_generation += 1;
+        }
         for (frag_path, frag_file, frag_range) in self.auto_open_fragments_reachable(namespace) {
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a

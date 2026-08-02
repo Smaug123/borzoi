@@ -1932,57 +1932,49 @@ impl<'a> Resolver<'a> {
     /// auto-opened by FCS, so this asks whether *any* attribute proves the
     /// premise rather than whether any fails it.
     fn auto_open_verdict(&self, nm: &NestedModuleDecl) -> AutoOpenVerdict {
+        // The ONLY finding of absence is the absence of the spelling. Past this
+        // gate a `[<AutoOpen>]`-spelled marker is present, and the question is
+        // whether it names FSharp.Core's attribute — which only a *proof*
+        // settles, in one direction. Enumerating the resolutions that prove the
+        // opposite is what four review rounds each defeated with a fifth route,
+        // and the enumeration is unsound in principle: a resolution to some
+        // other type does not prove foreignness, because that type may
+        // *abbreviate* the core marker and FCS chases abbreviations. Probed:
+        // `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`
+        // makes `[<AutoOpen>]` resolve to a project type, and FCS still
+        // auto-opens the module (fsi-accepted). An assembly-declared
+        // abbreviation reached through an `open` does the same.
+        //
+        // So: proof of the core identity folds, and everything else with the
+        // spelling declines.
         if !attrs_auto_open(nm.attributes()) {
             return AutoOpenVerdict::NotAutoOpen;
         }
-        let mut any_unproven = false;
-        for name in nm
+        let proven = nm
             .attributes()
             .flat_map(|list| list.attributes().collect::<Vec<_>>())
             .filter_map(|attr| attr.type_name())
-        {
-            let toks: Vec<_> = name.idents().collect();
-            let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
-                // A nameless attribute node tells us nothing about the marker,
-                // and one of the *other* attributes here is spelled
-                // `[<AutoOpen>]` — so this is uncertainty, not absence.
-                any_unproven = true;
-                continue;
-            };
-            let range = rowan::TextRange::new(first.text_range().start(), last.text_range().end());
-            match self.attribute_resolutions.get(&range) {
-                // One genuine marker suffices, and short-circuits: a header
-                // carrying both `[<Microsoft.FSharp.Core.AutoOpen>]` and a
-                // foreign lookalike is auto-opened by FCS, so a proof anywhere
-                // outranks another attribute's uncertainty.
-                Some(Resolution::Entity(h))
-                    if self.assemblies.entity_full_name(*h) == FSHARP_CORE_AUTO_OPEN =>
-                {
-                    return AutoOpenVerdict::Proven;
-                }
-                // Resolved, and to something else — a project type, an opened
-                // assembly type, another entity. This attribute is provably not
-                // the marker, and contributes no uncertainty.
-                Some(Resolution::Entity(_))
-                | Some(Resolution::Item(_))
-                | Some(Resolution::Local(_))
-                | Some(Resolution::Member { .. }) => {}
-                // A deferral is the whole point of the three-valued answer —
-                // the walk had no verdict, so neither do we.
-                Some(Resolution::Deferred(_)) | Some(Resolution::Unresolved) => {
-                    any_unproven = true;
-                }
-                // No record at all. FCS type-checks against FSharp.Core in every
-                // configuration, so a marker that resolved to *nothing* here
-                // means our reference set could not see the type — "we did not
-                // look", not "provably absent". Uncertainty, not a finding.
-                None => any_unproven = true,
-            }
-        }
-        if any_unproven {
-            AutoOpenVerdict::Unproven
+            .any(|name| {
+                let toks: Vec<_> = name.idents().collect();
+                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                    return false;
+                };
+                let range =
+                    rowan::TextRange::new(first.text_range().start(), last.text_range().end());
+                matches!(
+                    self.attribute_resolutions.get(&range),
+                    Some(Resolution::Entity(h))
+                        if self.assemblies.entity_full_name(*h) == FSHARP_CORE_AUTO_OPEN
+                )
+            });
+        // One genuine marker suffices: a header carrying both
+        // `[<Microsoft.FSharp.Core.AutoOpen>]` and a foreign lookalike is
+        // auto-opened by FCS, so this asks whether *any* attribute proves the
+        // premise rather than whether any fails it.
+        if proven {
+            AutoOpenVerdict::Proven
         } else {
-            AutoOpenVerdict::NotAutoOpen
+            AutoOpenVerdict::Unproven
         }
     }
 
