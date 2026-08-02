@@ -1195,6 +1195,7 @@ mod tests {
             treat_as_local in proptest::bool::ANY,
             untrusted_gate in proptest::bool::ANY,
             override_empty in proptest::bool::ANY,
+            caller_seed in proptest::option::of("net(1[0-2]|[5-9])\\.0"),
         ) {
             let mut seen = HashSet::new();
             let tfms: Vec<String> = tfms.into_iter().filter(|t| seen.insert(t.clone())).collect();
@@ -1255,17 +1256,57 @@ mod tests {
             let project = tmp.path().join("Sample.fsproj");
             fs::write(&project, &text).unwrap();
 
-            let mut ws = crate::workspace::Workspace::with_env(SdkDiscoveryEnv::default());
+            // A caller-supplied global takes `tfm_choice`'s first arm, which is
+            // a different route to the served evaluation than the reseed — and
+            // it is a global `TreatAsLocalProperty` can unprotect just the
+            // same, so the two surfaces have to agree on that route too.
+            let extras: HashMap<String, String> = caller_seed
+                .iter()
+                .map(|t| ("TargetFramework".to_string(), t.clone()))
+                .collect();
+            let mut ws = crate::workspace::Workspace::with_env_and_extra_build_properties(
+                SdkDiscoveryEnv::default(),
+                extras,
+            );
             let parsed_tfm = ws.parsed_tfm_for_project(&project);
             let served = ws.served_tfm_for_project(&project);
             let diags = diagnostics_for(&text, &project, ws.env(), &ws.build_properties());
 
+            // Which gates the *workspace's* served evaluation ran, read off the
+            // same witnesses. Comparing the two evaluations directly — rather
+            // than each against a TFM — is what makes this total: an
+            // `not_an_inner_build` document has no single TFM to compare
+            // against, and it is exactly the shape most likely to diverge.
+            let workspace_fired: HashSet<&String> = {
+                let parsed = ws.project(&project).expect("evaluates");
+                tfms.iter()
+                    .filter(|t| {
+                        let needle = format!("@({})", witness_name(t));
+                        parsed
+                            .diagnostics
+                            .iter()
+                            .any(|d| format!("{:?}", d.kind).contains(&needle))
+                    })
+                    .collect()
+            };
             for tfm in &tfms {
                 prop_assert_eq!(
                     witness_fired(&diags, &witness_name(tfm)),
-                    parsed_tfm.as_deref() == Some(tfm.as_str()),
-                    "tfm {} vs parsed {:?}: {:#?}", tfm, parsed_tfm, diags
+                    workspace_fired.contains(tfm),
+                    "tfm {} : buffer vs workspace evaluation: {:#?}", tfm, diags
                 );
+            }
+            // And when a single TFM *does* describe the parse, it is the one
+            // whose gate ran — the TFM-keyed form of the same claim, which is
+            // what the assembly env consumes.
+            if let Some(t) = parsed_tfm.as_deref() {
+                for tfm in &tfms {
+                    prop_assert_eq!(
+                        witness_fired(&diags, &witness_name(tfm)),
+                        tfm == t,
+                        "tfm {} vs parsed {:?}", tfm, t
+                    );
+                }
             }
             // Where the env is willing to trust a TFM, it must be the one the
             // parse ran under — otherwise defines come from one inner build

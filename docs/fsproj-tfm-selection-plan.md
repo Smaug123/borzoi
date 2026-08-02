@@ -121,12 +121,16 @@ would only be correct when buffer == disk, and is what
 
 **What guards it.** `buffer_diagnostics_follow_the_workspace_parsed_tfm` is E5's
 coherence invariant extended to this third surface: for a buffer matching disk,
-the branch the diagnostics evaluate is exactly the branch the workspace's own
-evaluation ran under (`Workspace::parsed_tfm_for_project`) — no more, no fewer.
-The currency is the *parsed* TFM rather than the *served* verdict, because
-`served_tfm_for_project` additionally declines a TFM the assembly env must not
-key on, while the parse still ran under something and the buffer describes the
-parse. Nothing
+the gates the diagnostics evaluate are exactly the gates the workspace's own
+served evaluation ran — no more, no fewer.
+
+The comparison is **evaluation against evaluation**, not each against a TFM, and
+that is load-bearing rather than stylistic. A TFM-keyed form cannot state the
+claim for a document that has no single TFM (the overridable case below), so it
+was over-specified exactly where divergence is most likely; the direct
+comparison is total. The TFM-keyed form survives as a second assertion, applied
+only when a single TFM does describe the parse — that is the form the assembly
+env consumes, so both are worth having. Nothing
 asserted that before, which is how this path could diverge for two whole stages
 without a test going red; the property is the durable half of the change.
 
