@@ -3310,3 +3310,59 @@ fn an_unprovable_fragment_stales_a_proven_fragment_at_an_earlier_file() {
          test proves nothing; got {control_res:?}"
     );
 }
+
+/// Uncertainty **below** a proven fragment reaches the fold-back too.
+///
+/// A proven `[<AutoOpen>] module Parent` holding an `[<AutoOpen>] module Child`
+/// whose marker we cannot rule on — here spelled with the qualifier
+/// `[<Microsoft.FSharp.Core.AutoOpen>]`, which resolves to no assembly entity we
+/// can name. FCS folds both, innermost last, and binds `Root.Parent.Child.X`
+/// (fcs-dump-probed). Folding only the provable half commits `Parent.X`, which
+/// is a wrong go-to-definition; on `origin/main` the same use merely *declines*,
+/// so committing it would be a gap turned into a wrong answer.
+///
+/// The fold-back therefore declines wholesale when any descendant fragment it
+/// would fold is unprovable — the same arm the module's own unprovable verdict
+/// takes. That over-declines (a name only `Parent` supplies declines too) and
+/// never over-commits.
+#[test]
+fn an_unprovable_descendant_declines_the_parents_fold_back() {
+    let env = crate::common::fsharp_core_env().clone();
+    let unprovable_child = "module Root\n\n[<AutoOpen>]\nmodule Parent =\n    let X = 0\n    \
+                            [<Microsoft.FSharp.Core.AutoOpen>]\n    module Child =\n        \
+                            let X = 1\n\nlet y = X\n";
+    // Same shape with a provable child: the fold-back must still commit, and
+    // commit the CHILD's binder — the innermost fragment folds last.
+    let provable_child = "module Root\n\n[<AutoOpen>]\nmodule Parent =\n    let X = 0\n    \
+                          [<AutoOpen>]\n    module Child =\n        let X = 1\n\nlet y = X\n";
+    let binder_of = |src: &str| {
+        let rf = resolve(src, &env);
+        let start = src.rfind('X').expect("the use");
+        let use_at = rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        );
+        let res = rf.resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| rf.resolved_def(r))
+                .map(|d| usize::from(d.range.start())),
+        )
+    };
+
+    let (res, def) = binder_of(unprovable_child);
+    assert_ne!(
+        def,
+        unprovable_child.find("X = 0"),
+        "the unprovable child may supply this name, and FCS gives it \
+         `Parent.Child.X`; committing `Parent.X` is a wrong target; got {res:?}"
+    );
+
+    let (control_res, control_def) = binder_of(provable_child);
+    assert_eq!(
+        control_def,
+        provable_child.find("X = 1"),
+        "with a provable child the fold-back must still commit the innermost \
+         binder, or this test proves nothing; got {control_res:?}"
+    );
+}

@@ -2032,7 +2032,18 @@ impl<'a> Resolver<'a> {
             self.open_generation += 1;
             return;
         }
-        if verdict == AutoOpenVerdict::Unproven {
+        // The same "we cannot say" whether the uncertainty is this module's own
+        // marker or a **descendant's**. FCS folds nested auto-open modules
+        // innermost-last, so an unprovable child would take names from the
+        // parent we *can* enumerate: folding only the provable half commits the
+        // parent's binder where FCS binds the child's (fcs-dump-probed —
+        // `Root.Parent.Child.X`, not `Root.Parent.X`).
+        //
+        // A descendant fragment is same-file by construction, so this reads the
+        // file's own declaration list rather than the cross-file fold list.
+        if verdict == AutoOpenVerdict::Unproven
+            || self.unprovable_fragment_within(nm.syntax().text_range())
+        {
             // We cannot fold (the marker might not be FSharp.Core's) and we
             // cannot merely *decline to fold* either (it might be): returning
             // here would leave an enclosing `open`'s same-named value standing

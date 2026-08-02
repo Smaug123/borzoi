@@ -1227,6 +1227,23 @@ impl<'a> Resolver<'a> {
         out
     }
 
+    /// Whether an `[<AutoOpen>]`-spelled module declared **inside** `range` has
+    /// an unprovable marker.
+    ///
+    /// The fold-back's descendant question. Every fragment it would fold lies
+    /// lexically within the module block being folded, so containment in this
+    /// file's own declaration list answers it exactly — no cross-file half, and
+    /// no dependence on the fold list, which filters unprovable fragments out.
+    ///
+    /// Accessibility is deliberately not consulted: a `private` submodule is
+    /// still folded into its own parent, which is precisely the scope this
+    /// question is about.
+    pub(super) fn unprovable_fragment_within(&self, range: TextRange) -> bool {
+        self.auto_open_module_paths
+            .iter()
+            .any(|d| !d.commits() && range.contains_range(d.range))
+    }
+
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
         let mut out: Vec<Vec<String>> = self.preceding.auto_open_modules_directly_in(container);
         out.extend(
