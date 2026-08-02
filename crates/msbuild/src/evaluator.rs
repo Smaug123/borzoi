@@ -4255,6 +4255,13 @@ fn evaluate_property_group_condition(
 /// The SDK relies on this idiom pervasively (`NuGet.props` gates every
 /// `Directory.Packages.props` discovery property with it), and flagging
 /// it would leave those writes unpinned and the central import refused.
+///
+/// "Never written" is a precondition, not a description of the shape, so a
+/// name whose write the walk *refused* ([`State::unevaluable_written`]) is not
+/// exempt: there the emptiness is our failure to compute a value rather than a
+/// fact about the real build, and MSBuild — holding the value it did compute —
+/// takes the opposite branch of the very condition the exemption calls
+/// deterministic.
 fn evaluate_condition_with_exemptions(
     node: Node<'_, '_>,
     current_file_dir: &Path,
@@ -4288,6 +4295,12 @@ fn evaluate_condition_with_exemptions(
             || !self_default_names
                 .iter()
                 .any(|written| written.eq_ignore_ascii_case(name))
+            // A refused write is why the name reads empty here; MSBuild holds
+            // the value it computed and skips the default. See the
+            // "never written" precondition in this function's docs.
+            || state
+                .unevaluable_written
+                .contains(&name.to_ascii_lowercase())
     });
     // C.2b: an undefined name the walk can prove is undefined in the
     // real build too substitutes to exactly the "" the evaluation used —

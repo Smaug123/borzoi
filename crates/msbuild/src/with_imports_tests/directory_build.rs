@@ -1271,6 +1271,42 @@ fn a_clean_overwrite_re_pins_a_gate_however_the_earlier_write_was_untrusted() {
 }
 
 #[test]
+fn a_self_default_after_a_refused_write_cannot_certify_the_gate() {
+    // The default-fill idiom `<X Condition="'$(X)' == ''">…</X>` is exempted
+    // from the undefined-read carve-outs, on the stated ground that a name the
+    // walk never wrote is genuinely unset in the real build too. A *refused*
+    // write breaks that precondition rather than satisfying it: we dropped the
+    // binding because we could not compute the value, so `$(X)` reads empty
+    // here and non-empty in MSBuild, and the two sides take opposite branches
+    // of the very condition the exemption declared deterministic.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02): with `Y=false`, MSBuild evaluates
+    // `$(Y.Substring(0,5))` to `false`, so the default does not fire and it
+    // reports `ImportDirectoryBuildTargets = false` — it skips
+    // `Directory.Build.targets` where we would import it.
+    let result = parse_with_body(
+        "  <PropertyGroup>\n    <Y>false</Y>\n    \
+         <ImportDirectoryBuildTargets>$(Y.Substring(0,5))</ImportDirectoryBuildTargets>\n    \
+         <ImportDirectoryBuildTargets Condition=\"'$(ImportDirectoryBuildTargets)' == ''\">\
+         true</ImportDirectoryBuildTargets>\n  </PropertyGroup>",
+    );
+    // Stated as the contract rather than as a decline, because either half is
+    // an acceptable answer: commit the set MSBuild has, or claim nothing.
+    if !result.items_uncertain {
+        let names: Vec<String> = paths_of(&result.items)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Main.fs".to_string()],
+            "the gate holds `false` in the real build, so a committed item set \
+             must not carry Directory.Build.targets' item",
+        );
+    }
+}
+
+#[test]
 fn a_body_read_before_the_gated_import_stays_exact() {
     // The mirror of the item claim, and the reason the trust question is asked
     // at the *splice* rather than at the write. MSBuild evaluates the body

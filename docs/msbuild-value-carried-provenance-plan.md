@@ -728,6 +728,46 @@ drift from the other two, and the next person to add a write path is forced to
 say what it does to all three. A decline recovered would have been the smaller
 prize.
 
+**Review found that the stale mark was load-bearing, and what it was propping
+up was a different bug.** Clearing it exposed a live certain-implies-exact
+violation, and the diagnosis is worth more than the fix. The default-fill
+exemption in `evaluate_condition_with_exemptions` drops a self-referencing
+undefined name from the divergence-risk set on the stated ground that *"a name
+absent from the environment and never written is genuinely unset"* — and it
+never checked the "never written" half. So:
+
+```xml
+<Y>false</Y>
+<ImportDirectoryBuildTargets>$(Y.Substring(0,5))</ImportDirectoryBuildTargets>
+<ImportDirectoryBuildTargets Condition="'$(ImportDirectoryBuildTargets)' == ''">true</ImportDirectoryBuildTargets>
+```
+
+We refuse the first write and drop the binding, so `$(…)` reads empty, the
+exemption declares the condition deterministic, the default fires, and we import
+`Directory.Build.targets`. MSBuild computed `false`, skips the default, and
+skips the import (probed, 10.0.301). Both sides take opposite branches of the
+condition the exemption called deterministic.
+
+The exemption was already wrong; `unevaluable_written`'s insert-only behaviour
+was *accidentally* masking it at the one consumer that reads that set. Verified
+by mutation: with the clearing reverted to `Keep` the new test passes, so the
+decline it produced was luck rather than reasoning — the value we published
+(`true`) was wrong either way, and only a marker nobody had connected to this
+condition kept it from being published as fact.
+
+The fix is to give the exemption its own stated precondition: a name in
+`unevaluable_written` is not exempt, because there the emptiness is our failure
+to compute rather than a fact about the real build. The census is unchanged
+(66/396, 139/2758) — the SDK's pervasive use of the idiom is on names it never
+refuses.
+
+The lesson for the rest of this plan: **a conservative marker can be holding up
+a soundness argument nobody has written down.** Removing one is not purely a
+precision change, and the way to find out is to remove it and see what the
+suite — and the reviewer — say. Which is an argument for P2 rather than against
+it: the coupling here was invisible precisely because the channel was a bare
+`HashSet` no type connected to the condition evaluator.
+
 Two of the newly-named outcomes are likewise **inert**, and are recorded as such
 rather than defended as fixes: the reserved-toolset seed now scrubs the refused
 mark alongside the other two (its own comment already promised to scrub "both
