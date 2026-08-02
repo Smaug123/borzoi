@@ -335,6 +335,29 @@ fn tuple_containing_a_function_is_parenthesised() {
 // ============================================================================
 
 /// Look up the canonical render of the binder named `name` in `inferred`.
+/// [`binder_render`] for a snippet that does **not** parse cleanly — the
+/// half-typed input an editor sees, where inference still runs over a recovery
+/// tree — under a **caller-supplied** recovery reading.
+///
+/// The reading is a parameter rather than taken off the parse because two gates
+/// decline such a snippet and a test that fixed it could not say which:
+/// [`SyntaxRecovery::of`] is what production passes, and the whole declaration
+/// declines under it; `Reported([])` is that gate deliberately switched off, so
+/// a decline under *it* is attributable to the syntax check on the application
+/// itself.
+fn binder_render_under(source: &str, name: &str, recovery: &SyntaxRecovery) -> Option<String> {
+    let parsed = parse(source);
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let env = crate::common::full_bcl_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, recovery);
+    let inferred = infer_file(&file, &resolved, env);
+    inferred
+        .def_types()
+        .iter()
+        .find(|(id, _)| resolved.def(**id).name == name)
+        .map(|(_, ty)| ty.render())
+}
+
 fn binder_render(source: &str, name: &str) -> Option<String> {
     let (resolved, inferred) = resolve_and_infer(source);
     inferred
@@ -871,34 +894,474 @@ fn later_application_does_not_monomorphise_an_earlier_binder() {
     assert_binder_sound(annotated);
 }
 
-/// A generic annotation still defers, at every head. [`Ty::Named`] can *carry*
-/// arguments now, but nothing in `annotation_ty` builds one: the bridge from a
-/// written `Type::App` to an applied `Ty` needs a generated sweep against this
-/// oracle before it can be trusted, because the safe subset turned out to be
-/// far narrower than it looks. Four separate shapes were measured diverging —
-/// a source-renamed head (`Result`, compiled `FSharpResult`), a tycon FCS
-/// canonicalises structurally (`System.Tuple<int, string>` renders
-/// `System.Int32 * System.String`), a tuple or function anywhere in an
-/// argument's tree, and an unsatisfied generic constraint
-/// (`System.Nullable<string>`, which FCS reports as `System.Object`).
+/// An **F#-only constraint** on the head defers, and its unconstrained twin
+/// does not.
 ///
-/// This pins the silence so the bridge lands as a visible, reviewed change
-/// rather than by accident.
+/// The pair is the whole point. `when 'T : comparison` has no IL encoding —
+/// `Constrained<'T>` and `Free<'T>` emit byte-identical `GenericParam` rows —
+/// so a bridge that declined both would look correct while having seen only
+/// "this head is generic". Committing `Free<int>` beside declining
+/// `Constrained<int>` is what makes the decline attributable to the constraint.
+///
+/// It has to be a fixture: every constrained head in the shipped FSharp.Core is
+/// *also* excluded by an unrelated guard (`Map` and `Set` are source-renamed,
+/// `System.Nullable`'s constraint is IL-visible), so a constraint-blind bridge
+/// passes every library-only test.
+///
+/// F# rejects `Constrained<int -> int>` outright and recovers the binder to
+/// `System.Object`, so committing the written type is a wrong answer, not merely
+/// a commit on an erroring line — which is why the deferral is unconditional
+/// rather than argument-dependent: nothing here checks a constraint against an
+/// argument.
 #[test]
-fn a_generic_annotation_still_defers() {
+fn a_constrained_head_defers_but_its_twin_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet f : ConstrainedFixture.Free<int> = failwith \"\"\n",
+            "f"
+        )
+        .as_deref(),
+        Some("ConstrainedFixture.Free<System.Int32>"),
+        "the unconstrained twin commits — so the head itself is reachable, and a \
+         decline on its constrained sibling is about the constraint"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet c : ConstrainedFixture.Constrained<int> = failwith \"\"\n",
+            "c"
+        ),
+        None,
+        "an F#-only constraint has no IL encoding and nothing here checks one, so \
+         the head declines at every argument"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet k : ConstrainedFixture.ConstrainedKey<int, string> = failwith \"\"\n",
+            "k"
+        ),
+        None,
+        "a constraint on any one position declines the whole application"
+    );
+}
+
+/// An **error-obsolete** head or argument declines; its warning-obsolete twin
+/// does not.
+///
+/// F# rejects an annotation naming an `[<Obsolete(_, true)>]` type (FS0101) and
+/// recovers the binder to `System.Object`, so committing the written type is a
+/// wrong answer, not a commit on an erroring line. Measured against the
+/// `binder-types` oracle: `Old<int>` types as `System.Object` while
+/// `Warn<int>` types as itself, and `System.Func<Old<int>, bool>` sinks whole.
+///
+/// The warning-obsolete twin is what makes the decline attributable to the
+/// `IsError` flag: a bridge that declined on *any* `Obsolete` attribute would
+/// pass a table containing only the error case, while losing types F# accepts.
+#[test]
+fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet w : ConstrainedFixture.WarnObsolete<int> = failwith \"\"\n",
+            "w"
+        )
+        .as_deref(),
+        Some("ConstrainedFixture.WarnObsolete<System.Int32>"),
+        "obsolete-as-a-warning is a type F# accepts, so declining it would lose a \
+         result — this is what makes the error case attributable"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet e : ConstrainedFixture.ErrorObsolete<int> = failwith \"\"\n",
+            "e"
+        ),
+        None,
+        "an error-obsolete head is rejected by F#, which recovers to System.Object"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet a : ConstrainedFixture.ErrorObsoleteAtom = failwith \"\"\n",
+            "a"
+        ),
+        None,
+        "the nullary bridge reaches an error-obsolete type too"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet g : System.Func<ConstrainedFixture.ErrorObsoleteAtom, bool> = failwith \"\"\n",
+            "g"
+        ),
+        None,
+        "an error-obsolete *argument* sinks the application, via the recursion \
+         rather than the head check"
+    );
+}
+
+/// A rejecting attribute on an **abbreviation** declines, like one on a
+/// definition.
+///
+/// An abbreviation emits no ECMA TypeDef, so the projected entity is the
+/// name-only marker `fsharp_pickle_merge` synthesises from the F# pickle — and
+/// that marker is the only carrier its attributes have. A marker that reports
+/// them absent rather than reading them is indistinguishable, at the bridge,
+/// from a clean type: the head chases to its target and publishes it, while
+/// FCS rejects the annotation and recovers the binder to `System.Object`.
+///
+/// Measured with `dotnet fsi` against the fixture assembly: the error pair
+/// gives `FS12004` / `FS0101`, the warning pair `FS12005` / `FS0044`. The
+/// warning twins are asserted alongside because declining every abbreviation
+/// that carries *an* attribute would pass the error half while losing results
+/// F# accepts — and because a marker that read nothing at all would also fail
+/// them, which is what makes the decline attributable to `IsError`.
+#[test]
+fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet w : ConstrainedFixture.WarnMessagedAbbrev = failwith \"\"\n",
+            "w"
+        )
+        .as_deref(),
+        Some("System.Int32"),
+        "a warning-level CompilerMessage abbreviation is a type F# accepts, and it \
+         chases to its target — so declining it would lose a result"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet x : ConstrainedFixture.WarnObsoleteAbbrev = failwith \"\"\n",
+            "x"
+        )
+        .as_deref(),
+        Some("System.Int32"),
+        "and the obsolete half of the same pair"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet e : ConstrainedFixture.ErrorMessagedAbbrev = failwith \"\"\n",
+            "e"
+        ),
+        None,
+        "an error-level CompilerMessage on the abbreviation itself is FS12004"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet f : ConstrainedFixture.ErrorObsoleteAbbrev = failwith \"\"\n",
+            "f"
+        ),
+        None,
+        "and an error-obsolete abbreviation is FS0101"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet g : System.Func<ConstrainedFixture.ErrorMessagedAbbrev, bool> = failwith \"\"\n",
+            "g"
+        ),
+        None,
+        "a rejecting abbreviation sinks an application it stands inside, reached by \
+         the recursion rather than by the head check"
+    );
+}
+
+/// An array rank above what F# accepts declines, in every position.
+///
+/// Our parser reads whatever rank the brackets spell, so without a check the
+/// written type reaches [`Ty::Array`] and is published. Measured: rank 32 types
+/// as itself and rank 33 recovers to `System.Object` — bare and as a generic
+/// argument alike, which is why the check sits on the shared array arm.
+///
+/// Rank 32 is asserted alongside so the decline is attributable to the limit
+/// rather than to arrays-of-high-rank being unsupported generally.
+#[test]
+fn an_array_rank_above_the_limit_defers() {
+    let commas = |n: usize| ",".repeat(n);
+    let at_limit = format!("module M\nlet a : int[{}] = failwith \"\"\n", commas(31));
+    let over_limit = format!("module M\nlet b : int[{}] = failwith \"\"\n", commas(32));
+    let arg_at_limit = format!(
+        "module M\nlet c : System.Func<int[{}], bool> = failwith \"\"\n",
+        commas(31)
+    );
+    let arg_over_limit = format!(
+        "module M\nlet d : System.Func<int[{}], bool> = failwith \"\"\n",
+        commas(32)
+    );
+
+    assert_eq!(
+        binder_render(&at_limit, "a").as_deref(),
+        Some("System.Int32[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,]"),
+        "rank 32 is accepted by F#, so declining it would lose a result"
+    );
+    assert_eq!(
+        binder_render(&over_limit, "b"),
+        None,
+        "rank 33 is rejected by F#, which recovers the binder to System.Object"
+    );
+    assert_eq!(
+        binder_render(&arg_at_limit, "c").as_deref(),
+        Some("System.Func<System.Int32[,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,], System.Boolean>"),
+        "and the same limit applies in argument position"
+    );
+    assert_eq!(
+        binder_render(&arg_over_limit, "d"),
+        None,
+        "an over-rank argument sinks the whole application"
+    );
+}
+
+/// A **generic application** annotation grounds its binder — the case the
+/// member wake depends on most, since a receiver whose annotation publishes no
+/// type answers nothing at all for every member access on it.
+///
+/// The currency is the compiled BCL FQN with angle brackets and `", "`-joined
+/// arguments. FCS's canonical rendering strips every abbreviation layer, so the
+/// comparison is against the compiled spelling and never the F# display one.
+/// Every string here was read off the oracle, and each case also rides the
+/// certain-implies-exact sweep.
+#[test]
+fn a_generic_application_grounds_its_binder() {
+    for (source, name, expected) in [
+        (
+            "module M\nlet k : System.Collections.Generic.KeyValuePair<int, string> = System.Collections.Generic.KeyValuePair<int, string>()\n",
+            "k",
+            "System.Collections.Generic.KeyValuePair<System.Int32, System.String>",
+        ),
+        (
+            "module M\nlet f : System.Func<int, bool> = failwith \"\"\n",
+            "f",
+            "System.Func<System.Int32, System.Boolean>",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name).as_deref(),
+            Some(expected),
+            "binder `{name}` in {source:?}"
+        );
+        assert_eq!(assert_binder_sound(source), 1, "in {source:?}");
+    }
+}
+
+/// The argument list is a real recursion, not a one-level special case: an
+/// argument that is itself an application, an array, a tuple or a function all
+/// render through, and all agree with FCS exactly.
+///
+/// A tuple or function *argument* is deliberately **not** parenthesised. Unlike
+/// a tuple element or an array element, a comma-separated argument list has
+/// nothing to regroup — `Func<int -> string, bool>` is a two-argument
+/// application, checked against the F# compiler rather than asserted.
+#[test]
+fn a_generic_argument_may_be_structured() {
+    for (source, name, expected) in [
+        (
+            "module M\nlet a : System.Collections.Generic.KeyValuePair<int[], string> = System.Collections.Generic.KeyValuePair<int[], string>()\n",
+            "a",
+            "System.Collections.Generic.KeyValuePair<System.Int32[], System.String>",
+        ),
+        (
+            "module M\nlet e : System.Collections.Generic.KeyValuePair<System.Collections.Generic.KeyValuePair<int, string>, bool> = failwith \"\"\n",
+            "e",
+            "System.Collections.Generic.KeyValuePair<System.Collections.Generic.KeyValuePair<System.Int32, System.String>, System.Boolean>",
+        ),
+        (
+            "module M\nlet p : System.Collections.Generic.KeyValuePair<int * string, bool> = failwith \"\"\n",
+            "p",
+            "System.Collections.Generic.KeyValuePair<System.Int32 * System.String, System.Boolean>",
+        ),
+        (
+            "module M\nlet q : System.Func<int -> string, bool> = failwith \"\"\n",
+            "q",
+            "System.Func<System.Int32 -> System.String, System.Boolean>",
+        ),
+    ] {
+        assert_eq!(
+            binder_render(source, name).as_deref(),
+            Some(expected),
+            "binder `{name}` in {source:?}"
+        );
+        assert_eq!(assert_binder_sound(source), 1, "in {source:?}");
+    }
+}
+
+/// Two shapes F# rejects that a bridge reading only the head would commit.
+///
+/// **A byref-like type.** F# admits `System.Span<int>` in exactly one annotation
+/// position — a parameter — and rejects the rest (FS0431 for a let-bound value,
+/// FS0412 for a return type or a type argument). The parameter it lands on
+/// declares no constraint at all, so a check reading constraints sees nothing
+/// wrong. Nothing here distinguishes the legal position and `Ty` cannot carry
+/// byref-likeness onward, so one is committed nowhere.
+///
+/// **`System.Void`.** Admitted only as `typeof<System.Void>` (FS0411), so it is
+/// never a type an annotation denotes — and the display renderer aliases it to
+/// `unit`, which would make a rejected annotation hover as a plausible one.
+///
+/// **A recovered application.** `KeyValuePair<int, string,>` is a parse error
+/// FCS reports as FS1241 and recovers to `System.Object`, but the recovery tree
+/// drops the missing argument rather than representing it, so the surviving
+/// children *look* like a complete two-argument list. Committing there is a
+/// wrong hover on exactly the half-typed input an editor sees most.
+#[test]
+fn a_generic_application_defers_on_input_fsharp_rejects() {
+    for (source, name) in [
+        // FCS admits a byref-like type in exactly one annotation position — a
+        // parameter — and rejects the rest: FS0431 for this let-bound value,
+        // FS0412 for a return type or a type argument. Nothing here
+        // distinguishes the legal position, so all of them decline.
+        ("module M\nlet s : System.Span<int> = failwith \"\"\n", "s"),
+        (
+            "module M\nlet a : System.Collections.Generic.KeyValuePair<System.Span<int>, int> = failwith \"\"\n",
+            "a",
+        ),
+        (
+            "module M\nlet b : System.Span<System.Span<int>> = failwith \"\"\n",
+            "b",
+        ),
+        // A **non-generic** byref-like type, which reaches the nullary bridge
+        // rather than the applied one — the arm an abbreviation of a byref-like
+        // type also lands on, once its marker (whose own `is_byref_like` is
+        // false) has been chased to its terminal.
+        (
+            "module M\nlet r : System.Collections.Generic.KeyValuePair<System.TypedReference, int> = failwith \"\"\n",
+            "r",
+        ),
+        (
+            "module M\nlet t : System.TypedReference = failwith \"\"\n",
+            "t",
+        ),
+        // `System.Void` is a type F# admits only as `typeof<System.Void>`
+        // (FS0411). It also renders as `unit` in the display form, so
+        // committing it would make a rejected annotation hover plausibly.
+        (
+            "module M\nlet v : System.Collections.Generic.KeyValuePair<System.Void, int> = failwith \"\"\n",
+            "v",
+        ),
+        ("module M\nlet w : System.Void = failwith \"\"\n", "w"),
+    ] {
+        assert_eq!(
+            binder_render(source, name),
+            None,
+            "F# rejects this annotation, so nothing may be committed: {source:?}"
+        );
+    }
+
+    // Recovery: the snippet does not parse, so `assert_binder_sound` (which
+    // demands a clean parse) cannot be used — the point is precisely that
+    // inference still runs over a broken tree.
+    let malformed =
+        "module M\nlet c : System.Collections.Generic.KeyValuePair<int, string,> = failwith \"\"\n";
+    let parsed = parse(malformed);
+    assert!(
+        !parsed.errors.is_empty(),
+        "the malformed annotation really is a parse error, else this asserts nothing"
+    );
+    assert_eq!(
+        binder_render_under(malformed, "c", &SyntaxRecovery::of(&parsed)),
+        None,
+        "an application whose syntax did not parse cleanly commits nothing"
+    );
+    // ...and the application's own syntax check is what earns it, independently
+    // of the declaration-level gate. Asserted by switching that gate off — the
+    // reading a file with no reported errors produces — because two sufficient
+    // reasons for the same `None` are indistinguishable while both are on, and
+    // the one being tested here is the one that survives a parser that learns to
+    // recover this shape without reporting.
+    assert_eq!(
+        binder_render_under(
+            malformed,
+            "c",
+            &SyntaxRecovery::Reported(std::sync::Arc::from([]))
+        ),
+        None,
+        "the trailing comma is caught by the application's own syntax check"
+    );
+}
+
+/// The heads a generic application still defers on. Each is a *decline*, so each
+/// is sound; together they are why `int option` does not type yet.
+///
+/// - an **abbreviation** head (`int option`, `int list`): an alias may permute or
+///   fix its target's arguments (`type Swap<'a, 'b> = Map<'b, 'a>`), so applying
+///   the written arguments positionally to the chased tycon can produce a
+///   different type, and arity alone does not rule it out;
+/// - a **source-renamed** head (`Result`, compiled `FSharpResult`; `Map`,
+///   compiled `FSharpMap`): [`Ty`] carries one path and this needs two — the
+///   compiled name is FCS's canonical currency, the source name is what hover
+///   must show, and no alias table recovers one from the other;
+/// - a tycon FCS canonicalises **structurally**: `System.Tuple<int, string>`
+///   renders `System.Int32 * System.String`, `FSharpFunc<a, b>` renders `a -> b`,
+///   `array<int>` renders `System.Int32[]`, and `System.ValueTuple<…>` renders
+///   `struct (…)` — a shape `Ty` cannot represent at all. Measured off the
+///   annotation sweep, not reasoned out;
+/// - a head with an **F#-only constraint** (`comparison`, `equality`, SRTP),
+///   which has no IL encoding. Nothing here checks a constraint against an
+///   argument, so a head that declares one at any position declines: F# rejects
+///   `Constrained<int -> int>` and recovers the binder to `System.Object`, so
+///   committing the written type is a wrong answer, not a commit on an erroring
+///   line.
+#[test]
+fn the_heads_a_generic_application_defers_on() {
     for (source, name) in [
         ("module M\nlet x : int option = None\n", "x"),
         ("module M\nlet l : int list = []\n", "l"),
         ("module M\nlet r : Result<int, string> = Ok 1\n", "r"),
         (
-            "module M\nlet k : System.Collections.Generic.KeyValuePair<int, string> = System.Collections.Generic.KeyValuePair<int, string>()\n",
-            "k",
+            "module M\nlet t : System.Tuple<int, string> = System.Tuple<int, string>(1, \"a\")\n",
+            "t",
         ),
+        (
+            "module M\nlet v : System.ValueTuple<int, string> = failwith \"\"\n",
+            "v",
+        ),
+        (
+            "module M\nlet g : Microsoft.FSharp.Core.FSharpFunc<int, bool> = failwith \"\"\n",
+            "g",
+        ),
+        ("module M\nlet a : array<int> = [||]\n", "a"),
     ] {
         assert_eq!(
             binder_render(source, name),
             None,
-            "binder `{name}` in {source:?}"
+            "binder `{name}` in {source:?} must defer"
         );
         // Whatever else the snippet types, nothing it *does* emit may disagree.
         assert_binder_sound(source);

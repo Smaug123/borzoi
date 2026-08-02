@@ -384,7 +384,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use borzoi_assembly::{EntityKind, Primitive, TypeRef};
+use borzoi_assembly::{EntityKind, FSharpConstraints, Primitive, TypeRef};
 use borzoi_cst::syntax::{
     AppExpr, AstNode, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr, ImplFile, LetDecl,
     LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat, SyntaxKind, SyntaxNode, SyntaxToken,
@@ -1365,10 +1365,45 @@ impl<'a> Gen<'a> {
                 }
                 Some(Ty::Tuple(elems))
             }
-            Type::Array(a) => Some(Ty::Array {
-                elem: Box::new(self.annotation_ty(&a.element_type()?)?),
-                rank: u32::try_from(a.rank()).ok()?,
-            }),
+            Type::Array(a) => {
+                let rank = u32::try_from(a.rank()).ok()?;
+                if rank > MAX_ARRAY_RANK {
+                    return None;
+                }
+                Some(Ty::Array {
+                    elem: Box::new(self.annotation_ty(&a.element_type()?)?),
+                    rank,
+                })
+            }
+            // A generic application. The CST has already normalised the two
+            // surface spellings — postfix `int list` and prefix
+            // `Dictionary<int, string>` — into a head plus an ordered argument
+            // list, so only one shape arrives here. A `Type::LongIdentApp`
+            // (`Dictionary<int, string>.KeyCollection`) is a different shape
+            // that `Ty` cannot spell and stays deferred.
+            Type::App(app) => {
+                if !application_syntax_is_complete(app) {
+                    return None;
+                }
+                let Type::LongIdent(li) = &app.type_name()? else {
+                    return None;
+                };
+                let li = li.long_ident()?;
+                if li.active_pat_names().next().is_some() {
+                    return None;
+                }
+                let last = li.idents().last()?;
+                let Some(Resolution::Entity(handle)) =
+                    self.resolved.resolution_at(last.text_range())
+                else {
+                    return None;
+                };
+                let mut args = Vec::new();
+                for arg in app.type_args() {
+                    args.push(self.annotation_ty(&arg)?);
+                }
+                self.applied_annotation_ty(handle, args)
+            }
             _ => None,
         }
     }
@@ -1408,6 +1443,17 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
+        // The marker's *own* attributes, which is where F# actually looks:
+        // `CheckEntityAttributes` runs on the entity the name resolved to and
+        // does not chase an abbreviation. Measured — a use of `type Chain =
+        // WarnObsoleteAbbrev` reports nothing, though declaring the chain
+        // reports FS0044 at the link. An abbreviation emits no ECMA TypeDef, so
+        // this reads the marker `fsharp_pickle_merge` synthesises from the
+        // pickle; a marker that reported its attributes absent rather than
+        // reading them publishes a type F# rejects.
+        if rejected_by_attributes(entity) {
+            return None;
+        }
         let (handle, entity) = if entity.kind == EntityKind::Abbreviation {
             let terminal = self.env.resolve_abbreviation_target(handle)?;
             (terminal, self.env.entity(terminal))
@@ -1417,21 +1463,138 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
+        // The **terminal**'s attributes, which F# does *not* consult at a use of
+        // the alias — so this is deliberate over-rejection, not a second attempt
+        // at reproducing `CheckEntityAttributes`. It costs a decline on `type
+        // Chain = ErrorObsoleteAtom`, which F# accepts.
+        //
+        // Kept because the two questions differ in kind: whether F# *rejects the
+        // name written* is decided at the marker above, while what we publish is
+        // the terminal — and an alias is not a licence to publish a type whose
+        // own declaration says it may not be used. The structural checks below
+        // sit here for the sharper form of that reason: `is_byref_like` is a
+        // property of the published type and a marker carries `false`.
+        if rejected_by_attributes(entity) {
+            return None;
+        }
         if matches!(
             entity.kind,
             EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
         ) {
             return None;
         }
+        // A **byref-like** type (`[<IsByRefLike>]`, `Span<_>` and friends) is a
+        // type F# admits in exactly one annotation position — a parameter —
+        // and rejects everywhere else this bridge can reach: FS0431 for a
+        // let-bound value, FS0412 for a return type or a type argument.
+        // Measured, and checked HERE rather than at the resolved head because
+        // an abbreviation marker carries `is_byref_like = false`: `type A = R`
+        // over a byref-like `R` would otherwise commit `A`'s terminal.
+        //
+        // Nothing here distinguishes a parameter annotation from the rest, and
+        // `Ty` cannot carry byref-likeness to a later consumer, so the sound
+        // reading is to commit one nowhere. It costs `let f (s : Span<int>)`,
+        // the single legal position.
+        if entity.is_byref_like {
+            return None;
+        }
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
-        if path == ["Microsoft", "FSharp", "Core", "Unit"] {
+        // `unit` has no `Ty` story and 3.3d's void rule assumes its absence.
+        // `System.Void` is a different refusal for a stronger reason: F# admits
+        // it only as `typeof<System.Void>` (FS0411), so it is never a type an
+        // annotation denotes — and `Ty::render_fsharp` would alias it to `unit`,
+        // making a rejected annotation hover as a plausible one.
+        if path == ["Microsoft", "FSharp", "Core", "Unit"] || path == ["System", "Void"] {
             return None;
         }
         if self.env.entity_full_name(handle) != path.join(".") {
             return None;
         }
         Some(Ty::named_path(path))
+    }
+
+    /// Bridge a **generic application** whose head resolved to `handle` and
+    /// whose written arguments are `args`, under the nullary bridge's
+    /// conventions plus three of its own.
+    ///
+    /// The head must declare **exactly as many generic parameters as the
+    /// application writes**. A partial application is not a type, and a count
+    /// mismatch means the head is not the tycon we think it is.
+    ///
+    /// An **abbreviation** head defers, unlike the nullary bridge which chases
+    /// it. A generic alias may permute or fix its target's arguments
+    /// (`type Swap<'a, 'b> = Map<'b, 'a>`, `type IntMap<'V> = Map<int, 'V>`), so
+    /// applying the written arguments positionally to the chased tycon can
+    /// silently produce a different type, and arity alone does not rule that out
+    /// — `Swap` preserves it. Recovering the common aliases needs a chase that
+    /// reports the target's argument *structure*, which
+    /// [`AbbreviationTarget`](borzoi_assembly::AbbreviationTarget) models but
+    /// [`AssemblyEnv::resolve_abbreviation_target`] does not return.
+    ///
+    /// A head **constraining any of its parameters** defers — see
+    /// [`constrained_parameter`]. Nothing here checks a constraint against an
+    /// argument, so the only sound reading of one is to decline, and that is not
+    /// a coverage nicety: F# rejects both `System.Nullable<string[]>` (IL
+    /// `struct`/`new()`) and `Constrained<int -> int>` (F# `comparison`) and
+    /// recovers the annotated binder to `System.Object`, so committing the
+    /// written type is a wrong answer rather than a commit on an erroring line.
+    ///
+    /// Four heads name a shape FCS canonicalises **structurally** rather than as
+    /// an application, so committing the application form would be a wrong
+    /// string for the right type. Measured off `infer_annotation_shape_gen_diff`,
+    /// not reasoned out. The set is closed because what it enumerates is closed:
+    /// three are [`Ty`]'s own structural variants, one head each, and the fourth
+    /// is the struct tuple, which `Ty` cannot represent at all — which is why
+    /// [`Self::annotation_ty`] already declines a written `struct (a * b)`.
+    fn applied_annotation_ty(&self, handle: EntityHandle, args: Vec<Ty>) -> Option<Ty> {
+        let entity = self.env.entity(handle);
+        if entity.is_byref_like {
+            return None;
+        }
+        // An error-obsolete *argument* is caught by the recursion, which reaches
+        // this bridge or the nullary one for every written argument; this covers
+        // the head.
+        if rejected_by_attributes(entity) {
+            return None;
+        }
+        if entity.generic_parameters.len() != args.len() {
+            return None;
+        }
+        if matches!(
+            entity.kind,
+            EntityKind::Module | EntityKind::Abbreviation | EntityKind::Measure
+        ) {
+            return None;
+        }
+        if entity.generic_parameters.iter().any(constrained_parameter) {
+            return None;
+        }
+        // Neither NESTED nor source-RENAMED, the same combined test the nullary
+        // bridge applies and for the same second reason: `Ty` carries one path
+        // and a renamed entity needs two — FCS's canonical currency is the
+        // COMPILED name (`Microsoft.FSharp.Core.FSharpResult`) while
+        // [`Ty::render_fsharp`] must show the source name a user can write
+        // (`Result`), which no alias table recovers from the compiled one.
+        // Committing the compiled path would make hover display a name that does
+        // not resolve in F# source.
+        let mut path: Vec<String> = entity.namespace.clone();
+        path.push(entity.name.clone());
+        if self.env.entity_full_name(handle) != path.join(".") {
+            return None;
+        }
+        if matches!(
+            path.iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice(),
+            ["System", "Tuple"]
+                | ["System", "ValueTuple"]
+                | ["Microsoft", "FSharp", "Core", "FSharpFunc"]
+        ) {
+            return None;
+        }
+        Some(Ty::Named { path, args })
     }
 
     /// On a **complete** function binding, emit `Eq(slot, binder_var)` for each
@@ -3326,6 +3489,139 @@ fn trivial_typed_head(paren: &ParenPat) -> Option<(NamedPat, Type)> {
     Some((named, ty))
 }
 
+/// Whether a written generic application's **punctuation accounts for every
+/// argument it appears to have**.
+///
+/// Parser recovery drops what it could not parse rather than representing it, so
+/// the surviving `Type` children of `KeyValuePair<int, string,>` are a
+/// well-formed-looking pair — while FCS reports FS1241 and recovers the binder
+/// to `System.Object`. Committing there is a wrong hover on exactly the
+/// half-typed input an editor sees most.
+///
+/// The punctuation is what still records the loss: a well-formed prefix
+/// application has one `,` between each pair of arguments and is closed by `>`,
+/// so a trailing comma or a missing bracket does not add up. The postfix form
+/// (`int list`) carries neither and has exactly one argument.
+///
+/// Not done by looking for `ERROR` in the tree: the parser emits **zero-width
+/// `ERROR` tokens as ordinary structure** — a cleanly-parsed
+/// `KeyValuePair<int, string>` contains one — so their presence says nothing
+/// about whether anything was lost.
+fn application_syntax_is_complete(app: &borzoi_cst::syntax::AppType) -> bool {
+    let args = app.type_args().len();
+    if app.is_postfix() {
+        return args == 1;
+    }
+    let mut commas = 0usize;
+    let (mut opened, mut closed) = (false, false);
+    for token in app
+        .syntax()
+        .children_with_tokens()
+        .filter_map(|el| el.into_token())
+    {
+        match token.kind() {
+            SyntaxKind::COMMA_TOK => commas += 1,
+            SyntaxKind::LESS_TOK => opened = true,
+            SyntaxKind::GREATER_TOK => closed = true,
+            _ => {}
+        }
+    }
+    opened && closed && args > 0 && commas + 1 == args
+}
+
+/// Whether a generic parameter constrains what may be substituted for it, in
+/// any way this crate can see.
+///
+/// Nothing in the annotation bridge *checks* a constraint against an argument,
+/// so the only sound reading of one is to decline the whole application. That
+/// makes presence the entire question, and it has to be asked of every channel
+/// at once: the IL flags and named type constraints
+/// (`System.Nullable<'T>`'s `struct` + `new()`), and the F#-only ones
+/// ([`FSharpConstraints`]), which have no IL encoding at all. Reading one
+/// channel and not the other is how `System.Nullable<string[]>` — which F#
+/// rejects — gets published.
+///
+/// [`FSharpConstraints::Unknowable`] counts as constrained for the same reason:
+/// an unread pickle means unread constraints, not absent ones.
+///
+/// `allows_ref_struct` is deliberately absent: it *widens* what may be
+/// substituted rather than narrowing it, so it never makes an application
+/// illegal. `nullability` is an annotation, not a constraint.
+fn constrained_parameter(p: &borzoi_assembly::TypeParameter) -> bool {
+    p.reference_type_constraint
+        || p.value_type_constraint
+        || p.default_constructor_constraint
+        || p.is_unmanaged
+        || !p.type_constraints.is_empty()
+        || p.fsharp_constraints != FSharpConstraints::Free
+}
+
+/// The highest array rank F# accepts in an annotation.
+///
+/// Our parser reads any rank the brackets spell, so the limit has to be applied
+/// here or a rank the language rejects reaches [`Ty::Array`]. Measured against
+/// the `binder-types` oracle rather than read off a spec: `int[,…]` at rank 32
+/// types as itself, and at rank 33 FCS reports the annotation and recovers the
+/// binder to `System.Object` — in argument position (`System.Func<int[…], bool>`)
+/// exactly as in bare position, which is why the check sits on the shared array
+/// arm rather than in either bridge.
+const MAX_ARRAY_RANK: u32 = 32;
+
+/// Whether F# **rejects a use** of this entity on account of its attributes.
+///
+/// This reproduces the F# compiler's `CheckEntityAttributes`
+/// (`src/Compiler/Checking/AttributeChecking.fs`), which is the whole of what
+/// it consults at a type use, and is why the set is closed rather than however
+/// many channels a reviewer has thought of so far. It dispatches to
+/// `CheckILAttributes` (obsolescence, experimentality) or `CheckFSharpAttributes`
+/// (those plus compiler-message and unverifiability), and of the four only two
+/// can produce an **error**:
+///
+/// - `[<Obsolete(_, true)>]`, on either path;
+/// - `[<CompilerMessage(_, n, IsError = true)>]`, on the F#-tycon path.
+///
+/// Experimental and unverifiable warn and never reject, so neither is read.
+///
+/// Asking both of every entity — rather than gating the second on whether the
+/// entity came through F# signature data — costs only a decline on an IL type
+/// carrying an attribute F# would not consult there, which is not a shape a
+/// C# compiler emits.
+fn rejected_by_attributes(entity: &borzoi_assembly::Entity) -> bool {
+    error_obsolete(entity) || error_compiler_message(entity)
+}
+
+/// Whether an entity is marked `[<Obsolete(_, true)>]` — obsolete **as an
+/// error** rather than as a warning.
+///
+/// F# rejects an annotation naming one (FS0101) and recovers the binder to
+/// `System.Object`, so committing the written type is a wrong answer rather than
+/// a commit on an erroring line. The `is_error` flag is the whole discriminator,
+/// measured: `[<Obsolete("…", false)>] Warn<int>` types as `Warn<System.Int32>`
+/// while `[<Obsolete("…", true)>] Old<int>` types as `System.Object`, and an
+/// error-obsolete type used as a generic *argument* sinks the whole application
+/// the same way.
+fn error_obsolete(entity: &borzoi_assembly::Entity) -> bool {
+    entity.obsolete.as_ref().is_some_and(|o| o.is_error)
+}
+
+/// Whether an entity carries `[<CompilerMessage(_, n, IsError = true)>]` at a
+/// message number F# does not suppress.
+///
+/// F#'s `CheckCompilerMessageAttribute` errors when `IsError` holds, with two
+/// exemptions: number **3501** is suppressed outright (FSharp.Core's `nameof`
+/// marker), and 1204 is suppressed only while compiling FSharp.Core itself,
+/// which we never are. An *undecodable* marker is read as "not suppressed",
+/// so a payload we could not parse declines rather than commits.
+fn error_compiler_message(entity: &borzoi_assembly::Entity) -> bool {
+    /// FSharp.Core's `nameof` marker, which F# suppresses whatever `IsError`
+    /// says.
+    const NAMEOF_MARKER: i32 = 3501;
+    entity
+        .compiler_message
+        .as_ref()
+        .is_some_and(|m| m.is_error && m.marker != Some(NAMEOF_MARKER))
+}
+
 fn contains_param(ty: &Ty) -> bool {
     match ty {
         Ty::Param(_) => true,
@@ -3781,6 +4077,7 @@ mod tests {
             is_structural_comparison: false,
             is_allow_null_literal: false,
             obsolete: None,
+            compiler_message: None,
             experimental: None,
             default_member: None,
             compiler_feature_required: vec![],

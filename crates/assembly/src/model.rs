@@ -856,6 +856,13 @@ pub struct Entity {
     /// don't change "should I use this?" decisions.
     pub obsolete: Option<Obsolete>,
     /// `Some` when the entity carries
+    /// `[Microsoft.FSharp.Core.CompilerMessageAttribute]` — see
+    /// [`CompilerMessage`]. Together with [`Self::obsolete`] this is the whole
+    /// error-producing half of what F# checks at a use of the entity; its
+    /// siblings in `CheckEntityAttributes` (experimental, unverifiable) warn
+    /// and never reject.
+    pub compiler_message: Option<CompilerMessage>,
+    /// `Some` when the entity carries
     /// `[System.Diagnostics.CodeAnalysis.ExperimentalAttribute]` (the
     /// .NET 8+ "this API may change without notice" marker). Decoding
     /// rules are documented on [`Experimental`]. Sibling of
@@ -1030,6 +1037,37 @@ pub enum Augmentation {
     /// `[<CompiledName>]`. Defer: keep the name in scope (so it still shadows by
     /// position) but resolve it to nothing.
     Possible,
+}
+
+/// F#'s own diagnostic marker, projected from
+/// `[Microsoft.FSharp.Core.CompilerMessageAttribute(string, int)]` with the
+/// named `IsError` property.
+///
+/// Sibling of [`Obsolete`], and a separate field for the same reason
+/// [`Experimental`] is: the payloads differ and consumers query them
+/// independently. It matters to a *type* consumer because F# consults it when
+/// checking a use of the entity — `CheckCompilerMessageAttribute` in the F#
+/// compiler's `AttributeChecking.fs`, reached from `CheckEntityAttributes` —
+/// and reports an **error** when `is_error` holds, recovering the annotated
+/// binder to `System.Object`.
+///
+/// Unlike [`Obsolete`], F# consults this only on the **F#-tycon** path, i.e.
+/// for entities read through an assembly's F# signature data;
+/// `CheckEntityAttributes` runs the IL path for a plain IL tycon and that path
+/// checks obsolescence and experimentality alone. The projection does not model
+/// that split — it records what the metadata says, and the consumer decides.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CompilerMessage {
+    /// The explanatory text — the attribute's first ctor argument.
+    pub message: Option<String>,
+    /// The message *number*, the second ctor argument. Load-bearing rather than
+    /// informational: F# suppresses number 3501 outright whatever `is_error`
+    /// says (it is the `nameof` marker in FSharp.Core), so a consumer deciding
+    /// "does this reject a use?" must read it.
+    pub marker: Option<i32>,
+    /// The `IsError` named property; absent means `false`.
+    pub is_error: bool,
 }
 
 /// Deprecation marker, projected from `[System.ObsoleteAttribute]`. The

@@ -55,12 +55,14 @@
 use crate::ecma335_assembly::strip_arity;
 use crate::error::ImportError;
 use crate::fsharp_pickle::model::{
-    IsType, PickledAttribute, PickledCcu, PickledEntity, PickledExnRepr, PickledTcRef,
-    PickledTyconRepr, PickledType, PickledVal, TupleKind, TyparKind,
+    IsType, PickledAttribExpr, PickledAttribute, PickledCcu, PickledConst, PickledEntity,
+    PickledExnRepr, PickledExpr, PickledTcRef, PickledTyconRepr, PickledType, PickledVal,
+    TupleKind, TyparKind,
 };
 use crate::model::{
-    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, Entity, EntityKind,
-    FSharpConstraints, FsharpSourceRange, Member, SkippedMember, TypeParameter, UnionCases,
+    AbbreviationTarget, Access, AssemblyIdentity, Augmentation, CompilerMessage, Entity,
+    EntityKind, FSharpConstraints, FsharpSourceRange, Member, Obsolete, SkippedMember,
+    TypeParameter, UnionCases,
 };
 use std::collections::HashMap;
 
@@ -2089,6 +2091,126 @@ fn apply_permutation(items: &mut [Entity], order: &[usize]) {
 /// non-local-entity table (the attribute class lives in FSharp.Core, so its
 /// tcref is always non-local for a user assembly). FCS's
 /// `EntityHasWellKnownAttribute` match, on the pickle's encoding.
+/// The pickled attribute whose class is `path`, if the declaration carries one.
+///
+/// Keyed exactly like [`has_auto_open_attribute`]'s test — by the non-local
+/// entity reference's path — because that is the only spelling of an attribute
+/// class the pickle holds. A `Local` tcref is an attribute *declared in this
+/// same assembly*, which neither of the classes read here ever is.
+fn pickled_attribute<'a>(
+    pickled: &PickledCcu,
+    attribs: &'a [PickledAttribute],
+    path: &[&str],
+) -> Option<&'a PickledAttribute> {
+    attribs.iter().find(|a| match &a.tcref {
+        PickledTcRef::NonLocal(idx) => {
+            pickled
+                .header
+                .nlerefs
+                .get(*idx as usize)
+                .is_some_and(|nle| {
+                    let actual: Vec<&str> = nle
+                        .path
+                        .iter()
+                        .filter_map(|&i| pickled.header.strings.get(i as usize).map(String::as_str))
+                        .collect();
+                    actual == path
+                })
+        }
+        PickledTcRef::Local(_) => false,
+    })
+}
+
+/// The constant an attribute argument evaluates to, seeing through the
+/// pass-through `Coerce` wrapper an `obj`-typed parameter introduces.
+///
+/// `None` for every other expression shape. An attribute argument that is not a
+/// literal cannot be read here, and the callers treat that as *undecoded*
+/// rather than as absent — see [`pickled_obsolete`].
+fn pickled_attribute_const(expr: &PickledAttribExpr) -> Option<&PickledConst> {
+    fn strip(e: &PickledExpr) -> Option<&PickledConst> {
+        match e {
+            PickledExpr::Const { value, .. } => Some(value),
+            PickledExpr::Coerce { arg } => strip(arg),
+            _ => None,
+        }
+    }
+    // `evaluated` is FCS's constant-folded form, which is what an attribute
+    // argument's *value* is; `orig` keeps the source spelling.
+    strip(&expr.evaluated).or_else(|| strip(&expr.orig))
+}
+
+/// `[<System.Obsolete>]` as carried by the pickle.
+///
+/// `is_error` is the second positional argument (`ObsoleteAttribute` exposes it
+/// through constructors only — the property is get-only, so there is no named
+/// form to read). An argument list we cannot read yields `is_error: true`: the
+/// attribute is *present*, so the only question is whether F# rejects a use,
+/// and answering "no" on an argument we failed to decode is the one answer that
+/// can produce a wrong commit. Over-rejecting costs a decline, which the
+/// certain-implies-exact contract always permits.
+fn pickled_obsolete(pickled: &PickledCcu, attribs: &[PickledAttribute]) -> Option<Obsolete> {
+    let attr = pickled_attribute(pickled, attribs, &["System", "ObsoleteAttribute"])?;
+    let message = match attr.args_unnamed.first().map(pickled_attribute_const) {
+        // `[<Obsolete>]` — the nullary constructor carries no message.
+        None => None,
+        Some(Some(PickledConst::String(s))) => Some(s.clone()),
+        Some(_) => {
+            return Some(Obsolete {
+                message: None,
+                is_error: true,
+            });
+        }
+    };
+    let is_error = match attr.args_unnamed.get(1).map(pickled_attribute_const) {
+        None => false,
+        Some(Some(PickledConst::Bool(b))) => *b,
+        Some(_) => true,
+    };
+    Some(Obsolete { message, is_error })
+}
+
+/// `[<CompilerMessage>]` as carried by the pickle — F#'s own error-level
+/// diagnostic marker, which `CheckEntityAttributes` consults on the F#-tycon
+/// path.
+///
+/// The `marker` number is read because it is load-bearing rather than
+/// informational (see [`CompilerMessage::marker`]), and an unreadable one is
+/// left `None` — that spelling makes a consumer treat the message as ordinary
+/// rather than as the `nameof` marker, which is the conservative direction.
+/// `IsError` is a named property here, unlike [`pickled_obsolete`]'s positional
+/// flag, and an unreadable one rejects for the same reason.
+fn pickled_compiler_message(
+    pickled: &PickledCcu,
+    attribs: &[PickledAttribute],
+) -> Option<CompilerMessage> {
+    let attr = pickled_attribute(
+        pickled,
+        attribs,
+        &["Microsoft", "FSharp", "Core", "CompilerMessageAttribute"],
+    )?;
+    let message = match attr.args_unnamed.first().map(pickled_attribute_const) {
+        Some(Some(PickledConst::String(s))) => Some(s.clone()),
+        _ => None,
+    };
+    let marker = match attr.args_unnamed.get(1).map(pickled_attribute_const) {
+        Some(Some(PickledConst::Int32(n))) => Some(*n),
+        _ => None,
+    };
+    let is_error = match attr.args_named.iter().find(|a| a.name == "IsError") {
+        None => false,
+        Some(arg) => match pickled_attribute_const(&arg.value) {
+            Some(PickledConst::Bool(b)) => *b,
+            _ => true,
+        },
+    };
+    Some(CompilerMessage {
+        message,
+        marker,
+        is_error,
+    })
+}
+
 fn has_auto_open_attribute(pickled: &PickledCcu, attribs: &[PickledAttribute]) -> bool {
     attribs.iter().any(|a| match &a.tcref {
         PickledTcRef::NonLocal(idx) => {
@@ -2132,6 +2254,17 @@ struct AbbrevMarkerSite {
     /// marker without the flag would read as a complete, static-less surface
     /// (codex round 22).
     is_auto_open: bool,
+    /// The pickled `[<Obsolete>]` and `[<CompilerMessage>]` attributes, the two
+    /// `CheckEntityAttributes` consults that can make F# **reject** a use of the
+    /// name outright (`FS0101` / `FS12004`).
+    ///
+    /// An abbreviation emits no ECMA TypeDef, so no projected row carries them
+    /// and this marker is their only carrier. Reading them here is what lets
+    /// `None` on the synthesised entity mean *absent* rather than *not looked
+    /// at* — a distinction a consumer deciding "may I publish this type?" reads
+    /// as the difference between a sound commit and a wrong one.
+    obsolete: Option<Obsolete>,
+    compiler_message: Option<CompilerMessage>,
     /// The decoded target of a plain type abbreviation (`type IntId = int` ⇒
     /// `Named { path: ["Microsoft","FSharp","Core","int"], … }`), or `None` for
     /// an exception abbreviation and for any target shape the nullary decoder
@@ -2464,6 +2597,8 @@ pub(crate) fn apply_abbreviation_markers(
                     typar_names: Vec::new(),
                     is_exception: true,
                     is_auto_open: false,
+                    obsolete: pickled_obsolete(pickled, &entity.attribs),
+                    compiler_message: pickled_compiler_message(pickled, &entity.attribs),
                     // An exception abbreviation's target is a constructor, not a
                     // type-position name; the decoder does not model it.
                     abbreviation_target: None,
@@ -2515,6 +2650,8 @@ pub(crate) fn apply_abbreviation_markers(
                 typar_names,
                 is_exception: false,
                 is_auto_open: has_auto_open_attribute(pickled, &entity.attribs),
+                obsolete: pickled_obsolete(pickled, &entity.attribs),
+                compiler_message: pickled_compiler_message(pickled, &entity.attribs),
                 abbreviation_target,
                 definition_range: resolve_entity_range(pickled, entity),
             });
@@ -2619,7 +2756,8 @@ fn abbreviation_marker(
         is_structural_equality: false,
         is_structural_comparison: false,
         is_allow_null_literal: false,
-        obsolete: None,
+        obsolete: target.obsolete.clone(),
+        compiler_message: target.compiler_message.clone(),
         experimental: None,
         default_member: None,
         compiler_feature_required: Vec::new(),
@@ -2987,6 +3125,7 @@ mod tests {
             is_structural_comparison: false,
             is_allow_null_literal: false,
             obsolete: None,
+            compiler_message: None,
             experimental: None,
             default_member: None,
             compiler_feature_required: Vec::new(),
