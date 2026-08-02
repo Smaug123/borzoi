@@ -19,10 +19,10 @@ use std::path::{Path, PathBuf};
 /// ("property is reserved, and cannot be modified"), so the oracle cannot be
 /// put in a state where both sides agree on their value. Our side sees them
 /// undefined and declines — sound, just less covered. How much less is
-/// measured, not assumed: `sdk_chain_decline_attribution.rs` seeds every
-/// reserved name and counts what that turns on — +12 expressions and +24
-/// conditions, itself an over-statement since a real walk already supplies
-/// several of the names this table lacks.
+/// measured, not assumed: `sdk_chain_decline_attribution.rs` seeds them and
+/// counts what that turns on. Most of the gain is names a real walk already
+/// supplies; the names still unseeded are worth +4 expressions and +30
+/// conditions, and no reserved-name seeding could exceed +52 and +145.
 pub fn seeded_props() -> Vec<(String, String)> {
     [
         ("TargetFramework", "net10.0"),
