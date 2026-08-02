@@ -340,7 +340,10 @@ impl<'a> Resolver<'a> {
                         Resolution::Item(item_id)
                     }
                     None => {
-                        self.note_hidden_value_module(self.container_path.clone());
+                        self.note_hidden_value_module(
+                            self.container_path.clone(),
+                            Some(range.start()),
+                        );
                         Resolution::Local(id)
                     }
                 }
@@ -459,7 +462,7 @@ impl<'a> Resolver<'a> {
         let res = match self.export_case(&entry_name, id, is_private, CaseKind::Exception) {
             Some(item_id) => Resolution::Item(item_id),
             None => {
-                self.note_hidden_value_module(self.container_path.clone());
+                self.note_hidden_value_module(self.container_path.clone(), Some(range.start()));
                 Resolution::Local(id)
             }
         };
@@ -2000,7 +2003,7 @@ impl<'a> Resolver<'a> {
     /// file ([`ProjectItems::project_type_simple_names`](super::model::ProjectItems))
     /// — has the simple name `name`. The attribute resolution's project-type
     /// guard; see [`Self::attribute_candidate`].
-    fn project_type_named(&self, name: &str) -> bool {
+    pub(super) fn project_type_named(&self, name: &str) -> bool {
         self.own_type_simple_names.contains(name)
             || self.preceding.project_type_simple_names.contains(name)
     }

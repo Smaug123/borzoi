@@ -2509,7 +2509,6 @@ fn a_later_type_declaration_evicts_an_opened_value_of_the_same_name() {
 /// `open` brought in. Reproduced through an explicit `open` for the same reason
 /// as the test above.
 #[test]
-#[ignore = "pre-existing wrong target on main: a same-block auto-open module does not fold back"]
 fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
     // FCS binds `LocalAuto.extraValue`; we bind the assembly's
     // `Demo.Auto.Extra.extraValue`.
@@ -2526,6 +2525,33 @@ fn a_later_auto_open_module_outranks_an_opened_value_of_the_same_name() {
     assert!(
         !matches!(res, Some(Resolution::Member { .. })),
         "the block's own `[<AutoOpen>] module LocalAuto` out-ranks the assembly's; got {res:?}"
+    );
+}
+
+/// In a `module rec` block an `[<AutoOpen>]` module's value beats even a
+/// **later** explicit `open` of a colliding module — FCS makes every
+/// declaration in the block visible to every other, so nothing there is ordered
+/// by source position (fcs-dump probe `RecOpen`). The fold-back is positional,
+/// and `block_local_shadow`'s rec decline reaches only the *implicit*
+/// enclosing-namespace channel, so an explicit `open` still wins on our side.
+/// Task #47; pre-existing (nothing folded the module at all before the
+/// fold-back landed, so the same `open` won then too).
+#[test]
+#[ignore = "pre-existing wrong target: a rec block's auto-open module loses to a later explicit open"]
+fn a_rec_blocks_auto_open_module_outranks_a_later_open_of_the_same_name() {
+    let env = fixture_env();
+    let src = "module rec M\n[<AutoOpen>]\nmodule LocalAuto =\n    \
+               let extraValue () = 1\nopen Demo.Auto\nlet x = extraValue\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the rec block's `[<AutoOpen>] module LocalAuto` out-ranks the later open; got {res:?}"
     );
 }
 
@@ -2557,5 +2583,786 @@ fn implicit_enclosing_namespace_declines_a_shortenable_project_auto_open_value()
         res.and_then(|r| proj.item_def(r)) != outer || outer.is_none(),
         "the outer `ProjectAuto.shortTarget` must not win over the shortened \
          `Inner.shortTarget`; got {res:?}"
+    );
+}
+
+/// Within one `[<AutoOpen>]` module an unenumerated `extern` declared *after* a
+/// same-named case takes the name in FCS — the module's own source order
+/// decides. The fold-back enumerates the case, so its decline for the extern
+/// must land *after* that push, or the case wins and the enclosing use gets a
+/// wrong go-to-definition (codex round 3).
+#[test]
+fn an_extern_after_a_same_named_case_declines_the_folded_case() {
+    let env = fixture_env();
+    let src = "module M\n[<AutoOpen>]\nmodule LocalAuto =\n    type Holder =\n        | Marker\n    \
+               extern int Marker()\nlet x = Marker\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Marker").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Marker".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `extern Marker` takes the name and we cannot name it; got {res:?}"
+    );
+}
+
+/// The fold-back brings in the members of the `[<AutoOpen>]` **fragment**, not
+/// every same-file member at that module path. Two blocks of one file can
+/// declare the same module, one plain and one auto-open; FCS folds only the
+/// attributed one, so the plain fragment's `earlier` stays unbound after it
+/// (fcs-dump probe `Frag` reports no use for it at all) while `current` binds.
+#[test]
+fn the_fold_back_brings_in_only_the_attributed_fragment() {
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "namespace Demo.Frag\n\nmodule M =\n    let earlier = 1\n\n\
+               namespace Demo.Frag\n\n[<AutoOpen>]\nmodule M =\n    let current = 2\n\n\
+               module User =\n    let a = current\n    let b = earlier\n";
+    let rf = resolve(src, &env);
+    let at_use = |needle: &str| {
+        let start = src.rfind(needle).expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    assert!(
+        matches!(
+            rf.resolution_at(at_use("current")),
+            Some(Resolution::Item(_))
+        ),
+        "the attributed fragment folds: got {:?}",
+        rf.resolution_at(at_use("current"))
+    );
+    let earlier = rf.resolution_at(at_use("earlier"));
+    assert!(
+        matches!(earlier, None | Some(Resolution::Deferred(_))),
+        "the plain fragment at the same path does not fold; got {earlier:?}"
+    );
+}
+
+/// The fold's **type-eviction** override is fragment-scoped too. A plain
+/// fragment's constructible type at the same module path is not folded by the
+/// `[<AutoOpen>]` fragment, so it evicts nothing in the enclosing scope: FCS
+/// keeps the opened value (fcs-dump probe `FragType`, which binds `Src.Tag`,
+/// not the plain fragment's `M.Tag` type).
+#[test]
+fn the_type_eviction_override_is_scoped_to_the_folded_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.FragTy\n\nmodule M =\n    type Tag() =\n        member _.Marker = 1\n\n\
+               namespace Demo.FragTy\n\nopen Demo.Auto\n\n[<AutoOpen>]\nmodule M =\n    \
+               let unrelated = 1\n\nmodule User =\n    let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    // The property under test is that the *plain* fragment's `Tag` evicts
+    // nothing at the auto-open fragment's fold — and it still holds. What is no
+    // longer observable is the positive witness (naming `Demo.Auto.Extra.Tag`):
+    // [`fixture_env`] deliberately carries an unknowable auto-open surface, so
+    // the `[<AutoOpen>]` marker here is *unprovable*, and an unprovable marker
+    // declines rather than folding or not-folding
+    // ([`AutoOpenVerdict::Unproven`](borzoi_sema) — see the fold-back).
+    //
+    // So this asserts the half that survives: we must not commit the evicting
+    // type. Committing `Tag`'s *type* would be the wrong go-to-definition the
+    // eviction override exists to prevent, and a decline is not that.
+    assert!(
+        matches!(
+            res,
+            Some(Resolution::Member { .. }) | Some(Resolution::Deferred(_))
+        ),
+        "the other fragment's type evicts nothing here; got {res:?}"
+    );
+    assert!(
+        !matches!(res, Some(Resolution::Entity(_))),
+        "the plain fragment's type must never be committed here; got {res:?}"
+    );
+}
+
+/// An **inaccessible** member does not rank in the fold, so it cannot decide
+/// where the type-eviction override lands. A fragment holding an earlier public
+/// union case `Tag`, a later `type Tag()`, and a `let private Tag` that never
+/// escapes the module: FCS filters the private value and binds the *type*
+/// (fcs-dump-probed, with and without the private line — the answer is the same
+/// either way), so the case must not stand. Counting the private value as an
+/// outranking member put the override before the fold and let the case win —
+/// a wrong go-to-definition, and one the pairwise member sweep cannot reach
+/// because it takes three members to build (codex review of #49).
+#[test]
+fn an_inaccessible_member_does_not_rank_in_the_fold() {
+    let env = fixture_env();
+    let src = "module Review\n[<AutoOpen>]\nmodule Fold =\n    type Holder =\n        | Tag\n    \
+               type Tag() = class end\n    let private Tag = 42\nlet probe = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `type Tag()` takes the name and sema cannot name a project \
+         type constructor; got {res:?}"
+    );
+}
+
+/// A constructible type the **enclosing** block declares *after* the fold takes
+/// the name from a folded value, so the fold must not leave one standing there.
+/// fcs-dump-probed both ways: with `type Tag()` below the module FCS binds the
+/// type's constructor, and with it above, the folded `Tag`. Sema models no
+/// project type constructor, so the sound answer to the first is a deferral
+/// (codex review of #49; the explicit-`open` arm of the same shape is #45 and
+/// resolves the same wrong way on `main`).
+#[test]
+fn a_later_enclosing_type_takes_a_folded_name() {
+    let env = fixture_env();
+    let src = "module M\n[<AutoOpen>]\nmodule Local =\n    let Tag = 1\ntype Tag() = class end\n\
+               let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later `type Tag()` takes the name; got {res:?}"
+    );
+}
+
+/// …and a type declared *before* the module does not, so the decline is keyed
+/// on position rather than on the name being a type anywhere in the block.
+#[test]
+fn an_earlier_enclosing_type_does_not_take_a_folded_name() {
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "module M\ntype Tag() = class end\n[<AutoOpen>]\nmodule Local =\n    let Tag = 1\n\
+               let x = Tag\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Tag").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Tag".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let want = src.find("Tag = 1").expect("the folded binder");
+    assert_eq!(
+        def.map(|r| usize::from(r.start())),
+        Some(want),
+        "the folded value still wins over an earlier type; got {res:?}"
+    );
+}
+
+/// A file declaring its own `AutoOpenAttribute` shadows FSharp.Core's, and FCS
+/// then treats `[<AutoOpen>]` as an ordinary attribute that opens nothing — so
+/// the enclosing `marker` keeps its earlier binding (fcs-dump-probed). Folding
+/// on the attribute's *spelling* committed this module's `marker` instead
+/// (codex review of #49).
+///
+/// What this asserts is the half that survives: the module's `marker` must not
+/// be committed. The enclosing binder is no longer *named* here, because
+/// proving the attribute foreign needs more than "it resolved to a project
+/// type" — a project type may **abbreviate** the core marker, and then FCS
+/// folds after all (see
+/// [`a_local_abbreviation_of_the_core_marker_does_not_prove_the_attribute_foreign`]).
+/// Telling a class declaration from an abbreviation is decidable for a project
+/// type and would recover the positive answer; until then this declines, which
+/// is the safe side of the same question.
+#[test]
+fn a_shadowed_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module M\ntype AutoOpenAttribute() =\n    inherit System.Attribute()\n\
+               let marker = 1\n[<AutoOpen>]\nmodule Local =\n    let marker = 2\nlet x = marker\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("marker").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "marker".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let folded = src.find("marker = 2").expect("the module's binder");
+    assert_ne!(
+        def.map(|r| usize::from(r.start())),
+        Some(folded),
+        "the shadowed attribute opens nothing, so the module's `marker` must not \
+         be folded in; got {res:?}"
+    );
+}
+
+/// The shadowed attribute suppresses the module's fold **everywhere**, not just
+/// at its own declaration position. A second `namespace` block reopening the
+/// same namespace folds its auto-open modules implicitly, and that fold reads a
+/// cross-block index — so a module recorded as auto-open on the *spelling*
+/// alone is imported there even though the declaring block already declined it.
+/// FCS reports `FS0039` for the bare `target` in the later block (fcs-dump
+/// `uses-project-batch` probe `TwoBlocks`), so committing it is a wrong target.
+///
+/// Found by codex review: the fold-back's own decline is position-local, and
+/// the implicit namespace fold is a different reader of the same fact.
+#[test]
+fn a_shadowed_attribute_also_suppresses_the_later_blocks_implicit_fold() {
+    let env = fixture_env();
+    let src = "namespace Demo.Two\n\ntype AutoOpenAttribute() =\n    \
+               inherit System.Attribute()\n\n[<AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nnamespace Demo.Two\n\nmodule B =\n    let y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the project's own `AutoOpenAttribute` makes `A` an ordinary module, so \
+         the later block's implicit fold brings in nothing; got {res:?}"
+    );
+}
+
+/// The **implicit namespace fold** must keep the same fragment identity the
+/// fold-back does: a plain `module M` fragment is not folded by a later
+/// `[<AutoOpen>] module M` at the same path, so a third block in the namespace
+/// binds only the attributed fragment's members (fcs-dump probe `NsFrag`, which
+/// reports no use for `plainOnly` at all).
+#[test]
+fn the_namespace_fold_brings_in_only_the_attributed_same_file_fragment() {
+    // Pure project source — no fixture symbol appears here, so this case
+    // takes the plain FSharp.Core env, in which the `[<AutoOpen>]` marker is
+    // provable. Under [`fixture_env`] it is not: that fixture deliberately
+    // carries an unknowable auto-open surface, which makes every attribute
+    // candidate unrulable and the fold decline.
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "namespace Demo.NsFrag\n\nmodule M =\n    let plainOnly = 1\n\n\
+               namespace Demo.NsFrag\n\n[<AutoOpen>]\nmodule M =\n    let autoOnly = 2\n\n\
+               namespace Demo.NsFrag\n\nmodule User =\n    let a = autoOnly\n    let b = plainOnly\n";
+    let rf = resolve(src, &env);
+    let at_use = |needle: &str| {
+        let start = src.rfind(needle).expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    assert!(
+        matches!(
+            rf.resolution_at(at_use("autoOnly")),
+            Some(Resolution::Item(_))
+        ),
+        "the attributed fragment folds: got {:?}",
+        rf.resolution_at(at_use("autoOnly"))
+    );
+    let plain = rf.resolution_at(at_use("plainOnly"));
+    assert!(
+        matches!(plain, None | Some(Resolution::Deferred(_))),
+        "the plain fragment at the same path does not fold; got {plain:?}"
+    );
+}
+
+/// A `[<AutoOpen>] module rec` is *itself* a rec container, so a use inside it
+/// sees its own later declarations and cannot be ordered by position — the same
+/// reason an enclosing `rec` block declines the implicit namespace fold. The
+/// fold-back's own reasoning ("its rec-ness changes nothing about how its
+/// surface folds *outward*") does not carry to uses *inside* it (codex round 7).
+#[test]
+fn a_self_recursive_auto_open_module_still_declines_the_implicit_fold() {
+    let env = fixture_env();
+    let src = "namespace Demo.Auto\n\n[<AutoOpen>]\nmodule rec Inner =\n    \
+               let y = extraValue\n    let extraValue () = 1\n";
+    let rf = resolve(src, &env);
+    let start = src.find("extraValue").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "extraValue".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        !matches!(res, Some(Resolution::Member { .. })),
+        "the module's own later `extraValue` is forward-visible; got {res:?}"
+    );
+}
+
+/// Inside a `rec` container the fold-back must not run at all: FCS orders
+/// nothing there by source position, so appending the module's entries last
+/// makes them win a contest the enclosing block's own binding takes (fcs-dump
+/// probe `RecFold` binds `M.marker`, not `Auto.marker`).
+#[test]
+fn the_fold_back_declines_inside_a_rec_container() {
+    let env = fixture_env();
+    let src = "module rec M\n\nlet marker = 2\n\n[<AutoOpen>]\nmodule Auto =\n    \
+               let marker = 1\n\nmodule User =\n    let x = marker\n";
+    let rf = resolve(src, &env);
+    let span = |needle: &str, from_end: bool| {
+        let start = if from_end {
+            src.rfind(needle).expect("the use")
+        } else {
+            src.find(needle).expect("the def")
+        };
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + needle.len()).unwrap().into(),
+        )
+    };
+    let at_def = rf.resolution_at(span("marker", false));
+    let at_use = rf.resolution_at(span("marker", true));
+    assert!(at_def.is_some(), "the block's own `marker` is a binder");
+    assert_eq!(
+        at_use, at_def,
+        "the rec block's own `marker` binds, not the auto-open module's"
+    );
+}
+
+/// A nested `[<AutoOpen>]` fragment belongs to the **parent fragment that
+/// declares it**. An earlier plain `Parent` fragment holding an auto-open
+/// `Child` must not attach that child to a later `[<AutoOpen>] Parent`
+/// fragment, whose own `Child` is plain — FCS leaves the later child's members
+/// unbound (fcs-dump probe `NestFrag` reports no use for `bad`).
+#[test]
+fn a_nested_auto_open_fragment_belongs_to_its_declaring_parent_fragment() {
+    let env = fixture_env();
+    let src = "namespace Demo.NestFrag\n\nmodule Parent =\n    [<AutoOpen>]\n    \
+               module Child =\n        let good = 1\n\nnamespace Demo.NestFrag\n\n\
+               [<AutoOpen>]\nmodule Parent =\n    module Child =\n        let bad = 2\n\n\
+               module User =\n    let x = bad\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("bad").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "bad".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later fragment's `Child` is plain, so `bad` is unbound; got {res:?}"
+    );
+}
+
+/// A custom `AutoOpenAttribute` an **earlier Compile-order file** declares, in
+/// scope at the fold site through an `open`, shadows FSharp.Core's — so
+/// `[<AutoOpen>]` is an ordinary attribute there and the module folds nothing.
+/// FCS reports `FS0039 The value or constructor 'target' is not defined` for
+/// the bare use (fcs-dump `uses-project` probe).
+///
+/// The same-file arm of this is
+/// [`a_shadowed_auto_open_attribute_folds_nothing`]; the shadow is equally real
+/// when it arrives from another file, where the attribute's own resolution need
+/// not be a same-file `Item`.
+#[test]
+fn a_cross_file_custom_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src0 = "namespace Custom\n\ntype AutoOpenAttribute() =\n    inherit System.Attribute()\n";
+    let src1 = "module Use\n\nopen Custom\n\n[<AutoOpen>]\nmodule A =\n    let target = 1\n\n\
+                let y = target\n";
+    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+    let start = src1.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = proj.file(1).resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "`Custom.AutoOpenAttribute` shadows FSharp.Core's, so `A` folds nothing \
+         and `target` is unbound; got {res:?}"
+    );
+}
+
+/// An `[<AutoOpen>]` **type**'s static shares one rank with a union case of the
+/// same fragment, so the two order by source position: with the case first, the
+/// later static wins. fcs-dump-probed both ways round — case-then-static binds
+/// `Frag.Holder.Target`, static-then-case binds `Frag.U.Target`.
+///
+/// We model no auto-open type statics (task #48), so the static is unnameable
+/// here; the requirement is exactly "do not commit the case it outranks".
+#[test]
+fn an_auto_open_type_static_outranks_an_earlier_union_case() {
+    let env = fixture_env();
+    let src = "module M\n\n[<AutoOpen>]\nmodule Frag =\n    type U =\n        | Target\n    \
+               [<AutoOpen>]\n    type Holder() =\n        static member Target = 42\n\n\
+               let y = Target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the later auto-open type's static outranks the case; got {res:?}"
+    );
+}
+
+/// An `[<AutoOpen>]` type's static beats a same-named **exception** from
+/// *either* side. An exception folds at [`fold_rank`] 0 — before every tycon —
+/// so unlike a union case it is not ordered against the static by source
+/// position. fcs-dump-probed both ways round: both bind `Root.M.T.Clash`.
+///
+/// The static is unnameable (task #48), so the requirement is exactly "do not
+/// commit the exception".
+#[test]
+fn an_auto_open_type_static_outranks_an_exception_declared_after_it() {
+    let env = fixture_env();
+    let src = "module Root\n\n[<AutoOpen>]\nmodule M =\n    [<AutoOpen>]\n    type T =\n        \
+               static member Clash = 42\n    exception Clash\n\nlet x = Clash\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("Clash").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "Clash".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "an exception loses to the auto-open type's static from either side; got {res:?}"
+    );
+}
+
+/// A custom `AutoOpenAttribute` supplied by a **referenced assembly** and
+/// brought into scope by an `open` shadows FSharp.Core's, exactly as a
+/// project-declared one does — so `[<AutoOpen>]` is an ordinary attribute
+/// there and the module folds nothing. FCS reports `FS0039` for the bare use
+/// (fcs-dump `uses-project-batch` probe against this very fixture).
+///
+/// The third and last arm of the fold's attribute precondition: same file
+/// ([`a_shadowed_auto_open_attribute_folds_nothing`]), a preceding project file
+/// ([`a_cross_file_custom_auto_open_attribute_folds_nothing`]), and here an
+/// assembly. A project-name scan cannot see this one.
+#[test]
+fn an_assembly_custom_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module Use\n\nopen Demo.CustomAttr\n\n[<AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "the assembly's `AutoOpenAttribute` shadows FSharp.Core's, so `A` folds \
+         nothing and `target` is unbound; got {res:?}"
+    );
+}
+
+/// A **fully qualified** foreign attribute (`[<Demo.CustomAttr.AutoOpen>]`)
+/// needs no `open` to name somebody else's `AutoOpenAttribute`, so the fold
+/// must read the qualifier rather than the leaf. FCS reports `FS0039` for the
+/// bare use here exactly as it does for the opened spelling (fcs-dump
+/// `uses-project-batch` probe against this fixture).
+///
+/// The leaf is what [`attrs_auto_open`](borzoi_sema) matches, and the
+/// attribute resolver defers a multi-segment name — so neither the spelling
+/// test nor a committed verdict distinguishes this from FSharp.Core's. The
+/// written qualifier is the only evidence, and it is conclusive: a path
+/// naming any container but `Microsoft.FSharp.Core` cannot be FSharp.Core's
+/// attribute.
+#[test]
+fn a_qualified_foreign_auto_open_attribute_folds_nothing() {
+    let env = fixture_env();
+    let src = "module Use\n\n[<Demo.CustomAttr.AutoOpen>]\nmodule A =\n    \
+               let target = 1\n\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    assert!(
+        matches!(res, None | Some(Resolution::Deferred(_))),
+        "a qualified foreign `AutoOpen` is an ordinary attribute, so `A` folds \
+         nothing and `target` is unbound; got {res:?}"
+    );
+}
+
+/// A **local abbreviation** of the core marker is not a foreign attribute.
+///
+/// `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute` makes
+/// `[<AutoOpen>]` resolve to a *project* type — but that type abbreviates
+/// FSharp.Core's, so FCS chases it and auto-opens the module. Probed: FCS binds
+/// the use to `M.A.target` (the fold, at A's closing position, outranking the
+/// earlier `let target = 99`), and `dotnet fsi --exec` accepts the file.
+///
+/// So a resolution that merely *is not* an assembly entity naming the core
+/// marker does not prove the attribute foreign. Grading it `NotAutoOpen` makes
+/// the module ordinary and leaves the enclosing `let` standing — a wrong
+/// go-to-definition. Only a proof either way is a finding
+/// ([`AutoOpenVerdict`](borzoi_sema)); this is neither, so it declines.
+#[test]
+fn a_local_abbreviation_of_the_core_marker_does_not_prove_the_attribute_foreign() {
+    let env = crate::common::fsharp_core_env().clone();
+    let src = "module M\ntype AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\
+               let target = 99\n[<AutoOpen>]\nmodule A =\n    let target = 1\nlet y = target\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind("target").expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + "target".len()).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let enclosing = src.find("target = 99").expect("the enclosing binder");
+    assert_ne!(
+        def.map(|r| usize::from(r.start())),
+        Some(enclosing),
+        "the enclosing `let target = 99` must not take the name — FCS binds the \
+         folded `M.A.target`; got {res:?}"
+    );
+}
+
+/// The **namespace** fold declines on an unprovable marker too, not just the
+/// same-file fold-back.
+///
+/// A later `namespace` block folds the auto-open modules declared directly in
+/// that namespace. The fold-back's generation barrier covers only the declaring
+/// block, so filtering an unproven module out of *this* consumer would let the
+/// direct case take the name — probed: FCS binds `N.A.X`, the module's value,
+/// not `N.H.X` (fsi-accepted). Committing the case would be a wrong
+/// go-to-definition.
+///
+/// [`fixture_env`] is the env in which the marker is unprovable (its unknowable
+/// auto-open surface makes every attribute candidate unrulable), which is
+/// exactly the condition under test.
+#[test]
+fn an_unprovable_marker_declines_the_namespace_fold_rather_than_taking_the_direct_case() {
+    let env = fixture_env();
+    let src = "namespace N\n\ntype H =\n    | X\n\nnamespace N\n\n[<AutoOpen>]\nmodule A =\n    \
+               let X = 1\n\nnamespace N\n\nmodule User =\n    let u = X\n";
+    let rf = resolve(src, &env);
+    let start = src.rfind('X').expect("the use");
+    let use_at = rowan::TextRange::new(
+        u32::try_from(start).unwrap().into(),
+        u32::try_from(start + 1).unwrap().into(),
+    );
+    let res = rf.resolution_at(use_at);
+    let def = res.and_then(|r| rf.resolved_def(r)).map(|d| d.range);
+    let direct_case = src.find("| X").map(|i| i + 2).expect("the direct case");
+    assert_ne!(
+        def.map(|r| usize::from(r.start())),
+        Some(direct_case),
+        "an unprovable marker must not let the direct case take the name — FCS \
+         binds the folded `N.A.X`; got {res:?}"
+    );
+}
+
+/// The unprovable verdict must survive the **file boundary**.
+///
+/// An earlier Compile-order file can declare two `[<AutoOpen>]` modules in one
+/// namespace: one whose marker we prove, and a later one whose marker resolves
+/// to a local `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`
+/// — which FCS chases, so the later module really does open, and its `X` wins.
+/// Probed with `dotnet fsi --exec`: the program prints `result=2`, the
+/// *unprovable* module's value (FS3561 "should not be aliased" is a warning, so
+/// the file compiles).
+///
+/// A later file's `open` therefore meets a contest it cannot see unless the
+/// export carries the verdict: exporting only the *proven* fragment leaves the
+/// proven `X` uncontested and commits it — a wrong go-to-definition, not a gap.
+/// The same-file barrier does not reach here; only the exported verdict does.
+/// The unprovable verdict must survive the **file boundary**.
+///
+/// `an_unprovable_marker_declines_the_namespace_fold_rather_than_taking_the_direct_case`
+/// is this contest within one file. Split across two, the earlier file exports
+/// only its *proven* auto-open fragments, so the later `open CU` sees an
+/// uncontested direct tier and commits the namespace's own union case `CU.H.X`.
+/// FCS does not: probed with `dotnet fsi --exec` over the same two files, it
+/// prints `2` — `CU.Unp.X`, the value of the module whose marker we cannot rule
+/// on, because it chases the local
+/// `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`. So the
+/// direct case is a wrong go-to-definition, not a gap.
+///
+/// The hidden-container marker the export already carries does not cover this.
+/// It guards the names the unprovable module might *supply* — enough for a
+/// contest against another auto-open fragment's value — and says nothing about
+/// the names the namespace supplies **directly**. Only the verdict itself
+/// crossing the boundary ([`ProjectItems`]'s unproven paths) reaches the direct
+/// tier.
+#[test]
+fn an_earlier_files_unprovable_marker_declines_the_namespaces_direct_tier() {
+    let env = crate::common::fsharp_core_env().clone();
+    let unprovable = "namespace CU\n\ntype H =\n    | X\n\nnamespace CU\n\n\
+                      type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\n\
+                      [<AutoOpen>]\nmodule Unp =\n    let X = 2\n";
+    let src1 = "module CrossUser\n\nopen CU\n\nlet result = X\n";
+    let use_at = {
+        let start = src1.rfind('X').expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        )
+    };
+    let resolve_pair = |src0: &str| {
+        let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+        let res = proj.file(1).resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| proj.item_def(r))
+                .map(|(f, d)| (f, d.range)),
+        )
+    };
+
+    let (res, def) = resolve_pair(unprovable);
+    let direct_case = unprovable
+        .find("| X")
+        .map(|i| i + 2)
+        .expect("the direct case");
+    assert_ne!(
+        def.map(|(file, range)| (file, usize::from(range.start()))),
+        Some((0, direct_case)),
+        "an earlier file's unprovable fragment contests this name; FCS binds \
+         `CU.Unp.X`, so the namespace's own case is a wrong target; got {res:?}"
+    );
+
+    // Non-vacuity: without the unprovable fragment the very same use commits the
+    // direct case. So the decline above is this fragment's doing, not a blanket
+    // refusal of the shape — the failure mode a one-sided assertion would miss.
+    let control = "namespace CU\n\ntype H =\n    | X\n";
+    let (control_res, control_def) = resolve_pair(control);
+    assert_eq!(
+        control_def.map(|(file, range)| (file, usize::from(range.start()))),
+        Some((
+            0,
+            control.find("| X").map(|i| i + 2).expect("the direct case")
+        )),
+        "with no unprovable fragment the direct case must still commit, or this \
+         test proves nothing; got {control_res:?}"
+    );
+}
+/// The unprovable fragment's **Compile-order position** decides what it stales.
+///
+/// A proven fragment in file 0 and an unprovable one in file 1, both directly in
+/// one namespace, then a third file's `open`. FCS folds fragments in file order,
+/// so the later one wins: probed with `dotnet fsi --exec` over exactly these
+/// three files, the program prints the unprovable module's `2`.
+///
+/// A barrier raised once *before* the fragment loop cannot express that. It
+/// stales the direct tier, and then the loop re-pushes every proven fragment
+/// into the fresh generation — so the file-0 fragment stands and takes a name
+/// FCS gives the file-1 one. The barrier has to sit at the uncertainty's own
+/// position instead.
+#[test]
+fn an_unprovable_fragment_stales_a_proven_fragment_at_an_earlier_file() {
+    let env = crate::common::fsharp_core_env().clone();
+    let proven = "namespace CU\n\n[<AutoOpen>]\nmodule P =\n    let X = 1\n";
+    let unproven = "namespace CU\n\n\
+                    type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\n\
+                    [<AutoOpen>]\nmodule U =\n    let X = 2\n";
+    // The control keeps the file count and the namespace, dropping only the
+    // unprovable fragment — so a decline above is that fragment's doing.
+    let inert = "namespace CU\n\nmodule Unrelated =\n    let q = 1\n";
+    let src2 = "module Probe\n\nopen CU\n\nlet r = X\n";
+    let use_at = {
+        let start = src2.rfind('X').expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        )
+    };
+    let resolve_triple = |middle: &str| {
+        let proj = resolve_project(
+            &[impl_file(proven), impl_file(middle), impl_file(src2)],
+            &env,
+        );
+        let res = proj.file(2).resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| proj.item_def(r))
+                .map(|(f, d)| (f, usize::from(d.range.start()))),
+        )
+    };
+
+    let proven_x = proven.find("X = 1").expect("the proven binder");
+    let (res, def) = resolve_triple(unproven);
+    assert_ne!(
+        def,
+        Some((0, proven_x)),
+        "the file-0 proven fragment precedes the file-1 unprovable one, which \
+         FCS folds later and binds; committing the earlier one is a wrong \
+         target; got {res:?}"
+    );
+
+    let (control_res, control_def) = resolve_triple(inert);
+    assert_eq!(
+        control_def,
+        Some((0, proven_x)),
+        "with no unprovable fragment the proven one must still commit, or this \
+         test proves nothing; got {control_res:?}"
+    );
+}
+
+/// Uncertainty **below** a proven fragment reaches the fold-back too.
+///
+/// A proven `[<AutoOpen>] module Parent` holding an `[<AutoOpen>] module Child`
+/// whose marker we cannot rule on — here spelled with the qualifier
+/// `[<Microsoft.FSharp.Core.AutoOpen>]`, which resolves to no assembly entity we
+/// can name. FCS folds both, innermost last, and binds `Root.Parent.Child.X`
+/// (fcs-dump-probed). Folding only the provable half commits `Parent.X`, which
+/// is a wrong go-to-definition; on `origin/main` the same use merely *declines*,
+/// so committing it would be a gap turned into a wrong answer.
+///
+/// The fold-back therefore declines wholesale when any descendant fragment it
+/// would fold is unprovable — the same arm the module's own unprovable verdict
+/// takes. That over-declines (a name only `Parent` supplies declines too) and
+/// never over-commits.
+#[test]
+fn an_unprovable_descendant_declines_the_parents_fold_back() {
+    let env = crate::common::fsharp_core_env().clone();
+    let unprovable_child = "module Root\n\n[<AutoOpen>]\nmodule Parent =\n    let X = 0\n    \
+                            [<Microsoft.FSharp.Core.AutoOpen>]\n    module Child =\n        \
+                            let X = 1\n\nlet y = X\n";
+    // Same shape with a provable child: the fold-back must still commit, and
+    // commit the CHILD's binder — the innermost fragment folds last.
+    let provable_child = "module Root\n\n[<AutoOpen>]\nmodule Parent =\n    let X = 0\n    \
+                          [<AutoOpen>]\n    module Child =\n        let X = 1\n\nlet y = X\n";
+    let binder_of = |src: &str| {
+        let rf = resolve(src, &env);
+        let start = src.rfind('X').expect("the use");
+        let use_at = rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        );
+        let res = rf.resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| rf.resolved_def(r))
+                .map(|d| usize::from(d.range.start())),
+        )
+    };
+
+    let (res, def) = binder_of(unprovable_child);
+    assert_ne!(
+        def,
+        unprovable_child.find("X = 0"),
+        "the unprovable child may supply this name, and FCS gives it \
+         `Parent.Child.X`; committing `Parent.X` is a wrong target; got {res:?}"
+    );
+
+    let (control_res, control_def) = binder_of(provable_child);
+    assert_eq!(
+        control_def,
+        provable_child.find("X = 1"),
+        "with a provable child the fold-back must still commit the innermost \
+         binder, or this test proves nothing; got {control_res:?}"
     );
 }

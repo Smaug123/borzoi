@@ -1193,3 +1193,42 @@ fn cross_file_auto_open_defers_only_its_names() {
         at("Literal")
     );
 }
+
+/// A nested module's **own header** attributes are resolved in the enclosing
+/// env — FCS checks them before adding the module's contents to it — so an
+/// `[<AutoOpen>]` module's fold-back must not have happened yet when they run.
+/// It advances `latest_open_pos` to the module's end, and an in-file attribute
+/// candidate whose definition precedes the latest open defers; folding before
+/// the attributes therefore deferred a candidate FCS commits (codex round 2).
+#[test]
+fn diff_an_auto_open_modules_own_header_attribute_still_commits() {
+    let env = fsharp_core_env();
+    let src = "module Test\ntype FooAttribute() =\n    inherit System.Attribute()\n\
+               [<Foo>]\n[<AutoOpen>]\nmodule Local =\n    let v = 1\n";
+    // Both `Foo` and `AutoOpen` must commit; folding first dropped the floor to
+    // one. (`verdict_at` cannot be used here — it spans the first `Foo` in the
+    // source, which is the `FooAttribute` definition, not the attribute use.)
+    assert_attrs_match_fcs(src, &env, 2);
+}
+
+/// An `[<AutoOpen>]` module that supplies **no** attribute type must not defer
+/// an in-file candidate defined before it. The fold-back is an open, and
+/// `attribute_candidate` distrusts a definition preceding the latest open — but
+/// the auto-open attribute hazard already has a name-keyed guard
+/// (`own_auto_open_type_names`, AO-2), so a presence-wide frontier here only
+/// re-opens the gap that guard was built to close (codex round 3).
+#[test]
+fn diff_an_unrelated_auto_open_module_does_not_defer_a_later_attribute() {
+    let env = fsharp_core_env();
+    let src = "module Test\ntype FooAttribute() =\n    inherit System.Attribute()\n\
+               [<AutoOpen>]\nmodule Local =\n    let v = 1\n[<Foo>]\ntype X() = class end\n";
+    assert_attrs_match_fcs(src, &env, 2);
+    assert!(
+        matches!(
+            verdict_at(&env, src, "Foo"),
+            Some(Resolution::Local(_) | Resolution::Item(_))
+        ),
+        "an auto-open module declaring no attribute type defers nothing; got {:?}",
+        verdict_at(&env, src, "Foo")
+    );
+}
