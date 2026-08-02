@@ -3500,7 +3500,7 @@ fn trivial_typed_head(paren: &ParenPat) -> Option<(NamedPat, Type)> {
 ///
 /// The punctuation is what still records the loss: a well-formed prefix
 /// application has one `,` between each pair of arguments and is closed by `>`,
-/// so a trailing comma or a missing bracket no longer adds up. The postfix form
+/// so a trailing comma or a missing bracket does not add up. The postfix form
 /// (`int list`) carries neither and has exactly one argument.
 ///
 /// Not done by looking for `ERROR` in the tree: the parser emits **zero-width

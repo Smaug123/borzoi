@@ -1149,10 +1149,9 @@ fn an_array_rank_above_the_limit_defers() {
     );
 }
 
-/// A **generic application** annotation grounds its binder. Before this the
-/// annotation deferred, the binder published nothing, and every member access on
-/// such a receiver was silence — the single largest coverage gap in the member
-/// wake.
+/// A **generic application** annotation grounds its binder — the case the
+/// member wake depends on most, since a receiver whose annotation publishes no
+/// type answers nothing at all for every member access on it.
 ///
 /// The currency is the compiled BCL FQN with angle brackets and `", "`-joined
 /// arguments. FCS's canonical rendering strips every abbreviation layer, so the

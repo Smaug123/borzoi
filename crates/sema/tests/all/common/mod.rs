@@ -1329,11 +1329,12 @@ pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
 /// declared so no other guard can stand in — none renamed, none an
 /// abbreviation, each paired with an unconstrained twin.
 ///
-/// It has since grown the other dimensions that need an F#-authored reference
-/// rather than a library head: `[<Obsolete(_, true)>]` and
+/// It carries the other dimensions that need an F#-authored reference rather
+/// than a library head, on the same terms: `[<Obsolete(_, true)>]` and
 /// `[<CompilerMessage(_, _, IsError = true)>]` heads, each with a
-/// warning-level twin, and — the one carrier with no ECMA row at all — the same
-/// two attributes on **abbreviations**, whose only record is the F# pickle.
+/// warning-level twin so a decline is attributable to the `IsError` flag, and
+/// the same two attributes on **abbreviations** — the one carrier with no ECMA
+/// row at all, whose attributes exist only in the F# pickle.
 pub fn ensure_constrained_fixture_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT

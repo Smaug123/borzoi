@@ -31,19 +31,21 @@
 //!
 //! # What this harness does not close
 //!
-//! The alphabet is enumerated over *positions* but hand-listed over **carriers**,
-//! and that is the seam a later round found: no abbreviation carrying a rejecting
-//! attribute existed here or in the fixture, so the whole attribute dimension
-//! agreed while a marker that reported its attributes absent published a type F#
-//! rejects. [`ABBREV_HEADS`] closes that carrier.
+//! The alphabet is enumerated over *positions* but hand-listed over
+//! **carriers**, and that asymmetry is the live risk. A carrier absent from the
+//! list makes its whole dimension agree vacuously: every attribute row would
+//! pass while a carrier that reports its attributes absent publishes a type F#
+//! rejects, because no case names one. [`ABBREV_HEADS`] is the carrier with no
+//! ECMA row at all; a reader adding a dimension should ask which *carriers* can
+//! hold it, not only which positions.
 //!
 //! Deriving the fixture half of the alphabet from `constrained_env/Library.fs`
-//! was considered and **not** built. It would guard against wiring up a fixture
-//! type and forgetting it, which has not happened; it would not have found this,
-//! because the shape was absent from the fixture too, and no derivation
-//! synthesises a dimension nobody has thought of. The trigger to build it is a
-//! *second* finding of this kind — a shape present in the fixture but missing
-//! from the alphabet — not another guard-logic gap.
+//! is deliberately not done. It guards against declaring a fixture type and
+//! forgetting to list it here — a failure that has not occurred — and it cannot
+//! reach the failure that matters, since a derivation only enumerates shapes
+//! someone already thought to write down. Build it when a shape is found
+//! present in the fixture but missing from the alphabet; a guard-logic gap is
+//! not that signal.
 //!
 //! # The oracle is diagnostic-aware — this is the design point
 //!
