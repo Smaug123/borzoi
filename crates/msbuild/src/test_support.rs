@@ -47,6 +47,18 @@ pub fn substitute(input: &str, props: &PropertyMap) -> (String, Vec<Issue>) {
     (value.unescape(), issues)
 }
 
+/// Names MSBuild computes for itself as initial properties — the predicate the
+/// walker uses to decide that an undefined read of such a name is *not* exact.
+///
+/// Exposed so the SDK-chain decline attribution can classify blocking names
+/// with the *same* rule production uses. A copy in the test would drift, and
+/// its first drift is already known: `MSBuildIsRestoring` looks reserved by
+/// prefix but is deliberately excluded, because build evaluation genuinely
+/// leaves it unset.
+pub fn is_toolset_initial_property_name(name: &str) -> bool {
+    crate::evaluator::is_toolset_initial_property_name(&name.to_ascii_lowercase())
+}
+
 /// Every property name `raw` references — the input to every trust scan in the
 /// crate, exposed so `tests/property_reference_scan.rs` can hold it to the one
 /// obligation that matters: it must never under-report relative to what

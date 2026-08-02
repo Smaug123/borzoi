@@ -1,9 +1,9 @@
 # Reserved-name seeding: what it is actually worth
 
 > **Status:** planned, and deliberately *not* started. The measurement below
-> was made to price the work, and it re-priced it downward by two orders of
-> magnitude. What follows is the case for doing a small, well-bounded slice of
-> it and for cutting the rest loose from the plan it was blocking.
+> was made to price the work, and it came out at a few per cent of what the
+> comments claimed. What follows is the case for doing a small, well-bounded
+> slice of it and for cutting the rest loose from the plan it was blocking.
 
 ## Why this document exists
 
@@ -22,9 +22,11 @@ Two things were wrong with that.
    trigger condition could not fire — not because the measurement said wait,
    but because no work existed to move the measurement.
 2. **The attribution behind it was false.** The census's decline column was
-   described as "dominated by undefined *reserved* receivers". It is not, and
-   the error was an artefact of reading a histogram bucketed by *function name*
-   as though it were bucketed by *cause*.
+   described as "dominated by undefined *reserved* receivers". It is not: the
+   reserved population is 13 of 330 expression declines and 42 of 2 619
+   condition withdrawals, both upper bounds. The error was an artefact of
+   reading a histogram bucketed by *function name* as though it were bucketed
+   by *cause*.
 
 ## The measurement
 
@@ -33,33 +35,51 @@ Two things were wrong with that.
 declined. Its committed counts are asserted equal to the census's (66 and 139),
 so the two harnesses cannot drift apart and quietly measure different corpora.
 
+**The classifier does not read issue tags**, because they do not carry the
+distinction it needs. `$([System.IO.Path]::Combine($(Undefined), 'x'))` reports
+`Unsupported` and nothing else, though `Combine` *is* modelled and the real
+blocker is the operand. So each declined item is instead **re-evaluated with
+every name it references defined**, under several fillers; if it commits then,
+a richer property table would reach it.
+
 | SDK-chain call expressions | 396 distinct |
 | --- | ---: |
 | committed | **66** |
-| declined — **shape not modelled** | **286** |
-| declined — undefined operands only | 44 |
-|   …blocked purely by reserved names | **6** |
-|   …reserved mixed with ordinary | 0 |
-|   …no reserved name involved | 38 |
+| declined — **no property table can reach** | **193** |
+| declined — operands missing | 137 |
+|   …blocked purely by reserved names | **13** |
+|   …reserved mixed with ordinary | 13 |
+|   …no reserved name involved | **111** |
 
 | SDK-chain conditions | 2 758 distinct |
 | --- | ---: |
 | committed | **139** |
-| withdrawn — unsupported grammar | 237 |
-| withdrawn — undefined-bearing | 2 382 |
-|   …blocked purely by reserved names | **40** |
-|   …reserved mixed with ordinary | 14 |
-|   …no reserved name involved | **2 328** |
+| withdrawn — no property table can reach | 157 |
+| withdrawn — operands missing | 2 462 |
+|   …blocked purely by reserved names | **42** |
+|   …reserved mixed with ordinary | 65 |
+|   …no reserved name involved | **2 355** |
 
-**Reserved-name seeding can reach 6 of 330 expression declines and at most 54 of
-2 619 condition withdrawals — about 1.5% of each.** The expression declines are
-dominated by property functions we do not implement (`Regex::Replace` ×37,
-`Path::Combine` ×35, `.Contains` ×24, `.Replace` ×23, …), and *no* amount of
-seeding reduces those: the shape does not reduce however many operands are
-defined. The condition withdrawals are dominated by ordinary SDK-computed names
-— `OutputType`, `Language`, `BuildingInsideVisualStudio`, `TargetPlatformIdentifier`,
-`PublishSingleFile`, `PlatformTarget`, `SelfContained` — which are not reserved
-and which no toolset seed supplies.
+**Reserved-name seeding can reach at most 13 of 330 expression declines and 42
+of 2 619 condition withdrawals — 3.9% and 1.6%.** Both are *upper* bounds twice
+over: the census seeds no reserved name at all, so those counts include names a
+real walk already supplies (`MSBuildProjectDirectory`, `MSBuildToolsVersion`,
+`MSBuildRuntimeType`); and the reachability probe counts an item as reachable if
+*any* filler commits, which over-states what a real table would do. Even folding
+in the mixed bucket — which seeding alone cannot unblock, since those items also
+need ordinary names — the ceiling is 26 of 330 and 107 of 2 619.
+
+What the declines actually are:
+
+- **193 of the 330 expression declines reach no property table at all** —
+  property functions outside the modelled subset. The census's function
+  histogram names them: `Regex::Replace` ×37, `Path::Combine` ×35 (modelled, but
+  many call sites nest an unmodelled inner call), `.Contains` ×24, `.Replace` ×23.
+- **2 355 of the 2 619 condition withdrawals involve no reserved name** — they
+  are blocked by ordinary SDK-computed names: `_TargetFrameworkVersionWithoutV`
+  ×87, `OutputType` ×44, `Language` ×38, `TargetPlatformIdentifier` ×29,
+  `BuildingInsideVisualStudio` ×25, `PublishSingleFile` ×25. No toolset seed
+  supplies any of them.
 
 ### The census is context-free, and that inflates its undefined column
 
@@ -69,7 +89,9 @@ condition on `$(OutputType)`, its own props have written it. Probed on a plain
 `net10.0` SDK project, our walker defines `OutputType=Library`, `Language=F#`,
 `TargetPlatformIdentifier=`, `_TargetFrameworkVersionWithoutV=10.0`,
 `EnableDefaultItems=true` and `TargetExt=.dll` — six of the census's top
-blockers, all resolved, none of them reserved.
+blockers, all resolved, none of them reserved. `_TargetFrameworkVersionWithoutV`
+alone accounts for 87 of the withdrawals the census attributes to a missing
+operand.
 
 So the census's undefined-bearing column measures *how much of the SDK's text
 depends on values established elsewhere in the SDK*, which is a fact about the
@@ -159,19 +181,21 @@ broadly will hit this, and will read it as five wrong commits.
 ## What this changes elsewhere
 
 1. **P3's trigger is void and needs re-deriving.** It was "the committed
-   fraction rises, via trusted seeding". Seeding moves that fraction by ~1.5%,
-   so the trigger would never fire on its own terms. P3 should be re-priced
+   fraction rises, via trusted seeding". Seeding moves that fraction by a few
+   per cent at most, so the trigger would never fire on its own terms. P3 should be re-priced
    against what its durability is actually worth, or against the *modelling*
    lever (the 286 unmodelled shapes), which is the thing that would genuinely
    grow the committed surface — and therefore genuinely grow P3's blast radius.
 2. **The five comments are corrected**, and the attribution is now a checked
-   two-sided number rather than a sentence. Improving the evaluator will fail
-   `sdk_chain_decline_attribution.rs` and force the figures to be restated with
-   a date and a direction, which is the discipline `parser_corpus`'s
-   `CLEAN_PARSES` already applies and for the same reason.
+   two-sided number rather than a sentence — pinned over the *whole* partition,
+   so work that merely moves items between buckets still forces a restatement.
+   Improving the evaluator will fail `sdk_chain_decline_attribution.rs` and
+   force the figures to be restated with a date and a direction, which is the
+   discipline `parser_corpus`'s `CLEAN_PARSES` already applies and for the same
+   reason.
 3. **The real coverage worklist is the function list**, already printed by the
-   census and now labelled as what it is. `Regex::Replace`, `Path::Combine`,
-   `.Contains` and `.Replace` are 119 of the 330 expression declines between
+   census and now labelled as what it is: 193 of the 330 expression declines
+   reach no property table at all, so modelling is the only lever that moves
    them.
 
 ## The recommendation

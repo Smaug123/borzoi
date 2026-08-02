@@ -4329,7 +4329,7 @@ fn emit_unsupported_condition(node: Node<'_, '_>, state: &mut State<'_>) {
 /// import groups on it, so keeping it conservative would latch
 /// [`State::walk_opaque`] at the top of every real SDK chain and blind
 /// the entire downstream walk.
-fn is_toolset_initial_property_name(lower: &str) -> bool {
+pub(crate) fn is_toolset_initial_property_name(lower: &str) -> bool {
     if lower == "msbuildisrestoring" {
         return false;
     }
