@@ -148,9 +148,8 @@ fn sdk_chain_property_expressions_are_never_wrongly_committed() {
     // the evaluator started declining something it used to model, which is a
     // capability regression even though it stays *sound*. The buckets printed
     // above say which functions to model, and that is where the coverage is:
-    // 193 of the 330 declines still decline with every name they reference
-    // defined, so no property table reaches them
-    // (`sdk_chain_decline_attribution.rs`).
+    // seeding every reserved name moves this count by 12
+    // (`sdk_chain_decline_attribution.rs`), so the rest is modelling work.
     let floor = if cfg!(windows) { 62 } else { 66 };
     assert!(
         exact >= floor,
@@ -211,10 +210,10 @@ fn sdk_chain_conditions_are_never_wrongly_committed() {
     // `[System.IO.Path]::IsPathRooted` commit non-leading backslash conditions
     // (`docs/msbuild-unix-path-fixup-plan.md` P3). Unix-only gain (the Windows
     // `is_path_rooted` declines), so the floor there stays 130. The withdrawn
-    // majority is operand-blocked, but on *ordinary* SDK-computed names
-    // (`_TargetFrameworkVersionWithoutV`, `OutputType`, `Language`, …), which a
-    // context-free census cannot have: 2 355 of the 2 619 withdrawals involve no
-    // reserved name at all (`sdk_chain_decline_attribution.rs`).
+    // majority reads *ordinary* SDK-computed names undefined
+    // (`_TargetFrameworkVersionWithoutV` ×86, `OutputType` ×44, `Language` ×40),
+    // which a context-free census cannot have. Seeding every reserved name moves
+    // this count by 24 (`sdk_chain_decline_attribution.rs`).
     let floor = if cfg!(windows) { 130 } else { 139 };
     assert!(
         committed >= floor,

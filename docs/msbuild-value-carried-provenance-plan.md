@@ -21,7 +21,7 @@
 > expressions and 5% of its conditions, so the surface a laundering defect
 > could reach is small. Its previously-stated trigger — "land trusted seeding" —
 > was **void**, and is corrected under "The census, re-run"; the seeding lever
-> reaches a few per cent of the declines, and the work it named was never
+> is worth +12 and +24 committed values, and the work it named was never
 > scheduled
 > ([`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md)).
 >
@@ -984,12 +984,12 @@ were wrong, and
 [`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md) has the
 measurement.
 
-- **Seeding reaches a few per cent of the declines**, not most of them: 13 of
-  330 expression declines and 42 of 2 619 condition withdrawals are blocked
-  purely by reserved names, both *upper* bounds. 193 of the expression declines
-  still decline with every name they reference defined, so no property table
-  reaches them at all; 2 355 of the condition withdrawals involve no reserved
-  name.
+- **Seeding every reserved name moves the census by +12 expressions and +24
+  conditions**, against populations of 396 and 2 758 — and that over-states the
+  lever, since the seed table includes names a real walk already supplies and one
+  that cannot be known at all. Measured by doing the seeding and counting, not by
+  classifying declines: two attempts at classification were wrong, both inferring
+  a universal from a finite probe.
 - **The claim came from misreading a histogram** bucketed by *function called*
   as though it were bucketed by *cause*. The attribution is now its own
   measurement (`sdk_chain_decline_attribution.rs`) with two-sided pins, so the

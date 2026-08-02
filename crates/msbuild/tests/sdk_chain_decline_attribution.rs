@@ -1,30 +1,39 @@
-//! **Why** the SDK-chain census declines what it declines.
+//! What reserved-name seeding would actually buy on the SDK chain.
 //!
 //! [`sdk_chain_expression_census`](../sdk_chain_expression_census.rs) buckets
 //! its declines by the *function being called*, which answers "what would I
-//! have to model?" but not "what is actually blocking this?". The two are
-//! different questions with different answers, and the census's own comments
-//! answered the second one wrong: they said the declines were dominated by
-//! undefined **reserved** receivers.
+//! have to model?". The census's own comments used it to answer a different
+//! question — "what is blocking this?" — and concluded the declines were
+//! dominated by undefined **reserved** receivers. That claim was load-bearing:
+//! `docs/msbuild-value-carried-provenance-plan.md` deferred its P3 stage behind
+//! "land trusted seeding, then re-price", so a wrong attribution had a real
+//! stage waiting on a lever nobody had sized.
 //!
-//! That claim was load-bearing — `docs/msbuild-value-carried-provenance-plan.md`
-//! deferred its P3 stage behind "land trusted seeding, then re-price", so a
-//! wrong attribution had made a real stage wait on a lever nobody had sized.
-//! Hence this file: the attribution is a number the machine keeps.
+//! ## Why this measures a delta rather than classifying declines
 //!
-//! **The classifier does not read issue tags**, because they do not carry the
-//! distinction. `$([System.IO.Path]::Combine($(Undefined), 'x'))` reports
-//! `Unsupported` and nothing else, even though `Combine` *is* modelled and the
-//! real blocker is the operand — so charging `Unsupported` to "shape not
-//! modelled" would silently absorb every operand-blocked call into the one
-//! bucket the conclusion rests on. Instead each declined item is **re-evaluated
-//! with every name it references defined**. If it commits then, the shape is
-//! modelled and a richer property table would reach it; if it still declines,
-//! no property table can.
+//! Two earlier attempts here classified each decline by cause, and both were
+//! wrong in the same way — they inferred a *universal* ("no property table
+//! reaches this") from a *finite* probe:
 //!
-//! **This runs without the oracle.** It asks only what *our* evaluator does and
-//! why, so it decomposes the census's decline column rather than adding a
-//! second differential. Certain-implies-exact is the census's job.
+//! * Reading `Issue` tags does not work: `substitute` reports `Unsupported` and
+//!   nothing else when a modelled function has an undefined operand, so
+//!   `$([System.IO.Path]::Combine($(Undefined), 'x'))` is indistinguishable
+//!   from a function we have never implemented.
+//! * Re-probing with a fixed set of filler values does not work either: a
+//!   condition like `'$(X)' != '' and Exists('$(X)')` commits when `X` is
+//!   defined **empty**, and `$(Rid.Split('-')[1])` commits only for a
+//!   hyphen-bearing value. No finite filler set proves the negative.
+//!
+//! So this file does not classify. It runs the census's own population twice —
+//! once with the census seeds, once with the reserved names additionally
+//! defined — and reports the **difference**. That is the lever, measured
+//! directly, with no claim about the declines it does not move.
+//!
+//! **This runs without the oracle**, deliberately: the census cannot seed
+//! reserved names on the MSBuild side at all (`-p:MSBuildProjectDirectory=…` is
+//! rejected as reserved), which is why it leaves them out. Asking only what
+//! *our* evaluator commits needs no second side. Certain-implies-exact remains
+//! the census's job.
 
 mod common;
 
@@ -39,250 +48,204 @@ use common::sdk_chain::{
     extract_call_expressions, extract_conditions, msbuild_files, sdk_dir, seeded_props,
 };
 
-/// Plausible fillers for an otherwise-undefined name.
-///
-/// A single filler under-reports: `[System.IO.Path]::Combine` rejects `"x"` on
-/// some hosts while accepting a path, and a version comparison rejects anything
-/// that is not version-shaped. Trying several and counting the item as
-/// *reachable* if **any** of them commits over-approximates "a richer table
-/// would turn this on" — deliberately, because that over-approximation inflates
-/// the seeding lever, which is the quantity this file is sceptical about. An
-/// over-stated lever that still comes out small is a safe conclusion.
-const FILLERS: &[&str] = &["x", "/tmp/probe", "1.0.0", "net10.0", "true"];
+/// The reserved names a real walk seeds once an SDK resolves, with the values
+/// it seeds them with (`seed_toolset_properties`, `properties::well_known`),
+/// plus the four path-derivable ones `docs/msbuild-reserved-seeding-plan.md`
+/// proposes adding. Realistic rather than uniform: the point is to model the
+/// table seeding would produce, not to search for one that commits.
+fn reserved_seed() -> Vec<(String, String)> {
+    [
+        ("MSBuildProjectDirectory", "/repo/proj"),
+        ("MSBuildProjectFullPath", "/repo/proj/Demo.fsproj"),
+        ("MSBuildProjectName", "Demo"),
+        ("MSBuildProjectFile", "Demo.fsproj"),
+        ("MSBuildProjectExtension", ".fsproj"),
+        ("MSBuildProjectDirectoryNoRoot", "repo/proj"),
+        ("MSBuildThisFile", "Demo.fsproj"),
+        ("MSBuildThisFileDirectory", "/repo/proj/"),
+        ("MSBuildThisFileFullPath", "/repo/proj/Demo.fsproj"),
+        ("MSBuildThisFileName", "Demo"),
+        ("MSBuildThisFileExtension", ".fsproj"),
+        ("MSBuildToolsPath", "/usr/share/dotnet/sdk/10.0.301"),
+        ("MSBuildBinPath", "/usr/share/dotnet/sdk/10.0.301"),
+        ("MSBuildToolsVersion", "Current"),
+        ("MSBuildRuntimeType", "Core"),
+        ("MSBuildSDKsPath", "/usr/share/dotnet/sdk/10.0.301/Sdks"),
+        ("MSBuildExtensionsPath", "/usr/share/dotnet/sdk/10.0.301/"),
+        ("MSBuildExtensionsPath32", "/usr/share/dotnet/sdk/10.0.301"),
+        ("MSBuildVersion", "18.6.4"),
+        ("MSBuildAssemblyVersion", "18.0"),
+        ("MSBuildProgramFiles32", "/Applications"),
+        ("MSBuildNodeCount", "1"),
+        ("MSBuildStartupDirectory", "/repo"),
+        ("VisualStudioVersion", "18.0"),
+        ("OS", "Unix"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect()
+}
 
-/// Would a richer property table let `render` commit? `references` are the
-/// names it reads that the seeded table lacks.
-fn reachable_with_operands_defined(
-    references: &BTreeSet<String>,
-    base: &[(String, String)],
-    render: impl Fn(&PropertyMap) -> bool,
-) -> bool {
-    FILLERS.iter().any(|filler| {
-        let mut map = PropertyMap::new();
-        for (k, v) in base {
+fn table(entries: &[&[(String, String)]]) -> PropertyMap {
+    let mut map = PropertyMap::new();
+    for group in entries {
+        for (k, v) in *group {
             map.insert(k.clone(), v.clone());
         }
-        for name in references {
-            map.insert(name.clone(), (*filler).to_string());
-        }
-        render(&map)
-    })
+    }
+    map
 }
 
-#[derive(Default)]
-struct Attribution {
-    committed: usize,
-    /// Declines no property table can reach: still declined with every name it
-    /// references defined, under any filler. A property function we do not
-    /// implement, or grammar outside the modelled subset.
-    unreachable: usize,
-    /// Declines a richer property table *would* reach.
-    operand_blocked: usize,
-    /// …of which the missing names are all reserved — an **upper bound** on
-    /// the "trusted seeding" lever, not its value. The census seeds no reserved
-    /// name at all, so this counts names a real walk already supplies
-    /// (`MSBuildProjectDirectory`, `MSBuildToolsVersion`, `MSBuildRuntimeType`,
-    /// …). The lever is smaller than the number printed here.
-    operand_reserved_only: usize,
-    operand_mixed: usize,
-    operand_ordinary_only: usize,
-    /// Which names block a reachable shape, most frequent first.
-    blocking: BTreeMap<String, usize>,
+fn expression_commits(raw: &str, map: &PropertyMap) -> bool {
+    substitute(raw, map).1.is_empty()
 }
 
-impl Attribution {
-    fn note_operand_blocked(&mut self, names: &BTreeSet<String>) {
-        self.operand_blocked += 1;
-        let reserved = names
-            .iter()
-            .filter(|n| is_toolset_initial_property_name(n))
-            .count();
-        if reserved == names.len() {
-            self.operand_reserved_only += 1;
-        } else if reserved > 0 {
-            self.operand_mixed += 1;
-        } else {
-            self.operand_ordinary_only += 1;
-        }
+fn condition_commits(raw: &str, map: &PropertyMap) -> bool {
+    let eval = evaluate(raw, map);
+    eval.outcome != Outcome::Unsupported && eval.undefined_properties.is_empty()
+}
+
+/// Every name in `population` that some item reads and `defined` lacks, counted
+/// by how many items read it. Descriptive only — it says which names appear
+/// undefined, not that supplying one would make anything commit.
+fn undefined_name_census<'a>(
+    population: impl Iterator<Item = &'a String>,
+    defined: &PropertyMap,
+) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for raw in population {
+        let names: BTreeSet<String> = property_references(raw)
+            .into_iter()
+            .map(|n| n.to_ascii_lowercase())
+            .filter(|n| defined.get(n).is_none())
+            .collect();
         for name in names {
-            *self.blocking.entry(name.clone()).or_default() += 1;
+            *counts.entry(name).or_default() += 1;
         }
     }
+    counts
+}
 
-    fn report(&self, title: &str, total: usize) {
-        eprintln!("--- {title}: {total} distinct ---");
-        eprintln!("  committed:                          {}", self.committed);
-        eprintln!("  declined, no table can reach:       {}", self.unreachable);
-        eprintln!(
-            "  declined, operands missing:         {}",
-            self.operand_blocked
-        );
-        eprintln!(
-            "      purely reserved names:          {}",
-            self.operand_reserved_only
-        );
-        eprintln!(
-            "      reserved mixed with ordinary:   {}",
-            self.operand_mixed
-        );
-        eprintln!(
-            "      no reserved name involved:      {}",
-            self.operand_ordinary_only
-        );
-        let mut rows: Vec<(&String, &usize)> = self.blocking.iter().collect();
-        rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-        eprintln!("  top blocking names:");
-        for (name, count) in rows.iter().take(15) {
-            let tag = if is_toolset_initial_property_name(name) {
-                "RESERVED"
-            } else {
-                "ordinary"
-            };
-            eprintln!("    {count:5}  {tag}  {name}");
-        }
+fn report_names(title: &str, counts: &BTreeMap<String, usize>) {
+    let mut rows: Vec<(&String, &usize)> = counts.iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+    let reserved: usize = rows
+        .iter()
+        .filter(|(n, _)| is_toolset_initial_property_name(n))
+        .map(|(_, c)| **c)
+        .sum();
+    let total: usize = rows.iter().map(|(_, c)| **c).sum();
+    eprintln!("--- {title}: {total} undefined reads, {reserved} of them reserved ---");
+    for (name, count) in rows.iter().take(12) {
+        let tag = if is_toolset_initial_property_name(name) {
+            "RESERVED"
+        } else {
+            "ordinary"
+        };
+        eprintln!("  {count:5}  {tag}  {name}");
     }
 }
 
-/// Names `raw` reads that `seeded` does not define.
-fn missing_references(raw: &str, seeded: &[(String, String)]) -> BTreeSet<String> {
-    let defined: BTreeSet<String> = seeded.iter().map(|(k, _)| k.to_ascii_lowercase()).collect();
-    property_references(raw)
-        .into_iter()
-        .map(|n| n.to_ascii_lowercase())
-        .filter(|n| !defined.contains(n))
-        .collect()
-}
-
-/// The decline column of both censuses, decomposed by cause.
+/// Seed every reserved name and count what that turns on.
 ///
-/// The assertions are **two-sided** over the *whole* partition, for the same
-/// reason `parser_corpus`'s `CLEAN_PARSES` is: the SDK is pinned and the
-/// evaluator deterministic, so there is no drift for a one-sided bound to
-/// absorb, and pinning only the headline subset would let work move items
-/// between the other buckets without ever restating the figures that priced
-/// the plan. Improving the evaluator is *supposed* to fail this test; update
-/// the numbers with the date and say which way they moved.
+/// The assertions are **two-sided**, for the same reason `parser_corpus`'s
+/// `CLEAN_PARSES` is: the SDK is pinned and the evaluator deterministic, so
+/// there is no drift for a one-sided bound to absorb. Improving the evaluator
+/// is *supposed* to fail this test; update the numbers with the date and say
+/// which way they moved.
 ///
 /// Measured 2026-08-02 against the pinned SDK 10.0.301.
 #[test]
 #[ignore = "walks the whole pinned SDK chain; a measurement, run in CI's sweep lane"]
-fn the_declines_are_dominated_by_shapes_no_property_table_can_reach() {
+fn seeding_every_reserved_name_moves_the_census_by_single_digits() {
     let sdk = sdk_dir();
     let files = msbuild_files(&sdk);
-    let seeded = seeded_props();
-    let mut seeded_map = PropertyMap::new();
-    for (k, v) in &seeded {
-        seeded_map.insert(k.clone(), v.clone());
-    }
+    let census_seeds = seeded_props();
+    let reserved = reserved_seed();
 
-    // ---- expressions ----
+    let base = table(&[&census_seeds]);
+    let with_reserved = table(&[&census_seeds, &reserved]);
+
     let mut expressions: BTreeSet<String> = BTreeSet::new();
-    for file in &files {
-        if let Ok(text) = std::fs::read_to_string(file) {
-            extract_call_expressions(&text, &mut expressions);
-        }
-    }
-    let mut expr = Attribution::default();
-    for expression in &expressions {
-        let (_, issues) = substitute(expression, &seeded_map);
-        if issues.is_empty() {
-            expr.committed += 1;
-            continue;
-        }
-        let missing = missing_references(expression, &seeded);
-        let reachable = !missing.is_empty()
-            && reachable_with_operands_defined(&missing, &seeded, |map| {
-                substitute(expression, map).1.is_empty()
-            });
-        if reachable {
-            expr.note_operand_blocked(&missing);
-        } else {
-            expr.unreachable += 1;
-        }
-    }
-    expr.report("SDK-chain call expressions", expressions.len());
-
-    // ---- conditions ----
     let mut conditions: BTreeSet<String> = BTreeSet::new();
     for file in &files {
         if let Ok(text) = std::fs::read_to_string(file) {
+            extract_call_expressions(&text, &mut expressions);
             extract_conditions(&text, &mut conditions);
         }
     }
-    let mut cond = Attribution::default();
-    for condition in &conditions {
-        let eval = evaluate(condition, &seeded_map);
-        if eval.outcome != Outcome::Unsupported && eval.undefined_properties.is_empty() {
-            cond.committed += 1;
-            continue;
-        }
-        let missing = missing_references(condition, &seeded);
-        let reachable = !missing.is_empty()
-            && reachable_with_operands_defined(&missing, &seeded, |map| {
-                let e = evaluate(condition, map);
-                e.outcome != Outcome::Unsupported && e.undefined_properties.is_empty()
-            });
-        if reachable {
-            cond.note_operand_blocked(&missing);
-        } else {
-            cond.unreachable += 1;
-        }
-    }
-    cond.report("SDK-chain conditions", conditions.len());
 
-    // The finding, pinned as a whole partition. Reserved-name seeding is a
-    // *small* lever, and the population it cannot reach at all is the large one.
-    assert_eq!(
-        (
-            expr.committed,
-            expr.unreachable,
-            expr.operand_blocked,
-            expr.operand_reserved_only,
-            expr.operand_mixed,
-            expr.operand_ordinary_only,
-        ),
-        EXPRESSION_ATTRIBUTION,
-        "the SDK-chain expression attribution moved; restate it with today's \
-         date and say which way, rather than adjusting the tuple to match"
-    );
-    assert_eq!(
-        (
-            cond.committed,
-            cond.unreachable,
-            cond.operand_blocked,
-            cond.operand_reserved_only,
-            cond.operand_mixed,
-            cond.operand_ordinary_only,
-        ),
-        CONDITION_ATTRIBUTION,
-        "the SDK-chain condition attribution moved; restate it with today's \
-         date and say which way, rather than adjusting the tuple to match"
-    );
-    // Non-vacuity: the decomposition must partition the census's own population,
-    // or a broken extractor would make every bucket agreeably small.
-    assert_eq!(
-        expr.committed + expr.unreachable + expr.operand_blocked,
+    let expr_base = expressions
+        .iter()
+        .filter(|e| expression_commits(e, &base))
+        .count();
+    let expr_seeded = expressions
+        .iter()
+        .filter(|e| expression_commits(e, &with_reserved))
+        .count();
+    let cond_base = conditions
+        .iter()
+        .filter(|c| condition_commits(c, &base))
+        .count();
+    let cond_seeded = conditions
+        .iter()
+        .filter(|c| condition_commits(c, &with_reserved))
+        .count();
+
+    eprintln!(
+        "expressions: {expr_base} of {} committed, {expr_seeded} with every reserved name seeded \
+         (+{})",
         expressions.len(),
-        "the expression attribution must partition the census population"
+        expr_seeded - expr_base
     );
-    assert_eq!(
-        cond.committed + cond.unreachable + cond.operand_blocked,
+    eprintln!(
+        "conditions:  {cond_base} of {} committed, {cond_seeded} with every reserved name seeded \
+         (+{})",
         conditions.len(),
-        "the condition attribution must partition the census population"
+        cond_seeded - cond_base
+    );
+    report_names(
+        "expression reads still undefined after seeding",
+        &undefined_name_census(
+            expressions
+                .iter()
+                .filter(|e| !expression_commits(e, &with_reserved)),
+            &with_reserved,
+        ),
+    );
+    report_names(
+        "condition reads still undefined after seeding",
+        &undefined_name_census(
+            conditions
+                .iter()
+                .filter(|c| !condition_commits(c, &with_reserved)),
+            &with_reserved,
+        ),
+    );
+
+    // The finding. Seeding *every* reserved name — including the ones a real
+    // walk already supplies, and the one that is unknowable in principle — is
+    // an over-statement of the lever by construction, and it still moves the
+    // census by single digits against populations of 396 and 2 758.
+    assert_eq!(
+        (expr_base, expr_seeded),
+        (66, 78),
+        "the reserved-seeding lever on call expressions moved; restate it with \
+         today's date and say which way, rather than adjusting the tuple"
     );
     assert_eq!(
-        (expr.committed, cond.committed),
+        (cond_base, cond_seeded),
+        (139, 163),
+        "the reserved-seeding lever on conditions moved; restate it with \
+         today's date and say which way, rather than adjusting the tuple"
+    );
+    // Cross-check against the census, which computes its committed counts by a
+    // different route (both property contexts, plus the oracle). If these
+    // diverge, one of the two harnesses has drifted and neither can be trusted.
+    assert_eq!(
+        (expr_base, cond_base),
         (66, 139),
-        "the attribution's committed counts must equal the census's own \
-         (same seeds, same extraction) — if they diverge, one of the two \
-         harnesses has drifted and neither number can be trusted"
+        "the base commit counts must equal the census's own — same seeds, same \
+         extraction"
     );
 }
-
-/// `(committed, unreachable, operand_blocked, reserved_only, mixed, ordinary_only)`
-/// over the pinned SDK 10.0.301, measured 2026-08-02.
-const EXPRESSION_ATTRIBUTION: (usize, usize, usize, usize, usize, usize) =
-    (66, 193, 137, 13, 13, 111);
-/// As [`EXPRESSION_ATTRIBUTION`], for `Condition` attributes.
-const CONDITION_ATTRIBUTION: (usize, usize, usize, usize, usize, usize) =
-    (139, 157, 2462, 42, 65, 2355);
