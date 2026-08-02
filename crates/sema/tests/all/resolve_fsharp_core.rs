@@ -451,6 +451,57 @@ fn bare_list_call_inside_a_module_named_list_resolves_into_fsharp_core() {
     }
 }
 
+/// The fall-through above rests on an **absence proof** — the assemblies hold no
+/// rooting position for the enclosing-namespace reading `N.List`, so that
+/// reading is a no-match rather than a self-module deferral and the walk carries
+/// on to FSharp.Core. A **dropped TypeDef** in a namespace the reading passes
+/// through voids the proof: the projection records that a type was lost there
+/// but not its name, so the missing entity could be exactly `N.List`, whose
+/// `rev` FCS would bind over FSharp.Core's.
+///
+/// So the same source under the same env, plus a drop marker on `N`, must stop
+/// committing. The clean half is asserted first from the same env, so this
+/// cannot pass by the source having quietly stopped resolving at all (codex
+/// review round 1).
+///
+/// **This shape is over-determined, and deliberately kept anyway.** A drop in
+/// the enclosing namespace also gives that namespace's fold group name-unknown
+/// residue (`Resolver::open_fold_surface`'s `path_dropped`), which declines the
+/// head on its own — so the case is green with or without the rooting check's
+/// dropped-type arm. What that arm is actually for is a drop *deeper* than the
+/// fold group: written `List.Sub.rev` inside `namespace N; module List`, with
+/// the type `Sub` dropped from namespace `N.List`, where only the rooting check
+/// spans the split. Pinning that needs a manifest-`[<assembly: AutoOpen>]`
+/// fixture supplying a lower reading of a three-segment path, which does not
+/// exist yet — so the deep half is argued, not measured.
+#[test]
+fn a_dropped_type_in_the_namespace_stops_the_self_qualifier_fall_through() {
+    let src = "namespace N\n\
+               \n\
+               [<RequireQualifiedAccess>]\n\
+               module private List =\n\
+               \x20\x20\x20\x20let g xs = List.rev xs\n";
+
+    let clean = fsharp_core_env();
+    let list = list_module(&clean);
+    assert_eq!(
+        rf_head(&clean, src, "List", 1),
+        Some(Resolution::Entity(list)),
+        "without a drop the head falls through to Microsoft.FSharp.Collections.List"
+    );
+
+    let mut dropped = fsharp_core_env();
+    dropped.mark_namespace_dropped_type(vec!["N".to_owned()]);
+    assert!(
+        !matches!(
+            rf_head(&dropped, src, "List", 1),
+            Some(Resolution::Entity(_))
+        ),
+        "a dropped type in `N` could be `N.List` itself, so the self-qualified head \
+         may not be committed to FSharp.Core"
+    );
+}
+
 /// Resolve `src` and read the resolution at the `n`th occurrence of `head`.
 fn rf_head(env: &AssemblyEnv, src: &str, head: &str, n: usize) -> Option<Resolution> {
     resolve(src, env).resolution_at(nth(src, head, n))
