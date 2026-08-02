@@ -1451,6 +1451,30 @@ fn evaluate_project(
     })
 }
 
+/// Mark an outer dispatch build served in place of a discarded inner one as
+/// uncertain on every axis a `$(TargetFramework)` gate can reach.
+///
+/// Its `DefineConstants`, its Compile items and its `<ProjectReference>`s are
+/// the *outer* build's, and no inner build has them — content gated on
+/// `'$(TargetFramework)' == ''` is reached here and nowhere else. Nothing in the
+/// evaluation says so on its own: a multi-targeted document never writes the
+/// singular, so that gate is decided cleanly under the evaluator's environment
+/// model, with no diagnostic and no `*_uncertain` flag.
+///
+/// Setting the flags the consumers already read is deliberate, rather than
+/// giving each of them a second predicate to consult. `*_uncertain` already
+/// means "this list may not be what the real build sees, so do not fold from
+/// it", which is exactly the claim, and every consumer that must respect it has
+/// been audited for that meaning already — `parses_for_project` refuses the
+/// whole fold on the first two (`semantic.rs`), degrading to single-file
+/// analysis.
+fn discarded_inner_build(mut parsed: ParsedProject) -> ParsedProject {
+    parsed.define_constants_uncertain = true;
+    parsed.items_uncertain = true;
+    parsed.project_references_uncertain = true;
+    parsed
+}
+
 /// The evaluation to serve for one project, and what is known about the TFM it
 /// ran under. Produced by [`select_target_framework`].
 struct ServedEvaluation {
@@ -1493,7 +1517,7 @@ fn select_target_framework(
         let caller_seeded = tfm_policy::caller_owns_target_framework(extras);
         if overridable && caller_seeded {
             return ServedEvaluation {
-                parsed: pass1,
+                parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
             };
@@ -1529,7 +1553,7 @@ fn select_target_framework(
             // TFM, the output name, the node label, the reference list. A
             // discarded one is unreachable and no such decision exists.
             tfm_policy::ReseedOutcome::Overridable => ServedEvaluation {
-                parsed: pass1,
+                parsed: discarded_inner_build(pass1),
                 chosen_tfm: None,
                 not_an_inner_build: true,
             },
@@ -2434,6 +2458,57 @@ mod tests {
             "the seeded evaluation overwrote its own seed"
         );
         assert_eq!(node.output_name, None, "declines with the TFM");
+    }
+
+    /// The parse-side twin of
+    /// `an_override_document_does_not_publish_outer_build_only_edges`: defines
+    /// and Compile items gated on `'$(TargetFramework)' == ''` belong to the
+    /// outer dispatch build, and no inner build has them.
+    ///
+    /// The served pass *is* that outer build, and nothing in it flags itself —
+    /// a multi-targeted document never writes the singular, so that gate is
+    /// decided cleanly under the environment model, with no diagnostic and no
+    /// `*_uncertain` flag. Discarding the seeded pass without marking the one
+    /// that replaces it would therefore hand the semantic layer an outer-only
+    /// `DefineConstants` as fact.
+    ///
+    /// The assertion is on the flags rather than on `symbols_for_project`,
+    /// because the flags are the operative control: `parses_for_project`
+    /// refuses the whole fold on `items_uncertain ||
+    /// define_constants_uncertain` (`semantic.rs`), degrading to single-file
+    /// analysis. `symbols_for_project` deliberately still reports the raw set —
+    /// that is the standing contract for every untrusted project, not something
+    /// this shape changes.
+    #[test]
+    fn an_override_document_publishes_no_outer_build_only_symbols() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup Condition="'$(TargetFramework)' == ''">
+                <DefineConstants>OUTER_ONLY</DefineConstants>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let mut ws = Workspace::default();
+
+        let parsed = ws.project(&proj).expect("evaluates");
+        assert!(
+            parsed.define_constants_uncertain,
+            "outer-only defines must not be served as fact"
+        );
+        assert!(parsed.items_uncertain, "nor the outer build's Compile set");
+        assert!(
+            parsed.project_references_uncertain,
+            "nor its reference list"
+        );
     }
 
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
