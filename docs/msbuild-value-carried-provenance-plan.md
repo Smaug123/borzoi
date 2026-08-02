@@ -1,6 +1,6 @@
 # MSBuild value-carried provenance plan (make the value carry its trust)
 
-> **Status:** **P0, P1 and P2″ landed; P2′ mostly done.** The reference scan is
+> **Status:** **P0, P1, P2′ and P2″ landed.** The reference scan is
 > a walk of the same parse tree evaluation uses, so a member access can no
 > longer launder its receiver's provenance (#265); the gates read MSBuild
 > booleans rather than strings (#266); and an undecided `Directory.Build.*`
@@ -8,15 +8,15 @@
 >
 > **Open, in the order I would take them:**
 >
-> 1. Finish P2′ — record a verdict for the direct-read sites not yet written
->    up (the `properties` output loop and `LangVersion` were checked and judged
->    already-covered, but that is not in this document), and close the
->    `seed_toolset_properties` gap below.
-> 2. Re-run the SDK census and decide P3's priority from residual risk, as P2′
->    always said to do before committing to it.
-> 3. The three recorded **precision** items under P2″ — declines, not wrong
+> 1. The three recorded **precision** items under P2″ — declines, not wrong
 >    answers, and each carries regression risk (see the fifth-round entry).
-> 4. P1′, P2, P3, P4.
+> 2. P1′, P2, P4.
+>
+> **P3 is deferred on measurement, not on effort** — the census (re-run
+> 2026-08-02, zero wrong commits) shows we commit on 17% of the SDK's call
+> expressions and 5% of its conditions, so the surface a laundering defect
+> could reach is small. Its trigger is the committed fraction rising; see
+> "The census, re-run".
 
 ## The rule
 
@@ -318,28 +318,73 @@ the only one that matters.
 
 **Sized:** medium. Mechanical; churn concentrated in `evaluator.rs`.
 
-### P2′ — audit the twelve direct-read sites (small, standalone)
+### P2′ — audit the twelve direct-read sites — **landed**
 
 Before committing to P3's blast radius, close the *known* instance of the
 direct-read route cheaply: audit the twelve named `get_unescaped` sites against
 the eleven-entry `msbuild-trust-audit` checklist, in one PR, touching no types.
 
-A second instance of the same class, found while planning:
-`seed_toolset_properties` (`evaluator.rs:~2149-2158`) calls `insert_computed`
-with **no** matching `apply_property_provenance`. It is harmless today only
-because of the `if get(name).is_none()` fresh-insert guard. Note what this
-proves about P2: pairing the two channels in one struct forces both to be named
-*at the call site that already remembers to call it* — it does nothing to stop
-a different write path from skipping the call entirely. That gap is P3's
-argument, not P2's.
-
 **Then re-run the SDK census and decide P3's priority from residual risk**,
-rather than committing to it up front.
+rather than committing to it up front. Done — see below.
 
-#### P2′ findings so far
+#### The `seed_toolset_properties` "gap" is not one — the asymmetry is required
 
-The audit is under way. Two defects out, both confirmed against the oracle
-before any code changed.
+An earlier draft of this plan flagged that `seed_toolset_properties` calls
+`insert_computed` with no matching `apply_property_provenance`, "harmless today
+only because of the `if get(name).is_none()` fresh-insert guard", and filed it
+as evidence for P3. **That was wrong, and acting on it would have introduced a
+wrong commit.**
+
+The function seeds two groups and treats them differently on purpose:
+
+| group | names | seeded | provenance |
+| --- | --- | --- | --- |
+| reserved | `MSBuildToolsPath`, `MSBuildBinPath`, `MSBuildToolsVersion`, `MSBuildRuntimeType` | over anything | **scrubbed** |
+| overridable | `MSBuildSDKsPath`, `MSBuildExtensionsPath32`, `MSBuildExtensionsPath` | into an empty slot only | **left alone** |
+
+Ground truth (dotnet 10.0.301, probed 2026-08-02 — a plain `<Project>` writing
+each name, read back with `-getProperty`):
+
+```text
+<MSBuildToolsPath>/SPOOFED</…>          → error MSB4004: … reserved, and cannot be modified
+<MSBuildSDKsPath>/SPOOFED</…>           → "/SPOOFED"
+<MSBuildExtensionsPath32>/SPOOFED32</…> → "/SPOOFED32"
+```
+
+That is the whole explanation. A reserved name's accumulated value and taint
+describe a write real MSBuild *rejects*, so they describe nothing and are
+scrubbed. An overridable name's refused write may really have set the property
+in the real build, so our computed path is a **fallback, not the answer**, and
+the surviving mark is exactly right. Clearing it — the natural "tidy-up", and
+what the old TODO invited — turns a correct decline into the walker publishing
+its own guessed path as certain.
+
+Verified, not argued: `tests/toolset_seed_provenance.rs` pins both directions
+(refused write before any SDK resolves ⇒ overridable stays untrusted, reserved
+does not), and the tidy-up fails it.
+
+The general lesson is worth more than the case: **an omitted call is not
+evidence of an oversight.** Reading the two groups as one shape is what
+produced the bogus TODO.
+
+#### P2′ verdicts — the audit is closed
+
+Every direct-read site, with what it turned out to need. Two were defects, one
+was a bogus TODO, and the rest were already discharged — recorded here so the
+next reader does not re-derive them.
+
+| # | site | read | verdict |
+| ---: | --- | --- | --- |
+| 1–2, 9–11 | `evaluator.rs` ×5 | `ImportDirectoryBuild{Props,Targets}` | **defect, fixed** — read MSBuild booleans (#266); consult trust at the splice (P2″) |
+| 3 | `evaluator.rs` | `DirectoryPackagesPropsPath` | **no consumer to protect** — probed on a real SDK chain, CPM references are uncertain under an undecidable redirect *and* both cleanly-decided controls, because the inline discharge never fires there |
+| 4–5 | `evaluator.rs` | `ManagePackageVersionsCentrally`, `CentralPackageVersionsFileImported` | **defect, fixed** (#266); trust already covered at the write site by `package_context`, pinned by `inline_cpm_tainted_{manage_flag,import_marker}_stays_uncertain` |
+| 6 | `evaluator.rs` | `CentralPackageVersionOverrideEnabled` | **conservative by construction** — the SDK forwards it to the restore task rather than comparing it, so its vocabulary is NuGet's C# and this crate cannot ground-truth it; widened to treat either reading's `false` as opting out, which retains uncertainty under both |
+| 7 | `evaluator.rs` | the `written` loop building `ParsedProject::properties` | **already discharged** — published beside `untrusted_properties`, and both real consumers (`workspace.rs`, reading `TargetFramework`) compute `property_provenance_untrusted` and thread it |
+| 8 | `evaluator.rs` | `LangVersion` | **already discharged** — `semantic.rs` reads `property_provenance_untrusted("LangVersion")` into the fold's cache key, alongside the bespoke consequence-side `shape_depends_on_language_version` the `msbuild-trust-audit` skill describes |
+| 12 | `properties/expr.rs` | `MSBuildDisableFeaturesFromVersion` | **fail-safe by construction** — evaluates only when the table holds exactly the `999.999` sentinel, and returns `Unsupported` for every other reading including an untrusted one |
+| — | `evaluator.rs` | `seed_toolset_properties` | **not a gap** — see above; the omitted call is required |
+
+Two defects out, both confirmed against the oracle before any code changed.
 
 1. **The gates read MSBuild booleans as strings** (#266, landed as its own
    change). `'$(ImportDirectoryBuildProps)' == 'true'` is an MSBuild `==`, so
@@ -600,7 +645,64 @@ for `Substring` above), not to be the assertion.
 siblings. Strictly smaller than P3, and it closes the *reachable* half of what
 P3 would close.
 
-### P3 — value-carried
+### The census, re-run — and what it says about P3's priority
+
+Measured 2026-08-02 against the pinned SDK **10.0.301** (the P1 member table
+above is 9.0.200 and is left as the record of that round). Every harness green;
+**zero wrong commits anywhere.**
+
+| census | population | committed | declined |
+| --- | ---: | ---: | ---: |
+| SDK-chain call expressions | 396 distinct | **66** (17%) | 330 |
+| SDK-chain conditions | 2 758 distinct | **139** (5%) | 2 619 |
+
+Both coverage ratchets sit *exactly* on their floors (66 and 139), so the gate
+is tight: any regression fails, and the numbers have not drifted.
+
+Global-perturbation movement, the other half of the picture:
+
+| sweep | committed (name, globals) pairs | move in MSBuild | we track |
+| --- | ---: | ---: | ---: |
+| corner routes | 132 | 14 | **14** (0 declined) |
+| generated documents | 1 470 | 152 | 108 |
+| real SDK chain | 215 | 36 | 11 |
+
+#### The decision: **P3 is not urgent, and the trigger to revisit it is not a date**
+
+P3's value was priced in the consultation record as *durability against the
+thirteenth direct-read site* — making "ignore the trust" something you must
+write code to do. Weigh that against what the census actually shows:
+
+1. **The committed surface is small.** We commit on 17% of the SDK's call
+   expressions and 5% of its conditions. A trust-laundering defect can only
+   bite where we commit, so today's blast radius is bounded to that slice — and
+   in the rest, an unrelated decline masks it anyway.
+2. **The residual risk P3 addresses is not currently realised.** P2′ audited
+   all twelve direct-read sites: two were defects (both fixed), one TODO was
+   bogus, the rest were already discharged. There is no known thirteenth site.
+3. **The declines are dominated by something else entirely.** Both census
+   comments record that the remaining declines are mostly undefined *reserved*
+   receivers, which trusted seeding turns on wholesale. That is the coverage
+   lever, and it is unrelated to trust plumbing.
+
+Point 3 is the interesting one, because it inverts the sequencing. **Seeding
+is exactly what makes P3 worth doing**: it multiplies the committed fraction,
+and the committed fraction *is* the blast radius. Doing P3 first pays for
+durability over a surface we mostly decline; doing it after seeding pays for
+durability over the surface that seeding just opened up.
+
+So: **P3 is deferred, and its trigger is the committed fraction rising** — i.e.
+land trusted seeding, re-run this census, and re-price P3 against the new
+numbers. Should either ratchet floor be raised for any other reason, that is
+the same signal.
+
+The one thing that would override this is a *new* direct-read site appearing
+without the audit noticing. The P2″ sweep is driven off the splice-property
+constants for exactly that reason, but it only covers the names it knows;
+a genuinely new read is still caught by review rather than by the machine.
+That, not the current numbers, is P3's standing argument.
+
+### P3 — value-carried — **deferred on measurement** (see "The census, re-run")
 
 `PropertyMap`'s `Entry` gains `trust: Trust` beside its `Escaped` value.
 `PropertyMap::get` returns the pair; `substitute` returns
