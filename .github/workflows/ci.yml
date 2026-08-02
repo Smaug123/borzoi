@@ -293,6 +293,19 @@ jobs:
           nix develop --command cargo test -p borzoi-cst --test all \
             parser_corpus_diff:: -- --ignored --nocapture
 
+      - name: Sweep the parser for panics on adversarial input
+        if: steps.gate.outputs.run == 'true'
+        # The corpus above is the F# compiler's own sources: well-formed by
+        # construction, so it consults every starter predicate on exactly the
+        # input it was written for and is structurally blind to a predicate that
+        # disagrees with the production it gates. This sweep supplies the other
+        # half — token soup that is not F#, at every language version. The
+        # exhaustive halves run in the ordinary suite; this is the fresh-seed
+        # one, which takes a new seed each run and prints it.
+        run: |
+          nix develop --command cargo test -p borzoi-cst --test all \
+            parser_panic_sweep::fresh_seed -- --ignored --nocapture
+
   test-msbuild:
     name: Test msbuild
     needs: changes

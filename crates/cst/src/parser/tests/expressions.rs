@@ -1114,12 +1114,12 @@ fn colon_equals_forms_infix_above_tuple() {
 }
 
 /// A `:=` whose RHS is missing (EOF, a closer, or a separator) must *not*
-/// recurse into the RHS parse — that path assumes a verified expression start
-/// and would reach `parse_const_payload`'s `unreachable!` and panic. The
+/// recurse into the RHS parse — that path would consume whatever follows,
+/// including a token belonging to the enclosing construct. The
 /// `peek_is_expr_start` guard (mirroring [`Parser::parse_assign_rhs`]'s `<-`
 /// arm) records a recovery error instead; the `:=` operator itself stays in the
 /// tree. An LSP parser sees half-typed input constantly, so this is the
-/// load-bearing invariant: no panic, fully lossless.
+/// load-bearing invariant: recovery in place, fully lossless.
 #[test]
 fn colon_equals_missing_rhs_recovers_without_panicking() {
     for source in [
@@ -1131,8 +1131,9 @@ fn colon_equals_missing_rhs_recovers_without_panicking() {
         // Missing RHS *inside* parens: the `)` is swallowed from the filtered
         // stream, so without the `!at_swallowed_seq_closer` RHS guard
         // `peek_is_expr_start` would see the token past the closer and recurse
-        // across it — `(r := )..3` would reach `parse_const_payload`'s
-        // `unreachable!`. The same hazard (and guard) applies to `<-`.
+        // across it — `(r := )..3` would swallow the `..` as the stray token
+        // `parse_const_payload` reports. The same hazard (and guard) applies
+        // to `<-`.
         "(r := )..3\n",
         "(r := ) x\n",
         "(x <- )..3\n",

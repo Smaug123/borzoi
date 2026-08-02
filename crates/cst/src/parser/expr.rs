@@ -227,10 +227,11 @@ impl<'src> Parser<'src> {
             // in [`Self::parse_pratt_expr`]: inside `( … )` the `)` is stripped
             // from the filtered stream, so on a missing RHS (`(x <- )..3`) a
             // bare `peek_is_expr_start` would see the token *past* the closer,
-            // recurse across it, and (for a `..` successor) reach
-            // `parse_const_payload`'s `unreachable!`. Treating the RHS as
-            // missing here records a recovery error and leaves the `)` for the
-            // enclosing paren — no panic, fully lossless.
+            // recurse across it, and swallow it into this assignment — for a
+            // `..` successor, as the stray token `parse_const_payload`'s
+            // recovery arm reports. Treating the RHS as missing here records a
+            // recovery error and leaves the `)` for the enclosing paren, which
+            // is where the range belongs.
             let span = self
                 .peek()
                 .map(|(_, s)| s.clone())
@@ -725,12 +726,12 @@ impl<'src> Parser<'src> {
             // firing gate: inside `( … )` the `)` is stripped from the filtered
             // stream, so on a missing RHS (`(r := )..3`) `peek_is_expr_start`
             // would see the token *past* the closer and recurse across it —
-            // draining the `)` as ERROR and (for a `..` successor) reaching
-            // `parse_const_payload`'s `unreachable!`. On incomplete input
-            // (`r :=`, `r := )`, `let f () = r :=`, `(r := )..3`) the `:=`
-            // stays in the tree and a recovery error is recorded instead — no
-            // panic, fully lossless (an LSP parser sees half-typed input
-            // constantly).
+            // draining the `)` as ERROR and swallowing a `..` successor as the
+            // stray token `parse_const_payload`'s recovery arm reports. On
+            // incomplete input (`r :=`, `r := )`, `let f () = r :=`,
+            // `(r := )..3`) the `:=` stays in the tree and a recovery error is
+            // recorded instead, leaving the range to the enclosing frame (an
+            // LSP parser sees half-typed input constantly).
             self.builder
                 .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::APP_EXPR));
             if self.peek_is_expr_start() && !self.at_swallowed_seq_closer() {
@@ -942,7 +943,8 @@ impl<'src> Parser<'src> {
     ///
     /// * a leading `..` ([`Self::peek_is_range_op`]) — an open-lower range is a
     ///   `declExpr`, not a Pratt-level operand, so feeding it to
-    ///   `parse_pratt_expr` would reach the atomic const parser's `unreachable!`.
+    ///   `parse_pratt_expr` would bottom out in the atomic const parser, whose
+    ///   recovery arm reports the `..` as a stray token.
     ///   Callers that want to accept such a bound dispatch
     ///   [`Self::parse_open_lower_range`] directly (`.. ..3`, `1.. ..2`). The
     ///   ordinary `a..b..c` path still keeps non-leading uppers as Pratt operands
@@ -979,7 +981,8 @@ impl<'src> Parser<'src> {
     /// `declExpr`, *not* a `minusExpr`, so it cannot be the operand of a unary
     /// `-`/`&`/`upcast` (FCS rejects `- ..3` / `& ..3`) — those sites exclude it
     /// so the operand recursion never feeds a leading `..` into the atomic-level
-    /// const parser (which would `unreachable!`). The bare `*` wildcard is
+    /// const parser, which has no arm for it and would report it as a stray
+    /// token rather than a missing operand. The bare `*` wildcard is
     /// **not** lumped in here: it is a `declExpr` leaf
     /// ([`Parser::parse_index_wildcard`]) the infix / range loops handle directly.
     pub(super) fn peek_is_range_op(&self) -> bool {
@@ -1189,7 +1192,8 @@ impl<'src> Parser<'src> {
                 // A leading open-lower range (`query { a in ..b }`, FCS's
                 // `DOT_DOT declExpr`) is a `declExpr` form that `parse_pratt_expr`
                 // *cannot* consume — a leading `..` falls through to the atomic
-                // const parser's `unreachable!`. So a `..` RHS is delegated to the
+                // const parser, whose recovery arm reports it as a stray token
+                // instead of opening a range. So a `..` RHS is delegated to the
                 // shared open-lower-range production, which self-recovers on a
                 // missing upper (`query { a in .. }`). A *bounded* `a in b..c`
                 // needs no special case: `..` binds looser than `JOIN_IN`

@@ -454,12 +454,12 @@ impl<'src> Parser<'src> {
         self.bump_into(SyntaxKind::DOT_TOK);
         // `at_dot_lambda` only guaranteed the `_.` head, not a body — `_.` at
         // EOF or before a delimiter (`let f = _.`, `List.map _.`) has none.
-        // `parse_atomic_expr` assumes its caller verified an atomic starter
-        // (it bottoms out in `parse_const_payload`'s `unreachable!`), so guard
-        // it here. This is FCS's `UNDERSCORE DOT recover` arm (`pars.fsy:5221`):
-        // a recovered `DotLambda` with a placeholder body and a parse error,
-        // rather than a panic — keeping the round-trip lossless and the LSP
-        // alive on a half-typed shorthand.
+        // `parse_atomic_expr` has no arm for a delimiter, so it would bottom out
+        // in `parse_const_payload` and consume the delimiter as a stray token —
+        // stealing it from the construct that owns it. Guarding here is FCS's
+        // `UNDERSCORE DOT recover` arm (`pars.fsy:5221`): a recovered
+        // `DotLambda` with a placeholder body and a parse error, which leaves
+        // the delimiter where it belongs on a half-typed shorthand.
         //
         // The body must also be raw-adjacent: in `(_.) x` the `)` is swallowed
         // from the filtered stream, so a bare `peek_starts_atomic_expr` would
@@ -2545,9 +2545,18 @@ impl<'src> Parser<'src> {
     /// triple) into the currently-open node. Shared between
     /// [`Self::parse_const_expr`] (wrapping `CONST_EXPR`) and
     /// [`Self::parse_const_pat`] (wrapping `CONST_PAT`) — both project
-    /// to FCS's `SynConst`. The caller must have verified the leading
-    /// token is a const-starter (see [`raw_starts_const_payload`] at
-    /// module scope); any other token here is a parser bug.
+    /// to FCS's `SynConst`. Callers that know a literal is expected check
+    /// [`raw_starts_const_payload`] (at module scope) first, so their
+    /// diagnostic names the construct; this dispatch is **total** regardless,
+    /// and any other token lands on the recovery arm at the bottom.
+    ///
+    /// Totality here rather than a caller-side precondition is deliberate.
+    /// This is where the atomic-expression dispatch sends every token it has no
+    /// arm for ([`Self::parse_atomic_expr_head`]'s trailing `_`), so "the
+    /// caller verified a const-starter" would be a claim made by a dozen
+    /// productions about a token the *lex filter* placed — and the two disagree
+    /// on malformed input, which is exactly when a panic costs a user their
+    /// diagnostics. `parser_panic_sweep` is the standing check.
     pub(super) fn parse_const_payload(&mut self) {
         match self.peek().cloned() {
             Some((Ok(FilteredToken::Raw(Token::Int(text))), span)) => {
@@ -2884,12 +2893,35 @@ impl<'src> Parser<'src> {
                 self.bump_into(SyntaxKind::LPAREN_TOK);
                 self.bump_swallowed_rparen(SyntaxKind::RPAREN_TOK);
             }
-            // The caller (`parse_const_expr` or `parse_const_pat`) is only
-            // entered after a const-starter check, so any other token here
-            // is a parser bug, not bad input.
-            other => {
-                unreachable!("parse_const_payload called with non-const-starter token: {other:?}",)
+            // Anything else: a token in constant position that no literal arm
+            // accepts. Reachable from bad input, not only from a parser bug —
+            // `match)..` strands the `..` here, because the LexFilter swallows
+            // the `)` and that switches off the range production's claim on it
+            // (`at_range_op`), leaving the re-entered expression cycle to
+            // dispatch a token whose only home was the range level.
+            //
+            // Consume it under `ERROR`, as the `struct` arm above does: the
+            // round-trip stays lossless, and the caller's application /
+            // statement loops cannot spin on a position that made no progress.
+            // `bump_into` advances the filtered cursor for a layout virtual
+            // too (emitting it zero-width), so progress does not depend on the
+            // token having bytes.
+            //
+            // The caller's node stays open around it, so the tree records
+            // `CONST_EXPR > ERROR` (or `CONST_PAT` / `STATIC_CONST_TYPE`) —
+            // "a constant was expected here and this is what was written",
+            // which is what a recovered constant position is.
+            Some((_, span)) => {
+                self.errors.push(ParseError {
+                    message: "expected a constant literal".to_string(),
+                    span,
+                });
+                self.bump_into(SyntaxKind::ERROR);
             }
+            // End of input in constant position — nothing to consume, so this
+            // is the zero-width placeholder every other truncated-input
+            // recovery emits.
+            None => self.push_missing_operand_error_with("expected a constant literal"),
         }
     }
 

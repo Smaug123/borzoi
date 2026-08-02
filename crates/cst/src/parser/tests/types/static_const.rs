@@ -213,9 +213,10 @@ fn static_const_named_missing_value_recovers() {
 /// LexFilter-swallowed closer, and must reject non-atomic starters cleanly.
 /// `(x : const) y` would otherwise drain the swallowed `)` and parse the outer
 /// `y` as the static-const expression; `const if …` / a bare `const -` would
-/// otherwise reach `parse_atomic_expr`'s `parse_const_payload` `unreachable!`
-/// arm. All three error gracefully and round-trip losslessly (FCS errors too;
-/// the recovery *shape* is phase 11).
+/// otherwise reach `parse_atomic_expr`'s `parse_const_payload`, whose recovery
+/// arm reports a stray token instead of naming `const`. All three error
+/// gracefully and round-trip losslessly (FCS errors too; the recovery *shape*
+/// is phase 11).
 #[test]
 fn static_const_expr_bad_operand_recovers() {
     for source in [

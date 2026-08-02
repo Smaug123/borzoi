@@ -1272,15 +1272,17 @@ impl<'src> Parser<'src> {
                         .start_node(FSharpLang::kind_to_raw(SyntaxKind::STATIC_CONST_EXPR_TYPE));
                     self.bump_into(SyntaxKind::CONST_TOK);
                     // Gate the operand on [`Parser::peek_starts_const_arg_expr`] — a
-                    // raw-aligned, LParen-safe restriction to exactly what
-                    // [`Parser::parse_atomic_expr`] consumes without panicking. This
+                    // raw-aligned, LParen-safe restriction to exactly the shapes
+                    // [`Parser::parse_atomic_expr`] has an arm for. This
                     // rejects (a) a swallowed closer (`(x : const) y` — raw cursor
                     // `)` ), (b) a non-atomic starter (`const if …`, a bare
-                    // `const -` — would reach `parse_const_payload`'s `unreachable!`
-                    // arm), and (c) a malformed paren (`const (>` — would reach the
-                    // LParen-dispatch `unreachable!`); a sign-folded `const -1` and
-                    // a `const (e)` paren expr are admitted. All rejections error
-                    // cleanly, matching FCS.
+                    // `const -` — which `parse_const_payload` would report as a
+                    // stray token), and (c) a malformed paren (`const (>` — which
+                    // would reach the LParen-dispatch `unreachable!`); a
+                    // sign-folded `const -1` and a `const (e)` paren expr are
+                    // admitted. All rejections error cleanly, matching FCS —
+                    // naming `const` in the diagnostic, which the atomic parser
+                    // cannot.
                     if self.peek_starts_const_arg_expr() {
                         // Drain the trivia between `const` and the expression so it
                         // attaches to the outer `STATIC_CONST_EXPR_TYPE` (matching

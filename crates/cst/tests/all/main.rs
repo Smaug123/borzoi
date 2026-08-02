@@ -86,6 +86,7 @@ mod parser_diff_type_relation;
 mod parser_diff_types;
 mod parser_diff_when_constraints;
 mod parser_ifdef;
+mod parser_panic_sweep;
 mod shape_sensitivity;
 
 /// Every case group under `tests/all/` must be `mod`-declared here, or it is

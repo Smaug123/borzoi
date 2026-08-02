@@ -319,15 +319,17 @@ pub fn parse_with_options(source: &str, opts: ParseOptions<'_>) -> Parse {
 /// being the real build's, and the version is a guess.
 ///
 /// Both endpoint parses run under [`catch_unwind`](std::panic::catch_unwind),
-/// and a panic reads as version-*dependent*. This parses at versions the caller
-/// never asked for, so a buffer the caller's own version handles can still fire
-/// one of the parser's invariant guards at an endpoint — `"match)..\n"` does,
-/// at `MIN` only. Containing it here rather than at the call site is what makes
-/// the containment hold for every caller: the LSP wraps its own parses
-/// (`borzoi::cst_panic_safe`), but `borzoi_sema::SyntaxRecovery::of_guessed_version`
-/// calls straight in. A panic is also exactly the reading this returns `false`
-/// for on its merits — it proves nothing about the other versions, so the
-/// caller must retain no diagnostics.
+/// and a panic reads as version-*dependent*. The parser is not expected to
+/// panic — `parser_panic_sweep` enumerates adversarial token soup at every
+/// version and asserts it does not — but this function parses at versions the
+/// caller never asked for, so a *future* invariant guard that fires only at an
+/// endpoint would cost the caller a verdict it never requested. Containing it
+/// here rather than at the call site is what makes the containment hold for
+/// every caller: the LSP wraps its own parses (`borzoi::cst_panic_safe`), but
+/// `borzoi_sema::SyntaxRecovery::of_guessed_version` calls straight in. A panic
+/// is also exactly the reading this returns `false` for on its merits — it
+/// proves nothing about the other versions, so the caller must retain no
+/// diagnostics.
 pub fn diagnostics_are_version_invariant(
     source: &str,
     symbols: &HashSet<String>,
