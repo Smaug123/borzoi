@@ -560,15 +560,19 @@ impl NuGetFramework {
     }
 
     /// `FrameworkReducer.GetNearest`: the index of the best candidate for
-    /// `project`, or `None` when nothing is compatible.
+    /// `project`, or `None` when nothing is compatible — plus one decline of
+    /// our own: a non-specific project (Any / Agnostic / Unsupported) always
+    /// yields `None`, because the resolver only asks with a concrete TFM and
+    /// NuGet's answers there are unreachable rather than modelled.
     pub fn get_nearest(project: &NuGetFramework, candidates: &[NuGetFramework]) -> Option<usize> {
         nearest::get_nearest(project, candidates)
     }
 
-    /// The exact `FrameworkReducer.GetNearest` mirror, for the callers whose
-    /// answer must equal NuGet's rather than merely be compatible: nuspec
-    /// dependency- and reference-group selection, and the content model's
-    /// group tie-break ([`crate::assets`]).
+    /// The same reducer without that decline, for callers that have already
+    /// established a concrete project TFM: nuspec dependency- and
+    /// reference-group selection, and the content model's group tie-break
+    /// ([`crate::assets`]). Both entry points run one implementation, so
+    /// neither can drift into ranking assets differently from the other.
     pub(crate) fn get_nearest_reducer(
         project: &NuGetFramework,
         candidates: &[NuGetFramework],
@@ -580,9 +584,10 @@ impl NuGetFramework {
     ///
     /// These are the only frameworks an F# project targets, and — not
     /// coincidentally — the only ones on which the compatibility relation is
-    /// differentially *exact* in both directions (see the `nearest` module's
-    /// precision envelope). Outside them the resolver and asset selection
-    /// decline rather than risk an incompatible pick.
+    /// differentially *exact* in both directions; `framework_exhaustive.rs`
+    /// states that envelope and sweeps the whole canonical space against it.
+    /// Outside them the resolver and asset selection decline rather than risk
+    /// an incompatible pick.
     pub fn is_resolver_project_framework(&self) -> bool {
         matches!(
             self.framework(),
@@ -1630,34 +1635,21 @@ mod compat {
     }
 }
 
-/// `FrameworkReducer.GetNearest` behaviourally: keep the compatible
-/// candidates, reduce upwards under the compatibility relation itself
-/// (drop any candidate that another candidate *accepts* — so
-/// `portable-profile259` beats `netstandard0.0` because the PCL accepts
-/// it, and `net45` beats `dotnet5.1` for a DNX project), then tie-break
-/// the surviving maximal elements: same identifier as the project (its
-/// platform-fallback family included) first, highest version,
-/// platform-presence match, first occurrence. Non-specific *projects*
-/// return None.
+/// `FrameworkReducer.GetNearest`: the nearest candidate a project may consume,
+/// as an index, or `None` when nothing compatible is offered.
 ///
-/// ## Precision envelope
+/// One deliberate deviation from NuGet, and only one: a **non-specific
+/// project** (Any / Agnostic / Unsupported) returns `None`. The restore
+/// resolver only ever asks with a concrete project TFM and declines otherwise,
+/// so NuGet's own answers there are unreachable — and they are byzantine
+/// enough that reproducing them would be modelling for its own sake.
 ///
-/// The **compatibility** relation (which candidates are even eligible) is
-/// exact — that is the correctness-critical part, since it decides whether
-/// an asset may be consumed at all. The **tie-break** among mutually
-/// compatible candidates is exact on realistic candidate sets (versions of
-/// one framework family, the shape a real package's `lib/` folders take —
-/// pinned by `framework_diff.rs`), but *approximate* on synthetic
-/// heterogeneous mixes where NuGet's `FrameworkReducer` consults a larger
-/// cross-family precedence table than the coarse banding below (e.g. for a
-/// `uap` project it ranks `winrt` above `netstandard`). Every such
-/// disagreement is a choice between two candidates NuGet also deems
-/// compatible, so the worst case is selecting a less-specific-but-still-
-/// compatible asset — an optimality gap, never an incompatible pick. The
-/// `soak` test asserts the correctness invariant (we pick iff a compatible
-/// candidate exists, and homogeneous sets resolve exactly); slice 8's
-/// end-to-end differential over real packages is where exact folder
-/// selection meets reality.
+/// Everything else defers to [`dependency_group_nearest`], which mirrors the
+/// reducer's steps. There is no second, coarser ranking: a tie-break invented
+/// to approximate this one is a way to publish a different asset than NuGet
+/// selected, and "both candidates are compatible" does not make that harmless —
+/// two compatible assets are two different DLLs, whose surfaces are what a
+/// consumer goes on to read.
 mod nearest {
     use super::NuGetFramework;
 
@@ -1665,123 +1657,17 @@ mod nearest {
         if !project.is_specific_framework() {
             return None;
         }
-        let compatible: Vec<usize> = (0..candidates.len())
-            .filter(|&i| NuGetFramework::is_compatible(project, &candidates[i]))
-            .collect();
-        if compatible.is_empty() {
-            return None;
-        }
-
-        // Specific candidates dominate Any/Agnostic/Unsupported ones; the
-        // latter only win when nothing specific is compatible.
-        let (specific, fallback): (Vec<usize>, Vec<usize>) = compatible
-            .iter()
-            .partition(|&&i| candidates[i].is_specific_framework());
-        let pool = if specific.is_empty() {
-            fallback
-        } else {
-            specific
-        };
-
-        // Reduce upwards: drop c when some other candidate accepts c.
-        let maximal: Vec<usize> = pool
-            .iter()
-            .copied()
-            .filter(|&i| {
-                !pool.iter().any(|&j| {
-                    j != i
-                        && !(candidates[j] == candidates[i])
-                        && NuGetFramework::is_compatible(&candidates[j], &candidates[i])
-                })
-            })
-            .collect();
-        let mut group = if maximal.is_empty() { pool } else { maximal };
-
-        // Tie-break the maximal set: same identifier as the project,
-        // then NuGet's framework precedence (netstandard outranks the
-        // dotnet generations, PCLs come last — FrameworkReducer's
-        // precedence tables), then highest version, platform-presence
-        // match, first occurrence.
-        // "Same family" includes the legacy translation: a DNX/ASP.NET
-        // project's own family is .NETFramework (dnx451 picks NET45 over
-        // netstandard1.2), ASP.NETCore's is DNXCore.
-        let family: &str = if project.framework().eq_ignore_ascii_case(super::id::DNX)
-            || project.framework().eq_ignore_ascii_case(super::id::ASPNET)
-        {
-            super::id::NET_FRAMEWORK
-        } else if project
-            .framework()
-            .eq_ignore_ascii_case(super::id::ASPNETCORE)
-        {
-            super::id::DNXCORE
-        } else {
-            project.framework()
-        };
-        // A platformed net5.0+ project's platform-fallback assets
-        // (MonoAndroid/Tizen for android/tizen) rank *below* the modern
-        // same-identifier .NET assets: NuGet prefers a net6.0 folder over a
-        // legacy monoandroid one. They land in the generic cross-family
-        // band (2), so a same-identifier net asset of any version wins over
-        // them — the correctness-favouring choice (modern .NET over legacy
-        // Xamarin). The exact NuGet threshold (the fallback outranks
-        // *net5.0* but not net6.0) is cross-family tie-break precedence,
-        // documented-approximate on `get_nearest` and tolerated by the
-        // differential harnesses; both picks are always compatible.
-        let band = |c: &NuGetFramework| -> u32 {
-            if c.framework().eq_ignore_ascii_case(project.framework())
-                || c.framework().eq_ignore_ascii_case(family)
-            {
-                0
-            } else if c.framework().eq_ignore_ascii_case(super::id::NET_STANDARD) {
-                1
-            } else if c.is_pcl() {
-                4
-            } else if c.framework().eq_ignore_ascii_case(super::id::DOTNET) {
-                3
-            } else {
-                2
-            }
-        };
-        let profile_number = |c: &NuGetFramework| -> u32 {
-            c.profile()
-                .and_then(|p| {
-                    p.to_ascii_lowercase()
-                        .strip_prefix("profile")
-                        .and_then(|n| n.parse().ok())
-                })
-                .unwrap_or(u32::MAX)
-        };
-        group.sort_by(|&a, &b| {
-            let (ca, cb) = (&candidates[a], &candidates[b]);
-            band(ca)
-                .cmp(&band(cb))
-                .then_with(|| {
-                    // PCL-vs-PCL ties go to the lower profile number
-                    // (oracle-pinned on Profile47 vs Profile111).
-                    if ca.is_pcl() && cb.is_pcl() {
-                        profile_number(ca).cmp(&profile_number(cb))
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
-                .then_with(|| cb.version.cmp(&ca.version))
-                .then_with(|| {
-                    let pa = ca.platform.is_some() == project.platform.is_some();
-                    let pb = cb.platform.is_some() == project.platform.is_some();
-                    pb.cmp(&pa)
-                })
-                .then(a.cmp(&b))
-        });
-        group.first().copied()
+        super::dependency_group_nearest::get_nearest(project, candidates)
     }
 }
 
-/// Exact `FrameworkReducer.GetNearest` path for nuspec dependency groups.
+/// `FrameworkReducer.GetNearest`, mirroring the reducer's steps.
 ///
-/// Asset folder selection can tolerate the public `get_nearest` tie-break
-/// envelope because every disagreement is still a compatible asset. Dependency
-/// groups are different: the selected group changes the restore graph, so this
-/// mirrors NuGet's reducer steps rather than the coarse cross-family banding.
+/// Everything that ranks frameworks arrives here — dependency groups, whose
+/// selection changes the restore graph, and asset folders, whose selection
+/// changes which DLL is read. Neither can be served by an approximation of the
+/// ranking: a candidate NuGet also deems *compatible* is still the wrong
+/// answer if NuGet would have chosen the other one.
 mod dependency_group_nearest {
     use std::cmp::Ordering;
 

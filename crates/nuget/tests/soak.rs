@@ -66,6 +66,7 @@ fn fresh_seed_soak_agrees_with_oracle() {
     let mut rng = SplitMix64(seed);
     let mut oracle = Oracle::spawn();
     let mut mismatches: Vec<String> = Vec::new();
+    let mut cross_family = 0usize;
     let mut parsed: Vec<(String, NuGetVersion)> = Vec::new();
 
     for _ in 0..n_versions {
@@ -291,15 +292,11 @@ fn fresh_seed_soak_agrees_with_oracle() {
             .collect();
         let mine = NuGetFramework::get_nearest(pf, &parsed);
 
-        // Correctness invariant (asserted everywhere): we return Some
-        // exactly when the oracle finds a compatible candidate, and our
-        // pick is itself compatible. The exact *choice* among mutually
-        // compatible candidates is only pinned on homogeneous sets — where
-        // every candidate the oracle deemed compatible shares the project's
-        // framework identifier, the realistic shape of a package's folders.
-        // Heterogeneous cross-family precedence is documented-approximate
-        // (see framework.rs); both picks are always compatible, so a
-        // disagreement there is an optimality gap, not a correctness one.
+        // Two claims, both asserted for every candidate set: we return Some
+        // exactly when the oracle finds a compatible candidate and our pick
+        // is itself compatible, and the pick is the one NuGet makes. Picking
+        // a *different* compatible asset is not a lesser failure — it selects
+        // a different DLL, whose surface is what a consumer goes on to read.
         match (mine, their_index) {
             (None, ti) if ti < 0 => {}
             (None, ti) => {
@@ -318,25 +315,45 @@ fn fresh_seed_soak_agrees_with_oracle() {
                         "getNearest({ps:?}, {cands:?}): our pick {mi} is incompatible"
                     ));
                 }
-                // Exact pin on homogeneous candidate sets only, and even
-                // there interchangeable picks (mutually compatible — equal
-                // frameworks or distinct spellings normalising to the same,
+                // Interchangeable picks (mutually compatible — equal
+                // frameworks, or distinct spellings normalising to the same,
                 // like uap8 ≡ uap) are both correct.
-                let homogeneous = parsed
+                let compatible: Vec<&NuGetFramework> = parsed
                     .iter()
                     .filter(|c| NuGetFramework::is_compatible(pf, c))
-                    .all(|c| c.framework().eq_ignore_ascii_case(pf.framework()));
+                    .collect();
+                if compatible.len() > 1
+                    && !compatible
+                        .iter()
+                        .all(|c| c.framework().eq_ignore_ascii_case(pf.framework()))
+                {
+                    cross_family += 1;
+                }
                 let interchangeable =
                     NuGetFramework::is_compatible(&parsed[mi], &parsed[ti as usize])
                         && NuGetFramework::is_compatible(&parsed[ti as usize], &parsed[mi]);
-                if homogeneous && !interchangeable {
+                if !interchangeable {
                     mismatches.push(format!(
-                        "getNearest({ps:?}, {cands:?}): homogeneous, ours={mi} oracle={ti}"
+                        "getNearest({ps:?}, {cands:?}): ours={mi} oracle={ti}"
                     ));
                 }
             }
         }
     }
+
+    // The exactness pin above is unconditional, which is only meaningful if the
+    // sweep actually reaches sets where a *cross-family* choice has to be made:
+    // if every set were single-candidate or single-family, "we always agree"
+    // would be a statement about cases that never arise. This counts the sets
+    // with more than one compatible candidate not all sharing the project's
+    // framework identifier, and fails if the generator stops producing them.
+    eprintln!("nearest: {cross_family} cross-family candidate set(s)");
+    assert!(
+        cross_family > 100,
+        "nearest sweep no longer exercises cross-family choices: {cross_family} \
+         (150-215 across seven probed seeds; the floor is a degeneracy alarm, \
+         not a target)"
+    );
 
     if !mismatches.is_empty() {
         let shown = mismatches.iter().take(25).cloned().collect::<Vec<_>>();
