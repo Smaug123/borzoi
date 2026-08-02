@@ -82,7 +82,10 @@ pub(crate) struct TrustShape {
 ///
 /// [`Trust::CERTAIN`] is the identity of [`Trust::join`] and means every
 /// channel is clean — the walk's value for the name is the real build's.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Deliberately **not** `Default`: a derived `Trust::default()` is `pub(crate)`
+/// too, so it would hand every module an all-clean value without going through
+/// [`Trust::CERTAIN`], which is the one entry point this module's seal rests on.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Trust {
     unpinned: Option<UnpinnedRoot>,
     sdk_package: Option<SdkPackagePropertyTaint>,
