@@ -12,8 +12,9 @@
 //! ## Why this measures a delta rather than classifying declines
 //!
 //! Two earlier attempts here classified each decline by cause, and both were
-//! wrong in the same way — they inferred a *universal* ("no property table
-//! reaches this") from a *finite* probe:
+//! wrong the same way — they inferred a *universal* ("no property table reaches
+//! this") from a *finite* probe. A third was right in method but hand-listed
+//! its seeds, and the list was short:
 //!
 //! * Reading `Issue` tags does not work: `substitute` reports `Unsupported` and
 //!   nothing else when a modelled function has an undefined operand, so
@@ -23,6 +24,10 @@
 //!   condition like `'$(X)' != '' and Exists('$(X)')` commits when `X` is
 //!   defined **empty**, and `$(Rid.Split('-')[1])` commits only for a
 //!   hyphen-bearing value. No finite filler set proves the negative.
+//! * A hand-written seed list understates the lever, which is the direction that
+//!   flatters this file's conclusion. Any reserved name the corpus reads that no
+//!   table names is now derived and seeded, and each step is checked to *add*
+//!   names rather than redefine an earlier one.
 //!
 //! So this file does not classify. It runs the census's own population under
 //! three property tables — the census seeds, plus what a real walk already
@@ -217,13 +222,20 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
         }
     }
 
-    // Any reserved name the corpus reads that neither hand list names still
+    // Any reserved name the corpus reads that no earlier table defines still
     // gets a value, so an omission cannot understate the lever — the direction
     // that would flatter this file's conclusion, and the one review has already
     // caught twice (`MSBuildDisableFeaturesFromVersion`,
     // `MSBuildProjectDefaultTargets`, both now named above).
-    let named: BTreeSet<String> = already
+    //
+    // Keyed on **every** earlier table, the census's own seeds included: each
+    // step must only ever *add* names. Overwriting a baseline value would let a
+    // path-sensitive expression move for a reason that has nothing to do with
+    // reserved-name seeding and still be counted as its gain
+    // (`MSBuildProjectExtensionsPath` is a census seed and reads as reserved).
+    let named: BTreeSet<String> = census_seeds
         .iter()
+        .chain(already.iter())
         .chain(remaining.iter())
         .map(|(k, _)| k.to_ascii_lowercase())
         .collect();
@@ -237,6 +249,26 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
         .into_iter()
         .map(|n| (n, "1.0.0".to_string()))
         .collect();
+
+    // Enforced rather than asserted in prose: a step that redefines a name is
+    // measuring a different baseline, not a bigger table.
+    for (earlier, later, what) in [
+        (&census_seeds, &already, "already-seeded"),
+        (&census_seeds, &remaining, "not-yet-seeded"),
+        (&already, &remaining, "not-yet-seeded"),
+    ] {
+        let earlier_keys: BTreeSet<String> = earlier
+            .iter()
+            .map(|(k, _)| k.to_ascii_lowercase())
+            .collect();
+        for (k, _) in later.iter() {
+            assert!(
+                !earlier_keys.contains(&k.to_ascii_lowercase()),
+                "the {what} table redefines {k}, so its step would measure a \
+                 changed baseline rather than an added name"
+            );
+        }
+    }
 
     let base = table(&[&census_seeds]);
     let today = table(&[&census_seeds, &already]);
