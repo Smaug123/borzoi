@@ -1055,10 +1055,10 @@ impl<'a> Resolver<'a> {
     /// `|_| ShadowVeto::None`: sema already enumerates an auto-open module's
     /// *values* (only its nested *types* are unmodelled), and it has no
     /// coarse unmodelled-shadow source once past the
-    /// `unmodelled_open_active` guard its caller applies first. Once a
-    /// fallback reading is held it already outranks anything at or below the
-    /// current tier — shadow risk included — so the verdict is not consulted
-    /// again.
+    /// `unmodelled_open_active` guard its caller applies first. It is asked at
+    /// **every** tier the walk visits, a held partial fallback
+    /// notwithstanding — see the fallback's own comment for why a partial
+    /// cannot switch the lower tiers' verdicts off.
     pub(super) fn resolve_assembly_path_tiered<R>(
         &self,
         records: impl Fn(&[String]) -> AssemblyPath<R>,
@@ -1105,19 +1105,19 @@ impl<'a> Resolver<'a> {
         // the whole walk ends with no owning reading and no project shadow. A
         // reading is *owning* (`owns_path`) iff it captures the whole path — a
         // nested-type chain, a unique static member, or an overload set the type
-        // owns but cannot uniquely select (see [`AssemblyPath::Resolved`]). Once
-        // set, a held fallback already outranks anything at or below the
-        // current tier — shadow risk included — so the verdict is not
-        // consulted once a fallback has been seen.
+        // owns but cannot uniquely select (see [`AssemblyPath::Resolved`]).
+        //
+        // Holding one does **not** switch the shadow verdict off for the tiers
+        // below it. A partial does not own the path, and the loop below hands a
+        // *lower* owning reading the win over it — so a risk between the two is
+        // a reading that may own the path above whatever eventually does, and
+        // skipping it commits under it. It invalidates the held partial as well,
+        // for the same reason: what the risk hides may own the whole path where
+        // the partial only reached its rooting.
         let mut fallback: Option<(R, DeclineTier)> = None;
 
         for (tier, prefix) in prefixes {
-            let veto = if fallback.is_none() {
-                shadow_at(prefix)
-            } else {
-                ShadowVeto::None
-            };
-            if let ShadowVeto::Vetoed(cause) = veto {
+            if let ShadowVeto::Vetoed(cause) = shadow_at(prefix) {
                 return TieredResolution::ShadowDeferred(DeclineSite { cause, tier });
             }
             let reading = match root.take() {
