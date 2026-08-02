@@ -1597,6 +1597,20 @@ impl<'a> Resolver<'a> {
         // colliding name takes the relative `Demo.Sub`. The latest open with a
         // match wins. `Some(verdict)` is this stratum's answer and stops the
         // walk; `None` means no reading here spoke.
+        // `open type` wants a **type**, and an F# module is not one — FCS rejects
+        // `open type M` for a module outright. [`Self::opened_assembly_type`]
+        // answers off `lookup_type`, whose bucket holds modules too, so the
+        // filter is here rather than there: other callers reach that lookup for
+        // a *container*, where a module is exactly what they want. Without it a
+        // module at a higher tier captures the target and this open would
+        // enumerate its statics — `open type Foo` inside `namespace N` with a
+        // referenced `module N.Foo` would publish `N.Foo`'s members under the
+        // name FCS binds to an implicitly-opened `Imp.Foo` (codex review round
+        // 4).
+        let type_target = |p: &[String]| {
+            self.opened_assembly_type(p)
+                .filter(|&h| !self.assemblies.is_authoritative_module(h))
+        };
         let through_opens = |prefixes: &mut dyn Iterator<Item = (DeclineTier, &[String])>| {
             for (_, prefix) in prefixes {
                 let mut full = prefix.to_vec();
@@ -1604,7 +1618,7 @@ impl<'a> Resolver<'a> {
                 if self.open_type_target_shadowed(&full) {
                     return Some(None); // an open routes it into project territory
                 }
-                if let Some(handle) = self.opened_assembly_type(&full) {
+                if let Some(handle) = type_target(&full) {
                     return Some(Some(handle));
                 }
             }
@@ -1626,7 +1640,7 @@ impl<'a> Resolver<'a> {
             for k in (1..=self.container_path.len()).rev() {
                 let mut full = self.container_path[..k].to_vec();
                 full.extend_from_slice(path);
-                if let Some(handle) = self.opened_assembly_type(&full) {
+                if let Some(handle) = type_target(&full) {
                     return (!self.open_type_target_shadowed(&full)).then_some(handle);
                 }
             }
@@ -1645,7 +1659,7 @@ impl<'a> Resolver<'a> {
         // a cross-file `namespace Demo; type Calc` is invisible here. Resolving the
         // root type could therefore be wrong — decline (defer) rather than guess.
         let bare_in_namespace = path.len() == 1 && !self.container_path.is_empty();
-        if !bare_in_namespace && let Some(handle) = self.opened_assembly_type(path) {
+        if !bare_in_namespace && let Some(handle) = type_target(path) {
             return (!self.open_type_target_shadowed(path)).then_some(handle);
         }
         None
