@@ -346,6 +346,17 @@ fn the_unseeded_reserved_names_are_worth_four_expressions_and_thirty_conditions(
     // populations of 396 and 2 758. The floor is itself an over-statement of
     // what real seeding would deliver: the table includes names a real walk
     // already supplies and one that cannot be known at all.
+    //
+    // The populations are pinned first, and they are not a formality: an
+    // extractor that started dropping declined shapes reading no reserved name
+    // would leave every count and ceiling below untouched, and every ratio this
+    // file reports would silently be against a smaller denominator.
+    assert_eq!(
+        (expressions.len(), conditions.len()),
+        (396, 2758),
+        "the census population moved; every count below is a ratio against it, \
+         so restate them together"
+    );
     assert_eq!(
         (expr_base, expr_today, expr_seeded),
         EXPRESSION_STEPS,
