@@ -1572,9 +1572,14 @@ struct State<'r> {
     /// evaluate, so the binding was removed rather than stored. The real
     /// build stores that value, so a later undefined read of the name is
     /// not exact, and neither is a splice decision that rests on it
-    /// ([`State::gate_value_is_exact`]). A later clean write under a clean
-    /// gate discharges the mark: last write wins on both sides. Mutated only
-    /// via [`Self::apply_property_provenance`].
+    /// ([`State::gate_value_is_exact`]). The mark then stands for the rest of
+    /// the walk: a later clean write does *not* discharge it, because its
+    /// reader consumes it mid-walk and tolerates SDK-subtree opacity, under
+    /// which a cleanly-computed value can still rest on a property hidden
+    /// content redefined (see [`RefusedOutcome::Keep`] at the clean-write
+    /// site). The one clear is the reserved-toolset seed, which re-establishes
+    /// a name the real build refuses to let the document write at all.
+    /// Mutated only via [`Self::apply_property_provenance`].
     unevaluable_written: HashSet<String>,
 }
 
