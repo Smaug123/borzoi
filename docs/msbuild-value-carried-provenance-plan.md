@@ -304,11 +304,11 @@ worth doing *for Bucket A only*, but its benefit is **fewer spurious declines**,
 not soundness, once P1 lands. Re-sequenced after P2/P3 and explicitly labelled
 a precision improvement so nobody reviews it as a fix.
 
-### P2 — one lattice instead of three maps
+### P2 — one lattice instead of three maps — **landed**
 
-Replace the parallel side maps with a single `Trust` value — a *product* of the
-channels, since they have genuinely different downstream semantics and
-collapsing them would change behaviour:
+The three parallel side maps are one `HashMap<String, Trust>`, and `Trust` is a
+*product* of the channels, since they have genuinely different downstream
+semantics and collapsing them would change behaviour:
 
 ```rust
 struct Trust {
@@ -318,23 +318,54 @@ struct Trust {
 }
 ```
 
-with a sealed `join` (per channel, first cause wins — matching today's
-`find_map`). `PropertyProvenance`, `TaintOutcome`, `UnpinnedOutcome` and
-`RefusedOutcome` collapse into it. The "forgot one channel" hazard becomes
-unrepresentable rather than convention-enforced.
-
 There are **three** channels, not two, and P2‴ is why the count is written down
 here: `unevaluable_written` was outside `PropertyProvenance` and drifted from
 its siblings for as long as it was outside. That is the concrete instance of the
-hazard this stage abolishes, so P2 is no longer speculative tidying — it is the
-generalisation of a defect that has now actually happened.
+hazard this stage abolishes, so P2 was not speculative tidying — it is the
+generalisation of a defect that had actually happened, twice: the second
+instance was a precision regression introduced *by the fix for the first*, when
+a "channel X is subsumed by channel Y" claim silently expired.
 
-**Property-test the algebra:** `join` is associative, commutative, idempotent,
-with `Trust::CERTAIN` as identity, and *monotone* — `join` never returns
-`CERTAIN` unless both inputs were. That last one is the soundness property and
-the only one that matters.
+The type lives in its own module (`crates/msbuild/src/trust.rs`) with private
+fields, so certainty cannot be produced by writing a struct literal — only
+`Trust::CERTAIN`, a `join`, and clears that say what they are doing.
 
-**Sized:** medium. Mechanical; churn concentrated in `evaluator.rs`.
+#### What the plan got wrong, and what the work found instead
+
+- **The outcome enums do not collapse into `Trust`.** `PropertyProvenance`,
+  `TaintOutcome`, `UnpinnedOutcome` and `RefusedOutcome` describe a *transition*
+  — what one write does — and `Clear` is deliberately **non-monotone**, because
+  a clean write genuinely re-pins a name. Only the combination of several names'
+  trust into one value is a lattice. Two operations, two types: `join` combines
+  what several names contribute to one value, `after` combines what several
+  writes do to one name.
+- **`join` is commutative only up to the channel-wise shape.** It is
+  left-biased, so where both operands carry a witness the left one survives and
+  the fold reports the *first* offending reference in source order — which is
+  the diagnostic a reader wants. Associativity, idempotence and the
+  `Trust::CERTAIN` identity hold exactly; commutativity holds on the verdict and
+  not on the witness, and the property test says so at exactly that granularity.
+- **The durability came from the read side, which the plan had not named.** The
+  write side was already disciplined by `PropertyProvenance`. What was not was
+  the *scan*: `unpinned_root_for_raw` and `sdk_package_taint_for_raw` were two
+  separate `find_map`s over the same reference list, and the refused channel had
+  no scan at all. They are now one `trust_for_raw` fold serving every channel,
+  and each read site names the subset it wants — `is_certain`,
+  `reference_is_untrusted`, `refused` — with the omission argued in its docs
+  rather than implied by a short list of map lookups.
+
+**Property-tested algebra** (`join` associative, idempotent, unital, commutative
+on the verdict, left-biased on the witness, and *monotone* — never `CERTAIN`
+unless both inputs were, which is the soundness property and the only one that
+matters). Verified to discriminate: three mutations of `join` — dropping the
+refused channel, right-biasing the witness, joining refused with `&&` — each go
+red, and on different subsets of the laws.
+
+**A fourth channel is a compile error, not a review item.** Every projection
+(`CERTAIN`, `is_certain`, `join`, `reference_is_untrusted`, `shape`, `after`)
+destructures exhaustively rather than accessing fields, so a channel added
+without being handled fails to build at each site that would otherwise default
+it. Checked by adding one: four errors, one per site.
 
 ### P2′ — audit the twelve direct-read sites — **landed**
 

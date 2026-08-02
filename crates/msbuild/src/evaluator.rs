@@ -70,6 +70,10 @@ use super::diagnostic::{
 use super::imports::normalise;
 use super::properties::escaping::Escaped;
 use super::properties::{self, Issue, PropertyMap};
+use super::trust::{
+    PropertyProvenance, RefusedOutcome, SdkPackagePropertyTaint, TaintOutcome, Trust,
+    UnpinnedOutcome, UnpinnedRoot,
+};
 use super::{
     FrameworkReference, GlobRequest, GlobResolver, GlobalPackageReference, ItemKind,
     ItemMetadataValue, PackageRefOp, PackageReference, PackageVersion, ParsedProject, ResolvedItem,
@@ -1481,16 +1485,6 @@ struct State<'r> {
     package_references_uncertain: bool,
     /// Accumulates into [`ParsedProject::package_reference_uncertainties`].
     package_reference_uncertainties: Vec<PackageReferenceUncertaintyCause>,
-    /// Lowercased property names whose current value came from the SDK property
-    /// pass, or from an SDK property write evaluated with an untrusted condition
-    /// or value in this single-pass walker. The taint is package-specific:
-    /// Compile uncertainty deliberately tolerates SDK property machinery, but a
-    /// later `<PackageReference Version="$(Name)">` consuming such a value must
-    /// not be reported as trustworthy because MSBuild evaluates project
-    /// properties before project items. Mutated only via
-    /// [`Self::apply_property_provenance`]; see [`PropertyProvenance`] for how
-    /// this channel relates to [`Self::unpinned_value_properties`].
-    sdk_package_tainted_properties: HashMap<String, SdkPackagePropertyTaint>,
     /// The preprocessor-symbol analogue of [`Self::compile_context`]: `true`
     /// while resolving a user-authored `<DefineConstants>` write or the
     /// `<PropertyGroup>` condition gating one. A diagnostic [`Self::push`]ed
@@ -1537,20 +1531,20 @@ struct State<'r> {
     /// kept so the item pass can re-parse them. Indexed by
     /// [`CurrentFile::Imported::retained`].
     retained_imported_files: Vec<RetainedImportedFile>,
-    /// Properties whose stored value the property pass could not pin down —
-    /// keyed by lowercase property name, valued by the root cause
-    /// ([`UnpinnedRoot`]): the value chain substituted an undefined
-    /// reference, read another unpinned property, or a write in the chain
-    /// sat behind a gate we couldn't evaluate. The stored value is our best
-    /// evaluation, but a real build can diverge, so every read — a `$(…)`
-    /// expansion ([`State::expand`]) or a condition
-    /// ([`evaluate_condition_with_exemptions`]) — re-surfaces the root as a
-    /// diagnostic under the active contexts, degrading compile/package
-    /// certainty exactly like a direct undefined reference. A later clean
-    /// overwrite re-pins the property. Mutated only via
-    /// [`Self::apply_property_provenance`]; see [`PropertyProvenance`] for how
-    /// this channel relates to [`Self::sdk_package_tainted_properties`].
-    unpinned_value_properties: HashMap<String, UnpinnedRoot>,
+    /// What the walk knows, or doesn't, about each property's stored value —
+    /// keyed by lowercase property name. All three forward-uncertainty channels
+    /// live in the one [`Trust`] value, so a name cannot be marked on one
+    /// channel and quietly missed on another; [`Trust`]'s own docs say what
+    /// each channel means and who consumes it.
+    ///
+    /// **Absence means certainty**, and the map never holds a certain
+    /// [`Trust`]: [`Self::apply_property_provenance`] — the only mutator —
+    /// drops the entry when a write clears the last channel. Readers go
+    /// through [`Self::trust_of`] and so never see the difference, but
+    /// [`Self::into_project`] *iterates* the map, and an entry that declares
+    /// nothing would be a name reported for no reason. The debug assertion
+    /// there checks the mutator holds the line.
+    property_trust: HashMap<String, Trust>,
     /// Lowercased referenceable names present in the caller's environment
     /// snapshot — *including* names promotion skipped (case collisions,
     /// toolset overwrites): the real build has *some* value for every one
@@ -1567,20 +1561,6 @@ struct State<'r> {
     /// the item pass runs after the whole property pass, so it correctly
     /// sees the final flag.
     walk_opaque: bool,
-    /// Lowercased names whose write was *refused* — the value carried an
-    /// expression, item reference, or metadata reference we can't
-    /// evaluate, so the binding was removed rather than stored. The real
-    /// build stores that value, so a later undefined read of the name is
-    /// not exact, and neither is a splice decision that rests on it
-    /// ([`State::gate_value_is_exact`]). The mark then stands for the rest of
-    /// the walk: a later clean write does *not* discharge it, because its
-    /// reader consumes it mid-walk and tolerates SDK-subtree opacity, under
-    /// which a cleanly-computed value can still rest on a property hidden
-    /// content redefined (see [`RefusedOutcome::Keep`] at the clean-write
-    /// site). The one clear is the reserved-toolset seed, which re-establishes
-    /// a name the real build refuses to let the document write at all.
-    /// Mutated only via [`Self::apply_property_provenance`].
-    unevaluable_written: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1627,33 +1607,6 @@ impl HelperMetadataUncertainty {
     }
 }
 
-/// Why a stored property value cannot be trusted as final (see
-/// [`State::unpinned_value_properties`]): the divergence a real build could
-/// introduce, re-surfaced as a diagnostic at every read of the value.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum UnpinnedRoot {
-    /// The value chain substituted `$(Name)` while `Name` was undefined —
-    /// a real build may supply it (environment variables are MSBuild
-    /// initial properties) and produce a different value.
-    Undefined(String),
-    /// A write in the value chain was gated on a condition outside the
-    /// supported grammar, so we cannot know whether it ran.
-    UnsupportedCondition(String),
-}
-
-impl UnpinnedRoot {
-    fn to_diagnostic(&self) -> DiagnosticKind {
-        match self {
-            UnpinnedRoot::Undefined(name) => {
-                DiagnosticKind::UndefinedProperty { name: name.clone() }
-            }
-            UnpinnedRoot::UnsupportedCondition(condition) => DiagnosticKind::UnsupportedCondition {
-                condition: condition.clone(),
-            },
-        }
-    }
-}
-
 /// Result of expanding `$(...)` in a raw attribute or element value. The
 /// two issue flags are tracked separately because they have different
 /// downstream consequences:
@@ -1673,113 +1626,13 @@ struct Expansion {
     /// Why the produced value cannot be trusted as final, if it can't: a
     /// direct undefined `$(Name)` substitution, or a reference to a
     /// property that is itself unpinned. Recorded when the value is stored
-    /// as a property ([`State::unpinned_value_properties`]).
+    /// as a property ([`Trust::unpinned`]).
     unpinned_root: Option<UnpinnedRoot>,
 }
 
 impl Expansion {
     fn had_issue(&self) -> bool {
         self.had_undefined || self.had_unsupported
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SdkPackagePropertyTaint {
-    span: Range<usize>,
-    origin: DiagnosticOrigin,
-}
-
-/// What a single property write does to the SDK-package taint channel
-/// ([`State::sdk_package_tainted_properties`]).
-enum TaintOutcome {
-    /// Mark the property tainted at `span` (a write we can't trust for a
-    /// later package read).
-    Set(Range<usize>),
-    /// Clear any existing taint — a clean write re-pins the name.
-    Clear,
-    /// Leave the existing taint mark as-is.
-    Keep,
-}
-
-/// What a single property write does to the unpinned channel
-/// ([`State::unpinned_value_properties`]).
-enum UnpinnedOutcome {
-    /// Record `root` — every later read re-surfaces it as a diagnostic.
-    Set(UnpinnedRoot),
-    /// Clear any existing root — a clean write under a clean gate re-pins.
-    Clear,
-    /// Leave the existing root as-is.
-    Keep,
-}
-
-/// What a single property write does to the refused-write channel
-/// ([`State::unevaluable_written`]).
-enum RefusedOutcome {
-    /// Record the refusal — we stored no value, so the one the real build
-    /// stored is unknown to us.
-    Set,
-    /// Discharge any earlier refusal — this write re-pins the name.
-    Clear,
-    /// Leave the existing mark as-is.
-    Keep,
-}
-
-/// The provenance verdict for a single property write: what happens to
-/// **all three** forward-uncertainty channels, applied through the one method
-/// ([`State::apply_property_provenance`]) that mutates any of them.
-///
-/// The channels stay deliberately separate — this type pairs them at
-/// the *decision* point, not the concept:
-/// * [`State::unpinned_value_properties`] rides the diagnostic pipeline: a
-///   read re-surfaces its root under the active context, so it can flip
-///   [`State::items_uncertain`] and [`State::define_constants_uncertain`].
-/// * [`State::sdk_package_tainted_properties`] is a silent marker checked
-///   only at package/item sites and propagates through *clean* reads; it
-///   deliberately **never** reaches [`State::items_uncertain`] (Compile
-///   evaluation tolerates SDK property machinery).
-/// * [`State::unevaluable_written`] records that we stored *no* value where
-///   the real build stored one, and is read where a name's current value
-///   decides something — [`State::undefined_read_is_exact`] and
-///   [`State::gate_value_is_exact`].
-///
-/// The first two union into [`ParsedProject::untrusted_properties`]
-/// ([`State::property_provenance_untrusted`]). Because a write must name an
-/// outcome for each channel, a new write path cannot update one map and
-/// silently forget the others.
-struct PropertyProvenance {
-    taint: TaintOutcome,
-    unpinned: UnpinnedOutcome,
-    refused: RefusedOutcome,
-}
-
-impl TaintOutcome {
-    /// The taint outcome of a write the property pass performed: taint it
-    /// when the value/condition is untrusted, else clear unless a prior
-    /// taint must be preserved (an earlier untrusted write to the same
-    /// name whose divergence still stands).
-    fn after_write(taints_property: bool, span: Range<usize>, preserve_existing: bool) -> Self {
-        if taints_property {
-            TaintOutcome::Set(span)
-        } else if preserve_existing {
-            TaintOutcome::Keep
-        } else {
-            TaintOutcome::Clear
-        }
-    }
-}
-
-impl UnpinnedOutcome {
-    /// The unpinned outcome of a write the property pass performed:
-    /// `unpinned_by` is the root cause when the new value (or the gate it
-    /// sat behind) leans on one; a clean value under a clean gate re-pins,
-    /// while a clean value under a still-uncertain gate leaves the prior
-    /// state untouched.
-    fn after_write(unpinned_by: Option<UnpinnedRoot>, write_condition_maybe_wrong: bool) -> Self {
-        match unpinned_by {
-            Some(root) => UnpinnedOutcome::Set(root),
-            None if !write_condition_maybe_wrong => UnpinnedOutcome::Clear,
-            None => UnpinnedOutcome::Keep,
-        }
     }
 }
 
@@ -2052,14 +1905,12 @@ impl<'r> State<'r> {
             project_references_uncertain: false,
             package_references_uncertain: false,
             package_reference_uncertainties: Vec::new(),
-            sdk_package_tainted_properties: HashMap::new(),
             current_file: CurrentFile::Entry,
             deferred_item_groups: Vec::new(),
             retained_imported_files: Vec::new(),
-            unpinned_value_properties: HashMap::new(),
+            property_trust: HashMap::new(),
             env_property_names,
             walk_opaque: false,
-            unevaluable_written: HashSet::new(),
         }
     }
 
@@ -2068,10 +1919,9 @@ impl<'r> State<'r> {
     /// `docs/completed/sdk-chain-exactness-plan.md`). True only when every input
     /// that could have supplied the name says it doesn't exist:
     ///   * the walk has hidden no content (`walk_opaque`);
-    ///   * no undecided or refused write could have set it
-    ///     (`unpinned_value_properties`, `unevaluable_written`, SDK
-    ///     package taint — the tainted map covers maybe-skipped writes
-    ///     whose gate leaned on tainted input);
+    ///   * no undecided or refused write could have set it — every
+    ///     [`Trust`] channel is clean, the taint one included, since it
+    ///     covers maybe-skipped writes whose gate leaned on tainted input;
     ///   * the name is not in the environment snapshot (a skipped
     ///     promotion — collision or toolset overwrite — still means the
     ///     real build defines *something*);
@@ -2092,9 +1942,7 @@ impl<'r> State<'r> {
             return false;
         }
         !self.env_property_names.contains(&lower)
-            && !self.unpinned_value_properties.contains_key(&lower)
-            && !self.unevaluable_written.contains(&lower)
-            && !self.sdk_package_property_is_tainted(name)
+            && self.trust_of(name).is_certain()
             && !is_toolset_initial_property_name(&lower)
     }
 
@@ -2110,16 +1958,22 @@ impl<'r> State<'r> {
     /// extends to a name the walk has **direct evidence** the real build gives
     /// a value:
     ///
-    /// * [`Self::unevaluable_written`] — a write we refused. Its emptiness here
+    /// * [`Trust::refused`] — a write we refused. Its emptiness here
     ///   is our failure to compute, not a fact; MSBuild holds what it computed
     ///   and takes the other branch.
     /// * [`Self::env_property_names`] — an environment name promotion skipped
     ///   (a case collision, a toolset overwrite). We dropped it from the lookup
     ///   precisely because we cannot model its value, and "cannot model" is not
     ///   "unset": the real build defines *something* non-empty.
+    ///
+    /// The other two [`Trust`] channels are deliberately *not* consulted: both
+    /// describe a value we hold and may have wrong, whereas this asks about a
+    /// name that read as absent. Widening to [`Trust::is_certain`] would refuse
+    /// the idiom wherever any earlier write to the name was undecided, which is
+    /// the wholesale decline the over-commitment above exists to avoid.
     fn self_default_absence_is_a_fact(&self, name: &str) -> bool {
         let lower = name.to_ascii_lowercase();
-        !self.unevaluable_written.contains(&lower) && !self.env_property_names.contains(&lower)
+        !self.trust_of(name).refused() && !self.env_property_names.contains(&lower)
     }
 
     /// Is the *current* value of `name` exactly what MSBuild holds at this
@@ -2150,15 +2004,12 @@ impl<'r> State<'r> {
         // existing tests assert that SDK structural uncertainty must *not*
         // reintroduce Compile uncertainty, and they were right to.
         //
-        // What is left is precise: these three say a write *of this name* was
-        // undecided, refused, or rode SDK-tainted input. That is the question
-        // the splice actually needs answered, and it holds whether or not the
-        // name currently has a value — an undecided write that did not happen
-        // is recorded the same way as one that did.
-        let lower = name.to_ascii_lowercase();
-        !self.unpinned_value_properties.contains_key(&lower)
-            && !self.unevaluable_written.contains(&lower)
-            && !self.sdk_package_property_is_tainted(name)
+        // What is left is precise: the three channels say a write *of this
+        // name* was undecided, refused, or rode SDK-tainted input. That is the
+        // question the splice actually needs answered, and it holds whether or
+        // not the name currently has a value — an undecided write that did not
+        // happen is recorded the same way as one that did.
+        self.trust_of(name).is_certain()
     }
 
     /// Record that a `Directory.Build.*` splice decision rested on a value we
@@ -2361,7 +2212,6 @@ impl<'r> State<'r> {
             // doesn't outlive the value it described.
             self.apply_property_provenance(
                 name,
-                &lower,
                 PropertyProvenance {
                     taint: TaintOutcome::Clear,
                     unpinned: UnpinnedOutcome::Clear,
@@ -2437,14 +2287,22 @@ impl<'r> State<'r> {
              the walk produces its result"
         );
         // The output-name verdict and the untrusted-provenance set need
-        // `&self` (the pin/taint maps), so compute them before the
-        // destructure below consumes them.
+        // `&self` (the trust map), so compute them before the destructure
+        // below consumes it.
         let target_name = self.target_name_verdict();
+        debug_assert!(
+            self.property_trust.values().all(|t| !t.is_certain()),
+            "a write that clears every channel must drop the entry, so that \
+             iterating the trust map means what it looks like"
+        );
+        // A refused write alone does not put a name here: this set describes
+        // values a consumer holds and may have wrong, and a refusal means we
+        // hold no value at all — see [`Trust::reference_is_untrusted`].
         let untrusted_properties: std::collections::HashSet<String> = self
-            .unpinned_value_properties
-            .keys()
-            .chain(self.sdk_package_tainted_properties.keys())
-            .cloned()
+            .property_trust
+            .iter()
+            .filter(|(_, trust)| trust.reference_is_untrusted())
+            .map(|(name, _)| name.clone())
             .collect();
         let State {
             lookup,
@@ -2514,14 +2372,12 @@ impl<'r> State<'r> {
             project_references_uncertain,
             package_references_uncertain,
             package_reference_uncertainties,
-            sdk_package_tainted_properties: _,
             current_file: _,
             deferred_item_groups: _,
             retained_imported_files: _,
-            unpinned_value_properties: _,
+            property_trust: _,
             env_property_names: _,
             walk_opaque: _,
-            unevaluable_written: _,
         } = self;
         // Central Package Management opt-in: a versionless
         // `<PackageReference Include="X"/>` may receive its effective version
@@ -2932,67 +2788,61 @@ impl<'r> State<'r> {
             .or_insert_with(|| HelperMetadataUncertainty::item_definition_default(metadata_name));
     }
 
-    fn mark_sdk_package_property_tainted(&mut self, name: &str, span: Range<usize>) {
-        let lower = name.to_ascii_lowercase();
-        let span = self.effective_span(span);
-        let origin = self.current_origin();
-        self.sdk_package_tainted_properties
-            .insert(lower, SdkPackagePropertyTaint { span, origin });
+    /// What the walk knows about `name`'s stored value. An absent entry is
+    /// [`Trust::CERTAIN`] — see [`Self::property_trust`].
+    fn trust_of(&self, name: &str) -> &Trust {
+        self.property_trust
+            .get(&name.to_ascii_lowercase())
+            .unwrap_or(Trust::certain_ref())
     }
 
-    fn clear_sdk_package_property_taint(&mut self, name: &str) {
-        self.sdk_package_tainted_properties
-            .remove(&name.to_ascii_lowercase());
+    /// The trust a *value* inherits from the properties it references: the
+    /// join over every `$(…)` in `raw`, in source order.
+    ///
+    /// One scan serves every channel. Reading the channels separately would
+    /// mean one scan per channel, and a scan that quietly covered two of the
+    /// three would look exactly like this one at the call site.
+    fn trust_for_raw(&self, raw: &str) -> Trust {
+        let mut joined = Trust::CERTAIN;
+        for name in properties::property_references(raw) {
+            // Only a name with something to declare is in the map at all, so
+            // the clean case — nearly every reference — costs no clone.
+            if let Some(trust) = self.property_trust.get(&name.to_ascii_lowercase()) {
+                joined = joined.join(trust.clone());
+            }
+        }
+        joined
     }
 
     fn sdk_package_property_is_tainted(&self, name: &str) -> bool {
-        self.sdk_package_tainted_properties
-            .contains_key(&name.to_ascii_lowercase())
+        self.trust_of(name).sdk_package().is_some()
     }
 
-    /// The single point that mutates any forward-uncertainty channel:
-    /// apply a [`PropertyProvenance`] verdict to all three. `name` keys the
-    /// taint map (lowercased internally, carrying the write span/origin);
-    /// `lower` keys the unpinned map and the refused set. Every mutation flows
-    /// through here so the channels cannot drift at population time.
-    fn apply_property_provenance(
-        &mut self,
-        name: &str,
-        lower: &str,
-        provenance: PropertyProvenance,
-    ) {
-        match provenance.taint {
-            TaintOutcome::Set(span) => self.mark_sdk_package_property_tainted(name, span),
-            TaintOutcome::Clear => self.clear_sdk_package_property_taint(name),
-            TaintOutcome::Keep => {}
-        }
-        match provenance.unpinned {
-            UnpinnedOutcome::Set(root) => {
-                self.unpinned_value_properties
-                    .insert(lower.to_string(), root);
-            }
-            UnpinnedOutcome::Clear => {
-                self.unpinned_value_properties.remove(lower);
-            }
-            UnpinnedOutcome::Keep => {}
-        }
-        match provenance.refused {
-            RefusedOutcome::Set => {
-                self.unevaluable_written.insert(lower.to_string());
-            }
-            RefusedOutcome::Clear => {
-                self.unevaluable_written.remove(lower);
-            }
-            RefusedOutcome::Keep => {}
+    /// The single point that mutates any forward-uncertainty channel: apply a
+    /// [`PropertyProvenance`] verdict to all three, keyed by `name`.
+    ///
+    /// The taint span is resolved here — remapped to the entry file and
+    /// stamped with the current origin — because that is walk state the write
+    /// sites don't carry. The certain result is *removed* rather than stored,
+    /// which is what lets [`Self::property_trust`] read absence as certainty.
+    fn apply_property_provenance(&mut self, name: &str, provenance: PropertyProvenance) {
+        let resolved = provenance.map_taint(|span| SdkPackagePropertyTaint {
+            span: self.effective_span(span),
+            origin: self.current_origin(),
+        });
+        let lower = name.to_ascii_lowercase();
+        let trust = self
+            .property_trust
+            .remove(&lower)
+            .unwrap_or(Trust::CERTAIN)
+            .after(resolved);
+        if !trust.is_certain() {
+            self.property_trust.insert(lower, trust);
         }
     }
 
     fn sdk_package_taint_for_raw(&self, raw: &str) -> Option<SdkPackagePropertyTaint> {
-        properties::property_references(raw).find_map(|name| {
-            self.sdk_package_tainted_properties
-                .get(&name.to_ascii_lowercase())
-                .cloned()
-        })
+        self.trust_for_raw(raw).sdk_package().cloned()
     }
 
     fn raw_uses_sdk_package_taint(&self, raw: &str) -> bool {
@@ -3000,13 +2850,9 @@ impl<'r> State<'r> {
     }
 
     /// The root cause behind the first unpinned property `raw` references,
-    /// if any (see [`Self::unpinned_value_properties`]).
+    /// if any (see [`Trust::unpinned`]).
     fn unpinned_root_for_raw(&self, raw: &str) -> Option<UnpinnedRoot> {
-        properties::property_references(raw).find_map(|name| {
-            self.unpinned_value_properties
-                .get(&name.to_ascii_lowercase())
-                .cloned()
-        })
+        self.trust_for_raw(raw).unpinned().cloned()
     }
 
     /// Whether `name`'s end-of-evaluation value provenance is untrusted —
@@ -3014,9 +2860,7 @@ impl<'r> State<'r> {
     /// or its value leaned on one) or SDK-package-tainted. The basis of
     /// [`ParsedProject::untrusted_properties`].
     fn property_provenance_untrusted(&self, name: &str) -> bool {
-        self.unpinned_value_properties
-            .contains_key(&name.to_ascii_lowercase())
-            || self.sdk_package_property_is_tainted(name)
+        self.trust_of(name).reference_is_untrusted()
     }
 
     /// The [`ParsedProject::target_name`] verdict: the output file's base
@@ -3180,23 +3024,19 @@ impl<'r> State<'r> {
             self.push(kind, span.clone());
         }
         // A reference to an *unpinned* property (its stored value leaned on
-        // an undefined name or an unevaluable gate — see
-        // [`State::unpinned_value_properties`]) carries the same divergence
-        // risk as a direct undefined reference, but plain substitution
-        // cannot see it: the property IS defined. Re-surface each root here
-        // so every read — property-pass or item-pass — reports it under the
-        // active contexts, exactly like the direct case.
+        // an undefined name or an unevaluable gate — see [`Trust::unpinned`])
+        // carries the same divergence risk as a direct undefined reference,
+        // but plain substitution cannot see it: the property IS defined.
+        // Re-surface each root here so every read — property-pass or
+        // item-pass — reports it under the active contexts, exactly like the
+        // direct case.
         let mut unpinned_root = direct_undefined
             .first()
             .cloned()
             .map(UnpinnedRoot::Undefined);
         let mut surfaced: Vec<UnpinnedRoot> = Vec::new();
         for reference in properties::property_references(raw) {
-            let Some(root) = self
-                .unpinned_value_properties
-                .get(&reference.to_ascii_lowercase())
-                .cloned()
-            else {
+            let Some(root) = self.trust_of(reference).unpinned().cloned() else {
                 continue;
             };
             if unpinned_root.is_none() {
@@ -4002,7 +3842,6 @@ fn walk_property_child_inner(
             };
             state.apply_property_provenance(
                 &name,
-                &lower,
                 PropertyProvenance {
                     taint,
                     unpinned,
@@ -4022,7 +3861,6 @@ fn walk_property_child_inner(
             };
             state.apply_property_provenance(
                 &name,
-                &lower,
                 PropertyProvenance {
                     taint: TaintOutcome::Set(node.range()),
                     unpinned,
@@ -4055,7 +3893,6 @@ fn walk_property_child_inner(
         state.record_directory_build_path_write(&name);
         state.apply_property_provenance(
             &name,
-            &lower,
             PropertyProvenance {
                 taint: TaintOutcome::Set(node.range()),
                 unpinned: UnpinnedOutcome::Set(UnpinnedRoot::UnsupportedCondition(format!(
@@ -4113,7 +3950,6 @@ fn walk_property_child_inner(
         );
         state.apply_property_provenance(
             &name,
-            &lower,
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
@@ -4149,7 +3985,6 @@ fn walk_property_child_inner(
         );
         state.apply_property_provenance(
             &name,
-            &lower,
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
@@ -4177,7 +4012,6 @@ fn walk_property_child_inner(
         );
         state.apply_property_provenance(
             &name,
-            &lower,
             PropertyProvenance {
                 taint,
                 unpinned: UnpinnedOutcome::Clear,
@@ -4238,7 +4072,7 @@ fn walk_property_child_inner(
     state.lookup.insert_escaped(name.clone(), expansion.value);
     state.written.insert(lower.clone(), name.clone());
     state.record_directory_build_path_write(&name);
-    state.apply_property_provenance(&name, &lower, provenance);
+    state.apply_property_provenance(&name, provenance);
 }
 
 /// Result of evaluating a node's `Condition` attribute.
@@ -4299,7 +4133,7 @@ fn evaluate_property_group_condition(
 /// it would leave those writes unpinned and the central import refused.
 ///
 /// "Never written" is a precondition, not a description of the shape, so a
-/// name whose write the walk *refused* ([`State::unevaluable_written`]) is not
+/// name whose write the walk *refused* ([`Trust::refused`]) is not
 /// exempt: there the emptiness is our failure to compute a value rather than a
 /// fact about the real build, and MSBuild — holding the value it did compute —
 /// takes the opposite branch of the very condition the exemption calls
@@ -4347,20 +4181,16 @@ fn evaluate_condition_with_exemptions(
     // guard — see `undefined_read_is_exact`'s carve-outs.)
     eval.undefined_properties
         .retain(|name| !state.undefined_read_is_exact(name));
-    // A condition reading an *unpinned* property (see
-    // [`State::unpinned_value_properties`]) may take the other branch in a
-    // real build — the same risk as a direct undefined reference, invisible
-    // to `condition::evaluate` because the property is defined. Collect the
-    // roots first so both the diagnostics and the compile carve-outs below
-    // see them; downstream maybe-wrong detection (which watches the
-    // diagnostics emitted here) then treats the gate accordingly.
+    // A condition reading an *unpinned* property (see [`Trust::unpinned`])
+    // may take the other branch in a real build — the same risk as a direct
+    // undefined reference, invisible to `condition::evaluate` because the
+    // property is defined. Collect the roots first so both the diagnostics
+    // and the compile carve-outs below see them; downstream maybe-wrong
+    // detection (which watches the diagnostics emitted here) then treats the
+    // gate accordingly.
     let mut unpinned_roots: Vec<UnpinnedRoot> = Vec::new();
     for reference in properties::property_references(cond) {
-        let Some(root) = state
-            .unpinned_value_properties
-            .get(&reference.to_ascii_lowercase())
-            .cloned()
-        else {
+        let Some(root) = state.trust_of(reference).unpinned().cloned() else {
             continue;
         };
         if let UnpinnedRoot::Undefined(name) = &root
@@ -4866,10 +4696,8 @@ fn mark_property_group_children_provenance(
         if state.protected.contains(&name.to_ascii_lowercase()) {
             continue;
         }
-        let lower = name.to_ascii_lowercase();
         state.apply_property_provenance(
             name,
-            &lower,
             PropertyProvenance {
                 taint: TaintOutcome::Set(child.range()),
                 unpinned: match unpinned_root {
