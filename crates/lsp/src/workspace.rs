@@ -160,6 +160,30 @@ struct EvaluatedProject {
     /// caller-supplied global `TargetFramework` is immune too: globals
     /// out-rank body writes, and the caller's value needs no provenance.
     tfm_untrusted: bool,
+    /// The document overwrote the `TargetFramework` global we seeded to serve
+    /// its inner build (`<Project TreatAsLocalProperty="TargetFramework">` plus
+    /// a write pass 1 could not see), so **no evaluation of it is an inner
+    /// build**: MSBuild evaluates in document order, and a gated group above
+    /// the override has already contributed the seed's values while the table
+    /// ends at the override's. `parsed` is therefore the *outer dispatch*
+    /// build — pass 1, whose one virtue is that it is at least internally
+    /// consistent — and every TFM-derived conclusion is withheld.
+    ///
+    /// Withheld includes the reference list, which
+    /// [`Self::tfm_untrusted`] alone does not cover.
+    /// That flag's consumers keep pass 1's edges on the argument
+    /// that any TFM-dependent edge read the unpinned `TargetFramework` and so
+    /// already flipped `project_references_uncertain` — true when the singular
+    /// is unpinned, false here: a multi-targeted document never *writes* the
+    /// singular, so pass 1 decides `'$(TargetFramework)' == ''` cleanly under
+    /// the environment model and captures an outer-build-only edge as fact.
+    /// See `an_override_document_does_not_publish_outer_build_only_edges`.
+    ///
+    /// Zero projects in the pinned F# corpus or the local NuGet cache opt
+    /// `TargetFramework` out (15 opt out `RepoRoot`, 2 `OutDir`, 1 each
+    /// `WasmNativeWorkload` and `RestoreAdditionalProjectSources`), so this
+    /// declines nothing anyone has been observed to write.
+    not_an_inner_build: bool,
 }
 
 /// The workspace's served-TFM verdict for an entry project
@@ -1153,7 +1177,13 @@ fn resolve_node_uncached(
 /// drops edges without marking them leaves the env fold counting a set those
 /// references were already filtered out of, so it sees no shortfall to report.
 fn references_suppressed(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose) -> bool {
-    purpose == GraphWalkPurpose::CompileClosure && evaluated.parsed.project_references_uncertain
+    // `not_an_inner_build` is a second, independent reason: we are serving the
+    // *outer dispatch* build, whose reference list is not the real build's under
+    // any TFM — and unlike the unpinned-singular case, nothing in the evaluation
+    // flagged itself, because a multi-targeted document never writes the
+    // singular and so decides `'$(TargetFramework)' == ''` cleanly.
+    purpose == GraphWalkPurpose::CompileClosure
+        && (evaluated.parsed.project_references_uncertain || evaluated.not_an_inner_build)
 }
 
 fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: bool) -> Vec<Edge> {
@@ -1351,8 +1381,10 @@ fn evaluate_project(
     let parsed = served.parsed;
     let chosen_tfm = served.chosen_tfm;
     // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
-    // so a `TreatAsLocalProperty` override widens it.
-    let tfm_untrusted = pass1_untrusted || served.override_untrusted;
+    // so an override widens it — and the override additionally withholds every
+    // other TFM-derived conclusion (see `EvaluatedProject::not_an_inner_build`).
+    let not_an_inner_build = served.not_an_inner_build;
+    let tfm_untrusted = pass1_untrusted || not_an_inner_build;
     // The evaluator reports the `SdkPaths::root` of the entry project's own SDK
     // (`ParsedProject::resolved_sdk_root`); recover the install root from it.
     // This is the single source of truth for an entry-SDK project — see
@@ -1371,6 +1403,7 @@ fn evaluate_project(
         declared_tfms,
         body_target_framework,
         tfm_untrusted,
+        not_an_inner_build,
     })
 }
 
@@ -1381,10 +1414,10 @@ struct ServedEvaluation {
     /// The TFM `parsed` was evaluated under — what its defines and Compile
     /// items came from. Published as [`EvaluatedProject::chosen_tfm`].
     chosen_tfm: Option<String>,
-    /// A pass-2 `TreatAsLocalProperty` override fired *and* its write has
-    /// untrusted provenance. Pass 1 cannot see such a write at all, so its own
-    /// verdict does not cover this and the caller must widen with it.
-    override_untrusted: bool,
+    /// A pass-2 `TreatAsLocalProperty` override fired, so no evaluation of this
+    /// document is an inner build — see
+    /// [`EvaluatedProject::not_an_inner_build`], which this becomes.
+    not_an_inner_build: bool,
 }
 
 /// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
@@ -1408,33 +1441,36 @@ fn select_target_framework(
         return ServedEvaluation {
             parsed: pass1,
             chosen_tfm,
-            override_untrusted: false,
+            not_an_inner_build: false,
         };
     };
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
-        // Report what pass 2 *evaluated as*, not what we asked it to evaluate
-        // as: a `TreatAsLocalProperty` document can overwrite the seed, with a
-        // write pass 1 never sees. `reseed_outcome` owns that classification —
-        // including the distinction between "no override" and "overridden to
-        // empty", which a value-shaped answer cannot express. Note the ordinary
-        // case (`AsSeeded`) never consults pass 2's provenance at all, and that
-        // matters: the generic provenance seam fires unconditionally for real
-        // SDK projects, so an unguarded consult would decline every
-        // multi-targeted project (see the `msbuild-trust-audit` skill, §2).
-        Some(pass2) => {
-            let (chosen_tfm, override_untrusted) = match tfm_policy::reseed_outcome(&pass2) {
-                tfm_policy::ReseedOutcome::AsSeeded => (Some(seed), false),
-                tfm_policy::ReseedOutcome::OverriddenUntrusted { ran_under } => (ran_under, true),
-            };
-            ServedEvaluation {
+        Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
+            tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
                 parsed: pass2,
-                chosen_tfm,
-                override_untrusted,
-            }
-        }
+                chosen_tfm: Some(seed),
+                not_an_inner_build: false,
+            },
+            // The document overwrote the seed, so pass 2 is a chimera: values
+            // above the override came from the seed, values below from the
+            // override. Serving it would publish a mixture as though it were
+            // one build. Keep **pass 1** — the outer dispatch build, which is
+            // at least internally consistent — and withhold every TFM-derived
+            // conclusion (`EvaluatedProject::not_an_inner_build`).
+            //
+            // Discarding pass 2 rather than flagging it is what ends this
+            // family: a flagged chimera has to be audited at each of the
+            // surfaces that read the evaluation, and six review rounds found
+            // six of them one at a time.
+            tfm_policy::ReseedOutcome::Overridden => ServedEvaluation {
+                parsed: pass1,
+                chosen_tfm: None,
+                not_an_inner_build: true,
+            },
+        },
         // Same source, same resolver, and the seed key can't collide (a
         // caller-owned global never yields `Reseed`) — so this arm shouldn't
         // be reachable. Degrade to the unseeded view rather than failing the
@@ -1442,7 +1478,7 @@ fn select_target_framework(
         None => ServedEvaluation {
             parsed: pass1,
             chosen_tfm: None,
-            override_untrusted: false,
+            not_an_inner_build: false,
         },
     }
 }
@@ -2138,6 +2174,61 @@ mod tests {
         assert_eq!(node.tfm, NodeTfm::Known("net8.0".to_string()));
     }
 
+    /// An override document whose `<ProjectReference>` is gated on
+    /// `'$(TargetFramework)' == ''` — an edge only the **outer dispatch build**
+    /// takes, which every real inner build strips.
+    ///
+    /// This is the shape that makes "serve pass 1 and mark it untrusted"
+    /// insufficient on its own. `TargetFramework` is never *written* by a
+    /// multi-targeted document, so pass 1 decides that gate cleanly under the
+    /// evaluator's environment model — no diagnostic, no
+    /// `project_references_uncertain` — and the edge is captured as fact. The
+    /// compile closure would then follow a project the real build never
+    /// references, and fold its assemblies.
+    #[test]
+    fn an_override_document_does_not_publish_outer_build_only_edges() {
+        let tmp = TempDir::new().unwrap();
+        let dep = tmp.path().join("Dep.fsproj");
+        write_file(&dep, "<Project><PropertyGroup/></Project>");
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="Dep.fsproj" Condition="'$(TargetFramework)' == ''" />
+              </ItemGroup>
+            </Project>"#,
+        );
+        let ws = Workspace::default();
+
+        // The *compile closure* walk — the one whose edges become the env
+        // fold's assemblies. (`project_graph`'s declared-structure walk
+        // deliberately keeps reporting the elements the document declares; it
+        // feeds cycle diagnostics, not assembly resolution.)
+        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert!(
+            node.references.is_empty(),
+            "an outer-build-only edge must not reach the compile closure: {:?}",
+            node.references
+        );
+        assert!(
+            node.references_uncertain,
+            "and the emptied list must say it was suppressed, not that the project \
+             references nothing"
+        );
+    }
+
     /// A multi-targeted project that opts `TargetFramework` out of global
     /// read-only-ness and overwrites it once the seed is non-empty — a write
     /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
@@ -2189,16 +2280,16 @@ mod tests {
     /// it wrongly in a different way, discovered one review round at a time. A
     /// per-surface test would have found them one at a time again; enumerating
     /// the surfaces against one fixture is what makes the next such shape cost
-    /// one round instead of four.
+    /// one round instead of six.
     ///
-    /// Every override declines, whatever it wrote and however clean it looks —
-    /// see [`tfm_policy::reseed_outcome`] for why the final property-table
-    /// value cannot classify the pass. What the rows pin is that the decline is
-    /// uniform across the surfaces, and that `ran_under` still describes the
-    /// parse: the *trust* is withheld, not the fact of what was evaluated.
-    /// Without the third row this would pass on an implementation that reads
-    /// the override through a value-shaped helper and so cannot tell an
-    /// override that *cleared* the TFM from no override at all.
+    /// **Every override declines, on every surface, whatever it wrote.** The
+    /// rows differ in what the document says and agree in what we serve, which
+    /// is the point: the seeded pass is discarded, the outer dispatch build is
+    /// served in its place, and no TFM is reported for it (see
+    /// [`tfm_policy::reseed_outcome`] for why no single TFM describes such a
+    /// pass). The variety that remains — a clean override, an unpinned one, one
+    /// that clears the TFM, one over a sole declaration — exists so that any
+    /// implementation which *starts* distinguishing them again fails here.
     #[test]
     fn every_tfm_surface_agrees_on_a_pass_two_override() {
         struct Case {
@@ -2206,9 +2297,10 @@ mod tests {
             outer_gate: bool,
             value: &'static str,
             served: ServedTfm,
-            /// The TFM the parse ran under — what the defines, the Compile
-            /// items and the `.fsproj` buffer diagnostics describe (plan E7).
-            /// Withholding *trust* is a separate axis from what was evaluated.
+            /// The TFM the served parse ran under — what its defines, Compile
+            /// items and `.fsproj` buffer diagnostics describe (plan E7).
+            /// `None` throughout here: the served parse is the outer dispatch
+            /// build, which runs under no TFM at all.
             ran_under: Option<&'static str>,
             node: NodeTfm,
         }
@@ -2218,7 +2310,7 @@ mod tests {
                 outer_gate: false,
                 value: "net10.0",
                 served: ServedTfm::Untrusted,
-                ran_under: Some("net10.0"),
+                ran_under: None,
                 node: NodeTfm::Unresolved,
             },
             Case {
@@ -2226,7 +2318,7 @@ mod tests {
                 outer_gate: true,
                 value: "net10.0",
                 served: ServedTfm::Untrusted,
-                ran_under: Some("net10.0"),
+                ran_under: None,
                 node: NodeTfm::Unresolved,
             },
             Case {
@@ -2245,7 +2337,7 @@ mod tests {
                 outer_gate: false,
                 value: "net10.0",
                 served: ServedTfm::Untrusted,
-                ran_under: Some("net10.0"),
+                ran_under: None,
                 node: NodeTfm::Unresolved,
             },
         ];

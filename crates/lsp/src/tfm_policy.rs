@@ -122,16 +122,18 @@ pub(crate) fn tfm_choice(pass1: &ParsedProject, extras: &HashMap<String, String>
     }
 }
 
-/// What the evaluation produced by honouring a [`TfmChoice::Reseed`] actually
-/// ran under — which is not necessarily what it was seeded with.
+/// Whether the evaluation produced by honouring a [`TfmChoice::Reseed`] is
+/// actually the inner build we asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReseedOutcome {
-    /// The seed stood: the document did not touch the global.
+    /// The seed stood: the document did not touch the global, so this pass *is*
+    /// the seeded inner build.
     AsSeeded,
-    /// The document overrode the seed. No consumer may key on the result;
-    /// `ran_under` is the value the property table ended at (`None` when the
-    /// override cleared it) purely so the parse surfaces can describe the parse.
-    OverriddenUntrusted { ran_under: Option<String> },
+    /// The document overwrote the seed, so the pass is not any single TFM's
+    /// build and must be discarded — see [`reseed_outcome`]. Deliberately
+    /// carries no value: the final table entry is not "the TFM it ran under",
+    /// which is what made this look reportable for four review rounds.
+    Overridden,
 }
 
 /// Classify what pass 2 ran under (fsproj 3.3c, plan E7).
@@ -149,24 +151,25 @@ pub(crate) enum ReseedOutcome {
 /// parse that ran under nothing. Distinguishing absence from emptiness is the
 /// whole job.
 ///
-/// **Every override is untrusted, whatever it wrote.** The tempting third
-/// outcome — a pinned, non-empty override we serve on its own merits — is not
-/// soundly available, because the final table value does not classify the
-/// *pass*. MSBuild evaluates a document in order, so a `$(TargetFramework)`-gated
-/// `<PropertyGroup>` sitting above the override has already contributed the
-/// **seed's** defines and items; reporting the override's value would pair those
-/// with the other TFM's assets, which is precisely the incoherence E5 exists to
-/// prevent. Tracking which writes preceded the override would mean modelling
-/// per-property TFM provenance through the whole evaluation, for a document
-/// shape that overwrites its own inner-build seed. Declining costs a real
-/// project nothing we can identify and keeps the guarantee statable.
+/// **An override makes the pass unusable, whatever it wrote** — the caller
+/// discards it and keeps pass 1. There is no "the TFM this pass ran under" to
+/// report, because MSBuild evaluates a document in order: a
+/// `$(TargetFramework)`-gated `<PropertyGroup>` above the override has already
+/// contributed the **seed's** defines and items, while the table ends at the
+/// override's value. The pass is a mixture of two builds, and any single TFM
+/// reported for it would pair one build's defines with the other's assets —
+/// precisely the incoherence E5 exists to prevent.
+///
+/// Recovering a usable answer would mean modelling per-property TFM provenance
+/// through the whole evaluation. That is not worth building for a document that
+/// overwrites its own inner-build seed: zero projects in the pinned F# corpus or
+/// the local NuGet cache opt `TargetFramework` out (they opt out `RepoRoot`,
+/// `OutDir`, `WasmNativeWorkload`, `RestoreAdditionalProjectSources`), so this
+/// declines nothing anyone has been observed to write.
 pub(crate) fn reseed_outcome(pass2: &ParsedProject) -> ReseedOutcome {
-    let Some(raw) = lookup_property_ci(&pass2.properties, "TargetFramework") else {
-        return ReseedOutcome::AsSeeded;
-    };
-    let value = raw.trim();
-    ReseedOutcome::OverriddenUntrusted {
-        ran_under: (!value.is_empty()).then(|| value.to_string()),
+    match lookup_property_ci(&pass2.properties, "TargetFramework") {
+        Some(_) => ReseedOutcome::Overridden,
+        None => ReseedOutcome::AsSeeded,
     }
 }
 
