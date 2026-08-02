@@ -148,8 +148,8 @@ fn sdk_chain_property_expressions_are_never_wrongly_committed() {
     // the evaluator started declining something it used to model, which is a
     // capability regression even though it stays *sound*. The buckets printed
     // above say which functions to model, and that is where the coverage is:
-    // seeding every reserved name moves this count by 12
-    // (`sdk_chain_decline_attribution.rs`), so the rest is modelling work.
+    // no reserved-name seeding could move this count by more than 52, and the
+    // names still unseeded are worth 4 (`sdk_chain_decline_attribution.rs`).
     let floor = if cfg!(windows) { 62 } else { 66 };
     assert!(
         exact >= floor,
@@ -212,8 +212,9 @@ fn sdk_chain_conditions_are_never_wrongly_committed() {
     // `is_path_rooted` declines), so the floor there stays 130. The withdrawn
     // majority reads *ordinary* SDK-computed names undefined
     // (`_TargetFrameworkVersionWithoutV` ×86, `OutputType` ×44, `Language` ×40),
-    // which a context-free census cannot have. Seeding every reserved name moves
-    // this count by 24 (`sdk_chain_decline_attribution.rs`).
+    // which a context-free census cannot have. No reserved-name seeding could
+    // move this count by more than 145, and the names still unseeded are worth
+    // 30 (`sdk_chain_decline_attribution.rs`).
     let floor = if cfg!(windows) { 130 } else { 139 };
     assert!(
         committed >= floor,

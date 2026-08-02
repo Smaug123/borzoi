@@ -21,8 +21,8 @@
 > expressions and 5% of its conditions, so the surface a laundering defect
 > could reach is small. Its previously-stated trigger — "land trusted seeding" —
 > was **void**, and is corrected under "The census, re-run"; the seeding lever
-> is worth +12 and +24 committed values, and the work it named was never
-> scheduled
+> is worth +4 and +30 committed values (ceiling +52/+145), and the work it named
+> was never scheduled
 > ([`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md)).
 >
 > **Known wrong commit, reproducible, not fixed:** a `Directory.Build.*` gate
@@ -984,12 +984,12 @@ were wrong, and
 [`msbuild-reserved-seeding-plan.md`](msbuild-reserved-seeding-plan.md) has the
 measurement.
 
-- **Seeding every reserved name moves the census by +12 expressions and +24
-  conditions**, against populations of 396 and 2 758 — and that over-states the
-  lever, since the seed table includes names a real walk already supplies and one
-  that cannot be known at all. Measured by doing the seeding and counting, not by
-  classifying declines: two attempts at classification were wrong, both inferring
-  a universal from a finite probe.
+- **The seeding work is worth +4 expressions and +30 conditions**, against
+  populations of 396 and 2 758, and *no* reserved-name seeding could exceed +52
+  and +145 — a sound ceiling, since an item reading no reserved name cannot be
+  reached by any choice of reserved values. Measured by seeding and counting,
+  not by classifying declines: two attempts at classification were wrong, both
+  inferring a universal from a finite probe.
 - **The claim came from misreading a histogram** bucketed by *function called*
   as though it were bucketed by *cause*. The attribution is now its own
   measurement (`sdk_chain_decline_attribution.rs`) with two-sided pins, so the
