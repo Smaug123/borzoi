@@ -1,9 +1,10 @@
 # Reserved-name seeding: what it is actually worth
 
 > **Status:** planned, and deliberately *not* started. The measurement below
-> was made to price the work, and it came out at a few per cent of what the
-> comments claimed. What follows is the case for doing a small, well-bounded
-> slice of it and for cutting the rest loose from the plan it was blocking.
+> was made to price the work: seeding **every** reserved name moves the SDK-chain
+> census by +12 call expressions and +24 conditions, against populations of 396
+> and 2 758. What follows is the case for doing a small, well-bounded slice of it
+> and cutting the rest loose from the plan it was blocking.
 
 ## Why this document exists
 
@@ -22,81 +23,74 @@ Two things were wrong with that.
    trigger condition could not fire — not because the measurement said wait,
    but because no work existed to move the measurement.
 2. **The attribution behind it was false.** The census's decline column was
-   described as "dominated by undefined *reserved* receivers". It is not: the
-   reserved population is 13 of 330 expression declines and 42 of 2 619
-   condition withdrawals, both upper bounds. The error was an artefact of
-   reading a histogram bucketed by *function name* as though it were bucketed
-   by *cause*.
+   described as "dominated by undefined *reserved* receivers". Seeding every
+   reserved name moves the census by +12 expressions and +24 conditions. The
+   error was an artefact of reading a histogram bucketed by *function name* as
+   though it were bucketed by *cause*.
 
 ## The measurement
 
 `crates/msbuild/tests/sdk_chain_decline_attribution.rs`, against the pinned SDK
-**10.0.301**, decomposing the census's own populations by why each item was
-declined. Its committed counts are asserted equal to the census's (66 and 139),
-so the two harnesses cannot drift apart and quietly measure different corpora.
+**10.0.301**. It does not classify declines — it **runs the census's own
+population twice**, once with the census seeds and once with every reserved name
+additionally defined, and reports the difference. That difference *is* the
+lever, with no claim about the declines it does not move.
 
-**The classifier does not read issue tags**, because they do not carry the
-distinction it needs. `$([System.IO.Path]::Combine($(Undefined), 'x'))` reports
-`Unsupported` and nothing else, though `Combine` *is* modelled and the real
-blocker is the operand. So each declined item is instead **re-evaluated with
-every name it references defined**, under several fillers; if it commits then,
-a richer property table would reach it.
+| | census seeds | + every reserved name | delta |
+| --- | ---: | ---: | ---: |
+| call expressions committed (of 396) | 66 | **78** | **+12** |
+| conditions committed (of 2 758) | 139 | **163** | **+24** |
 
-| SDK-chain call expressions | 396 distinct |
-| --- | ---: |
-| committed | **66** |
-| declined — **no property table can reach** | **193** |
-| declined — operands missing | 137 |
-|   …blocked purely by reserved names | **13** |
-|   …reserved mixed with ordinary | 13 |
-|   …no reserved name involved | **111** |
+**Seeding every reserved name moves the census by +12 expressions and +24
+conditions** — 3.6% of the 330 expression declines and 0.9% of the 2 619
+condition withdrawals. That is an *over-statement* of the lever by construction:
+the seed table includes names a real walk already supplies
+(`MSBuildProjectDirectory`, `MSBuildToolsVersion`, `MSBuildRuntimeType`), the
+four path-derivable names this document proposes adding, and
+`MSBuildStartupDirectory`, which cannot be known at all. The real lever is
+smaller than +12/+24.
 
-| SDK-chain conditions | 2 758 distinct |
-| --- | ---: |
-| committed | **139** |
-| withdrawn — no property table can reach | 157 |
-| withdrawn — operands missing | 2 462 |
-|   …blocked purely by reserved names | **42** |
-|   …reserved mixed with ordinary | 65 |
-|   …no reserved name involved | **2 355** |
+After seeding, what is still read undefined is overwhelmingly ordinary: 7 of 361
+remaining undefined expression reads are reserved names, and 47 of 3 576
+condition reads. The names doing the blocking are SDK-computed —
+`_TargetFrameworkVersionWithoutV` ×86, `OutputType` ×44, `Language` ×40,
+`TargetPlatformIdentifier` ×29, `BuildingInsideVisualStudio` ×25,
+`PublishSingleFile` ×25 — and no toolset seed supplies any of them.
 
-**Reserved-name seeding can reach at most 13 of 330 expression declines and 42
-of 2 619 condition withdrawals — 3.9% and 1.6%.** Both are *upper* bounds twice
-over: the census seeds no reserved name at all, so those counts include names a
-real walk already supplies (`MSBuildProjectDirectory`, `MSBuildToolsVersion`,
-`MSBuildRuntimeType`); and the reachability probe counts an item as reachable if
-*any* filler commits, which over-states what a real table would do. Even folding
-in the mixed bucket — which seeding alone cannot unblock, since those items also
-need ordinary names — the ceiling is 26 of 330 and 107 of 2 619.
+### Why this is a delta and not a classification
 
-What the declines actually are:
+Two earlier versions of this measurement classified each decline by cause, and
+both were wrong the same way: they inferred a *universal* ("no property table
+reaches this") from a *finite* probe. Recorded because the shape recurs.
 
-- **193 of the 330 expression declines reach no property table at all** —
-  property functions outside the modelled subset. The census's function
-  histogram names them: `Regex::Replace` ×37, `Path::Combine` ×35 (modelled, but
-  many call sites nest an unmodelled inner call), `.Contains` ×24, `.Replace` ×23.
-- **2 355 of the 2 619 condition withdrawals involve no reserved name** — they
-  are blocked by ordinary SDK-computed names: `_TargetFrameworkVersionWithoutV`
-  ×87, `OutputType` ×44, `Language` ×38, `TargetPlatformIdentifier` ×29,
-  `BuildingInsideVisualStudio` ×25, `PublishSingleFile` ×25. No toolset seed
-  supplies any of them.
+- **Reading `Issue` tags does not work.** `substitute` reports `Unsupported` and
+  nothing else when a *modelled* function has an undefined operand, so
+  `$([System.IO.Path]::Combine($(Undefined), 'x'))` is indistinguishable from a
+  function never implemented — while the same call with the operand defined
+  reduces cleanly. Charging `Unsupported` to "shape not modelled" absorbed every
+  operand-blocked call into the bucket the conclusion rested on.
+- **Re-probing with fixed filler values does not work either.**
+  `'$(X)' != '' and Exists('$(X)')` commits when `X` is defined **empty**, which
+  a set of non-empty fillers never tries; `$(Rid.Split('-')[1])` commits only for
+  a hyphen-bearing value. A failed finite probe cannot establish unreachability.
 
-### The census is context-free, and that inflates its undefined column
+The delta needs neither inference. It answers the question actually being asked
+— *what would seeding buy?* — by doing the seeding and counting.
 
-The census evaluates each expression and condition **in isolation** against a
-fixed seed table. A real walk does not: by the time the SDK chain reaches a
-condition on `$(OutputType)`, its own props have written it. Probed on a plain
-`net10.0` SDK project, our walker defines `OutputType=Library`, `Language=F#`,
-`TargetPlatformIdentifier=`, `_TargetFrameworkVersionWithoutV=10.0`,
-`EnableDefaultItems=true` and `TargetExt=.dll` — six of the census's top
-blockers, all resolved, none of them reserved. `_TargetFrameworkVersionWithoutV`
-alone accounts for 87 of the withdrawals the census attributes to a missing
-operand.
+### The census is context-free, which is why it looked otherwise
 
-So the census's undefined-bearing column measures *how much of the SDK's text
-depends on values established elsewhere in the SDK*, which is a fact about the
-SDK, not a defect list. **It is the wrong instrument for pricing seeding work**,
-and P3's trigger should never have been keyed to it.
+The census evaluates each expression and condition **in isolation**. A real walk
+does not: by the time the SDK chain reaches a condition on `$(OutputType)`, its
+own props have written it. Probed on a plain `net10.0` SDK project, our walker
+defines `OutputType=Library`, `Language=F#`, `TargetPlatformIdentifier=`,
+`_TargetFrameworkVersionWithoutV=10.0`, `EnableDefaultItems=true` and
+`TargetExt=.dll` — six of the census's top blockers, all resolved, none of them
+reserved. `_TargetFrameworkVersionWithoutV` alone appears in 86 withdrawn
+conditions.
+
+So the census's undefined column measures *how much of the SDK's text depends on
+values established elsewhere in the SDK*, which is a fact about the SDK rather
+than a defect list.
 
 ## What a real walk actually leaves empty
 
@@ -181,8 +175,8 @@ broadly will hit this, and will read it as five wrong commits.
 ## What this changes elsewhere
 
 1. **P3's trigger is void and needs re-deriving.** It was "the committed
-   fraction rises, via trusted seeding". Seeding moves that fraction by a few
-   per cent at most, so the trigger would never fire on its own terms. P3 should be re-priced
+   fraction rises, via trusted seeding". Seeding moves it by +12 and +24, so
+   the trigger would never fire on its own terms. P3 should be re-priced
    against what its durability is actually worth, or against the *modelling*
    lever (the 286 unmodelled shapes), which is the thing that would genuinely
    grow the committed surface — and therefore genuinely grow P3's blast radius.
@@ -194,9 +188,10 @@ broadly will hit this, and will read it as five wrong commits.
    discipline `parser_corpus`'s `CLEAN_PARSES` already applies and for the same
    reason.
 3. **The real coverage worklist is the function list**, already printed by the
-   census and now labelled as what it is: 193 of the 330 expression declines
-   reach no property table at all, so modelling is the only lever that moves
-   them.
+   census and now labelled as what it is. What this document establishes is only
+   that *seeding* is not the lever; which of the remaining declines are
+   modelling work and which are richer-table work is not measured here, and the
+   two failed attempts above are why no number for that split is quoted.
 
 ## The recommendation
 
