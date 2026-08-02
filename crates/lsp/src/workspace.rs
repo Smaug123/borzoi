@@ -46,6 +46,7 @@ use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::tfm_policy::{self, caller_owns_target_framework, seed_target_framework_global};
 use borzoi_msbuild::ItemMetadataValue;
 
 const COMPILED: &str = "COMPILED";
@@ -159,6 +160,30 @@ struct EvaluatedProject {
     /// caller-supplied global `TargetFramework` is immune too: globals
     /// out-rank body writes, and the caller's value needs no provenance.
     tfm_untrusted: bool,
+    /// The document can overwrite the `TargetFramework` global we seed to serve
+    /// its inner build (`<Project TreatAsLocalProperty="TargetFramework">`), so
+    /// **no evaluation of it is an inner build**: MSBuild evaluates in document
+    /// order, so a gated group above such an override contributes the seed's
+    /// values while everything after it runs under the override's. `parsed` is
+    /// therefore the *outer dispatch* build, whose one virtue is that it is at
+    /// least internally consistent, and every TFM-derived conclusion is
+    /// withheld.
+    ///
+    /// Withheld includes the reference list, which
+    /// [`Self::tfm_untrusted`] alone does not cover.
+    /// That flag's consumers keep pass 1's edges on the argument
+    /// that any TFM-dependent edge read the unpinned `TargetFramework` and so
+    /// already flipped `project_references_uncertain` — true when the singular
+    /// is unpinned, false here: a multi-targeted document never *writes* the
+    /// singular, so pass 1 decides `'$(TargetFramework)' == ''` cleanly under
+    /// the environment model and captures an outer-build-only edge as fact.
+    /// See `an_override_document_does_not_publish_outer_build_only_edges`.
+    ///
+    /// Zero projects in the pinned F# corpus or the local NuGet cache opt
+    /// `TargetFramework` out (15 opt out `RepoRoot`, 2 `OutDir`, 1 each
+    /// `WasmNativeWorkload` and `RestoreAdditionalProjectSources`), so this
+    /// declines nothing anyone has been observed to write.
+    not_an_inner_build: bool,
 }
 
 /// The workspace's served-TFM verdict for an entry project
@@ -258,6 +283,24 @@ impl Workspace {
         &self.env
     }
 
+    /// The MSBuild build-global bag every project evaluation in this workspace
+    /// starts from: the `dotnet build` defaults (`default_build_properties`)
+    /// overlaid with whatever the caller pinned at construction.
+    ///
+    /// Exposed for the same reason as [`Workspace::env`], and for the same
+    /// class of divergence (plan E7): the `.fsproj`-buffer diagnostic path
+    /// evaluates the *buffer* rather than the file, so it cannot go through
+    /// the project cache — but it must start from the identical globals, or a
+    /// caller who pinned `Configuration=Release` sees it honoured in
+    /// resolution and ignored in the squiggles.
+    ///
+    /// `TargetFramework` is deliberately absent: it is per-project, not
+    /// workspace-global, and each surface seeds it from its own evaluation via
+    /// `tfm_policy::tfm_choice`.
+    pub fn build_properties(&self) -> HashMap<String, String> {
+        build_properties(&self.extra_build_properties)
+    }
+
     /// Drop every cached project evaluation, forcing re-evaluation from disk on
     /// the next lookup. Used by `workspace/didChangeWatchedFiles` when a
     /// `.fsproj` / `Directory.Build.*` / `global.json` changes on disk: the SDK
@@ -290,6 +333,26 @@ impl Workspace {
         }
     }
 
+    /// The target framework the project's evaluation actually **ran under** —
+    /// the one its `DefineConstants` and Compile items came from.
+    ///
+    /// Distinct from [`Workspace::served_tfm_for_project`], and the distinction
+    /// is load-bearing. That one answers "may the *assembly env* key assets
+    /// selection on this?", and declines an untrusted TFM outright; this one
+    /// answers "which inner build did we parse?", which has an answer even
+    /// then, because the parse still had to pick something (the untrusted arm
+    /// keeps pass 1 and lets each read flip its own `*_uncertain` flag). The
+    /// two agree whenever the verdict is [`ServedTfm::Tfm`].
+    ///
+    /// This is the currency the *parse-side* coherence invariant is stated in
+    /// (plan E7): the `.fsproj`-buffer diagnostics must describe this
+    /// evaluation, not the publish-side verdict — see
+    /// `buffer_diagnostics_follow_the_workspace_parsed_tfm`.
+    pub fn parsed_tfm_for_project(&mut self, project_path: &Path) -> Option<String> {
+        self.evaluated(project_path)
+            .and_then(|e| e.chosen_tfm.clone())
+    }
+
     /// The full served-TFM verdict for the project at `project_path` — the
     /// input the assembly-env layer keys its assets-target selection on
     /// (fsproj 3.3d round 19). [`ServedTfm`] documents the three states and
@@ -314,6 +377,13 @@ impl Workspace {
             // degradation as "no TFM declared" (the pre-3.3c behaviour).
             None => ServedTfm::NoneDeclared,
             Some(e) => {
+                // The caller-owned immunity is about *provenance* — the
+                // caller's value needs none. It cannot extend to an evaluation
+                // the document was free to conduct under a different TFM than
+                // the one supplied, so `not_an_inner_build` declines either way.
+                if e.not_an_inner_build {
+                    return ServedTfm::Untrusted;
+                }
                 if e.tfm_untrusted && !caller_owns_tfm {
                     return ServedTfm::Untrusted;
                 }
@@ -916,6 +986,24 @@ fn resolve_node_uncached(
     };
     let outer_edges = edges_of(&outer, purpose, is_entry);
     let outer_suppressed = references_suppressed(&outer, purpose);
+    if outer.not_an_inner_build {
+        // Ahead of the caller-owned fast path below, for the reason
+        // `Workspace::served_tfm_for_project` states: caller ownership excuses
+        // the *provenance* of a value, not an evaluation the document was free
+        // to conduct under a different TFM than the one supplied.
+        //
+        // `Unresolved`, never `NoneDeclared`: the latter tells the env "this
+        // project declares no TFM, so its sole restored output is the one",
+        // which for a multi-targeted project licenses folding whichever stale
+        // TFM directory is lying around. The output name declines with it, as
+        // for any TFM-unresolved node.
+        return NodeResult::Resolved {
+            edges: outer_edges,
+            tfm: NodeTfm::Unresolved,
+            output_name: None,
+            references_uncertain: outer_suppressed,
+        };
+    }
     if caller_owns_target_framework(extra_build_properties) {
         return NodeResult::Resolved {
             edges: outer_edges,
@@ -959,14 +1047,30 @@ fn resolve_node_uncached(
     let declared = &outer.declared_tfms;
     if declared.len() <= 1 {
         // Single-target (or no TFM declared at all): there is only one build
-        // the project can produce; the seed adds nothing.
+        // the project can produce, so the seed adds nothing — *provided the
+        // evaluation in hand is that build*.
+        //
+        // The label therefore comes from `chosen_tfm`, which describes what the
+        // evaluation ran under, and never from the declaration alone. The two
+        // agree except when the caller pinned an explicitly **empty**
+        // `TargetFramework` global: that is the outer dispatch build, so a
+        // `Known(sole)` label would pair the inner build's identity with the
+        // outer build's `output_name` and reference list, both of which may be
+        // TFM-gated. A declared-but-not-evaluated TFM is `Unresolved` — we
+        // cannot say — rather than `NoneDeclared`, which would tell the env the
+        // project's sole restored output is the one to fold.
+        let tfm = match (&outer.chosen_tfm, declared.first()) {
+            (Some(chosen), _) => NodeTfm::Known(chosen.clone()),
+            (None, Some(_)) => NodeTfm::Unresolved,
+            (None, None) => NodeTfm::NoneDeclared,
+        };
+        let names_the_build = matches!(tfm, NodeTfm::Known(_) | NodeTfm::NoneDeclared);
         return NodeResult::Resolved {
             edges: outer_edges,
-            tfm: match declared.first() {
-                Some(sole) => NodeTfm::Known(sole.clone()),
-                None => NodeTfm::NoneDeclared,
-            },
-            output_name: evaluated_output_name(path, &outer),
+            output_name: names_the_build
+                .then(|| evaluated_output_name(path, &outer))
+                .flatten(),
+            tfm,
             references_uncertain: outer_suppressed,
         };
     }
@@ -989,6 +1093,17 @@ fn resolve_node_uncached(
             let mut map = extra_build_properties.clone();
             seed_target_framework_global(&mut map, current);
             return match evaluate_project(path, env, &map) {
+                // The label describes the evaluation, as everywhere else: this
+                // seeded pass may itself turn out not to be an inner build,
+                // and only *it* can tell us — a `TreatAsLocalProperty` reached
+                // through a `$(TargetFramework)`-conditioned import is
+                // invisible to the first-declared `outer` above.
+                Some(inner) if inner.not_an_inner_build => NodeResult::Resolved {
+                    edges: edges_of(&inner, purpose, is_entry),
+                    tfm: NodeTfm::Unresolved,
+                    output_name: None,
+                    references_uncertain: references_suppressed(&inner, purpose),
+                },
                 Some(inner) => NodeResult::Resolved {
                     edges: edges_of(&inner, purpose, is_entry),
                     tfm: NodeTfm::Known(current.clone()),
@@ -1106,7 +1221,13 @@ fn resolve_node_uncached(
 /// drops edges without marking them leaves the env fold counting a set those
 /// references were already filtered out of, so it sees no shortfall to report.
 fn references_suppressed(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose) -> bool {
-    purpose == GraphWalkPurpose::CompileClosure && evaluated.parsed.project_references_uncertain
+    // `not_an_inner_build` is a second, independent reason: we are serving the
+    // *outer dispatch* build, whose reference list is not the real build's under
+    // any TFM — and unlike the unpinned-singular case, nothing in the evaluation
+    // flagged itself, because a multi-targeted document never writes the
+    // singular and so decides `'$(TargetFramework)' == ''` cleanly.
+    purpose == GraphWalkPurpose::CompileClosure
+        && (evaluated.parsed.project_references_uncertain || evaluated.not_an_inner_build)
 }
 
 fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: bool) -> Vec<Edge> {
@@ -1288,33 +1409,26 @@ fn evaluate_project(
         disc.as_ref(),
     )?;
     // First-pass views, captured before any first-declared re-evaluation
-    // (`select_target_framework` case 3 replaces `parsed` with an inner-build
-    // pass in which an outer-gated `<TargetFrameworks>` may no longer exist).
+    // (a `TfmChoice::Reseed` replaces `parsed` with an inner-build pass in
+    // which an outer-gated `<TargetFrameworks>` may no longer exist).
     let declared_tfms = target_frameworks(&parsed);
-    let body_target_framework = lookup_property_ci(&parsed.properties, "TargetFramework")
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(String::from);
-    // Deliberately the singular only: an outer-gated PLURAL (the arcade
-    // idiom, `<TargetFrameworks Condition="'$(TargetFramework)' == ''">`)
-    // is unpinned by construction — its gate reads the then-undefined
-    // `TargetFramework` — yet the TFM-invariant intersection consumes the
-    // declared list without trusting any single branch, so distrusting it
-    // here would break the idiom for nothing. The body singular, by
-    // contrast, is consumed as an authoritative `NodeTfm::Known`.
-    let tfm_untrusted = parsed.property_provenance_untrusted("TargetFramework")
-        || body_target_framework
-            .as_deref()
-            .is_some_and(|v| v.contains("$("));
-    let (parsed, chosen_tfm) = select_target_framework(
+    let body_target_framework = tfm_policy::body_target_framework(&parsed);
+    let pass1_untrusted = tfm_policy::tfm_untrusted(&parsed);
+    let served = select_target_framework(
         parsed,
         &source,
         project_path,
         &extras,
         &env.build_environment,
         disc.as_ref(),
-        tfm_untrusted,
     );
+    let parsed = served.parsed;
+    let chosen_tfm = served.chosen_tfm;
+    // Pass 1's provenance verdict cannot see a write that only pass 2 performs,
+    // so an override widens it — and the override additionally withholds every
+    // other TFM-derived conclusion (see `EvaluatedProject::not_an_inner_build`).
+    let not_an_inner_build = served.not_an_inner_build;
+    let tfm_untrusted = pass1_untrusted || not_an_inner_build;
     // The evaluator reports the `SdkPaths::root` of the entry project's own SDK
     // (`ParsedProject::resolved_sdk_root`); recover the install root from it.
     // This is the single source of truth for an entry-SDK project — see
@@ -1333,40 +1447,54 @@ fn evaluate_project(
         declared_tfms,
         body_target_framework,
         tfm_untrusted,
+        not_an_inner_build,
     })
 }
 
-/// Pick the target framework to serve this project under, re-evaluating with
-/// it seeded when that changes the answer (fsproj 3.3c, plan E1/E2).
+/// Mark an outer dispatch build served in place of a discarded inner one as
+/// uncertain on every axis a `$(TargetFramework)` gate can reach.
 ///
-/// Policy: first-declared. Precisely, the chosen TFM is
+/// Its `DefineConstants`, its Compile items and its `<ProjectReference>`s are
+/// the *outer* build's, and no inner build has them — content gated on
+/// `'$(TargetFramework)' == ''` is reached here and nowhere else. Nothing in the
+/// evaluation says so on its own: a multi-targeted document never writes the
+/// singular, so that gate is decided cleanly under the evaluator's environment
+/// model, with no diagnostic and no `*_uncertain` flag.
 ///
-/// 1. the caller-seeded `TargetFramework` global when present (any casing,
-///    any value — `None` when it's empty). The caller owns the choice: an
-///    empty read-only global is an explicit "no TFM", and re-seeding would
-///    both override that input and trip the evaluator's case-insensitive
-///    duplicate-key validation, failing the whole evaluation;
-/// 2. else the body-written `<TargetFramework>` when non-empty. MSBuild's
-///    outer/inner gate is `'$(TargetFrameworks)' != '' and
-///    '$(TargetFramework)' == ''`, so a non-empty singular is a single-target
-///    build even when the plural is also set. Pass 1 already evaluated under
-///    it — no second pass;
-/// 3. else the **first** `target_frameworks()` entry, under which the project
-///    is re-evaluated with `TargetFramework` seeded as a read-only global —
-///    exactly what an MSBuild inner build does — so `$(TargetFramework)`-gated
-///    defines and Compile items become evaluable instead of flipping the
-///    `*_uncertain` flags. NOT taken when pass 1's `TargetFramework` is
-///    `tfm_untrusted` (an unpinned empty singular alongside the plural): the
-///    real build may be a *single* build under a value we can't see, so
-///    seeding would evaluate the gated defines/items cleanly under a choice
-///    [`Workspace::target_framework_for_project`] declines to serve — pairing
-///    first-declared parses with whatever the env's no-TFM fallback selects
-///    (the E5 incoherence). Keeping pass 1 lets every read of the unpinned
-///    `TargetFramework` flip its own `*_uncertain` flag instead;
-/// 4. else `None` (no TFM declared anywhere): keep pass 1 unchanged.
+/// Setting the flags the consumers already read is deliberate, rather than
+/// giving each of them a second predicate to consult. `*_uncertain` already
+/// means "this list may not be what the real build sees, so do not fold from
+/// it", which is exactly the claim, and every consumer that must respect it has
+/// been audited for that meaning already — `parses_for_project` refuses the
+/// whole fold on the first two (`semantic.rs`), degrading to single-file
+/// analysis.
+fn discarded_inner_build(mut parsed: ParsedProject) -> ParsedProject {
+    parsed.define_constants_uncertain = true;
+    parsed.items_uncertain = true;
+    parsed.project_references_uncertain = true;
+    parsed
+}
+
+/// The evaluation to serve for one project, and what is known about the TFM it
+/// ran under. Produced by [`select_target_framework`].
+struct ServedEvaluation {
+    parsed: ParsedProject,
+    /// The TFM `parsed` was evaluated under — what its defines and Compile
+    /// items came from. Published as [`EvaluatedProject::chosen_tfm`].
+    chosen_tfm: Option<String>,
+    /// A pass-2 `TreatAsLocalProperty` override fired, so no evaluation of this
+    /// document is an inner build — see
+    /// [`EvaluatedProject::not_an_inner_build`], which this becomes.
+    not_an_inner_build: bool,
+}
+
+/// Apply [`tfm_policy::tfm_choice`]'s decision: re-evaluate `pass1`'s project
+/// with the chosen TFM seeded when the decision asks for it, and return the
+/// evaluation to serve alongside what is known about its TFM.
 ///
-/// The one extra parse in case 3 happens once per multi-targeted project and
-/// is cached with the evaluation.
+/// The policy itself — which TFM, and when a second pass is needed — lives in
+/// [`tfm_policy`], shared with the `.fsproj`-buffer diagnostics path so the two
+/// surfaces cannot drift (plan E5/E7). This function is only the effect.
 fn select_target_framework(
     pass1: ParsedProject,
     source: &str,
@@ -1374,84 +1502,92 @@ fn select_target_framework(
     extras: &HashMap<String, String>,
     environment: &HashMap<String, String>,
     disc: Option<&SdkDiscovery>,
-    tfm_untrusted: bool,
-) -> (ParsedProject, Option<String>) {
-    if let Some(value) = lookup_property_ci(extras, "TargetFramework") {
-        let trimmed = value.trim();
-        let chosen = (!trimmed.is_empty()).then(|| trimmed.to_string());
-        return (pass1, chosen);
-    }
-    let body_tf = lookup_property_ci(&pass1.properties, "TargetFramework")
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(String::from);
-    if body_tf.is_some() {
-        return (pass1, body_tf);
-    }
-    if tfm_untrusted {
-        return (pass1, None);
-    }
-    let declared = target_frameworks(&pass1);
-    let Some(first) = declared.first().cloned() else {
-        return (pass1, None);
+) -> ServedEvaluation {
+    let choice = tfm_policy::tfm_choice(&pass1, extras);
+    let Some(seed) = choice.reseed() else {
+        // A *caller-supplied* global carries the name too, and the same opt-out
+        // lets the document overwrite it — so pass 1 already is the mixture,
+        // with no second pass involved. The caller's ownership of the choice is
+        // a reason to skip provenance checks on its value, not a reason to
+        // believe an evaluation that did not honour it.
+        let overridable = matches!(
+            tfm_policy::reseed_outcome(&pass1),
+            tfm_policy::ReseedOutcome::Overridable
+        );
+        // Presence, not ownership: `caller_owns_target_framework` asks whether
+        // the caller made a TFM *choice*, and an empty global deliberately is
+        // not one — but it is still a global of that name for the opt-out to
+        // unprotect, and the document can overwrite it just the same.
+        let caller_supplied_global =
+            tfm_policy::lookup_property_ci(extras, "TargetFramework").is_some();
+        if overridable && caller_supplied_global {
+            return ServedEvaluation {
+                parsed: discarded_inner_build(pass1),
+                chosen_tfm: None,
+                not_an_inner_build: true,
+            };
+        }
+        let chosen_tfm = choice.served().map(str::to_string);
+        return ServedEvaluation {
+            parsed: pass1,
+            chosen_tfm,
+            not_an_inner_build: false,
+        };
     };
     let mut seeded = extras.clone();
-    seeded.insert("TargetFramework".to_string(), first.clone());
+    tfm_policy::seed_target_framework_global(&mut seeded, seed);
+    let seed = seed.to_string();
     match parse_with_optional_sdk(source, project_path, &seeded, environment, disc) {
-        Some(pass2) => (pass2, Some(first)),
-        // Same source, same resolver, and the seed key can't collide (the
-        // caller-global case returned above) — so this arm shouldn't be
-        // reachable. Degrade to the unseeded view rather than failing the
+        Some(pass2) => match tfm_policy::reseed_outcome(&pass2) {
+            tfm_policy::ReseedOutcome::AsSeeded => ServedEvaluation {
+                parsed: pass2,
+                chosen_tfm: Some(seed),
+                not_an_inner_build: false,
+            },
+            // The document opts `TargetFramework` out of global protection,
+            // so the seeded pass may be a chimera: values above an override
+            // came from the seed, values below from the override. Serving it
+            // would publish a mixture as though it were one build. Keep
+            // **pass 1** — the outer dispatch build, which is at least
+            // internally consistent — and withhold every TFM-derived
+            // conclusion (`EvaluatedProject::not_an_inner_build`).
+            //
+            // Discarded rather than flagged, deliberately: a flagged chimera
+            // stays reachable, so every surface that reads the evaluation has
+            // to decide independently whether it may trust a mixture — the
+            // TFM, the output name, the node label, the reference list. A
+            // discarded one is unreachable and no such decision exists.
+            tfm_policy::ReseedOutcome::Overridable => ServedEvaluation {
+                parsed: discarded_inner_build(pass1),
+                chosen_tfm: None,
+                not_an_inner_build: true,
+            },
+        },
+        // Same source, same resolver, and the seed key can't collide (a
+        // caller-owned global never yields `Reseed`) — so this arm shouldn't
+        // be reachable. Degrade to the unseeded view rather than failing the
         // whole project.
-        None => (pass1, None),
+        None => ServedEvaluation {
+            parsed: pass1,
+            chosen_tfm: None,
+            not_an_inner_build: false,
+        },
     }
-}
-
-/// Whether the caller's extra build properties pin a **non-empty**
-/// `TargetFramework` global — the caller then owns the TFM choice, and its
-/// value needs no provenance (globals out-rank body writes). An EMPTY
-/// caller-supplied `TargetFramework` is the outer (dispatch) build, not a
-/// TFM choice — the SDK's inner-build gate is exactly
-/// `'$(TargetFramework)' == ''` — so it does not count as ownership and
-/// falls through to the normal declared-TFM classification (in
-/// [`resolve_node_uncached`], reading it as ownership would classify a
-/// multi-targeted node `NoneDeclared` and let the output locator fold a
-/// lone stale variant). Shared between [`resolve_node_uncached`] and
-/// [`Workspace::target_framework_for_project`] so the graph-node and
-/// entry-side provenance gates cannot drift.
-fn caller_owns_target_framework(extra_build_properties: &HashMap<String, String>) -> bool {
-    extra_build_properties
-        .iter()
-        .any(|(k, v)| k.eq_ignore_ascii_case("TargetFramework") && !v.trim().is_empty())
-}
-
-/// Seed `TargetFramework` as a build global for an inner-build (per-TFM)
-/// evaluation, **replacing** any case-insensitively equal existing key.
-/// MSBuild global-property names compare OrdinalIgnoreCase and the
-/// evaluator's input validation rejects case-insensitive duplicates, so a
-/// caller-supplied differently-cased key (e.g. an explicitly empty
-/// `targetframework`, which deliberately falls through to per-TFM
-/// evaluation) must be displaced, not joined — a duplicate fails the whole
-/// branch evaluation and even TFM-invariant edges would vanish.
-fn seed_target_framework_global(map: &mut HashMap<String, String>, tfm: &str) {
-    map.retain(|k, _| !k.eq_ignore_ascii_case("TargetFramework"));
-    map.insert("TargetFramework".to_string(), tfm.to_string());
-}
-
-/// Case-insensitive property lookup (MSBuild property names compare
-/// OrdinalIgnoreCase; both `extra_properties` keys and
-/// [`ParsedProject::properties`] preserve the source spelling).
-fn lookup_property_ci<'a>(map: &'a HashMap<String, String>, name: &str) -> Option<&'a str> {
-    map.iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(name))
-        .map(|(_, v)| v.as_str())
 }
 
 /// MSBuild-default build globals used when evaluating a project for
 /// LSP diagnostics. The SDK's own `*.props` predicate `DefineConstants`
 /// on these (e.g. `DEBUG` is gated on `$(Configuration) == 'Debug'`),
 /// so passing an empty bag would silently drop those symbols and
-/// produce diagnostics against the wrong `#if` branches.
+/// produce diagnostics against the wrong `#if` branches. The
+/// `.fsproj`-buffer surface needs them for a second reason: without
+/// them the most common condition shape in real `.fsproj` files —
+/// `Condition="'$(Configuration)|$(Platform)' == 'Debug|AnyCPU'"` —
+/// emits an `UndefinedProperty` diagnostic on every clean buffer.
+///
+/// Intentionally a tiny set. Each addition trades a class of false
+/// positives for the risk of evaluating user conditions against a value
+/// the user didn't pick.
 ///
 /// Today the LSP only ever evaluates as `Configuration=Debug,
 /// Platform=AnyCPU` — the F# editor flow most users want. A future
@@ -2097,6 +2233,499 @@ mod tests {
             ws.target_framework_for_project(&proj),
             Some("net10.0".to_string())
         );
+    }
+
+    /// A caller-supplied **empty** `TargetFramework` global is the outer
+    /// dispatch build, not a TFM choice, so `chosen_tfm` is `None` while the
+    /// project still declares its sole TFM. The node is then `Unresolved`, and
+    /// both of the other two verdicts would be wrong in opposite directions:
+    /// `NoneDeclared` tells the env the project's lone restored output is the
+    /// one to fold, and `Known(sole)` pairs the inner build's identity with an
+    /// `output_name` and reference list computed under the *outer* build, both
+    /// of which may be TFM-gated.
+    #[test]
+    fn an_empty_tfm_global_leaves_the_sole_declaration_unresolved() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            "<Project><PropertyGroup><TargetFrameworks>net8.0</TargetFrameworks></PropertyGroup></Project>",
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), String::new())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+        let graph = ws.project_graph(&proj);
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(node.tfm, NodeTfm::Unresolved);
+        assert_eq!(node.output_name, None, "declines with the TFM");
+    }
+
+    /// An override document whose `<ProjectReference>` is gated on
+    /// `'$(TargetFramework)' == ''` — an edge only the **outer dispatch build**
+    /// takes, which every real inner build strips.
+    ///
+    /// This is the shape that makes "serve pass 1 and mark it untrusted"
+    /// insufficient on its own. `TargetFramework` is never *written* by a
+    /// multi-targeted document, so pass 1 decides that gate cleanly under the
+    /// evaluator's environment model — no diagnostic, no
+    /// `project_references_uncertain` — and the edge is captured as fact. The
+    /// compile closure would then follow a project the real build never
+    /// references, and fold its assemblies.
+    #[test]
+    fn an_override_document_does_not_publish_outer_build_only_edges() {
+        let tmp = TempDir::new().unwrap();
+        let dep = tmp.path().join("Dep.fsproj");
+        write_file(&dep, "<Project><PropertyGroup/></Project>");
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+              <ItemGroup>
+                <ProjectReference Include="Dep.fsproj" Condition="'$(TargetFramework)' == ''" />
+              </ItemGroup>
+            </Project>"#,
+        );
+        let ws = Workspace::default();
+
+        // The *compile closure* walk — the one whose edges become the env
+        // fold's assemblies. (`project_graph`'s declared-structure walk
+        // deliberately keeps reporting the elements the document declares; it
+        // feeds cycle diagnostics, not assembly resolution.)
+        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert!(
+            node.references.is_empty(),
+            "an outer-build-only edge must not reach the compile closure: {:?}",
+            node.references
+        );
+        assert!(
+            node.references_uncertain,
+            "and the emptied list must say it was suppressed, not that the project \
+             references nothing"
+        );
+    }
+
+    /// A multi-targeted project that opts `TargetFramework` out of global
+    /// read-only-ness and overwrites it once the seed is non-empty — a write
+    /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
+    /// write in a group the evaluator cannot pin.
+    /// An override whose *value* the evaluator refuses (`@(Tfms)` is an item
+    /// reference, and we have no item evaluator). MSBuild still performs the
+    /// assignment; our walk drops the name from the property table entirely.
+    ///
+    /// So the served evaluation is a chimera exactly as for a plain override,
+    /// but the property table looks identical to a document that never
+    /// overrode anything — absence there conflates "no write" with "a write we
+    /// refused". The decline is therefore keyed on the document's
+    /// `TreatAsLocalProperty` opt-out, which is a syntactic fact and states the
+    /// same thing whatever the write turns out to be.
+    #[test]
+    fn an_override_the_evaluator_refuses_still_declines() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "@(Tfms)"),
+        );
+        let mut ws = Workspace::default();
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
+    /// A *caller-supplied* `TargetFramework` global is subject to the same
+    /// opt-out as one we seed ourselves: `TreatAsLocalProperty` lets the
+    /// document overwrite whichever global carries the name, and the caller's
+    /// ownership of the choice is a reason to skip *provenance* checks, not a
+    /// reason to believe an evaluation that did not honour it.
+    ///
+    /// Otherwise the graph's producer-TFM seeding and any harness constructed
+    /// with `with_env_and_extra_build_properties` would report the TFM they
+    /// asked for while the defines and items came from another.
+    #[test]
+    fn a_caller_owned_tfm_declines_when_the_document_can_overwrite_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(
+            ws.served_tfm_for_project(&proj),
+            ServedTfm::Untrusted,
+            "the caller asked for net8.0 and the document wrote net10.0"
+        );
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
+    /// The graph node's mirror of
+    /// `a_caller_owned_tfm_declines_when_the_document_can_overwrite_it`: the
+    /// walk has its own caller-owned fast path, and it must consult
+    /// `not_an_inner_build` too.
+    ///
+    /// `NodeTfm::NoneDeclared` would be the wrong decline here — it tells the
+    /// env "this project declares no TFM, so its sole restored output is the
+    /// one", which for a multi-targeted project licenses folding whichever
+    /// stale TFM directory happens to be lying around. `Unresolved` is the
+    /// verdict that means "we cannot say", and it folds nothing.
+    #[test]
+    fn a_caller_owned_graph_node_declines_when_the_document_can_overwrite_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
+        let ws = Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(node.tfm, NodeTfm::Unresolved);
+        assert_eq!(
+            node.output_name, None,
+            "a TFM-unresolved node's per-TFM output name cannot be pinned either"
+        );
+    }
+
+    /// A producer-seeded node is labelled by *its own* evaluation, so an
+    /// opt-out only that evaluation can see still declines.
+    ///
+    /// The first-declared pass (`outer`) cannot see this one: the
+    /// `TreatAsLocalProperty` root is imported behind a
+    /// `'$(TargetFramework)' == 'net10.0'` gate, so it is reached only when the
+    /// restore's producer TFM seeds `net10.0`. The node's TFM and output name
+    /// come from the seeded evaluation, so they must decline with it —
+    /// otherwise a restore selecting that TFM folds a DLL from a build whose
+    /// own seed was overwritten.
+    #[test]
+    fn a_producer_seeded_node_declines_on_its_own_evaluation() {
+        let tmp = TempDir::new().unwrap();
+        write_file(
+            &tmp.path().join("Local.props"),
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net8.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project>
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <Import Project="Local.props" Condition="'$(TargetFramework)' == 'net10.0'" />
+            </Project>"#,
+        );
+        let ws = Workspace::default();
+        // The map's keys are *canonicalised* (`project_graph_impl`), which on
+        // macOS differs from lexical normalisation: `/tmp` is a symlink to
+        // `/private/tmp`, so a lexically-normalised key silently never matches
+        // and the node is walked unseeded.
+        let producers =
+            BTreeMap::from([(std::fs::canonicalize(&proj).unwrap(), "net10.0".to_string())]);
+
+        let graph = ws.project_graph_with_producer_tfms(&proj, &producers);
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(
+            node.tfm,
+            NodeTfm::Unresolved,
+            "the seeded evaluation overwrote its own seed"
+        );
+        assert_eq!(node.output_name, None, "declines with the TFM");
+    }
+
+    /// The parse-side twin of
+    /// `an_override_document_does_not_publish_outer_build_only_edges`: defines
+    /// and Compile items gated on `'$(TargetFramework)' == ''` belong to the
+    /// outer dispatch build, and no inner build has them.
+    ///
+    /// The served pass *is* that outer build, and nothing in it flags itself —
+    /// a multi-targeted document never writes the singular, so that gate is
+    /// decided cleanly under the environment model, with no diagnostic and no
+    /// `*_uncertain` flag. Discarding the seeded pass without marking the one
+    /// that replaces it would therefore hand the semantic layer an outer-only
+    /// `DefineConstants` as fact.
+    ///
+    /// The assertion is on the flags rather than on `symbols_for_project`,
+    /// because the flags are the operative control: `parses_for_project`
+    /// refuses the whole fold on `items_uncertain ||
+    /// define_constants_uncertain` (`semantic.rs`), degrading to single-file
+    /// analysis. `symbols_for_project` deliberately still reports the raw set —
+    /// that is the standing contract for every untrusted project, not something
+    /// this shape changes.
+    #[test]
+    fn an_override_document_publishes_no_outer_build_only_symbols() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup Condition="'$(TargetFramework)' == ''">
+                <DefineConstants>OUTER_ONLY</DefineConstants>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let mut ws = Workspace::default();
+
+        let parsed = ws.project(&proj).expect("evaluates");
+        assert!(
+            parsed.define_constants_uncertain,
+            "outer-only defines must not be served as fact"
+        );
+        assert!(parsed.items_uncertain, "nor the outer build's Compile set");
+        assert!(
+            parsed.project_references_uncertain,
+            "nor its reference list"
+        );
+    }
+
+    /// An **empty** caller-supplied global is still a global the document can
+    /// overwrite. `caller_owns_target_framework` is the wrong question here —
+    /// it asks "did the caller make a TFM *choice*", and an empty global is
+    /// deliberately not one — where what matters is only whether a global of
+    /// that name is present for `TreatAsLocalProperty` to unprotect.
+    ///
+    /// Without this the document overwrites the empty seed, the evaluation runs
+    /// under the write, and we report `NoneDeclared` with the items and defines
+    /// still marked certain.
+    #[test]
+    fn an_empty_caller_global_is_still_overwritable() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), String::new())]);
+        let mut ws =
+            Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        let parsed = ws.project(&proj).expect("evaluates");
+        assert!(parsed.define_constants_uncertain);
+        assert!(parsed.items_uncertain);
+    }
+
+    /// `TreatAsLocalProperty` may itself be computed: MSBuild expands `$(…)` in
+    /// the attribute and honours the result (probed, dotnet 10.0.301 — with
+    /// `LocalNames=TargetFramework` supplied as a global, the body write beats
+    /// the seed). We record the attribute's raw text, so an entry we cannot
+    /// resolve to a name is exactly the "we did not look" case, and it declines
+    /// like any other opt-out.
+    ///
+    /// Over-conservative when the property expands to some other name — but
+    /// only ever in the declining direction, and it costs nothing measurable:
+    /// no real project opts `TargetFramework` out at all, computed or literal.
+    #[test]
+    fn a_computed_opt_out_declines_because_we_cannot_read_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            r#"<Project TreatAsLocalProperty="$(LocalNames)">
+              <PropertyGroup>
+                <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+              </PropertyGroup>
+              <PropertyGroup>
+                <TargetFramework Condition="'$(TargetFramework)' != ''">net10.0</TargetFramework>
+              </PropertyGroup>
+            </Project>"#,
+        );
+        let mut ws = Workspace::default();
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
+    fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
+        let (open, close) = if outer_gate {
+            (
+                "<PropertyGroup Condition=\"'$(DefineConstants)' == ''\">",
+                "</PropertyGroup>",
+            )
+        } else {
+            ("<PropertyGroup>", "</PropertyGroup>")
+        };
+        format!(
+            r#"<Project TreatAsLocalProperty="TargetFramework">
+              <PropertyGroup>
+                <TargetFrameworks>{declared}</TargetFrameworks>
+              </PropertyGroup>
+              {open}
+                <TargetFramework Condition="'$(TargetFramework)' != ''">{value}</TargetFramework>
+              {close}
+            </Project>"#
+        )
+    }
+
+    /// A pass-2 `TreatAsLocalProperty` override is served like any other body
+    /// write: on its own provenance. Pass 1's verdict cannot cover it — the
+    /// write does not exist there — so `evaluate_project` widens with pass 2's,
+    /// and *only* when an override actually fired (the generic provenance seam
+    /// fires unconditionally for real SDK projects, so an unguarded consult
+    /// would decline every multi-targeted project — `msbuild-trust-audit` §2).
+    ///
+    /// Every surface that publishes a TFM must publish the *same* one for the
+    /// same document, because they are all describing one evaluation. There are
+    /// three: what the parse ran under, what the assembly env may key assets
+    /// selection on, and how the project-graph node is labelled for a consumer
+    /// locating its output.
+    ///
+    /// "Agrees" is commit-or-decline, not equality. Each surface may decline —
+    /// and the graph declines a *multi*-targeted node outright absent a restore
+    /// seed, whatever any override did, because which TFM a consumer would
+    /// reference is genuinely open (rows 1-3, and equally true of a plain
+    /// multi-targeted project). What none of them may do is commit to a TFM
+    /// other than the one the parse ran under.
+    ///
+    /// One table over all three rather than three per-surface tests, because
+    /// `TreatAsLocalProperty="TargetFramework"` is cross-cutting: it lets a
+    /// document overwrite the inner-build seed, and every surface downstream of
+    /// that seed has to answer for it. A per-surface test only ever asks one of
+    /// them, so it can pass while the others are wrong; enumerating the
+    /// surfaces against one fixture asks all of them at once, which is the
+    /// property worth having for the next cross-cutting shape.
+    ///
+    /// **Every override declines, on every surface, whatever it wrote.** The
+    /// rows differ in what the document says and agree in what we serve, which
+    /// is the point: the seeded pass is discarded, the outer dispatch build is
+    /// served in its place, and no TFM is reported for it (see
+    /// [`tfm_policy::reseed_outcome`] for why no single TFM describes such a
+    /// pass). The variety that remains — a clean override, an unpinned one, one
+    /// that clears the TFM, one over a sole declaration — exists so that any
+    /// implementation which *starts* distinguishing them again fails here.
+    #[test]
+    fn every_tfm_surface_agrees_on_a_pass_two_override() {
+        struct Case {
+            declared: &'static str,
+            outer_gate: bool,
+            value: &'static str,
+            served: ServedTfm,
+            /// The TFM the served parse ran under — what its defines, Compile
+            /// items and `.fsproj` buffer diagnostics describe (plan E7).
+            /// `None` throughout here: the served parse is the outer dispatch
+            /// build, which runs under no TFM at all.
+            ran_under: Option<&'static str>,
+            node: NodeTfm,
+        }
+        let cases = [
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: false,
+                value: "net10.0",
+                served: ServedTfm::Untrusted,
+                ran_under: None,
+                node: NodeTfm::Unresolved,
+            },
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: true,
+                value: "net10.0",
+                served: ServedTfm::Untrusted,
+                ran_under: None,
+                node: NodeTfm::Unresolved,
+            },
+            Case {
+                declared: "net8.0;net10.0",
+                outer_gate: false,
+                value: "",
+                served: ServedTfm::Untrusted,
+                ran_under: None,
+                node: NodeTfm::Unresolved,
+            },
+            // A *sole* declaration takes the graph's single-target arm, which
+            // labelled the node from the declaration rather than from the
+            // evaluation its edges came from.
+            Case {
+                declared: "net8.0",
+                outer_gate: false,
+                value: "net10.0",
+                served: ServedTfm::Untrusted,
+                ran_under: None,
+                node: NodeTfm::Unresolved,
+            },
+        ];
+        // Crossed with whether the *caller* supplied the `TargetFramework`
+        // global. Both `served_tfm_for_project` and `resolve_node_uncached`
+        // keep a caller-owned fast path that answers before consulting the
+        // untrusted state, and each has to decline ahead of it — caller
+        // ownership excuses a value's provenance, not an evaluation the
+        // document was free to conduct under a different TFM. Crossing the axis
+        // in here asks every surface both ways at once.
+        for caller_seeded in [false, true] {
+            for case in &cases {
+                let tmp = TempDir::new().unwrap();
+                let proj = tmp.path().join("Sample.fsproj");
+                write_file(
+                    &proj,
+                    &fsproj_pass2_override(case.declared, case.outer_gate, case.value),
+                );
+                let extra = if caller_seeded {
+                    HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())])
+                } else {
+                    HashMap::new()
+                };
+                let mut ws = Workspace::with_env_and_extra_build_properties(
+                    SdkDiscoveryEnv::default(),
+                    extra,
+                );
+                let label = format!(
+                    "declared={} outer_gate={} value={:?} caller_seeded={caller_seeded}",
+                    case.declared, case.outer_gate, case.value
+                );
+
+                assert_eq!(ws.served_tfm_for_project(&proj), case.served, "{label}");
+                assert_eq!(
+                    ws.parsed_tfm_for_project(&proj).as_deref(),
+                    case.ran_under,
+                    "{label}"
+                );
+                let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+                let node = graph
+                    .nodes
+                    .iter()
+                    .find(|n| paths_equal(&n.path, &proj))
+                    .unwrap_or_else(|| panic!("entry node missing: {label}"));
+                assert_eq!(node.tfm, case.node, "{label}");
+            }
+        }
     }
 
     proptest! {

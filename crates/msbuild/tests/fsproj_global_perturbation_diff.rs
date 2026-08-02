@@ -19,6 +19,14 @@
 //! as though it were a fixed fact about the project. Any of those may in truth
 //! be "the value under the globals the editor picked".
 //!
+//! It also seeds `TargetFramework` on every multi-targeted project, to serve the
+//! first-declared inner build (`lsp::tfm_policy`, fsproj plan E1/E2/E7). That
+//! one is not a guess — it is the policy — but it is the same structural
+//! exposure, and it moves far more of the SDK chain than `Configuration` does
+//! because the whole TFM inference runs under it. So the sweep carries an
+//! inner-build global set: what the LSP evaluates a real user's multi-targeted
+//! `.fsproj` under is checked exactly, not assumed.
+//!
 //! ## The contract
 //!
 //! Unchanged from the crate's other harnesses, with the global set as a new
@@ -77,8 +85,8 @@
 //!   projects.** A route none of them takes is untested. Widening means adding
 //!   a case; the anti-vacuity floors refuse one that measures nothing.
 //! - **Whatever the global sweep in [`global_sets`] does not vary.** A value
-//!   that depends on, say, `RuntimeIdentifier` or `TargetFramework` is a fixed
-//!   fact as far as this file is concerned.
+//!   that depends on, say, `RuntimeIdentifier` is a fixed fact as far as this
+//!   file is concerned.
 
 mod common;
 
@@ -308,6 +316,16 @@ fn global_sets() -> Vec<Vec<(String, String)>> {
         g(&[("Configuration", "")]),
         // A global the document does not mention.
         g(&[("BorzoiProbe", "probed")]),
+        // An inner build. The LSP seeds this on every multi-targeted project
+        // (`tfm_policy`, fsproj plan E1/E2), so it is not a hypothetical
+        // perturbation but the evaluation a real user's `.fsproj` diagnostics
+        // and defines come from — and it moves far more of the SDK chain than
+        // `Configuration` does, because the whole TFM inference runs under it.
+        g(&[
+            ("Configuration", "Debug"),
+            ("Platform", "AnyCPU"),
+            ("TargetFramework", "net10.0"),
+        ]),
     ]
 }
 

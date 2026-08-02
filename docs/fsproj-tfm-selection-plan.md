@@ -6,14 +6,13 @@
 > (the *assets-side* producer-TFM resolver) and
 > [`csharp-sidecar-plan.md`](completed/csharp-sidecar-plan.md).
 >
-> **Status:** implemented (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in).
-> The LSP now picks one entry TFM per project (first-declared) and threads it
-> coherently through both the parse (defines + Compile items, so multi-targeted
-> projects fold at all) and the assembly env (assets-target selection +
-> platform-suffix recovery for C# refs). One documented follow-up remains: **E7**
-> — the `.fsproj`-buffer diagnostics path stays deliberately TFM-unseeded (detail
-> under [Still to do](#still-to-do)). The E-decision IDs below are referenced from
-> code comments (`workspace.rs` E1/E2, `lib.rs` E4).
+> **Status:** implemented (3.3c-1 #878; 3.3c-2 #879, with 3.3c-3/E4 folded in;
+> E7 last). The LSP picks one entry TFM per project (first-declared) and threads
+> it coherently through the parse (defines + Compile items, so multi-targeted
+> projects fold at all), the assembly env (assets-target selection +
+> platform-suffix recovery for C# refs), and the `.fsproj`-buffer diagnostics.
+> The E-decision IDs below are referenced from code comments (`tfm_policy.rs`
+> E1/E2/E7, `lib.rs` E4).
 
 ## Background (reference)
 
@@ -46,7 +45,8 @@ Settled decisions (IDs cited from code):
 - **E1** — Policy: serve the **first-declared** TFM (`target_frameworks()` returns
   document order). Deterministic and guess-free; matches VS/Ionide design-time
   convention. Override deferred (see [Out of scope](#out-of-scope)).
-- **E2** — Two-pass `evaluate_project` (`select_target_framework`): parse
+- **E2** — Two-pass `evaluate_project` (`select_target_framework`, deciding via
+  `tfm_policy::tfm_choice` since E7): parse
   TFM-unseeded to read `target_frameworks()`, then re-evaluate with
   `TargetFramework=<first>` seeded **only when it changes the answer** (caller
   didn't own the global; pass-1 evaluated `TargetFramework` empty; ≥1 TFM
@@ -68,24 +68,186 @@ Settled decisions (IDs cited from code):
 - **E6** — Under-resolve, never cross-resolve (D5): a stale restore missing the
   chosen TFM's target degrades to **empty for that TFM**, never another TFM's
   assemblies.
+- **E7** — The `.fsproj`-buffer diagnostics path serves the same inner build.
+  Detail below, because what it gives up is worth stating.
 
-## Still to do
+### E7 — Align the `.fsproj`-buffer diagnostics path
 
-### E7 — Align the `.fsproj`-buffer diagnostics path (documented follow-up)
+`fsproj_diagnostics.rs` evaluated the open `.fsproj` *buffer* with its own global
+seeds (`Configuration` + `Platform` only) and no `TargetFramework`, on the reading
+that the buffer describes the project file's evaluability *in general*. Measured,
+that reading did not hold. Unseeded, `$(TargetFramework)` reads empty, so **every**
+`'$(TargetFramework)' == 'netX'` gate is cleanly false and no inner build's content
+is evaluated at all: on a two-TFM fixture the buffer produced four
+`UndefinedProperty` warnings the real inner build never emits and diagnosed the
+content of neither branch. It was describing the outer dispatch build, which has
+no content.
 
-`fsproj_diagnostics.rs` evaluates the open `.fsproj` *buffer* with its own global
-seeds (`default_global_properties`: `Configuration` + `Platform` only) and **no**
-`TargetFramework`. This remains true post-3.3c, so the two surfaces diverge on
-`$(TargetFramework)` conditions: workspace resolution evaluates them cleanly while
-the buffer still shows the undefined-property diagnostic.
+The fix is a two-pass over the **buffer text** — never the workspace's
+disk-derived choice, so an unsaved `<TargetFrameworks>` edit takes effect
+immediately — sharing the decision, not the parse, with workspace resolution:
+`crates/lsp/src/tfm_policy.rs` holds `TfmChoice` and `tfm_choice`, and each
+surface performs its own re-evaluation. Only `TfmChoice::Reseed` (a multi-targeted
+project with no body singular and trusted provenance) costs a second parse.
+The same seam fixed a second divergence found on the way: `diagnostics_for` built
+its own defaults bag and ignored `Workspace::extra_build_properties` entirely, so
+a caller who pinned `Configuration=Release` saw it honoured in resolution and
+ignored in the squiggles. There is now one bag, `Workspace::build_properties`.
 
-v1 deliberately keeps the buffer path unseeded — it describes the project file's
-evaluability *in general*, it works on unsaved text (so the workspace's
-disk-derived `chosen_tfm` may not even match the buffer), and changing its
-diagnostics is not needed for coherent resolution. Aligning it is a two-pass over
-the buffer text (mirroring E2's `select_target_framework` but reading the buffer's
-own `target_frameworks()`); the divergence is recorded here so it isn't
-rediscovered as a bug.
+**What this gives up.** Seeding *moves* the diagnosed region rather than only
+adding to it. Content gated on `'$(TargetFramework)' == ''` or
+`!= '<served>'` was reached by the outer build and is not reached by the inner
+one. That is a deliberate consequence of serving one TFM — every other LSP surface
+already speaks about that same inner build — and it is pinned in both directions
+by `served_region_follows_the_served_tfm`, which asserts each gate shape against
+both columns rather than leaving the tradeoff to prose.
+
+**What it costs.** Measured on a real SDK-resolved two-TFM project, release
+profile: one pass 7.5 ms, two passes 36.4 ms. The extra 29 ms is the *inner*
+build's evaluation, not the second parse as such — a seeded evaluation walks far
+more of the SDK's targets chain than the outer dispatch build does, so even a
+hypothetical single-pass implementation that went straight to the seeded
+evaluation would pay it. Single-TFM, body-pinned and no-TFM projects pay nothing:
+they never reach `TfmChoice::Reseed`.
+
+`diagnostics_for` is deliberately left uncached. It runs per publish and, via
+`workspace/diagnostic`, once per discovered `.fsproj` per sweep — but that sweep
+also parses and semantically analyses every `<Compile>` item in every project, so
+36 ms per *project* is not where its time goes. The lever if that ever changes is
+a memo on `(path, text, build globals)`, which is sound because the function is
+pure in exactly those; reaching for the workspace's cached evaluation instead
+would only be correct when buffer == disk, and is what
+`the_served_tfm_comes_from_the_buffer_not_from_disk` exists to catch.
+
+**What guards it.** `buffer_diagnostics_follow_the_workspace_parsed_tfm` is E5's
+coherence invariant extended to this third surface: for a buffer matching disk,
+the gates the diagnostics evaluate are exactly the gates the workspace's own
+served evaluation ran — no more, no fewer.
+
+The comparison is **evaluation against evaluation**, not each against a TFM, and
+that is load-bearing rather than stylistic. A TFM-keyed form cannot state the
+claim for a document that has no single TFM (the overridable case below), so it
+was over-specified exactly where divergence is most likely; the direct
+comparison is total. The TFM-keyed form survives as a second assertion, applied
+only when a single TFM does describe the parse — that is the form the assembly
+env consumes, so both are worth having. Nothing
+asserted that before, which is how this path could diverge for two whole stages
+without a test going red; the property is the durable half of the change.
+
+It immediately earned itself. A seeded `TargetFramework` global is read-only to
+the document *unless* the document says otherwise with `<Project
+TreatAsLocalProperty="TargetFramework">`, and a body write gated on the seed
+being non-empty then fires in pass 2 only — invisible to pass 1, so the policy
+never sees it. `select_target_framework` published the seed it asked for rather
+than the value pass 2 evaluated under, so since 3.3c-1
+`target_framework_for_project` had been naming a branch the parse did not take:
+defines and Compile items from one TFM, assets selection from another. The E7
+work did not introduce that; it made it *observable*, because a second surface
+finally existed to disagree with. Both now read the effective value out of pass
+2's property table, which is where MSBuild puts an override — pinned
+certain-implies-exact by `fsproj_global_perturbation_diff`'s
+`TreatAsLocalProperty` corner.
+
+### The override that is not worth modelling
+
+A document may opt `TargetFramework` out of global read-only-ness with `<Project
+TreatAsLocalProperty="TargetFramework">` and then overwrite the very seed we set
+to serve its inner build. Nine review rounds went into serving such a document
+before the answer turned out to be that it cannot be served at all. The rounds
+are recorded because the sequence, not any one finding, is the lesson.
+
+Rounds 1–4 each fixed one consumer of the resulting state: the value published
+(the seed, not the override), the provenance verdict (pass 1 cannot judge a write
+pass 1 never performs), the absent-vs-empty distinction (a value-shaped
+`Option<String>` cannot tell "no override" from "overridden to empty" — the
+`absent-vs-unread` class), and the graph node's label. Round 5 both carried a
+regression from round 4's fix *and* landed the decisive observation: the final
+property-table value **cannot classify the pass at all**. MSBuild evaluates in
+document order, so a `$(TargetFramework)`-gated `<PropertyGroup>` above the
+override has already contributed the *seed's* defines and items while the table
+ends at the override's value. The pass is a chimera of two builds. Round 6 then
+found the sixth consumer — an outer-build-only `<ProjectReference>` reaching the
+compile closure — which is when the pattern became unmistakable.
+
+**So the seeded pass is discarded, not flagged.** For such a document
+`select_target_framework` keeps **pass 1** — the outer dispatch build, whose one
+virtue is being internally consistent — reports no TFM for it, and sets
+`EvaluatedProject::not_an_inner_build`, which withholds the reference list as
+well as the TFM. A flagged chimera has to be audited at every surface that reads
+the evaluation, and six rounds found six such surfaces one at a time; a discarded
+one has no surfaces.
+
+**And the trigger is the document's own declaration, not the evaluated table.**
+Round 7 found that keying on "is there a `TargetFramework` entry in pass 2's
+properties?" is unsound in the by-now-familiar `absent-vs-unread` way: an
+override whose *value* the evaluator refuses (`@(Tfms)`, `%(Meta)`) is performed
+by MSBuild but drops the name from our table, so absence conflates "no write"
+with "a write we could not evaluate" and the chimera is served as though clean.
+`ParsedProject::locally_overridable_properties` (new) reports what each walked
+root — entry and imports alike — asked for with `TreatAsLocalProperty`, which is
+syntactic, gap-free, and says the same thing however the write is spelled or
+whether it fires at all. Every round before this one was reading downstream
+state to infer a fact the document states directly.
+
+With a sound trigger in hand the remaining entry point closed in one step
+(round 9): a **caller-supplied** `TargetFramework` global carries the same name
+and is overwritable the same way, so pass 1 is already the mixture with no
+second pass involved. The caller-owned immunity in `served_tfm_for_project` is
+about *provenance* — the caller's value needs none — and cannot extend to an
+evaluation the document was free to conduct under a different TFM, so
+`not_an_inner_build` declines ahead of it. `tfm_choice`'s four arms are now
+exhaustively accounted for: caller-owned and reseed consult the opt-out, and
+body-pinned and untrusted involve no global for it to act on.
+
+The reference list needs withholding *separately* from the TFM, which is the
+subtlety rounds 1–5 kept missing. `tfm_untrusted`'s consumers keep pass 1's edges
+on the argument that a TFM-dependent edge read the unpinned `TargetFramework` and
+so already flagged itself — true when the singular is unpinned, false here, since
+a multi-targeted document never writes the singular and therefore decides
+`'$(TargetFramework)' == ''` cleanly under the environment model. An
+outer-build-only edge is thus captured as fact
+(`an_override_document_does_not_publish_outer_build_only_edges`).
+
+**Declining costs nothing measurable.** Zero projects in the pinned F# corpus or
+the local NuGet cache opt `TargetFramework` out — the 18 real occurrences of the
+attribute opt out `RepoRoot` (15), `OutDir` (2), `WasmNativeWorkload` and
+`RestoreAdditionalProjectSources`. That measurement is what settled it: the
+alternative to declining is per-property TFM provenance through the whole
+evaluation, and no observed project would benefit.
+
+The graph node's single-target arm settled on one exhaustive rule rather than
+the per-case patching that rounds 4, 5 and 11 each produced: **the label
+describes the evaluation**. `chosen_tfm` present → `Known`; absent with TFMs
+declared → `Unresolved` (declared but not evaluated under — we cannot say);
+absent with none declared → `NoneDeclared`. Both of the other verdicts are wrong
+in opposite directions for the caller-supplied *empty* global, which is an outer
+dispatch build over a project that does declare a sole TFM: `NoneDeclared` tells
+the env its lone restored output is the one to fold, and `Known(sole)` pairs the
+inner build's identity with an `output_name` and reference list computed under
+the outer build, both of which may be TFM-gated. The output name declines with
+the TFM, as everywhere else.
+
+`declared_tfms` stays a pass-1 capture: it is the *outer* build's declaration
+list, which is what the TFM-invariant intersection wants.
+
+**Three surfaces publish a TFM** — what the parse ran under, what the assembly
+env may key assets selection on, and how a graph node is labelled for a consumer
+locating its output — plus the reference list makes four things this shape
+touches. `every_tfm_surface_agrees_on_a_pass_two_override` is a table over the
+surfaces against one fixture, so the next cross-cutting shape costs one round
+instead of six. Its rows vary what the document says and agree on what we serve;
+the variety exists so that an implementation which *starts* distinguishing
+overrides again fails there.
+
+The generator axes (`treat_as_local`, `seed_conditional`, `untrusted_gate`,
+`override_empty`) exist because these shapes are not ones a reviewer should have
+to think of twice. A property whose generator cannot build a shape agrees
+vacuously on it; widening the axes is the fix, not adding case N+1. Each round's
+axis reproduced that round's finding independently before it was fixed, and
+`untrusted_gate` additionally corrected the property itself — stated against
+`served_tfm_for_project` it demanded the buffer diagnose no branch for a project
+whose parse legitimately took one, which is why `parsed_tfm_for_project` exists
+and is the currency.
 
 ## Out of scope
 

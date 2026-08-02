@@ -1204,7 +1204,13 @@ pub(crate) fn grouped_for_uri_linked(
         }
         Some("fsproj") => {
             let path: PathBuf = uri.to_file_path().ok()?;
-            let mut diagnostics = fsproj_diagnostics::diagnostics_for(text, &path, workspace.env());
+            let build_properties = workspace.build_properties();
+            let mut diagnostics = fsproj_diagnostics::diagnostics_for(
+                text,
+                &path,
+                workspace.env(),
+                &build_properties,
+            );
             // Graph-derived cycle diagnostics (consumer #3 stage 3.2) describe the
             // *on-disk* project graph, so we only emit them when the buffer
             // matches disk. An unsaved `.fsproj` edit must not surface a stale
