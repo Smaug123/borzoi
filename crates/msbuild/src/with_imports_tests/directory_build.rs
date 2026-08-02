@@ -1271,6 +1271,74 @@ fn a_clean_overwrite_re_pins_a_gate_however_the_earlier_write_was_untrusted() {
 }
 
 #[test]
+fn an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal() {
+    // The boundary of the sweep above. A clean overwrite discharges a refusal
+    // because last write wins on both sides — but "clean" is judged by the
+    // unpinned channel, and under `walk_opaque` a value can be computed from a
+    // property that hidden content redefined, which that channel does not see.
+    // `gate_value_is_exact` deliberately tolerates SDK-subtree opacity, so the
+    // refusal is the only mark left; discharging it would publish a Compile set
+    // on a gate we cannot justify.
+    //
+    // Here the SDK's own `Sdk.props` gates an import on a condition outside the
+    // modelled grammar. The oracle says that condition is *true*, so MSBuild
+    // walks `Hidden.props`, reads `ThatProperty = true`, and imports
+    // `Directory.Build.targets`. We skip the import, keep the stale `false`,
+    // and would skip the file — so any committed item set here is the wrong
+    // one.
+    let tmp = TempDir::new().unwrap();
+    let (root, props, targets) = write_synthetic_sdk(
+        tmp.path(),
+        "MySdk",
+        &format!(
+            r#"<Project>
+  <PropertyGroup><X>abc</X><ThatProperty>false</ThatProperty></PropertyGroup>
+  <Import Project="Hidden.props" Condition="{UNDECIDABLE_TRUE}" />
+</Project>"#
+        ),
+        "<Project/>",
+    );
+    write_at(
+        &root,
+        "Hidden.props",
+        r#"<Project><PropertyGroup><ThatProperty>true</ThatProperty></PropertyGroup></Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "Directory.Build.targets",
+        r#"<Project><ItemGroup><Compile Include="FromDirBuild.fs" /></ItemGroup></Project>"#,
+    );
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project Sdk="MySdk">
+  <PropertyGroup>
+    <ImportDirectoryBuildTargets>$(X.Substring(0,1))</ImportDirectoryBuildTargets>
+    <ImportDirectoryBuildTargets>$(ThatProperty)</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="Main.fs" /></ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file_with_sdk(&project_path, |name| {
+        if name == "MySdk" {
+            Ok(SdkPaths {
+                root: root.clone(),
+                props: props.clone(),
+                targets: targets.clone(),
+            })
+        } else {
+            Err(SdkResolveError::NotFound)
+        }
+    });
+    assert!(
+        result.items_uncertain,
+        "the overwrite's value came from a property an opaque import may have \
+         redefined, so the refusal must stand; items: {:?}",
+        paths_of(&result.items)
+    );
+}
+
+#[test]
 fn a_self_default_after_a_refused_write_cannot_certify_the_gate() {
     // The default-fill idiom `<X Condition="'$(X)' == ''">…</X>` is exempted
     // from the undefined-read carve-outs, on the stated ground that a name the

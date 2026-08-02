@@ -1789,10 +1789,24 @@ impl RefusedOutcome {
     /// refusal sites are precisely the ones that record `Set` here while
     /// recording [`UnpinnedOutcome::Clear`] there: they remove the binding
     /// rather than storing an unpinned value.
-    fn after_write(unpinned: &UnpinnedOutcome) -> Self {
+    ///
+    /// `walk_opaque` withholds the discharge, and the reason is not that the
+    /// discharge is wrong — last write wins on both sides regardless. It is
+    /// that this mark is read by [`State::gate_value_is_exact`], which
+    /// deliberately tolerates SDK-subtree opacity (folding `walk_opaque` in
+    /// there declines every real SDK project — measured). Under opacity a
+    /// "clean" value can be computed from a property hidden content redefined,
+    /// and this mark is then the only thing standing between that and a
+    /// published Compile set. Discharging it would trade a decline we can
+    /// justify for a commit we cannot. The condition goes away when a value
+    /// carries its own staleness rather than the walk carrying one flag for
+    /// all of them — see the plan's P3.
+    fn after_write(unpinned: &UnpinnedOutcome, walk_opaque: bool) -> Self {
         match unpinned {
-            UnpinnedOutcome::Clear => RefusedOutcome::Clear,
-            UnpinnedOutcome::Set(_) | UnpinnedOutcome::Keep => RefusedOutcome::Keep,
+            UnpinnedOutcome::Clear if !walk_opaque => RefusedOutcome::Clear,
+            UnpinnedOutcome::Clear | UnpinnedOutcome::Set(_) | UnpinnedOutcome::Keep => {
+                RefusedOutcome::Keep
+            }
         }
     }
 }
@@ -4214,7 +4228,7 @@ fn walk_property_child_inner(
             node.range(),
             preserve_existing_sdk_taint,
         ),
-        refused: RefusedOutcome::after_write(&unpinned),
+        refused: RefusedOutcome::after_write(&unpinned, state.walk_opaque),
         unpinned,
     };
     state.lookup.insert_escaped(name.clone(), expansion.value);

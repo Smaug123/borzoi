@@ -836,16 +836,46 @@ of the blunt alternative was re-measured rather than taken on trust: adding
 `package_uncertain::sdk_*` cases), which is the "every real SDK project
 declines" result P2″ recorded.
 
-**Not fixed here, deliberately.** A sound narrow fix needs per-name staleness
-under opacity, propagating through writes like the taint channel does and
-consulted only at the splice — i.e. **a fourth parallel channel**, in a design
-whose next stage exists to collapse the channels into one lattice. Building it
-now means building the thing P2 must then undo. It is therefore a **P2
-requirement**: the lattice must be able to express "this value may be stale
-because content was hidden after it was computed", which is a per-value fact and
-so is really a **P3** one. That is the first argument for P3 that does not rest
-on the committed fraction — it is a wrong answer we can reproduce today, not a
-durability hedge. The census trigger stands, but this witness sits beside it.
+**The pre-existing hole is not fixed here, deliberately.** A sound narrow fix
+needs per-name staleness under opacity, propagating through writes like the
+taint channel does and consulted only at the splice — i.e. **a fourth parallel
+channel**, in a design whose next stage exists to collapse the channels into
+one lattice. Building it now means building the thing P2 must then undo. What
+the lattice must be able to express is "this value may be stale because content
+was hidden after it was computed", which is a per-*value* fact — so it is really
+a **P3** requirement. That is the first argument for P3 that does not rest on
+the committed fraction: a wrong answer reproducible today, not a durability
+hedge. The census trigger stands; this witness sits beside it.
+
+**But one clause of the review was right and is fixed.** A fourth round
+repeated the finding and added the part that *is* about this change: in the
+intersection — a refusal, then an overwrite whose value reads opaque-stale state
+— the stale mark was the only thing declining, and discharging it converts that
+decline into a wrong commit. The accounting there is plainly negative, because
+the discharge was measured to recover nothing. So the discharge is now withheld
+under `walk_opaque`:
+
+```rust
+fn after_write(unpinned: &UnpinnedOutcome, walk_opaque: bool) -> Self {
+    match unpinned {
+        UnpinnedOutcome::Clear if !walk_opaque => RefusedOutcome::Clear,
+        _ => RefusedOutcome::Keep,
+    }
+}
+```
+
+Not because the discharge is wrong — last write wins on both sides regardless —
+but because its *reader* tolerates opacity, and under opacity a "clean" value
+can come from a property hidden content redefined. Pinned by
+`an_overwrite_under_sdk_opacity_does_not_discharge_a_refusal`, which fails
+against the unconditional form. Without opacity there is no hidden content and
+so no staleness, which is why the discharge sweep is unaffected.
+
+That is the general shape worth carrying forward: **before removing a
+conservative marker, ask what its readers tolerate.** In the exemption's case
+the reader's assumption was repairable and the marker went; here the reader's
+tolerance is load-bearing and measured, so the marker stays until values carry
+their own staleness.
 
 Two of the newly-named outcomes are likewise **inert**, and are recorded as such
 rather than defended as fixes: the reserved-toolset seed now scrubs the refused
