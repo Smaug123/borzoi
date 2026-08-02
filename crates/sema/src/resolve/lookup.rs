@@ -1179,34 +1179,52 @@ impl<'a> Resolver<'a> {
     /// lexical position — starts with `container` (the candidate's direct
     /// parent). `preceding`'s half needs no such check: it is already
     /// privacy-filtered at the file/export boundary.
-    /// Whether an `[<AutoOpen>]`-spelled module directly in `container` has an
-    /// **unprovable** marker.
+    /// The **Compile-order file indices** at which an `[<AutoOpen>]`-spelled
+    /// module directly in `container` has an **unprovable** marker, ascending.
     ///
     /// Such a module is filtered out of every fold list here — it might not open,
     /// so folding it would name members FCS never brings into scope — but its
     /// absence from the list is not the same as its absence from the program. It
-    /// might open, and then the names it contributes outrank the namespace's own
-    /// direct tier. So a fold that meets one must decline the contest rather than
-    /// proceed without it, or the direct tier takes a name FCS gives the module
-    /// (probed: FCS binds `N.A.X`, not the direct case `N.H.X`).
+    /// might open, and then the names it contributes outrank everything folded
+    /// **before it**: the namespace's own direct tier, and every proven fragment
+    /// at an earlier file (probed: FCS binds `N.A.X`, not the direct case
+    /// `N.H.X`; and across three files it binds the *later* unprovable
+    /// fragment's value over the earlier proven one's).
     ///
-    /// The fold-back's generation barrier does not cover this: it protects the
-    /// declaring block only, and a later `namespace` block folds afresh.
+    /// So the answer is a list of positions, not a flag. The fold walks
+    /// fragments in file order and raises a generation barrier as it passes each
+    /// of these, which stales exactly what precedes the uncertainty and leaves a
+    /// fragment folded after it — which outranks it either way — standing. A
+    /// single pre-loop barrier instead staled only the direct tier, and the loop
+    /// then re-pushed every proven fragment into the fresh generation, so an
+    /// earlier proven fragment won a contest FCS gives the later unprovable one.
     ///
-    /// Both halves of the project are asked. An earlier Compile-order file's
+    /// Within one file the position is not resolved further: an unprovable
+    /// fragment at file `f` stales the whole of `f`'s fold, including proven
+    /// fragments declared after it. That over-declines and never over-commits.
+    ///
+    /// The fold-back's generation barrier does not cover any of this: it
+    /// protects the declaring block only, and a later `namespace` block folds
+    /// afresh. Both halves of the project are asked — an earlier file's
     /// unprovable fragment reaches this contest exactly as a same-file one does
-    /// — probed across two files, FCS binds the module's `X` and not the
-    /// namespace's own `H.X` — so the earlier-file half
-    /// ([`ProjectItems::has_unproven_auto_open_fragment_in`](super::model::ProjectItems::has_unproven_auto_open_fragment_in))
-    /// must be consulted too, or the boundary silently turns a decline into a
-    /// commit.
-    pub(super) fn unproven_auto_open_fragment_in(&self, container: &[String]) -> bool {
-        self.preceding.has_unproven_auto_open_fragment_in(container)
-            || self.auto_open_module_paths.iter().any(|d| {
-                !d.commits()
-                    && super::model::is_directly_in(&d.path, container)
-                    && (!d.private || self.container_path.starts_with(container))
-            })
+    /// ([`ProjectItems::unproven_auto_open_fragment_files_in`](super::model::ProjectItems::unproven_auto_open_fragment_files_in)).
+    pub(super) fn unproven_auto_open_fragment_files_in(&self, container: &[String]) -> Vec<usize> {
+        let current = self.preceding.num_files();
+        let mut out = self
+            .preceding
+            .unproven_auto_open_fragment_files_in(container);
+        out.extend(
+            self.auto_open_module_paths
+                .iter()
+                .filter(|d| {
+                    !d.commits()
+                        && super::model::is_directly_in(&d.path, container)
+                        && (!d.private || self.container_path.starts_with(container))
+                })
+                .map(|_| current),
+        );
+        out.sort_unstable();
+        out
     }
 
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {
@@ -2815,16 +2833,32 @@ impl<'a> Resolver<'a> {
         // per-module-path recursion folded all of a module's members at the
         // module's list position, mis-ordering multi-file/nested fragments.)
         let mut count = self.open_module_values(namespace, open_pos, None, None);
-        // An unprovable marker in this namespace makes the whole contest
-        // unadjudicable: the fragment is not in the list below (it might not
-        // open), but the direct tier just folded must not stand either (it
-        // might). Stale what has been pushed so far — the generation barrier is
-        // the same "we cannot say" the fold-back raises, applied where a later
-        // block folds afresh and the fold-back's barrier no longer reaches.
-        if self.unproven_auto_open_fragment_in(namespace) {
-            self.open_generation += 1;
-        }
+        // An unprovable marker in this namespace makes the contest unadjudicable
+        // for everything folded *before* it: the fragment is not in the list
+        // below (it might not open), but what precedes it must not stand either
+        // (it might, and then it outranks them). The generation barrier is the
+        // same "we cannot say" the fold-back raises, applied where a later block
+        // folds afresh and the fold-back's barrier no longer reaches.
+        //
+        // Its POSITION is what the barrier has to respect
+        // ([`Self::unproven_auto_open_fragment_files_in`]). The direct tier just
+        // folded precedes every fragment, so any unprovable fragment stales it;
+        // a proven fragment at an earlier file is staled only by an unprovable
+        // one that comes after it; and one folded later outranks the uncertainty
+        // anyway, so it survives.
+        let unproven_files = self.unproven_auto_open_fragment_files_in(namespace);
+        let mut next_unproven = 0usize;
         for (frag_path, frag_file, frag_range) in self.auto_open_fragments_reachable(namespace) {
+            // Every uncertainty strictly *before* this fragment's file applies
+            // now, so this fragment is pushed into a generation that has already
+            // staled them. A same-file uncertainty is deliberately not resolved
+            // here: it is flushed after the loop, which stales the whole file's
+            // fold rather than guessing at declaration order within it.
+            while next_unproven < unproven_files.len() && unproven_files[next_unproven] < frag_file
+            {
+                self.open_generation += 1;
+                next_unproven += 1;
+            }
             // A constructible type in this fragment takes FCS's unqualified slot,
             // evicting an EARLIER-folded sibling's same-named value; push a
             // `Deferred` override for its type names before folding it (sema models
@@ -2916,6 +2950,13 @@ impl<'a> Resolver<'a> {
             entry.opened_case = true;
             self.module_frame().entries.push(entry);
             count += 1;
+        }
+        // Every uncertainty at or after the last folded fragment's file. It sits
+        // at the end of the fold, so it stales the whole of it — including the
+        // straddle winners just re-pushed, which come from the direct tier and
+        // are exactly what an unprovable fragment might outrank.
+        if next_unproven < unproven_files.len() {
+            self.open_generation += 1;
         }
         count
     }

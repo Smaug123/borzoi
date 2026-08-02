@@ -1306,17 +1306,24 @@ impl ProjectItems {
             .collect()
     }
 
-    /// Whether an earlier file declares a module directly in `container` whose
-    /// `[<AutoOpen>]` marker we could not rule on — the cross-file half of
-    /// [`Resolver::unproven_auto_open_fragment_in`](super::Resolver::unproven_auto_open_fragment_in).
+    /// The **file indices** at which an earlier file declares a module directly
+    /// in `container` whose `[<AutoOpen>]` marker we could not rule on — the
+    /// cross-file half of
+    /// [`Resolver::unproven_auto_open_fragment_files_in`](super::Resolver::unproven_auto_open_fragment_files_in).
+    ///
+    /// The index, not just the fact, because the fold is file-ordered: an
+    /// unprovable fragment stales what precedes *it*, and a fragment folded
+    /// after it legitimately outranks it either way.
     ///
     /// No accessibility check: [`Self::unproven_auto_open_module_paths`] holds
     /// only non-`private` declarations, since a `private` module is confined to
     /// its own declaring container and cannot reach another file at all.
-    pub(super) fn has_unproven_auto_open_fragment_in(&self, container: &[String]) -> bool {
+    pub(super) fn unproven_auto_open_fragment_files_in(&self, container: &[String]) -> Vec<usize> {
         self.unproven_auto_open_module_paths
             .iter()
-            .any(|(p, _)| is_directly_in(p, container))
+            .filter(|(p, _)| is_directly_in(p, container))
+            .map(|(_, f)| *f)
+            .collect()
     }
 }
 

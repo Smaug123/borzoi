@@ -3249,3 +3249,64 @@ fn an_earlier_files_unprovable_marker_declines_the_namespaces_direct_tier() {
          test proves nothing; got {control_res:?}"
     );
 }
+/// The unprovable fragment's **Compile-order position** decides what it stales.
+///
+/// A proven fragment in file 0 and an unprovable one in file 1, both directly in
+/// one namespace, then a third file's `open`. FCS folds fragments in file order,
+/// so the later one wins: probed with `dotnet fsi --exec` over exactly these
+/// three files, the program prints the unprovable module's `2`.
+///
+/// A barrier raised once *before* the fragment loop cannot express that. It
+/// stales the direct tier, and then the loop re-pushes every proven fragment
+/// into the fresh generation — so the file-0 fragment stands and takes a name
+/// FCS gives the file-1 one. The barrier has to sit at the uncertainty's own
+/// position instead.
+#[test]
+fn an_unprovable_fragment_stales_a_proven_fragment_at_an_earlier_file() {
+    let env = crate::common::fsharp_core_env().clone();
+    let proven = "namespace CU\n\n[<AutoOpen>]\nmodule P =\n    let X = 1\n";
+    let unproven = "namespace CU\n\n\
+                    type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\n\
+                    [<AutoOpen>]\nmodule U =\n    let X = 2\n";
+    // The control keeps the file count and the namespace, dropping only the
+    // unprovable fragment — so a decline above is that fragment's doing.
+    let inert = "namespace CU\n\nmodule Unrelated =\n    let q = 1\n";
+    let src2 = "module Probe\n\nopen CU\n\nlet r = X\n";
+    let use_at = {
+        let start = src2.rfind('X').expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        )
+    };
+    let resolve_triple = |middle: &str| {
+        let proj = resolve_project(
+            &[impl_file(proven), impl_file(middle), impl_file(src2)],
+            &env,
+        );
+        let res = proj.file(2).resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| proj.item_def(r))
+                .map(|(f, d)| (f, usize::from(d.range.start()))),
+        )
+    };
+
+    let proven_x = proven.find("X = 1").expect("the proven binder");
+    let (res, def) = resolve_triple(unproven);
+    assert_ne!(
+        def,
+        Some((0, proven_x)),
+        "the file-0 proven fragment precedes the file-1 unprovable one, which \
+         FCS folds later and binds; committing the earlier one is a wrong \
+         target; got {res:?}"
+    );
+
+    let (control_res, control_def) = resolve_triple(inert);
+    assert_eq!(
+        control_def,
+        Some((0, proven_x)),
+        "with no unprovable fragment the proven one must still commit, or this \
+         test proves nothing; got {control_res:?}"
+    );
+}

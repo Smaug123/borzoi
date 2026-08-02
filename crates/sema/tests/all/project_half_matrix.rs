@@ -25,6 +25,21 @@
 //! isolated by FQN. The currency covers targets in the fixtures AND in the
 //! cell's decl files, so "the project half wins" is a positive value on both
 //! sides, not a blind `None`.
+//!
+//! ## What this grid cannot see
+//!
+//! Every `[<AutoOpen>]` marker is **unprovable** in this env: the autoopen
+//! fixture carries an unknowable auto-open surface, which makes every attribute
+//! candidate unrulable. So a cell can exhibit an *unprovable* fragment but never
+//! a **proven** one, and any contest whose outcome turns on the two being
+//! distinguished — chiefly which of a proven and an unprovable fragment folds
+//! later — declines here no matter what the resolver does. Such cells would be
+//! green before and after a fix, so they do not belong in the grid; they live in
+//! `resolve_autoopen` under `common::fsharp_core_env()`, where the marker
+//! resolves.
+//!
+//! What the grid *does* pin is the unprovable fragment against the namespace's
+//! own direct tier, which needs no proven contestant.
 
 use crate::common::fold_matrix::{Cell, Container, Position, run_matrix};
 
