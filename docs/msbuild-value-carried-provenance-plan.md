@@ -8,11 +8,15 @@
 >
 > **Open, in the order I would take them:**
 >
-> 1. Re-run the SDK census and decide P3's priority from residual risk, as P2′
->    always said to do before committing to it.
-> 2. The three recorded **precision** items under P2″ — declines, not wrong
+> 1. The three recorded **precision** items under P2″ — declines, not wrong
 >    answers, and each carries regression risk (see the fifth-round entry).
-> 3. P1′, P2, P3, P4.
+> 2. P1′, P2, P4.
+>
+> **P3 is deferred on measurement, not on effort** — the census (re-run
+> 2026-08-02, zero wrong commits) shows we commit on 17% of the SDK's call
+> expressions and 5% of its conditions, so the surface a laundering defect
+> could reach is small. Its trigger is the committed fraction rising; see
+> "The census, re-run".
 
 ## The rule
 
@@ -321,7 +325,7 @@ direct-read route cheaply: audit the twelve named `get_unescaped` sites against
 the eleven-entry `msbuild-trust-audit` checklist, in one PR, touching no types.
 
 **Then re-run the SDK census and decide P3's priority from residual risk**,
-rather than committing to it up front.
+rather than committing to it up front. Done — see below.
 
 #### The `seed_toolset_properties` "gap" is not one — the asymmetry is required
 
@@ -641,7 +645,64 @@ for `Substring` above), not to be the assertion.
 siblings. Strictly smaller than P3, and it closes the *reachable* half of what
 P3 would close.
 
-### P3 — value-carried
+### The census, re-run — and what it says about P3's priority
+
+Measured 2026-08-02 against the pinned SDK **10.0.301** (the P1 member table
+above is 9.0.200 and is left as the record of that round). Every harness green;
+**zero wrong commits anywhere.**
+
+| census | population | committed | declined |
+| --- | ---: | ---: | ---: |
+| SDK-chain call expressions | 396 distinct | **66** (17%) | 330 |
+| SDK-chain conditions | 2 758 distinct | **139** (5%) | 2 619 |
+
+Both coverage ratchets sit *exactly* on their floors (66 and 139), so the gate
+is tight: any regression fails, and the numbers have not drifted.
+
+Global-perturbation movement, the other half of the picture:
+
+| sweep | committed (name, globals) pairs | move in MSBuild | we track |
+| --- | ---: | ---: | ---: |
+| corner routes | 132 | 14 | **14** (0 declined) |
+| generated documents | 1 470 | 152 | 108 |
+| real SDK chain | 215 | 36 | 11 |
+
+#### The decision: **P3 is not urgent, and the trigger to revisit it is not a date**
+
+P3's value was priced in the consultation record as *durability against the
+thirteenth direct-read site* — making "ignore the trust" something you must
+write code to do. Weigh that against what the census actually shows:
+
+1. **The committed surface is small.** We commit on 17% of the SDK's call
+   expressions and 5% of its conditions. A trust-laundering defect can only
+   bite where we commit, so today's blast radius is bounded to that slice — and
+   in the rest, an unrelated decline masks it anyway.
+2. **The residual risk P3 addresses is not currently realised.** P2′ audited
+   all twelve direct-read sites: two were defects (both fixed), one TODO was
+   bogus, the rest were already discharged. There is no known thirteenth site.
+3. **The declines are dominated by something else entirely.** Both census
+   comments record that the remaining declines are mostly undefined *reserved*
+   receivers, which trusted seeding turns on wholesale. That is the coverage
+   lever, and it is unrelated to trust plumbing.
+
+Point 3 is the interesting one, because it inverts the sequencing. **Seeding
+is exactly what makes P3 worth doing**: it multiplies the committed fraction,
+and the committed fraction *is* the blast radius. Doing P3 first pays for
+durability over a surface we mostly decline; doing it after seeding pays for
+durability over the surface that seeding just opened up.
+
+So: **P3 is deferred, and its trigger is the committed fraction rising** — i.e.
+land trusted seeding, re-run this census, and re-price P3 against the new
+numbers. Should either ratchet floor be raised for any other reason, that is
+the same signal.
+
+The one thing that would override this is a *new* direct-read site appearing
+without the audit noticing. The P2″ sweep is driven off the splice-property
+constants for exactly that reason, but it only covers the names it knows;
+a genuinely new read is still caught by review rather than by the machine.
+That, not the current numbers, is P3's standing argument.
+
+### P3 — value-carried — **deferred on measurement** (see "The census, re-run")
 
 `PropertyMap`'s `Entry` gains `trust: Trust` beside its `Escaped` value.
 `PropertyMap::get` returns the pair; `substitute` returns
