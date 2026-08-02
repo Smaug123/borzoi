@@ -119,10 +119,14 @@ pure in exactly those; reaching for the workspace's cached evaluation instead
 would only be correct when buffer == disk, and is what
 `the_served_tfm_comes_from_the_buffer_not_from_disk` exists to catch.
 
-**What guards it.** `buffer_diagnostics_follow_the_workspace_served_tfm` is E5's
+**What guards it.** `buffer_diagnostics_follow_the_workspace_parsed_tfm` is E5's
 coherence invariant extended to this third surface: for a buffer matching disk,
-the branch the diagnostics evaluate is exactly the branch
-`Workspace::target_framework_for_project` serves — no more, no fewer. Nothing
+the branch the diagnostics evaluate is exactly the branch the workspace's own
+evaluation ran under (`Workspace::parsed_tfm_for_project`) — no more, no fewer.
+The currency is the *parsed* TFM rather than the *served* verdict, because
+`served_tfm_for_project` additionally declines a TFM the assembly env must not
+key on, while the parse still ran under something and the buffer describes the
+parse. Nothing
 asserted that before, which is how this path could diverge for two whole stages
 without a test going red; the property is the durable half of the change.
 
@@ -144,7 +148,7 @@ certain-implies-exact by `fsproj_global_perturbation_diff`'s
 
 A document may opt `TargetFramework` out of global read-only-ness with `<Project
 TreatAsLocalProperty="TargetFramework">` and then overwrite the very seed we set
-to serve its inner build. Six review rounds went into serving such a document
+to serve its inner build. Eight review rounds went into serving such a document
 before the answer turned out to be that it cannot be served at all. The rounds
 are recorded because the sequence, not any one finding, is the lesson.
 
@@ -161,13 +165,25 @@ ends at the override's value. The pass is a chimera of two builds. Round 6 then
 found the sixth consumer — an outer-build-only `<ProjectReference>` reaching the
 compile closure — which is when the pattern became unmistakable.
 
-**So the seeded pass is discarded, not flagged.** On detecting an override,
+**So the seeded pass is discarded, not flagged.** For such a document
 `select_target_framework` keeps **pass 1** — the outer dispatch build, whose one
 virtue is being internally consistent — reports no TFM for it, and sets
 `EvaluatedProject::not_an_inner_build`, which withholds the reference list as
 well as the TFM. A flagged chimera has to be audited at every surface that reads
 the evaluation, and six rounds found six such surfaces one at a time; a discarded
 one has no surfaces.
+
+**And the trigger is the document's own declaration, not the evaluated table.**
+Round 7 found that keying on "is there a `TargetFramework` entry in pass 2's
+properties?" is unsound in the by-now-familiar `absent-vs-unread` way: an
+override whose *value* the evaluator refuses (`@(Tfms)`, `%(Meta)`) is performed
+by MSBuild but drops the name from our table, so absence conflates "no write"
+with "a write we could not evaluate" and the chimera is served as though clean.
+`ParsedProject::locally_overridable_properties` (new) reports what each walked
+root — entry and imports alike — asked for with `TreatAsLocalProperty`, which is
+syntactic, gap-free, and says the same thing however the write is spelled or
+whether it fires at all. Every round before this one was reading downstream
+state to infer a fact the document states directly.
 
 The reference list needs withholding *separately* from the TFM, which is the
 subtlety rounds 1–5 kept missing. `tfm_untrusted`'s consumers keep pass 1's edges

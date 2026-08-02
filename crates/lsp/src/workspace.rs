@@ -160,14 +160,14 @@ struct EvaluatedProject {
     /// caller-supplied global `TargetFramework` is immune too: globals
     /// out-rank body writes, and the caller's value needs no provenance.
     tfm_untrusted: bool,
-    /// The document overwrote the `TargetFramework` global we seeded to serve
-    /// its inner build (`<Project TreatAsLocalProperty="TargetFramework">` plus
-    /// a write pass 1 could not see), so **no evaluation of it is an inner
-    /// build**: MSBuild evaluates in document order, and a gated group above
-    /// the override has already contributed the seed's values while the table
-    /// ends at the override's. `parsed` is therefore the *outer dispatch*
-    /// build — pass 1, whose one virtue is that it is at least internally
-    /// consistent — and every TFM-derived conclusion is withheld.
+    /// The document can overwrite the `TargetFramework` global we seed to serve
+    /// its inner build (`<Project TreatAsLocalProperty="TargetFramework">`), so
+    /// **no evaluation of it is an inner build**: MSBuild evaluates in document
+    /// order, so a gated group above such an override contributes the seed's
+    /// values while everything after it runs under the override's. `parsed` is
+    /// therefore the *outer dispatch* build, whose one virtue is that it is at
+    /// least internally consistent, and every TFM-derived conclusion is
+    /// withheld.
     ///
     /// Withheld includes the reference list, which
     /// [`Self::tfm_untrusted`] alone does not cover.
@@ -1025,7 +1025,7 @@ fn resolve_node_uncached(
         // the project can produce; the seed adds nothing.
         //
         // The declaration, not `chosen_tfm`. They differ only when a
-        // `TreatAsLocalProperty` document overwrote the seed in pass 2, and
+        // `TreatAsLocalProperty` document may overwrite the seed, and
         // such a document is untrusted wholesale — it returned `Unresolved`
         // from the arm above and never arrives here. `chosen_tfm` would also
         // be wrong for the *caller-supplied empty* global, which is an outer
@@ -1454,11 +1454,12 @@ fn select_target_framework(
                 chosen_tfm: Some(seed),
                 not_an_inner_build: false,
             },
-            // The document overwrote the seed, so pass 2 is a chimera: values
-            // above the override came from the seed, values below from the
-            // override. Serving it would publish a mixture as though it were
-            // one build. Keep **pass 1** — the outer dispatch build, which is
-            // at least internally consistent — and withhold every TFM-derived
+            // The document opts `TargetFramework` out of global protection,
+            // so the seeded pass may be a chimera: values above an override
+            // came from the seed, values below from the override. Serving it
+            // would publish a mixture as though it were one build. Keep
+            // **pass 1** — the outer dispatch build, which is at least
+            // internally consistent — and withhold every TFM-derived
             // conclusion (`EvaluatedProject::not_an_inner_build`).
             //
             // Discarded rather than flagged, deliberately: a flagged chimera
@@ -1466,7 +1467,7 @@ fn select_target_framework(
             // to decide independently whether it may trust a mixture — the
             // TFM, the output name, the node label, the reference list. A
             // discarded one is unreachable and no such decision exists.
-            tfm_policy::ReseedOutcome::Overridden => ServedEvaluation {
+            tfm_policy::ReseedOutcome::Overridable => ServedEvaluation {
                 parsed: pass1,
                 chosen_tfm: None,
                 not_an_inner_build: true,
@@ -2234,6 +2235,30 @@ mod tests {
     /// read-only-ness and overwrites it once the seed is non-empty — a write
     /// pass 1 cannot see, because pass 1 has no seed. `outer_gate` wraps that
     /// write in a group the evaluator cannot pin.
+    /// An override whose *value* the evaluator refuses (`@(Tfms)` is an item
+    /// reference, and we have no item evaluator). MSBuild still performs the
+    /// assignment; our walk drops the name from the property table entirely.
+    ///
+    /// So the served evaluation is a chimera exactly as for a plain override,
+    /// but the property table looks identical to a document that never
+    /// overrode anything — absence there conflates "no write" with "a write we
+    /// refused". The decline is therefore keyed on the document's
+    /// `TreatAsLocalProperty` opt-out, which is a syntactic fact and states the
+    /// same thing whatever the write turns out to be.
+    #[test]
+    fn an_override_the_evaluator_refuses_still_declines() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "@(Tfms)"),
+        );
+        let mut ws = Workspace::default();
+
+        assert_eq!(ws.served_tfm_for_project(&proj), ServedTfm::Untrusted);
+        assert_eq!(ws.parsed_tfm_for_project(&proj), None);
+    }
+
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
         let (open, close) = if outer_gate {
             (

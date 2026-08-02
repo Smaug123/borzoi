@@ -166,3 +166,73 @@ fn imported_treat_as_local_unprotects_empty_gate_global_and_imports() {
         result.properties,
     );
 }
+
+/// [`ParsedProject::locally_overridable_properties`] reports what the document
+/// *asked for*, across every root the walk reads — the entry's own attribute
+/// and any imported file's.
+///
+/// A caller that supplies a global needs this to know whether the evaluation it
+/// got back was really conducted under that global. It cannot ask the evaluated
+/// property table instead: an override whose value we refuse leaves no entry
+/// there, so absence conflates "the document never wrote it" with "the document
+/// wrote something we could not evaluate" — the last case in the table below.
+#[test]
+fn locally_overridable_properties_reports_every_roots_opt_out() {
+    let cases: &[(&str, &str, &str, &[&str])] = &[
+        // (label, entry attribute, imported attribute, expected union)
+        ("neither", "", "", &[]),
+        ("entry only", r#" TreatAsLocalProperty="Foo""#, "", &["foo"]),
+        (
+            "import only",
+            "",
+            r#" TreatAsLocalProperty="Bar""#,
+            &["bar"],
+        ),
+        (
+            "both, case- and list-normalised",
+            r#" TreatAsLocalProperty="Foo;BAZ""#,
+            r#" TreatAsLocalProperty="bar""#,
+            &["bar", "baz", "foo"],
+        ),
+    ];
+    for (label, entry_attr, import_attr, expected) in cases {
+        let tmp = TempDir::new().unwrap();
+        write_at(
+            tmp.path(),
+            "Directory.Build.props",
+            &format!("<Project{import_attr}><PropertyGroup/></Project>"),
+        );
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            &format!("<Project{entry_attr}><PropertyGroup/></Project>"),
+        );
+        let result = parse_file_with_extras(&project_path, HashMap::new());
+        let got: Vec<&str> = result
+            .locally_overridable_properties
+            .iter()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(got, *expected, "{label}");
+    }
+}
+
+/// The opt-out is recorded whether or not *this* evaluation supplied a matching
+/// global, because it answers a question about the document rather than about
+/// one caller's inputs — and the caller that needs it (the LSP's inner-build
+/// seeding) asks before deciding whether to supply the global at all.
+#[test]
+fn an_opt_out_is_recorded_without_a_matching_global() {
+    let tmp = TempDir::new().unwrap();
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project TreatAsLocalProperty="Foo"><PropertyGroup/></Project>"#,
+    );
+    let result = parse_file_with_extras(&project_path, HashMap::new());
+    assert!(
+        result.locally_overridable_properties.contains("foo"),
+        "no `Foo` global was supplied, but the document still asked: {:?}",
+        result.locally_overridable_properties,
+    );
+}

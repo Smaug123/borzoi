@@ -231,14 +231,14 @@ fn serve_chosen_tfm(
     let mut seeded = extras.clone();
     tfm_policy::seed_target_framework_global(&mut seeded, seed);
     match parse_buffer(text, project_path, &seeded, environment, disc) {
-        // The document overwrote the seed, so pass 2 is a mixture of two builds
-        // rather than one inner build, and the workspace discards it too
-        // (`ReseedOutcome::Overridden`). Diagnosing the mixture would describe a
-        // build that does not exist — and would diverge from the served
-        // evaluation, which is the coherence this whole path exists to restore.
+        // The document can overwrite the seed mid-evaluation, so the seeded
+        // pass is not one inner build, and the workspace discards it too
+        // (`ReseedOutcome::Overridable`). Diagnosing it would describe a build
+        // that does not exist — and would diverge from the served evaluation,
+        // which is the coherence this whole path exists to restore.
         Ok(pass2) => match tfm_policy::reseed_outcome(&pass2) {
             tfm_policy::ReseedOutcome::AsSeeded => pass2,
-            tfm_policy::ReseedOutcome::Overridden => pass1,
+            tfm_policy::ReseedOutcome::Overridable => pass1,
         },
         Err(_) => pass1,
     }

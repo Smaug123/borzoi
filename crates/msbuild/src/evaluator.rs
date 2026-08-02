@@ -1146,6 +1146,13 @@ struct State<'r> {
     /// ignored, matching MSBuild's "global properties override project
     /// properties" / "reserved properties are read-only" rules.
     protected: HashSet<String>,
+    /// Lowercased names any walked root opted out of global protection with
+    /// `TreatAsLocalProperty` — the union across the entry document and every
+    /// file the walk imported, whether or not the name was actually a global
+    /// (so it answers "could this document have overwritten a global of this
+    /// name?" independently of what the caller happened to supply). Surfaced on
+    /// [`ParsedProject::locally_overridable_properties`].
+    locally_overridable: HashSet<String>,
     /// Lowercased names of MSBuild reserved well-known properties
     /// (everything seeded by [`properties::well_known`]). Snapshot
     /// taken at construction time. Used by [`walk_external_file`] to
@@ -1944,6 +1951,7 @@ impl<'r> State<'r> {
         Self {
             lookup,
             protected,
+            locally_overridable: local_overrides.clone(),
             reserved,
             sticky_globals,
             env_extensions_path,
@@ -2423,6 +2431,7 @@ impl<'r> State<'r> {
             pending_directory_build_props: _,
             in_entry_body: _,
             resolved_sdk_root,
+            locally_overridable,
             compile_context: _,
             in_sdk_subtree: _,
             sdk_tolerance_roots: _,
@@ -2578,6 +2587,7 @@ impl<'r> State<'r> {
             compile_item_uncertainties,
             package_references_uncertain,
             package_reference_uncertainties,
+            locally_overridable_properties: locally_overridable.into_iter().collect(),
             resolved_sdk_root,
         }
     }
@@ -5905,6 +5915,13 @@ fn walk_external_file(path: &Path, span: Range<usize>, state: &mut State<'_>) {
     // doesn't re-add names that the entry project itself had marked
     // local (and which therefore were never in `state.protected`).
     let imported_overrides = collect_local_overrides(doc.root_element());
+    // Record the opt-out regardless of whether this walk had a matching global
+    // to unprotect: the question a consumer asks is "could the document have
+    // overwritten a global of this name", which does not depend on what the
+    // caller happened to supply *this* time.
+    state
+        .locally_overridable
+        .extend(imported_overrides.iter().cloned());
     let unprotected: Vec<String> = imported_overrides
         .into_iter()
         .filter(|name| !state.reserved.contains(name) && state.protected.remove(name))

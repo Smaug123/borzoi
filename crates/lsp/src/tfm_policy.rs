@@ -122,43 +122,43 @@ pub(crate) fn tfm_choice(pass1: &ParsedProject, extras: &HashMap<String, String>
     }
 }
 
-/// Whether the evaluation produced by honouring a [`TfmChoice::Reseed`] is
-/// actually the inner build we asked for.
+/// Whether a document can be served as an inner build at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ReseedOutcome {
-    /// The seed stood: the document did not touch the global, so this pass *is*
-    /// the seeded inner build.
+    /// The seed is read-only to this document, so an evaluation seeded with it
+    /// *is* the inner build it names.
     AsSeeded,
-    /// The document overwrote the seed, so the pass is not any single TFM's
-    /// build and must be discarded — see [`reseed_outcome`]. Deliberately
-    /// carries no value: the final table entry is the override's, not "the TFM
-    /// the pass ran under", and there is no such TFM to report.
-    Overridden,
+    /// The document opts `TargetFramework` out of global protection, so it may
+    /// overwrite the seed mid-evaluation and the seeded pass must be discarded
+    /// — see [`reseed_outcome`]. Deliberately carries no value: there is no
+    /// single TFM such a pass runs under.
+    Overridable,
 }
 
-/// Classify what pass 2 ran under (fsproj 3.3c, plan E7).
+/// Whether an evaluation seeded with `TargetFramework` is the inner build it
+/// was seeded for (fsproj 3.3c, plan E7).
 ///
-/// A seeded `TargetFramework` global is read-only to the document unless it
-/// opts the name out with `<Project TreatAsLocalProperty="TargetFramework">`.
-/// **Presence in the property table is the override signal**: a suppressed body
-/// write leaves no entry at all, an override leaves its value, and an override
-/// that clears the TFM leaves an empty string (all three probed, dotnet
-/// 10.0.301).
+/// A seeded global is read-only to the document — unless the document opts the
+/// name out with `<Project TreatAsLocalProperty="…">`, after which a project
+/// write beats the seed. **That opt-out is the signal**, and it is a syntactic
+/// property of the document
+/// ([`ParsedProject::locally_overridable_properties`]), stated the same way
+/// however the write is spelled and whether or not it fires.
 ///
-/// So this reads the table *unfiltered*. [`body_target_framework`] cannot answer
-/// the question — it maps both "no override" and "overridden to empty" to
-/// `None`, and treating the latter as "no override" would name the seed for a
-/// parse that ran under nothing. Distinguishing absence from emptiness is the
-/// whole job.
+/// The tempting alternative — look for a `TargetFramework` entry in the
+/// evaluated property table — is unsound in the `absent-vs-unread` way. An
+/// override whose value the evaluator refuses (`@(Tfms)`, `%(Meta)`) is
+/// performed by MSBuild but drops the name from our table entirely (probed),
+/// so absence proves "no write" and "a write we could not evaluate" alike. The
+/// document's own declaration has no such gap.
 ///
-/// **An override makes the pass unusable, whatever it wrote** — the caller
-/// discards it and keeps pass 1. There is no "the TFM this pass ran under" to
-/// report, because MSBuild evaluates a document in order: a
-/// `$(TargetFramework)`-gated `<PropertyGroup>` above the override has already
-/// contributed the **seed's** defines and items, while the table ends at the
-/// override's value. The pass is a mixture of two builds, and any single TFM
-/// reported for it would pair one build's defines with the other's assets —
-/// precisely the incoherence E5 exists to prevent.
+/// **An overridable document cannot be served as an inner build at all**, so
+/// the caller discards the seeded pass and keeps the outer one. MSBuild
+/// evaluates in document order: a `$(TargetFramework)`-gated `<PropertyGroup>`
+/// above the override has already contributed the **seed's** defines and items
+/// while the table ends at the override's value. The pass is a mixture of two
+/// builds, and any single TFM reported for it would pair one build's defines
+/// with the other's assets — precisely the incoherence E5 exists to prevent.
 ///
 /// Recovering a usable answer would mean modelling per-property TFM provenance
 /// through the whole evaluation. That is not worth building for a document that
@@ -167,10 +167,15 @@ pub(crate) enum ReseedOutcome {
 /// `OutDir`, `WasmNativeWorkload`, `RestoreAdditionalProjectSources`), so this
 /// declines nothing anyone has been observed to write.
 pub(crate) fn reseed_outcome(pass2: &ParsedProject) -> ReseedOutcome {
-    match lookup_property_ci(&pass2.properties, "TargetFramework") {
-        Some(_) => ReseedOutcome::Overridden,
-        None => ReseedOutcome::AsSeeded,
+    // Lowercased in the evaluator, to match MSBuild's OrdinalIgnoreCase
+    // property-name comparison.
+    if pass2
+        .locally_overridable_properties
+        .contains("targetframework")
+    {
+        return ReseedOutcome::Overridable;
     }
+    ReseedOutcome::AsSeeded
 }
 
 /// The project's own non-empty `<TargetFramework>` write, trimmed.
