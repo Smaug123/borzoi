@@ -986,6 +986,24 @@ fn resolve_node_uncached(
     };
     let outer_edges = edges_of(&outer, purpose, is_entry);
     let outer_suppressed = references_suppressed(&outer, purpose);
+    if outer.not_an_inner_build {
+        // Ahead of the caller-owned fast path below, for the reason
+        // `Workspace::served_tfm_for_project` states: caller ownership excuses
+        // the *provenance* of a value, not an evaluation the document was free
+        // to conduct under a different TFM than the one supplied.
+        //
+        // `Unresolved`, never `NoneDeclared`: the latter tells the env "this
+        // project declares no TFM, so its sole restored output is the one",
+        // which for a multi-targeted project licenses folding whichever stale
+        // TFM directory is lying around. The output name declines with it, as
+        // for any TFM-unresolved node.
+        return NodeResult::Resolved {
+            edges: outer_edges,
+            tfm: NodeTfm::Unresolved,
+            output_name: None,
+            references_uncertain: outer_suppressed,
+        };
+    }
     if caller_owns_target_framework(extra_build_properties) {
         return NodeResult::Resolved {
             edges: outer_edges,
@@ -2312,6 +2330,40 @@ mod tests {
         assert_eq!(ws.parsed_tfm_for_project(&proj), None);
     }
 
+    /// The graph node's mirror of
+    /// `a_caller_owned_tfm_declines_when_the_document_can_overwrite_it`: the
+    /// walk has its own caller-owned fast path, and it must consult
+    /// `not_an_inner_build` too.
+    ///
+    /// `NodeTfm::NoneDeclared` would be the wrong decline here — it tells the
+    /// env "this project declares no TFM, so its sole restored output is the
+    /// one", which for a multi-targeted project licenses folding whichever
+    /// stale TFM directory happens to be lying around. `Unresolved` is the
+    /// verdict that means "we cannot say", and it folds nothing.
+    #[test]
+    fn a_caller_owned_graph_node_declines_when_the_document_can_overwrite_it() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("Sample.fsproj");
+        write_file(
+            &proj,
+            &fsproj_pass2_override("net8.0;net10.0", false, "net10.0"),
+        );
+        let extra = HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())]);
+        let ws = Workspace::with_env_and_extra_build_properties(SdkDiscoveryEnv::default(), extra);
+
+        let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+        let node = graph
+            .nodes
+            .iter()
+            .find(|n| paths_equal(&n.path, &proj))
+            .expect("entry node");
+        assert_eq!(node.tfm, NodeTfm::Unresolved);
+        assert_eq!(
+            node.output_name, None,
+            "a TFM-unresolved node's per-TFM output name cannot be pinned either"
+        );
+    }
+
     fn fsproj_pass2_override(declared: &str, outer_gate: bool, value: &str) -> String {
         let (open, close) = if outer_gate {
             (
@@ -2420,32 +2472,49 @@ mod tests {
                 node: NodeTfm::Unresolved,
             },
         ];
-        for case in cases {
-            let tmp = TempDir::new().unwrap();
-            let proj = tmp.path().join("Sample.fsproj");
-            write_file(
-                &proj,
-                &fsproj_pass2_override(case.declared, case.outer_gate, case.value),
-            );
-            let mut ws = Workspace::default();
-            let label = format!(
-                "declared={} outer_gate={} value={:?}",
-                case.declared, case.outer_gate, case.value
-            );
+        // Crossed with whether the *caller* supplied the `TargetFramework`
+        // global. Both `served_tfm_for_project` and `resolve_node_uncached`
+        // keep a caller-owned fast path that answers before consulting the
+        // untrusted state, and each has to decline ahead of it — caller
+        // ownership excuses a value's provenance, not an evaluation the
+        // document was free to conduct under a different TFM. Crossing the axis
+        // in here asks every surface both ways at once.
+        for caller_seeded in [false, true] {
+            for case in &cases {
+                let tmp = TempDir::new().unwrap();
+                let proj = tmp.path().join("Sample.fsproj");
+                write_file(
+                    &proj,
+                    &fsproj_pass2_override(case.declared, case.outer_gate, case.value),
+                );
+                let extra = if caller_seeded {
+                    HashMap::from([("TargetFramework".to_string(), "net8.0".to_string())])
+                } else {
+                    HashMap::new()
+                };
+                let mut ws = Workspace::with_env_and_extra_build_properties(
+                    SdkDiscoveryEnv::default(),
+                    extra,
+                );
+                let label = format!(
+                    "declared={} outer_gate={} value={:?} caller_seeded={caller_seeded}",
+                    case.declared, case.outer_gate, case.value
+                );
 
-            assert_eq!(ws.served_tfm_for_project(&proj), case.served, "{label}");
-            assert_eq!(
-                ws.parsed_tfm_for_project(&proj).as_deref(),
-                case.ran_under,
-                "{label}"
-            );
-            let graph = ws.project_graph(&proj);
-            let node = graph
-                .nodes
-                .iter()
-                .find(|n| paths_equal(&n.path, &proj))
-                .unwrap_or_else(|| panic!("entry node missing: {label}"));
-            assert_eq!(node.tfm, case.node, "{label}");
+                assert_eq!(ws.served_tfm_for_project(&proj), case.served, "{label}");
+                assert_eq!(
+                    ws.parsed_tfm_for_project(&proj).as_deref(),
+                    case.ran_under,
+                    "{label}"
+                );
+                let graph = ws.project_graph_with_producer_tfms(&proj, &BTreeMap::new());
+                let node = graph
+                    .nodes
+                    .iter()
+                    .find(|n| paths_equal(&n.path, &proj))
+                    .unwrap_or_else(|| panic!("entry node missing: {label}"));
+                assert_eq!(node.tfm, case.node, "{label}");
+            }
         }
     }
 
