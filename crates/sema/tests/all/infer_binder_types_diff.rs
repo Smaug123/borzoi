@@ -1025,6 +1025,85 @@ fn an_error_obsolete_head_or_argument_defers_but_a_warning_one_does_not() {
     );
 }
 
+/// A rejecting attribute on an **abbreviation** declines, like one on a
+/// definition.
+///
+/// An abbreviation emits no ECMA TypeDef, so the projected entity is the
+/// name-only marker `fsharp_pickle_merge` synthesises from the F# pickle — and
+/// that marker is the only carrier its attributes have. A marker that reports
+/// them absent rather than reading them is indistinguishable, at the bridge,
+/// from a clean type: the head chases to its target and publishes it, while
+/// FCS rejects the annotation and recovers the binder to `System.Object`.
+///
+/// Measured with `dotnet fsi` against the fixture assembly: the error pair
+/// gives `FS12004` / `FS0101`, the warning pair `FS12005` / `FS0044`. The
+/// warning twins are asserted alongside because declining every abbreviation
+/// that carries *an* attribute would pass the error half while losing results
+/// F# accepts — and because a marker that read nothing at all would also fail
+/// them, which is what makes the decline attributable to `IsError`.
+#[test]
+fn a_rejecting_attribute_on_an_abbreviation_defers_but_a_warning_one_does_not() {
+    let env = crate::common::constrained_fixture_env();
+    let render = |source: &str, name: &str| -> Option<String> {
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "snippet parses: {source:?}");
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+        let inferred = infer_file(&file, &resolved, env);
+        inferred
+            .def_types()
+            .iter()
+            .find(|(id, _)| resolved.def(**id).name == name)
+            .map(|(_, ty)| ty.render())
+    };
+
+    assert_eq!(
+        render(
+            "module M\nlet w : ConstrainedFixture.WarnMessagedAbbrev = failwith \"\"\n",
+            "w"
+        )
+        .as_deref(),
+        Some("System.Int32"),
+        "a warning-level CompilerMessage abbreviation is a type F# accepts, and it \
+         chases to its target — so declining it would lose a result"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet x : ConstrainedFixture.WarnObsoleteAbbrev = failwith \"\"\n",
+            "x"
+        )
+        .as_deref(),
+        Some("System.Int32"),
+        "and the obsolete half of the same pair"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet e : ConstrainedFixture.ErrorMessagedAbbrev = failwith \"\"\n",
+            "e"
+        ),
+        None,
+        "an error-level CompilerMessage on the abbreviation itself is FS12004"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet f : ConstrainedFixture.ErrorObsoleteAbbrev = failwith \"\"\n",
+            "f"
+        ),
+        None,
+        "and an error-obsolete abbreviation is FS0101"
+    );
+    assert_eq!(
+        render(
+            "module M\nlet g : System.Func<ConstrainedFixture.ErrorMessagedAbbrev, bool> = failwith \"\"\n",
+            "g"
+        ),
+        None,
+        "a rejecting abbreviation sinks an application it stands inside, reached by \
+         the recursion rather than by the head check"
+    );
+}
+
 /// An array rank above what F# accepts declines, in every position.
 ///
 /// Our parser reads whatever rank the brackets spell, so without a check the

@@ -55,3 +55,29 @@ type WarnMessaged<'T> = WMsg of 'T
 /// argument.
 [<CompilerMessage("gone by message", 12003, IsError = true)>]
 type ErrorMessagedAtom = EMsgAtom of int
+
+/// An **abbreviation**, not a definition, so it emits no ECMA TypeDef: the
+/// only record of it is the F# pickle, and resolution returns the synthetic
+/// name-only marker `fsharp_pickle_merge` builds. That marker is the sole
+/// carrier of these attributes, so an entity whose attributes it did not read
+/// is one whose use F# may reject while every projected field says it is fine.
+[<CompilerMessage("gone by message", 12004, IsError = true)>]
+type ErrorMessagedAbbrev = int
+
+/// [`ErrorMessagedAbbrev`]'s twin at warning level, so a decline on the former
+/// is attributable to `IsError` and not to being an abbreviation at all.
+[<CompilerMessage("just a note", 12005)>]
+type WarnMessagedAbbrev = int
+
+/// The obsolete-attribute half of the same shape.
+[<System.Obsolete("gone", true)>]
+type ErrorObsoleteAbbrev = int
+
+/// Its warning-level twin.
+[<System.Obsolete("soon", false)>]
+type WarnObsoleteAbbrev = int
+
+/// An abbreviation **chain** onto a warning-level one. Whether F# reports the
+/// link's own attribute at a use of `ChainedToWarnObsolete` decides whether an
+/// intermediate link's attributes are part of the question at all.
+type ChainedToWarnObsolete = WarnObsoleteAbbrev

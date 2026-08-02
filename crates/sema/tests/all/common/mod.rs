@@ -1325,9 +1325,15 @@ pub fn ensure_fsharp_member_corpus_built() -> &'static Path {
 /// F#-only typar constraints: they have no IL encoding, and every constrained
 /// head reachable from the shipped FSharp.Core is *also* excluded from a bridge
 /// by an unrelated guard, so a constraint-blind bridge passes the sweep green
-/// while publishing a type FCS disagrees with. The fixture's types are declared
-/// so no other guard can stand in — none renamed, none an abbreviation, each
-/// constrained type paired with an unconstrained twin.
+/// while publishing a type FCS disagrees with. Its constraint types are
+/// declared so no other guard can stand in — none renamed, none an
+/// abbreviation, each paired with an unconstrained twin.
+///
+/// It has since grown the other dimensions that need an F#-authored reference
+/// rather than a library head: `[<Obsolete(_, true)>]` and
+/// `[<CompilerMessage(_, _, IsError = true)>]` heads, each with a
+/// warning-level twin, and — the one carrier with no ECMA row at all — the same
+/// two attributes on **abbreviations**, whose only record is the F# pickle.
 pub fn ensure_constrained_fixture_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT

@@ -29,6 +29,22 @@
 //!   — over structural arguments and a typar, then nests them one level further.
 //!   This is the surface the bridge would add.
 //!
+//! # What this harness does not close
+//!
+//! The alphabet is enumerated over *positions* but hand-listed over **carriers**,
+//! and that is the seam a later round found: no abbreviation carrying a rejecting
+//! attribute existed here or in the fixture, so the whole attribute dimension
+//! agreed while a marker that reported its attributes absent published a type F#
+//! rejects. [`ABBREV_HEADS`] closes that carrier.
+//!
+//! Deriving the fixture half of the alphabet from `constrained_env/Library.fs`
+//! was considered and **not** built. It would guard against wiring up a fixture
+//! type and forgetting it, which has not happened; it would not have found this,
+//! because the shape was absent from the fixture too, and no derivation
+//! synthesises a dimension nobody has thought of. The trigger to build it is a
+//! *second* finding of this kind — a shape present in the fixture but missing
+//! from the alphabet — not another guard-logic gap.
+//!
 //! # The oracle is diagnostic-aware — this is the design point
 //!
 //! Two of the shapes above are **invalid F#** that FCS *error-recovers* from:
@@ -397,6 +413,36 @@ const ERROR_OBSOLETE_ATOM: &str = "ConstrainedFixture.ErrorObsoleteAtom";
 /// argument-position reason.
 const ERROR_MESSAGED_ATOM: &str = "ConstrainedFixture.ErrorMessagedAtom";
 
+/// The four **abbreviation** heads, each carrying a rejecting attribute at one
+/// of the two levels F# distinguishes.
+///
+/// An abbreviation is a distinct carrier, not another spelling of a definition:
+/// it emits no ECMA TypeDef, so its attributes exist only in the F# pickle and
+/// reach a consumer through the synthesised marker entity. Every other
+/// attribute row in this alphabet names a *definition*, whose attributes ride
+/// on a real metadata row — so the whole dimension agreed while a marker that
+/// reported its attributes absent published `System.Int32` for a head FCS
+/// rejects.
+///
+/// Measured against the fixture assembly: `ErrorMessagedAbbrev` is `FS12004`
+/// and `ErrorObsoleteAbbrev` `FS0101`; the two `Warn` twins are accepted
+/// (`FS12005` / `FS0044`) and chase to `System.Int32`. Both halves are in the
+/// alphabet because an implementation that declined every attribute-bearing
+/// abbreviation would pass the error half while losing results F# accepts.
+/// The last entry is an abbreviation **chain** onto an attribute-bearing link.
+/// F# consults only the entity a name resolves to, so a use of the chain
+/// reports nothing at all (measured: declaring it is `FS0044` at the link, using
+/// it is silent) — the link's attribute is not part of the question. It is in
+/// the alphabet because our chase walks *through* that link, so "we agree here"
+/// is worth measuring rather than reasoning about.
+const ABBREV_HEADS: [&str; 5] = [
+    "ConstrainedFixture.ErrorMessagedAbbrev",
+    "ConstrainedFixture.WarnMessagedAbbrev",
+    "ConstrainedFixture.ErrorObsoleteAbbrev",
+    "ConstrainedFixture.WarnObsoleteAbbrev",
+    "ConstrainedFixture.ChainedToWarnObsolete",
+];
+
 /// A type nested inside a **non-generic** one. The oracle's metadata renderer
 /// normalises FCS's `+` separator to `/`, but this one arrives already dotted, so
 /// the two conventions are not distinguishable from the head spelling alone.
@@ -478,6 +524,23 @@ fn enumerate() -> Vec<Ann> {
             ]
         })
         .collect::<Vec<_>>();
+    // The **abbreviation** carrier, in each position its attributes can decide:
+    // bare (the nullary bridge, which chases the alias to its target), under a
+    // former, and as a generic argument (reached by the recursion, which no
+    // head-side check sees). See [`ABBREV_HEADS`].
+    let abbreviations = ABBREV_HEADS
+        .into_iter()
+        .flat_map(|head| {
+            [
+                Ann::atom(head),
+                Ann::array(Ann::atom(head)),
+                Ann::App("option", vec![Ann::atom(head)]),
+                Ann::tuple(Ann::atom(head), Ann::atom("bool")),
+                Ann::fun(Ann::atom("int"), Ann::atom(head)),
+                Ann::App("System.Func", vec![Ann::atom(head), Ann::atom("bool")]),
+            ]
+        })
+        .collect::<Vec<_>>();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for a in structural
@@ -486,6 +549,7 @@ fn enumerate() -> Vec<Ann> {
         .chain(nested)
         .chain(nested_in_generic)
         .chain(ranked)
+        .chain(abbreviations)
     {
         if seen.insert(a.render()) {
             out.push(a);

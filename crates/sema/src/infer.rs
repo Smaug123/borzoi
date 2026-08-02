@@ -1443,9 +1443,14 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
-        // Asked of the marker *and* of the chased terminal below: either being
-        // error-obsolete is enough for F# to reject the annotation, and an
-        // abbreviation carries its own attributes.
+        // The marker's *own* attributes, which is where F# actually looks:
+        // `CheckEntityAttributes` runs on the entity the name resolved to and
+        // does not chase an abbreviation. Measured — a use of `type Chain =
+        // WarnObsoleteAbbrev` reports nothing, though declaring the chain
+        // reports FS0044 at the link. An abbreviation emits no ECMA TypeDef, so
+        // this reads the marker `fsharp_pickle_merge` synthesises from the
+        // pickle; a marker that reported its attributes absent rather than
+        // reading them publishes a type F# rejects.
         if rejected_by_attributes(entity) {
             return None;
         }
@@ -1458,6 +1463,17 @@ impl<'a> Gen<'a> {
         if !entity.generic_parameters.is_empty() {
             return None;
         }
+        // The **terminal**'s attributes, which F# does *not* consult at a use of
+        // the alias — so this is deliberate over-rejection, not a second attempt
+        // at reproducing `CheckEntityAttributes`. It costs a decline on `type
+        // Chain = ErrorObsoleteAtom`, which F# accepts.
+        //
+        // Kept because the two questions differ in kind: whether F# *rejects the
+        // name written* is decided at the marker above, while what we publish is
+        // the terminal — and an alias is not a licence to publish a type whose
+        // own declaration says it may not be used. The structural checks below
+        // sit here for the sharper form of that reason: `is_byref_like` is a
+        // property of the published type and a marker carries `false`.
         if rejected_by_attributes(entity) {
             return None;
         }
