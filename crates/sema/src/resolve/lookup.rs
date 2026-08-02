@@ -1192,12 +1192,21 @@ impl<'a> Resolver<'a> {
     ///
     /// The fold-back's generation barrier does not cover this: it protects the
     /// declaring block only, and a later `namespace` block folds afresh.
+    ///
+    /// Both halves of the project are asked. An earlier Compile-order file's
+    /// unprovable fragment reaches this contest exactly as a same-file one does
+    /// — probed across two files, FCS binds the module's `X` and not the
+    /// namespace's own `H.X` — so the earlier-file half
+    /// ([`ProjectItems::has_unproven_auto_open_fragment_in`](super::model::ProjectItems::has_unproven_auto_open_fragment_in))
+    /// must be consulted too, or the boundary silently turns a decline into a
+    /// commit.
     pub(super) fn unproven_auto_open_fragment_in(&self, container: &[String]) -> bool {
-        self.auto_open_module_paths.iter().any(|d| {
-            !d.commits()
-                && super::model::is_directly_in(&d.path, container)
-                && (!d.private || self.container_path.starts_with(container))
-        })
+        self.preceding.has_unproven_auto_open_fragment_in(container)
+            || self.auto_open_module_paths.iter().any(|d| {
+                !d.commits()
+                    && super::model::is_directly_in(&d.path, container)
+                    && (!d.private || self.container_path.starts_with(container))
+            })
     }
 
     pub(super) fn project_auto_open_submodules_in(&self, container: &[String]) -> Vec<Vec<String>> {

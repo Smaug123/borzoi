@@ -3165,3 +3165,87 @@ fn an_unprovable_marker_declines_the_namespace_fold_rather_than_taking_the_direc
          binds the folded `N.A.X`; got {res:?}"
     );
 }
+
+/// The unprovable verdict must survive the **file boundary**.
+///
+/// An earlier Compile-order file can declare two `[<AutoOpen>]` modules in one
+/// namespace: one whose marker we prove, and a later one whose marker resolves
+/// to a local `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`
+/// — which FCS chases, so the later module really does open, and its `X` wins.
+/// Probed with `dotnet fsi --exec`: the program prints `result=2`, the
+/// *unprovable* module's value (FS3561 "should not be aliased" is a warning, so
+/// the file compiles).
+///
+/// A later file's `open` therefore meets a contest it cannot see unless the
+/// export carries the verdict: exporting only the *proven* fragment leaves the
+/// proven `X` uncontested and commits it — a wrong go-to-definition, not a gap.
+/// The same-file barrier does not reach here; only the exported verdict does.
+/// The unprovable verdict must survive the **file boundary**.
+///
+/// `an_unprovable_marker_declines_the_namespace_fold_rather_than_taking_the_direct_case`
+/// is this contest within one file. Split across two, the earlier file exports
+/// only its *proven* auto-open fragments, so the later `open CU` sees an
+/// uncontested direct tier and commits the namespace's own union case `CU.H.X`.
+/// FCS does not: probed with `dotnet fsi --exec` over the same two files, it
+/// prints `2` — `CU.Unp.X`, the value of the module whose marker we cannot rule
+/// on, because it chases the local
+/// `type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute`. So the
+/// direct case is a wrong go-to-definition, not a gap.
+///
+/// The hidden-container marker the export already carries does not cover this.
+/// It guards the names the unprovable module might *supply* — enough for a
+/// contest against another auto-open fragment's value — and says nothing about
+/// the names the namespace supplies **directly**. Only the verdict itself
+/// crossing the boundary ([`ProjectItems`]'s unproven paths) reaches the direct
+/// tier.
+#[test]
+fn an_earlier_files_unprovable_marker_declines_the_namespaces_direct_tier() {
+    let env = crate::common::fsharp_core_env().clone();
+    let unprovable = "namespace CU\n\ntype H =\n    | X\n\nnamespace CU\n\n\
+                      type AutoOpenAttribute = Microsoft.FSharp.Core.AutoOpenAttribute\n\n\
+                      [<AutoOpen>]\nmodule Unp =\n    let X = 2\n";
+    let src1 = "module CrossUser\n\nopen CU\n\nlet result = X\n";
+    let use_at = {
+        let start = src1.rfind('X').expect("the use");
+        rowan::TextRange::new(
+            u32::try_from(start).unwrap().into(),
+            u32::try_from(start + 1).unwrap().into(),
+        )
+    };
+    let resolve_pair = |src0: &str| {
+        let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &env);
+        let res = proj.file(1).resolution_at(use_at);
+        (
+            res,
+            res.and_then(|r| proj.item_def(r))
+                .map(|(f, d)| (f, d.range)),
+        )
+    };
+
+    let (res, def) = resolve_pair(unprovable);
+    let direct_case = unprovable
+        .find("| X")
+        .map(|i| i + 2)
+        .expect("the direct case");
+    assert_ne!(
+        def.map(|(file, range)| (file, usize::from(range.start()))),
+        Some((0, direct_case)),
+        "an earlier file's unprovable fragment contests this name; FCS binds \
+         `CU.Unp.X`, so the namespace's own case is a wrong target; got {res:?}"
+    );
+
+    // Non-vacuity: without the unprovable fragment the very same use commits the
+    // direct case. So the decline above is this fragment's doing, not a blanket
+    // refusal of the shape — the failure mode a one-sided assertion would miss.
+    let control = "namespace CU\n\ntype H =\n    | X\n";
+    let (control_res, control_def) = resolve_pair(control);
+    assert_eq!(
+        control_def.map(|(file, range)| (file, usize::from(range.start()))),
+        Some((
+            0,
+            control.find("| X").map(|i| i + 2).expect("the direct case")
+        )),
+        "with no unprovable fragment the direct case must still commit, or this \
+         test proves nothing; got {control_res:?}"
+    );
+}

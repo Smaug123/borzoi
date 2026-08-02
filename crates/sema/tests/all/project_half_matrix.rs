@@ -35,6 +35,25 @@ const PJ_AUTOMOD: &str = "namespace Demo.PjFold.AutoMod\n\n[<AutoOpen>]\nmodule 
 const PJ_CLASS: &str =
     "namespace Demo.PjFold.ClassShape\ntype PjClass() =\n    static member PjStat = 9\n";
 const PJ_MIX_MOD: &str = "module Demo.PjMix.NsOnly\n\nlet pjModVal () = 10\n";
+/// A decl file whose namespace supplies one name **twice**: directly, as a
+/// union case, and from an `[<AutoOpen>]` module declared after it. FCS folds
+/// the module last, so the module's value wins — probed across two files with
+/// `dotnet fsi --exec`, which prints the module's `2`, not the case.
+///
+/// This is the cross-file half of the unprovable-marker contest. A later file's
+/// `open` sees the namespace's direct tier and the module's, and must not
+/// commit the direct tier merely because it cannot rule on the marker: the
+/// exported *proven* fragments alone would leave the case uncontested, which is
+/// a wrong go-to-definition rather than a gap.
+const PJ_UNPROVEN: &str = "namespace Demo.PjUnproven.Contest\n\ntype PjHolder =\n    \
+                           | PjContested\n\n[<AutoOpen>]\nmodule PjAutoLate =\n    \
+                           let PjContested = 2\n";
+/// [`PJ_UNPROVEN`] minus the auto-open module — the non-vacuity control. With
+/// no fragment to be unsure about, the direct case must still commit on both
+/// sides, so a decline on the contested cell is that fragment's doing and not a
+/// blanket refusal of the shape.
+const PJ_DIRECT_ONLY: &str = "namespace Demo.PjUnproven.Direct\n\ntype PjHolder2 =\n    \
+                              | PjDirectOnly\n";
 
 const CELLS: &[Cell] = &[
     // ---- project namespace half carries an exception ----
@@ -171,6 +190,26 @@ const CELLS: &[Cell] = &[
         probe: "PjNsClass.PjNsStat",
         position: Position::Expr,
     },
+    // ---- an earlier file's UNPROVABLE auto-open fragment contests the
+    //      namespace's own direct tier ----
+    Cell {
+        container: Container::Anon,
+        decls: &[PJ_UNPROVEN],
+        label: "pj-unproven / direct case contested by an auto-open fragment, expression",
+        body: &["open Demo.PjUnproven.Contest"],
+        after: &[],
+        probe: "PjContested",
+        position: Position::Expr,
+    },
+    Cell {
+        container: Container::Anon,
+        decls: &[PJ_DIRECT_ONLY],
+        label: "pj-unproven / uncontested direct case, expression",
+        body: &["open Demo.PjUnproven.Direct"],
+        after: &[],
+        probe: "PjDirectOnly",
+        position: Position::Expr,
+    },
 ];
 
 /// Cells where FCS resolves the probe but we do not — each must remain
@@ -192,6 +231,10 @@ const KNOWN_GAPS: &[(&str, &str)] = &[
     (
         "pj-auto / colliding value, expression",
         "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the fold declines rather than committing either side of it",
+    ),
+    (
+        "pj-unproven / direct case contested by an auto-open fragment, expression",
+        "the `[<AutoOpen>]` marker is unprovable in this env — the autoopen fixture carries an unknowable auto-open surface, which makes every attribute candidate unrulable — so the contested name declines rather than committing the namespace's direct case, which is what FCS does NOT bind (see the FCS pin)",
     ),
     (
         "pj-class-dotted / static under the project type head, expression",
@@ -218,9 +261,27 @@ fn project_half_matches_fcs_on_every_cell() {
     // PROJECT declaration site (decl 0's `pjAutoVal` binder) — the assembly
     // module-half member rendering (`Demo.PjFold.AutoMod.pjAutoVal`) fails it.
     let pj_auto_val = PJ_AUTOMOD.find("pjAutoVal").expect("decl text");
-    let fcs_pins = [(
-        "pj-auto / colliding value, expression",
-        format!("pj:0:{}..{}", pj_auto_val, pj_auto_val + "pjAutoVal".len()),
-    )];
+    // Same reasoning for the unprovable-marker contest: the gap entry says only
+    // that FCS resolved *something*, and the whole claim is WHICH of the two
+    // same-named declarations it picked. Pin it to the auto-open module's
+    // binder — the direct union case's site fails it, which is exactly the wrong
+    // target this family guards.
+    let pj_contested_val = PJ_UNPROVEN
+        .rfind("PjContested")
+        .expect("the auto-open module's binder");
+    let fcs_pins = [
+        (
+            "pj-auto / colliding value, expression",
+            format!("pj:0:{}..{}", pj_auto_val, pj_auto_val + "pjAutoVal".len()),
+        ),
+        (
+            "pj-unproven / direct case contested by an auto-open fragment, expression",
+            format!(
+                "pj:0:{}..{}",
+                pj_contested_val,
+                pj_contested_val + "PjContested".len()
+            ),
+        ),
+    ];
     run_matrix(CELLS, KNOWN_GAPS, &fcs_pins, "project_half_matrix");
 }
