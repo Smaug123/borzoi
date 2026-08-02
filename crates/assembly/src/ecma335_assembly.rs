@@ -13,11 +13,12 @@ use crate::fsharp_resource::{
 };
 use crate::model::{
     Access, AssemblyIdentity, AssemblyProjectionSkips, Augmentation, CompilerFeatureRequired,
-    ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental, FSharpConstraints,
-    Field, FsharpOverlayKind, ImplementedMember, IndexParameter, InterfaceMemberImpl, Member,
-    MethodLike, MethodSignature, ModuleValue, Nullability, NullableType, Obsolete, ParamDefault,
-    Parameter, Primitive, Property, SkippedFsharpOverlay, SkippedMember, SkippedProjectionItem,
-    TypeParameter, TypeRef, UnclassifiedMethodImpl, UnionCases, Variance, Version,
+    CompilerMessage, ConstantValue, DefaultMember, Entity, EntityKind, Event, Experimental,
+    FSharpConstraints, Field, FsharpOverlayKind, ImplementedMember, IndexParameter,
+    InterfaceMemberImpl, Member, MethodLike, MethodSignature, ModuleValue, Nullability,
+    NullableType, Obsolete, ParamDefault, Parameter, Primitive, Property, SkippedFsharpOverlay,
+    SkippedMember, SkippedProjectionItem, TypeParameter, TypeRef, UnclassifiedMethodImpl,
+    UnionCases, Variance, Version,
 };
 use crate::reader::{
     AccessDefect, Accessibility, AccessorOwner, AssemblyIdentity as RawAssemblyIdentity,
@@ -766,6 +767,7 @@ impl Ecma335Assembly {
             is_structural_comparison,
             is_allow_null_literal: self.detect_allow_null_literal(&td.attributes)?,
             obsolete: self.detect_obsolete(&td.attributes)?,
+            compiler_message: self.detect_compiler_message(&td.attributes)?,
             experimental: self.detect_experimental(&td.attributes)?,
             default_member: self.detect_default_member(&td.attributes)?,
             compiler_feature_required: self.detect_compiler_feature_required(&td.attributes)?,
@@ -995,6 +997,55 @@ impl Ecma335Assembly {
             }
         }
         Ok(Some(Obsolete { message, is_error }))
+    }
+
+    /// `[Microsoft.FSharp.Core.CompilerMessageAttribute]`, if present.
+    ///
+    /// The declared ctor is `(string, int)` with a named `IsError`, but the
+    /// decode tolerates a missing or reordered payload rather than refusing:
+    /// every field is optional in the model, and the consumer that reads
+    /// `is_error` treats an undecodable marker as "no suppression", which is
+    /// the conservative direction for a rejection check.
+    fn detect_compiler_message(
+        &self,
+        attributes: &[RawAttribute],
+    ) -> Result<Option<CompilerMessage>, ImportError> {
+        let widths = EnumWidths::new();
+        let Some(raw) = self.find_attribute(
+            attributes,
+            "Microsoft.FSharp.Core",
+            "CompilerMessageAttribute",
+        ) else {
+            return Ok(None);
+        };
+        let decoded = self.decode_found_attribute(raw, &widths, "CompilerMessageAttribute")?;
+        let mut message = None;
+        let mut marker = None;
+        let mut is_error = false;
+        for arg in &decoded.fixed_args {
+            match arg {
+                FixedArg::String(s) if message.is_none() => message = s.clone(),
+                FixedArg::Integral(IntegralParam::Int32(n)) if marker.is_none() => {
+                    marker = Some(*n);
+                }
+                _ => {}
+            }
+        }
+        for na in &decoded.named_args {
+            match (na.name.as_str(), &na.value) {
+                ("Message", FixedArg::String(s)) => message = s.clone(),
+                ("MessageNumber", FixedArg::Integral(IntegralParam::Int32(n))) => {
+                    marker = Some(*n);
+                }
+                ("IsError", FixedArg::Boolean(b)) => is_error = *b,
+                _ => {}
+            }
+        }
+        Ok(Some(CompilerMessage {
+            message,
+            marker,
+            is_error,
+        }))
     }
 
     /// `[System.Diagnostics.CodeAnalysis.ExperimentalAttribute]`, if present.
