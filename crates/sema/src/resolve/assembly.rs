@@ -212,17 +212,26 @@ impl<'a> Resolver<'a> {
     ///
     /// Which is why a **dropped TypeDef** counts as a rooting position. The
     /// projector records the namespace it lost a type from but never the name,
-    /// so a drop at any split of the path may *be* the entity a split would have
-    /// rooted at — and an absence proof that ignores it is the standing
+    /// so a drop in a namespace a split would have rooted *at* may be that very
+    /// entity — and an absence proof that ignores it is the standing
     /// absent-versus-unread confusion
     /// ([`Self::dropped_type_could_root_this_path`] is the type path's gate for
     /// the same hazard). Real inputs make this nearly free: drops are rare
     /// enough that the whole-project differential does not move.
+    ///
+    /// The drop is asked of **exactly the namespaces the rooting loop visits**,
+    /// not of every split of the path. A drop recorded in `names` entire is a
+    /// type *inside* the whole path — a child of the leaf, which no rooting
+    /// could be — and one shallower than `base` sits inside the reading prefix,
+    /// which this walk never roots at either. Widening past the loop's own range
+    /// would decline `List.rev` inside `namespace N; module List` on a drop in
+    /// `N.List.rev`, losing the fall-through to FSharp.Core for a type that
+    /// cannot occupy the terminal segment (codex review round 2).
     fn any_rooting_position(&self, names: &[String], base: usize) -> bool {
-        (base..names.len()).any(|k| !self.rooting_candidates(&names[..k], &names[k]).is_empty())
-            || self
-                .assemblies
-                .any_split_of_a_module_path_has_a_dropped_type(names)
+        (base..names.len()).any(|k| {
+            !self.rooting_candidates(&names[..k], &names[k]).is_empty()
+                || self.assemblies.namespace_has_dropped_type(&names[..k])
+        })
     }
 
     /// The one owner a reading may commit, or `None` when the owners are
