@@ -2305,6 +2305,44 @@ fn undefined_only_property_value_is_still_stored_but_unpins_consumers() {
 }
 
 #[test]
+fn a_self_default_over_an_unpromoted_environment_name_cannot_commit() {
+    // The other half of the default-fill exemption's "never written, and absent
+    // from the environment" precondition. A case-collided environment variable
+    // is remembered in the environment snapshot but *dropped* from the lookup,
+    // because which spelling wins is unspecified — so the name reads undefined
+    // here while the real build has a value for it, and the default fires on
+    // one side only.
+    //
+    // Probed (dotnet 10.0.301, 2026-08-02) with `SomeName=real` and
+    // `somename=REAL` both in the environment: MSBuild reports
+    // `SomeName = real`, so its `== ''` gate is false and the write never
+    // happens. Ours would write `fallback` and gate an item on it.
+    let src = r#"<Project>
+  <PropertyGroup>
+    <SomeName Condition="'$(SomeName)' == ''">fallback</SomeName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+    <Compile Condition="'$(SomeName)' == 'fallback'" Include="Ghost.fs" />
+  </ItemGroup>
+</Project>"#;
+    let environment = HashMap::from([
+        ("SomeName".to_string(), "real".to_string()),
+        ("somename".to_string(), "REAL".to_string()),
+    ]);
+    let p = parse_with_environment(src, &environment);
+    // Stated as the contract: claim nothing, or claim the set MSBuild has.
+    if !p.items_uncertain {
+        assert_eq!(
+            paths(&p.items),
+            [Path::new("/repo/proj/Main.fs")],
+            "the real build's SomeName is non-empty, so a committed item set \
+             must not carry the item the fallback gates",
+        );
+    }
+}
+
+#[test]
 fn protected_write_with_unsupported_condition_emits_no_diagnostic() {
     // The standard SDK idiom for defaulting a global property:
     //   <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>

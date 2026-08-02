@@ -2099,6 +2099,30 @@ impl<'r> State<'r> {
             && !is_toolset_initial_property_name(&lower)
     }
 
+    /// Is `name` reading as undefined because it *is* undefined in the real
+    /// build, or because the walk could not work out what it holds? Asked by
+    /// the default-fill exemption ([`evaluate_condition_with_exemptions`]),
+    /// whose whole justification is the former.
+    ///
+    /// That exemption deliberately over-commits on two axes — it believes the
+    /// environment model, and it believes an undefined read even under
+    /// [`Self::walk_opaque`] — because the SDK leans on the idiom pervasively
+    /// and flagging it would refuse every real project. Neither over-commitment
+    /// extends to a name the walk has **direct evidence** the real build gives
+    /// a value:
+    ///
+    /// * [`Self::unevaluable_written`] — a write we refused. Its emptiness here
+    ///   is our failure to compute, not a fact; MSBuild holds what it computed
+    ///   and takes the other branch.
+    /// * [`Self::env_property_names`] — an environment name promotion skipped
+    ///   (a case collision, a toolset overwrite). We dropped it from the lookup
+    ///   precisely because we cannot model its value, and "cannot model" is not
+    ///   "unset": the real build defines *something* non-empty.
+    fn self_default_absence_is_a_fact(&self, name: &str) -> bool {
+        let lower = name.to_ascii_lowercase();
+        !self.unevaluable_written.contains(&lower) && !self.env_property_names.contains(&lower)
+    }
+
     /// Is the *current* value of `name` exactly what MSBuild holds at this
     /// point in the walk? Asked at the `Directory.Build.*` splice, where the
     /// answer decides whether a whole user-authored file joins the walk.
@@ -4295,12 +4319,7 @@ fn evaluate_condition_with_exemptions(
             || !self_default_names
                 .iter()
                 .any(|written| written.eq_ignore_ascii_case(name))
-            // A refused write is why the name reads empty here; MSBuild holds
-            // the value it computed and skips the default. See the
-            // "never written" precondition in this function's docs.
-            || state
-                .unevaluable_written
-                .contains(&name.to_ascii_lowercase())
+            || !state.self_default_absence_is_a_fact(name)
     });
     // C.2b: an undefined name the walk can prove is undefined in the
     // real build too substitutes to exactly the "" the evaluation used —

@@ -22,6 +22,12 @@
 > expressions and 5% of its conditions, so the surface a laundering defect
 > could reach is small. Its trigger is the committed fraction rising; see
 > "The census, re-run".
+>
+> **Known wrong commit, reproducible, not fixed:** a `Directory.Build.*` gate
+> written from a property an opaque *SDK-subtree* import may have redefined
+> commits a wrong Compile set. It is the measured residual of P2″'s stated
+> tolerance, and a sound fix wants per-value staleness — P3's shape, not a
+> fourth side channel. See "A third round produced the witness".
 
 ## The rule
 
@@ -767,6 +773,79 @@ precision change, and the way to find out is to remove it and see what the
 suite — and the reviewer — say. Which is an argument for P2 rather than against
 it: the coupling here was invisible precisely because the channel was a bare
 `HashSet` no type connected to the condition evaluator.
+
+**Asking the precondition's other half found a second wrong commit, this one
+pre-existing.** The exemption's ground is "absent from the environment *and*
+never written"; the review found the write half, so the environment half was
+worth one probe. `env_property_names` records every referenceable environment
+name — *including* the ones promotion dropped from the lookup, because their
+value is unmodellable (a case collision, a toolset overwrite). That is exactly
+"we cannot model it", which the exemption was reading as "it is unset":
+
+```xml
+<SomeName Condition="'$(SomeName)' == ''">fallback</SomeName>
+<Compile Condition="'$(SomeName)' == 'fallback'" Include="Ghost.fs" />
+```
+
+With `SomeName=real` and `somename=REAL` both in the environment, MSBuild
+reports `SomeName = real` (probed, 10.0.301), skips the default, and excludes
+the item. We published `Ghost.fs` with `items_uncertain = false`. Nothing in
+this PR caused it — it has been true for as long as the exemption has, and it
+is the same sentence's other clause.
+
+Both halves now go through one named predicate,
+`State::self_default_absence_is_a_fact`, whose doc says which over-commitments
+the exemption keeps (the environment model, `walk_opaque`) and which it drops
+(direct evidence that the real build has a value). Naming it is the point: the
+next reader can check the claim against the two channels it consults instead of
+re-deriving it from a comment. Census unchanged either way — the SDK's uses of
+the idiom are on names it neither refuses nor inherits from a dropped
+environment variable.
+
+#### A third round produced the witness for a risk P2″ accepted knowingly
+
+Review then argued that clearing a refusal is unsafe when the replacement value
+reads a property an opaque SDK import may have redefined: `walk_opaque` says
+content was hidden, `gate_value_is_exact` deliberately ignores `walk_opaque`, so
+a gate written from a stale value commits. Correct about the outcome, wrong
+about the cause — **the refusal is incidental**, and the reproducer needs no
+refused write at all:
+
+```xml
+<!-- inside the SDK's own Sdk.props -->
+<PropertyGroup><A>abc</A><ThatProperty>false</ThatProperty></PropertyGroup>
+<Import Project="Hidden.props" Condition="'$(A.Substring(0,1))' == 'a'" />
+<!-- Hidden.props sets ThatProperty=true; the entry body then writes -->
+<ImportDirectoryBuildTargets>$(ThatProperty)</ImportDirectoryBuildTargets>
+```
+
+Measured on this branch: `items_uncertain = false`, gate `false`,
+`Directory.Build.targets` skipped — while MSBuild takes the import (its
+condition is true), reads `true`, and takes the file. A wrong Compile set
+published as fact, with nothing in this plan's recent changes involved. The
+same document with the opaque import in the *project* rather than the SDK
+already declines, because an undecidable import outside the SDK subtree marks
+the item set directly.
+
+So it is the residual of P2″'s stated decision — *"deliberately the name-keyed
+channels only, and not `undefined_read_is_exact`, which folds in
+`walk_opaque`"* — now with a concrete witness rather than an argument. The cost
+of the blunt alternative was re-measured rather than taken on trust: adding
+`!self.walk_opaque` to `gate_value_is_exact` fails exactly six tests
+(`shared_dotnet_sdk_version_files_are_tolerated` and five
+`package_uncertain::sdk_*` cases), which is the "every real SDK project
+declines" result P2″ recorded.
+
+**Not fixed here, deliberately.** A sound narrow fix needs per-name staleness
+under opacity, propagating through writes like the taint channel does and
+consulted only at the splice — i.e. **a fourth parallel channel**, in a design
+whose next stage exists to collapse the channels into one lattice. Building it
+now means building the thing P2 must then undo. It is therefore a **P2
+requirement**: the lattice must be able to express "this value may be stale
+because content was hidden after it was computed", which is a per-value fact and
+so is really a **P3** one. That is the first argument for P3 that does not rest
+on the committed fraction — it is a wrong answer we can reproduce today, not a
+durability hedge. The census trigger stands, but this witness sits beside it.
 
 Two of the newly-named outcomes are likewise **inert**, and are recorded as such
 rather than defended as fixes: the reserved-toolset seed now scrubs the refused
