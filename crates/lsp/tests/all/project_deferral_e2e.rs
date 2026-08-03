@@ -18,7 +18,7 @@ use std::time::Duration;
 use borzoi::server::{State, run};
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidChangeWatchedFiles, DidOpenTextDocument, Exit,
+    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument, Exit,
     Notification as NotificationTrait, ShowMessage,
 };
 use lsp_types::request::{
@@ -26,11 +26,11 @@ use lsp_types::request::{
 };
 use lsp_types::{
     ClientCapabilities, DiagnosticClientCapabilities, DidChangeTextDocumentParams,
-    DidChangeWatchedFilesParams, DidOpenTextDocumentParams, DocumentSymbolParams, FileChangeType,
-    FileEvent, GotoDefinitionParams, PartialResultParams, Position, ShowMessageParams,
-    TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
-    TextDocumentItem, TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
-    WorkDoneProgressParams,
+    DidChangeWatchedFilesParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentSymbolParams, FileChangeType, FileEvent, GotoDefinitionParams, PartialResultParams,
+    Position, ShowMessageParams, TextDocumentClientCapabilities, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Url,
+    VersionedTextDocumentIdentifier, WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -102,6 +102,12 @@ impl Server {
                 range_length: None,
                 text: text.to_string(),
             }],
+        });
+    }
+
+    fn close(&self, uri: &Url) {
+        self.notify::<DidCloseTextDocument>(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
         });
     }
 
@@ -894,5 +900,89 @@ fn a_carried_fold_verdict_is_never_restated() {
         "the fresh toast restates a refusal about a file the project no longer \
          mentions: {}",
         second[0]
+    );
+}
+
+/// Dedup is on the words the user saw, not on internal bookkeeping.
+///
+/// The reviewer's sequence: a fold refusal is carried across an invalidation
+/// while a reference-edge loss is what actually gets rendered; a later
+/// successful fold then drops only the hidden carried entry. The *record*
+/// changes, but the toast would be identical — so nothing may be sent.
+#[test]
+fn a_record_only_change_does_not_re_toast() {
+    let tmp = TempDir::new().unwrap();
+    let proj_path = real_path(&tmp).join("Demo.fsproj");
+    // Declines reference edges (an unapplied `Remove`) *and* has a Compile item
+    // that isn't there, so both a fold refusal and a reference loss are live.
+    let broken = r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="Gone.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#;
+    std::fs::write(&proj_path, broken).unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let proj = Url::from_file_path(&proj_path).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    // Two distinct messages, legitimately: the reference loss is known from the
+    // evaluation immediately, the fold refusal only once something folds.
+    let first = server.deferral_messages_after_fold(&a);
+    let last_shown = first.last().cloned().expect("something was reported");
+
+    // Fix only the fold problem. The reference loss — and so the rendered
+    // message — is unchanged; only the hidden carried verdict resolves.
+    std::fs::write(
+        &proj_path,
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: proj.clone(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let mut sent = server.deferral_messages(&a);
+    sent.extend(server.deferral_messages_after_fold(&a));
+    // The reference-only message may be sent once (the fold cause dropping out
+    // genuinely changes the words), but never twice, and never a repeat of what
+    // is already on screen.
+    eprintln!("SCRATCH last_shown={last_shown:?}\nSCRATCH sent={sent:?}");
+    assert!(
+        !sent.contains(&last_shown),
+        "re-sent the message already on screen: {sent:?}"
+    );
+    assert!(sent.len() <= 1, "sent more than one new message: {sent:?}");
+    let mut deduped = sent.clone();
+    deduped.dedup();
+    assert_eq!(deduped, sent, "sent the same words twice: {sent:?}");
+}
+
+/// Closing every buffer of a project takes it out of scope, and reopening
+/// reports afresh — the record is scoped to what the user has open.
+#[test]
+fn closing_the_last_buffer_forgets_the_project() {
+    let (tmp, _proj) = project_dir(UNCERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let mut server = Server::start();
+
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a).len(), 1);
+    server.close(&a);
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&a).len(),
+        1,
+        "reopening reports afresh"
     );
 }

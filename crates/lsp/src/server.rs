@@ -182,13 +182,19 @@ pub struct State {
     /// a **different** reason says so. A project with nothing to report is
     /// removed, so one that is fixed and later re-broken reports again. See
     /// [`report_deferral`].
-    warned_uncertain_projects: HashMap<PathBuf, Vec<project_deferral::Deferral>>,
-    /// The projects [`refresh_project_deferrals`] reports on — the canonicalised
-    /// compiling project of each open source buffer. Maintained by
-    /// [`recompute_deferral_scope`] at the few events that can change it, so the
-    /// per-dispatch refresh does no filesystem work. See that function for why
-    /// an open `.fsproj` is not in scope on its own account.
-    deferral_scope: Vec<CanonicalProject>,
+    warned_uncertain_projects: HashMap<PathBuf, ProjectReport>,
+    /// Which project each open source buffer belongs to — the scope
+    /// [`refresh_project_deferrals`] reports on, as a per-document map so it can
+    /// be maintained **incrementally**.
+    ///
+    /// One entry is added per `didOpen` and removed per `didClose`, each costing
+    /// a single ownership lookup; recomputing the whole map on every open would
+    /// make restoring N tabs N(N+1)/2 ancestor `read_dir` walks. The full
+    /// recomputation is reserved for structural watched changes, which are the
+    /// only thing that can move an *existing* buffer's owner. See
+    /// [`recompute_deferral_scope`] for why an open `.fsproj` is not in scope on
+    /// its own account.
+    doc_projects: HashMap<Url, CanonicalProject>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -220,7 +226,7 @@ impl State {
             client_capabilities: None,
             workspace_roots: Vec::new(),
             warned_uncertain_projects: HashMap::new(),
-            deferral_scope: Vec::new(),
+            doc_projects: HashMap::new(),
             server_request_seq: 0,
             wants_diagnostic_refresh: false,
             pending_refresh_id: None,
@@ -1013,7 +1019,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.docs.insert(uri.clone(), params.text_document.text);
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
-                recompute_deferral_scope(state);
+                extend_deferral_scope(state, &uri);
             }
         }
         DidChangeTextDocument::METHOD => {
@@ -1032,7 +1038,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 let uri = params.text_document.uri;
                 state.docs.remove(&uri);
                 state.invalidate_owning_project(&uri);
-                recompute_deferral_scope(state);
+                shrink_deferral_scope(state, &uri);
                 if !state.supports_pull_diagnostics() {
                     // Clear this document's own diagnostics and any it had
                     // relocated onto other files via `#line` directives.
@@ -1089,6 +1095,22 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
     }
 }
 
+/// What was last reported for a project: the reconciliation record, and the
+/// notification the user actually saw.
+///
+/// Two fields because they answer different questions and can move
+/// independently. The **record** carries claims the current state cannot
+/// re-derive (a fold verdict across an invalidation), so it is what the next
+/// refresh reconciles against — but it is never shown. The **message** is what
+/// was rendered, and is the only sound thing to dedupe against: a hidden
+/// record-only change, or a change past the rendered cause cap, would otherwise
+/// re-send a toast identical to the one already on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectReport {
+    record: Vec<project_deferral::Deferral>,
+    message: Option<String>,
+}
+
 /// Bring the client's picture of what borzoi is declining, and why, up to date
 /// with the current state — sending a `window/showMessage` for each project
 /// whose explanation has *changed* ([`crate::project_deferral`]).
@@ -1130,11 +1152,11 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// walk on every dispatch. The toast's own job is the one squiggles can't do —
 /// telling a `.fs` buffer why its project went quiet.
 fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
-    for project in state.deferral_scope.clone() {
+    for project in projects_in_scope(state) {
         let previous = state
             .warned_uncertain_projects
             .get(project.key())
-            .cloned()
+            .map(|report| report.record.clone())
             .unwrap_or_default();
         let reconciled = {
             // Read, never provoke: recomputing the fold here would fold every
@@ -1157,52 +1179,78 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
     }
 }
 
-/// Recompute [`State::deferral_scope`]: the projects a refresh reports on.
+/// The project an open buffer puts in scope, if any.
 ///
-/// Maintained at the few points that can change it — a document opening or
-/// closing, and a structural watched change that can move ownership — rather
-/// than recomputed per dispatch, because [`Workspace::compiling_project`] walks
-/// ancestor directories with `read_dir` even when every evaluation is already
-/// cached. Per dispatch that is one filesystem scan per open buffer, on every
-/// keystroke, which is unaffordable on a large or network-backed workspace and
-/// buys nothing: ownership does not change when a source buffer is edited.
+/// `None` for a `.fsproj` — it is in scope only through its source files. Its
+/// own text already gets span-anchored diagnostics every keystroke, which is
+/// better feedback than a toast, and evaluating it here would populate
+/// `Workspace`'s project memo from *disk* on a path text-sync deliberately does
+/// not invalidate, pinning a stale Compile list for the server's lifetime
+/// (`tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
-/// Scope is derived from open **source** buffers. An open `.fsproj` is not in
-/// scope on its own account: it already has span-anchored diagnostics on its own
-/// text, and evaluating it here would populate `Workspace`'s project memo from
-/// *disk* on a path that text-sync deliberately does not invalidate — pinning a
-/// stale Compile list for the server's lifetime, which is exactly what
-/// `tests::fsproj_sync_does_not_pin_the_project_cache` exists to prevent. When
-/// one of its source files is open, the project is in scope through that.
-///
-/// A project that leaves scope is forgotten
-/// ([`State::warned_uncertain_projects`]), so reopening a file reports afresh
-/// rather than being deduped against a message from a previous session with the
-/// file.
-fn recompute_deferral_scope(state: &mut State) {
-    let mut scope: Vec<CanonicalProject> = Vec::new();
-    let uris: Vec<Url> = state.docs.keys().cloned().collect();
-    for uri in uris {
-        if !matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
-            continue;
-        }
-        let Ok(path) = uri.to_file_path() else {
-            continue;
-        };
-        // `compiling_project`, not `owning_project`: a standalone `.fsx` beside
-        // an unrelated `.fsproj` must not be told that project's problems.
-        let Some(project) = state.workspace.compiling_project(&path) else {
-            continue;
-        };
-        let project = CanonicalProject::new(&project);
-        if !scope.contains(&project) {
-            scope.push(project);
-        }
+/// `compiling_project`, not `owning_project`: a standalone `.fsx` beside an
+/// unrelated `.fsproj` must not be told that project's problems.
+fn scope_project_of(state: &mut State, uri: &Url) -> Option<CanonicalProject> {
+    if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
+        return None;
     }
+    let path = uri.to_file_path().ok()?;
+    let project = state.workspace.compiling_project(&path)?;
+    Some(CanonicalProject::new(&project))
+}
+
+/// Put `uri`'s project in scope, if it has one. One ownership lookup, so
+/// restoring N tabs costs N walks rather than N(N+1)/2.
+fn extend_deferral_scope(state: &mut State, uri: &Url) {
+    if let Some(project) = scope_project_of(state, uri) {
+        state.doc_projects.insert(uri.clone(), project);
+    }
+}
+
+/// Drop `uri` from scope. A project with no remaining open buffer leaves scope
+/// and is forgotten, so reopening a file reports afresh rather than being
+/// deduped against a message from a previous session with the file.
+fn shrink_deferral_scope(state: &mut State, uri: &Url) {
+    state.doc_projects.remove(uri);
+    forget_projects_out_of_scope(state);
+}
+
+/// Recompute every open buffer's owner from scratch.
+///
+/// Reserved for structural watched changes, which are the only thing that can
+/// move an *existing* buffer's owner (a new `<Compile>` entry, a deleted
+/// `.fsproj`). Opens and closes are handled incrementally, because this walks
+/// ancestor directories with `read_dir` per buffer.
+fn recompute_deferral_scope(state: &mut State) {
+    let uris: Vec<Url> = state.docs.keys().cloned().collect();
+    state.doc_projects.clear();
+    for uri in uris {
+        extend_deferral_scope(state, &uri);
+    }
+    forget_projects_out_of_scope(state);
+}
+
+fn forget_projects_out_of_scope(state: &mut State) {
+    let in_scope: HashSet<PathBuf> = state
+        .doc_projects
+        .values()
+        .map(|p| p.key().to_path_buf())
+        .collect();
     state
         .warned_uncertain_projects
-        .retain(|key, _| scope.iter().any(|p| p.key() == key));
-    state.deferral_scope = scope;
+        .retain(|key, _| in_scope.contains(key));
+}
+
+/// The distinct projects in scope, in a deterministic order.
+fn projects_in_scope(state: &State) -> Vec<CanonicalProject> {
+    let mut projects: Vec<CanonicalProject> = Vec::new();
+    for project in state.doc_projects.values() {
+        if !projects.contains(project) {
+            projects.push(project.clone());
+        }
+    }
+    projects.sort_by(|a, b| a.key().cmp(b.key()));
+    projects
 }
 
 /// Send `message` for `project`, unless the identical message was the last one
@@ -1231,35 +1279,54 @@ fn report_deferral(
     // The stored value is the *deferrals*, not the rendered string: they are
     // what the next refresh reconciles against per capability, and prose cannot
     // answer "what did we last know about this project's fold?".
-    if state
-        .warned_uncertain_projects
-        .get(project.key())
-        .is_some_and(|stored| stored.as_slice() == reconciled.record())
-    {
-        return;
-    }
     // Rendered from `stated`, recorded as `record`: a fold verdict carried over
     // an invalidation may suppress a repeat, but must never be *asserted* in a
     // fresh toast — it describes inputs that have since changed.
-    let message = project_deferral::deferral_message(project.as_path(), reconciled.stated());
-    if !reconciled.stated().is_empty() {
-        // The toast caps its cause list; the log carries all of them, so a user
-        // who reports "it says 'and 12 more'" can be asked for the trace.
-        tracing::warn!(
-            project = %project,
-            deferrals = ?reconciled.stated(),
-            "declining project-wide features"
-        );
-    }
+    let fresh_message = project_deferral::deferral_message(project.as_path(), reconciled.stated());
     let record = reconciled.into_record();
-    if record.is_empty() {
+    let last_shown = state
+        .warned_uncertain_projects
+        .get(project.key())
+        .and_then(|prev| prev.message.clone());
+
+    // Send only when the *words* change. A record-only change (a hidden carried
+    // verdict resolving) or a change past the rendered cause cap leaves the user
+    // looking at the same toast, and re-sending it is noise.
+    let resend = fresh_message.is_some() && fresh_message != last_shown;
+
+    // What the user is now looking at. When there is nothing to state but the
+    // project is still in some declining or unknown state, the *previous* toast
+    // is still on screen and remains the thing to dedupe against — clearing it
+    // here would re-send the identical message as soon as the state resolved
+    // back. Only a genuine recovery (an empty record) wipes it.
+    let showing = match (&fresh_message, record.is_empty()) {
+        (Some(_), _) => fresh_message.clone(),
+        (None, false) => last_shown,
+        (None, true) => None,
+    };
+
+    let report = ProjectReport {
+        record,
+        message: showing,
+    };
+    if state.warned_uncertain_projects.get(project.key()) == Some(&report) {
+        return;
+    }
+    if report.record.is_empty() && report.message.is_none() {
         state.warned_uncertain_projects.remove(project.key());
     } else {
         state
             .warned_uncertain_projects
-            .insert(project.key().to_path_buf(), record);
+            .insert(project.key().to_path_buf(), report);
     }
-    if let Some(message) = message {
+    if resend && let Some(message) = fresh_message {
+        // The toast caps its cause list; the log carries all of them, so a user
+        // who reports "it says 'and 12 more'" can be asked for the trace.
+        tracing::warn!(
+            project = %project,
+            %message,
+            "declining project-wide features"
+        );
         send_notification::<ShowMessage>(
             conn,
             ShowMessageParams {

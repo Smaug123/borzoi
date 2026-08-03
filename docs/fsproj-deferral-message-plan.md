@@ -275,6 +275,33 @@ anything not currently re-derivable) is what the next refresh compares against,
 and `stated` (only what current state knows) is the only thing ever rendered.
 Carrying a verdict may suppress a repeat; it may never assert one.
 
+### Dedupe on the words, and maintain scope incrementally
+
+An eleventh round found two more.
+
+- **Dedup compared the internal record, not the rendered message.** Those are
+  not the same question: a hidden carried verdict resolving, or a change past
+  the rendered cause cap, changes the record while leaving the user looking at
+  identical words. `ProjectReport` now stores both — `record` for
+  reconciliation, `message` for "what is on screen" — and only a change in the
+  *words* sends. A subtlety found while fixing it: when there is nothing to
+  state but the project is not yet recovered, the previous message is still on
+  screen and must stay the dedup target; clearing it re-sent the same toast the
+  moment the state resolved back.
+- **Scope was recomputed in full on every open**, so restoring N tabs did
+  N(N+1)/2 ancestor `read_dir` walks. It is now a per-document map:
+  `extend_deferral_scope` on open, `shrink_deferral_scope` on close, each one
+  ownership lookup. The full recomputation is reserved for structural watched
+  changes, the only thing that can move an *existing* buffer's owner.
+
+Honest note on test strength: the e2e tests pin the user-visible properties
+(never restate a fixed problem, report an evaluation change without waiting for
+a fold, never send the same words twice). They do *not* discriminate
+message-dedup from record-dedup — a deliberately reintroduced record-based rule
+still passes them, because in the reachable sequences the two agree on how many
+messages go out, differing only in which dispatch carries them. The rule is
+chosen on argument (dedupe on what the user saw), not pinned by a failing test.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The
