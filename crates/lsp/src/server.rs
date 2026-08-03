@@ -44,6 +44,7 @@ use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
+use crate::project_deferral::{self, ProjectEvaluation};
 use crate::publish::PublishState;
 use crate::semantic::SemanticState;
 use crate::workspace::Workspace;
@@ -172,10 +173,12 @@ pub struct State {
     /// set. Empty until `initialize` (tests, or a client that opened no folder)
     /// — in which case a workspace pull simply reports nothing.
     workspace_roots: Vec<PathBuf>,
-    /// Owning-project paths we've already shown a "Compile set is untrustworthy"
-    /// `window/showMessage` for. Dedupes the notice to once per project per
-    /// server session, so opening file after file in the same project doesn't
-    /// re-toast. See [`warn_compile_uncertainty`].
+    /// Project paths we've already shown a "declining project-wide features"
+    /// `window/showMessage` for. Dedupes the notice to once per project, so
+    /// opening file after file in the same project doesn't re-toast. Cleared by
+    /// a structural [`Self::apply_watched_changes`], which re-evaluates every
+    /// project and so may produce a different explanation. See
+    /// [`warn_project_deferral`].
     warned_uncertain_projects: HashSet<PathBuf>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
@@ -389,6 +392,12 @@ impl State {
             // clears the assembly state too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
+            // Every project is about to be re-evaluated, so the record of what
+            // we've already explained is stale: a project may now defer for a
+            // different reason, or have stopped deferring and be about to start
+            // again. Keeping the marks would make the *fixed* edit the last one
+            // the user ever hears about.
+            self.warned_uncertain_projects.clear();
             self.wants_diagnostic_refresh = true;
             self.docs.keys().cloned().collect()
         } else {
@@ -972,7 +981,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.docs.insert(uri.clone(), params.text_document.text);
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
-                warn_compile_uncertainty(conn, state, &uri);
+                warn_project_deferral(conn, state, &uri);
             }
         }
         DidChangeTextDocument::METHOD => {
@@ -1008,6 +1017,10 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // project context on their next request.
                 for uri in state.apply_watched_changes(&params.changes) {
                     publish_diagnostics(conn, state, &uri);
+                    // The project was re-evaluated, so its deferrals may have
+                    // changed; `apply_watched_changes` has already cleared the
+                    // dedup set, letting a *new* reason be reported.
+                    warn_project_deferral(conn, state, &uri);
                 }
             }
         }
@@ -1034,45 +1047,93 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
     }
 }
 
-/// Show a one-time `window/showMessage` when the source file's owning project
-/// has a Compile item gated on a condition we couldn't evaluate — the
-/// correctness carve-out from the msbuild evaluator
-/// ([`borzoi_msbuild::CompileConditionUncertainty`]).
+/// Show a one-time `window/showMessage` naming every project-wide capability
+/// the LSP is declining for the opened buffer's project, and why
+/// ([`crate::project_deferral`]).
 ///
-/// This is the user-facing half of the `items_uncertain` gate: when a Compile
-/// item's inclusion is undecidable, [`crate::semantic`] conservatively falls
-/// back to single-file resolution (so go-to-definition into referenced
-/// assemblies, cross-file resolution, etc. go quiet for this project). Without
-/// a message that looks like a silent failure; with one, the user learns *why*
-/// and what to fix. Deduped per owning project for the session via
-/// [`State::warned_uncertain_projects`] so it fires at most once, not on every
-/// `.fs` open. Only `.fs`/`.fsi`/`.fsx` buffers under an evaluable project can
-/// trigger it; everything else returns early.
-fn warn_compile_uncertainty(conn: &Connection, state: &mut State, uri: &Url) {
-    if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
-        return;
-    }
+/// This is the user-facing half of the deferral gates. When a project's
+/// evaluation can't be trusted, `semantic::build_parses` refuses the
+/// Compile-order fold and the project graph drops reference edges — so
+/// go-to-definition, find-references and imported-assembly lookups quietly stop
+/// working. Without a message that reads as a broken language server; with one,
+/// the user learns which construct to fix.
+///
+/// It reads the same [`crate::project_deferral::deferrals`] call the fold's
+/// refusal does, so "we went quiet" and "we said why" cannot diverge.
+///
+/// Both a source buffer (whose *owning* project is reported, from the workspace's
+/// cached evaluation) and a `.fsproj` buffer (which reports itself, from its
+/// **buffer text**, evaluated off-cache) can trigger it — a user investigating a
+/// broken project usually opens the `.fsproj`, and that buffer may be unsaved.
+/// Routing the `.fsproj` case through [`crate::workspace::Workspace::project`]
+/// instead would both describe the wrong text and pin the project cache for the
+/// server's lifetime — see [`fsproj_diagnostics::evaluate_buffer`] and
+/// `tests::fsproj_sync_does_not_pin_the_project_cache`.
+///
+/// Deduped per project via [`State::warned_uncertain_projects`], and that set is
+/// cleared when a watched structural change re-evaluates the project, since it
+/// may now defer for a new reason (or stop deferring).
+fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
     let Ok(path) = uri.to_file_path() else {
         return;
     };
-    let Some(project) = state.workspace.owning_project(&path) else {
+    let is_project_buffer = matches!(path_extension(uri).as_deref(), Some("fsproj"));
+    let project = if is_project_buffer {
+        path
+    } else if matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
+        let Some(project) = state.workspace.owning_project(&path) else {
+            return;
+        };
+        project
+    } else {
         return;
     };
     if state.warned_uncertain_projects.contains(&project) {
         return;
     }
+    // A `.fsproj` buffer describes itself off-cache; anything else reads the
+    // workspace's evaluation of its owning project. `evaluate_buffer` needs the
+    // borrow of `state.docs` released before `state.workspace` is used, hence
+    // the owned text.
+    let buffer = is_project_buffer
+        .then(|| state.docs.get(uri).cloned())
+        .flatten();
     // Build the message inside a scope so the immutable `workspace` borrow ends
-    // before we touch `warned_uncertain_projects` and send. `None`/empty means
-    // there's nothing to surface — leave the project *unmarked* so a later
-    // re-evaluation that does turn up an uncertainty can still warn.
+    // before we touch `warned_uncertain_projects` and send.
     let message = {
-        let Some(parsed) = state.workspace.project(&project) else {
+        let build_properties = state.workspace.build_properties();
+        let buffer_parse = buffer.as_ref().map(|text| {
+            fsproj_diagnostics::evaluate_buffer(
+                text,
+                &project,
+                state.workspace.env(),
+                &build_properties,
+            )
+        });
+        let evaluation = match &buffer_parse {
+            Some(Ok(parsed)) => ProjectEvaluation::Evaluated(parsed),
+            Some(Err(_)) => ProjectEvaluation::Failed,
+            None => match state.workspace.project(&project) {
+                Some(parsed) => ProjectEvaluation::Evaluated(parsed),
+                None => ProjectEvaluation::Failed,
+            },
+        };
+        let deferrals = project_deferral::deferrals(evaluation);
+        if !deferrals.is_empty() {
+            // The toast is capped; the log is not, so a user who reports "it
+            // says 'and 12 more'" can be asked for the trace.
+            tracing::warn!(
+                project = %project.display(),
+                deferrals = ?deferrals,
+                "declining project-wide features"
+            );
+        }
+        // `None` means nothing is declined — leave the project *unmarked* so a
+        // later re-evaluation that does defer can still warn.
+        let Some(message) = project_deferral::deferral_message(&project, &deferrals) else {
             return;
         };
-        if parsed.compile_condition_uncertainties.is_empty() {
-            return;
-        }
-        compile_uncertainty_message(&project, &parsed.compile_condition_uncertainties)
+        message
     };
     state.warned_uncertain_projects.insert(project);
     send_notification::<ShowMessage>(
@@ -1082,66 +1143,6 @@ fn warn_compile_uncertainty(conn: &Connection, state: &mut State, uri: &Url) {
             message,
         },
     );
-}
-
-/// Render the editor message for a project whose Compile set we couldn't trust
-/// because of [`borzoi_msbuild::CompileConditionUncertainty`]s. Pure
-/// (no IO) so it's unit-testable; the caller does the IO and dedup.
-fn compile_uncertainty_message(
-    project: &std::path::Path,
-    uncertainties: &[borzoi_msbuild::CompileConditionUncertainty],
-) -> String {
-    use borzoi_msbuild::CompileConditionReason;
-
-    let name = project
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| project.display().to_string());
-
-    // Collect the distinct undefined property names (first-seen order) and note
-    // whether any condition was outright unmodeled.
-    let mut props: Vec<&str> = Vec::new();
-    let mut any_unsupported = false;
-    for u in uncertainties {
-        match &u.reason {
-            CompileConditionReason::UndefinedProperties(names) => {
-                for n in names {
-                    if !props.contains(&n.as_str()) {
-                        props.push(n);
-                    }
-                }
-            }
-            CompileConditionReason::Unsupported => any_unsupported = true,
-        }
-    }
-
-    let n = uncertainties.len();
-    let item_clause = if n == 1 {
-        "1 Compile item is".to_string()
-    } else {
-        format!("{n} Compile items are")
-    };
-    let mut detail = String::new();
-    if !props.is_empty() {
-        detail.push_str(&format!(
-            " (unresolved propert{}: {})",
-            if props.len() == 1 { "y" } else { "ies" },
-            props.join(", ")
-        ));
-    }
-    if any_unsupported {
-        if detail.is_empty() {
-            detail.push_str(" (unmodeled condition syntax)");
-        } else {
-            detail.push_str(" plus unmodeled condition syntax");
-        }
-    }
-    format!(
-        "{name}: {item_clause} gated on a condition I couldn't evaluate{detail}, \
-         so I can't tell which files compile. Project-wide features \
-         (go-to-definition into referenced assemblies, cross-file resolution) \
-         fall back to single-file resolution here."
-    )
 }
 
 /// Pick the right diagnostic producer for the URI's file extension, returning
@@ -1593,59 +1594,6 @@ mod tests {
             state.set_client_capabilities(caps);
             assert_eq!(state.supports_diagnostic_refresh(), support);
         }
-    }
-
-    #[test]
-    fn compile_uncertainty_message_names_project_and_unresolved_properties() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let u = [CompileConditionUncertainty {
-            condition: "'$(Foo)' == 'bar'".into(),
-            reason: CompileConditionReason::UndefinedProperties(vec!["Foo".into()]),
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        }];
-        let msg = compile_uncertainty_message(Path::new("/x/Proj.fsproj"), &u);
-        assert!(msg.contains("Proj.fsproj"), "{msg}");
-        assert!(msg.contains("1 Compile item is"), "{msg}");
-        assert!(msg.contains("unresolved property: Foo"), "{msg}");
-        assert!(msg.contains("single-file"), "{msg}");
-    }
-
-    #[test]
-    fn compile_uncertainty_message_pluralises_and_dedupes_properties() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let mk = |names: Vec<&str>| CompileConditionUncertainty {
-            condition: "c".into(),
-            reason: CompileConditionReason::UndefinedProperties(
-                names.into_iter().map(str::to_string).collect(),
-            ),
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        };
-        let u = [mk(vec!["Foo"]), mk(vec!["Foo", "Bar"])];
-        let msg = compile_uncertainty_message(Path::new("/x/P.fsproj"), &u);
-        assert!(msg.contains("2 Compile items are"), "{msg}");
-        // "Foo" appears once despite two uncertainties referencing it.
-        assert!(msg.contains("unresolved properties: Foo, Bar"), "{msg}");
-    }
-
-    #[test]
-    fn compile_uncertainty_message_handles_unsupported_only() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let u = [CompileConditionUncertainty {
-            condition: "Exists('x')".into(),
-            reason: CompileConditionReason::Unsupported,
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        }];
-        let msg = compile_uncertainty_message(Path::new("/x/P.fsproj"), &u);
-        assert!(msg.contains("unmodeled condition syntax"), "{msg}");
     }
 
     #[test]

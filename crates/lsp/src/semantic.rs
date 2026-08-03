@@ -32,6 +32,7 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
+use crate::project_deferral::ProjectEvaluation;
 use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
@@ -1174,7 +1175,12 @@ fn build_parses(
     // are unreliable (a user define gated on an unresolved property — e.g. a
     // multi-targeted `'$(TargetFramework)' == …` condition) we'd fold files
     // under the wrong branches and export the wrong bindings. Refuse there too.
-    if parsed.items_uncertain || parsed.define_constants_uncertain {
+    //
+    // Asked through [`crate::project_deferral`] rather than off the flags
+    // directly, so that the refusal and the editor message the user gets for it
+    // are the same decision: a project that goes quiet here is exactly a project
+    // that has something to say about why.
+    if crate::project_deferral::defers_project_fold(ProjectEvaluation::Evaluated(parsed)) {
         return None;
     }
     // `LangVersion` provenance is the third axis, gated per *source shape*

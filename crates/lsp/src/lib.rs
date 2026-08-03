@@ -11,6 +11,7 @@ pub mod logging;
 pub mod paths;
 pub mod position;
 pub mod project_assets;
+pub mod project_deferral;
 pub mod project_graph;
 pub mod publish;
 pub mod pull;

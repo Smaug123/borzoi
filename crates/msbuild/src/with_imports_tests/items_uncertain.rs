@@ -878,3 +878,182 @@ fn unfollowable_import_in_a_user_file_makes_items_uncertain() {
         result.compile_item_uncertainties
     );
 }
+
+/// The `#if`-symbol axis must be able to say *why*, not merely *that*. Before
+/// [`crate::ParsedProject::define_constants_uncertainties`] existed it was the
+/// one uncertainty channel with no cause vector at all, so a consumer that
+/// declined on it (`lsp::semantic::build_parses`) could not explain itself.
+#[test]
+fn define_constants_uncertainty_records_its_cause() {
+    let tmp = TempDir::new().unwrap();
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    write_at(
+        tmp.path(),
+        "Directory.Build.props",
+        r#"<Project>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net6.0'">
+    <DefineConstants>NET6</DefineConstants>
+  </PropertyGroup>
+</Project>"#,
+    );
+    let result = parse_file(&project_path);
+    assert!(result.define_constants_uncertain);
+    let kinds: Vec<_> = result
+        .define_constants_uncertainties
+        .iter()
+        .map(|c| c.kind.clone())
+        .collect();
+    assert!(
+        kinds.contains(&crate::DiagnosticKind::UndefinedProperty {
+            name: "TargetFramework".to_string()
+        }),
+        "the gating condition's undefined property is the cause; got {kinds:?}"
+    );
+    assert!(
+        result
+            .define_constants_uncertainties
+            .iter()
+            .all(|c| c.origin == crate::DiagnosticOrigin::Imported),
+        "the write lives in Directory.Build.props, not the entry project"
+    );
+}
+
+/// The define axis is raised at exactly one site, which records its cause at the
+/// same moment — so the flag and the cause vector are the same fact, and a
+/// consumer may read either. This is what lets the LSP's message never say
+/// "uncertain, no reason given" on this axis.
+#[test]
+fn define_uncertainty_and_its_causes_agree() {
+    let mut flagged = 0usize;
+    for (label, dbp) in DEFINE_SHAPES {
+        let tmp = TempDir::new().unwrap();
+        let project_path = write_at(
+            tmp.path(),
+            "Demo.fsproj",
+            r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
+        );
+        write_at(tmp.path(), "Directory.Build.props", dbp);
+        let result = parse_file(&project_path);
+        assert_eq!(
+            result.define_constants_uncertain,
+            !result.define_constants_uncertainties.is_empty(),
+            "{label}: flag and causes disagree ({}, {:?})",
+            result.define_constants_uncertain,
+            result.define_constants_uncertainties
+        );
+        if result.define_constants_uncertain {
+            flagged += 1;
+        }
+    }
+    // An agreement assertion is vacuously satisfied by a table where the axis
+    // never fires — or never doesn't. Pin that both sides are exercised.
+    assert!(
+        flagged > 0 && flagged < DEFINE_SHAPES.len(),
+        "the shape table must straddle the axis; {flagged} of {} flagged",
+        DEFINE_SHAPES.len()
+    );
+}
+
+/// The Compile axis's weaker twin of the invariant above: `items_uncertain` is
+/// raised at several sites, each of which pushes a cause — so an uncertain
+/// Compile set always has *something* to report. (The converse does not hold:
+/// SDK-tolerated causes are recorded without raising the flag.)
+#[test]
+fn compile_uncertainty_always_records_a_cause() {
+    let mut flagged = 0usize;
+    for (label, body) in COMPILE_SHAPES {
+        let tmp = TempDir::new().unwrap();
+        let project_path = write_at(tmp.path(), "Demo.fsproj", body);
+        let result = parse_file(&project_path);
+        if result.items_uncertain {
+            flagged += 1;
+            assert!(
+                !result.compile_item_uncertainties.is_empty()
+                    || !result.compile_condition_uncertainties.is_empty(),
+                "{label}: an uncertain Compile set with nothing to report"
+            );
+        }
+    }
+    assert!(
+        flagged > 0 && flagged < COMPILE_SHAPES.len(),
+        "the shape table must straddle the axis; {flagged} of {} flagged",
+        COMPILE_SHAPES.len()
+    );
+}
+
+/// Entry-project bodies straddling the Compile axis: the first two leave the
+/// Compile set exact, the rest each drop or gate content through a different
+/// mechanism (unresolved import path, unsupported gate, undefined-property
+/// gate, undescended `<Choose>`, unresolvable SDK).
+const COMPILE_SHAPES: &[(&str, &str)] = &[
+    (
+        "plain compile",
+        r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
+    ),
+    (
+        "gated on an exactly-false condition",
+        r#"<Project><ItemGroup Condition="'$(Missing)' == 'x'"><Compile Include="A.fs" /></ItemGroup></Project>"#,
+    ),
+    (
+        "import with an unresolved path",
+        r#"<Project><Import Project="$(Missing)/x.props" /><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
+    ),
+    (
+        "compile group gated on an unsupported condition",
+        r#"<Project><ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('x.props')))"><Compile Include="A.fs" /></ItemGroup></Project>"#,
+    ),
+    (
+        "compile gated on an inexactly-undefined property",
+        r#"<Project><ItemGroup><Compile Include="A.fs" Condition="'$(Missing)' != 'x'" /></ItemGroup></Project>"#,
+    ),
+    (
+        "compile items inside a <Choose>",
+        r#"<Project><Choose><When Condition="'$(X)' == ''"><ItemGroup><Compile Include="A.fs" /></ItemGroup></When></Choose></Project>"#,
+    ),
+    (
+        "unresolvable SDK",
+        r#"<Project Sdk="No.Such.Sdk"><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
+    ),
+];
+
+/// User-authored `Directory.Build.props` bodies spanning the define axis's
+/// certain and uncertain shapes. Deliberately mixed: the invariant tests above
+/// are vacuous if every shape flags.
+const DEFINE_SHAPES: &[(&str, &str)] = &[
+    (
+        "no defines at all",
+        r#"<Project><PropertyGroup><Foo>1</Foo></PropertyGroup></Project>"#,
+    ),
+    (
+        "unconditional define",
+        r#"<Project><PropertyGroup><DefineConstants>PLAIN</DefineConstants></PropertyGroup></Project>"#,
+    ),
+    (
+        "the append idiom (self-reference is exempt)",
+        r#"<Project><PropertyGroup><DefineConstants>$(DefineConstants);EXTRA</DefineConstants></PropertyGroup></Project>"#,
+    ),
+    (
+        "gated on an undefined property",
+        r#"<Project><PropertyGroup Condition="'$(TargetFramework)' == 'net6.0'"><DefineConstants>NET6</DefineConstants></PropertyGroup></Project>"#,
+    ),
+    (
+        "gated on an unsupported condition",
+        r#"<Project><PropertyGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('x.props')))"><DefineConstants>X</DefineConstants></PropertyGroup></Project>"#,
+    ),
+    (
+        "value reads an undefined property",
+        r#"<Project><PropertyGroup><DefineConstants>$(Missing);Y</DefineConstants></PropertyGroup></Project>"#,
+    ),
+    (
+        "value reads an item list",
+        r#"<Project><PropertyGroup><DefineConstants>@(Compile)</DefineConstants></PropertyGroup></Project>"#,
+    ),
+];

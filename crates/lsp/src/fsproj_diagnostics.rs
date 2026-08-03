@@ -63,31 +63,7 @@ pub fn diagnostics_for(
     env: &SdkDiscoveryEnv,
     build_properties: &HashMap<String, String>,
 ) -> Vec<Diagnostic> {
-    // The environment the *caller* declared, not the ambient process: a
-    // workspace constructed with an explicit `SdkDiscoveryEnv` has asked not to
-    // see host variables, and reading `std::env` here would leak them back into
-    // `$(…)` evaluation. `SdkDiscoveryEnv::from_process_env` is what fills this
-    // with the real environment for production callers.
-    let environment = env.build_environment.clone();
-    let disc = SdkDiscovery::for_project(project_path, env).ok();
-    let parse_result = parse_buffer(
-        text,
-        project_path,
-        build_properties,
-        &environment,
-        disc.as_ref(),
-    )
-    .map(|pass1| {
-        serve_chosen_tfm(
-            pass1,
-            text,
-            project_path,
-            build_properties,
-            &environment,
-            disc.as_ref(),
-        )
-    });
-    match parse_result {
+    match evaluate_buffer(text, project_path, env, build_properties) {
         Ok(parsed) => {
             let mut diags: Vec<Diagnostic> = parsed
                 .diagnostics
@@ -145,6 +121,50 @@ pub fn diagnostics_for(
         // call-site change doesn't silently swallow a real bug.
         Err(other) => vec![lsp_error_at_origin(format!("fsproj parse failed: {other}"))],
     }
+}
+
+/// Evaluate an `.fsproj` **buffer** — its live text, not its on-disk content —
+/// through the full two-pass pipeline, without touching
+/// [`crate::workspace::Workspace`]'s project cache.
+///
+/// Both properties matter to callers other than the diagnostics above. The
+/// buffer may be unsaved, so disk would describe a different project; and the
+/// workspace cache has no unconditional file-watch invalidation, so a read
+/// through it from a `.fsproj` text-sync pins the evaluation for the server's
+/// lifetime (`server::tests::fsproj_sync_does_not_pin_the_project_cache`).
+///
+/// `server::warn_project_deferral` is the other caller: it explains
+/// what the LSP is declining for a project the user has open as a buffer.
+pub fn evaluate_buffer(
+    text: &str,
+    project_path: &Path,
+    env: &SdkDiscoveryEnv,
+    build_properties: &HashMap<String, String>,
+) -> Result<borzoi_msbuild::ParsedProject, ParseError> {
+    // The environment the *caller* declared, not the ambient process: a
+    // workspace constructed with an explicit `SdkDiscoveryEnv` has asked not to
+    // see host variables, and reading `std::env` here would leak them back into
+    // `$(…)` evaluation. `SdkDiscoveryEnv::from_process_env` is what fills this
+    // with the real environment for production callers.
+    let environment = env.build_environment.clone();
+    let disc = SdkDiscovery::for_project(project_path, env).ok();
+    parse_buffer(
+        text,
+        project_path,
+        build_properties,
+        &environment,
+        disc.as_ref(),
+    )
+    .map(|pass1| {
+        serve_chosen_tfm(
+            pass1,
+            text,
+            project_path,
+            build_properties,
+            &environment,
+            disc.as_ref(),
+        )
+    })
 }
 
 /// Parse the buffer with or without an SDK resolver depending on whether

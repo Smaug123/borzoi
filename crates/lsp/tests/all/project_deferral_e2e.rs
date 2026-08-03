@@ -1,0 +1,370 @@
+//! End-to-end: a project whose evaluation the LSP declines produces a
+//! `window/showMessage` on the wire saying why.
+//!
+//! The pure decision-and-wording lives in `borzoi::project_deferral` and is
+//! property-tested there. What these tests pin is the wiring around it, which
+//! is where the feature was previously broken: *when* the message is sent (a
+//! source buffer, a `.fsproj` buffer, a re-evaluation after a watched change),
+//! and that it is sent at most once per project until something changes.
+//!
+//! Driven over an in-memory `lsp_server::Connection` against the real dispatch
+//! loop, with pull-diagnostic capabilities so the only server-initiated
+//! notification in flight is the one under test.
+
+use std::thread;
+use std::time::Duration;
+
+use borzoi::server::{State, run};
+use lsp_server::{Connection, Message, Notification, Request, RequestId};
+use lsp_types::notification::{
+    DidChangeWatchedFiles, DidOpenTextDocument, Exit, Notification as NotificationTrait,
+    ShowMessage,
+};
+use lsp_types::request::{DocumentSymbolRequest, Request as RequestTrait, Shutdown};
+use lsp_types::{
+    ClientCapabilities, DiagnosticClientCapabilities, DidChangeWatchedFilesParams,
+    DidOpenTextDocumentParams, DocumentSymbolParams, FileChangeType, FileEvent,
+    PartialResultParams, ShowMessageParams, TextDocumentClientCapabilities, TextDocumentIdentifier,
+    TextDocumentItem, Url, WorkDoneProgressParams,
+};
+use tempfile::TempDir;
+
+/// A pull-diagnostic client: `publish_diagnostics` returns early for it, so the
+/// receiver carries only the deferral message and request responses.
+fn pull_caps() -> ClientCapabilities {
+    ClientCapabilities {
+        text_document: Some(TextDocumentClientCapabilities {
+            diagnostic: Some(DiagnosticClientCapabilities::default()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+struct Server {
+    client: Connection,
+    thread: Option<thread::JoinHandle<()>>,
+    next_id: i32,
+}
+
+impl Server {
+    fn start() -> Self {
+        let (server, client) = Connection::memory();
+        let thread = thread::spawn(move || {
+            let mut state = State::default();
+            state.set_client_capabilities(pull_caps());
+            run(server, state).expect("server::run terminated cleanly");
+        });
+        Server {
+            client,
+            thread: Some(thread),
+            next_id: 0,
+        }
+    }
+
+    fn notify<N: NotificationTrait>(&self, params: N::Params)
+    where
+        N::Params: serde::Serialize,
+    {
+        self.client
+            .sender
+            .send(Message::Notification(Notification {
+                method: N::METHOD.to_string(),
+                params: serde_json::to_value(params).expect("serialise params"),
+            }))
+            .expect("send notification");
+    }
+
+    fn open(&self, uri: &Url, text: &str, language_id: &str) {
+        self.notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: language_id.to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        });
+    }
+
+    /// Drive one request through and drain messages until its response arrives,
+    /// returning the notifications seen on the way.
+    ///
+    /// The dispatch loop is serial, so any notification the server emitted while
+    /// handling the *preceding* messages is already queued ahead of this
+    /// response. That makes "no message was sent" a positive observation rather
+    /// than a timeout — a sleep-and-hope would pass just as readily on a server
+    /// that had simply not got round to sending it yet.
+    fn barrier(&mut self, uri: &Url) -> Vec<Notification> {
+        let id = RequestId::from(self.next_id);
+        self.next_id += 1;
+        self.client
+            .sender
+            .send(Message::Request(Request {
+                id: id.clone(),
+                method: DocumentSymbolRequest::METHOD.to_string(),
+                params: serde_json::to_value(DocumentSymbolParams {
+                    text_document: TextDocumentIdentifier { uri: uri.clone() },
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .expect("serialise params"),
+            }))
+            .expect("send barrier request");
+        let mut seen = Vec::new();
+        loop {
+            match self
+                .client
+                .receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("a response within 10s")
+            {
+                Message::Notification(not) => seen.push(not),
+                Message::Response(resp) if resp.id == id => return seen,
+                other => panic!("unexpected message while awaiting the barrier: {other:?}"),
+            }
+        }
+    }
+
+    /// The deferral messages emitted since the last barrier.
+    fn deferral_messages(&mut self, uri: &Url) -> Vec<String> {
+        self.barrier(uri)
+            .into_iter()
+            .filter(|not| not.method == ShowMessage::METHOD)
+            .map(|not| {
+                serde_json::from_value::<ShowMessageParams>(not.params)
+                    .expect("deserialise ShowMessageParams")
+                    .message
+            })
+            .collect()
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let id = RequestId::from(self.next_id + 1000);
+        let _ = self.client.sender.send(Message::Request(Request {
+            id,
+            method: Shutdown::METHOD.to_string(),
+            params: serde_json::Value::Null,
+        }));
+        // Drain until the loop stops; a queued notification must not be mistaken
+        // for the shutdown response.
+        while let Ok(msg) = self.client.receiver.recv_timeout(Duration::from_secs(2)) {
+            if matches!(msg, Message::Response(_)) {
+                break;
+            }
+        }
+        let _ = self.client.sender.send(Message::Notification(Notification {
+            method: Exit::METHOD.to_string(),
+            params: serde_json::Value::Null,
+        }));
+        if let Some(handle) = self.thread.take()
+            && let Err(err) = handle.join()
+        {
+            eprintln!("server thread panicked during shutdown: {err:?}");
+        }
+    }
+}
+
+/// A project whose Compile group is gated on a condition the evaluator can't
+/// reduce — the shape the real-world census found most often, and one that
+/// produced no message at all before this feature.
+const UNCERTAIN_PROJECT: &str = r#"<Project>
+  <ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props')))">
+    <Compile Include="A.fs" />
+  </ItemGroup>
+</Project>"#;
+
+const CERTAIN_PROJECT: &str = r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+  </ItemGroup>
+</Project>"#;
+
+/// Lay out a project directory. Returns the temp dir plus the `.fsproj` URI.
+fn project_dir(fsproj: &str) -> (TempDir, Url) {
+    let tmp = TempDir::new().unwrap();
+    let proj = tmp.path().join("Demo.fsproj");
+    std::fs::write(&proj, fsproj).unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    let uri = Url::from_file_path(&proj).unwrap();
+    (tmp, uri)
+}
+
+fn source_uri(tmp: &TempDir, name: &str) -> Url {
+    Url::from_file_path(tmp.path().join(name)).unwrap()
+}
+
+#[test]
+fn opening_a_source_file_reports_its_project_s_deferral() {
+    let (tmp, _proj) = project_dir(UNCERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let messages = server.deferral_messages(&a);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Demo.fsproj"), "{}", messages[0]);
+    // The *cause*, not merely the fact — this is what the previous
+    // implementation could not produce for this project.
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
+    );
+    assert!(
+        messages[0].contains("single-file analysis"),
+        "{}",
+        messages[0]
+    );
+}
+
+#[test]
+fn a_trustworthy_project_produces_no_message() {
+    let (tmp, _proj) = project_dir(CERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+}
+
+/// The user investigating a broken project opens the `.fsproj` itself. That
+/// buffer could previously never trigger the message, being neither `.fs`,
+/// `.fsi` nor `.fsx`.
+#[test]
+fn opening_the_fsproj_itself_reports_its_deferral() {
+    let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
+    let mut server = Server::start();
+    server.open(&proj, UNCERTAIN_PROJECT, "xml");
+    let messages = server.deferral_messages(&proj);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Demo.fsproj"), "{}", messages[0]);
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
+    );
+}
+
+/// The `.fsproj` message must describe the **buffer**, not disk — an unsaved
+/// edit is exactly when a user is trying to work out what they broke. It must
+/// also not pin the workspace's project cache to a disk read, which is why it
+/// goes through `fsproj_diagnostics::evaluate_buffer` rather than
+/// `Workspace::project` (see `fsproj_sync_does_not_pin_the_project_cache`).
+#[test]
+fn the_fsproj_message_describes_the_unsaved_buffer() {
+    // Disk is clean; the buffer is not.
+    let (tmp, proj) = project_dir(CERTAIN_PROJECT);
+    let mut server = Server::start();
+    server.open(&proj, UNCERTAIN_PROJECT, "xml");
+    let messages = server.deferral_messages(&proj);
+    assert_eq!(
+        messages.len(),
+        1,
+        "the buffer's problem must be reported: {messages:?}"
+    );
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
+    );
+
+    // …and the disk-clean project is still what a source file sees, proving the
+    // buffer read pinned nothing.
+    let a = source_uri(&tmp, "A.fs");
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&a),
+        Vec::<String>::new(),
+        "the buffer evaluation must not have pinned the project cache"
+    );
+}
+
+/// The mirror image: a buffer whose text is fine while disk is broken says
+/// nothing, because the buffer is what the user is about to save.
+#[test]
+fn a_fixed_but_unsaved_fsproj_buffer_says_nothing() {
+    let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
+    let mut server = Server::start();
+    server.open(&proj, CERTAIN_PROJECT, "xml");
+    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
+}
+
+#[test]
+fn the_message_fires_once_per_project_not_once_per_file() {
+    let (tmp, _proj) = project_dir(UNCERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let b = source_uri(&tmp, "B.fs");
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a).len(), 1);
+    server.open(&b, "module B\nlet b = 2\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&b),
+        Vec::<String>::new(),
+        "a second file in the same project must not re-toast"
+    );
+}
+
+/// The dedup must not outlive the evaluation it deduped. A user who edits the
+/// `.fsproj` and introduces a *different* problem has to be told about that
+/// one — the previous code marked the project for the whole session, so the
+/// second problem was silent forever.
+#[test]
+fn editing_the_project_lets_a_new_reason_be_reported() {
+    let (tmp, proj) = project_dir(UNCERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let first = server.deferral_messages(&a);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("GetPathOfFileAbove"), "{}", first[0]);
+
+    // Swap the cause on disk, then tell the server the file changed.
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project>
+  <Import Project="extra.props" />
+  <ItemGroup><Compile Include="A.fs" /></ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: proj.clone(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let second = server.deferral_messages(&a);
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(
+        second[0].contains("extra.props") && second[0].contains("no such file"),
+        "the new cause must be reported, got {}",
+        second[0]
+    );
+    assert_ne!(
+        first[0], second[0],
+        "the session-long dedup would have re-shown the stale reason"
+    );
+}
+
+/// …and the converse: fixing the project stops the message, rather than
+/// re-toasting the stale reason on every watched change.
+#[test]
+fn fixing_the_project_stops_the_message() {
+    let (tmp, proj) = project_dir(UNCERTAIN_PROJECT);
+    let a = source_uri(&tmp, "A.fs");
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a).len(), 1);
+
+    std::fs::write(tmp.path().join("Demo.fsproj"), CERTAIN_PROJECT).unwrap();
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: proj.clone(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+}
