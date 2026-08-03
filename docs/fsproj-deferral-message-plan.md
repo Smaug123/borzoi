@@ -81,15 +81,14 @@ found both:
   `Result<_, FoldRefusal>` rather than `Option`, so every exit is a value
   `deferrals` can fold into the same capability. (The API for handing that
   verdict to the server went through two more shapes before settling on
-  `SemanticState::fold_outcome`, below.)
+  `SemanticState::fold_outcome` — see the appendix.)
 
 Both were the original defect wearing a different hat: a decline computed
 somewhere the explainer couldn't see. The lesson is the input type, not the two
 patches — a narrow one lets the next such decline escape silently too.
 
-**And the reporting must be derived, not dispatched.** Two further review rounds
-found four more bugs, every one the same shape: a decline reached through a path
-that had no notify call on it.
+**And the reporting must be derived, not dispatched.** Four more bugs, every one
+the same shape: a decline reached through a path that had no notify call on it.
 
 - A refusal introduced *after* the file was opened — a sibling Compile item
   deleted, an edit that makes one straddle the F# 8 indentation boundary — was
@@ -123,11 +122,132 @@ Two supporting shapes:
   project's message twice, because it arrives spelled `/var/…` from a buffer and
   `/private/var/…` from the semantic layer (caught by the e2e tests, not by
   inspection). What is stored against that key started as the message text and
-  is now the deferral list, for the per-capability reason below.
+  is now a per-capability map of the clause the user last saw (appendix).
 
 The refresh runs *before* the reply is enqueued, since the refusal is precisely
 why that reply is degraded and an explanation arriving afterwards reads as
 unrelated.
+
+## Scope
+
+Capabilities reported (each has a live consumer that declines today):
+
+| capability | trigger | consumer that declines |
+| --- | --- | --- |
+| `ProjectFold` | evaluation failed, `items_uncertain`, `define_constants_uncertain`, or any `FoldRefusal` (unreadable Compile item, parser panic, F# 8 shape straddle, unexpected parse root) | `semantic::build_parses` → single-file fallback |
+| `ProjectReferenceEdges` | `project_references_uncertain` **or** `not_an_inner_build` | `workspace::references_suppressed` → `ProjectNode::references_uncertain` → edges dropped from the `AssemblyEnv` |
+
+`package_references_uncertain` is **not** reported: it has no consumer in
+`crates/lsp` (grep), so nothing is declined and there is no user-visible loss to
+explain. Reporting it would be a claim we cannot back.
+
+Delivery is `window/showMessage`, extending the existing channel rather than
+adding a second one. Publishing the causes as `.fsproj` diagnostics anchored on
+their spans is a natural follow-up (the spans are already carried) but is not
+this change: it would move the `.fsproj` diagnostic set, which has its own
+served-TFM semantics (E7, `fsproj_diagnostics.rs`).
+
+## Changes
+
+1. **`borzoi-msbuild`** — add `ParsedProject::define_constants_uncertainties`,
+   the define-axis twin of `compile_item_uncertainties`. That axis is set at
+   exactly one site (`State::push` under `define_context`) and recorded no cause
+   at all, so it was the one axis that could not answer "why" even in principle.
+   One site means the invariant `define_constants_uncertain ==
+   !define_constants_uncertainties.is_empty()` holds by construction; a test
+   pins it, as does the weaker `items_uncertain ⟹ some compile cause` for the
+   pre-existing axis.
+
+2. **`crates/lsp/src/project_deferral.rs`** (new, pure, no IO) — `ProjectEvaluation`
+   (evaluated / failed), `DeferredCapability`, `Deferral`, `deferrals`,
+   `deferral_message`, and the cause renderers.
+
+3. **Wiring** — `semantic::build_parses` gates through `deferrals`, and
+   `server::warn_compile_uncertainty` is replaced by the state-derived
+   `refresh_project_deferrals`. The sections below are the eight review rounds
+   that got that wiring right; read them before changing it, because most of the
+   obvious simplifications are things that were tried and found to hide a
+   decline.
+
+## Bounded output
+
+A project can accumulate many causes. The message renders at most
+`MAX_RENDERED_CAUSES` of them and states the residual count explicitly; the full
+list goes to `tracing` at `warn`. A silent cap would read as "that was all of
+them".
+## Known coverage limit: graph-level reference suppression
+
+`ProjectReferenceEdges` is reported from the entry project's own evaluation. The
+compile-closure graph walk suppresses edges **per node**, on two facts that
+input does not carry:
+
+- a **later target framework** of a multi-targeted project — the walk evaluates
+  additional/seeded TFMs, so a clean first TFM hides an uncertain second one;
+- a **transitive** node — if open project A references B and *B's* reference
+  list is untrustworthy, A's `AssemblyEnv` loses C while A itself is clean, and
+  with no B source open nobody is told.
+
+Both are **under-reporting, never mis-reporting**: nothing false is said, but a
+user can lose a reference edge in silence. Closing them needs the graph's own
+per-node verdict as an input to reporting, which means running
+`Workspace::project_graph` — a deliberately *off-cache* multi-project walk, since
+it must not pin the project memo — on a path that currently touches nothing but
+memos. That is a new axis with a real cost, not a fix to this one, and is left
+here rather than done.
+
+Two shapes carry the rest of the enforcement:
+
+- **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /
+  `Unrecorded`, built only through a private constructor that collapses the
+  empty vector to `Unrecorded`. A set flag whose cause vector is empty therefore
+  cannot silently render as a blank "why" — it renders as an explicit stated
+  absence, and a caller can tell the two apart by matching rather than by
+  reading prose. Distinguishing "no cause" from "we didn't look" is the
+  recurring defect class in this repo, so it is made unrepresentable here rather
+  than documented.
+- **Cause rendering is a wildcard-free match** over the msbuild cause
+  vocabulary, and the test that supplies one sample per variant is wildcard-free
+  too. Adding a variant to `borzoi-msbuild` is then a compile error in both
+  places, not a silently-unrendered cause.
+
+## Known incompleteness, and what would close it
+
+`project_references_uncertain` is raised at ~13 sites in `borzoi-msbuild`, none
+of which records a cause — unlike the Compile axis (`compile_item_uncertainties`)
+and, now, the define axis. The `ProjectReferenceEdges` deferral therefore borrows
+the Compile axis's *structural* causes, which are true reasons the reference list
+can't be trusted (a followed-through import can carry `<ProjectReference>`
+mutations) and are raised by a site that flips both axes. Where none exists it
+reports `Causes::Unrecorded`.
+
+So that capability's "why" is **sound but possibly short**: an item-pass site of
+its own (a `Remove`, an unevaluable Include) that co-occurs with a structural
+Compile cause is not named. Closing it means giving the axis its own cause
+channel, exactly as change 1 does for the define axis — 13 sites rather than 1,
+which is why it is not in this change. The stated-absence arm is what keeps the
+gap visible instead of letting it read as "nothing else was wrong".
+
+Short is the cost; *wrong* would not be acceptable, and review found one. The
+borrowed subset is `StructuralCompileItemUncertainty::hides_project_references`,
+the evaluator's own rule, not "every structural cause": `UnsupportedChoose` is
+deliberately exempt there (`handle_choose` scans a `<Choose>`'s still-possible
+branches for reference mutations itself), so a Compile-only `<Choose>` alongside
+an unrelated `<ProjectReference Remove>` would otherwise have been named as the
+reason for a drop it did not cause. A confidently wrong explanation is worse
+than the stated absence it displaces.
+
+## Appendix: what fifteen review rounds changed
+
+The design above is not what was first written. Fifteen rounds of
+`codex review` produced roughly twenty-five findings, and the shape of them
+mattered more than any one fix: the first five were all *the same defect* — a
+decline reached through a path the explainer could not see — which is what drove
+the design from "notify at each call site" to "derive from state", and which is
+why three separate features were **cut** rather than patched.
+
+Each subsection below is one round. They are kept because they record which
+simplifications were tried and found to hide a decline; before changing this
+code, check whether the change you have in mind is one of them.
 
 ### Cut: describing an unsaved `.fsproj` buffer
 
@@ -385,111 +505,3 @@ agreement with `paths_equal` rather than hardcoding a platform's answer. An e2e
 test written first for this was deleted: it passed against a deliberately broken
 identity, so it pinned nothing.
 
-## Known coverage limit: graph-level reference suppression
-
-`ProjectReferenceEdges` is reported from the entry project's own evaluation. The
-compile-closure graph walk suppresses edges **per node**, on two facts that
-input does not carry:
-
-- a **later target framework** of a multi-targeted project — the walk evaluates
-  additional/seeded TFMs, so a clean first TFM hides an uncertain second one;
-- a **transitive** node — if open project A references B and *B's* reference
-  list is untrustworthy, A's `AssemblyEnv` loses C while A itself is clean, and
-  with no B source open nobody is told.
-
-Both are **under-reporting, never mis-reporting**: nothing false is said, but a
-user can lose a reference edge in silence. Closing them needs the graph's own
-per-node verdict as an input to reporting, which means running
-`Workspace::project_graph` — a deliberately *off-cache* multi-project walk, since
-it must not pin the project memo — on a path that currently touches nothing but
-memos. That is a new axis with a real cost, not a fix to this one, and is left
-here rather than done.
-
-Two shapes carry the rest of the enforcement:
-
-- **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /
-  `Unrecorded`, built only through a private constructor that collapses the
-  empty vector to `Unrecorded`. A set flag whose cause vector is empty therefore
-  cannot silently render as a blank "why" — it renders as an explicit stated
-  absence, and a caller can tell the two apart by matching rather than by
-  reading prose. Distinguishing "no cause" from "we didn't look" is the
-  recurring defect class in this repo, so it is made unrepresentable here rather
-  than documented.
-- **Cause rendering is a wildcard-free match** over the msbuild cause
-  vocabulary, and the test that supplies one sample per variant is wildcard-free
-  too. Adding a variant to `borzoi-msbuild` is then a compile error in both
-  places, not a silently-unrendered cause.
-
-## Scope
-
-Capabilities reported (each has a live consumer that declines today):
-
-| capability | trigger | consumer that declines |
-| --- | --- | --- |
-| `ProjectFold` | evaluation failed, `items_uncertain`, `define_constants_uncertain`, or any `FoldRefusal` (unreadable Compile item, parser panic, F# 8 shape straddle, unexpected parse root) | `semantic::build_parses` → single-file fallback |
-| `ProjectReferenceEdges` | `project_references_uncertain` **or** `not_an_inner_build` | `workspace::references_suppressed` → `ProjectNode::references_uncertain` → edges dropped from the `AssemblyEnv` |
-
-`package_references_uncertain` is **not** reported: it has no consumer in
-`crates/lsp` (grep), so nothing is declined and there is no user-visible loss to
-explain. Reporting it would be a claim we cannot back.
-
-Delivery is `window/showMessage`, extending the existing channel rather than
-adding a second one. Publishing the causes as `.fsproj` diagnostics anchored on
-their spans is a natural follow-up (the spans are already carried) but is not
-this change: it would move the `.fsproj` diagnostic set, which has its own
-served-TFM semantics (E7, `fsproj_diagnostics.rs`).
-
-## Changes
-
-1. **`borzoi-msbuild`** — add `ParsedProject::define_constants_uncertainties`,
-   the define-axis twin of `compile_item_uncertainties`. That axis is set at
-   exactly one site (`State::push` under `define_context`) and recorded no cause
-   at all, so it was the one axis that could not answer "why" even in principle.
-   One site means the invariant `define_constants_uncertain ==
-   !define_constants_uncertainties.is_empty()` holds by construction; a test
-   pins it, as does the weaker `items_uncertain ⟹ some compile cause` for the
-   pre-existing axis.
-
-2. **`crates/lsp/src/project_deferral.rs`** (new, pure, no IO) — `ProjectEvaluation`
-   (evaluated / failed), `DeferredCapability`, `Deferral`, `deferrals`,
-   `deferral_message`, and the cause renderers.
-
-3. **Wiring** — `semantic::build_parses` gates through `deferrals`, and
-   `server::warn_compile_uncertainty` is replaced by the state-derived
-   `refresh_project_deferrals`. The sections below are the eight review rounds
-   that got that wiring right; read them before changing it, because most of the
-   obvious simplifications are things that were tried and found to hide a
-   decline.
-
-## Known incompleteness, and what would close it
-
-`project_references_uncertain` is raised at ~13 sites in `borzoi-msbuild`, none
-of which records a cause — unlike the Compile axis (`compile_item_uncertainties`)
-and, now, the define axis. The `ProjectReferenceEdges` deferral therefore borrows
-the Compile axis's *structural* causes, which are true reasons the reference list
-can't be trusted (a followed-through import can carry `<ProjectReference>`
-mutations) and are raised by a site that flips both axes. Where none exists it
-reports `Causes::Unrecorded`.
-
-So that capability's "why" is **sound but possibly short**: an item-pass site of
-its own (a `Remove`, an unevaluable Include) that co-occurs with a structural
-Compile cause is not named. Closing it means giving the axis its own cause
-channel, exactly as change 1 does for the define axis — 13 sites rather than 1,
-which is why it is not in this change. The stated-absence arm is what keeps the
-gap visible instead of letting it read as "nothing else was wrong".
-
-Short is the cost; *wrong* would not be acceptable, and review found one. The
-borrowed subset is `StructuralCompileItemUncertainty::hides_project_references`,
-the evaluator's own rule, not "every structural cause": `UnsupportedChoose` is
-deliberately exempt there (`handle_choose` scans a `<Choose>`'s still-possible
-branches for reference mutations itself), so a Compile-only `<Choose>` alongside
-an unrelated `<ProjectReference Remove>` would otherwise have been named as the
-reason for a drop it did not cause. A confidently wrong explanation is worse
-than the stated absence it displaces.
-
-## Bounded output
-
-A project can accumulate many causes. The message renders at most
-`MAX_RENDERED_CAUSES` of them and states the residual count explicitly; the full
-list goes to `tracing` at `warn`. A silent cap would read as "that was all of
-them".
