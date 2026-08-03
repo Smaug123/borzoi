@@ -324,48 +324,67 @@ fn opening_the_fsproj_itself_reports_its_deferral() {
     );
 }
 
-/// The `.fsproj` message must describe the **buffer**, not disk — an unsaved
-/// edit is exactly when a user is trying to work out what they broke. It must
-/// also not pin the workspace's project cache to a disk read, which is why it
-/// goes through `fsproj_diagnostics::evaluate_buffer` rather than
-/// `Workspace::project` (see `fsproj_sync_does_not_pin_the_project_cache`).
+/// An open `.fsproj` is reported from the **workspace's** evaluation, not from
+/// its unsaved buffer text.
+///
+/// That is a deliberate narrowing. The buffer's own problems already surface as
+/// span-anchored diagnostics on every keystroke, which is better feedback than
+/// a toast; describing the buffer here instead would put a full import/SDK walk
+/// on every dispatched message, and — because the buffer parse knows nothing of
+/// the workspace's multi-target dispatch verdict or of the fold — would *hide*
+/// declines that are really in force. The toast's job is the one squiggles
+/// can't do: telling a source buffer why its project went quiet.
 #[test]
-fn the_fsproj_message_describes_the_unsaved_buffer() {
-    // Disk is clean; the buffer is not.
-    let (tmp, proj) = project_dir(CERTAIN_PROJECT);
+fn an_open_fsproj_is_reported_from_disk_not_from_its_buffer() {
+    // Disk is broken, the buffer is clean: the decline is real (handlers use
+    // the disk project), so it is reported.
+    let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
     let mut server = Server::start();
-    server.open(&proj, UNCERTAIN_PROJECT, "xml");
+    server.open(&proj, CERTAIN_PROJECT, "xml");
     let messages = server.deferral_messages(&proj);
-    assert_eq!(
-        messages.len(),
-        1,
-        "the buffer's problem must be reported: {messages:?}"
-    );
+    assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(
         messages[0].contains("GetPathOfFileAbove"),
         "{}",
         messages[0]
     );
-
-    // …and the disk-clean project is still what a source file sees, proving the
-    // buffer read pinned nothing.
-    let a = source_uri(&tmp, "A.fs");
-    server.open(&a, "module A\nlet a = 1\n", "fsharp");
-    assert_eq!(
-        server.deferral_messages(&a),
-        Vec::<String>::new(),
-        "the buffer evaluation must not have pinned the project cache"
-    );
 }
 
-/// The mirror image: a buffer whose text is fine while disk is broken says
-/// nothing, because the buffer is what the user is about to save.
+/// The converse: a clean project whose buffer has been edited into an uncertain
+/// one says nothing *yet* — nothing is declined until the edit is saved, and
+/// the buffer's own diagnostics already flag it in place.
 #[test]
-fn a_fixed_but_unsaved_fsproj_buffer_says_nothing() {
-    let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
+fn an_unsaved_fsproj_edit_does_not_toast_before_it_takes_effect() {
+    let (_tmp, proj) = project_dir(CERTAIN_PROJECT);
     let mut server = Server::start();
     server.open(&proj, CERTAIN_PROJECT, "xml");
     assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
+    server.change(&proj, UNCERTAIN_PROJECT);
+    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
+}
+
+/// …and once the edit reaches disk and the client says so, it is reported.
+#[test]
+fn a_saved_fsproj_edit_is_reported() {
+    let (tmp, proj) = project_dir(CERTAIN_PROJECT);
+    let mut server = Server::start();
+    server.open(&proj, CERTAIN_PROJECT, "xml");
+    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
+
+    std::fs::write(tmp.path().join("Demo.fsproj"), UNCERTAIN_PROJECT).unwrap();
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: proj.clone(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+    let messages = server.deferral_messages(&proj);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
+    );
 }
 
 #[test]
@@ -581,42 +600,6 @@ fn a_persisting_reason_is_reported_only_once() {
     }
 }
 
-/// Editing an open `.fsproj` — without saving — must report the problem the
-/// edit introduced. Previously only the initial open was reported, so the
-/// buffer-aware behaviour worked exactly once per file.
-#[test]
-fn editing_an_open_fsproj_buffer_reports_the_new_problem() {
-    let (_tmp, proj) = project_dir(CERTAIN_PROJECT);
-    let mut server = Server::start();
-    server.open(&proj, CERTAIN_PROJECT, "xml");
-    assert_eq!(
-        server.deferral_messages(&proj),
-        Vec::<String>::new(),
-        "the buffer is sound at open time"
-    );
-
-    server.change(&proj, UNCERTAIN_PROJECT);
-    let messages = server.deferral_messages(&proj);
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
-    );
-
-    // …and editing it back is not merely quiet, it *forgets*: re-breaking it
-    // the same way reports again rather than being deduped against the stale
-    // message.
-    server.change(&proj, CERTAIN_PROJECT);
-    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
-    server.change(&proj, UNCERTAIN_PROJECT);
-    assert_eq!(
-        server.deferral_messages(&proj).len(),
-        1,
-        "a recovered project must be able to report the same problem again"
-    );
-}
-
 /// The fold-refusal equivalent: a project that refuses, recovers, then refuses
 /// the same way again must report each time it breaks. This is what a
 /// state-derived message buys — the recovery clears the record because the
@@ -661,4 +644,28 @@ fn a_recovered_fold_reports_again_when_it_breaks_the_same_way() {
         again, first,
         "the same problem, recurring after a recovery, must be reported again"
     );
+}
+
+/// A fold refusal is reported even when the project's own `.fsproj` buffer is
+/// open. When the message was built from the buffer instead of from state, an
+/// open `.fsproj` whose text evaluated cleanly *suppressed* the fold's refusal
+/// — recreating exactly the silent fallback this whole change exists to remove,
+/// and only for the user who had opened the project file to investigate.
+#[test]
+fn an_open_fsproj_does_not_suppress_its_project_s_fold_refusal() {
+    let tmp = TempDir::new().unwrap();
+    let fsproj = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#;
+    std::fs::write(tmp.path().join("Demo.fsproj"), fsproj).unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let proj = Url::from_file_path(tmp.path().join("Demo.fsproj")).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    // The project file is opened *first* — the ordering that hid the refusal.
+    server.open(&proj, fsproj, "xml");
+    let _ = server.deferral_messages(&proj);
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let messages = server.deferral_messages(&a);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Gone.fs"), "{}", messages[0]);
 }

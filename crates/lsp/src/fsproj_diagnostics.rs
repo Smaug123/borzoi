@@ -127,15 +127,13 @@ pub fn diagnostics_for(
 /// through the full two-pass pipeline, without touching
 /// [`crate::workspace::Workspace`]'s project cache.
 ///
-/// Both properties matter to callers other than the diagnostics above. The
-/// buffer may be unsaved, so disk would describe a different project; and the
-/// workspace cache has no unconditional file-watch invalidation, so a read
-/// through it from a `.fsproj` text-sync pins the evaluation for the server's
-/// lifetime (`server::tests::fsproj_sync_does_not_pin_the_project_cache`).
+/// Both properties are load-bearing. The buffer may be unsaved, so disk would
+/// describe a different project; and the workspace cache has no unconditional
+/// file-watch invalidation, so a read through it from a `.fsproj` text-sync
+/// pins the evaluation for the server's lifetime
+/// (`server::tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
-/// `server::warn_project_deferral` is the other caller: it explains
-/// what the LSP is declining for a project the user has open as a buffer.
-pub fn evaluate_buffer(
+fn evaluate_buffer(
     text: &str,
     project_path: &Path,
     env: &SdkDiscoveryEnv,

@@ -127,6 +127,33 @@ The refresh runs *before* the reply is enqueued, since the refusal is precisely
 why that reply is degraded and an explanation arriving afterwards reads as
 unrelated.
 
+### Cut: describing an unsaved `.fsproj` buffer
+
+The refresh originally described an open `.fsproj` from its **buffer text**, so
+an unsaved edit would toast immediately. A fourth review round produced five
+findings and four were that one feature: a full import/SDK walk on every
+dispatched message; the buffer evaluation *suppressing* a real fold refusal
+(nothing in the buffer knows about the fold, so a clean buffer read as "nothing
+declined"); the same for `not_an_inner_build`; and a lexical scope merge that
+double-reported an aliased path.
+
+Rather than patch four, the feature is gone. It was never worth its cost: an
+open `.fsproj` already gets **span-anchored diagnostics on its own buffer text
+every keystroke** — strictly better feedback than a toast, and pointing at the
+offending element rather than naming it. The toast's unique job is the one
+squiggles cannot do: telling a `.fs` buffer why its *project* went quiet. So
+every project is now reported from the workspace's evaluation, and an open
+`.fsproj` is in scope merely as a project like any other.
+
+What that buys, beyond the four bugs: the whole refresh is now cached reads —
+the workspace's evaluation memo and the last recorded fold outcome — which is
+what makes running it after every dispatched message affordable at all.
+
+The remaining fifth finding was ordinary: the log line moved behind the same
+changed-message check as the notification, since a per-dispatch refresh would
+otherwise repeat a permanently-deferred project's full cause list into stderr
+(and into Loki under `otel`) thousands of times a session.
+
 Two shapes carry the rest of the enforcement:
 
 - **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /

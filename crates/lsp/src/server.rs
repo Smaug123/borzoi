@@ -44,7 +44,7 @@ use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
-use crate::project_deferral::{self, ProjectEvaluation};
+use crate::project_deferral;
 use crate::publish::PublishState;
 use crate::semantic::SemanticState;
 use crate::workspace::Workspace;
@@ -1075,113 +1075,73 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// **A refresh, not an event handler.** It recomputes every in-scope project's
 /// explanation from current state and diffs it against what was last sent, so
 /// the shell calls it after every dispatched message and never has to decide
-/// *which* state changes can alter a deferral. Three review rounds found six
-/// bugs of exactly that shape — a decline reached through a path nobody had
-/// added a notify call to — and each was a symptom of reporting being event-
-/// driven. Derived state has no such path: a project that starts deferring is
-/// reported, one that stops is forgotten (so re-breaking it reports again), and
-/// a changed reason replaces the old one, because all three fall out of the
-/// same diff.
+/// *which* state changes can alter a deferral. Review rounds found eight bugs of
+/// exactly that shape — a decline reached through a path nobody had added a
+/// notify call to — and each was a symptom of reporting being event-driven.
+/// Derived state has no such path: a project that starts deferring is reported,
+/// one that stops is forgotten (so re-breaking it reports again), and a changed
+/// reason replaces the old one, because all three fall out of the same diff.
 ///
-/// In scope: the owning project of every open source buffer, and every open
-/// `.fsproj`. A `.fsproj` reports on its **buffer text**, evaluated off-cache
-/// via [`fsproj_diagnostics::evaluate_buffer`] — a user investigating a broken
-/// project usually opens it, and that buffer may be unsaved. Routing that
-/// through [`crate::workspace::Workspace::project`] instead would both describe
-/// the wrong text and pin the project cache for the server's lifetime (see
-/// `tests::fsproj_sync_does_not_pin_the_project_cache`).
+/// **Everything here is a cached read**, which is what makes per-dispatch
+/// refreshing affordable: the project evaluation is the workspace's memo and the
+/// fold outcome is whatever the last fold recorded. Nothing is evaluated,
+/// parsed, or folded to answer a question nothing has asked.
 ///
-/// Cost is bounded by the open buffers: project evaluation and the fold outcome
-/// are both read from caches, and only an open `.fsproj` is re-parsed — the
-/// same parse its own diagnostics already do on each keystroke.
+/// Scope is the owning project of every open buffer — including an open
+/// `.fsproj`, which is in scope as a *project*, reported from the workspace's
+/// evaluation like any other. It is deliberately not described from its unsaved
+/// buffer text: that text already gets span-anchored diagnostics on every
+/// keystroke ([`fsproj_diagnostics::diagnostics_for`]), which is strictly better
+/// feedback than a toast, and evaluating it here would put a full import/SDK
+/// walk on every dispatch. The toast's own job is the one squiggles can't do —
+/// telling a `.fs` buffer why its project went quiet.
 fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
-    for (project, buffer) in projects_in_scope(state) {
-        let message = {
-            let build_properties = state.workspace.build_properties();
-            let buffer_parse = buffer.as_ref().map(|text| {
-                fsproj_diagnostics::evaluate_buffer(
-                    text,
-                    &project,
-                    state.workspace.env(),
-                    &build_properties,
-                )
-            });
-            // The fold outcome is *read*, never provoked: recomputing it here
-            // would fold every project on every keystroke to answer a question
-            // nothing has asked. `SemanticState::fold` records it wherever it
-            // does run — a handler, or `ensure_folded` on open.
-            let fold = buffer
-                .is_none()
-                .then(|| state.semantic.observed_fold_refusal(&project).cloned())
-                .flatten();
-            let evaluation = match &buffer_parse {
-                Some(Ok(parsed)) => ProjectEvaluation::Evaluated {
-                    parsed,
-                    // An unsaved buffer's multi-target dispatch shape is the
-                    // workspace's business, not this one-off parse's; the buffer
-                    // path reports only what the buffer itself says.
-                    not_an_inner_build: false,
-                },
-                Some(Err(_)) => ProjectEvaluation::Failed,
-                None => state.workspace.project_evaluation(&project),
-            };
-            deferral_message_for(&project, evaluation, fold.as_ref())
+    for project in projects_in_scope(state) {
+        let deferrals = {
+            // Read, never provoke: recomputing the fold here would fold every
+            // project on every keystroke. `SemanticState::fold` records the
+            // outcome wherever it does run — a handler, or `ensure_folded` on
+            // open.
+            let fold = state.semantic.observed_fold_refusal(&project).cloned();
+            let evaluation = state.workspace.project_evaluation(&project);
+            project_deferral::deferrals(evaluation, fold.as_ref())
         };
-        report_deferral(conn, state, project, message);
+        report_deferral(conn, state, project, &deferrals);
     }
 }
 
-/// The projects a refresh reports on, each with the buffer text to describe it
-/// by (`Some` only for an open `.fsproj`, which describes itself).
+/// The projects a refresh reports on: the owning project of every open buffer,
+/// canonicalised and deduplicated.
 ///
 /// Deliberately derived from the open buffers rather than from the workspace
 /// roots: a message about a project the user has nothing open from is noise
 /// they cannot act on from where they are.
-fn projects_in_scope(state: &mut State) -> Vec<(PathBuf, Option<String>)> {
-    let mut scope: Vec<(PathBuf, Option<String>)> = Vec::new();
+///
+/// Canonicalised *here*, not just at the send: the same project reached through
+/// a symlink and through its real path is one project, and two entries for it
+/// would each recompute and diff against the same key — alternately inserting
+/// and removing it, re-toasting after every dispatched message.
+fn projects_in_scope(state: &mut State) -> Vec<PathBuf> {
+    let mut scope: Vec<PathBuf> = Vec::new();
     let uris: Vec<Url> = state.docs.keys().cloned().collect();
     for uri in uris {
         let Ok(path) = uri.to_file_path() else {
             continue;
         };
-        let entry = match path_extension(&uri).as_deref() {
-            Some("fsproj") => (path, state.docs.get(&uri).cloned()),
+        let project = match path_extension(&uri).as_deref() {
+            Some("fsproj") => path,
             Some("fs" | "fsi" | "fsx") => match state.workspace.owning_project(&path) {
-                Some(project) => (project, None),
+                Some(project) => project,
                 None => continue,
             },
             _ => continue,
         };
-        // An open `.fsproj` and an open source file under it name the same
-        // project; the buffer-bearing entry wins, since it describes the text
-        // the user is actually looking at.
-        match scope.iter_mut().find(|(p, _)| *p == entry.0) {
-            Some(existing) if existing.1.is_none() => existing.1 = entry.1,
-            Some(_) => {}
-            None => scope.push(entry),
+        let project = crate::semantic::canonicalise(&project);
+        if !scope.contains(&project) {
+            scope.push(project);
         }
     }
     scope
-}
-
-/// Render the message for one project's deferrals, logging the full (uncapped)
-/// list. Pure but for the log; the caller owns the dedup and the send.
-fn deferral_message_for(
-    project: &std::path::Path,
-    evaluation: ProjectEvaluation<'_>,
-    fold: Option<&crate::project_deferral::FoldRefusal>,
-) -> Option<String> {
-    let deferrals = project_deferral::deferrals(evaluation, fold);
-    if !deferrals.is_empty() {
-        // The toast is capped; the log is not, so a user who reports "it says
-        // 'and 12 more'" can be asked for the trace.
-        tracing::warn!(
-            project = %project.display(),
-            deferrals = ?deferrals,
-            "declining project-wide features"
-        );
-    }
-    project_deferral::deferral_message(project, &deferrals)
 }
 
 /// Send `message` for `project`, unless the identical message was the last one
@@ -1191,24 +1151,31 @@ fn deferral_message_for(
 /// problem" and "do report a new problem" one rule instead of two that have to
 /// be kept in agreement. `None` — nothing is declined — *forgets* the project,
 /// so one that is fixed and later re-broken is reported again.
+///
+/// The log line is behind the same check as the notification. A refresh runs
+/// after every dispatched message, so logging unconditionally would repeat a
+/// permanently-deferred project's full cause list thousands of times per session
+/// — into stderr, and into Loki under the `otel` feature.
 fn report_deferral(
     conn: &Connection,
     state: &mut State,
     project: PathBuf,
-    message: Option<String>,
+    deferrals: &[project_deferral::Deferral],
 ) {
-    // Canonicalised, because the same project arrives here spelled two ways —
-    // `owning_project`'s literal path from a source buffer, and the semantic
-    // layer's canonical key elsewhere. Keying them apart would send one
-    // project's message twice.
-    let project = crate::semantic::canonicalise(&project);
-    let Some(message) = message else {
+    let Some(message) = project_deferral::deferral_message(&project, deferrals) else {
         state.warned_uncertain_projects.remove(&project);
         return;
     };
     if state.warned_uncertain_projects.get(&project) == Some(&message) {
         return;
     }
+    // The toast caps its cause list; the log carries all of them, so a user who
+    // reports "it says 'and 12 more'" can be asked for the trace.
+    tracing::warn!(
+        project = %project.display(),
+        deferrals = ?deferrals,
+        "declining project-wide features"
+    );
     state
         .warned_uncertain_projects
         .insert(project, message.clone());
