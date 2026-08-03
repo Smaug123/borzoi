@@ -7,9 +7,9 @@ lookups simply stop working, with no explanation. This plan closes that.
 
 ## The defect, measured
 
-`server::warn_compile_uncertainty` already exists and already sends a
-`window/showMessage`. It reads exactly one of the evaluator's cause channels:
-`ParsedProject::compile_condition_uncertainties`.
+`server::warn_compile_uncertainty` (as `main` has it) already exists and already
+sends a `window/showMessage`. It reads exactly one of the evaluator's cause
+channels: `ParsedProject::compile_condition_uncertainties`.
 
 A census over **a 401-`.fsproj` sample** under `~/Documents/GitHub` (a bounded
 walk — the cap is why it is a sample, not the population — evaluated through
@@ -79,10 +79,9 @@ found both:
   reading and parsing the Compile items: an unreadable item, a parser panic, an
   F# 8 shape straddle, an unexpected parse root. It now returns
   `Result<_, FoldRefusal>` rather than `Option`, so every exit is a value
-  `deferrals` can fold into the same capability. `SemanticState::fold_refusal`
-  hands the verdict to the server (caching the *success*, never the refusal — a
-  refusal turns into a success the moment a file appears, and a cached negative
-  would need its own invalidation hook on every such event).
+  `deferrals` can fold into the same capability. (The API for handing that
+  verdict to the server went through two more shapes before settling on
+  `SemanticState::fold_outcome`, below.)
 
 Both were the original defect wearing a different hat: a decline computed
 somewhere the explainer couldn't see. The lesson is the input type, not the two
@@ -113,15 +112,18 @@ diff.
 Two supporting shapes:
 
 - `SemanticState::fold` is the one place the fold runs and records its outcome;
-  `observed_fold_refusal` *reads* it rather than draining, which is what makes
-  the message a pure function of state. The refresh never provokes a fold —
-  folding every project on every keystroke would answer a question nothing has
-  asked — so `ensure_folded` runs once on `didOpen` and handlers record the rest.
-- The dedup is keyed on the **message text**, canonicalised path. Keying by
-  project alone cannot express "same problem, don't repeat" and "new problem, do
-  report" at once; not canonicalising sent one project's message twice, because
-  it arrives spelled `/var/…` from a buffer and `/private/var/…` from the
-  semantic layer (caught by the e2e tests, not by inspection).
+  `fold_outcome` *reads* it rather than draining, which is what makes the message
+  a pure function of state. The refresh never provokes a fold — folding every
+  project on every keystroke would answer a question nothing has asked — so the
+  outcome is whatever the last request that genuinely needed the Compile order
+  recorded.
+- The dedup is keyed by canonicalised project path. Keying by project *identity
+  alone* — a bare "already warned" set — cannot express "same problem, don't
+  repeat" and "new problem, do report" at once; not canonicalising sent one
+  project's message twice, because it arrives spelled `/var/…` from a buffer and
+  `/private/var/…` from the semantic layer (caught by the e2e tests, not by
+  inspection). What is stored against that key started as the message text and
+  is now the deferral list, for the per-capability reason below.
 
 The refresh runs *before* the reply is enqueued, since the refusal is precisely
 why that reply is degraded and an explanation arriving afterwards reads as
@@ -329,13 +331,12 @@ served-TFM semantics (E7, `fsproj_diagnostics.rs`).
    (evaluated / failed), `DeferredCapability`, `Deferral`, `deferrals`,
    `deferral_message`, and the cause renderers.
 
-3. **Wiring** — `semantic::build_parses` gates through `deferrals`;
-   `server::warn_compile_uncertainty` becomes `warn_project_deferral` and reads
-   it; a `.fsproj` buffer opening now reports its own project (previously only
-   `.fs`/`.fsi`/`.fsx` could trigger it, so opening the offending file itself
-   said nothing); and a structural `didChangeWatchedFiles` clears the
-   already-warned set, since the project is re-evaluated and may defer for a new
-   reason.
+3. **Wiring** — `semantic::build_parses` gates through `deferrals`, and
+   `server::warn_compile_uncertainty` is replaced by the state-derived
+   `refresh_project_deferrals`. The sections below are the eight review rounds
+   that got that wiring right; read them before changing it, because most of the
+   obvious simplifications are things that were tried and found to hide a
+   decline.
 
 ## Known incompleteness, and what would close it
 
