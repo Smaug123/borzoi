@@ -88,24 +88,44 @@ Both were the original defect wearing a different hat: a decline computed
 somewhere the explainer couldn't see. The lesson is the input type, not the two
 patches — a narrow one lets the next such decline escape silently too.
 
-**And wide enough in time, not only in data.** A second review round found the
-same shape once more: a refusal introduced *after* the file was opened (a
-sibling Compile item deleted, an edit that makes one straddle the F# 8
-indentation boundary) was reached only from a request handler, which has no
-connection to the client. `SemanticState::fold` — now the single place the fold
-runs — records every refusal, and the shell drains it
-(`flush_observed_fold_refusals`) *before* enqueueing the reply, since the refusal
-is precisely why that reply is degraded. Reporting on the keystroke instead would
-mean folding the project on every edit just to check, and would toast before
-anything had actually failed.
+**And the reporting must be derived, not dispatched.** Two further review rounds
+found four more bugs, every one the same shape: a decline reached through a path
+that had no notify call on it.
 
-The dedup moved with it: keyed on the **message text** rather than the project,
-so "don't re-toast the same problem" and "do report a new problem" are one rule
-instead of two that must be kept in agreement. A project with nothing to report
-is forgotten, so one that is fixed and later re-broken reports again. The key is
-canonicalised — the same project arrives spelled `/var/…` from a buffer and
-`/private/var/…` from a drained refusal, and keying those apart sent one
-project's message twice (caught by the e2e tests, not by inspection).
+- A refusal introduced *after* the file was opened — a sibling Compile item
+  deleted, an edit that makes one straddle the F# 8 indentation boundary — was
+  discovered only inside a request handler, which cannot talk to the client.
+- A `.fsproj` opened clean and then edited reported nothing: only `didOpen`
+  called the reporter, so the buffer-aware path worked exactly once per file.
+- A fold that refused, recovered, then refused the same way was silent the
+  second time, because the recovery cleared the fold's own record but not the
+  server's sent-message record.
+
+Patching each site would have been four more `warn_…` calls and a fifth bug
+waiting. Instead the reporting became a **refresh over current state**:
+`server::refresh_project_deferrals` recomputes every in-scope project's
+explanation and diffs it against what was last sent, and the shell calls it after
+every dispatched message. Nobody has to know which state changes can alter a
+deferral. Started deferring → reported; stopped → forgotten (so re-breaking
+reports again); different reason → replaces the old one: all three are the same
+diff.
+
+Two supporting shapes:
+
+- `SemanticState::fold` is the one place the fold runs and records its outcome;
+  `observed_fold_refusal` *reads* it rather than draining, which is what makes
+  the message a pure function of state. The refresh never provokes a fold —
+  folding every project on every keystroke would answer a question nothing has
+  asked — so `ensure_folded` runs once on `didOpen` and handlers record the rest.
+- The dedup is keyed on the **message text**, canonicalised path. Keying by
+  project alone cannot express "same problem, don't repeat" and "new problem, do
+  report" at once; not canonicalising sent one project's message twice, because
+  it arrives spelled `/var/…` from a buffer and `/private/var/…` from the
+  semantic layer (caught by the e2e tests, not by inspection).
+
+The refresh runs *before* the reply is enqueued, since the refusal is precisely
+why that reply is degraded and an explanation arriving afterwards reads as
+unrelated.
 
 Two shapes carry the rest of the enforcement:
 

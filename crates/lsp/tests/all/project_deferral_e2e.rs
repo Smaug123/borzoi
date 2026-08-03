@@ -580,3 +580,85 @@ fn a_persisting_reason_is_reported_only_once() {
         );
     }
 }
+
+/// Editing an open `.fsproj` — without saving — must report the problem the
+/// edit introduced. Previously only the initial open was reported, so the
+/// buffer-aware behaviour worked exactly once per file.
+#[test]
+fn editing_an_open_fsproj_buffer_reports_the_new_problem() {
+    let (_tmp, proj) = project_dir(CERTAIN_PROJECT);
+    let mut server = Server::start();
+    server.open(&proj, CERTAIN_PROJECT, "xml");
+    assert_eq!(
+        server.deferral_messages(&proj),
+        Vec::<String>::new(),
+        "the buffer is sound at open time"
+    );
+
+    server.change(&proj, UNCERTAIN_PROJECT);
+    let messages = server.deferral_messages(&proj);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
+    );
+
+    // …and editing it back is not merely quiet, it *forgets*: re-breaking it
+    // the same way reports again rather than being deduped against the stale
+    // message.
+    server.change(&proj, CERTAIN_PROJECT);
+    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
+    server.change(&proj, UNCERTAIN_PROJECT);
+    assert_eq!(
+        server.deferral_messages(&proj).len(),
+        1,
+        "a recovered project must be able to report the same problem again"
+    );
+}
+
+/// The fold-refusal equivalent: a project that refuses, recovers, then refuses
+/// the same way again must report each time it breaks. This is what a
+/// state-derived message buys — the recovery clears the record because the
+/// recomputed message is "nothing", not because anything remembered to undo the
+/// earlier notification.
+#[test]
+fn a_recovered_fold_reports_again_when_it_breaks_the_same_way() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="B.fs" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+
+    // Break it.
+    std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
+    server.change(&a, "module A\nlet a = 2\n");
+    let first = server.deferral_messages_after_fold(&a);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("B.fs"), "{}", first[0]);
+
+    // Fix it: the message stops, and the record of it is dropped.
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    server.change(&a, "module A\nlet a = 3\n");
+    assert_eq!(
+        server.deferral_messages_after_fold(&a),
+        Vec::<String>::new()
+    );
+
+    // Break it the same way again: reported, not deduped against the stale one.
+    std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
+    server.change(&a, "module A\nlet a = 4\n");
+    let again = server.deferral_messages_after_fold(&a);
+    assert_eq!(
+        again, first,
+        "the same problem, recurring after a recovery, must be reported again"
+    );
+}

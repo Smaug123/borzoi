@@ -227,12 +227,17 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
     project_parses: HashMap<PathBuf, ProjectParses>,
-    /// Fold refusals seen since the shell last drained them
-    /// ([`Self::take_observed_fold_refusals`]), keyed by canonicalised project
-    /// path. Not a cache: nothing reads it to *decide* anything, and a
-    /// successful fold removes the entry, so it cannot go stale into a decision.
-    /// It exists because the fold is reached from handlers, which have no
-    /// connection to the client, while the message must be sent from the shell.
+    /// The last fold outcome per project, keyed by canonicalised project path:
+    /// an entry means the most recent fold refused, its absence means the most
+    /// recent fold succeeded or none has run.
+    ///
+    /// Written **only** by [`Self::fold`], the one place the fold runs, so it
+    /// cannot disagree with what the fold actually did. Read (not drained) by
+    /// [`Self::observed_fold_refusal`], which is what lets the shell's message
+    /// be a function of current state rather than of the event that provoked
+    /// it: a fold that starts succeeding removes its entry, and the message
+    /// recomputes to "nothing to report" without anyone having to remember to
+    /// clear it.
     observed_fold_refusals: HashMap<PathBuf, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
@@ -1153,38 +1158,33 @@ impl SemanticState {
         self.project_parses.get(&key)
     }
 
-    /// Why the Compile-order fold refuses this project, or `None` if it folds.
+    /// Fold `project` if nothing has yet, so that its outcome is observable via
+    /// [`Self::observed_fold_refusal`]. A success is cached (through the same
+    /// memo [`Self::parses_for_project`] fills), so the request that follows
+    /// pays nothing extra.
     ///
-    /// The refusal is deliberately **not** cached: it can turn into a success
-    /// as soon as a missing file appears or a buffer is edited, and a cached
-    /// negative would need its own invalidation hook on every such event. A
-    /// success *is* cached (through the same memo `parses_for_project` fills),
-    /// so the common path costs one fold, not two.
-    ///
-    /// [`crate::server`] calls this to explain a project that has gone quiet;
-    /// `crate::project_deferral::deferrals` turns the verdict into the message.
-    pub fn fold_refusal(
+    /// Called when the shell has reason to believe a fold outcome is worth
+    /// knowing now — a buffer just opened — rather than on every edit, which
+    /// would fold the whole project repeatedly to answer a question nothing has
+    /// asked yet.
+    pub fn ensure_folded(
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
         docs: &HashMap<Url, String>,
-    ) -> Option<FoldRefusal> {
+    ) {
         if self.project_parses.contains_key(&canonicalise(project)) {
-            return None;
+            return;
         }
-        match self.fold(project, workspace, docs) {
-            Ok(parses) => {
-                self.project_parses.insert(canonicalise(project), parses);
-                None
-            }
-            Err(refusal) => Some(refusal),
+        if let Ok(parses) = self.fold(project, workspace, docs) {
+            self.project_parses.insert(canonicalise(project), parses);
         }
     }
 
     /// The one place the fold runs, so that **every** refusal is observed no
     /// matter which caller provoked it.
     ///
-    /// A refusal is recorded for [`Self::take_observed_fold_refusals`] to report.
+    /// The outcome is recorded for [`Self::observed_fold_refusal`] to report.
     /// Without this, a refusal introduced *after* the file was opened — an edit
     /// that makes a Compile item straddle the F# 8 indentation boundary, a
     /// sibling source deleted on disk — would be reached only from a handler,
@@ -1209,13 +1209,16 @@ impl SemanticState {
         outcome
     }
 
-    /// Drain the fold refusals observed since the last drain, for the shell to
-    /// report. Draining (rather than reading) keeps the map from becoming a
-    /// second, staleable record of *why a project is broken*: it holds only
-    /// what has happened since the last flush, and the fold re-records on the
-    /// next attempt.
-    pub fn take_observed_fold_refusals(&mut self) -> Vec<(PathBuf, FoldRefusal)> {
-        self.observed_fold_refusals.drain().collect()
+    /// How the most recent fold of `project` refused, or `None` if it succeeded
+    /// or has not run.
+    ///
+    /// The shell reads this to explain a project that has gone quiet. Reading
+    /// rather than draining is deliberate: the message is then a pure function
+    /// of current state, so a fold that recovers stops being reported *because
+    /// there is nothing to report*, not because some other code path remembered
+    /// to undo an earlier notification.
+    pub fn observed_fold_refusal(&self, project: &Path) -> Option<&FoldRefusal> {
+        self.observed_fold_refusals.get(&canonicalise(project))
     }
 }
 

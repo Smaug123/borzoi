@@ -625,7 +625,7 @@ pub fn run_with_fetcher(
                     // the disappointing answer reads as unrelated. The fold
                     // itself has no way to reach the client, so the shell
                     // reports what it observed.
-                    flush_observed_fold_refusals(&mut state, &connection);
+                    refresh_project_deferrals(&mut state, &connection);
                     match dispatch {
                         // Synchronous request: reply immediately, as before.
                         Dispatch::Reply(response) => {
@@ -653,7 +653,7 @@ pub fn run_with_fetcher(
                     // an open buffer's semantic tokens without any fold, so
                     // drain refresh work here too, not only after requests.
                     maybe_send_refresh(&mut state, &connection);
-                    flush_observed_fold_refusals(&mut state, &connection);
+                    refresh_project_deferrals(&mut state, &connection);
                 }
             }
             Message::Response(resp) => {
@@ -986,7 +986,20 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.docs.insert(uri.clone(), params.text_document.text);
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
-                warn_project_deferral(conn, state, &uri);
+                // Fold on open so the newly-visible project's fold outcome is
+                // known state by the time the shell's refresh reports on it —
+                // a project that cannot fold should say so before the user's
+                // first go-to-definition silently under-answers. Later edits
+                // don't re-fold here: the next request that needs the fold
+                // records its outcome, and the refresh picks it up.
+                if let Ok(path) = uri.to_file_path()
+                    && matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx"))
+                    && let Some(project) = state.workspace.owning_project(&path)
+                {
+                    state
+                        .semantic
+                        .ensure_folded(&project, &mut state.workspace, &state.docs);
+                }
             }
         }
         DidChangeTextDocument::METHOD => {
@@ -1022,10 +1035,6 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // project context on their next request.
                 for uri in state.apply_watched_changes(&params.changes) {
                     publish_diagnostics(conn, state, &uri);
-                    // The project was re-evaluated, so its deferrals may have
-                    // changed; `apply_watched_changes` has already cleared the
-                    // dedup set, letting a *new* reason be reported.
-                    warn_project_deferral(conn, state, &uri);
                 }
             }
         }
@@ -1052,9 +1061,9 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
     }
 }
 
-/// Show a one-time `window/showMessage` naming every project-wide capability
-/// the LSP is declining for the opened buffer's project, and why
-/// ([`crate::project_deferral`]).
+/// Bring the client's picture of what borzoi is declining, and why, up to date
+/// with the current state — sending a `window/showMessage` for each project
+/// whose explanation has *changed* ([`crate::project_deferral`]).
 ///
 /// This is the user-facing half of the deferral gates. When a project's
 /// evaluation can't be trusted, `semantic::build_parses` refuses the
@@ -1063,104 +1072,96 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// working. Without a message that reads as a broken language server; with one,
 /// the user learns which construct to fix.
 ///
-/// It reads the same [`crate::project_deferral::deferrals`] call the fold's
-/// refusal does, so "we went quiet" and "we said why" cannot diverge.
+/// **A refresh, not an event handler.** It recomputes every in-scope project's
+/// explanation from current state and diffs it against what was last sent, so
+/// the shell calls it after every dispatched message and never has to decide
+/// *which* state changes can alter a deferral. Three review rounds found six
+/// bugs of exactly that shape — a decline reached through a path nobody had
+/// added a notify call to — and each was a symptom of reporting being event-
+/// driven. Derived state has no such path: a project that starts deferring is
+/// reported, one that stops is forgotten (so re-breaking it reports again), and
+/// a changed reason replaces the old one, because all three fall out of the
+/// same diff.
 ///
-/// Both a source buffer (whose *owning* project is reported, from the workspace's
-/// cached evaluation) and a `.fsproj` buffer (which reports itself, from its
-/// **buffer text**, evaluated off-cache) can trigger it — a user investigating a
-/// broken project usually opens the `.fsproj`, and that buffer may be unsaved.
-/// Routing the `.fsproj` case through [`crate::workspace::Workspace::project`]
-/// instead would both describe the wrong text and pin the project cache for the
-/// server's lifetime — see [`fsproj_diagnostics::evaluate_buffer`] and
-/// `tests::fsproj_sync_does_not_pin_the_project_cache`.
+/// In scope: the owning project of every open source buffer, and every open
+/// `.fsproj`. A `.fsproj` reports on its **buffer text**, evaluated off-cache
+/// via [`fsproj_diagnostics::evaluate_buffer`] — a user investigating a broken
+/// project usually opens it, and that buffer may be unsaved. Routing that
+/// through [`crate::workspace::Workspace::project`] instead would both describe
+/// the wrong text and pin the project cache for the server's lifetime (see
+/// `tests::fsproj_sync_does_not_pin_the_project_cache`).
 ///
-/// Deduped by message text via [`State::warned_uncertain_projects`], so the same
-/// reason never re-toasts but a new one always does.
-fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
-    let Ok(path) = uri.to_file_path() else {
-        return;
-    };
-    let is_project_buffer = matches!(path_extension(uri).as_deref(), Some("fsproj"));
-    let project = if is_project_buffer {
-        path
-    } else if matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
-        let Some(project) = state.workspace.owning_project(&path) else {
-            return;
-        };
-        project
-    } else {
-        return;
-    };
-    // A `.fsproj` buffer describes itself off-cache; anything else reads the
-    // workspace's evaluation of its owning project. `evaluate_buffer` needs the
-    // borrow of `state.docs` released before `state.workspace` is used, hence
-    // the owned text.
-    let buffer = is_project_buffer
-        .then(|| state.docs.get(uri).cloned())
-        .flatten();
-    // The Compile-order fold's own verdict, for the project the workspace knows.
-    // Read *before* the evaluation borrow because it needs `&mut workspace`, and
-    // only when this isn't a buffer describing something other than that project.
-    //
-    // `fold_refusal` folds the project if nothing has yet, and caches the
-    // success — so the request that follows this notification reuses it rather
-    // than paying twice. It is skipped for a `.fsproj` buffer: the fold applies
-    // to the workspace's project, not to unsaved text.
-    let fold = (!is_project_buffer)
-        .then(|| {
-            state
-                .semantic
-                .fold_refusal(&project, &mut state.workspace, &state.docs)
-        })
-        .flatten();
-    // Build the message inside a scope so the immutable `workspace` borrow ends
-    // before we touch `warned_uncertain_projects` and send.
-    let message = {
-        let build_properties = state.workspace.build_properties();
-        let buffer_parse = buffer.as_ref().map(|text| {
-            fsproj_diagnostics::evaluate_buffer(
-                text,
-                &project,
-                state.workspace.env(),
-                &build_properties,
-            )
-        });
-        let evaluation = match &buffer_parse {
-            Some(Ok(parsed)) => ProjectEvaluation::Evaluated {
-                parsed,
-                // An unsaved buffer's multi-target dispatch shape is the
-                // workspace's business, not this one-off parse's; the buffer
-                // path reports only what the buffer itself says.
-                not_an_inner_build: false,
-            },
-            Some(Err(_)) => ProjectEvaluation::Failed,
-            None => state.workspace.project_evaluation(&project),
-        };
-        deferral_message_for(&project, evaluation, fold.as_ref())
-    };
-    report_deferral(conn, state, project, message);
-}
-
-/// Report every fold refusal observed since the last drain.
-///
-/// The fold is reached from request handlers, which cannot talk to the client,
-/// and from edits that happen long after the file was opened — a Compile item
-/// deleted on disk, an edit that makes one straddle the F# 8 indentation
-/// boundary. Draining here, after every dispatched message, is what turns
-/// "a handler quietly fell back" into "the user was told why".
-///
-/// A project whose fold *succeeded* is not reported on: it was removed from the
-/// observation map by the success itself, and its evaluation-level deferrals (if
-/// any) were reported when the buffer was opened.
-fn flush_observed_fold_refusals(state: &mut State, conn: &Connection) {
-    for (project, refusal) in state.semantic.take_observed_fold_refusals() {
+/// Cost is bounded by the open buffers: project evaluation and the fold outcome
+/// are both read from caches, and only an open `.fsproj` is re-parsed — the
+/// same parse its own diagnostics already do on each keystroke.
+fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
+    for (project, buffer) in projects_in_scope(state) {
         let message = {
-            let evaluation = state.workspace.project_evaluation(&project);
-            deferral_message_for(&project, evaluation, Some(&refusal))
+            let build_properties = state.workspace.build_properties();
+            let buffer_parse = buffer.as_ref().map(|text| {
+                fsproj_diagnostics::evaluate_buffer(
+                    text,
+                    &project,
+                    state.workspace.env(),
+                    &build_properties,
+                )
+            });
+            // The fold outcome is *read*, never provoked: recomputing it here
+            // would fold every project on every keystroke to answer a question
+            // nothing has asked. `SemanticState::fold` records it wherever it
+            // does run — a handler, or `ensure_folded` on open.
+            let fold = buffer
+                .is_none()
+                .then(|| state.semantic.observed_fold_refusal(&project).cloned())
+                .flatten();
+            let evaluation = match &buffer_parse {
+                Some(Ok(parsed)) => ProjectEvaluation::Evaluated {
+                    parsed,
+                    // An unsaved buffer's multi-target dispatch shape is the
+                    // workspace's business, not this one-off parse's; the buffer
+                    // path reports only what the buffer itself says.
+                    not_an_inner_build: false,
+                },
+                Some(Err(_)) => ProjectEvaluation::Failed,
+                None => state.workspace.project_evaluation(&project),
+            };
+            deferral_message_for(&project, evaluation, fold.as_ref())
         };
         report_deferral(conn, state, project, message);
     }
+}
+
+/// The projects a refresh reports on, each with the buffer text to describe it
+/// by (`Some` only for an open `.fsproj`, which describes itself).
+///
+/// Deliberately derived from the open buffers rather than from the workspace
+/// roots: a message about a project the user has nothing open from is noise
+/// they cannot act on from where they are.
+fn projects_in_scope(state: &mut State) -> Vec<(PathBuf, Option<String>)> {
+    let mut scope: Vec<(PathBuf, Option<String>)> = Vec::new();
+    let uris: Vec<Url> = state.docs.keys().cloned().collect();
+    for uri in uris {
+        let Ok(path) = uri.to_file_path() else {
+            continue;
+        };
+        let entry = match path_extension(&uri).as_deref() {
+            Some("fsproj") => (path, state.docs.get(&uri).cloned()),
+            Some("fs" | "fsi" | "fsx") => match state.workspace.owning_project(&path) {
+                Some(project) => (project, None),
+                None => continue,
+            },
+            _ => continue,
+        };
+        // An open `.fsproj` and an open source file under it name the same
+        // project; the buffer-bearing entry wins, since it describes the text
+        // the user is actually looking at.
+        match scope.iter_mut().find(|(p, _)| *p == entry.0) {
+            Some(existing) if existing.1.is_none() => existing.1 = entry.1,
+            Some(_) => {}
+            None => scope.push(entry),
+        }
+    }
+    scope
 }
 
 /// Render the message for one project's deferrals, logging the full (uncapped)
@@ -1197,9 +1198,9 @@ fn report_deferral(
     message: Option<String>,
 ) {
     // Canonicalised, because the same project arrives here spelled two ways —
-    // `owning_project`'s literal path from a buffer, and the semantic layer's
-    // canonical key from a drained fold refusal. Keying them apart would send
-    // one project's message twice.
+    // `owning_project`'s literal path from a source buffer, and the semantic
+    // layer's canonical key elsewhere. Keying them apart would send one
+    // project's message twice.
     let project = crate::semantic::canonicalise(&project);
     let Some(message) = message else {
         state.warned_uncertain_projects.remove(&project);
