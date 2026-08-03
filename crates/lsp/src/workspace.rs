@@ -47,6 +47,7 @@ use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::semantic::CanonicalProject;
 use crate::tfm_policy::{self, caller_owns_target_framework, seed_target_framework_global};
 use borzoi_msbuild::ItemMetadataValue;
 
@@ -731,7 +732,17 @@ impl Workspace {
     /// and a capability declined on a fact the explainer cannot see is a
     /// capability that goes away silently.
     pub fn project_evaluation(&mut self, project_path: &Path) -> ProjectEvaluation<'_> {
-        match self.evaluated(project_path) {
+        let key =
+            std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        self.project_evaluation_of(&CanonicalProject::new(&key))
+    }
+
+    /// [`Self::project_evaluation`] for a project whose path is already
+    /// canonical, skipping the `realpath` syscall. The deferral refresh runs
+    /// after every dispatched message and already holds canonical paths, so the
+    /// re-canonicalisation was pure cost there.
+    pub fn project_evaluation_of(&mut self, project: &CanonicalProject) -> ProjectEvaluation<'_> {
+        match self.evaluated_by_key(project.key().to_path_buf(), project.as_path()) {
             Some(evaluated) => ProjectEvaluation::Evaluated {
                 parsed: &evaluated.parsed,
                 not_an_inner_build: evaluated.not_an_inner_build,
@@ -747,11 +758,22 @@ impl Workspace {
     fn evaluated(&mut self, project_path: &Path) -> Option<&EvaluatedProject> {
         let key =
             std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        self.evaluated_by_key(key, project_path)
+    }
+
+    /// [`Self::evaluated`] with the cache key already computed.
+    ///
+    /// `project_path` stays the caller's spelling: it is what the evaluation is
+    /// *anchored on* (`$(MSBuildProjectDirectory)`, every joined `<Compile>`
+    /// include), so substituting the canonical key here would produce item paths
+    /// that match no open buffer on a system where `/tmp` is a symlink.
+    fn evaluated_by_key(&mut self, key: PathBuf, project_path: &Path) -> Option<&EvaluatedProject> {
+        let project_path = project_path.to_path_buf();
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
         self.projects
             .entry(key)
-            .or_insert_with(|| evaluate_project(project_path, env, extra_build_properties))
+            .or_insert_with(|| evaluate_project(&project_path, env, extra_build_properties))
             .as_ref()
     }
 

@@ -11,6 +11,7 @@
 //! loop, with pull-diagnostic capabilities so the only server-initiated
 //! notification in flight is the one under test.
 
+use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
 
@@ -259,6 +260,21 @@ const CERTAIN_PROJECT: &str = r#"<Project>
   </ItemGroup>
 </Project>"#;
 
+/// The temp dir's *real* path.
+///
+/// `TempDir` hands back `/tmp/…`, which on macOS is a symlink to
+/// `/private/tmp/…`. The workspace's membership and cache-key comparisons are
+/// lexical by design (decision C3 in `docs/fsproj-consumption-plan.md` — a
+/// `<Compile>` include must match a file that may not exist on disk yet), so the
+/// two spellings compare unequal and a project would not recognise its own
+/// source. Real editors open real paths; the tests do too, rather than exercise
+/// an aliasing residual that is documented and out of scope here.
+fn real_path(tmp: &TempDir) -> PathBuf {
+    tmp.path()
+        .canonicalize()
+        .expect("the temp dir exists on disk")
+}
+
 /// Lay out a project directory. Returns the temp dir plus the `.fsproj` URI.
 fn project_dir(fsproj: &str) -> (TempDir, Url) {
     let tmp = TempDir::new().unwrap();
@@ -266,12 +282,12 @@ fn project_dir(fsproj: &str) -> (TempDir, Url) {
     std::fs::write(&proj, fsproj).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    let uri = Url::from_file_path(&proj).unwrap();
+    let uri = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     (tmp, uri)
 }
 
 fn source_uri(tmp: &TempDir, name: &str) -> Url {
-    Url::from_file_path(tmp.path().join(name)).unwrap()
+    Url::from_file_path(real_path(tmp).join(name)).unwrap()
 }
 
 #[test]
@@ -363,12 +379,13 @@ fn a_compile_listed_script_is_told_its_projects_problems() {
 </Project>"#,
     )
     .unwrap();
-    std::fs::write(tmp.path().join("Script.fsx"), "let x = 1\n").unwrap();
+    // Two lines, so the fold barrier's cursor position is inside the file.
+    std::fs::write(tmp.path().join("Script.fsx"), "let x = 1\nlet y = x\n").unwrap();
     let script = source_uri(&tmp, "Script.fsx");
 
     let mut server = Server::start();
-    server.open(&script, "let x = 1\n", "fsharp");
-    let messages = server.deferral_messages(&script);
+    server.open(&script, "let x = 1\nlet y = x\n", "fsharp");
+    let messages = server.deferral_messages_after_fold(&script);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].contains("Gone.fs"), "{}", messages[0]);
 }
@@ -475,7 +492,10 @@ fn a_missing_compile_item_is_reported_even_though_the_project_evaluates_cleanly(
 
     let mut server = Server::start();
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
-    let messages = server.deferral_messages(&a);
+    // Reported on the first request that needs the Compile order, not on open:
+    // the fold is never provoked speculatively, so restoring N editor tabs from
+    // an M-file project costs nothing before the user asks for anything.
+    let messages = server.deferral_messages_after_fold(&a);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].contains("Missing.fs"), "{}", messages[0]);
     assert!(messages[0].contains("can't be read"), "{}", messages[0]);
@@ -575,11 +595,11 @@ fn a_persisting_reason_is_reported_only_once() {
 
     let mut server = Server::start();
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
-    assert_eq!(server.deferral_messages(&a).len(), 1);
+    assert_eq!(server.deferral_messages_after_fold(&a).len(), 1);
     for i in 0..3 {
         server.change(&a, &format!("module A\nlet a = {i}\n"));
         assert_eq!(
-            server.deferral_messages(&a),
+            server.deferral_messages_after_fold(&a),
             Vec::<String>::new(),
             "edit {i} re-toasted the same reason"
         );
@@ -591,32 +611,49 @@ fn a_persisting_reason_is_reported_only_once() {
 /// state-derived message buys — the recovery clears the record because the
 /// recomputed message is "nothing", not because anything remembered to undo the
 /// earlier notification.
+///
+/// Driven by watched project changes rather than buffer edits, because that is
+/// how a *disk* change reaches the server; the fold cache is dropped by the
+/// structural invalidation either way.
 #[test]
 fn a_recovered_fold_reports_again_when_it_breaks_the_same_way() {
     let tmp = TempDir::new().unwrap();
+    let proj_path = tmp.path().join("Demo.fsproj");
     std::fs::write(
-        tmp.path().join("Demo.fsproj"),
+        &proj_path,
         r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="B.fs" /></ItemGroup></Project>"#,
     )
     .unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
+    let touch_project = |server: &Server| {
+        server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: proj.clone(),
+                typ: FileChangeType::CHANGED,
+            }],
+        });
+    };
 
     let mut server = Server::start();
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
-    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+    assert_eq!(
+        server.deferral_messages_after_fold(&a),
+        Vec::<String>::new()
+    );
 
     // Break it.
     std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
-    server.change(&a, "module A\nlet a = 2\n");
+    touch_project(&server);
     let first = server.deferral_messages_after_fold(&a);
     assert_eq!(first.len(), 1, "{first:?}");
     assert!(first[0].contains("B.fs"), "{}", first[0]);
 
     // Fix it: the message stops, and the record of it is dropped.
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    server.change(&a, "module A\nlet a = 3\n");
+    touch_project(&server);
     assert_eq!(
         server.deferral_messages_after_fold(&a),
         Vec::<String>::new()
@@ -624,7 +661,7 @@ fn a_recovered_fold_reports_again_when_it_breaks_the_same_way() {
 
     // Break it the same way again: reported, not deduped against the stale one.
     std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
-    server.change(&a, "module A\nlet a = 4\n");
+    touch_project(&server);
     let again = server.deferral_messages_after_fold(&a);
     assert_eq!(
         again, first,
@@ -643,7 +680,7 @@ fn an_open_fsproj_does_not_suppress_its_project_s_fold_refusal() {
     let fsproj = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#;
     std::fs::write(tmp.path().join("Demo.fsproj"), fsproj).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    let proj = Url::from_file_path(tmp.path().join("Demo.fsproj")).unwrap();
+    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
 
     let mut server = Server::start();
@@ -651,7 +688,7 @@ fn an_open_fsproj_does_not_suppress_its_project_s_fold_refusal() {
     server.open(&proj, fsproj, "xml");
     let _ = server.deferral_messages(&proj);
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
-    let messages = server.deferral_messages(&a);
+    let messages = server.deferral_messages_after_fold(&a);
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].contains("Gone.fs"), "{}", messages[0]);
 }
@@ -677,7 +714,7 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
     std::fs::write(&proj_path, sound).unwrap();
     std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
     std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
-    let proj = Url::from_file_path(&proj_path).unwrap();
+    let proj = Url::from_file_path(real_path(&tmp).join("Demo.fsproj")).unwrap();
     let a = source_uri(&tmp, "A.fs");
     let touch_project = |server: &Server| {
         server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {

@@ -69,7 +69,10 @@ fn sibling_rebuild_refreshes_the_assembly_env_after_watched_dll_change() {
         uri: Url::from_file_path(&lib_dll).expect("dll path to URI"),
         typ: FileChangeType::CHANGED,
     }]);
-    assert!(republish.is_empty(), "a DLL change republishes nothing");
+    assert!(
+        republish.republish.is_empty(),
+        "a DLL change republishes nothing"
+    );
 
     let refreshed = state.semantic.assembly_env_for_project(
         &app,

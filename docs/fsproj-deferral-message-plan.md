@@ -200,6 +200,41 @@ untrustworthy.
 `apply_watched_changes` cleared the project memo, so it recorded owners from the
 pre-change Compile lists. Reordered.)
 
+### Paying for the per-dispatch refresh
+
+A seventh round found three costs, no correctness defects — the correctness
+surface had converged.
+
+- **The refresh must not fold.** `ensure_folded` on `didOpen` meant restoring N
+  editor tabs from an M-file project did N×M synchronous reads on the dispatch
+  thread before the user asked for anything (`build_parses` reads each file
+  before consulting the per-file parse cache). Dropped: the fold runs on the
+  first request that genuinely needs the Compile order, and the refresh reports
+  what it recorded. The message's timing moves from "on open" to "when the
+  capability is first used", which is also when the user could notice.
+- **The refresh must not `realpath`.** `fold_outcome` canonicalised twice and
+  `project_evaluation` again — 2–3 syscalls per scoped project per keystroke.
+  `CanonicalProject` carries both spellings so lookups take the key directly.
+  It carries *both* because they are not interchangeable: the key identifies the
+  project in every cache, while the **path must stay as the caller spelled it**,
+  since MSBuild anchors `$(MSBuildProjectDirectory)` and every joined `<Compile>`
+  include on it. Collapsing them (the first attempt) evaluated `/private/tmp/…`
+  for a project the editor opened as `/tmp/…`, and 16 tests caught the resulting
+  item paths matching no open buffer.
+- **Scope recomputes only on structural changes.** `didChangeWatchedFiles` also
+  carries ordinary `.fs`/`.dll`/`.csproj` events — every save, every build — and
+  recomputing then walked every open buffer's ancestors for nothing.
+  `apply_watched_changes` now returns `WatchedChangeEffect { structural,
+  republish }`; the flag is not derivable from the list, since a structural
+  change with no open buffers republishes nothing.
+
+The e2e harness also moved to canonicalised temp paths. macOS `/tmp` is a
+symlink to `/private/tmp`, and the workspace's membership comparison is lexical
+by design (decision C3), so a project did not recognise its own source file.
+Real editors open real paths; the tests now do too, rather than exercise an
+aliasing residual that is documented, pre-existing on `main`, and out of scope
+here.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

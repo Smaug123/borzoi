@@ -1173,38 +1173,15 @@ impl SemanticState {
         self.project_parses.get(&key)
     }
 
-    /// Fold `project` if nothing has yet, so that its outcome is observable via
-    /// [`Self::fold_outcome`]. A success is cached (through the same
-    /// memo [`Self::parses_for_project`] fills), so the request that follows
-    /// pays nothing extra.
-    ///
-    /// Called when the shell has reason to believe a fold outcome is worth
-    /// knowing now — a buffer just opened — rather than on every edit, which
-    /// would fold the whole project repeatedly to answer a question nothing has
-    /// asked yet.
-    pub fn ensure_folded(
-        &mut self,
-        project: &Path,
-        workspace: &mut Workspace,
-        docs: &HashMap<Url, String>,
-    ) {
-        if self.project_parses.contains_key(&canonicalise(project)) {
-            return;
-        }
-        if let Ok(parses) = self.fold(project, workspace, docs) {
-            self.project_parses.insert(canonicalise(project), parses);
-        }
-    }
-
-    /// The one place the fold runs, so that **every** refusal is observed no
+    /// The one place the fold runs, so that **every** outcome is observed no
     /// matter which caller provoked it.
     ///
-    /// The outcome is recorded for [`Self::fold_outcome`] to report.
-    /// Without this, a refusal introduced *after* the file was opened — an edit
-    /// that makes a Compile item straddle the F# 8 indentation boundary, a
-    /// sibling source deleted on disk — would be reached only from a handler,
-    /// which has no connection to the client, and the project would go quiet
-    /// with no message. A success clears any prior observation.
+    /// The outcome is recorded for [`Self::fold_outcome`] to report. Without
+    /// this, a refusal introduced *after* the file was opened — an edit that
+    /// makes a Compile item straddle the F# 8 indentation boundary, a sibling
+    /// source deleted on disk — would be reached only from a handler, which has
+    /// no connection to the client, and the project would go quiet with no
+    /// message. A success clears any prior observation.
     fn fold(
         &mut self,
         project: &Path,
@@ -1232,12 +1209,11 @@ impl SemanticState {
     /// of current state, so a fold that recovers stops being reported *because
     /// there is nothing to report*, not because some other code path remembered
     /// to undo an earlier notification.
-    pub fn fold_outcome(&self, project: &Path) -> FoldOutcome<'_> {
-        match self.observed_fold_refusals.get(&canonicalise(project)) {
+    pub fn fold_outcome(&self, project: &CanonicalProject) -> FoldOutcome<'_> {
+        let key = project.key();
+        match self.observed_fold_refusals.get(key) {
             Some(refusal) => FoldOutcome::Refused(refusal),
-            None if self.project_parses.contains_key(&canonicalise(project)) => {
-                FoldOutcome::Succeeded
-            }
+            None if self.project_parses.contains_key(key) => FoldOutcome::Succeeded,
             None => FoldOutcome::Unknown,
         }
     }
@@ -3059,6 +3035,52 @@ fn read_text(path: &Path, docs: &HashMap<Url, String>) -> Option<String> {
 /// out twice.
 pub fn canonicalise(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A project reference carrying both spellings that matter: the path the
+/// caller found it by, and its [`canonicalise`]d cache key.
+///
+/// The two are not interchangeable, which is the whole reason this type exists.
+/// The **key** identifies the project in every cache (and in the deferral
+/// dedup), so two spellings of one project are one entry. The **path** is what
+/// the project is *evaluated with*, and must stay as the caller spelled it:
+/// MSBuild derives `$(MSBuildProjectDirectory)` from it and joins every
+/// `<Compile>` include against it, so evaluating `/private/tmp/…` when the
+/// editor opened `/tmp/…` yields an item set whose paths match no open buffer.
+///
+/// Carrying both also lets a hot path skip the `realpath` syscall:
+/// [`crate::server`]'s deferral refresh runs after every dispatched message and
+/// looks projects up by key, and doing that naively cost two or three
+/// canonicalisations per scoped project per keystroke.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CanonicalProject {
+    path: PathBuf,
+    key: PathBuf,
+}
+
+impl CanonicalProject {
+    pub fn new(path: &Path) -> Self {
+        CanonicalProject {
+            path: path.to_path_buf(),
+            key: canonicalise(path),
+        }
+    }
+
+    /// The spelling the caller found this project by — what to *evaluate* with.
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The cache key — what to *look up* by.
+    pub fn key(&self) -> &Path {
+        &self.key
+    }
+}
+
+impl std::fmt::Display for CanonicalProject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path.display())
+    }
 }
 
 /// True for an F# signature file (`.fsi`). The extension match is

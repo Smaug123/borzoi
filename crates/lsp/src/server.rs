@@ -46,7 +46,7 @@ use crate::handlers::definition::{
 };
 use crate::project_deferral;
 use crate::publish::PublishState;
-use crate::semantic::SemanticState;
+use crate::semantic::{CanonicalProject, SemanticState};
 use crate::workspace::Workspace;
 use crate::{diagnostics, fsproj_diagnostics};
 
@@ -188,7 +188,7 @@ pub struct State {
     /// [`recompute_deferral_scope`] at the few events that can change it, so the
     /// per-dispatch refresh does no filesystem work. See that function for why
     /// an open `.fsproj` is not in scope on its own account.
-    deferral_scope: Vec<PathBuf>,
+    deferral_scope: Vec<CanonicalProject>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -381,7 +381,7 @@ impl State {
     ///
     /// Pure of IO beyond cache mutation, so it is testable without a
     /// [`Connection`]; the shell does the actual publishing.
-    pub fn apply_watched_changes(&mut self, changes: &[FileEvent]) -> Vec<Url> {
+    pub fn apply_watched_changes(&mut self, changes: &[FileEvent]) -> WatchedChangeEffect {
         let mut structural = false;
         let mut assembly_input = false;
         for change in changes {
@@ -403,12 +403,18 @@ impl State {
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
             self.wants_diagnostic_refresh = true;
-            self.docs.keys().cloned().collect()
+            WatchedChangeEffect {
+                structural: true,
+                republish: self.docs.keys().cloned().collect(),
+            }
         } else {
             if assembly_input {
                 self.semantic.invalidate_assembly_state();
             }
-            Vec::new()
+            WatchedChangeEffect {
+                structural: false,
+                republish: Vec::new(),
+            }
         }
     }
 
@@ -984,6 +990,20 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
     }
 }
 
+/// What a `workspace/didChangeWatchedFiles` batch did to the caches.
+///
+/// The `structural` flag is not derivable from `republish`: a structural change
+/// with no open buffers republishes nothing, and the shell must still recompute
+/// which project owns what. Two facts, so two fields.
+pub struct WatchedChangeEffect {
+    /// A `.fsproj` / `Directory.Build.*` / `global.json` / assets file changed,
+    /// so project evaluation — and with it file→project ownership — may have
+    /// moved.
+    pub structural: bool,
+    /// The open-document URIs whose diagnostics the shell must republish.
+    pub republish: Vec<Url>,
+}
+
 pub fn handle_notification(state: &mut State, conn: &Connection, not: Notification) {
     let _span = tracing::info_span!("lsp.notification", method = %not.method).entered();
     match not.method.as_str() {
@@ -994,19 +1014,6 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
                 recompute_deferral_scope(state);
-                // Fold on open so the newly-visible project's fold outcome is
-                // known state by the time the shell's refresh reports on it —
-                // a project that cannot fold should say so before the user's
-                // first go-to-definition silently under-answers. Later edits
-                // don't re-fold here: the next request that needs the fold
-                // records its outcome, and the refresh picks it up.
-                if let Ok(path) = uri.to_file_path()
-                    && let Some(project) = state.workspace.compiling_project(&path)
-                {
-                    state
-                        .semantic
-                        .ensure_folded(&project, &mut state.workspace, &state.docs);
-                }
             }
         }
         DidChangeTextDocument::METHOD => {
@@ -1041,16 +1048,22 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // buffer through the negotiated delivery path. Push clients
                 // receive new notifications; pull clients read the fresh
                 // project context on their next request.
-                for uri in state.apply_watched_changes(&params.changes) {
-                    publish_diagnostics(conn, state, &uri);
+                let effect = state.apply_watched_changes(&params.changes);
+                for uri in &effect.republish {
+                    publish_diagnostics(conn, state, uri);
                 }
-                // A structural change can move which project compiles a file (a
-                // new `<Compile>` entry, a deleted `.fsproj`), so scope is
-                // recomputed rather than assumed stable — *after*
-                // `apply_watched_changes`, which is what clears the project
-                // memo. Recomputing first would read the pre-change Compile
-                // lists and record the old owner.
-                recompute_deferral_scope(state);
+                // Only a *structural* change can move which project compiles a
+                // file (a new `<Compile>` entry, a deleted `.fsproj`). The batch
+                // also carries ordinary `.fs`/`.dll`/`.csproj` events — every
+                // save, every build — and recomputing on those would walk every
+                // open buffer's ancestors for nothing.
+                //
+                // After `apply_watched_changes`, which is what clears the
+                // project memo: recomputing first would read the pre-change
+                // Compile lists and record the old owner.
+                if effect.structural {
+                    recompute_deferral_scope(state);
+                }
             }
         }
         _ => {}
@@ -1099,8 +1112,14 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 ///
 /// **Everything here is a cached read**, which is what makes per-dispatch
 /// refreshing affordable: the project evaluation is the workspace's memo and the
-/// fold outcome is whatever the last fold recorded. Nothing is evaluated,
-/// parsed, or folded to answer a question nothing has asked.
+/// fold outcome is whatever the last fold recorded, both looked up by an
+/// already-canonical key ([`CanonicalProject`]) so not even a `realpath` syscall
+/// happens. Nothing is evaluated, parsed, or folded to answer a question nothing
+/// has asked — in particular the fold is never *provoked* here, so a project's
+/// refusal is reported on the first request that genuinely needs the Compile
+/// order rather than eagerly on open. Restoring N editor tabs from one M-file
+/// project would otherwise have cost N×M synchronous file reads on the dispatch
+/// thread before the user did anything.
 ///
 /// Scope is the owning project of every open buffer — including an open
 /// `.fsproj`, which is in scope as a *project*, reported from the workspace's
@@ -1115,10 +1134,10 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
         let Some(deferrals) = ({
             // Read, never provoke: recomputing the fold here would fold every
             // project on every keystroke. `SemanticState::fold` records the
-            // outcome wherever it does run — a handler, or `ensure_folded` on
-            // open.
+            // outcome wherever it does run, which is whenever a request
+            // actually needs the Compile order.
             let fold = state.semantic.fold_outcome(&project);
-            let evaluation = state.workspace.project_evaluation(&project);
+            let evaluation = state.workspace.project_evaluation_of(&project);
             // With a clean evaluation and no fold since the inputs changed, we
             // would be about to say "nothing is wrong" on the strength of a
             // fold nobody has run — which would clear a still-valid message and
@@ -1128,7 +1147,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
         }) else {
             continue;
         };
-        report_deferral(conn, state, project, &deferrals);
+        report_deferral(conn, state, &project, &deferrals);
     }
 }
 
@@ -1155,7 +1174,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
 /// rather than being deduped against a message from a previous session with the
 /// file.
 fn recompute_deferral_scope(state: &mut State) {
-    let mut scope: Vec<PathBuf> = Vec::new();
+    let mut scope: Vec<CanonicalProject> = Vec::new();
     let uris: Vec<Url> = state.docs.keys().cloned().collect();
     for uri in uris {
         if !matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
@@ -1169,14 +1188,14 @@ fn recompute_deferral_scope(state: &mut State) {
         let Some(project) = state.workspace.compiling_project(&path) else {
             continue;
         };
-        let project = crate::semantic::canonicalise(&project);
+        let project = CanonicalProject::new(&project);
         if !scope.contains(&project) {
             scope.push(project);
         }
     }
     state
         .warned_uncertain_projects
-        .retain(|project, _| scope.contains(project));
+        .retain(|key, _| scope.iter().any(|p| p.key() == key));
     state.deferral_scope = scope;
 }
 
@@ -1195,26 +1214,30 @@ fn recompute_deferral_scope(state: &mut State) {
 fn report_deferral(
     conn: &Connection,
     state: &mut State,
-    project: PathBuf,
+    project: &CanonicalProject,
     deferrals: &[project_deferral::Deferral],
 ) {
-    let Some(message) = project_deferral::deferral_message(&project, deferrals) else {
-        state.warned_uncertain_projects.remove(&project);
+    // Keyed on the canonical path: the same project reaches this code spelled
+    // two ways — `compiling_project`'s literal path from a source buffer, and
+    // the semantic layer's cache key — and keying them apart would send one
+    // project's message twice. The type carries that so no caller can forget.
+    let Some(message) = project_deferral::deferral_message(project.as_path(), deferrals) else {
+        state.warned_uncertain_projects.remove(project.key());
         return;
     };
-    if state.warned_uncertain_projects.get(&project) == Some(&message) {
+    if state.warned_uncertain_projects.get(project.key()) == Some(&message) {
         return;
     }
     // The toast caps its cause list; the log carries all of them, so a user who
     // reports "it says 'and 12 more'" can be asked for the trace.
     tracing::warn!(
-        project = %project.display(),
+        project = %project,
         deferrals = ?deferrals,
         "declining project-wide features"
     );
     state
         .warned_uncertain_projects
-        .insert(project, message.clone());
+        .insert(project.key().to_path_buf(), message.clone());
     send_notification::<ShowMessage>(
         conn,
         ShowMessageParams {
@@ -2240,8 +2263,9 @@ mod tests {
         );
 
         // Deliver the watched-file change for the project.
-        let republish =
-            state.apply_watched_changes(&[changed(Url::from_file_path(&proj).unwrap())]);
+        let republish = state
+            .apply_watched_changes(&[changed(Url::from_file_path(&proj).unwrap())])
+            .republish;
         assert!(republish.is_empty(), "no open buffers to republish here");
 
         let symbols = state.workspace.symbols_for(&file);
@@ -2257,7 +2281,9 @@ mod tests {
         let open = url("file:///p/Open.fs");
         state.docs.insert(open.clone(), "let x = 1\n".to_string());
 
-        let republish = state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        let republish = state
+            .apply_watched_changes(&[changed(url("file:///p/App.fsproj"))])
+            .republish;
         assert_eq!(
             republish,
             vec![open],
@@ -2277,7 +2303,9 @@ mod tests {
 
         for (uri, typ, expected) in cases {
             let mut state = State::default();
-            let republish = state.apply_watched_changes(&[event(url(uri), typ)]);
+            let republish = state
+                .apply_watched_changes(&[event(url(uri), typ)])
+                .republish;
             assert!(republish.is_empty(), "the test keeps every state unopened");
             assert_eq!(
                 state.wants_diagnostic_refresh, expected,
@@ -2295,7 +2323,9 @@ mod tests {
 
         // An unopened source file changing on disk can't alter an open buffer's
         // lexer/parser diagnostics, so nothing is republished.
-        let republish = state.apply_watched_changes(&[changed(url("file:///p/Other.fs"))]);
+        let republish = state
+            .apply_watched_changes(&[changed(url("file:///p/Other.fs"))])
+            .republish;
         assert!(republish.is_empty());
     }
 
@@ -2307,8 +2337,9 @@ mod tests {
 
         // A *created* source file changes glob-expanded Compile sets, so it
         // takes the structural path (and republishes open buffers).
-        let republish =
-            state.apply_watched_changes(&[event(url("file:///p/New.fs"), FileChangeType::CREATED)]);
+        let republish = state
+            .apply_watched_changes(&[event(url("file:///p/New.fs"), FileChangeType::CREATED)])
+            .republish;
         assert_eq!(republish, vec![open], "source create is structural");
     }
 
@@ -2389,7 +2420,8 @@ mod tests {
         );
 
         let republish = state
-            .apply_watched_changes(&[changed(url("file:///p/sibling/bin/Debug/net10.0/Lib.dll"))]);
+            .apply_watched_changes(&[changed(url("file:///p/sibling/bin/Debug/net10.0/Lib.dll"))])
+            .republish;
         assert!(
             republish.is_empty(),
             "a referenced-assembly change cannot alter an open buffer's \
@@ -2420,7 +2452,8 @@ mod tests {
         state.docs.insert(open.clone(), "<Project />".to_string());
 
         let republish = state
-            .apply_watched_changes(&[event(url("file:///p/Lib.csproj"), FileChangeType::CREATED)]);
+            .apply_watched_changes(&[event(url("file:///p/Lib.csproj"), FileChangeType::CREATED)])
+            .republish;
         assert_eq!(
             republish,
             vec![open],

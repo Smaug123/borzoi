@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc d8e9accad7a02d4c3148f5fa86f2f6b6f4e1fccb0666017281b505ca6bec6cd1 # shrinks to tfm = "net10.0", gated = true
+cc 19027802325d0e911cdeb848404caf5d602b360de72aa6db749ab090b7a2a1b8 # shrinks to count = 3, member = 1
