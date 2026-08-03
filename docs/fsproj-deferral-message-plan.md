@@ -316,6 +316,23 @@ Also from that round: the `tracing::warn!` had come to log the *message*, which
 documented "ask the user for the trace" path carried exactly the `(and N more)`
 the toast did. It logs the deferrals again.
 
+### Dedup is per capability too
+
+A thirteenth round found the last conflation. "What the user last saw" was one
+string, but the two capabilities are independently knowable: with a fold verdict
+carried as unknown, the whole message was retained — including its
+*evaluation-level* clause, which had demonstrably recovered. Reintroducing that
+loss before anything folded was then deduped away as "already reported".
+
+`ProjectReport::shown` is now a map from capability to the clause the user saw
+for it. A capability the current state can decide is replaced or dropped; only
+the fold, and only while `Unknown`, keeps its clause. The toast still states
+`stated` alone — a carried clause is remembered so it is not re-announced when
+the fold settles back to the same verdict, never so it can be restated.
+
+Sequence pinned by `a_recovered_capability_is_forgotten_while_another_stays_unknown`,
+and checked against a reintroduced wholesale-retention rule, which fails it.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

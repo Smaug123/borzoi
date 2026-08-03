@@ -1105,10 +1105,19 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// was rendered, and is the only sound thing to dedupe against: a hidden
 /// record-only change, or a change past the rendered cause cap, would otherwise
 /// re-send a toast identical to the one already on screen.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct ProjectReport {
+    /// The reconciliation record — fresh facts plus anything not currently
+    /// re-derivable. Never shown.
     record: Vec<project_deferral::Deferral>,
-    message: Option<String>,
+    /// The clause the user last saw *for each capability*.
+    ///
+    /// Per capability, not one message, because the two capabilities are
+    /// independently knowable: a fold verdict can be unknowable while a
+    /// reference-edge loss has demonstrably recovered. Keyed as one string, the
+    /// recovered one could not be forgotten without also forgetting the
+    /// unknowable one — so reintroducing it went unreported.
+    shown: HashMap<project_deferral::DeferredCapability, String>,
 }
 
 /// Bring the client's picture of what borzoi is declining, and why, up to date
@@ -1282,51 +1291,59 @@ fn report_deferral(
     // Rendered from `stated`, recorded as `record`: a fold verdict carried over
     // an invalidation may suppress a repeat, but must never be *asserted* in a
     // fresh toast — it describes inputs that have since changed.
-    let fresh_message = project_deferral::deferral_message(project.as_path(), reconciled.stated());
-    // Kept for the log below, which must carry every cause rather than the
-    // toast's truncation of them.
     let stated = reconciled.stated().to_vec();
     let record = reconciled.into_record();
-    let last_shown = state
+    let previously_shown = state
         .warned_uncertain_projects
         .get(project.key())
-        .and_then(|prev| prev.message.clone());
+        .map(|prev| prev.shown.clone())
+        .unwrap_or_default();
 
-    // Send only when the *words* change. A record-only change (a hidden carried
-    // verdict resolving) or a change past the rendered cause cap leaves the user
-    // looking at the same toast, and re-sending it is noise.
-    let resend = fresh_message.is_some() && fresh_message != last_shown;
+    // What the user is now looking at, per capability. A capability the current
+    // state can decide is replaced (or dropped, on recovery); one it cannot —
+    // only ever the fold, and only while it is `Unknown` — keeps the clause
+    // already on screen. Keyed per capability so a *recovered* capability is
+    // forgotten even while another stays unknowable; sharing one key meant
+    // reintroducing the recovered loss was deduped away as "already reported".
+    let mut shown: HashMap<project_deferral::DeferredCapability, String> = stated
+        .iter()
+        .map(|deferral| (deferral.capability(), deferral.clause()))
+        .collect();
+    if !project_deferral::fold_verdict_known_for(&record, &stated)
+        && let Some(carried) =
+            previously_shown.get(&project_deferral::DeferredCapability::ProjectFold)
+    {
+        shown.insert(
+            project_deferral::DeferredCapability::ProjectFold,
+            carried.clone(),
+        );
+    }
 
-    // What the user is now looking at. When there is nothing to state but the
-    // project is still in some declining or unknown state, the *previous* toast
-    // is still on screen and remains the thing to dedupe against — clearing it
-    // here would re-send the identical message as soon as the state resolved
-    // back. Only a genuine recovery (an empty record) wipes it.
-    let showing = match (&fresh_message, record.is_empty()) {
-        (Some(_), _) => fresh_message.clone(),
-        (None, false) => last_shown,
-        (None, true) => None,
-    };
+    // Send when any capability's news has changed. The message states only what
+    // is *stated* — never a carried clause, which describes inputs that have
+    // since changed — even though `shown` remembers the carried one so it is not
+    // re-announced when the fold settles back to the same verdict.
+    let resend = shown != previously_shown
+        && stated
+            .iter()
+            .any(|d| previously_shown.get(&d.capability()) != Some(&d.clause()));
 
-    let report = ProjectReport {
-        record,
-        message: showing,
-    };
+    let report = ProjectReport { record, shown };
     if state.warned_uncertain_projects.get(project.key()) == Some(&report) {
         return;
     }
-    if report.record.is_empty() && report.message.is_none() {
+    if report.record.is_empty() && report.shown.is_empty() {
         state.warned_uncertain_projects.remove(project.key());
     } else {
         state
             .warned_uncertain_projects
             .insert(project.key().to_path_buf(), report);
     }
-    if resend && let Some(message) = fresh_message {
+    if resend && let Some(message) = project_deferral::deferral_message(project.as_path(), &stated)
+    {
         // The toast caps its cause list at `MAX_RENDERED_CAUSES`; the log
         // carries the *deferrals*, so a user who reports "it says 'and 12 more'"
         // can be asked for the trace and the omitted causes are actually there.
-        // Logging the message instead would repeat the same truncation.
         tracing::warn!(
             project = %project,
             deferrals = ?stated,

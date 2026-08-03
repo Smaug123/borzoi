@@ -136,7 +136,7 @@ impl ProjectEvaluation<'_> {
 /// multi-project walk (it must not pin the project memo) — as an input to
 /// reporting. That is a new axis with a real cost, not a fix to this one, and
 /// is tracked in `docs/fsproj-deferral-message-plan.md`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeferredCapability {
     /// The Compile-order fold. Without it there is no cross-file name
     /// resolution: go-to-definition, find-references, hover and
@@ -293,6 +293,21 @@ impl Deferral {
 
     pub fn causes(&self) -> &Causes {
         &self.causes
+    }
+
+    /// This deferral's sentence, as it appears in the toast.
+    ///
+    /// Exposed because dedup is **per capability**: the caller records the
+    /// clause the user last saw for each one, which is the only way to decide
+    /// independently whether *this* capability's news has changed. A whole
+    /// message cannot answer that — two capabilities share it, and one of them
+    /// may be unknowable while the other has demonstrably recovered.
+    pub fn clause(&self) -> String {
+        format!(
+            "{} — {}.",
+            self.capability.consequence(),
+            self.causes.render()
+        )
     }
 }
 
@@ -579,6 +594,21 @@ pub fn reconcile(
     }
 }
 
+/// Whether a reconciled pair still carries an unknowable fold verdict — i.e.
+/// whether `record` holds a `ProjectFold` claim that `stated` could not make.
+///
+/// The caller-side companion to [`fold_verdict_known`], for a caller holding the
+/// reconciliation output rather than the inputs.
+pub fn fold_verdict_known_for(record: &[Deferral], stated: &[Deferral]) -> bool {
+    let carried = record
+        .iter()
+        .any(|d| d.capability() == DeferredCapability::ProjectFold)
+        && !stated
+            .iter()
+            .any(|d| d.capability() == DeferredCapability::ProjectFold);
+    !carried
+}
+
 /// Whether the *evaluation* alone declines the Compile-order fold — the gate
 /// `semantic::build_parses` applies before it reads any source. Defined in terms
 /// of [`deferrals`] so that a project which declines here always has a message,
@@ -607,13 +637,7 @@ pub fn deferral_message(project: &Path, deferrals: &[Deferral]) -> Option<String
 
     let body = deferrals
         .iter()
-        .map(|deferral| {
-            format!(
-                "{} — {}.",
-                deferral.capability.consequence(),
-                deferral.causes.render()
-            )
-        })
+        .map(Deferral::clause)
         .collect::<Vec<_>>()
         .join(" ");
     Some(format!("{name}: {body}"))

@@ -1030,3 +1030,65 @@ fn aliased_spellings_of_one_project_are_one_project() {
         );
     }
 }
+
+/// A capability that has *recovered* is forgotten even while another stays
+/// unknowable, so reintroducing it is reported again.
+///
+/// The reviewer's four steps, with no fold after the first: report an
+/// unreadable Compile item; replace it with a `<ProjectReference Remove>`;
+/// remove that; add it back. The edge loss is fully knowable from the
+/// evaluation at every step, so its return must be announced — even though the
+/// fold verdict has been unknowable throughout, and one shared "last message"
+/// would have kept the second occurrence deduped away.
+#[test]
+fn a_recovered_capability_is_forgotten_while_another_stays_unknown() {
+    let tmp = TempDir::new().unwrap();
+    let proj_path = real_path(&tmp).join("Demo.fsproj");
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let proj = Url::from_file_path(&proj_path).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+    let write_and_notify = |server: &Server, body: &str| {
+        std::fs::write(&proj_path, body).unwrap();
+        server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: proj.clone(),
+                typ: FileChangeType::CHANGED,
+            }],
+        });
+    };
+    const MISSING_ITEM: &str = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#;
+    const EDGE_LOSS: &str = r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#;
+    const CLEAN: &str = r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#;
+
+    std::fs::write(&proj_path, MISSING_ITEM).unwrap();
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let fold_refusal = server.deferral_messages_after_fold(&a);
+    assert_eq!(fold_refusal.len(), 1, "{fold_refusal:?}");
+    assert!(fold_refusal[0].contains("Gone.fs"), "{}", fold_refusal[0]);
+
+    // From here on nothing folds, so the fold verdict stays unknowable.
+    write_and_notify(&server, EDGE_LOSS);
+    let first_edge = server.deferral_messages(&a);
+    assert_eq!(first_edge.len(), 1, "{first_edge:?}");
+    assert!(
+        first_edge[0].contains("<ProjectReference>"),
+        "{}",
+        first_edge[0]
+    );
+
+    write_and_notify(&server, CLEAN);
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+
+    write_and_notify(&server, EDGE_LOSS);
+    assert_eq!(
+        server.deferral_messages(&a),
+        first_edge,
+        "the recovered edge loss returned and must be reported again"
+    );
+}
