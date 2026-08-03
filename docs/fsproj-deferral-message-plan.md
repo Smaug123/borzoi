@@ -179,6 +179,47 @@ reporting an unrelated neighbour's problems against a script that has no project
   should use it; `owning_project` answers the narrower "whose directory encloses
   it?".
 
+### The fold outcome is three-valued
+
+A sixth round found the recorded fold outcome surviving invalidation: after
+reporting an unreadable `Missing.fs`, fixing the project and re-evaluating left
+the *clean* new evaluation paired with the *stale* refusal, re-sending a warning
+that named a file the project no longer mentioned.
+
+`FoldOutcome` is now `Succeeded | Refused | Unknown`, and every invalidation
+drops back to `Unknown`. That third state is load-bearing in both directions:
+treating it as success clears a still-valid message and re-sends it the moment
+anything folds; treating it as failure re-reports a problem that may already be
+fixed. So `speaks_for_the_fold` tells the caller when an *empty* deferral list
+may be trusted to clear a message — everything except "clean evaluation, no fold
+since the inputs changed", where we make no claim at all. An evaluation-level
+decline is knowable without folding and is always reported; only the silence is
+untrustworthy.
+
+(The same round found `recompute_deferral_scope` running *before*
+`apply_watched_changes` cleared the project memo, so it recorded owners from the
+pre-change Compile lists. Reordered.)
+
+## Known coverage limit: graph-level reference suppression
+
+`ProjectReferenceEdges` is reported from the entry project's own evaluation. The
+compile-closure graph walk suppresses edges **per node**, on two facts that
+input does not carry:
+
+- a **later target framework** of a multi-targeted project — the walk evaluates
+  additional/seeded TFMs, so a clean first TFM hides an uncertain second one;
+- a **transitive** node — if open project A references B and *B's* reference
+  list is untrustworthy, A's `AssemblyEnv` loses C while A itself is clean, and
+  with no B source open nobody is told.
+
+Both are **under-reporting, never mis-reporting**: nothing false is said, but a
+user can lose a reference edge in silence. Closing them needs the graph's own
+per-node verdict as an input to reporting, which means running
+`Workspace::project_graph` — a deliberately *off-cache* multi-project walk, since
+it must not pin the project memo — on a path that currently touches nothing but
+memos. That is a new axis with a real cost, not a fix to this one, and is left
+here rather than done.
+
 Two shapes carry the rest of the enforcement:
 
 - **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /

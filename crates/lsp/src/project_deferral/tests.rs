@@ -28,7 +28,7 @@ fn certain_project() -> ParsedProject {
     )
     .expect("the baseline project parses");
     assert!(
-        deferrals(evaluated(&parsed), None).is_empty(),
+        deferrals(evaluated(&parsed), FoldOutcome::Unknown).is_empty(),
         "the baseline must defer nothing, or every test below is measuring the baseline"
     );
     parsed
@@ -54,7 +54,7 @@ fn compile_cause(kind: CompileItemUncertaintyCauseKind) -> CompileItemUncertaint
 fn message_for(parsed: &ParsedProject) -> Option<String> {
     deferral_message(
         Path::new("/w/Demo.fsproj"),
-        &deferrals(evaluated(parsed), None),
+        &deferrals(evaluated(parsed), FoldOutcome::Unknown),
     )
 }
 
@@ -261,7 +261,7 @@ mod properties {
         /// pre-existing code violated on every real project in the census.
         #[test]
         fn a_declined_capability_always_produces_a_message(parsed in arb_project()) {
-            let ds = deferrals(evaluated(&parsed), None);
+            let ds = deferrals(evaluated(&parsed), FoldOutcome::Unknown);
             let message = deferral_message(Path::new("/w/Demo.fsproj"), &ds);
             prop_assert_eq!(!ds.is_empty(), message.is_some());
             if let Some(message) = message {
@@ -290,7 +290,7 @@ mod properties {
         /// nothing.
         #[test]
         fn every_deferral_names_at_least_one_cause(parsed in arb_project()) {
-            for d in deferrals(evaluated(&parsed), None) {
+            for d in deferrals(evaluated(&parsed), FoldOutcome::Unknown) {
                 // Recorded means non-empty, and every phrase says something.
                 if let Causes::Recorded(causes) = d.causes() {
                     prop_assert!(!causes.is_empty());
@@ -309,7 +309,7 @@ mod properties {
             let eval = evaluated(&parsed);
             prop_assert_eq!(
                 evaluation_declines_project_fold(eval),
-                deferrals(eval, None)
+                deferrals(eval, FoldOutcome::Unknown)
                     .iter()
                     .any(|d| d.capability() == DeferredCapability::ProjectFold)
             );
@@ -330,7 +330,7 @@ mod properties {
             parsed.items_uncertain = false;
             parsed.define_constants_uncertain = false;
             parsed.project_references_uncertain = false;
-            prop_assert!(deferrals(evaluated(&parsed), None).is_empty());
+            prop_assert!(deferrals(evaluated(&parsed), FoldOutcome::Unknown).is_empty());
             prop_assert!(message_for(&parsed).is_none());
         }
     }
@@ -423,7 +423,7 @@ mod properties {
 
 #[test]
 fn an_unevaluable_project_is_reported_rather_than_ignored() {
-    let ds = deferrals(ProjectEvaluation::Failed, None);
+    let ds = deferrals(ProjectEvaluation::Failed, FoldOutcome::Unknown);
     let message = deferral_message(Path::new("/w/Demo.fsproj"), &ds).expect("failure is reported");
     assert!(message.contains("Demo.fsproj"), "{message}");
     assert!(message.contains("could not be evaluated"), "{message}");
@@ -462,7 +462,7 @@ fn duplicate_causes_are_reported_once() {
     });
     parsed.compile_item_uncertainties =
         vec![compile_cause(kind.clone()), compile_cause(kind.clone())];
-    let ds = deferrals(evaluated(&parsed), None);
+    let ds = deferrals(evaluated(&parsed), FoldOutcome::Unknown);
     assert_eq!(ds[0].causes().recorded().len(), 1, "{:?}", ds[0].causes());
 }
 
@@ -530,7 +530,7 @@ fn define_uncertainty_alone_declines_and_explains() {
 fn a_causeless_reference_deferral_states_the_absence() {
     let mut parsed = certain_project();
     parsed.project_references_uncertain = true;
-    let ds = deferrals(evaluated(&parsed), None);
+    let ds = deferrals(evaluated(&parsed), FoldOutcome::Unknown);
     assert_eq!(ds.len(), 1);
     assert_eq!(
         ds[0].capability(),
@@ -566,7 +566,7 @@ fn a_structural_reference_deferral_borrows_the_compile_cause() {
             },
         )),
     ];
-    let ds = deferrals(evaluated(&parsed), None);
+    let ds = deferrals(evaluated(&parsed), FoldOutcome::Unknown);
     let refs = ds
         .iter()
         .find(|d| d.capability() == DeferredCapability::ProjectReferenceEdges)
@@ -608,7 +608,7 @@ fn a_compile_only_choose_is_not_blamed_for_dropped_edges() {
         vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
             StructuralCompileItemUncertainty::UnsupportedChoose,
         ))];
-    let ds = deferrals(evaluated(&parsed), None);
+    let ds = deferrals(evaluated(&parsed), FoldOutcome::Unknown);
     let refs = ds
         .iter()
         .find(|d| d.capability() == DeferredCapability::ProjectReferenceEdges)
@@ -647,7 +647,7 @@ fn the_outer_dispatch_build_reports_its_dropped_edges() {
         not_an_inner_build: true,
     };
     assert!(eval.drops_reference_edges());
-    let ds = deferrals(eval, None);
+    let ds = deferrals(eval, FoldOutcome::Unknown);
     assert_eq!(ds.len(), 1, "{ds:?}");
     assert_eq!(
         ds[0].capability(),
@@ -672,7 +672,7 @@ fn the_edge_verdict_and_the_reported_capability_are_one_fact() {
             };
             assert_eq!(
                 eval.drops_reference_edges(),
-                deferrals(eval, None)
+                deferrals(eval, FoldOutcome::Unknown)
                     .iter()
                     .any(|d| d.capability() == DeferredCapability::ProjectReferenceEdges),
                 "uncertain={uncertain} outer={outer}"
@@ -715,7 +715,7 @@ fn a_fold_stage_refusal_is_reported_with_its_own_reason() {
         ),
     ];
     for (refusal, needle) in cases {
-        let ds = deferrals(evaluated(&parsed), Some(refusal));
+        let ds = deferrals(evaluated(&parsed), FoldOutcome::Refused(refusal));
         assert_eq!(ds.len(), 1, "{refusal:?}: {ds:?}");
         assert_eq!(ds[0].capability(), DeferredCapability::ProjectFold);
         let message =
@@ -739,7 +739,10 @@ fn the_evaluation_caused_fold_refusal_does_not_double_report() {
         vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
             StructuralCompileItemUncertainty::UnsupportedChoose,
         ))];
-    let ds = deferrals(evaluated(&parsed), Some(&FoldRefusal::ProjectEvaluation));
+    let ds = deferrals(
+        evaluated(&parsed),
+        FoldOutcome::Refused(&FoldRefusal::ProjectEvaluation),
+    );
     assert_eq!(ds.len(), 1, "{ds:?}");
     assert_eq!(ds[0].causes().recorded().len(), 1, "{:?}", ds[0].causes());
     assert!(ds[0].causes().recorded()[0].contains("Choose"));
@@ -749,5 +752,51 @@ fn the_evaluation_caused_fold_refusal_does_not_double_report() {
 #[test]
 fn a_successful_fold_adds_no_deferral() {
     let parsed = certain_project();
-    assert!(deferrals(evaluated(&parsed), None).is_empty());
+    assert!(deferrals(evaluated(&parsed), FoldOutcome::Unknown).is_empty());
+}
+
+/// A recorded fold outcome describes the inputs it ran on. When those change,
+/// the outcome is [`FoldOutcome::Unknown`] — a third state, not a synonym for
+/// success — and a clean evaluation paired with it is *not* a licence to say
+/// "nothing is wrong".
+///
+/// Getting this wrong reads badly in both directions: treating Unknown as
+/// success clears a still-valid message and re-sends it the moment anything
+/// folds, and treating it as failure re-reports a problem that may already be
+/// fixed.
+#[test]
+fn an_unknown_fold_makes_no_claim_about_a_clean_project() {
+    let parsed = certain_project();
+    let eval = evaluated(&parsed);
+    assert!(deferrals(eval, FoldOutcome::Unknown).is_empty());
+    assert!(
+        !speaks_for_the_fold(eval, FoldOutcome::Unknown),
+        "an empty deferral list from an unfolded project must not clear a message"
+    );
+    // A fold that has actually run does speak, either way.
+    assert!(speaks_for_the_fold(eval, FoldOutcome::Succeeded));
+    assert!(speaks_for_the_fold(
+        eval,
+        FoldOutcome::Refused(&FoldRefusal::ParserPanic {
+            file: PathBuf::from("/w/A.fs")
+        })
+    ));
+}
+
+/// …but an evaluation-level decline is knowable without folding, so it is
+/// always reported. Only the *silence* is untrustworthy.
+#[test]
+fn an_unknown_fold_still_reports_what_the_evaluation_declines() {
+    let mut parsed = certain_project();
+    parsed.items_uncertain = true;
+    parsed.compile_item_uncertainties =
+        vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
+            StructuralCompileItemUncertainty::UnsupportedChoose,
+        ))];
+    let eval = evaluated(&parsed);
+    assert!(
+        speaks_for_the_fold(eval, FoldOutcome::Unknown),
+        "an evaluation-level decline needs no fold to be certain of"
+    );
+    assert!(!deferrals(eval, FoldOutcome::Unknown).is_empty());
 }

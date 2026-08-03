@@ -7,9 +7,10 @@
 //! simply stop working.
 //!
 //! This module is the single place that decides *both* halves of that: which
-//! capabilities are declined, and what to tell the user about each. The
-//! deciding consumers and the message read the same [`deferrals`] call, so they
-//! cannot drift apart — which they had, entirely: a census over a 401-project
+//! capabilities are declined, and what to tell the user about each — for the
+//! declines it covers ([`DeferredCapability`] documents the one known coverage
+//! limit). The deciding consumers and the message read the same [`deferrals`]
+//! call, so they cannot drift apart — which they had, entirely: a census over a 401-project
 //! sample of real `.fsproj` files found three that declined the fold and *zero*
 //! that produced the message, because the message read one cause channel
 //! (`compile_condition_uncertainties`) that none of the three populated. See
@@ -113,6 +114,27 @@ impl ProjectEvaluation<'_> {
 /// `ParsedProject::package_references_uncertain` does not: nothing in
 /// `crates/lsp` reads it, so no capability is lost and there is nothing to
 /// explain. Announcing it would be a claim we cannot back.
+///
+/// # Known coverage limit: graph-level reference suppression
+///
+/// [`Self::ProjectReferenceEdges`] is reported from the *entry project's own*
+/// evaluation. The compile-closure graph walk suppresses edges per node, on
+/// facts this input does not carry:
+///
+/// - a **later target framework** of a multi-targeted project (the walk
+///   evaluates additional/seeded TFMs; a clean first TFM hides an uncertain
+///   second one), and
+/// - a **transitive** node — if an open project A references B and *B's*
+///   reference list is untrustworthy, A's `AssemblyEnv` loses C while A itself
+///   is clean.
+///
+/// Both are under-reporting, never mis-reporting: nothing false is said, but a
+/// user can lose a reference edge without being told. Closing them needs the
+/// graph's own per-node verdict, which means running
+/// [`crate::workspace::Workspace::project_graph`] — a deliberately *off-cache*
+/// multi-project walk (it must not pin the project memo) — as an input to
+/// reporting. That is a new axis with a real cost, not a fix to this one, and
+/// is tracked in `docs/fsproj-deferral-message-plan.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeferredCapability {
     /// The Compile-order fold. Without it there is no cross-file name
@@ -295,6 +317,25 @@ impl FoldRefusal {
     }
 }
 
+/// What the Compile-order fold has most recently done for a project.
+///
+/// Three-valued because "no fold has run since the inputs changed" is not
+/// "the fold succeeded". Collapsing them either re-reports a stale refusal
+/// against a project that has since been fixed, or silently claims a project
+/// folds when nothing has tried — the absent-versus-unread confusion this
+/// codebase keeps paying for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FoldOutcome<'a> {
+    /// The most recent fold succeeded.
+    Succeeded,
+    /// The most recent fold refused, for this reason.
+    Refused(&'a FoldRefusal),
+    /// No fold has run since this project's inputs last changed. Nothing is
+    /// claimed either way — see [`deferrals`], which declines to speak rather
+    /// than guess.
+    Unknown,
+}
+
 /// Every capability the LSP declines for this project, with its causes. Empty
 /// exactly when the project is fully usable.
 ///
@@ -302,12 +343,12 @@ impl FoldRefusal {
 /// is a project that has something to report, by construction rather than by
 /// discipline.
 ///
-/// `fold` is `semantic::build_parses`'s verdict when the caller has run it, and
-/// `None` when it has not (nothing has needed the fold yet, or the caller is
-/// describing an unsaved buffer rather than the workspace's project). It can
-/// only *add* a deferral: the fold never succeeds on an evaluation this
-/// function already declines.
-pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec<Deferral> {
+/// `fold` is what the Compile-order fold most recently did. It can only *add* a
+/// deferral: the fold never succeeds on an evaluation this function already
+/// declines. [`FoldOutcome::Unknown`] adds nothing — see
+/// [`speaks_for_the_fold`] for why the *caller* must also decline to clear a
+/// previous message on it.
+pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Deferral> {
     let mut out = Vec::new();
 
     let (parsed, fold_declined_on_evaluation) = match eval {
@@ -347,7 +388,10 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec
                     .map(render_define_cause),
             );
         out.push(Deferral::new(DeferredCapability::ProjectFold, causes));
-    } else if let Some(cause) = fold.and_then(FoldRefusal::cause) {
+    } else if let Some(cause) = match fold {
+        FoldOutcome::Refused(refusal) => refusal.cause(),
+        FoldOutcome::Succeeded | FoldOutcome::Unknown => None,
+    } {
         // The evaluation was fine but the fold still refused, on a fact only
         // reading the sources could reveal. Same lost capability, so the same
         // deferral — the user does not care which stage declined.
@@ -387,6 +431,21 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec
     out
 }
 
+/// Whether a reported set of deferrals is a *complete* account of this project,
+/// i.e. whether its absence of a fold deferral may be trusted to clear a
+/// previously-sent message.
+///
+/// `false` exactly when the evaluation is clean and the fold outcome is
+/// [`FoldOutcome::Unknown`]: we would then be about to say "nothing is wrong"
+/// on the strength of a fold nobody has run. A caller must make no claim there
+/// — leave whatever was last reported standing until a fold settles it.
+///
+/// The asymmetry is deliberate. An evaluation-level decline is knowable without
+/// folding, so it is always reported; only the *silence* is untrustworthy.
+pub fn speaks_for_the_fold(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> bool {
+    !matches!(fold, FoldOutcome::Unknown) || evaluation_declines_project_fold(eval)
+}
+
 /// Whether the *evaluation* alone declines the Compile-order fold — the gate
 /// `semantic::build_parses` applies before it reads any source. Defined in terms
 /// of [`deferrals`] so that a project which declines here always has a message,
@@ -396,7 +455,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec
 /// its own, which it reports as a [`FoldRefusal`] and which [`deferrals`] folds
 /// into the same capability.
 pub fn evaluation_declines_project_fold(eval: ProjectEvaluation<'_>) -> bool {
-    deferrals(eval, None)
+    deferrals(eval, FoldOutcome::Unknown)
         .iter()
         .any(|d| d.capability == DeferredCapability::ProjectFold)
 }

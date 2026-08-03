@@ -1041,13 +1041,16 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // buffer through the negotiated delivery path. Push clients
                 // receive new notifications; pull clients read the fresh
                 // project context on their next request.
-                // A structural change can move which project compiles a file
-                // (a new `<Compile>` entry, a deleted `.fsproj`), so scope is
-                // recomputed rather than assumed stable.
-                recompute_deferral_scope(state);
                 for uri in state.apply_watched_changes(&params.changes) {
                     publish_diagnostics(conn, state, &uri);
                 }
+                // A structural change can move which project compiles a file (a
+                // new `<Compile>` entry, a deleted `.fsproj`), so scope is
+                // recomputed rather than assumed stable — *after*
+                // `apply_watched_changes`, which is what clears the project
+                // memo. Recomputing first would read the pre-change Compile
+                // lists and record the old owner.
+                recompute_deferral_scope(state);
             }
         }
         _ => {}
@@ -1109,14 +1112,21 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// telling a `.fs` buffer why its project went quiet.
 fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
     for project in state.deferral_scope.clone() {
-        let deferrals = {
+        let Some(deferrals) = ({
             // Read, never provoke: recomputing the fold here would fold every
             // project on every keystroke. `SemanticState::fold` records the
             // outcome wherever it does run — a handler, or `ensure_folded` on
             // open.
-            let fold = state.semantic.observed_fold_refusal(&project).cloned();
+            let fold = state.semantic.fold_outcome(&project);
             let evaluation = state.workspace.project_evaluation(&project);
-            project_deferral::deferrals(evaluation, fold.as_ref())
+            // With a clean evaluation and no fold since the inputs changed, we
+            // would be about to say "nothing is wrong" on the strength of a
+            // fold nobody has run — which would clear a still-valid message and
+            // re-send it the moment something folds. Make no claim instead.
+            project_deferral::speaks_for_the_fold(evaluation, fold)
+                .then(|| project_deferral::deferrals(evaluation, fold))
+        }) else {
+            continue;
         };
         report_deferral(conn, state, project, &deferrals);
     }

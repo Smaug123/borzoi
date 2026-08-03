@@ -655,3 +655,76 @@ fn an_open_fsproj_does_not_suppress_its_project_s_fold_refusal() {
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].contains("Gone.fs"), "{}", messages[0]);
 }
+
+/// A recorded fold refusal must not outlive the inputs that produced it.
+///
+/// The dangerous window is a *clean* evaluation paired with a stale refusal:
+/// the refusal would then be reported as if it described the project as it is
+/// now. Constructing it takes three steps, because a standing identical message
+/// would otherwise dedupe the wrong report away — the intermediate
+/// evaluation-level problem is what displaces it.
+#[test]
+fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
+    let tmp = TempDir::new().unwrap();
+    let proj_path = tmp.path().join("Demo.fsproj");
+    let sound = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="B.fs" /></ItemGroup></Project>"#;
+    let gated = r#"<Project>
+  <ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props')))">
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+  </ItemGroup>
+</Project>"#;
+    std::fs::write(&proj_path, sound).unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    let proj = Url::from_file_path(&proj_path).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+    let touch_project = |server: &Server| {
+        server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: proj.clone(),
+                typ: FileChangeType::CHANGED,
+            }],
+        });
+    };
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+
+    // 1. Break the fold and let it be reported: a refusal is now on record.
+    std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
+    server.change(&a, "module A\nlet a = 2\n");
+    let broken = server.deferral_messages_after_fold(&a);
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    assert!(broken[0].contains("B.fs"), "{}", broken[0]);
+
+    // 2. Introduce an evaluation-level problem, which displaces that message —
+    //    so a later wrong report can't hide behind the dedup.
+    std::fs::write(&proj_path, gated).unwrap();
+    touch_project(&server);
+    let gated_messages = server.deferral_messages(&a);
+    assert_eq!(gated_messages.len(), 1, "{gated_messages:?}");
+    assert!(
+        gated_messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        gated_messages[0]
+    );
+
+    // 3. Fix everything. Nothing has folded since the invalidation, so the
+    //    recorded refusal describes inputs that no longer exist: it must not be
+    //    spoken for, and in particular must not resurface naming `B.fs`.
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    std::fs::write(&proj_path, sound).unwrap();
+    touch_project(&server);
+    assert_eq!(
+        server.deferral_messages(&a),
+        Vec::<String>::new(),
+        "a refusal from before the invalidation must not be re-reported"
+    );
+    // …and once something does fold, the project is genuinely fine.
+    assert_eq!(
+        server.deferral_messages_after_fold(&a),
+        Vec::<String>::new()
+    );
+}

@@ -32,7 +32,7 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
-use crate::project_deferral::FoldRefusal;
+use crate::project_deferral::{FoldOutcome, FoldRefusal};
 use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
@@ -227,17 +227,21 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
     project_parses: HashMap<PathBuf, ProjectParses>,
-    /// The last fold outcome per project, keyed by canonicalised project path:
-    /// an entry means the most recent fold refused, its absence means the most
-    /// recent fold succeeded or none has run.
+    /// The last fold outcome per project, keyed by canonicalised project path.
+    /// **Absence means [`FoldOutcome::Unknown`]** — no fold has run since the
+    /// inputs last changed — which is a third state, not a synonym for success.
     ///
     /// Written **only** by [`Self::fold`], the one place the fold runs, so it
-    /// cannot disagree with what the fold actually did. Read (not drained) by
-    /// [`Self::observed_fold_refusal`], which is what lets the shell's message
-    /// be a function of current state rather than of the event that provoked
-    /// it: a fold that starts succeeding removes its entry, and the message
-    /// recomputes to "nothing to report" without anyone having to remember to
-    /// clear it.
+    /// cannot disagree with what the fold actually did, and cleared by every
+    /// invalidation, because an invalidated input means the recorded outcome
+    /// describes a project that no longer exists in that form. Conflating that
+    /// with "succeeded" would let a stale refusal be re-reported against a
+    /// freshly-evaluated project; conflating it with "refused" would report a
+    /// problem that may already be fixed.
+    ///
+    /// Read (not drained) by [`Self::fold_outcome`], which is what lets the
+    /// shell's message be a function of current state rather than of the event
+    /// that provoked it.
     observed_fold_refusals: HashMap<PathBuf, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
@@ -456,6 +460,9 @@ impl SemanticState {
         let key = canonicalise(project);
         self.project_parses.remove(&key);
         self.resolved_projects.remove(&key);
+        // The recorded fold outcome described the *old* inputs; drop it back to
+        // `FoldOutcome::Unknown` rather than let it speak for the new ones.
+        self.observed_fold_refusals.remove(&key);
         // This edit may have staled an open later buffer's tokens; the client
         // only re-requests the buffer it touched, so owe a workspace refresh.
         self.wants_refresh = true;
@@ -469,6 +476,7 @@ impl SemanticState {
     /// which editor text-sync never can.
     pub fn invalidate_all(&mut self) {
         self.project_parses.clear();
+        self.observed_fold_refusals.clear();
         self.file_parses.clear();
         self.resolved_projects.clear();
         self.prev_resolved.clear();
@@ -534,6 +542,12 @@ impl SemanticState {
     /// inspecting the live cache avoids re-evaluating projects from disk.
     pub fn invalidate_file(&mut self, file: &Path) {
         let target = lexically_normalize(file);
+        // A *refused* project has no `project_parses` entry at all, so the
+        // path-matching sweep below cannot find it. Its recorded refusal is
+        // nevertheless about a source file that may be exactly the one that
+        // just changed, so every refusal drops back to `FoldOutcome::Unknown`;
+        // the next fold re-establishes whichever ones still hold.
+        self.observed_fold_refusals.clear();
         let to_drop: Vec<PathBuf> = self
             .project_parses
             .iter()
@@ -548,6 +562,7 @@ impl SemanticState {
         for key in to_drop {
             self.project_parses.remove(&key);
             self.resolved_projects.remove(&key);
+            self.observed_fold_refusals.remove(&key);
         }
         // This edit may have staled an open later buffer's tokens; the client
         // only re-requests the buffer it touched, so owe a workspace refresh.
@@ -1159,7 +1174,7 @@ impl SemanticState {
     }
 
     /// Fold `project` if nothing has yet, so that its outcome is observable via
-    /// [`Self::observed_fold_refusal`]. A success is cached (through the same
+    /// [`Self::fold_outcome`]. A success is cached (through the same
     /// memo [`Self::parses_for_project`] fills), so the request that follows
     /// pays nothing extra.
     ///
@@ -1184,7 +1199,7 @@ impl SemanticState {
     /// The one place the fold runs, so that **every** refusal is observed no
     /// matter which caller provoked it.
     ///
-    /// The outcome is recorded for [`Self::observed_fold_refusal`] to report.
+    /// The outcome is recorded for [`Self::fold_outcome`] to report.
     /// Without this, a refusal introduced *after* the file was opened — an edit
     /// that makes a Compile item straddle the F# 8 indentation boundary, a
     /// sibling source deleted on disk — would be reached only from a handler,
@@ -1209,16 +1224,22 @@ impl SemanticState {
         outcome
     }
 
-    /// How the most recent fold of `project` refused, or `None` if it succeeded
-    /// or has not run.
+    /// What the most recent fold of `project` did, or [`FoldOutcome::Unknown`]
+    /// if none has run since its inputs last changed.
     ///
     /// The shell reads this to explain a project that has gone quiet. Reading
     /// rather than draining is deliberate: the message is then a pure function
     /// of current state, so a fold that recovers stops being reported *because
     /// there is nothing to report*, not because some other code path remembered
     /// to undo an earlier notification.
-    pub fn observed_fold_refusal(&self, project: &Path) -> Option<&FoldRefusal> {
-        self.observed_fold_refusals.get(&canonicalise(project))
+    pub fn fold_outcome(&self, project: &Path) -> FoldOutcome<'_> {
+        match self.observed_fold_refusals.get(&canonicalise(project)) {
+            Some(refusal) => FoldOutcome::Refused(refusal),
+            None if self.project_parses.contains_key(&canonicalise(project)) => {
+                FoldOutcome::Succeeded
+            }
+            None => FoldOutcome::Unknown,
+        }
     }
 }
 
