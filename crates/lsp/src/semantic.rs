@@ -3056,16 +3056,28 @@ pub fn canonicalise(path: &Path) -> PathBuf {
 pub struct CanonicalProject {
     path: PathBuf,
     key: PathBuf,
+    /// [`crate::paths::path_dedup_key`] of `key` — the identity, folded the way
+    /// the platform folds case.
+    ///
+    /// For a project that exists on disk this is belt-and-braces: `canonicalize`
+    /// resolves the true on-disk casing (probed, macOS). It bites on the
+    /// fallback — [`canonicalise`] returns the literal path when `canonicalize`
+    /// fails, so a project not yet on disk keeps whatever casing the caller
+    /// spelled, and two spellings of one file would otherwise be two projects.
+    /// The rest of the LSP already treats those as equal
+    /// ([`crate::paths::paths_equal`]).
+    identity: String,
 }
 
-/// Identity is the **key**, not the spelling: two buffers reaching one physical
-/// `.fsproj` through different symlinked paths are the same project, and a
-/// derived `PartialEq` (which would compare `path` too) made them two — so a
-/// scope holding both stored one report under the shared key while rendering
-/// each alias's filename, and re-sent both toasts after every dispatch.
+/// Identity is the platform-folded canonical key, not the spelling: two buffers
+/// reaching one physical `.fsproj` — through a symlink, or through a
+/// differently-cased path on macOS/Windows — are the same project. A derived
+/// `PartialEq` (comparing `path` too) made them two, so a scope holding both
+/// stored one report under a shared key while rendering each spelling, and
+/// re-sent both toasts after every dispatch.
 impl PartialEq for CanonicalProject {
     fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
+        self.identity == other.identity
     }
 }
 
@@ -3073,16 +3085,23 @@ impl Eq for CanonicalProject {}
 
 impl std::hash::Hash for CanonicalProject {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.key.hash(state);
+        self.identity.hash(state);
     }
 }
 
 impl CanonicalProject {
     pub fn new(path: &Path) -> Self {
+        let key = canonicalise(path);
         CanonicalProject {
+            identity: crate::paths::path_dedup_key(&key),
             path: path.to_path_buf(),
-            key: canonicalise(path),
+            key,
         }
+    }
+
+    /// The platform-folded identity — the right key for a map of projects.
+    pub fn identity(&self) -> &str {
+        &self.identity
     }
 
     /// The spelling the caller found this project by — what to *evaluate* with.
@@ -3111,6 +3130,40 @@ fn is_signature_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A project's identity survives the spellings the rest of the LSP already
+    /// treats as one file.
+    ///
+    /// Exercised on paths that are *not* on disk, which is where it bites:
+    /// `canonicalise` falls back to the literal path there, so the caller's
+    /// casing survives. (For a project that does exist, `canonicalize` resolves
+    /// the true on-disk casing itself — probed on macOS — so this is defence in
+    /// depth for that case, not the mechanism.)
+    #[test]
+    fn project_identity_folds_case_where_the_platform_does() {
+        let upper = CanonicalProject::new(Path::new("/nonexistent/Proj/App.fsproj"));
+        let lower = CanonicalProject::new(Path::new("/nonexistent/proj/App.fsproj"));
+        let other = CanonicalProject::new(Path::new("/nonexistent/Proj/Other.fsproj"));
+
+        // Agrees with the comparison the rest of the LSP uses for the same
+        // question, on every platform.
+        assert_eq!(
+            upper == lower,
+            crate::paths::paths_equal(upper.as_path(), lower.as_path()),
+            "identity disagrees with `paths_equal` about {:?} vs {:?}",
+            upper.as_path(),
+            lower.as_path()
+        );
+        assert_ne!(upper, other, "different projects stay different");
+
+        // …and the identity is what a map keys on, so equal projects collide.
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(upper.identity().to_string());
+        assert_eq!(
+            seen.contains(lower.identity()),
+            crate::paths::paths_equal(upper.as_path(), lower.as_path())
+        );
+    }
     use super::*;
     use borzoi_assembly::{
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,

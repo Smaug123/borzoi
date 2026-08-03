@@ -182,7 +182,7 @@ pub struct State {
     /// a **different** reason says so. A project with nothing to report is
     /// removed, so one that is fixed and later re-broken reports again. See
     /// [`report_deferral`].
-    warned_uncertain_projects: HashMap<PathBuf, ProjectReport>,
+    warned_uncertain_projects: HashMap<String, ProjectReport>,
     /// Which project each open source buffer belongs to — the scope
     /// [`refresh_project_deferrals`] reports on, as a per-document map so it can
     /// be maintained **incrementally**.
@@ -1164,7 +1164,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
     for project in projects_in_scope(state) {
         let previous = state
             .warned_uncertain_projects
-            .get(project.key())
+            .get(project.identity())
             .map(|report| report.record.clone())
             .unwrap_or_default();
         let reconciled = {
@@ -1240,14 +1240,14 @@ fn recompute_deferral_scope(state: &mut State) {
 }
 
 fn forget_projects_out_of_scope(state: &mut State) {
-    let in_scope: HashSet<PathBuf> = state
+    let in_scope: HashSet<String> = state
         .doc_projects
         .values()
-        .map(|p| p.key().to_path_buf())
+        .map(|p| p.identity().to_string())
         .collect();
     state
         .warned_uncertain_projects
-        .retain(|key, _| in_scope.contains(key));
+        .retain(|identity, _| in_scope.contains(identity));
 }
 
 /// The distinct projects in scope, in a deterministic order.
@@ -1258,7 +1258,7 @@ fn projects_in_scope(state: &State) -> Vec<CanonicalProject> {
             projects.push(project.clone());
         }
     }
-    projects.sort_by(|a, b| a.key().cmp(b.key()));
+    projects.sort_by(|a, b| a.identity().cmp(b.identity()));
     projects
 }
 
@@ -1295,7 +1295,7 @@ fn report_deferral(
     let record = reconciled.into_record();
     let previously_shown = state
         .warned_uncertain_projects
-        .get(project.key())
+        .get(project.identity())
         .map(|prev| prev.shown.clone())
         .unwrap_or_default();
 
@@ -1329,15 +1329,15 @@ fn report_deferral(
             .any(|d| previously_shown.get(&d.capability()) != Some(&d.clause()));
 
     let report = ProjectReport { record, shown };
-    if state.warned_uncertain_projects.get(project.key()) == Some(&report) {
+    if state.warned_uncertain_projects.get(project.identity()) == Some(&report) {
         return;
     }
     if report.record.is_empty() && report.shown.is_empty() {
-        state.warned_uncertain_projects.remove(project.key());
+        state.warned_uncertain_projects.remove(project.identity());
     } else {
         state
             .warned_uncertain_projects
-            .insert(project.key().to_path_buf(), report);
+            .insert(project.identity().to_string(), report);
     }
     if resend && let Some(message) = project_deferral::deferral_message(project.as_path(), &stated)
     {

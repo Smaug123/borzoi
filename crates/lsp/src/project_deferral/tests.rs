@@ -923,8 +923,12 @@ fn the_outer_dispatch_build_states_its_reason() {
     );
     let causes = ds[0].causes().recorded();
     assert_eq!(causes.len(), 1, "{causes:?}");
-    assert!(causes[0].contains("multi-targets"), "{}", causes[0]);
-    assert!(causes[0].contains("outer dispatch build"), "{}", causes[0]);
+    assert!(causes[0].contains("TreatAsLocalProperty"), "{}", causes[0]);
+    // Phrased around the unhonoured TFM selection, because the trigger is not
+    // multi-targeting: a single-target project opting `TargetFramework` out sets
+    // the same flag, and "this project multi-targets" would be a confidently
+    // wrong explanation there.
+    assert!(!causes[0].contains("multi-target"), "{}", causes[0]);
 }
 
 /// `evaluation_declines_project_fold` is the gate `semantic::build_parses`
@@ -949,4 +953,38 @@ fn the_fold_gate_agrees_with_the_deferral_it_gates() {
         }
     }
     assert!(evaluation_declines_project_fold(ProjectEvaluation::Failed));
+}
+
+/// `workspace::discarded_inner_build` raises the fold's flags with *no*
+/// evaluator cause, so without the outer-build reason the fold clause would say
+/// "no specific cause was recorded" about a reason we know exactly — while the
+/// reference clause, from the same evaluation, stated it.
+#[test]
+fn a_discarded_inner_build_explains_its_fold_decline_too() {
+    // Exactly what `discarded_inner_build` produces: flags up, causes empty.
+    let mut parsed = certain_project();
+    parsed.items_uncertain = true;
+    parsed.define_constants_uncertain = true;
+    parsed.project_references_uncertain = true;
+    assert!(parsed.compile_item_uncertainties.is_empty());
+    assert!(parsed.define_constants_uncertainties.is_empty());
+
+    let ds = deferrals(
+        ProjectEvaluation::Evaluated {
+            parsed: &parsed,
+            not_an_inner_build: true,
+        },
+        FoldOutcome::Unknown,
+    );
+    assert_eq!(ds.len(), 2, "{ds:?}");
+    for deferral in &ds {
+        let causes = deferral.causes().recorded();
+        assert_eq!(
+            causes.len(),
+            1,
+            "{:?} should state the one known reason: {causes:?}",
+            deferral.capability()
+        );
+        assert!(causes[0].contains("TreatAsLocalProperty"), "{}", causes[0]);
+    }
 }

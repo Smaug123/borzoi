@@ -426,22 +426,29 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
         // Both axes feed the same decline, so they share one explanation. The
         // condition uncertainties come first: they name the gated Compile item,
         // which is the most actionable thing we can say.
-        let causes = parsed
-            .compile_condition_uncertainties
-            .iter()
-            .map(render_condition_uncertainty)
-            .chain(
-                parsed
-                    .compile_item_uncertainties
-                    .iter()
-                    .map(render_compile_cause),
-            )
-            .chain(
-                parsed
-                    .define_constants_uncertainties
-                    .iter()
-                    .map(render_define_cause),
-            );
+        //
+        // The outer-build cause leads when present, because in that case the
+        // evaluator records *nothing*: `workspace::discarded_inner_build` raises
+        // the flags directly, so without it this clause would say "no specific
+        // cause was recorded" about a reason we know exactly.
+        let causes = outer_build_cause(eval).into_iter().chain(
+            parsed
+                .compile_condition_uncertainties
+                .iter()
+                .map(render_condition_uncertainty)
+                .chain(
+                    parsed
+                        .compile_item_uncertainties
+                        .iter()
+                        .map(render_compile_cause),
+                )
+                .chain(
+                    parsed
+                        .define_constants_uncertainties
+                        .iter()
+                        .map(render_define_cause),
+                ),
+        );
         out.push(Deferral::new(
             DeferredCapability::ProjectFold,
             DeclineStage::Evaluation,
@@ -480,19 +487,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
         //
         // With no structural cause at all, `Causes::Unrecorded` states the
         // absence rather than inventing one.
-        let outer_build_cause = match eval {
-            ProjectEvaluation::Evaluated {
-                not_an_inner_build: true,
-                ..
-            } => Some(
-                "this project multi-targets, and I am serving its outer dispatch build, \
-                 whose <ProjectReference> list is not the real build's under any target \
-                 framework"
-                    .to_string(),
-            ),
-            _ => None,
-        };
-        let causes = outer_build_cause.into_iter().chain(
+        let causes = outer_build_cause(eval).into_iter().chain(
             parsed
                 .compile_item_uncertainties
                 .iter()
@@ -656,6 +651,32 @@ pub fn deferral_message(project: &Path, deferrals: &[Deferral]) -> Option<String
         .collect::<Vec<_>>()
         .join(" ");
     Some(format!("{name}: {body}"))
+}
+
+/// The reason an evaluation is not an inner build, when it is one.
+///
+/// `workspace::discarded_inner_build` raises the uncertainty flags directly and
+/// records no evaluator cause — a document that opts `TargetFramework` out of
+/// the globals decides every `'$(TargetFramework)' == …` gate perfectly cleanly,
+/// so there is nothing to diagnose. The reason is nonetheless known exactly, and
+/// it explains *both* capabilities this evaluation loses.
+///
+/// Phrased around the **unhonoured TFM selection**, not around multi-targeting:
+/// the trigger is `<Project TreatAsLocalProperty="TargetFramework">` overwriting
+/// the TFM we seed, which a *single*-target project can do just as well. Saying
+/// "this project multi-targets" there would be a confidently wrong explanation,
+/// which is worse than the stated absence it replaced.
+fn outer_build_cause(eval: ProjectEvaluation<'_>) -> Option<String> {
+    match eval {
+        ProjectEvaluation::Evaluated {
+            not_an_inner_build: true,
+            ..
+        } => Some(
+            "this project opts `TargetFramework` out of the build globals              (`TreatAsLocalProperty`), so it overwrites the target framework I select and              no evaluation of it is the build that actually runs"
+                .to_string(),
+        ),
+        _ => None,
+    }
 }
 
 /// Whether a Compile cause is *also* evidence about the `<ProjectReference>`

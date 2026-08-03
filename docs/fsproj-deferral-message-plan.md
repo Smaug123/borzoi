@@ -359,6 +359,32 @@ had used an *uncertain* project, where "standalone" is not establishable at all.
 It now uses a project that declines its reference edges while being certain
 about its Compile set, and the inconclusive case is its own test.
 
+### A wrong explanation, and where identity actually needs folding
+
+A fifteenth round. The important one was a **factually wrong cause**: the
+outer-build reason said "this project multi-targets", but the trigger is
+`<Project TreatAsLocalProperty="TargetFramework">` overwriting the TFM we seed,
+which a *single*-target project can do just as well. That is the confidently
+wrong explanation this plan calls worse than a stated absence, shipped by me two
+rounds after writing that sentence. It is phrased around the unhonoured TFM
+selection now.
+
+The same round: `discarded_inner_build` raises the fold's flags *and* the
+reference flag while recording no evaluator cause, so the fold clause said "no
+specific cause was recorded" while the reference clause — from the same
+evaluation — stated the reason. The cause now leads both.
+
+Third: `CanonicalProject`'s identity is folded with `paths::path_dedup_key`. The
+review's premise (that `canonicalize` preserves caller casing on macOS) turned
+out **not** to hold — a probe shows Rust's `canonicalize` resolves the true
+on-disk casing, unlike Python's `realpath`. So the duplicate-report path is
+unreachable for a project that exists. It *is* reachable through
+`canonicalise`'s literal-path fallback for one that does not, which is what
+`project_identity_folds_case_where_the_platform_does` exercises — asserting
+agreement with `paths_equal` rather than hardcoding a platform's answer. An e2e
+test written first for this was deleted: it passed against a deliberately broken
+identity, so it pinned nothing.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The
