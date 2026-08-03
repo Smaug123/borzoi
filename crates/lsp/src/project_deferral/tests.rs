@@ -763,19 +763,20 @@ fn a_successful_fold_adds_no_deferral() {
 /// Getting this wrong reads badly in both directions: treating Unknown as
 /// success clears a still-valid message and re-sends it the moment anything
 /// folds, and treating it as failure re-reports a problem that may already be
-/// fixed.
+/// fixed. [`reconcile`] is what acts on it — per capability, so that an
+/// unknowable *fold* never suppresses a known reference-edge loss.
 #[test]
 fn an_unknown_fold_makes_no_claim_about_a_clean_project() {
     let parsed = certain_project();
     let eval = evaluated(&parsed);
     assert!(deferrals(eval, FoldOutcome::Unknown).is_empty());
     assert!(
-        !speaks_for_the_fold(eval, FoldOutcome::Unknown),
+        !fold_verdict_known(eval, FoldOutcome::Unknown),
         "an empty deferral list from an unfolded project must not clear a message"
     );
     // A fold that has actually run does speak, either way.
-    assert!(speaks_for_the_fold(eval, FoldOutcome::Succeeded));
-    assert!(speaks_for_the_fold(
+    assert!(fold_verdict_known(eval, FoldOutcome::Succeeded));
+    assert!(fold_verdict_known(
         eval,
         FoldOutcome::Refused(&FoldRefusal::ParserPanic {
             file: PathBuf::from("/w/A.fs")
@@ -795,8 +796,97 @@ fn an_unknown_fold_still_reports_what_the_evaluation_declines() {
         ))];
     let eval = evaluated(&parsed);
     assert!(
-        speaks_for_the_fold(eval, FoldOutcome::Unknown),
+        fold_verdict_known(eval, FoldOutcome::Unknown),
         "an evaluation-level decline needs no fold to be certain of"
     );
     assert!(!deferrals(eval, FoldOutcome::Unknown).is_empty());
+}
+
+/// An unknowable fold must not suppress what the evaluation *does* know. A
+/// dropped `<ProjectReference>` edge set is a fact about the evaluation alone,
+/// so it publishes immediately rather than waiting for some unrelated request
+/// to happen to fold the project.
+#[test]
+fn an_unknown_fold_still_publishes_a_known_reference_loss() {
+    let parsed = certain_project();
+    let eval = ProjectEvaluation::Evaluated {
+        parsed: &parsed,
+        not_an_inner_build: true,
+    };
+    let fresh = deferrals(eval, FoldOutcome::Unknown);
+    assert_eq!(fresh.len(), 1);
+    assert_eq!(
+        fresh[0].capability(),
+        DeferredCapability::ProjectReferenceEdges
+    );
+    let reconciled = reconcile(fresh.clone(), &[], eval, FoldOutcome::Unknown);
+    assert_eq!(
+        reconciled, fresh,
+        "the known loss must survive reconciliation"
+    );
+}
+
+/// …and an unknowable fold carries the *previous* fold verdict forward, so a
+/// still-declined project keeps saying so rather than flickering to silence and
+/// re-toasting the moment anything folds.
+#[test]
+fn an_unknown_fold_carries_the_previous_verdict_forward() {
+    let parsed = certain_project();
+    let eval = evaluated(&parsed);
+    let previously = deferrals(
+        eval,
+        FoldOutcome::Refused(&FoldRefusal::UnreadableCompileItem {
+            file: PathBuf::from("/w/Gone.fs"),
+        }),
+    );
+    assert_eq!(previously.len(), 1);
+
+    let reconciled = reconcile(
+        deferrals(eval, FoldOutcome::Unknown),
+        &previously,
+        eval,
+        FoldOutcome::Unknown,
+    );
+    assert_eq!(reconciled, previously);
+
+    // A fold that *has* run overrides it in both directions.
+    assert!(
+        reconcile(
+            deferrals(eval, FoldOutcome::Succeeded),
+            &previously,
+            eval,
+            FoldOutcome::Succeeded
+        )
+        .is_empty(),
+        "a successful fold clears the carried-forward verdict"
+    );
+}
+
+/// An **evaluation-level** recovery is known without folding, so it clears its
+/// own record even while the fold verdict stays unknown. Otherwise
+/// reintroducing the same project problem would be deduped away as "already
+/// reported".
+#[test]
+fn an_evaluation_recovery_clears_its_record_under_an_unknown_fold() {
+    let mut broken = certain_project();
+    broken.items_uncertain = true;
+    broken.compile_item_uncertainties =
+        vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
+            StructuralCompileItemUncertainty::UnsupportedChoose,
+        ))];
+    let previously = deferrals(evaluated(&broken), FoldOutcome::Unknown);
+    assert_eq!(previously.len(), 1);
+
+    // The project is fixed; nothing has folded the fixed version yet.
+    let fixed = certain_project();
+    let reconciled = reconcile(
+        deferrals(evaluated(&fixed), FoldOutcome::Unknown),
+        &previously,
+        evaluated(&fixed),
+        FoldOutcome::Unknown,
+    );
+    assert!(
+        reconciled.is_empty(),
+        "an evaluation-level recovery needs no fold to be certain of: {reconciled:?}"
+    );
 }

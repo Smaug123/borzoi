@@ -235,6 +235,31 @@ Real editors open real paths; the tests now do too, rather than exercise an
 aliasing residual that is documented, pre-existing on `main`, and out of scope
 here.
 
+### The unknown fold is resolved per capability
+
+An eighth round found the "make no claim on an unknown fold" rule applied
+per *project*, conflating two independently-known facts:
+
+- a dropped `<ProjectReference>` edge set is decided by the evaluation alone, yet
+  the skip withheld it until some unrelated request happened to fold the
+  project; and
+- an evaluation-level *recovery* is equally knowable, yet the skip left the old
+  message on record, so reintroducing the same problem was deduped away as
+  "already reported".
+
+So `Deferral` now records its `DeclineStage` (`Evaluation` | `Fold`), and
+`reconcile` carries forward only a previous **fold-stage** verdict. Everything
+evaluation-derived is recomputed and published every refresh, because the
+evaluation is always in hand. The server's dedup record became the deferral list
+rather than the rendered string — prose cannot answer "what did we last know
+about this project's fold?".
+
+The same round caught `project_evaluation` still constructing its
+`CanonicalProject` from the canonical *key*, which would anchor a first lookup
+through a symlinked path on the wrong spelling. That was the fix I believed I had
+already made: the edit had silently not applied after `cargo fmt` reflowed the
+target text. Verify the file, not the intent.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

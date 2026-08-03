@@ -765,3 +765,78 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
         Vec::<String>::new()
     );
 }
+
+/// A dropped `<ProjectReference>` edge set is a fact about the *evaluation*, so
+/// it is reported as soon as the project is in scope — not held back until some
+/// unrelated request happens to fold the project. (An unknowable fold used to
+/// suppress the whole report, including this.)
+#[test]
+fn a_reference_edge_loss_is_reported_without_waiting_for_a_fold() {
+    let tmp = TempDir::new().unwrap();
+    // A `<ProjectReference Remove>` is an item operation the evaluator does not
+    // apply, so the captured reference list can't be trusted.
+    std::fs::write(
+        real_path(&tmp).join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    // A plain (non-folding) request suffices: nothing here needs the fold.
+    let messages = server.deferral_messages(&a);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("<ProjectReference>"),
+        "{}",
+        messages[0]
+    );
+}
+
+/// An evaluation-level problem, fixed and then reintroduced *without any fold in
+/// between*, must be reported both times. The recovery is knowable from the
+/// evaluation alone, so it clears its own record rather than waiting on a fold
+/// that may never come — otherwise the second occurrence is deduped away.
+#[test]
+fn an_evaluation_problem_reintroduced_without_a_fold_is_reported_again() {
+    let tmp = TempDir::new().unwrap();
+    let proj_path = real_path(&tmp).join("Demo.fsproj");
+    std::fs::write(&proj_path, UNCERTAIN_PROJECT).unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let proj = Url::from_file_path(&proj_path).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+    let touch_project = |server: &Server| {
+        server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+            changes: vec![FileEvent {
+                uri: proj.clone(),
+                typ: FileChangeType::CHANGED,
+            }],
+        });
+    };
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let first = server.deferral_messages(&a);
+    assert_eq!(first.len(), 1, "{first:?}");
+
+    // Fix it — no folding request in between.
+    std::fs::write(&proj_path, CERTAIN_PROJECT).unwrap();
+    touch_project(&server);
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+
+    // Break it the same way again.
+    std::fs::write(&proj_path, UNCERTAIN_PROJECT).unwrap();
+    touch_project(&server);
+    assert_eq!(
+        server.deferral_messages(&a),
+        first,
+        "the recovery must have cleared the record, so this reports again"
+    );
+}

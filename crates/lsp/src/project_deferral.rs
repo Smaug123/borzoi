@@ -237,23 +237,49 @@ impl Causes {
     }
 }
 
-/// One declined capability together with why.
+/// Which stage of the pipeline decided a decline.
+///
+/// [`DeferredCapability::ProjectFold`] is reachable from both, and telling them
+/// apart is load-bearing for [`reconcile`]: an evaluation-caused decline is
+/// re-decidable from the evaluation alone at any moment, while a fold-caused
+/// one is only knowable by folding. Carrying the wrong kind forward across an
+/// unknown fold leaves a *recovered* project still marked as broken, so
+/// reintroducing the same problem is deduped away as "already reported".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclineStage {
+    /// Decided by the `.fsproj` evaluation — always knowable.
+    Evaluation,
+    /// Decided by the Compile-order fold — knowable only once it has run.
+    Fold,
+}
+
+/// One declined capability together with why, and which stage decided it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Deferral {
     capability: DeferredCapability,
+    stage: DeclineStage,
     causes: Causes,
 }
 
 impl Deferral {
-    fn new(capability: DeferredCapability, causes: impl IntoIterator<Item = String>) -> Self {
+    fn new(
+        capability: DeferredCapability,
+        stage: DeclineStage,
+        causes: impl IntoIterator<Item = String>,
+    ) -> Self {
         Self {
             capability,
+            stage,
             causes: Causes::from_rendered(causes),
         }
     }
 
     pub fn capability(&self) -> DeferredCapability {
         self.capability
+    }
+
+    pub fn stage(&self) -> DeclineStage {
+        self.stage
     }
 
     pub fn causes(&self) -> &Causes {
@@ -346,7 +372,7 @@ pub enum FoldOutcome<'a> {
 /// `fold` is what the Compile-order fold most recently did. It can only *add* a
 /// deferral: the fold never succeeds on an evaluation this function already
 /// declines. [`FoldOutcome::Unknown`] adds nothing — see
-/// [`speaks_for_the_fold`] for why the *caller* must also decline to clear a
+/// [`fold_verdict_known`] for why the *caller* must also decline to clear a
 /// previous message on it.
 pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Deferral> {
     let mut out = Vec::new();
@@ -355,6 +381,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
         ProjectEvaluation::Failed => {
             return vec![Deferral::new(
                 DeferredCapability::ProjectFold,
+                DeclineStage::Evaluation,
                 [
                     "the project file could not be evaluated at all (see its own diagnostics)"
                         .to_string(),
@@ -387,7 +414,11 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
                     .iter()
                     .map(render_define_cause),
             );
-        out.push(Deferral::new(DeferredCapability::ProjectFold, causes));
+        out.push(Deferral::new(
+            DeferredCapability::ProjectFold,
+            DeclineStage::Evaluation,
+            causes,
+        ));
     } else if let Some(cause) = match fold {
         FoldOutcome::Refused(refusal) => refusal.cause(),
         FoldOutcome::Succeeded | FoldOutcome::Unknown => None,
@@ -395,7 +426,11 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
         // The evaluation was fine but the fold still refused, on a fact only
         // reading the sources could reveal. Same lost capability, so the same
         // deferral — the user does not care which stage declined.
-        out.push(Deferral::new(DeferredCapability::ProjectFold, [cause]));
+        out.push(Deferral::new(
+            DeferredCapability::ProjectFold,
+            DeclineStage::Fold,
+            [cause],
+        ));
     }
 
     if eval.drops_reference_edges() {
@@ -424,6 +459,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
             .map(render_compile_cause);
         out.push(Deferral::new(
             DeferredCapability::ProjectReferenceEdges,
+            DeclineStage::Evaluation,
             causes,
         ));
     }
@@ -431,19 +467,61 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
     out
 }
 
-/// Whether a reported set of deferrals is a *complete* account of this project,
-/// i.e. whether its absence of a fold deferral may be trusted to clear a
-/// previously-sent message.
+/// Whether the Compile-order fold's verdict is knowable from current state.
 ///
 /// `false` exactly when the evaluation is clean and the fold outcome is
-/// [`FoldOutcome::Unknown`]: we would then be about to say "nothing is wrong"
-/// on the strength of a fold nobody has run. A caller must make no claim there
-/// — leave whatever was last reported standing until a fold settles it.
+/// [`FoldOutcome::Unknown`]: nothing has folded since the inputs changed, so we
+/// can say neither that the fold is declined nor that it is fine.
 ///
 /// The asymmetry is deliberate. An evaluation-level decline is knowable without
-/// folding, so it is always reported; only the *silence* is untrustworthy.
-pub fn speaks_for_the_fold(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> bool {
+/// folding, so it settles the question on its own; only the *silence* is
+/// uninformative.
+pub fn fold_verdict_known(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> bool {
     !matches!(fold, FoldOutcome::Unknown) || evaluation_declines_project_fold(eval)
+}
+
+/// This refresh's account of a project, with any claim the current state cannot
+/// make carried over from `previous` rather than silently dropped.
+///
+/// Only [`DeferredCapability::ProjectFold`] is ever unknowable — every other
+/// capability is decided by the evaluation alone, which is always in hand. So a
+/// project that has not folded still *publishes* its known losses (a dropped
+/// `<ProjectReference>` edge set is a fact about the evaluation), while its
+/// previously-reported fold verdict stands until a fold settles it.
+///
+/// Handling this per capability rather than per project is what stops two
+/// independent facts being conflated: skipping the whole report on an unknown
+/// fold hid known reference-edge losses until an unrelated request happened to
+/// fold the project, and let an evaluation-level *recovery* go unrecorded, so
+/// reintroducing the same problem was deduped away as "already reported".
+pub fn reconcile(
+    fresh: Vec<Deferral>,
+    previous: &[Deferral],
+    eval: ProjectEvaluation<'_>,
+    fold: FoldOutcome<'_>,
+) -> Vec<Deferral> {
+    if fold_verdict_known(eval, fold) {
+        return fresh;
+    }
+    debug_assert!(
+        !fresh
+            .iter()
+            .any(|d| d.capability() == DeferredCapability::ProjectFold),
+        "an unknowable fold cannot have produced a ProjectFold deferral"
+    );
+    let mut out = fresh;
+    if let Some(prev) = previous.iter().find(|d| {
+        // Only a *fold-stage* verdict is unknowable and therefore carried. An
+        // evaluation-caused one was just recomputed from the same evaluation
+        // that is in hand — its absence now is a recovery, and dropping it is
+        // the point.
+        d.capability() == DeferredCapability::ProjectFold && d.stage() == DeclineStage::Fold
+    }) {
+        // Fold deferrals lead, as they do in `deferrals`: the lost capability is
+        // the broader one.
+        out.insert(0, prev.clone());
+    }
+    out
 }
 
 /// Whether the *evaluation* alone declines the Compile-order fold — the gate

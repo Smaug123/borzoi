@@ -732,9 +732,12 @@ impl Workspace {
     /// and a capability declined on a fact the explainer cannot see is a
     /// capability that goes away silently.
     pub fn project_evaluation(&mut self, project_path: &Path) -> ProjectEvaluation<'_> {
-        let key =
-            std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
-        self.project_evaluation_of(&CanonicalProject::new(&key))
+        // From the caller's spelling, never from the canonical key: on a first
+        // lookup through a symlinked path the key is what the evaluation would
+        // be *anchored on*, and `$(MSBuildProjectDirectory)` plus every joined
+        // `<Compile>` include would then name files under a spelling no open
+        // buffer uses. `CanonicalProject` keeps both for exactly this reason.
+        self.project_evaluation_of(&CanonicalProject::new(project_path))
     }
 
     /// [`Self::project_evaluation`] for a project whose path is already

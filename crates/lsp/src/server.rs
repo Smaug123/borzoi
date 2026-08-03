@@ -182,7 +182,7 @@ pub struct State {
     /// a **different** reason says so. A project with nothing to report is
     /// removed, so one that is fixed and later re-broken reports again. See
     /// [`report_deferral`].
-    warned_uncertain_projects: HashMap<PathBuf, String>,
+    warned_uncertain_projects: HashMap<PathBuf, Vec<project_deferral::Deferral>>,
     /// The projects [`refresh_project_deferrals`] reports on — the canonicalised
     /// compiling project of each open source buffer. Maintained by
     /// [`recompute_deferral_scope`] at the few events that can change it, so the
@@ -1131,23 +1131,29 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// telling a `.fs` buffer why its project went quiet.
 fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
     for project in state.deferral_scope.clone() {
-        let Some(deferrals) = ({
+        let previous = state
+            .warned_uncertain_projects
+            .get(project.key())
+            .cloned()
+            .unwrap_or_default();
+        let deferrals = {
             // Read, never provoke: recomputing the fold here would fold every
             // project on every keystroke. `SemanticState::fold` records the
             // outcome wherever it does run, which is whenever a request
             // actually needs the Compile order.
             let fold = state.semantic.fold_outcome(&project);
             let evaluation = state.workspace.project_evaluation_of(&project);
-            // With a clean evaluation and no fold since the inputs changed, we
-            // would be about to say "nothing is wrong" on the strength of a
-            // fold nobody has run — which would clear a still-valid message and
-            // re-send it the moment something folds. Make no claim instead.
-            project_deferral::speaks_for_the_fold(evaluation, fold)
-                .then(|| project_deferral::deferrals(evaluation, fold))
-        }) else {
-            continue;
+            // Per capability, not per project: the evaluation always settles the
+            // reference-edge verdict, while an unfolded project's *fold* verdict
+            // is genuinely unknown and its last one stands.
+            project_deferral::reconcile(
+                project_deferral::deferrals(evaluation, fold),
+                &previous,
+                evaluation,
+                fold,
+            )
         };
-        report_deferral(conn, state, &project, &deferrals);
+        report_deferral(conn, state, &project, deferrals);
     }
 }
 
@@ -1215,36 +1221,43 @@ fn report_deferral(
     conn: &Connection,
     state: &mut State,
     project: &CanonicalProject,
-    deferrals: &[project_deferral::Deferral],
+    deferrals: Vec<project_deferral::Deferral>,
 ) {
     // Keyed on the canonical path: the same project reaches this code spelled
     // two ways — `compiling_project`'s literal path from a source buffer, and
     // the semantic layer's cache key — and keying them apart would send one
     // project's message twice. The type carries that so no caller can forget.
-    let Some(message) = project_deferral::deferral_message(project.as_path(), deferrals) else {
-        state.warned_uncertain_projects.remove(project.key());
-        return;
-    };
-    if state.warned_uncertain_projects.get(project.key()) == Some(&message) {
+    //
+    // The stored value is the *deferrals*, not the rendered string: they are
+    // what the next refresh reconciles against per capability, and prose cannot
+    // answer "what did we last know about this project's fold?".
+    if state.warned_uncertain_projects.get(project.key()) == Some(&deferrals) {
         return;
     }
-    // The toast caps its cause list; the log carries all of them, so a user who
-    // reports "it says 'and 12 more'" can be asked for the trace.
-    tracing::warn!(
-        project = %project,
-        deferrals = ?deferrals,
-        "declining project-wide features"
-    );
-    state
-        .warned_uncertain_projects
-        .insert(project.key().to_path_buf(), message.clone());
-    send_notification::<ShowMessage>(
-        conn,
-        ShowMessageParams {
-            typ: MessageType::WARNING,
-            message,
-        },
-    );
+    let message = project_deferral::deferral_message(project.as_path(), &deferrals);
+    if deferrals.is_empty() {
+        state.warned_uncertain_projects.remove(project.key());
+    } else {
+        // The toast caps its cause list; the log carries all of them, so a user
+        // who reports "it says 'and 12 more'" can be asked for the trace.
+        tracing::warn!(
+            project = %project,
+            deferrals = ?deferrals,
+            "declining project-wide features"
+        );
+        state
+            .warned_uncertain_projects
+            .insert(project.key().to_path_buf(), deferrals);
+    }
+    if let Some(message) = message {
+        send_notification::<ShowMessage>(
+            conn,
+            ShowMessageParams {
+                typ: MessageType::WARNING,
+                message,
+            },
+        );
+    }
 }
 
 /// Pick the right diagnostic producer for the URI's file extension, returning
