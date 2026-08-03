@@ -986,3 +986,47 @@ fn closing_the_last_buffer_forgets_the_project() {
         "reopening reports afresh"
     );
 }
+
+/// Two buffers reaching one physical project through different symlinked
+/// spellings are one project, and are reported once.
+///
+/// This pins the user-visible contract. It does *not* discriminate
+/// `CanonicalProject`'s key-only equality from a path-inclusive one: aliases of
+/// one file render the same `file_name()`, so the duplicate report the equality
+/// prevents is unreachable through a directory symlink. The equality is
+/// key-only because that is what project identity *is*, not because this test
+/// forced it.
+#[test]
+fn aliased_spellings_of_one_project_are_one_project() {
+    let tmp = TempDir::new().unwrap();
+    let root = real_path(&tmp);
+    let real = root.join("real");
+    std::fs::create_dir(&real).unwrap();
+    std::fs::write(real.join("Demo.fsproj"), UNCERTAIN_PROJECT).unwrap();
+    std::fs::write(real.join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(real.join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    // A second route to the same directory.
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let mut server = Server::start();
+    let direct = Url::from_file_path(real.join("A.fs")).unwrap();
+    let aliased = Url::from_file_path(link.join("B.fs")).unwrap();
+    server.open(&direct, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&direct).len(), 1);
+
+    server.open(&aliased, "module B\nlet b = 2\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&aliased),
+        Vec::<String>::new(),
+        "the alias is the same project, already reported"
+    );
+    // …and it stays quiet, rather than re-toasting on every later dispatch.
+    for _ in 0..3 {
+        assert_eq!(
+            server.deferral_messages(&direct),
+            Vec::<String>::new(),
+            "an aliased project re-toasted on a later dispatch"
+        );
+    }
+}

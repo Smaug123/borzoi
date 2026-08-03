@@ -302,6 +302,20 @@ still passes them, because in the reachable sequences the two agree on how many
 messages go out, differing only in which dispatch carries them. The rule is
 chosen on argument (dedupe on what the user saw), not pinned by a failing test.
 
+### Project identity is the canonical key
+
+A twelfth round: `CanonicalProject`'s derived `PartialEq` compared the *path* as
+well as the key, so two buffers reaching one physical `.fsproj` through
+different symlinked spellings were two projects in scope — each rendering its
+own spelling while sharing one stored report. Identity is now the key alone,
+hand-implemented along with `Hash`, which fixes the class rather than the one
+call site that noticed it.
+
+Also from that round: the `tracing::warn!` had come to log the *message*, which
+`deferral_message` has already truncated to `MAX_RENDERED_CAUSES` — so the
+documented "ask the user for the trace" path carried exactly the `(and N more)`
+the toast did. It logs the deferrals again.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

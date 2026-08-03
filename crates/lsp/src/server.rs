@@ -1283,6 +1283,9 @@ fn report_deferral(
     // an invalidation may suppress a repeat, but must never be *asserted* in a
     // fresh toast — it describes inputs that have since changed.
     let fresh_message = project_deferral::deferral_message(project.as_path(), reconciled.stated());
+    // Kept for the log below, which must carry every cause rather than the
+    // toast's truncation of them.
+    let stated = reconciled.stated().to_vec();
     let record = reconciled.into_record();
     let last_shown = state
         .warned_uncertain_projects
@@ -1320,11 +1323,13 @@ fn report_deferral(
             .insert(project.key().to_path_buf(), report);
     }
     if resend && let Some(message) = fresh_message {
-        // The toast caps its cause list; the log carries all of them, so a user
-        // who reports "it says 'and 12 more'" can be asked for the trace.
+        // The toast caps its cause list at `MAX_RENDERED_CAUSES`; the log
+        // carries the *deferrals*, so a user who reports "it says 'and 12 more'"
+        // can be asked for the trace and the omitted causes are actually there.
+        // Logging the message instead would repeat the same truncation.
         tracing::warn!(
             project = %project,
-            %message,
+            deferrals = ?stated,
             "declining project-wide features"
         );
         send_notification::<ShowMessage>(

@@ -3052,10 +3052,29 @@ pub fn canonicalise(path: &Path) -> PathBuf {
 /// [`crate::server`]'s deferral refresh runs after every dispatched message and
 /// looks projects up by key, and doing that naively cost two or three
 /// canonicalisations per scoped project per keystroke.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub struct CanonicalProject {
     path: PathBuf,
     key: PathBuf,
+}
+
+/// Identity is the **key**, not the spelling: two buffers reaching one physical
+/// `.fsproj` through different symlinked paths are the same project, and a
+/// derived `PartialEq` (which would compare `path` too) made them two — so a
+/// scope holding both stored one report under the shared key while rendering
+/// each alias's filename, and re-sent both toasts after every dispatch.
+impl PartialEq for CanonicalProject {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for CanonicalProject {}
+
+impl std::hash::Hash for CanonicalProject {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+    }
 }
 
 impl CanonicalProject {
