@@ -407,7 +407,8 @@ pub enum FoldOutcome<'a> {
 pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Deferral> {
     let mut out = Vec::new();
 
-    let (parsed, fold_declined_on_evaluation) = match eval {
+    let fold_declined_on_evaluation = evaluation_declines_project_fold(eval);
+    let parsed = match eval {
         ProjectEvaluation::Failed => {
             return vec![Deferral::new(
                 DeferredCapability::ProjectFold,
@@ -418,10 +419,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
                 ],
             )];
         }
-        ProjectEvaluation::Evaluated { parsed, .. } => (
-            parsed,
-            parsed.items_uncertain || parsed.define_constants_uncertain,
-        ),
+        ProjectEvaluation::Evaluated { parsed, .. } => parsed,
     };
 
     if fold_declined_on_evaluation {
@@ -482,11 +480,25 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) -> Vec<Defe
         //
         // With no structural cause at all, `Causes::Unrecorded` states the
         // absence rather than inventing one.
-        let causes = parsed
-            .compile_item_uncertainties
-            .iter()
-            .filter(|cause| explains_dropped_references(&cause.kind))
-            .map(render_compile_cause);
+        let outer_build_cause = match eval {
+            ProjectEvaluation::Evaluated {
+                not_an_inner_build: true,
+                ..
+            } => Some(
+                "this project multi-targets, and I am serving its outer dispatch build, \
+                 whose <ProjectReference> list is not the real build's under any target \
+                 framework"
+                    .to_string(),
+            ),
+            _ => None,
+        };
+        let causes = outer_build_cause.into_iter().chain(
+            parsed
+                .compile_item_uncertainties
+                .iter()
+                .filter(|cause| explains_dropped_references(&cause.kind))
+                .map(render_compile_cause),
+        );
         out.push(Deferral::new(
             DeferredCapability::ProjectReferenceEdges,
             DeclineStage::Evaluation,
@@ -618,9 +630,12 @@ pub fn fold_verdict_known_for(record: &[Deferral], stated: &[Deferral]) -> bool 
 /// its own, which it reports as a [`FoldRefusal`] and which [`deferrals`] folds
 /// into the same capability.
 pub fn evaluation_declines_project_fold(eval: ProjectEvaluation<'_>) -> bool {
-    deferrals(eval, FoldOutcome::Unknown)
-        .iter()
-        .any(|d| d.capability == DeferredCapability::ProjectFold)
+    match eval {
+        ProjectEvaluation::Failed => true,
+        ProjectEvaluation::Evaluated { parsed, .. } => {
+            parsed.items_uncertain || parsed.define_constants_uncertain
+        }
+    }
 }
 
 /// The editor message for a project's deferrals, or `None` when there are none.

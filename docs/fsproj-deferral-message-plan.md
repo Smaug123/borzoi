@@ -333,6 +333,32 @@ the fold settles back to the same verdict, never so it can be restated.
 Sequence pinned by `a_recovered_capability_is_forgotten_while_another_stays_unknown`,
 and checked against a reintroduced wholesale-retention rule, which fails it.
 
+### Three more, and one test premise that was wrong
+
+A fourteenth round.
+
+- **The outer-build reason was known and reported as an absence.** Nothing in
+  the evaluator records a cause for `not_an_inner_build` (a multi-targeted
+  document decides `'$(TargetFramework)' == ''` perfectly cleanly), so the
+  deferral fell through to `Causes::Unrecorded` — while `ProjectEvaluation`
+  carried the fact all along. It states the reason now.
+- **Scope excluded scripts the handlers still serve.** `compiling_project`
+  requires a conclusive `Member`, which an `items_uncertain` project cannot give;
+  the handlers meanwhile select it and `build_parses` refuses on that same
+  uncertainty. `Workspace::reporting_project` is the scope rule: it excludes only
+  a **definite** `NotMember`. "May I serve this script under the project's
+  settings?" and "will the handlers try, and could they fail?" are different
+  questions, and only the first needs certainty.
+- **The fold gate rendered every cause to answer a boolean.** A declining
+  project is never cached, so every semantic request paid a full cause-rendering
+  pass just to be refused. `evaluation_declines_project_fold` reads the flags,
+  and `deferrals` consults *it* — still one predicate, now a cheap one.
+
+The scope fix invalidated a test premise: `a_standalone_script_is_not_told_a_neighbouring_projects_problems`
+had used an *uncertain* project, where "standalone" is not establishable at all.
+It now uses a project that declines its reference edges while being certain
+about its Compile set, and the inconclusive case is its own test.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

@@ -474,6 +474,31 @@ impl Workspace {
         }
     }
 
+    /// The project whose *declines* affect `file` — what
+    /// [`crate::project_deferral`] reports on.
+    ///
+    /// Looser than [`Self::compiling_project`], and deliberately: that one asks
+    /// "may I serve this script under the project's settings?", which needs a
+    /// conclusive `Member`. This asks "will the handlers try to serve this file
+    /// through that project, and could they fail?" — and they will, for anything
+    /// the ancestor walk selects. The one exclusion is a definite `NotMember`
+    /// for a script, which is a standalone `.fsx` sitting under an unrelated
+    /// `.fsproj`: telling it that project's problems would be nonsense.
+    ///
+    /// An *inconclusive* membership (`Unknown`, from an `items_uncertain`
+    /// project) therefore stays in scope. That is exactly the case where the
+    /// handlers do select the project and `build_parses` then refuses on the
+    /// same uncertainty, so it is the case that most needs explaining.
+    pub fn reporting_project(&mut self, file: &Path) -> Option<PathBuf> {
+        let project_path = self.owning_project(file)?;
+        if is_script_path(file)
+            && matches!(self.membership(&project_path, file), Membership::NotMember)
+        {
+            return None;
+        }
+        Some(project_path)
+    }
+
     /// The project whose settings `file` is served under, or `None` when it is
     /// served standalone.
     ///

@@ -900,3 +900,53 @@ fn an_evaluation_recovery_clears_its_record_under_an_unknown_fold() {
         "an evaluation-level recovery needs no fold to be certain of: {reconciled:?}"
     );
 }
+
+/// The outer-dispatch-build reason is *known* — it is the very fact
+/// `ProjectEvaluation` carries — so it must be stated rather than reported as an
+/// absence. Nothing in the evaluator records a cause for it (a multi-targeted
+/// document decides `'$(TargetFramework)' == ''` perfectly cleanly), which is
+/// exactly why it would otherwise fall through to `Causes::Unrecorded`.
+#[test]
+fn the_outer_dispatch_build_states_its_reason() {
+    let parsed = certain_project();
+    let ds = deferrals(
+        ProjectEvaluation::Evaluated {
+            parsed: &parsed,
+            not_an_inner_build: true,
+        },
+        FoldOutcome::Unknown,
+    );
+    assert_eq!(ds.len(), 1);
+    assert_eq!(
+        ds[0].capability(),
+        DeferredCapability::ProjectReferenceEdges
+    );
+    let causes = ds[0].causes().recorded();
+    assert_eq!(causes.len(), 1, "{causes:?}");
+    assert!(causes[0].contains("multi-targets"), "{}", causes[0]);
+    assert!(causes[0].contains("outer dispatch build"), "{}", causes[0]);
+}
+
+/// `evaluation_declines_project_fold` is the gate `semantic::build_parses`
+/// calls on every uncached fold, so it must not render anything. It stays the
+/// single source of truth by being what `deferrals` itself consults — checked
+/// here over the generated project space, not by inspection.
+#[test]
+fn the_fold_gate_agrees_with_the_deferral_it_gates() {
+    let mut parsed = certain_project();
+    for items in [false, true] {
+        for defines in [false, true] {
+            parsed.items_uncertain = items;
+            parsed.define_constants_uncertain = defines;
+            let eval = evaluated(&parsed);
+            assert_eq!(
+                evaluation_declines_project_fold(eval),
+                deferrals(eval, FoldOutcome::Unknown)
+                    .iter()
+                    .any(|d| d.capability() == DeferredCapability::ProjectFold),
+                "items={items} defines={defines}"
+            );
+        }
+    }
+    assert!(evaluation_declines_project_fold(ProjectEvaluation::Failed));
+}

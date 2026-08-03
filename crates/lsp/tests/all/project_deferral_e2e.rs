@@ -351,22 +351,64 @@ fn an_fsproj_buffer_alone_produces_no_toast() {
 
 /// A standalone `.fsx` beside an unrelated `.fsproj` must not be told that
 /// project's problems. `owning_project`'s nearest-ancestor fallback would claim
-/// it; `compiling_project` requires the project to *conclusively* compile the
-/// script, which the SDK never globs a `.fsx` into.
+/// it; the scope rule excludes a **definite** non-membership.
+///
+/// The project here declines something (its `<ProjectReference>` edges) while
+/// being *certain* about its Compile set — which is what makes the non-membership
+/// definite, and the test non-vacuous. An `items_uncertain` project cannot say
+/// whether it compiles the script, and that case is the next test's.
 #[test]
 fn a_standalone_script_is_not_told_a_neighbouring_projects_problems() {
     let tmp = TempDir::new().unwrap();
-    std::fs::write(tmp.path().join("Demo.fsproj"), UNCERTAIN_PROJECT).unwrap();
-    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
-    std::fs::write(tmp.path().join("Script.fsx"), "let x = 1\n").unwrap();
+    std::fs::write(
+        real_path(&tmp).join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(real_path(&tmp).join("Script.fsx"), "let x = 1\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
     let script = source_uri(&tmp, "Script.fsx");
+
+    let mut server = Server::start();
+    // The project genuinely declines — a source file it *does* compile hears so.
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a).len(), 1);
 
     let mut server = Server::start();
     server.open(&script, "let x = 1\n", "fsharp");
     assert_eq!(
         server.deferral_messages(&script),
         Vec::<String>::new(),
-        "a standalone script has no project, so nothing is declined for it"
+        "the script is conclusively not a member, so this is not its problem"
+    );
+}
+
+/// …but an **inconclusive** membership stays in scope. When the project's own
+/// Compile set is untrustworthy it cannot say whether it compiles the script —
+/// and the handlers will select it anyway and then refuse on that same
+/// uncertainty, so this is precisely the case that needs explaining.
+#[test]
+fn a_script_under_an_uncertain_project_is_told_its_problems() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(real_path(&tmp).join("Demo.fsproj"), UNCERTAIN_PROJECT).unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(real_path(&tmp).join("Script.fsx"), "let x = 1\n").unwrap();
+    let script = source_uri(&tmp, "Script.fsx");
+
+    let mut server = Server::start();
+    server.open(&script, "let x = 1\n", "fsharp");
+    let messages = server.deferral_messages(&script);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(
+        messages[0].contains("GetPathOfFileAbove"),
+        "{}",
+        messages[0]
     );
 }
 

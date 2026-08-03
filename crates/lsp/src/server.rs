@@ -1204,7 +1204,7 @@ fn scope_project_of(state: &mut State, uri: &Url) -> Option<CanonicalProject> {
         return None;
     }
     let path = uri.to_file_path().ok()?;
-    let project = state.workspace.compiling_project(&path)?;
+    let project = state.workspace.reporting_project(&path)?;
     Some(CanonicalProject::new(&project))
 }
 
