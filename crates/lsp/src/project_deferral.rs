@@ -8,12 +8,18 @@
 //!
 //! This module is the single place that decides *both* halves of that: which
 //! capabilities are declined, and what to tell the user about each. The
-//! deciding consumer and the message read the same [`deferrals`] call, so they
+//! deciding consumers and the message read the same [`deferrals`] call, so they
 //! cannot drift apart — which they had, entirely: a census over a 401-project
 //! sample of real `.fsproj` files found three that declined the fold and *zero*
 //! that produced the message, because the message read one cause channel
 //! (`compile_condition_uncertainties`) that none of the three populated. See
 //! `docs/fsproj-deferral-message-plan.md`.
+//!
+//! For that to mean anything the inputs must be wide enough to hold every fact
+//! a decline reads: [`ProjectEvaluation`] carries `not_an_inner_build` (which no
+//! evaluator flag records, yet which drops reference edges), and
+//! [`FoldRefusal`] carries the exits `semantic::build_parses` reaches only after
+//! reading the sources. A narrower input is how a decline escapes the explainer.
 //!
 //! Two shapes carry the rest of the discipline:
 //!
@@ -34,7 +40,7 @@ use borzoi_msbuild::{
     DiagnosticOrigin, ImplicitImportKind, ImportFailReason, ParsedProject,
     StructuralCompileItemUncertainty,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// How many causes a single capability's explanation renders before summarising
 /// the rest. A `window/showMessage` is a one-line toast in most clients, and a
@@ -46,18 +52,59 @@ use std::path::Path;
 /// site.
 const MAX_RENDERED_CAUSES: usize = 3;
 
-/// What the workspace knows about a `.fsproj`. Three-valued at the edge rather
-/// than an `Option<&ParsedProject>` with a comment, because "the project did
-/// not evaluate" is itself a reportable deferral and must not be confused with
-/// "the project evaluated and is fine".
+/// What the workspace knows about a `.fsproj` — **everything** the LSP's
+/// decline decisions read, so that a decline can always be explained from it.
+///
+/// Three-valued at the edge rather than an `Option<&ParsedProject>` with a
+/// comment, because "the project did not evaluate" is itself a reportable
+/// deferral and must not be confused with "the project evaluated and is fine".
+///
+/// The `Evaluated` arm carries more than the `ParsedProject` because more than
+/// the `ParsedProject` decides: [`Self::drops_reference_edges`] also turns on
+/// `not_an_inner_build`, which nothing in the evaluation flags. A narrower input
+/// here is what lets a capability be declined by a fact the explainer cannot
+/// see — build the value from
+/// [`crate::workspace::Workspace::project_evaluation`], never by hand.
 #[derive(Debug, Clone, Copy)]
 pub enum ProjectEvaluation<'a> {
-    /// The `.fsproj` evaluated; this is what it produced.
-    Evaluated(&'a ParsedProject),
+    /// The `.fsproj` evaluated.
+    Evaluated {
+        /// What the evaluator produced.
+        parsed: &'a ParsedProject,
+        /// We are serving the **outer dispatch** build of a multi-targeted
+        /// project, whose `<ProjectReference>` list is not the real build's
+        /// under any TFM. Nothing in `parsed` flags this: a multi-targeted
+        /// document never writes the singular `TargetFramework`, so it decides
+        /// `'$(TargetFramework)' == ''` perfectly cleanly. See
+        /// `workspace::EvaluatedProject::not_an_inner_build`.
+        not_an_inner_build: bool,
+    },
     /// The `.fsproj` did not evaluate at all — malformed XML, an unreadable
     /// file, a rejected project path. The buffer's own diagnostics say which;
     /// here we only know that nothing downstream can run.
     Failed,
+}
+
+impl ProjectEvaluation<'_> {
+    /// Whether the inter-project reference edge set is dropped for this project
+    /// — the predicate `workspace::references_suppressed` applies (modulo its
+    /// walk-purpose gate, which is about *why the caller is walking*, not about
+    /// the project).
+    ///
+    /// Shared rather than restated, because a walk that drops edges on a
+    /// condition the message doesn't know about is exactly the silence this
+    /// module exists to remove.
+    pub fn drops_reference_edges(&self) -> bool {
+        match self {
+            // A failed evaluation has no reference list to drop; its whole-project
+            // deferral covers it.
+            ProjectEvaluation::Failed => false,
+            ProjectEvaluation::Evaluated {
+                parsed,
+                not_an_inner_build,
+            } => parsed.project_references_uncertain || *not_an_inner_build,
+        }
+    }
 }
 
 /// A thing the LSP does for a project, which it is not doing for this one.
@@ -192,14 +239,78 @@ impl Deferral {
     }
 }
 
+/// Why the Compile-order fold refused **after** the `.fsproj` evaluation was
+/// accepted — a second decline stage, reached only by reading and parsing the
+/// Compile items themselves.
+///
+/// `semantic::build_parses` returns one of these instead of a bare `None`, so
+/// that a refusal it decides cannot be a refusal nobody can explain. The
+/// evaluation-caused arm exists so that *every* exit is a value: it carries no
+/// detail because [`deferrals`] already has the evaluation and explains it
+/// better.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FoldRefusal {
+    /// The `.fsproj` evaluation itself is untrustworthy or absent. Explained by
+    /// [`deferrals`] from the evaluation; adds nothing here.
+    ProjectEvaluation,
+    /// A Compile item could not be read from either the editor buffer or disk.
+    /// The fold hard-fails on a hole rather than skipping the file: sema's fold
+    /// is order-sensitive, so a silent gap can bind a later reference to the
+    /// wrong entity — a *wrong* answer, not merely a missing one.
+    UnreadableCompileItem { file: PathBuf },
+    /// The CST parser panicked on a Compile item.
+    ParserPanic { file: PathBuf },
+    /// A Compile item parses to a differently *shaped* tree either side of the
+    /// F# 8 strict-indentation boundary, and the project's `LangVersion`
+    /// provenance can't say which side the real build uses.
+    LanguageVersionShape { file: PathBuf },
+    /// A Compile item parsed to a root node that is neither an implementation
+    /// nor a signature file — an internal invariant break, like a panic.
+    UnexpectedParseRoot { file: PathBuf },
+}
+
+impl FoldRefusal {
+    /// The cause phrase, or `None` for the arm the evaluation already explains.
+    fn cause(&self) -> Option<String> {
+        match self {
+            FoldRefusal::ProjectEvaluation => None,
+            FoldRefusal::UnreadableCompileItem { file } => Some(format!(
+                "the Compile item {} can't be read from the editor or from disk",
+                file.display()
+            )),
+            FoldRefusal::ParserPanic { file } => Some(format!(
+                "parsing the Compile item {} hit a bug in borzoi's parser",
+                file.display()
+            )),
+            FoldRefusal::LanguageVersionShape { file } => Some(format!(
+                "{} parses differently either side of the F# 8 indentation rule, and this \
+                 project's LangVersion isn't pinned anywhere I can trust",
+                file.display()
+            )),
+            FoldRefusal::UnexpectedParseRoot { file } => Some(format!(
+                "the Compile item {} parsed to something borzoi didn't expect (a bug)",
+                file.display()
+            )),
+        }
+    }
+}
+
 /// Every capability the LSP declines for this project, with its causes. Empty
 /// exactly when the project is fully usable.
 ///
 /// This is the predicate the deciding consumers call, so a project that defers
 /// is a project that has something to report, by construction rather than by
 /// discipline.
-pub fn deferrals(eval: ProjectEvaluation<'_>) -> Vec<Deferral> {
-    let parsed = match eval {
+///
+/// `fold` is `semantic::build_parses`'s verdict when the caller has run it, and
+/// `None` when it has not (nothing has needed the fold yet, or the caller is
+/// describing an unsaved buffer rather than the workspace's project). It can
+/// only *add* a deferral: the fold never succeeds on an evaluation this
+/// function already declines.
+pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec<Deferral> {
+    let mut out = Vec::new();
+
+    let (parsed, fold_declined_on_evaluation) = match eval {
         ProjectEvaluation::Failed => {
             return vec![Deferral::new(
                 DeferredCapability::ProjectFold,
@@ -209,12 +320,13 @@ pub fn deferrals(eval: ProjectEvaluation<'_>) -> Vec<Deferral> {
                 ],
             )];
         }
-        ProjectEvaluation::Evaluated(parsed) => parsed,
+        ProjectEvaluation::Evaluated { parsed, .. } => (
+            parsed,
+            parsed.items_uncertain || parsed.define_constants_uncertain,
+        ),
     };
 
-    let mut out = Vec::new();
-
-    if parsed.items_uncertain || parsed.define_constants_uncertain {
+    if fold_declined_on_evaluation {
         // Both axes feed the same decline, so they share one explanation. The
         // condition uncertainties come first: they name the gated Compile item,
         // which is the most actionable thing we can say.
@@ -235,13 +347,19 @@ pub fn deferrals(eval: ProjectEvaluation<'_>) -> Vec<Deferral> {
                     .map(render_define_cause),
             );
         out.push(Deferral::new(DeferredCapability::ProjectFold, causes));
+    } else if let Some(cause) = fold.and_then(FoldRefusal::cause) {
+        // The evaluation was fine but the fold still refused, on a fact only
+        // reading the sources could reveal. Same lost capability, so the same
+        // deferral — the user does not care which stage declined.
+        out.push(Deferral::new(DeferredCapability::ProjectFold, [cause]));
     }
 
-    if parsed.project_references_uncertain {
+    if eval.drops_reference_edges() {
         // This axis has no cause channel of its own in `borzoi-msbuild` — it is
-        // raised at a dozen sites, none of which record one. The best we can do
-        // is borrow the Compile axis's *structural* causes: an import or SDK we
-        // couldn't follow is a genuine reason the reference list can't be
+        // raised at a dozen sites, none of which record one, and
+        // `not_an_inner_build` is not an evaluator flag at all. The best we can
+        // do is borrow the Compile axis's *structural* causes: an import or SDK
+        // we couldn't follow is a genuine reason the reference list can't be
         // trusted (it could have carried `<ProjectReference>` mutations), and
         // one of those sites raises both axes together.
         //
@@ -269,11 +387,16 @@ pub fn deferrals(eval: ProjectEvaluation<'_>) -> Vec<Deferral> {
     out
 }
 
-/// Whether the Compile-order fold is declined — the exact question
-/// `semantic::build_parses` asks. Defined in terms of [`deferrals`] so
-/// that a project which declines always has a message, and vice versa.
-pub fn defers_project_fold(eval: ProjectEvaluation<'_>) -> bool {
-    deferrals(eval)
+/// Whether the *evaluation* alone declines the Compile-order fold — the gate
+/// `semantic::build_parses` applies before it reads any source. Defined in terms
+/// of [`deferrals`] so that a project which declines here always has a message,
+/// and vice versa.
+///
+/// A `false` here is not "the fold will succeed": the fold has later exits of
+/// its own, which it reports as a [`FoldRefusal`] and which [`deferrals`] folds
+/// into the same capability.
+pub fn evaluation_declines_project_fold(eval: ProjectEvaluation<'_>) -> bool {
+    deferrals(eval, None)
         .iter()
         .any(|d| d.capability == DeferredCapability::ProjectFold)
 }

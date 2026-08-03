@@ -42,6 +42,7 @@ use borzoi_msbuild::{
 };
 
 use crate::paths::{lexically_normalize, paths_equal};
+use crate::project_deferral::ProjectEvaluation;
 use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
@@ -701,6 +702,21 @@ impl Workspace {
         self.evaluated(project_path).map(|e| &e.parsed)
     }
 
+    /// Everything the LSP's per-project decline decisions read, as one value —
+    /// see [`ProjectEvaluation`]. This is the *only* supported way to build one:
+    /// assembling it by hand from [`Self::project`] loses `not_an_inner_build`,
+    /// and a capability declined on a fact the explainer cannot see is a
+    /// capability that goes away silently.
+    pub fn project_evaluation(&mut self, project_path: &Path) -> ProjectEvaluation<'_> {
+        match self.evaluated(project_path) {
+            Some(evaluated) => ProjectEvaluation::Evaluated {
+                parsed: &evaluated.parsed,
+                not_an_inner_build: evaluated.not_an_inner_build,
+            },
+            None => ProjectEvaluation::Failed,
+        }
+    }
+
     /// The cached [`EvaluatedProject`] for `project_path` — the parse plus the
     /// SDK install root the evaluator resolved — lazily computed and cached
     /// (keyed by canonicalised path). `None` when evaluation failed; the
@@ -1221,13 +1237,23 @@ fn resolve_node_uncached(
 /// drops edges without marking them leaves the env fold counting a set those
 /// references were already filtered out of, so it sees no shortfall to report.
 fn references_suppressed(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose) -> bool {
-    // `not_an_inner_build` is a second, independent reason: we are serving the
-    // *outer dispatch* build, whose reference list is not the real build's under
-    // any TFM — and unlike the unpinned-singular case, nothing in the evaluation
-    // flagged itself, because a multi-targeted document never writes the
-    // singular and so decides `'$(TargetFramework)' == ''` cleanly.
+    // The project-side half of the condition is
+    // [`ProjectEvaluation::drops_reference_edges`], shared with the code that
+    // *explains* the dropped edges to the user rather than restated here: a walk
+    // that drops edges on a condition the message doesn't know about takes the
+    // capability away in silence. (`not_an_inner_build` is exactly such a
+    // condition — nothing in the evaluation flags it, because a multi-targeted
+    // document never writes the singular `TargetFramework` and so decides
+    // `'$(TargetFramework)' == ''` perfectly cleanly.)
+    //
+    // The purpose gate stays here: it is about why *this caller* is walking, not
+    // about the project, so it has no place in a per-project verdict.
     purpose == GraphWalkPurpose::CompileClosure
-        && (evaluated.parsed.project_references_uncertain || evaluated.not_an_inner_build)
+        && ProjectEvaluation::Evaluated {
+            parsed: &evaluated.parsed,
+            not_an_inner_build: evaluated.not_an_inner_build,
+        }
+        .drops_reference_edges()
 }
 
 fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: bool) -> Vec<Edge> {

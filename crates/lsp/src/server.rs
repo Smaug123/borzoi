@@ -1098,6 +1098,21 @@ fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
     let buffer = is_project_buffer
         .then(|| state.docs.get(uri).cloned())
         .flatten();
+    // The Compile-order fold's own verdict, for the project the workspace knows.
+    // Read *before* the evaluation borrow because it needs `&mut workspace`, and
+    // only when this isn't a buffer describing something other than that project.
+    //
+    // `fold_refusal` folds the project if nothing has yet, and caches the
+    // success — so the request that follows this notification reuses it rather
+    // than paying twice. It is skipped for a `.fsproj` buffer: the fold applies
+    // to the workspace's project, not to unsaved text.
+    let fold = (!is_project_buffer)
+        .then(|| {
+            state
+                .semantic
+                .fold_refusal(&project, &mut state.workspace, &state.docs)
+        })
+        .flatten();
     // Build the message inside a scope so the immutable `workspace` borrow ends
     // before we touch `warned_uncertain_projects` and send.
     let message = {
@@ -1111,14 +1126,17 @@ fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
             )
         });
         let evaluation = match &buffer_parse {
-            Some(Ok(parsed)) => ProjectEvaluation::Evaluated(parsed),
-            Some(Err(_)) => ProjectEvaluation::Failed,
-            None => match state.workspace.project(&project) {
-                Some(parsed) => ProjectEvaluation::Evaluated(parsed),
-                None => ProjectEvaluation::Failed,
+            Some(Ok(parsed)) => ProjectEvaluation::Evaluated {
+                parsed,
+                // An unsaved buffer's multi-target dispatch shape is the
+                // workspace's business, not this one-off parse's; the buffer
+                // path reports only what the buffer itself says.
+                not_an_inner_build: false,
             },
+            Some(Err(_)) => ProjectEvaluation::Failed,
+            None => state.workspace.project_evaluation(&project),
         };
-        let deferrals = project_deferral::deferrals(evaluation);
+        let deferrals = project_deferral::deferrals(evaluation, fold.as_ref());
         if !deferrals.is_empty() {
             // The toast is capped; the log is not, so a user who reports "it
             // says 'and 12 more'" can be asked for the trace.

@@ -32,7 +32,7 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
-use crate::project_deferral::ProjectEvaluation;
+use crate::project_deferral::FoldRefusal;
 use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
@@ -1140,10 +1140,47 @@ impl SemanticState {
     ) -> Option<&'a ProjectParses> {
         let key = canonicalise(project);
         if !self.project_parses.contains_key(&key) {
-            let parses = build_parses(project, workspace, docs, &mut self.file_parses)?;
+            let parses = self.fold(project, workspace, docs).ok()?;
             self.project_parses.insert(key.clone(), parses);
         }
         self.project_parses.get(&key)
+    }
+
+    /// Why the Compile-order fold refuses this project, or `None` if it folds.
+    ///
+    /// The refusal is deliberately **not** cached: it can turn into a success
+    /// as soon as a missing file appears or a buffer is edited, and a cached
+    /// negative would need its own invalidation hook on every such event. A
+    /// success *is* cached (through the same memo `parses_for_project` fills),
+    /// so the common path costs one fold, not two.
+    ///
+    /// [`crate::server`] calls this to explain a project that has gone quiet;
+    /// `crate::project_deferral::deferrals` turns the verdict into the message.
+    pub fn fold_refusal(
+        &mut self,
+        project: &Path,
+        workspace: &mut Workspace,
+        docs: &HashMap<Url, String>,
+    ) -> Option<FoldRefusal> {
+        if self.project_parses.contains_key(&canonicalise(project)) {
+            return None;
+        }
+        match self.fold(project, workspace, docs) {
+            Ok(parses) => {
+                self.project_parses.insert(canonicalise(project), parses);
+                None
+            }
+            Err(refusal) => Some(refusal),
+        }
+    }
+
+    fn fold(
+        &mut self,
+        project: &Path,
+        workspace: &mut Workspace,
+        docs: &HashMap<Url, String>,
+    ) -> Result<ProjectParses, FoldRefusal> {
+        build_parses(project, workspace, docs, &mut self.file_parses)
     }
 }
 
@@ -1154,11 +1191,22 @@ fn build_parses(
     workspace: &mut Workspace,
     docs: &HashMap<Url, String>,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
-) -> Option<ProjectParses> {
+) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
     let symbols = workspace.symbols_for_project(project);
     let lang = workspace.lang_version_for_project(project);
-    let parsed = workspace.project(project)?;
+    // Every exit below is a *value*, not a bare `None`: a refusal the user is
+    // never told about is the defect `crate::project_deferral` exists to close,
+    // and only a typed refusal makes "we went quiet" and "we said why" the same
+    // decision at every exit, not just the first.
+    if crate::project_deferral::evaluation_declines_project_fold(
+        workspace.project_evaluation(project),
+    ) {
+        return Err(FoldRefusal::ProjectEvaluation);
+    }
+    let parsed = workspace
+        .project(project)
+        .expect("the evaluation gate above accepted this project");
     // Gate on `items_uncertain`, *not* `is_partial`: we only need the Compile
     // *order* to be trustworthy to fold over it. `is_partial` flips for any
     // divergence from MSBuild — including the undefined properties and skipped
@@ -1176,13 +1224,9 @@ fn build_parses(
     // multi-targeted `'$(TargetFramework)' == …` condition) we'd fold files
     // under the wrong branches and export the wrong bindings. Refuse there too.
     //
-    // Asked through [`crate::project_deferral`] rather than off the flags
-    // directly, so that the refusal and the editor message the user gets for it
-    // are the same decision: a project that goes quiet here is exactly a project
-    // that has something to say about why.
-    if crate::project_deferral::defers_project_fold(ProjectEvaluation::Evaluated(parsed)) {
-        return None;
-    }
+    // Both are asked through `crate::project_deferral::evaluation_declines_project_fold`
+    // above, so that the refusal and the editor message the user gets for it are
+    // the same decision.
     // `LangVersion` provenance is the third axis, gated per *source shape*
     // below rather than here: the language version shapes the token stream
     // (the lex-filter's strict-indentation push decision at the F# 8
@@ -1242,7 +1286,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item unreadable from buffer and disk; refusing to resolve project"
             );
-            return None;
+            return Err(FoldRefusal::UnreadableCompileItem { file: include });
         };
         // Per-file parse cache: reuse a variant whose every deciding input — the
         // source text, the `#if` symbols, the language version, and the project's
@@ -1287,7 +1331,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item triggered parser panic; refusing to resolve project"
             );
-            return None;
+            return Err(FoldRefusal::ParserPanic { file: include });
         };
         // The intersection gate promised above: this file MAY parse to a
         // differently shaped tree at another language version (an offside
@@ -1321,7 +1365,7 @@ fn build_parses(
                     file = %include.display(),
                     "Compile item triggered parser panic; refusing to resolve project"
                 );
-                return None;
+                return Err(FoldRefusal::ParserPanic { file: include });
             };
             // Green-node equality is recursively structural (rowan compares
             // header + children, tokens by kind + text — verified against
@@ -1335,7 +1379,7 @@ fn build_parses(
                     "refusing project parses: LangVersion provenance is untrusted and \
                      this file parses to a different tree across the F# 8 boundary"
                 );
-                return None;
+                return Err(FoldRefusal::LanguageVersionShape { file: include });
             }
         }
         // Before `parse.root` is moved into the `SourceFile`: the errors and the
@@ -1367,7 +1411,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-SIG_FILE root; refusing to resolve project"
                     );
-                    return None;
+                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
                 }
             }
         } else {
@@ -1378,7 +1422,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-IMPL_FILE root; refusing to resolve project"
                     );
-                    return None;
+                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
                 }
             }
         };
@@ -1424,7 +1468,7 @@ fn build_parses(
         .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
         .collect();
 
-    Some(ProjectParses {
+    Ok(ProjectParses {
         files,
         paths,
         texts,

@@ -59,10 +59,34 @@ places from two different inputs — `semantic::build_parses` gates on
 cause vector that neither flag implies. Two predicates that must agree, kept in
 agreement by discipline, and they did not agree.
 
-The fix is one function. [`crate::project_deferral::deferrals`] maps a project
-evaluation to the list of capabilities the LSP declines and why; `build_parses`
-asks it whether to decline, and the server asks it what to say. They cannot
-disagree because there is only one of them.
+The fix is one function. `project_deferral::deferrals` maps a project evaluation
+to the list of capabilities the LSP declines and why; `build_parses` asks it
+whether to decline, and the server asks it what to say. They cannot disagree
+because there is only one of them.
+
+**The input has to be wide enough for that to mean anything.** The first cut of
+this took a `&ParsedProject`, and two declines promptly escaped it — a review
+found both:
+
+- `workspace::references_suppressed` also drops edges when `not_an_inner_build`
+  (the outer dispatch build of a multi-targeted project), which *no evaluator
+  flag records*: a multi-targeted document never writes the singular
+  `TargetFramework`, so it decides `'$(TargetFramework)' == ''` perfectly
+  cleanly. So `ProjectEvaluation::Evaluated` carries it, `drops_reference_edges`
+  is the one predicate both the graph walk and the message use, and
+  `Workspace::project_evaluation` is the only supported way to build the value.
+- `build_parses` has four more exits *after* the evaluation gate, reached only by
+  reading and parsing the Compile items: an unreadable item, a parser panic, an
+  F# 8 shape straddle, an unexpected parse root. It now returns
+  `Result<_, FoldRefusal>` rather than `Option`, so every exit is a value
+  `deferrals` can fold into the same capability. `SemanticState::fold_refusal`
+  hands the verdict to the server (caching the *success*, never the refusal — a
+  refusal turns into a success the moment a file appears, and a cached negative
+  would need its own invalidation hook on every such event).
+
+Both were the original defect wearing a different hat: a decline computed
+somewhere the explainer couldn't see. The lesson is the input type, not the two
+patches — a narrow one lets the next such decline escape silently too.
 
 Two shapes carry the rest of the enforcement:
 
@@ -85,8 +109,8 @@ Capabilities reported (each has a live consumer that declines today):
 
 | capability | trigger | consumer that declines |
 | --- | --- | --- |
-| `ProjectFold` | evaluation failed, `items_uncertain`, or `define_constants_uncertain` | `semantic::build_parses` → single-file fallback |
-| `ProjectReferenceEdges` | `project_references_uncertain` | `workspace::references_suppressed` → `ProjectNode::references_uncertain` → edges dropped from the `AssemblyEnv` |
+| `ProjectFold` | evaluation failed, `items_uncertain`, `define_constants_uncertain`, or any `FoldRefusal` (unreadable Compile item, parser panic, F# 8 shape straddle, unexpected parse root) | `semantic::build_parses` → single-file fallback |
+| `ProjectReferenceEdges` | `project_references_uncertain` **or** `not_an_inner_build` | `workspace::references_suppressed` → `ProjectNode::references_uncertain` → edges dropped from the `AssemblyEnv` |
 
 `package_references_uncertain` is **not** reported: it has no consumer in
 `crates/lsp` (grep), so nothing is declined and there is no user-visible loss to

@@ -368,3 +368,62 @@ fn fixing_the_project_stops_the_message() {
     });
     assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
 }
+
+/// The fold declines for reasons the `.fsproj` evaluation cannot see. A Compile
+/// item that isn't on disk is the common one: the evaluation is perfectly
+/// trustworthy — it faithfully reports the item the document lists — and the
+/// fold still hard-fails, because a hole in an order-sensitive fold can bind a
+/// later reference to the wrong entity. Before the fold reported a typed
+/// refusal, this project lost cross-file analysis in silence.
+#[test]
+fn a_missing_compile_item_is_reported_even_though_the_project_evaluates_cleanly() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="Missing.fs" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let messages = server.deferral_messages(&a);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Missing.fs"), "{}", messages[0]);
+    assert!(messages[0].contains("can't be read"), "{}", messages[0]);
+    assert!(
+        messages[0].contains("single-file analysis"),
+        "{}",
+        messages[0]
+    );
+}
+
+/// The same project, once the file exists, folds and says nothing — so the test
+/// above is measuring the missing file rather than something ambient.
+#[test]
+fn the_same_project_is_quiet_once_the_compile_item_exists() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="Missing.fs" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("Missing.fs"), "module M\nlet m = 1\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+}
