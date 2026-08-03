@@ -344,6 +344,24 @@ pub enum StructuralCompileItemUncertainty {
     UnsupportedChoose,
 }
 
+impl StructuralCompileItemUncertainty {
+    /// Whether skipping this construct also makes the `<ProjectReference>` list
+    /// untrustworthy — i.e. whether it could have carried reference *mutations*
+    /// we never saw.
+    ///
+    /// True for everything except [`Self::UnsupportedChoose`]: `handle_choose`
+    /// scans a `<Choose>`'s still-possible branches for reference mutations
+    /// itself, so an Include-only branch stays at worst a missed reference
+    /// rather than a wrong list.
+    ///
+    /// Public because a consumer explaining a dropped reference set must borrow
+    /// exactly this subset — attributing the drop to a Compile-only `<Choose>`
+    /// would name a construct that had nothing to do with it.
+    pub fn hides_project_references(&self) -> bool {
+        !matches!(self, StructuralCompileItemUncertainty::UnsupportedChoose)
+    }
+}
+
 /// One concrete reason the evaluated `DefineConstants` set is not trustworthy —
 /// the explaining channel for [`crate::ParsedProject::define_constants_uncertain`],
 /// in the mould of [`CompileItemUncertaintyCause`].

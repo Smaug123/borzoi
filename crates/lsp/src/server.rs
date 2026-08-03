@@ -173,13 +173,16 @@ pub struct State {
     /// set. Empty until `initialize` (tests, or a client that opened no folder)
     /// — in which case a workspace pull simply reports nothing.
     workspace_roots: Vec<PathBuf>,
-    /// Project paths we've already shown a "declining project-wide features"
-    /// `window/showMessage` for. Dedupes the notice to once per project, so
-    /// opening file after file in the same project doesn't re-toast. Cleared by
-    /// a structural [`Self::apply_watched_changes`], which re-evaluates every
-    /// project and so may produce a different explanation. See
-    /// [`warn_project_deferral`].
-    warned_uncertain_projects: HashSet<PathBuf>,
+    /// The last "declining project-wide features" `window/showMessage` sent for
+    /// each project.
+    ///
+    /// Keyed on the *message text*, not merely on the project, so that one rule
+    /// serves both halves of what the user needs: opening file after file in the
+    /// same project doesn't re-toast, while a project that starts deferring for
+    /// a **different** reason says so. A project with nothing to report is
+    /// removed, so one that is fixed and later re-broken reports again. See
+    /// [`report_deferral`].
+    warned_uncertain_projects: HashMap<PathBuf, String>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -210,7 +213,7 @@ impl State {
             semantic: SemanticState::new(),
             client_capabilities: None,
             workspace_roots: Vec::new(),
-            warned_uncertain_projects: HashSet::new(),
+            warned_uncertain_projects: HashMap::new(),
             server_request_seq: 0,
             wants_diagnostic_refresh: false,
             pending_refresh_id: None,
@@ -392,12 +395,6 @@ impl State {
             // clears the assembly state too.
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
-            // Every project is about to be re-evaluated, so the record of what
-            // we've already explained is stale: a project may now defer for a
-            // different reason, or have stopped deferring and be about to start
-            // again. Keeping the marks would make the *fixed* edit the last one
-            // the user ever hears about.
-            self.warned_uncertain_projects.clear();
             self.wants_diagnostic_refresh = true;
             self.docs.keys().cloned().collect()
         } else {
@@ -618,20 +615,27 @@ pub fn run_with_fetcher(
                     )))?;
                 } else {
                     let method = req.method.clone();
-                    {
+                    let dispatch = {
                         let _request_span =
                             tracing::info_span!("lsp.request", method = %method).entered();
-                        match handle_request(&mut state, req) {
-                            // Synchronous request: reply immediately, as before.
-                            Dispatch::Reply(response) => {
-                                enqueue_response(&connection, &method, response)?;
-                            }
-                            // Cold SourceLink fetch: hand to the pool, which replies
-                            // out-of-band when it completes. The loop never blocks on
-                            // the network.
-                            Dispatch::Defer { id, pending } => {
-                                dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
-                            }
+                        handle_request(&mut state, req)
+                    };
+                    // Before the reply, not after: a fold refusal is *why* this
+                    // reply is degraded, and an explanation that arrives after
+                    // the disappointing answer reads as unrelated. The fold
+                    // itself has no way to reach the client, so the shell
+                    // reports what it observed.
+                    flush_observed_fold_refusals(&mut state, &connection);
+                    match dispatch {
+                        // Synchronous request: reply immediately, as before.
+                        Dispatch::Reply(response) => {
+                            enqueue_response(&connection, &method, response)?;
+                        }
+                        // Cold SourceLink fetch: hand to the pool, which replies
+                        // out-of-band when it completes. The loop never blocks on
+                        // the network.
+                        Dispatch::Defer { id, pending } => {
+                            dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
                         }
                     }
                     maybe_send_refresh(&mut state, &connection);
@@ -649,6 +653,7 @@ pub fn run_with_fetcher(
                     // an open buffer's semantic tokens without any fold, so
                     // drain refresh work here too, not only after requests.
                     maybe_send_refresh(&mut state, &connection);
+                    flush_observed_fold_refusals(&mut state, &connection);
                 }
             }
             Message::Response(resp) => {
@@ -1070,9 +1075,8 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// server's lifetime — see [`fsproj_diagnostics::evaluate_buffer`] and
 /// `tests::fsproj_sync_does_not_pin_the_project_cache`.
 ///
-/// Deduped per project via [`State::warned_uncertain_projects`], and that set is
-/// cleared when a watched structural change re-evaluates the project, since it
-/// may now defer for a new reason (or stop deferring).
+/// Deduped by message text via [`State::warned_uncertain_projects`], so the same
+/// reason never re-toasts but a new one always does.
 fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
     let Ok(path) = uri.to_file_path() else {
         return;
@@ -1088,9 +1092,6 @@ fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
     } else {
         return;
     };
-    if state.warned_uncertain_projects.contains(&project) {
-        return;
-    }
     // A `.fsproj` buffer describes itself off-cache; anything else reads the
     // workspace's evaluation of its owning project. `evaluate_buffer` needs the
     // borrow of `state.docs` released before `state.workspace` is used, hence
@@ -1136,24 +1137,80 @@ fn warn_project_deferral(conn: &Connection, state: &mut State, uri: &Url) {
             Some(Err(_)) => ProjectEvaluation::Failed,
             None => state.workspace.project_evaluation(&project),
         };
-        let deferrals = project_deferral::deferrals(evaluation, fold.as_ref());
-        if !deferrals.is_empty() {
-            // The toast is capped; the log is not, so a user who reports "it
-            // says 'and 12 more'" can be asked for the trace.
-            tracing::warn!(
-                project = %project.display(),
-                deferrals = ?deferrals,
-                "declining project-wide features"
-            );
-        }
-        // `None` means nothing is declined — leave the project *unmarked* so a
-        // later re-evaluation that does defer can still warn.
-        let Some(message) = project_deferral::deferral_message(&project, &deferrals) else {
-            return;
-        };
-        message
+        deferral_message_for(&project, evaluation, fold.as_ref())
     };
-    state.warned_uncertain_projects.insert(project);
+    report_deferral(conn, state, project, message);
+}
+
+/// Report every fold refusal observed since the last drain.
+///
+/// The fold is reached from request handlers, which cannot talk to the client,
+/// and from edits that happen long after the file was opened — a Compile item
+/// deleted on disk, an edit that makes one straddle the F# 8 indentation
+/// boundary. Draining here, after every dispatched message, is what turns
+/// "a handler quietly fell back" into "the user was told why".
+///
+/// A project whose fold *succeeded* is not reported on: it was removed from the
+/// observation map by the success itself, and its evaluation-level deferrals (if
+/// any) were reported when the buffer was opened.
+fn flush_observed_fold_refusals(state: &mut State, conn: &Connection) {
+    for (project, refusal) in state.semantic.take_observed_fold_refusals() {
+        let message = {
+            let evaluation = state.workspace.project_evaluation(&project);
+            deferral_message_for(&project, evaluation, Some(&refusal))
+        };
+        report_deferral(conn, state, project, message);
+    }
+}
+
+/// Render the message for one project's deferrals, logging the full (uncapped)
+/// list. Pure but for the log; the caller owns the dedup and the send.
+fn deferral_message_for(
+    project: &std::path::Path,
+    evaluation: ProjectEvaluation<'_>,
+    fold: Option<&crate::project_deferral::FoldRefusal>,
+) -> Option<String> {
+    let deferrals = project_deferral::deferrals(evaluation, fold);
+    if !deferrals.is_empty() {
+        // The toast is capped; the log is not, so a user who reports "it says
+        // 'and 12 more'" can be asked for the trace.
+        tracing::warn!(
+            project = %project.display(),
+            deferrals = ?deferrals,
+            "declining project-wide features"
+        );
+    }
+    project_deferral::deferral_message(project, &deferrals)
+}
+
+/// Send `message` for `project`, unless the identical message was the last one
+/// sent for it.
+///
+/// Keying on the text rather than on the project makes "don't re-toast the same
+/// problem" and "do report a new problem" one rule instead of two that have to
+/// be kept in agreement. `None` — nothing is declined — *forgets* the project,
+/// so one that is fixed and later re-broken is reported again.
+fn report_deferral(
+    conn: &Connection,
+    state: &mut State,
+    project: PathBuf,
+    message: Option<String>,
+) {
+    // Canonicalised, because the same project arrives here spelled two ways —
+    // `owning_project`'s literal path from a buffer, and the semantic layer's
+    // canonical key from a drained fold refusal. Keying them apart would send
+    // one project's message twice.
+    let project = crate::semantic::canonicalise(&project);
+    let Some(message) = message else {
+        state.warned_uncertain_projects.remove(&project);
+        return;
+    };
+    if state.warned_uncertain_projects.get(&project) == Some(&message) {
+        return;
+    }
+    state
+        .warned_uncertain_projects
+        .insert(project, message.clone());
     send_notification::<ShowMessage>(
         conn,
         ShowMessageParams {

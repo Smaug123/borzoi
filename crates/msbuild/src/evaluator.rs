@@ -2618,11 +2618,12 @@ impl<'r> State<'r> {
     fn mark_structural_skip(&mut self, kind: StructuralCompileItemUncertainty, span: Range<usize>) {
         self.items_uncertain = true;
         // A skipped import / unresolved SDK can carry `<ProjectReference>`
-        // mutations as easily as Compile items. The un-descended `<Choose>`
-        // is the exception: `handle_choose` scans its still-possible
-        // branches for reference mutations itself, so an Include-only
-        // branch stays at worst a missed reference.
-        if !matches!(kind, StructuralCompileItemUncertainty::UnsupportedChoose) {
+        // mutations as easily as Compile items; the un-descended `<Choose>` is
+        // the exception. The rule is
+        // [`StructuralCompileItemUncertainty::hides_project_references`] rather
+        // than a local `matches!`, because a consumer explaining the dropped
+        // reference list must borrow exactly the subset that caused it.
+        if kind.hides_project_references() {
             self.project_references_uncertain = true;
         }
         self.mark_package_structural_skip(

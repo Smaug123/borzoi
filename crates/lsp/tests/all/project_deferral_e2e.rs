@@ -17,15 +17,19 @@ use std::time::Duration;
 use borzoi::server::{State, run};
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use lsp_types::notification::{
-    DidChangeWatchedFiles, DidOpenTextDocument, Exit, Notification as NotificationTrait,
-    ShowMessage,
+    DidChangeTextDocument, DidChangeWatchedFiles, DidOpenTextDocument, Exit,
+    Notification as NotificationTrait, ShowMessage,
 };
-use lsp_types::request::{DocumentSymbolRequest, Request as RequestTrait, Shutdown};
+use lsp_types::request::{
+    DocumentSymbolRequest, GotoDefinition, Request as RequestTrait, Shutdown,
+};
 use lsp_types::{
-    ClientCapabilities, DiagnosticClientCapabilities, DidChangeWatchedFilesParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, FileChangeType, FileEvent,
-    PartialResultParams, ShowMessageParams, TextDocumentClientCapabilities, TextDocumentIdentifier,
-    TextDocumentItem, Url, WorkDoneProgressParams,
+    ClientCapabilities, DiagnosticClientCapabilities, DidChangeTextDocumentParams,
+    DidChangeWatchedFilesParams, DidOpenTextDocumentParams, DocumentSymbolParams, FileChangeType,
+    FileEvent, GotoDefinitionParams, PartialResultParams, Position, ShowMessageParams,
+    TextDocumentClientCapabilities, TextDocumentContentChangeEvent, TextDocumentIdentifier,
+    TextDocumentItem, TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
+    WorkDoneProgressParams,
 };
 use tempfile::TempDir;
 
@@ -86,6 +90,20 @@ impl Server {
         });
     }
 
+    fn change(&self, uri: &Url, text: &str) {
+        self.notify::<DidChangeTextDocument>(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: text.to_string(),
+            }],
+        });
+    }
+
     /// Drive one request through and drain messages until its response arrives,
     /// returning the notifications seen on the way.
     ///
@@ -123,6 +141,65 @@ impl Server {
                 other => panic!("unexpected message while awaiting the barrier: {other:?}"),
             }
         }
+    }
+
+    /// Like [`Self::barrier`] but with a request that actually folds the
+    /// project (`textDocument/definition` resolves through the Compile order),
+    /// so a refusal the fold alone can discover is observed before the response
+    /// comes back. `documentSymbol` is single-file and would not provoke one.
+    fn fold_barrier(&mut self, uri: &Url) -> Vec<Notification> {
+        let id = RequestId::from(self.next_id);
+        self.next_id += 1;
+        self.client
+            .sender
+            .send(Message::Request(Request {
+                id: id.clone(),
+                method: GotoDefinition::METHOD.to_string(),
+                params: serde_json::to_value(GotoDefinitionParams {
+                    text_document_position_params: TextDocumentPositionParams {
+                        text_document: TextDocumentIdentifier { uri: uri.clone() },
+                        position: Position {
+                            line: 1,
+                            character: 4,
+                        },
+                    },
+                    work_done_progress_params: WorkDoneProgressParams::default(),
+                    partial_result_params: PartialResultParams::default(),
+                })
+                .expect("serialise params"),
+            }))
+            .expect("send fold barrier request");
+        let mut seen = Vec::new();
+        loop {
+            match self
+                .client
+                .receiver
+                .recv_timeout(Duration::from_secs(10))
+                .expect("a response within 10s")
+            {
+                Message::Notification(not) => seen.push(not),
+                Message::Response(resp) if resp.id == id => return seen,
+                other => panic!("unexpected message while awaiting the barrier: {other:?}"),
+            }
+        }
+    }
+
+    fn show_messages(notifications: Vec<Notification>) -> Vec<String> {
+        notifications
+            .into_iter()
+            .filter(|not| not.method == ShowMessage::METHOD)
+            .map(|not| {
+                serde_json::from_value::<ShowMessageParams>(not.params)
+                    .expect("deserialise ShowMessageParams")
+                    .message
+            })
+            .collect()
+    }
+
+    /// The deferral messages emitted after a request that folds the project.
+    fn deferral_messages_after_fold(&mut self, uri: &Url) -> Vec<String> {
+        let seen = self.fold_barrier(uri);
+        Self::show_messages(seen)
     }
 
     /// The deferral messages emitted since the last barrier.
@@ -426,4 +503,80 @@ fn the_same_project_is_quiet_once_the_compile_item_exists() {
     let mut server = Server::start();
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
     assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
+}
+
+/// A refusal introduced *after* the file was opened must still be reported.
+///
+/// The report follows the first request that actually needs the fold, not the
+/// keystroke: the fold is reached from request handlers, which have no
+/// connection to the client, so the refusal is observed there and drained by
+/// the shell afterwards. Folding on every edit just to check would be far more
+/// expensive and would toast before anything had failed. Without the drain,
+/// "delete a sibling source, then go to definition" fell back to single-file
+/// analysis in silence.
+#[test]
+fn a_refusal_introduced_by_a_later_change_is_still_reported() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <Compile Include="B.fs" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("B.fs"), "module B\nlet b = 2\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&a),
+        Vec::<String>::new(),
+        "the project is sound at open time"
+    );
+
+    // The sibling Compile item disappears, and the buffer is edited — which
+    // drops the cached fold, so the next fold hits the hole.
+    std::fs::remove_file(tmp.path().join("B.fs")).unwrap();
+    server.change(&a, "module A\nlet a = 2\n");
+    assert_eq!(
+        server.deferral_messages(&a),
+        Vec::<String>::new(),
+        "a single-file request provokes no fold, so nothing has failed yet"
+    );
+    let messages = server.deferral_messages_after_fold(&a);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("B.fs"), "{}", messages[0]);
+    assert!(messages[0].contains("can't be read"), "{}", messages[0]);
+}
+
+/// The same reason never re-toasts, however many times it is observed — the
+/// dedup is keyed on the message, so a project that stays broken stays quiet
+/// after saying so once.
+#[test]
+fn a_persisting_reason_is_reported_only_once() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    assert_eq!(server.deferral_messages(&a).len(), 1);
+    for i in 0..3 {
+        server.change(&a, &format!("module A\nlet a = {i}\n"));
+        assert_eq!(
+            server.deferral_messages(&a),
+            Vec::<String>::new(),
+            "edit {i} re-toasted the same reason"
+        );
+    }
 }

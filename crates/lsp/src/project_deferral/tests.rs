@@ -582,11 +582,48 @@ fn both_capabilities_are_reported_together() {
     parsed.project_references_uncertain = true;
     parsed.compile_item_uncertainties =
         vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
-            StructuralCompileItemUncertainty::UnsupportedChoose,
+            StructuralCompileItemUncertainty::ImportProjectUnresolved {
+                project: "$(Nope)/a.props".to_string(),
+            },
         ))];
     let message = message_for(&parsed).expect("both are reported");
     assert!(message.contains("single-file analysis"), "{message}");
     assert!(message.contains("<ProjectReference>"), "{message}");
+}
+
+/// A Compile-only `<Choose>` is **not** evidence about the reference list: the
+/// evaluator descends a `<Choose>`'s still-possible branches looking for
+/// reference mutations, and deliberately leaves `project_references_uncertain`
+/// alone for it. Borrowing it anyway would name an innocent construct as the
+/// reason edges were dropped — a confidently wrong explanation, which is worse
+/// than the stated absence it displaced.
+#[test]
+fn a_compile_only_choose_is_not_blamed_for_dropped_edges() {
+    let mut parsed = certain_project();
+    parsed.items_uncertain = true;
+    // Both flags set, but by *independent* causes: the `<Choose>` explains the
+    // Compile set only, and whatever raised the reference flag recorded nothing.
+    parsed.project_references_uncertain = true;
+    parsed.compile_item_uncertainties =
+        vec![compile_cause(CompileItemUncertaintyCauseKind::Structural(
+            StructuralCompileItemUncertainty::UnsupportedChoose,
+        ))];
+    let ds = deferrals(evaluated(&parsed), None);
+    let refs = ds
+        .iter()
+        .find(|d| d.capability() == DeferredCapability::ProjectReferenceEdges)
+        .expect("the reference axis is reported");
+    assert_eq!(
+        refs.causes(),
+        &Causes::Unrecorded,
+        "a Compile-only <Choose> must not be offered as the reason"
+    );
+    // …while the Compile axis, which it *does* explain, still names it.
+    let fold = ds
+        .iter()
+        .find(|d| d.capability() == DeferredCapability::ProjectFold)
+        .expect("the fold is reported");
+    assert!(fold.causes().recorded()[0].contains("Choose"));
 }
 
 // ---------------------------------------------------------------------------

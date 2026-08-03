@@ -227,6 +227,13 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
     project_parses: HashMap<PathBuf, ProjectParses>,
+    /// Fold refusals seen since the shell last drained them
+    /// ([`Self::take_observed_fold_refusals`]), keyed by canonicalised project
+    /// path. Not a cache: nothing reads it to *decide* anything, and a
+    /// successful fold removes the entry, so it cannot go stale into a decision.
+    /// It exists because the fold is reached from handlers, which have no
+    /// connection to the client, while the message must be sent from the shell.
+    observed_fold_refusals: HashMap<PathBuf, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
     /// a single-file edit and reuse every other file's tree (a rowan handle
@@ -1174,13 +1181,41 @@ impl SemanticState {
         }
     }
 
+    /// The one place the fold runs, so that **every** refusal is observed no
+    /// matter which caller provoked it.
+    ///
+    /// A refusal is recorded for [`Self::take_observed_fold_refusals`] to report.
+    /// Without this, a refusal introduced *after* the file was opened — an edit
+    /// that makes a Compile item straddle the F# 8 indentation boundary, a
+    /// sibling source deleted on disk — would be reached only from a handler,
+    /// which has no connection to the client, and the project would go quiet
+    /// with no message. A success clears any prior observation.
     fn fold(
         &mut self,
         project: &Path,
         workspace: &mut Workspace,
         docs: &HashMap<Url, String>,
     ) -> Result<ProjectParses, FoldRefusal> {
-        build_parses(project, workspace, docs, &mut self.file_parses)
+        let outcome = build_parses(project, workspace, docs, &mut self.file_parses);
+        let key = canonicalise(project);
+        match &outcome {
+            Ok(_) => {
+                self.observed_fold_refusals.remove(&key);
+            }
+            Err(refusal) => {
+                self.observed_fold_refusals.insert(key, refusal.clone());
+            }
+        }
+        outcome
+    }
+
+    /// Drain the fold refusals observed since the last drain, for the shell to
+    /// report. Draining (rather than reading) keeps the map from becoming a
+    /// second, staleable record of *why a project is broken*: it holds only
+    /// what has happened since the last flush, and the fold re-records on the
+    /// next attempt.
+    pub fn take_observed_fold_refusals(&mut self) -> Vec<(PathBuf, FoldRefusal)> {
+        self.observed_fold_refusals.drain().collect()
     }
 }
 
@@ -2993,7 +3028,12 @@ fn read_text(path: &Path, docs: &HashMap<Url, String>) -> Option<String> {
 /// Cache-key canonicalisation. Falls back to the literal path when
 /// `canonicalize` fails (e.g. the file doesn't exist on disk yet); matches
 /// the convention `Workspace::project` already uses.
-fn canonicalise(path: &Path) -> PathBuf {
+///
+/// Public because [`crate::server`] keys its per-project deferral record the
+/// same way: a project reached as `/var/…` from one path and `/private/var/…`
+/// from another is one project, and keying it as two makes the same message go
+/// out twice.
+pub fn canonicalise(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 

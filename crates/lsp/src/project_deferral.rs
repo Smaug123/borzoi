@@ -376,7 +376,7 @@ pub fn deferrals(eval: ProjectEvaluation<'_>, fold: Option<&FoldRefusal>) -> Vec
         let causes = parsed
             .compile_item_uncertainties
             .iter()
-            .filter(|cause| is_structural(&cause.kind))
+            .filter(|cause| explains_dropped_references(&cause.kind))
             .map(render_compile_cause);
         out.push(Deferral::new(
             DeferredCapability::ProjectReferenceEdges,
@@ -427,18 +427,26 @@ pub fn deferral_message(project: &Path, deferrals: &[Deferral]) -> Option<String
     Some(format!("{name}: {body}"))
 }
 
-/// Whether a Compile cause is a *structural* drop — a construct whose content
-/// never entered the walk, and so could equally have carried
-/// `<ProjectReference>` items. Used to borrow the Compile axis's causes for the
-/// reference axis.
+/// Whether a Compile cause is *also* evidence about the `<ProjectReference>`
+/// list — a construct whose content never entered the walk, and which could
+/// therefore have carried reference mutations we never saw. Used to borrow the
+/// Compile axis's causes for the reference axis, which records none of its own.
 ///
-/// The diagnostic half delegates to
-/// [`borzoi_msbuild::DiagnosticKind::hides_unseen_content`], the evaluator's own
-/// definition of the class, rather than restating it — a local `matches!` here
-/// silently stops matching the evaluator the moment a variant joins the class.
-fn is_structural(kind: &CompileItemUncertaintyCauseKind) -> bool {
+/// Both halves delegate to `borzoi-msbuild`'s own definitions
+/// ([`borzoi_msbuild::DiagnosticKind::hides_unseen_content`],
+/// [`borzoi_msbuild::StructuralCompileItemUncertainty::hides_project_references`])
+/// rather than restating them. Restating is not merely fragile here, it is
+/// wrong: a local "every structural cause counts" would include
+/// `UnsupportedChoose`, which the evaluator deliberately exempts because it
+/// scans a `<Choose>`'s branches for reference mutations itself. A Compile-only
+/// `<Choose>` alongside an unrelated `<ProjectReference Remove>` would then be
+/// named as the reason for a drop it did not cause — a confidently wrong
+/// explanation, which is worse than the stated absence it displaced.
+fn explains_dropped_references(kind: &CompileItemUncertaintyCauseKind) -> bool {
     match kind {
-        CompileItemUncertaintyCauseKind::Structural(_) => true,
+        CompileItemUncertaintyCauseKind::Structural(structural) => {
+            structural.hides_project_references()
+        }
         CompileItemUncertaintyCauseKind::Diagnostic(kind) => kind.hides_unseen_content(),
     }
 }

@@ -88,6 +88,25 @@ Both were the original defect wearing a different hat: a decline computed
 somewhere the explainer couldn't see. The lesson is the input type, not the two
 patches — a narrow one lets the next such decline escape silently too.
 
+**And wide enough in time, not only in data.** A second review round found the
+same shape once more: a refusal introduced *after* the file was opened (a
+sibling Compile item deleted, an edit that makes one straddle the F# 8
+indentation boundary) was reached only from a request handler, which has no
+connection to the client. `SemanticState::fold` — now the single place the fold
+runs — records every refusal, and the shell drains it
+(`flush_observed_fold_refusals`) *before* enqueueing the reply, since the refusal
+is precisely why that reply is degraded. Reporting on the keystroke instead would
+mean folding the project on every edit just to check, and would toast before
+anything had actually failed.
+
+The dedup moved with it: keyed on the **message text** rather than the project,
+so "don't re-toast the same problem" and "do report a new problem" are one rule
+instead of two that must be kept in agreement. A project with nothing to report
+is forgotten, so one that is fixed and later re-broken reports again. The key is
+canonicalised — the same project arrives spelled `/var/…` from a buffer and
+`/private/var/…` from a drained refusal, and keying those apart sent one
+project's message twice (caught by the e2e tests, not by inspection).
+
 Two shapes carry the rest of the enforcement:
 
 - **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /
@@ -161,6 +180,15 @@ Compile cause is not named. Closing it means giving the axis its own cause
 channel, exactly as change 1 does for the define axis — 13 sites rather than 1,
 which is why it is not in this change. The stated-absence arm is what keeps the
 gap visible instead of letting it read as "nothing else was wrong".
+
+Short is the cost; *wrong* would not be acceptable, and review found one. The
+borrowed subset is `StructuralCompileItemUncertainty::hides_project_references`,
+the evaluator's own rule, not "every structural cause": `UnsupportedChoose` is
+deliberately exempt there (`handle_choose` scans a `<Choose>`'s still-possible
+branches for reference mutations itself), so a Compile-only `<Choose>` alongside
+an unrelated `<ProjectReference Remove>` would otherwise have been named as the
+reason for a drop it did not cause. A confidently wrong explanation is worse
+than the stated absence it displaces.
 
 ## Bounded output
 
