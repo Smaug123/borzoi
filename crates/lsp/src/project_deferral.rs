@@ -41,6 +41,7 @@ use borzoi_msbuild::{
     DiagnosticOrigin, ImplicitImportKind, ImportFailReason, ParsedProject,
     StructuralCompileItemUncertainty,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 /// How many causes a single capability's explanation renders before summarising
@@ -196,10 +197,18 @@ pub enum Causes {
 }
 
 impl Causes {
+    /// Deduplicate while preserving first-seen order.
+    ///
+    /// Set-backed, not a `Vec::contains` scan: this runs inside
+    /// [`crate::server`]'s per-dispatch refresh, and a project with hundreds of
+    /// conditioned Compile items has hundreds of causes — quadratic string
+    /// comparison on every keystroke. [`MAX_RENDERED_CAUSES`] caps only what the
+    /// *toast* shows, not the work done to build the list.
     fn from_rendered(causes: impl IntoIterator<Item = String>) -> Self {
+        let mut seen: HashSet<String> = HashSet::new();
         let mut deduped: Vec<String> = Vec::new();
         for cause in causes {
-            if !deduped.contains(&cause) {
+            if seen.insert(cause.clone()) {
                 deduped.push(cause);
             }
         }
@@ -368,6 +377,12 @@ pub enum FoldOutcome<'a> {
 /// This is the predicate the deciding consumers call, so a project that defers
 /// is a project that has something to report, by construction rather than by
 /// discipline.
+///
+/// **Cost.** A project that declines nothing returns without rendering
+/// anything: both arms are behind their flag. Only a *declining* project pays,
+/// and then proportionally to its recorded causes — which is why the dedup is
+/// set-backed rather than a quadratic scan, since [`crate::server`] calls this
+/// after every dispatched message.
 ///
 /// `fold` is what the Compile-order fold most recently did. It can only *add* a
 /// deferral: the fold never succeeds on an evaluation this function already
