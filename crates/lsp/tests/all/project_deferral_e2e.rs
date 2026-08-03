@@ -840,3 +840,59 @@ fn an_evaluation_problem_reintroduced_without_a_fold_is_reported_again() {
         "the recovery must have cleared the record, so this reports again"
     );
 }
+
+/// A carried-forward fold verdict must never be *restated*.
+///
+/// The reviewer's sequence: a fold refusal is reported; a structural edit then
+/// fixes it and introduces an evaluation-only problem. The fold is now Unknown,
+/// so the old verdict is retained for comparison — but the new toast, triggered
+/// by the reference-edge loss, must not still claim the removed Compile item is
+/// unreadable. It describes inputs that no longer exist.
+#[test]
+fn a_carried_fold_verdict_is_never_restated() {
+    let tmp = TempDir::new().unwrap();
+    let proj_path = real_path(&tmp).join("Demo.fsproj");
+    std::fs::write(
+        &proj_path,
+        r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="Gone.fs" /></ItemGroup></Project>"#,
+    )
+    .unwrap();
+    std::fs::write(real_path(&tmp).join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    let proj = Url::from_file_path(&proj_path).unwrap();
+    let a = source_uri(&tmp, "A.fs");
+
+    let mut server = Server::start();
+    server.open(&a, "module A\nlet a = 1\n", "fsharp");
+    let first = server.deferral_messages_after_fold(&a);
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].contains("Gone.fs"), "{}", first[0]);
+
+    // Fix the fold problem and introduce an evaluation-only one, in one edit.
+    // Nothing folds the new project before the refresh runs.
+    std::fs::write(
+        &proj_path,
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="A.fs" />
+    <ProjectReference Remove="Other.fsproj" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: proj.clone(),
+            typ: FileChangeType::CHANGED,
+        }],
+    });
+
+    let second = server.deferral_messages(&a);
+    assert_eq!(second.len(), 1, "{second:?}");
+    assert!(second[0].contains("<ProjectReference>"), "{}", second[0]);
+    assert!(
+        !second[0].contains("Gone.fs"),
+        "the fresh toast restates a refusal about a file the project no longer \
+         mentions: {}",
+        second[0]
+    );
+}

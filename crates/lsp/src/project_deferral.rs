@@ -495,14 +495,48 @@ pub fn fold_verdict_known(eval: ProjectEvaluation<'_>, fold: FoldOutcome<'_>) ->
     !matches!(fold, FoldOutcome::Unknown) || evaluation_declines_project_fold(eval)
 }
 
-/// This refresh's account of a project, with any claim the current state cannot
-/// make carried over from `previous` rather than silently dropped.
+/// A refresh's account of a project: what may be *said*, and what is *known*.
+///
+/// The two differ exactly when a fold verdict is carried forward. Carrying it
+/// is what stops a still-declined project flickering to silence and re-toasting
+/// the moment anything folds — but a carried verdict describes inputs that have
+/// since changed, so it must never be *stated* as though it were current. A
+/// structural edit that fixes an unreadable Compile item while introducing an
+/// uncertain `<ProjectReference>` would otherwise send a fresh toast still
+/// naming the file it just removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Reconciled {
+    stated: Vec<Deferral>,
+    record: Vec<Deferral>,
+}
+
+impl Reconciled {
+    /// What the current state actually knows — the only thing fit to render.
+    pub fn stated(&self) -> &[Deferral] {
+        &self.stated
+    }
+
+    /// What we know *including* claims we cannot presently re-derive. Compare
+    /// this against the previous refresh's record to decide whether anything
+    /// changed; it is deliberately not shown to anyone.
+    pub fn record(&self) -> &[Deferral] {
+        &self.record
+    }
+
+    /// The record, for storing as the next refresh's `previous`.
+    pub fn into_record(self) -> Vec<Deferral> {
+        self.record
+    }
+}
+
+/// Reconcile this refresh's freshly-computed deferrals against what was last
+/// known, keeping any claim the current state cannot make.
 ///
 /// Only [`DeferredCapability::ProjectFold`] is ever unknowable — every other
 /// capability is decided by the evaluation alone, which is always in hand. So a
 /// project that has not folded still *publishes* its known losses (a dropped
 /// `<ProjectReference>` edge set is a fact about the evaluation), while its
-/// previously-reported fold verdict stands until a fold settles it.
+/// previously-reported fold verdict is retained for comparison only.
 ///
 /// Handling this per capability rather than per project is what stops two
 /// independent facts being conflated: skipping the whole report on an unknown
@@ -514,9 +548,12 @@ pub fn reconcile(
     previous: &[Deferral],
     eval: ProjectEvaluation<'_>,
     fold: FoldOutcome<'_>,
-) -> Vec<Deferral> {
+) -> Reconciled {
     if fold_verdict_known(eval, fold) {
-        return fresh;
+        return Reconciled {
+            record: fresh.clone(),
+            stated: fresh,
+        };
     }
     debug_assert!(
         !fresh
@@ -524,7 +561,7 @@ pub fn reconcile(
             .any(|d| d.capability() == DeferredCapability::ProjectFold),
         "an unknowable fold cannot have produced a ProjectFold deferral"
     );
-    let mut out = fresh;
+    let mut record = fresh.clone();
     if let Some(prev) = previous.iter().find(|d| {
         // Only a *fold-stage* verdict is unknowable and therefore carried. An
         // evaluation-caused one was just recomputed from the same evaluation
@@ -534,9 +571,12 @@ pub fn reconcile(
     }) {
         // Fold deferrals lead, as they do in `deferrals`: the lost capability is
         // the broader one.
-        out.insert(0, prev.clone());
+        record.insert(0, prev.clone());
     }
-    out
+    Reconciled {
+        stated: fresh,
+        record,
+    }
 }
 
 /// Whether the *evaluation* alone declines the Compile-order fold — the gate

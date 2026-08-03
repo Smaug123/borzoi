@@ -821,7 +821,8 @@ fn an_unknown_fold_still_publishes_a_known_reference_loss() {
     );
     let reconciled = reconcile(fresh.clone(), &[], eval, FoldOutcome::Unknown);
     assert_eq!(
-        reconciled, fresh,
+        reconciled.stated(),
+        fresh,
         "the known loss must survive reconciliation"
     );
 }
@@ -847,7 +848,15 @@ fn an_unknown_fold_carries_the_previous_verdict_forward() {
         eval,
         FoldOutcome::Unknown,
     );
-    assert_eq!(reconciled, previously);
+    assert_eq!(
+        reconciled.record(),
+        previously,
+        "the verdict is retained for comparison"
+    );
+    assert!(
+        reconciled.stated().is_empty(),
+        "…but not restated: it describes inputs that have since changed"
+    );
 
     // A fold that *has* run overrides it in both directions.
     assert!(
@@ -857,6 +866,7 @@ fn an_unknown_fold_carries_the_previous_verdict_forward() {
             eval,
             FoldOutcome::Succeeded
         )
+        .record()
         .is_empty(),
         "a successful fold clears the carried-forward verdict"
     );
@@ -886,7 +896,7 @@ fn an_evaluation_recovery_clears_its_record_under_an_unknown_fold() {
         FoldOutcome::Unknown,
     );
     assert!(
-        reconciled.is_empty(),
+        reconciled.record().is_empty(),
         "an evaluation-level recovery needs no fold to be certain of: {reconciled:?}"
     );
 }

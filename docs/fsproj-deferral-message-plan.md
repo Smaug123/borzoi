@@ -262,6 +262,19 @@ through a symlinked path on the wrong spelling. That was the fix I believed I ha
 already made: the edit had silently not applied after `cargo fmt` reflowed the
 target text. Verify the file, not the intent.
 
+### A carried verdict is for comparison, never for restating
+
+A tenth round found the last seam in that split. The carried fold verdict was
+used for *both* dedup and rendering, so a structural edit that fixed an
+unreadable Compile item while introducing an evaluation-only problem sent a
+fresh toast still naming the file it had just removed — the new deferral changed
+the list, so a message went out, and the carried cause rode along in it.
+
+`reconcile` now returns `Reconciled { stated, record }`: `record` (fresh plus
+anything not currently re-derivable) is what the next refresh compares against,
+and `stated` (only what current state knows) is the only thing ever rendered.
+Carrying a verdict may suppress a repeat; it may never assert one.
+
 ## Known coverage limit: graph-level reference suppression
 
 `ProjectReferenceEdges` is reported from the entry project's own evaluation. The

@@ -1136,7 +1136,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
             .get(project.key())
             .cloned()
             .unwrap_or_default();
-        let deferrals = {
+        let reconciled = {
             // Read, never provoke: recomputing the fold here would fold every
             // project on every keystroke. `SemanticState::fold` records the
             // outcome wherever it does run, which is whenever a request
@@ -1153,7 +1153,7 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
                 fold,
             )
         };
-        report_deferral(conn, state, &project, deferrals);
+        report_deferral(conn, state, &project, reconciled);
     }
 }
 
@@ -1221,7 +1221,7 @@ fn report_deferral(
     conn: &Connection,
     state: &mut State,
     project: &CanonicalProject,
-    deferrals: Vec<project_deferral::Deferral>,
+    reconciled: project_deferral::Reconciled,
 ) {
     // Keyed on the canonical path: the same project reaches this code spelled
     // two ways — `compiling_project`'s literal path from a source buffer, and
@@ -1231,23 +1231,33 @@ fn report_deferral(
     // The stored value is the *deferrals*, not the rendered string: they are
     // what the next refresh reconciles against per capability, and prose cannot
     // answer "what did we last know about this project's fold?".
-    if state.warned_uncertain_projects.get(project.key()) == Some(&deferrals) {
+    if state
+        .warned_uncertain_projects
+        .get(project.key())
+        .is_some_and(|stored| stored.as_slice() == reconciled.record())
+    {
         return;
     }
-    let message = project_deferral::deferral_message(project.as_path(), &deferrals);
-    if deferrals.is_empty() {
-        state.warned_uncertain_projects.remove(project.key());
-    } else {
+    // Rendered from `stated`, recorded as `record`: a fold verdict carried over
+    // an invalidation may suppress a repeat, but must never be *asserted* in a
+    // fresh toast — it describes inputs that have since changed.
+    let message = project_deferral::deferral_message(project.as_path(), reconciled.stated());
+    if !reconciled.stated().is_empty() {
         // The toast caps its cause list; the log carries all of them, so a user
         // who reports "it says 'and 12 more'" can be asked for the trace.
         tracing::warn!(
             project = %project,
-            deferrals = ?deferrals,
+            deferrals = ?reconciled.stated(),
             "declining project-wide features"
         );
+    }
+    let record = reconciled.into_record();
+    if record.is_empty() {
+        state.warned_uncertain_projects.remove(project.key());
+    } else {
         state
             .warned_uncertain_projects
-            .insert(project.key().to_path_buf(), deferrals);
+            .insert(project.key().to_path_buf(), record);
     }
     if let Some(message) = message {
         send_notification::<ShowMessage>(
