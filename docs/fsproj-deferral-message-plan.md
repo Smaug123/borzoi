@@ -154,6 +154,31 @@ changed-message check as the notification, since a per-dispatch refresh would
 otherwise repeat a permanently-deferred project's full cause list into stderr
 (and into Loki under `otel`) thousands of times a session.
 
+### Cut again: an open `.fsproj` is not in scope on its own account
+
+A fifth round found three, all in *scope discovery*: recomputing the scope per
+dispatch called `owning_project`, which walks ancestors with `read_dir` on every
+keystroke per open buffer; including an open `.fsproj` populated `Workspace`'s
+project memo from disk through a path text-sync deliberately does not invalidate
+(pinning a stale Compile list — the thing
+`fsproj_sync_does_not_pin_the_project_cache` exists to prevent); and
+`owning_project`'s nearest-ancestor fallback claimed a standalone `.fsx`,
+reporting an unrelated neighbour's problems against a script that has no project.
+
+- **Scope is maintained, not recomputed**: `recompute_deferral_scope` runs on
+  open, close, and structural watched changes. Ownership does not change when a
+  source buffer is edited, so the per-dispatch refresh does no filesystem work at
+  all. A project leaving scope is forgotten, so reopening reports afresh.
+- **An open `.fsproj` is no longer in scope by itself** — the last of three
+  narrowings in the same direction. It enters scope when one of its source files
+  is open, which is the only situation where the toast says anything its own
+  diagnostics don't.
+- **`Workspace::compiling_project`** is `owning_project` plus the script guard
+  `symbols_for` already applied privately (a `.fsx` needs a conclusive
+  `Membership::Member`). Every caller answering "what does this file belong to?"
+  should use it; `owning_project` answers the narrower "whose directory encloses
+  it?".
+
 Two shapes carry the rest of the enforcement:
 
 - **A deferral's `Causes` are a two-armed enum**, `Recorded(Vec<String>)` /

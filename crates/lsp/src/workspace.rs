@@ -462,9 +462,7 @@ impl Workspace {
     ///   one whose owning `.fsproj` failed to evaluate, gets the compiled base.
     pub fn symbols_for(&mut self, file: &Path) -> HashSet<String> {
         if is_script_path(file) {
-            if let Some(project_path) = self.owning_project(file)
-                && matches!(self.membership(&project_path, file), Membership::Member)
-            {
+            if let Some(project_path) = self.compiling_project(file) {
                 return self.symbols_for_project(&project_path);
             }
             return implicit_symbols(true);
@@ -473,6 +471,31 @@ impl Workspace {
             Some(project_path) => self.symbols_for_project(&project_path),
             None => implicit_symbols(false),
         }
+    }
+
+    /// The project whose settings `file` is served under, or `None` when it is
+    /// served standalone.
+    ///
+    /// This is [`Self::owning_project`] with the **script guard**: a `.fsx` is
+    /// claimed only by a project that *conclusively* compiles it (an explicit
+    /// `<Compile Include="…fsx">`, which the SDK never globs). Mere proximity
+    /// does not count — `owning_project`'s nearest-ancestor fallback would
+    /// otherwise hand a standalone script to whichever `.fsproj` happens to sit
+    /// up-tree, and then serve it that project's defines, its language version,
+    /// and (via [`crate::project_deferral`]) *its* problems, none of which have
+    /// anything to do with the script.
+    ///
+    /// Every caller that answers "what does this file belong to?" should use
+    /// this rather than `owning_project`, which answers the narrower "which
+    /// project's directory encloses it?".
+    pub fn compiling_project(&mut self, file: &Path) -> Option<PathBuf> {
+        let project_path = self.owning_project(file)?;
+        if is_script_path(file)
+            && !matches!(self.membership(&project_path, file), Membership::Member)
+        {
+            return None;
+        }
+        Some(project_path)
     }
 
     /// [`Self::symbols_for`], refined by a *linking project* the caller knows

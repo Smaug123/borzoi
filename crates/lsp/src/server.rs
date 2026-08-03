@@ -183,6 +183,12 @@ pub struct State {
     /// removed, so one that is fixed and later re-broken reports again. See
     /// [`report_deferral`].
     warned_uncertain_projects: HashMap<PathBuf, String>,
+    /// The projects [`refresh_project_deferrals`] reports on — the canonicalised
+    /// compiling project of each open source buffer. Maintained by
+    /// [`recompute_deferral_scope`] at the few events that can change it, so the
+    /// per-dispatch refresh does no filesystem work. See that function for why
+    /// an open `.fsproj` is not in scope on its own account.
+    deferral_scope: Vec<PathBuf>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -214,6 +220,7 @@ impl State {
             client_capabilities: None,
             workspace_roots: Vec::new(),
             warned_uncertain_projects: HashMap::new(),
+            deferral_scope: Vec::new(),
             server_request_seq: 0,
             wants_diagnostic_refresh: false,
             pending_refresh_id: None,
@@ -986,6 +993,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.docs.insert(uri.clone(), params.text_document.text);
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
+                recompute_deferral_scope(state);
                 // Fold on open so the newly-visible project's fold outcome is
                 // known state by the time the shell's refresh reports on it —
                 // a project that cannot fold should say so before the user's
@@ -993,8 +1001,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // don't re-fold here: the next request that needs the fold
                 // records its outcome, and the refresh picks it up.
                 if let Ok(path) = uri.to_file_path()
-                    && matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx"))
-                    && let Some(project) = state.workspace.owning_project(&path)
+                    && let Some(project) = state.workspace.compiling_project(&path)
                 {
                     state
                         .semantic
@@ -1018,6 +1025,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 let uri = params.text_document.uri;
                 state.docs.remove(&uri);
                 state.invalidate_owning_project(&uri);
+                recompute_deferral_scope(state);
                 if !state.supports_pull_diagnostics() {
                     // Clear this document's own diagnostics and any it had
                     // relocated onto other files via `#line` directives.
@@ -1033,6 +1041,10 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // buffer through the negotiated delivery path. Push clients
                 // receive new notifications; pull clients read the fresh
                 // project context on their next request.
+                // A structural change can move which project compiles a file
+                // (a new `<Compile>` entry, a deleted `.fsproj`), so scope is
+                // recomputed rather than assumed stable.
+                recompute_deferral_scope(state);
                 for uri in state.apply_watched_changes(&params.changes) {
                     publish_diagnostics(conn, state, &uri);
                 }
@@ -1096,7 +1108,7 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
 /// walk on every dispatch. The toast's own job is the one squiggles can't do —
 /// telling a `.fs` buffer why its project went quiet.
 fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
-    for project in projects_in_scope(state) {
+    for project in state.deferral_scope.clone() {
         let deferrals = {
             // Read, never provoke: recomputing the fold here would fold every
             // project on every keystroke. `SemanticState::fold` records the
@@ -1110,38 +1122,52 @@ fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
     }
 }
 
-/// The projects a refresh reports on: the owning project of every open buffer,
-/// canonicalised and deduplicated.
+/// Recompute [`State::deferral_scope`]: the projects a refresh reports on.
 ///
-/// Deliberately derived from the open buffers rather than from the workspace
-/// roots: a message about a project the user has nothing open from is noise
-/// they cannot act on from where they are.
+/// Maintained at the few points that can change it — a document opening or
+/// closing, and a structural watched change that can move ownership — rather
+/// than recomputed per dispatch, because [`Workspace::compiling_project`] walks
+/// ancestor directories with `read_dir` even when every evaluation is already
+/// cached. Per dispatch that is one filesystem scan per open buffer, on every
+/// keystroke, which is unaffordable on a large or network-backed workspace and
+/// buys nothing: ownership does not change when a source buffer is edited.
 ///
-/// Canonicalised *here*, not just at the send: the same project reached through
-/// a symlink and through its real path is one project, and two entries for it
-/// would each recompute and diff against the same key — alternately inserting
-/// and removing it, re-toasting after every dispatched message.
-fn projects_in_scope(state: &mut State) -> Vec<PathBuf> {
+/// Scope is derived from open **source** buffers. An open `.fsproj` is not in
+/// scope on its own account: it already has span-anchored diagnostics on its own
+/// text, and evaluating it here would populate `Workspace`'s project memo from
+/// *disk* on a path that text-sync deliberately does not invalidate — pinning a
+/// stale Compile list for the server's lifetime, which is exactly what
+/// `tests::fsproj_sync_does_not_pin_the_project_cache` exists to prevent. When
+/// one of its source files is open, the project is in scope through that.
+///
+/// A project that leaves scope is forgotten
+/// ([`State::warned_uncertain_projects`]), so reopening a file reports afresh
+/// rather than being deduped against a message from a previous session with the
+/// file.
+fn recompute_deferral_scope(state: &mut State) {
     let mut scope: Vec<PathBuf> = Vec::new();
     let uris: Vec<Url> = state.docs.keys().cloned().collect();
     for uri in uris {
+        if !matches!(path_extension(&uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
+            continue;
+        }
         let Ok(path) = uri.to_file_path() else {
             continue;
         };
-        let project = match path_extension(&uri).as_deref() {
-            Some("fsproj") => path,
-            Some("fs" | "fsi" | "fsx") => match state.workspace.owning_project(&path) {
-                Some(project) => project,
-                None => continue,
-            },
-            _ => continue,
+        // `compiling_project`, not `owning_project`: a standalone `.fsx` beside
+        // an unrelated `.fsproj` must not be told that project's problems.
+        let Some(project) = state.workspace.compiling_project(&path) else {
+            continue;
         };
         let project = crate::semantic::canonicalise(&project);
         if !scope.contains(&project) {
             scope.push(project);
         }
     }
-    scope
+    state
+        .warned_uncertain_projects
+        .retain(|project, _| scope.contains(project));
+    state.deferral_scope = scope;
 }
 
 /// Send `message` for `project`, unless the identical message was the last one

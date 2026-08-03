@@ -306,85 +306,71 @@ fn a_trustworthy_project_produces_no_message() {
     assert_eq!(server.deferral_messages(&a), Vec::<String>::new());
 }
 
-/// The user investigating a broken project opens the `.fsproj` itself. That
-/// buffer could previously never trigger the message, being neither `.fs`,
-/// `.fsi` nor `.fsx`.
+/// An open `.fsproj`, on its own, produces no toast.
+///
+/// Deliberate, and the third narrowing this feature took under review. The
+/// buffer's problems already surface as span-anchored diagnostics on its own
+/// text every keystroke — better feedback than a toast, since they point at the
+/// offending element instead of naming it. Meanwhile evaluating the project here
+/// would populate `Workspace`'s memo from *disk* through a path text-sync does
+/// not invalidate, pinning a stale Compile list for the server's lifetime.
+///
+/// The toast's job is the one squiggles cannot do: telling a *source* buffer why
+/// its project went quiet. So the project enters scope when one of its source
+/// files is open — pinned by
+/// `an_open_fsproj_does_not_suppress_its_project_s_fold_refusal` below.
 #[test]
-fn opening_the_fsproj_itself_reports_its_deferral() {
+fn an_fsproj_buffer_alone_produces_no_toast() {
     let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
     let mut server = Server::start();
     server.open(&proj, UNCERTAIN_PROJECT, "xml");
-    let messages = server.deferral_messages(&proj);
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].contains("Demo.fsproj"), "{}", messages[0]);
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
-    );
-}
-
-/// An open `.fsproj` is reported from the **workspace's** evaluation, not from
-/// its unsaved buffer text.
-///
-/// That is a deliberate narrowing. The buffer's own problems already surface as
-/// span-anchored diagnostics on every keystroke, which is better feedback than
-/// a toast; describing the buffer here instead would put a full import/SDK walk
-/// on every dispatched message, and — because the buffer parse knows nothing of
-/// the workspace's multi-target dispatch verdict or of the fold — would *hide*
-/// declines that are really in force. The toast's job is the one squiggles
-/// can't do: telling a source buffer why its project went quiet.
-#[test]
-fn an_open_fsproj_is_reported_from_disk_not_from_its_buffer() {
-    // Disk is broken, the buffer is clean: the decline is real (handlers use
-    // the disk project), so it is reported.
-    let (_tmp, proj) = project_dir(UNCERTAIN_PROJECT);
-    let mut server = Server::start();
-    server.open(&proj, CERTAIN_PROJECT, "xml");
-    let messages = server.deferral_messages(&proj);
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
-    );
-}
-
-/// The converse: a clean project whose buffer has been edited into an uncertain
-/// one says nothing *yet* — nothing is declined until the edit is saved, and
-/// the buffer's own diagnostics already flag it in place.
-#[test]
-fn an_unsaved_fsproj_edit_does_not_toast_before_it_takes_effect() {
-    let (_tmp, proj) = project_dir(CERTAIN_PROJECT);
-    let mut server = Server::start();
-    server.open(&proj, CERTAIN_PROJECT, "xml");
-    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
-    server.change(&proj, UNCERTAIN_PROJECT);
     assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
 }
 
-/// …and once the edit reaches disk and the client says so, it is reported.
+/// A standalone `.fsx` beside an unrelated `.fsproj` must not be told that
+/// project's problems. `owning_project`'s nearest-ancestor fallback would claim
+/// it; `compiling_project` requires the project to *conclusively* compile the
+/// script, which the SDK never globs a `.fsx` into.
 #[test]
-fn a_saved_fsproj_edit_is_reported() {
-    let (tmp, proj) = project_dir(CERTAIN_PROJECT);
-    let mut server = Server::start();
-    server.open(&proj, CERTAIN_PROJECT, "xml");
-    assert_eq!(server.deferral_messages(&proj), Vec::<String>::new());
-
+fn a_standalone_script_is_not_told_a_neighbouring_projects_problems() {
+    let tmp = TempDir::new().unwrap();
     std::fs::write(tmp.path().join("Demo.fsproj"), UNCERTAIN_PROJECT).unwrap();
-    server.notify::<DidChangeWatchedFiles>(DidChangeWatchedFilesParams {
-        changes: vec![FileEvent {
-            uri: proj.clone(),
-            typ: FileChangeType::CHANGED,
-        }],
-    });
-    let messages = server.deferral_messages(&proj);
-    assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
+    std::fs::write(tmp.path().join("A.fs"), "module A\nlet a = 1\n").unwrap();
+    std::fs::write(tmp.path().join("Script.fsx"), "let x = 1\n").unwrap();
+    let script = source_uri(&tmp, "Script.fsx");
+
+    let mut server = Server::start();
+    server.open(&script, "let x = 1\n", "fsharp");
+    assert_eq!(
+        server.deferral_messages(&script),
+        Vec::<String>::new(),
+        "a standalone script has no project, so nothing is declined for it"
     );
+}
+
+/// …while a `.fsx` a project *explicitly* compiles does belong to it, and hears
+/// about its problems like any other source file.
+#[test]
+fn a_compile_listed_script_is_told_its_projects_problems() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(
+        tmp.path().join("Demo.fsproj"),
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="Script.fsx" />
+    <Compile Include="Gone.fs" />
+  </ItemGroup>
+</Project>"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("Script.fsx"), "let x = 1\n").unwrap();
+    let script = source_uri(&tmp, "Script.fsx");
+
+    let mut server = Server::start();
+    server.open(&script, "let x = 1\n", "fsharp");
+    let messages = server.deferral_messages(&script);
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert!(messages[0].contains("Gone.fs"), "{}", messages[0]);
 }
 
 #[test]
