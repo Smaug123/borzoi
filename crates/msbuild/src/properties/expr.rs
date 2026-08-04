@@ -1071,6 +1071,47 @@ fn eval_msbuild_static(
             .map(|p| str_result(&p))
             .ok_or(Unsupported);
     }
+    if member_name.eq_ignore_ascii_case("GetPathOfFileAbove") {
+        if !fs {
+            return Err(Unsupported);
+        }
+        // The argument order mirrors the sibling above, and the starting
+        // directory is optional: the one-argument overload searches from the
+        // directory of the file the expression is *written in*. Oracle-pinned
+        // 2026-08-04 by putting the call in an imported `.props` living in a
+        // different directory — it searched from that file's directory, not the
+        // project's.
+        let (file, start) = match args {
+            [file] => {
+                // Read, not referenced: `MSBuildThisFileDirectory` is MSBuild's
+                // implicit default rather than a name the source mentions, so
+                // its absence is a decline. The empty substitution an undefined
+                // `$(…)` would get is exactly the empty starting directory
+                // MSBuild errors on.
+                let this_dir = props
+                    .get("MSBuildThisFileDirectory")
+                    .ok_or(Unsupported)?
+                    .unescape();
+                if !path_args_are_bare(&[file]) {
+                    return Err(Unsupported);
+                }
+                let file = super::eval_exact_path_arg(file, props, false).ok_or(Unsupported)?;
+                (file, this_dir)
+            }
+            [file, start] => {
+                if !path_args_are_bare(&[file, start]) {
+                    return Err(Unsupported);
+                }
+                let file = super::eval_exact_path_arg(file, props, false).ok_or(Unsupported)?;
+                let start = super::eval_exact_path_arg(start, props, false).ok_or(Unsupported)?;
+                (file, start)
+            }
+            _ => return Err(Unsupported),
+        };
+        return super::get_path_of_file_above(&file, &start)
+            .map(|p| str_result(&p))
+            .ok_or(Unsupported);
+    }
     Err(Unsupported)
 }
 

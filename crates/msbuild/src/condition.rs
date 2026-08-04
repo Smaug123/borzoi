@@ -787,8 +787,21 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// Parse `( '…' )` — the single quoted string-literal argument shared by
-    /// `Exists` and `HasTrailingSlash`. Returns the quote-stripped raw text.
+    /// Parse the single argument shared by `Exists` and `HasTrailingSlash`:
+    /// either a quoted literal `( '…' )` or a bare property expression
+    /// `( $(…) )`. Returns the raw (quote-stripped) text for the caller to
+    /// expand.
+    ///
+    /// The unquoted spelling is the only one available to an argument that
+    /// itself contains quotes — `Exists($([MSBuild]::GetPathOfFileAbove('x',
+    /// '$(D)')))`, the `Directory.Build.props` chaining idiom — since the
+    /// literal form has no escape for a nested delimiter. MSBuild accepts both
+    /// (oracle-pinned 2026-08-04: `Exists($(F))`, `HasTrailingSlash($(D))` and
+    /// the nested-function form all evaluate).
+    ///
+    /// Anything *around* the reference is still rejected, matching MSBuild:
+    /// `Exists($(D)../x.props)` is MSB4092 ("An unexpected token `..`"), and the
+    /// trailing text tokenises past the closing paren this expects.
     fn parse_single_string_argument(&mut self) -> Result<String, ()> {
         match self.bump() {
             Some(Token::LParen) => {}
@@ -796,6 +809,7 @@ impl<'a> Parser<'a> {
         }
         let arg = match self.bump() {
             Some(Token::String(s)) => s.clone(),
+            Some(Token::Property(raw)) => raw.clone(),
             _ => return Err(()),
         };
         match self.bump() {

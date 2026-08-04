@@ -185,6 +185,35 @@ fn hand_picked_corners() {
             props(&[("OutDir", "obj")]),
             Verdict::True,
         ),
+        // The **unquoted** argument spelling. MSBuild accepts a bare property
+        // expression where the built-ins take a string, and it is the only
+        // spelling available to an argument that itself contains quotes — the
+        // `Exists($([MSBuild]::GetPathOfFileAbove('x', '$(D)')))` idiom, which
+        // has no way to nest a delimiter inside a literal.
+        (
+            "HasTrailingSlash($(OutDir))",
+            props(&[("OutDir", "obj/")]),
+            Verdict::True,
+        ),
+        (
+            "HasTrailingSlash($(OutDir))",
+            props(&[("OutDir", "obj")]),
+            Verdict::False,
+        ),
+        // A nested function call as the unquoted argument — the shape that
+        // cannot be written quoted at all.
+        (
+            "HasTrailingSlash($([MSBuild]::EnsureTrailingSlash('obj')))",
+            props(&[]),
+            Verdict::True,
+        ),
+        // Bare text *around* the reference is MSB4092 ("An unexpected token"),
+        // so this must stay a decline rather than read as `$(D)` plus a suffix.
+        (
+            "HasTrailingSlash($(OutDir)sub/)",
+            props(&[("OutDir", "obj/")]),
+            Verdict::Unsupported,
+        ),
         // The F# SDK's FSharpCoreMaximumMajorVersion gate, end-to-end.
         (
             "'$(S)' == 'true' and '$(V)' != '' and !$(V.Contains('{'))",

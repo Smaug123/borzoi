@@ -253,8 +253,13 @@ impl Drop for Server {
 /// A project whose Compile group is gated on a condition the evaluator can't
 /// reduce — the shape the real-world census found most often, and one that
 /// produced no message at all before this feature.
+///
+/// The specimen must be a *genuinely* unmodelled expression: when the evaluator
+/// learns one, every test here silently stops exercising deferral and passes on
+/// a project that no longer defers at all. This one is unmodelled because the
+/// value is not a function of the project — it is the wall clock.
 const UNCERTAIN_PROJECT: &str = r#"<Project>
-  <ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props')))">
+  <ItemGroup Condition="'$([System.DateTime]::Now)' != ''">
     <Compile Include="A.fs" />
   </ItemGroup>
 </Project>"#;
@@ -307,11 +312,7 @@ fn opening_a_source_file_reports_its_project_s_deferral() {
     assert!(messages[0].contains("Demo.fsproj"), "{}", messages[0]);
     // The *cause*, not merely the fact — this is what the previous
     // implementation could not produce for this project.
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
-    );
+    assert!(messages[0].contains("System.DateTime"), "{}", messages[0]);
     assert!(
         messages[0].contains("single-file analysis"),
         "{}",
@@ -405,11 +406,7 @@ fn a_script_under_an_uncertain_project_is_told_its_problems() {
     server.open(&script, "let x = 1\n", "fsharp");
     let messages = server.deferral_messages(&script);
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(
-        messages[0].contains("GetPathOfFileAbove"),
-        "{}",
-        messages[0]
-    );
+    assert!(messages[0].contains("System.DateTime"), "{}", messages[0]);
 }
 
 /// …while a `.fsx` a project *explicitly* compiles does belong to it, and hears
@@ -466,7 +463,7 @@ fn editing_the_project_lets_a_new_reason_be_reported() {
     server.open(&a, "module A\nlet a = 1\n", "fsharp");
     let first = server.deferral_messages(&a);
     assert_eq!(first.len(), 1, "{first:?}");
-    assert!(first[0].contains("GetPathOfFileAbove"), "{}", first[0]);
+    assert!(first[0].contains("System.DateTime"), "{}", first[0]);
 
     // Swap the cause on disk, then tell the server the file changed.
     std::fs::write(
@@ -754,7 +751,7 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
     let proj_path = tmp.path().join("Demo.fsproj");
     let sound = r#"<Project><ItemGroup><Compile Include="A.fs" /><Compile Include="B.fs" /></ItemGroup></Project>"#;
     let gated = r#"<Project>
-  <ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props')))">
+  <ItemGroup Condition="'$([System.DateTime]::Now)' != ''">
     <Compile Include="A.fs" />
     <Compile Include="B.fs" />
   </ItemGroup>
@@ -791,7 +788,7 @@ fn a_fold_refusal_does_not_outlive_the_project_that_caused_it() {
     let gated_messages = server.deferral_messages(&a);
     assert_eq!(gated_messages.len(), 1, "{gated_messages:?}");
     assert!(
-        gated_messages[0].contains("GetPathOfFileAbove"),
+        gated_messages[0].contains("System.DateTime"),
         "{}",
         gated_messages[0]
     );
