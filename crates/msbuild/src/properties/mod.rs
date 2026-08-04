@@ -496,6 +496,14 @@ fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
 ///
 /// An empty `file` also declines, where MSBuild answers `""`. Declining is
 /// fail-safe and the shape does not arise.
+///
+/// A **found** path declines on a Windows host, because it is the one result
+/// here that carries separators: [`normalize_path`] joins with `/` where .NET's
+/// `Path.GetFullPath` uses `\`, so committing it would be byte-different from
+/// MSBuild — the same known gap [`eval_exact_path_arg`] already declines a
+/// `%XX`-bearing Windows argument for, and it belongs to the helper, not to this
+/// caller. An exhausted search returns `""`, which has no separators to get
+/// wrong, so it still commits.
 fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
     // `Path.GetFileName` on a value with any separator differs from the value
     // itself, which is what MSBuild's guard compares. A `\` counts on every
@@ -506,6 +514,9 @@ fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
     let dir = get_directory_name_of_file_above(start, file)?;
     if dir.is_empty() {
         return Some(String::new());
+    }
+    if cfg!(windows) {
+        return None;
     }
     normalize_path(&[dir, file.to_string()])
 }
