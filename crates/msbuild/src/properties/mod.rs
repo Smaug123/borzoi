@@ -505,9 +505,13 @@ fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
 /// caller. An exhausted search returns `""`, which has no separators to get
 /// wrong, so it still commits.
 fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
-    // `Path.GetFileName` on a value with any separator differs from the value
-    // itself, which is what MSBuild's guard compares. A `\` counts on every
-    // host here, since the walk normalises separators anyway.
+    // MSBuild's guard is `file != Path.GetFileName(file)`, which differs exactly
+    // when the value carries a separator. A `\` is a separator on Windows only:
+    // on a unix host `Path.GetFileName(@"a\b")` is the whole `a\b`, so MSBuild
+    // accepts it and the unix path fixup turns it into `a/b` (probed). Declining
+    // it here is therefore a deliberate over-decline off Windows — fail-safe, and
+    // it keeps this guard host-independent rather than making the *accepted*
+    // domain differ by host, which is the direction that produces wrong answers.
     if file.is_empty() || file.contains(['/', '\\']) {
         return None;
     }
