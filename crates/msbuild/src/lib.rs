@@ -31,8 +31,8 @@ pub mod test_support;
 
 pub use diagnostic::{
     CompileConditionReason, CompileConditionUncertainty, CompileItemUncertaintyCause,
-    CompileItemUncertaintyCauseKind, Diagnostic, DiagnosticKind, DiagnosticOrigin,
-    ImplicitImportKind, ImportFailReason, PackageReferenceUncertaintyCause,
+    CompileItemUncertaintyCauseKind, DefineConstantsUncertaintyCause, Diagnostic, DiagnosticKind,
+    DiagnosticOrigin, ImplicitImportKind, ImportFailReason, PackageReferenceUncertaintyCause,
     PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
     StructuralPackageReferenceUncertainty,
 };
@@ -678,6 +678,15 @@ pub struct ParsedProject {
     /// define uncertainty (an unevaluable condition, an unsupported/`@()`/`%()`
     /// value reference) is flagged.
     pub define_constants_uncertain: bool,
+    /// Concrete events that made [`Self::define_constants_uncertain`] true —
+    /// the define-axis twin of [`Self::compile_item_uncertainties`], and the
+    /// only channel that can say *why* the `#if` symbol set is untrusted.
+    ///
+    /// The flag is raised at exactly one site (a diagnostic pushed while in
+    /// define context), which pushes here at the same moment, so
+    /// `define_constants_uncertain == !define_constants_uncertainties.is_empty()`
+    /// holds by construction; `define_uncertainty_and_its_causes_agree` pins it.
+    pub define_constants_uncertainties: Vec<DefineConstantsUncertaintyCause>,
     /// The [`SdkPaths::root`] of the entry project's **own** SDK — its
     /// `<Project Sdk="X">` shorthand or the equivalent promoted explicit form
     /// (`<Import Sdk="X" Project="Sdk.props"/>` as the first body element).

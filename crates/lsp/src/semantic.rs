@@ -32,6 +32,7 @@ use crate::paths::{lexically_normalize, paths_equal};
 use crate::project_assets::{
     resolve_assemblies_for_tfm, resolve_assemblies_root_only, resolve_transitive_project_tfms,
 };
+use crate::project_deferral::{FoldOutcome, FoldRefusal};
 use crate::project_graph::{NodeTfm, ProjectGraph, ProjectKind};
 use crate::restore::{RestoreOutcome, restore_to_scratch_assemblies};
 use crate::sdk_discovery::SdkDiscoveryEnv;
@@ -226,6 +227,22 @@ pub struct SemanticState {
     /// [`Self::invalidate_all`] when `workspace/didChangeWatchedFiles` reports
     /// a structural (`.fsproj` / assets / import) change.
     project_parses: HashMap<PathBuf, ProjectParses>,
+    /// The last fold outcome per project, keyed by canonicalised project path.
+    /// **Absence means [`FoldOutcome::Unknown`]** — no fold has run since the
+    /// inputs last changed — which is a third state, not a synonym for success.
+    ///
+    /// Written **only** by [`Self::fold`], the one place the fold runs, so it
+    /// cannot disagree with what the fold actually did, and cleared by every
+    /// invalidation, because an invalidated input means the recorded outcome
+    /// describes a project that no longer exists in that form. Conflating that
+    /// with "succeeded" would let a stale refusal be re-reported against a
+    /// freshly-evaluated project; conflating it with "refused" would report a
+    /// problem that may already be fixed.
+    ///
+    /// Read (not drained) by [`Self::fold_outcome`], which is what lets the
+    /// shell's message be a function of current state rather than of the event
+    /// that provoked it.
+    observed_fold_refusals: HashMap<PathBuf, FoldRefusal>,
     /// Per-**file** parse cache — the parsed [`ImplFile`]s for each Compile item,
     /// keyed by path. Lets [`build_parses`] re-parse only the file that changed on
     /// a single-file edit and reuse every other file's tree (a rowan handle
@@ -443,6 +460,9 @@ impl SemanticState {
         let key = canonicalise(project);
         self.project_parses.remove(&key);
         self.resolved_projects.remove(&key);
+        // The recorded fold outcome described the *old* inputs; drop it back to
+        // `FoldOutcome::Unknown` rather than let it speak for the new ones.
+        self.observed_fold_refusals.remove(&key);
         // This edit may have staled an open later buffer's tokens; the client
         // only re-requests the buffer it touched, so owe a workspace refresh.
         self.wants_refresh = true;
@@ -456,6 +476,7 @@ impl SemanticState {
     /// which editor text-sync never can.
     pub fn invalidate_all(&mut self) {
         self.project_parses.clear();
+        self.observed_fold_refusals.clear();
         self.file_parses.clear();
         self.resolved_projects.clear();
         self.prev_resolved.clear();
@@ -521,6 +542,12 @@ impl SemanticState {
     /// inspecting the live cache avoids re-evaluating projects from disk.
     pub fn invalidate_file(&mut self, file: &Path) {
         let target = lexically_normalize(file);
+        // A *refused* project has no `project_parses` entry at all, so the
+        // path-matching sweep below cannot find it. Its recorded refusal is
+        // nevertheless about a source file that may be exactly the one that
+        // just changed, so every refusal drops back to `FoldOutcome::Unknown`;
+        // the next fold re-establishes whichever ones still hold.
+        self.observed_fold_refusals.clear();
         let to_drop: Vec<PathBuf> = self
             .project_parses
             .iter()
@@ -535,6 +562,7 @@ impl SemanticState {
         for key in to_drop {
             self.project_parses.remove(&key);
             self.resolved_projects.remove(&key);
+            self.observed_fold_refusals.remove(&key);
         }
         // This edit may have staled an open later buffer's tokens; the client
         // only re-requests the buffer it touched, so owe a workspace refresh.
@@ -1139,10 +1167,55 @@ impl SemanticState {
     ) -> Option<&'a ProjectParses> {
         let key = canonicalise(project);
         if !self.project_parses.contains_key(&key) {
-            let parses = build_parses(project, workspace, docs, &mut self.file_parses)?;
+            let parses = self.fold(project, workspace, docs).ok()?;
             self.project_parses.insert(key.clone(), parses);
         }
         self.project_parses.get(&key)
+    }
+
+    /// The one place the fold runs, so that **every** outcome is observed no
+    /// matter which caller provoked it.
+    ///
+    /// The outcome is recorded for [`Self::fold_outcome`] to report. Without
+    /// this, a refusal introduced *after* the file was opened — an edit that
+    /// makes a Compile item straddle the F# 8 indentation boundary, a sibling
+    /// source deleted on disk — would be reached only from a handler, which has
+    /// no connection to the client, and the project would go quiet with no
+    /// message. A success clears any prior observation.
+    fn fold(
+        &mut self,
+        project: &Path,
+        workspace: &mut Workspace,
+        docs: &HashMap<Url, String>,
+    ) -> Result<ProjectParses, FoldRefusal> {
+        let outcome = build_parses(project, workspace, docs, &mut self.file_parses);
+        let key = canonicalise(project);
+        match &outcome {
+            Ok(_) => {
+                self.observed_fold_refusals.remove(&key);
+            }
+            Err(refusal) => {
+                self.observed_fold_refusals.insert(key, refusal.clone());
+            }
+        }
+        outcome
+    }
+
+    /// What the most recent fold of `project` did, or [`FoldOutcome::Unknown`]
+    /// if none has run since its inputs last changed.
+    ///
+    /// The shell reads this to explain a project that has gone quiet. Reading
+    /// rather than draining is deliberate: the message is then a pure function
+    /// of current state, so a fold that recovers stops being reported *because
+    /// there is nothing to report*, not because some other code path remembered
+    /// to undo an earlier notification.
+    pub fn fold_outcome(&self, project: &CanonicalProject) -> FoldOutcome<'_> {
+        let key = project.key();
+        match self.observed_fold_refusals.get(key) {
+            Some(refusal) => FoldOutcome::Refused(refusal),
+            None if self.project_parses.contains_key(key) => FoldOutcome::Succeeded,
+            None => FoldOutcome::Unknown,
+        }
     }
 }
 
@@ -1153,11 +1226,22 @@ fn build_parses(
     workspace: &mut Workspace,
     docs: &HashMap<Url, String>,
     file_parses: &mut HashMap<PathBuf, Vec<CachedParse>>,
-) -> Option<ProjectParses> {
+) -> Result<ProjectParses, FoldRefusal> {
     let _span = tracing::info_span!("build_parses", project = %project.display()).entered();
     let symbols = workspace.symbols_for_project(project);
     let lang = workspace.lang_version_for_project(project);
-    let parsed = workspace.project(project)?;
+    // Every exit below is a *value*, not a bare `None`: a refusal the user is
+    // never told about is the defect `crate::project_deferral` exists to close,
+    // and only a typed refusal makes "we went quiet" and "we said why" the same
+    // decision at every exit, not just the first.
+    if crate::project_deferral::evaluation_declines_project_fold(
+        workspace.project_evaluation(project),
+    ) {
+        return Err(FoldRefusal::ProjectEvaluation);
+    }
+    let parsed = workspace
+        .project(project)
+        .expect("the evaluation gate above accepted this project");
     // Gate on `items_uncertain`, *not* `is_partial`: we only need the Compile
     // *order* to be trustworthy to fold over it. `is_partial` flips for any
     // divergence from MSBuild — including the undefined properties and skipped
@@ -1174,9 +1258,10 @@ fn build_parses(
     // are unreliable (a user define gated on an unresolved property — e.g. a
     // multi-targeted `'$(TargetFramework)' == …` condition) we'd fold files
     // under the wrong branches and export the wrong bindings. Refuse there too.
-    if parsed.items_uncertain || parsed.define_constants_uncertain {
-        return None;
-    }
+    //
+    // Both are asked through `crate::project_deferral::evaluation_declines_project_fold`
+    // above, so that the refusal and the editor message the user gets for it are
+    // the same decision.
     // `LangVersion` provenance is the third axis, gated per *source shape*
     // below rather than here: the language version shapes the token stream
     // (the lex-filter's strict-indentation push decision at the F# 8
@@ -1236,7 +1321,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item unreadable from buffer and disk; refusing to resolve project"
             );
-            return None;
+            return Err(FoldRefusal::UnreadableCompileItem { file: include });
         };
         // Per-file parse cache: reuse a variant whose every deciding input — the
         // source text, the `#if` symbols, the language version, and the project's
@@ -1281,7 +1366,7 @@ fn build_parses(
                 file = %include.display(),
                 "Compile item triggered parser panic; refusing to resolve project"
             );
-            return None;
+            return Err(FoldRefusal::ParserPanic { file: include });
         };
         // The intersection gate promised above: this file MAY parse to a
         // differently shaped tree at another language version (an offside
@@ -1315,7 +1400,7 @@ fn build_parses(
                     file = %include.display(),
                     "Compile item triggered parser panic; refusing to resolve project"
                 );
-                return None;
+                return Err(FoldRefusal::ParserPanic { file: include });
             };
             // Green-node equality is recursively structural (rowan compares
             // header + children, tokens by kind + text — verified against
@@ -1329,7 +1414,7 @@ fn build_parses(
                     "refusing project parses: LangVersion provenance is untrusted and \
                      this file parses to a different tree across the F# 8 boundary"
                 );
-                return None;
+                return Err(FoldRefusal::LanguageVersionShape { file: include });
             }
         }
         // Before `parse.root` is moved into the `SourceFile`: the errors and the
@@ -1361,7 +1446,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-SIG_FILE root; refusing to resolve project"
                     );
-                    return None;
+                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
                 }
             }
         } else {
@@ -1372,7 +1457,7 @@ fn build_parses(
                         file = %include.display(),
                         "Compile item parsed to a non-IMPL_FILE root; refusing to resolve project"
                     );
-                    return None;
+                    return Err(FoldRefusal::UnexpectedParseRoot { file: include });
                 }
             }
         };
@@ -1418,7 +1503,7 @@ fn build_parses(
         .map(|((file, qnof), recovery)| ProjectFile::new(file, qnof, recovery))
         .collect();
 
-    Some(ProjectParses {
+    Ok(ProjectParses {
         files,
         paths,
         texts,
@@ -2943,8 +3028,97 @@ fn read_text(path: &Path, docs: &HashMap<Url, String>) -> Option<String> {
 /// Cache-key canonicalisation. Falls back to the literal path when
 /// `canonicalize` fails (e.g. the file doesn't exist on disk yet); matches
 /// the convention `Workspace::project` already uses.
-fn canonicalise(path: &Path) -> PathBuf {
+///
+/// Public because [`crate::server`] keys its per-project deferral record the
+/// same way: a project reached as `/var/…` from one path and `/private/var/…`
+/// from another is one project, and keying it as two makes the same message go
+/// out twice.
+pub fn canonicalise(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// A project reference carrying both spellings that matter: the path the
+/// caller found it by, and its [`canonicalise`]d cache key.
+///
+/// The two are not interchangeable, which is the whole reason this type exists.
+/// The **key** identifies the project in every cache (and in the deferral
+/// dedup), so two spellings of one project are one entry. The **path** is what
+/// the project is *evaluated with*, and must stay as the caller spelled it:
+/// MSBuild derives `$(MSBuildProjectDirectory)` from it and joins every
+/// `<Compile>` include against it, so evaluating `/private/tmp/…` when the
+/// editor opened `/tmp/…` yields an item set whose paths match no open buffer.
+///
+/// Carrying both also lets a hot path skip the `realpath` syscall:
+/// [`crate::server`]'s deferral refresh runs after every dispatched message and
+/// looks projects up by key, and doing that naively cost two or three
+/// canonicalisations per scoped project per keystroke.
+#[derive(Debug, Clone)]
+pub struct CanonicalProject {
+    path: PathBuf,
+    key: PathBuf,
+    /// [`crate::paths::path_dedup_key`] of `key` — the identity, folded the way
+    /// the platform folds case.
+    ///
+    /// For a project that exists on disk this is belt-and-braces: `canonicalize`
+    /// resolves the true on-disk casing (probed, macOS). It bites on the
+    /// fallback — [`canonicalise`] returns the literal path when `canonicalize`
+    /// fails, so a project not yet on disk keeps whatever casing the caller
+    /// spelled, and two spellings of one file would otherwise be two projects.
+    /// The rest of the LSP already treats those as equal
+    /// ([`crate::paths::paths_equal`]).
+    identity: String,
+}
+
+/// Identity is the platform-folded canonical key, not the spelling: two buffers
+/// reaching one physical `.fsproj` — through a symlink, or through a
+/// differently-cased path on macOS/Windows — are the same project. A derived
+/// `PartialEq` (comparing `path` too) made them two, so a scope holding both
+/// stored one report under a shared key while rendering each spelling, and
+/// re-sent both toasts after every dispatch.
+impl PartialEq for CanonicalProject {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+impl Eq for CanonicalProject {}
+
+impl std::hash::Hash for CanonicalProject {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.identity.hash(state);
+    }
+}
+
+impl CanonicalProject {
+    pub fn new(path: &Path) -> Self {
+        let key = canonicalise(path);
+        CanonicalProject {
+            identity: crate::paths::path_dedup_key(&key),
+            path: path.to_path_buf(),
+            key,
+        }
+    }
+
+    /// The platform-folded identity — the right key for a map of projects.
+    pub fn identity(&self) -> &str {
+        &self.identity
+    }
+
+    /// The spelling the caller found this project by — what to *evaluate* with.
+    pub fn as_path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The cache key — what to *look up* by.
+    pub fn key(&self) -> &Path {
+        &self.key
+    }
+}
+
+impl std::fmt::Display for CanonicalProject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.path.display())
+    }
 }
 
 /// True for an F# signature file (`.fsi`). The extension match is
@@ -2956,6 +3130,40 @@ fn is_signature_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    /// A project's identity survives the spellings the rest of the LSP already
+    /// treats as one file.
+    ///
+    /// Exercised on paths that are *not* on disk, which is where it bites:
+    /// `canonicalise` falls back to the literal path there, so the caller's
+    /// casing survives. (For a project that does exist, `canonicalize` resolves
+    /// the true on-disk casing itself — probed on macOS — so this is defence in
+    /// depth for that case, not the mechanism.)
+    #[test]
+    fn project_identity_folds_case_where_the_platform_does() {
+        let upper = CanonicalProject::new(Path::new("/nonexistent/Proj/App.fsproj"));
+        let lower = CanonicalProject::new(Path::new("/nonexistent/proj/App.fsproj"));
+        let other = CanonicalProject::new(Path::new("/nonexistent/Proj/Other.fsproj"));
+
+        // Agrees with the comparison the rest of the LSP uses for the same
+        // question, on every platform.
+        assert_eq!(
+            upper == lower,
+            crate::paths::paths_equal(upper.as_path(), lower.as_path()),
+            "identity disagrees with `paths_equal` about {:?} vs {:?}",
+            upper.as_path(),
+            lower.as_path()
+        );
+        assert_ne!(upper, other, "different projects stay different");
+
+        // …and the identity is what a map keys on, so equal projects collide.
+        let mut seen = std::collections::HashSet::new();
+        seen.insert(upper.identity().to_string());
+        assert_eq!(
+            seen.contains(lower.identity()),
+            crate::paths::paths_equal(upper.as_path(), lower.as_path())
+        );
+    }
     use super::*;
     use borzoi_assembly::{
         Access, AssemblyIdentity, AssemblyProjectionSkips, EntityKind, FSharpResource,

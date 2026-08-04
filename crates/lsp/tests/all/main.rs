@@ -33,6 +33,7 @@ mod lsp_msbuild_user_extensions_e2e;
 mod parse_cache;
 mod parser_corpus_sweep;
 mod project_assets_integration;
+mod project_deferral_e2e;
 mod reference_set_msbuild_diff;
 mod resolve_real_project_diff;
 mod restore_hostile_config_matrix;

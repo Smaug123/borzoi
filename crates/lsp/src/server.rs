@@ -44,8 +44,9 @@ use crate::goto_source::SourceFetcher;
 use crate::handlers::definition::{
     DefinitionOutcome, PendingFetch, default_source_fetcher, location_for_pending, url_location,
 };
+use crate::project_deferral;
 use crate::publish::PublishState;
-use crate::semantic::SemanticState;
+use crate::semantic::{CanonicalProject, SemanticState};
 use crate::workspace::Workspace;
 use crate::{diagnostics, fsproj_diagnostics};
 
@@ -172,11 +173,28 @@ pub struct State {
     /// set. Empty until `initialize` (tests, or a client that opened no folder)
     /// — in which case a workspace pull simply reports nothing.
     workspace_roots: Vec<PathBuf>,
-    /// Owning-project paths we've already shown a "Compile set is untrustworthy"
-    /// `window/showMessage` for. Dedupes the notice to once per project per
-    /// server session, so opening file after file in the same project doesn't
-    /// re-toast. See [`warn_compile_uncertainty`].
-    warned_uncertain_projects: HashSet<PathBuf>,
+    /// The last "declining project-wide features" `window/showMessage` sent for
+    /// each project.
+    ///
+    /// Keyed on the *message text*, not merely on the project, so that one rule
+    /// serves both halves of what the user needs: opening file after file in the
+    /// same project doesn't re-toast, while a project that starts deferring for
+    /// a **different** reason says so. A project with nothing to report is
+    /// removed, so one that is fixed and later re-broken reports again. See
+    /// [`report_deferral`].
+    warned_uncertain_projects: HashMap<String, ProjectReport>,
+    /// Which project each open source buffer belongs to — the scope
+    /// [`refresh_project_deferrals`] reports on, as a per-document map so it can
+    /// be maintained **incrementally**.
+    ///
+    /// One entry is added per `didOpen` and removed per `didClose`, each costing
+    /// a single ownership lookup; recomputing the whole map on every open would
+    /// make restoring N tabs N(N+1)/2 ancestor `read_dir` walks. The full
+    /// recomputation is reserved for structural watched changes, which are the
+    /// only thing that can move an *existing* buffer's owner. See
+    /// [`recompute_deferral_scope`] for why an open `.fsproj` is not in scope on
+    /// its own account.
+    doc_projects: HashMap<Url, CanonicalProject>,
     /// Monotonic counter for the ids of repeated server→client refresh requests.
     /// A fresh id makes a late reply unable to acknowledge a newer refresh
     /// accidentally.
@@ -207,7 +225,8 @@ impl State {
             semantic: SemanticState::new(),
             client_capabilities: None,
             workspace_roots: Vec::new(),
-            warned_uncertain_projects: HashSet::new(),
+            warned_uncertain_projects: HashMap::new(),
+            doc_projects: HashMap::new(),
             server_request_seq: 0,
             wants_diagnostic_refresh: false,
             pending_refresh_id: None,
@@ -368,7 +387,7 @@ impl State {
     ///
     /// Pure of IO beyond cache mutation, so it is testable without a
     /// [`Connection`]; the shell does the actual publishing.
-    pub fn apply_watched_changes(&mut self, changes: &[FileEvent]) -> Vec<Url> {
+    pub fn apply_watched_changes(&mut self, changes: &[FileEvent]) -> WatchedChangeEffect {
         let mut structural = false;
         let mut assembly_input = false;
         for change in changes {
@@ -390,12 +409,18 @@ impl State {
             self.workspace.invalidate_projects();
             self.semantic.invalidate_all();
             self.wants_diagnostic_refresh = true;
-            self.docs.keys().cloned().collect()
+            WatchedChangeEffect {
+                structural: true,
+                republish: self.docs.keys().cloned().collect(),
+            }
         } else {
             if assembly_input {
                 self.semantic.invalidate_assembly_state();
             }
-            Vec::new()
+            WatchedChangeEffect {
+                structural: false,
+                republish: Vec::new(),
+            }
         }
     }
 
@@ -609,20 +634,27 @@ pub fn run_with_fetcher(
                     )))?;
                 } else {
                     let method = req.method.clone();
-                    {
+                    let dispatch = {
                         let _request_span =
                             tracing::info_span!("lsp.request", method = %method).entered();
-                        match handle_request(&mut state, req) {
-                            // Synchronous request: reply immediately, as before.
-                            Dispatch::Reply(response) => {
-                                enqueue_response(&connection, &method, response)?;
-                            }
-                            // Cold SourceLink fetch: hand to the pool, which replies
-                            // out-of-band when it completes. The loop never blocks on
-                            // the network.
-                            Dispatch::Defer { id, pending } => {
-                                dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
-                            }
+                        handle_request(&mut state, req)
+                    };
+                    // Before the reply, not after: a fold refusal is *why* this
+                    // reply is degraded, and an explanation that arrives after
+                    // the disappointing answer reads as unrelated. The fold
+                    // itself has no way to reach the client, so the shell
+                    // reports what it observed.
+                    refresh_project_deferrals(&mut state, &connection);
+                    match dispatch {
+                        // Synchronous request: reply immediately, as before.
+                        Dispatch::Reply(response) => {
+                            enqueue_response(&connection, &method, response)?;
+                        }
+                        // Cold SourceLink fetch: hand to the pool, which replies
+                        // out-of-band when it completes. The loop never blocks on
+                        // the network.
+                        Dispatch::Defer { id, pending } => {
+                            dispatch_fetch(&connection, pool.as_ref(), id, pending)?;
                         }
                     }
                     maybe_send_refresh(&mut state, &connection);
@@ -640,6 +672,7 @@ pub fn run_with_fetcher(
                     // an open buffer's semantic tokens without any fold, so
                     // drain refresh work here too, not only after requests.
                     maybe_send_refresh(&mut state, &connection);
+                    refresh_project_deferrals(&mut state, &connection);
                 }
             }
             Message::Response(resp) => {
@@ -963,6 +996,20 @@ fn handle_request_sync(state: &mut State, req: Request) -> Response {
     }
 }
 
+/// What a `workspace/didChangeWatchedFiles` batch did to the caches.
+///
+/// The `structural` flag is not derivable from `republish`: a structural change
+/// with no open buffers republishes nothing, and the shell must still recompute
+/// which project owns what. Two facts, so two fields.
+pub struct WatchedChangeEffect {
+    /// A `.fsproj` / `Directory.Build.*` / `global.json` / assets file changed,
+    /// so project evaluation — and with it file→project ownership — may have
+    /// moved.
+    pub structural: bool,
+    /// The open-document URIs whose diagnostics the shell must republish.
+    pub republish: Vec<Url>,
+}
+
 pub fn handle_notification(state: &mut State, conn: &Connection, not: Notification) {
     let _span = tracing::info_span!("lsp.notification", method = %not.method).entered();
     match not.method.as_str() {
@@ -972,7 +1019,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 state.docs.insert(uri.clone(), params.text_document.text);
                 state.invalidate_owning_project(&uri);
                 publish_diagnostics(conn, state, &uri);
-                warn_compile_uncertainty(conn, state, &uri);
+                extend_deferral_scope(state, &uri);
             }
         }
         DidChangeTextDocument::METHOD => {
@@ -991,6 +1038,7 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 let uri = params.text_document.uri;
                 state.docs.remove(&uri);
                 state.invalidate_owning_project(&uri);
+                shrink_deferral_scope(state, &uri);
                 if !state.supports_pull_diagnostics() {
                     // Clear this document's own diagnostics and any it had
                     // relocated onto other files via `#line` directives.
@@ -1006,8 +1054,21 @@ pub fn handle_notification(state: &mut State, conn: &Connection, not: Notificati
                 // buffer through the negotiated delivery path. Push clients
                 // receive new notifications; pull clients read the fresh
                 // project context on their next request.
-                for uri in state.apply_watched_changes(&params.changes) {
-                    publish_diagnostics(conn, state, &uri);
+                let effect = state.apply_watched_changes(&params.changes);
+                for uri in &effect.republish {
+                    publish_diagnostics(conn, state, uri);
+                }
+                // Only a *structural* change can move which project compiles a
+                // file (a new `<Compile>` entry, a deleted `.fsproj`). The batch
+                // also carries ordinary `.fs`/`.dll`/`.csproj` events — every
+                // save, every build — and recomputing on those would walk every
+                // open buffer's ancestors for nothing.
+                //
+                // After `apply_watched_changes`, which is what clears the
+                // project memo: recomputing first would read the pre-change
+                // Compile lists and record the old owner.
+                if effect.structural {
+                    recompute_deferral_scope(state);
                 }
             }
         }
@@ -1034,114 +1095,268 @@ fn publish_diagnostics(conn: &Connection, state: &mut State, uri: &Url) {
     }
 }
 
-/// Show a one-time `window/showMessage` when the source file's owning project
-/// has a Compile item gated on a condition we couldn't evaluate — the
-/// correctness carve-out from the msbuild evaluator
-/// ([`borzoi_msbuild::CompileConditionUncertainty`]).
+/// What was last reported for a project: the reconciliation record, and the
+/// notification the user actually saw.
 ///
-/// This is the user-facing half of the `items_uncertain` gate: when a Compile
-/// item's inclusion is undecidable, [`crate::semantic`] conservatively falls
-/// back to single-file resolution (so go-to-definition into referenced
-/// assemblies, cross-file resolution, etc. go quiet for this project). Without
-/// a message that looks like a silent failure; with one, the user learns *why*
-/// and what to fix. Deduped per owning project for the session via
-/// [`State::warned_uncertain_projects`] so it fires at most once, not on every
-/// `.fs` open. Only `.fs`/`.fsi`/`.fsx` buffers under an evaluable project can
-/// trigger it; everything else returns early.
-fn warn_compile_uncertainty(conn: &Connection, state: &mut State, uri: &Url) {
-    if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
-        return;
-    }
-    let Ok(path) = uri.to_file_path() else {
-        return;
-    };
-    let Some(project) = state.workspace.owning_project(&path) else {
-        return;
-    };
-    if state.warned_uncertain_projects.contains(&project) {
-        return;
-    }
-    // Build the message inside a scope so the immutable `workspace` borrow ends
-    // before we touch `warned_uncertain_projects` and send. `None`/empty means
-    // there's nothing to surface — leave the project *unmarked* so a later
-    // re-evaluation that does turn up an uncertainty can still warn.
-    let message = {
-        let Some(parsed) = state.workspace.project(&project) else {
-            return;
-        };
-        if parsed.compile_condition_uncertainties.is_empty() {
-            return;
-        }
-        compile_uncertainty_message(&project, &parsed.compile_condition_uncertainties)
-    };
-    state.warned_uncertain_projects.insert(project);
-    send_notification::<ShowMessage>(
-        conn,
-        ShowMessageParams {
-            typ: MessageType::WARNING,
-            message,
-        },
-    );
+/// Two fields because they answer different questions and can move
+/// independently. The **record** carries claims the current state cannot
+/// re-derive (a fold verdict across an invalidation), so it is what the next
+/// refresh reconciles against — but it is never shown. The **message** is what
+/// was rendered, and is the only sound thing to dedupe against: a hidden
+/// record-only change, or a change past the rendered cause cap, would otherwise
+/// re-send a toast identical to the one already on screen.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ProjectReport {
+    /// The reconciliation record — fresh facts plus anything not currently
+    /// re-derivable. Never shown.
+    record: Vec<project_deferral::Deferral>,
+    /// The clause the user last saw *for each capability*.
+    ///
+    /// Per capability, not one message, because the two capabilities are
+    /// independently knowable: a fold verdict can be unknowable while a
+    /// reference-edge loss has demonstrably recovered. Keyed as one string, the
+    /// recovered one could not be forgotten without also forgetting the
+    /// unknowable one — so reintroducing it went unreported.
+    shown: HashMap<project_deferral::DeferredCapability, String>,
 }
 
-/// Render the editor message for a project whose Compile set we couldn't trust
-/// because of [`borzoi_msbuild::CompileConditionUncertainty`]s. Pure
-/// (no IO) so it's unit-testable; the caller does the IO and dedup.
-fn compile_uncertainty_message(
-    project: &std::path::Path,
-    uncertainties: &[borzoi_msbuild::CompileConditionUncertainty],
-) -> String {
-    use borzoi_msbuild::CompileConditionReason;
+/// Bring the client's picture of what borzoi is declining, and why, up to date
+/// with the current state — sending a `window/showMessage` for each project
+/// whose explanation has *changed* ([`crate::project_deferral`]).
+///
+/// This is the user-facing half of the deferral gates. When a project's
+/// evaluation can't be trusted, `semantic::build_parses` refuses the
+/// Compile-order fold and the project graph drops reference edges — so
+/// go-to-definition, find-references and imported-assembly lookups quietly stop
+/// working. Without a message that reads as a broken language server; with one,
+/// the user learns which construct to fix.
+///
+/// **A refresh, not an event handler.** It recomputes every in-scope project's
+/// explanation from current state and diffs it against what was last sent, so
+/// the shell calls it after every dispatched message and never has to decide
+/// *which* state changes can alter a deferral. Review rounds found eight bugs of
+/// exactly that shape — a decline reached through a path nobody had added a
+/// notify call to — and each was a symptom of reporting being event-driven.
+/// Derived state has no such path: a project that starts deferring is reported,
+/// one that stops is forgotten (so re-breaking it reports again), and a changed
+/// reason replaces the old one, because all three fall out of the same diff.
+///
+/// **Everything here is a cached read**, which is what makes per-dispatch
+/// refreshing affordable: the project evaluation is the workspace's memo and the
+/// fold outcome is whatever the last fold recorded, both looked up by an
+/// already-canonical key ([`CanonicalProject`]) so not even a `realpath` syscall
+/// happens. Nothing is evaluated, parsed, or folded to answer a question nothing
+/// has asked — in particular the fold is never *provoked* here, so a project's
+/// refusal is reported on the first request that genuinely needs the Compile
+/// order rather than eagerly on open. Restoring N editor tabs from one M-file
+/// project would otherwise have cost N×M synchronous file reads on the dispatch
+/// thread before the user did anything.
+///
+/// Scope is the owning project of every open buffer — including an open
+/// `.fsproj`, which is in scope as a *project*, reported from the workspace's
+/// evaluation like any other. It is deliberately not described from its unsaved
+/// buffer text: that text already gets span-anchored diagnostics on every
+/// keystroke ([`fsproj_diagnostics::diagnostics_for`]), which is strictly better
+/// feedback than a toast, and evaluating it here would put a full import/SDK
+/// walk on every dispatch. The toast's own job is the one squiggles can't do —
+/// telling a `.fs` buffer why its project went quiet.
+fn refresh_project_deferrals(state: &mut State, conn: &Connection) {
+    for project in projects_in_scope(state) {
+        let previous = state
+            .warned_uncertain_projects
+            .get(project.identity())
+            .map(|report| report.record.clone())
+            .unwrap_or_default();
+        let reconciled = {
+            // Read, never provoke: recomputing the fold here would fold every
+            // project on every keystroke. `SemanticState::fold` records the
+            // outcome wherever it does run, which is whenever a request
+            // actually needs the Compile order.
+            let fold = state.semantic.fold_outcome(&project);
+            let evaluation = state.workspace.project_evaluation_of(&project);
+            // Per capability, not per project: the evaluation always settles the
+            // reference-edge verdict, while an unfolded project's *fold* verdict
+            // is genuinely unknown and its last one stands.
+            project_deferral::reconcile(
+                project_deferral::deferrals(evaluation, fold),
+                &previous,
+                evaluation,
+                fold,
+            )
+        };
+        report_deferral(conn, state, &project, reconciled);
+    }
+}
 
-    let name = project
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| project.display().to_string());
+/// The project an open buffer puts in scope, if any.
+///
+/// `None` for a `.fsproj` — it is in scope only through its source files. Its
+/// own text already gets span-anchored diagnostics every keystroke, which is
+/// better feedback than a toast, and evaluating it here would populate
+/// `Workspace`'s project memo from *disk* on a path text-sync deliberately does
+/// not invalidate, pinning a stale Compile list for the server's lifetime
+/// (`tests::fsproj_sync_does_not_pin_the_project_cache`).
+///
+/// `compiling_project`, not `owning_project`: a standalone `.fsx` beside an
+/// unrelated `.fsproj` must not be told that project's problems.
+fn scope_project_of(state: &mut State, uri: &Url) -> Option<CanonicalProject> {
+    if !matches!(path_extension(uri).as_deref(), Some("fs" | "fsi" | "fsx")) {
+        return None;
+    }
+    let path = uri.to_file_path().ok()?;
+    let project = state.workspace.reporting_project(&path)?;
+    Some(CanonicalProject::new(&project))
+}
 
-    // Collect the distinct undefined property names (first-seen order) and note
-    // whether any condition was outright unmodeled.
-    let mut props: Vec<&str> = Vec::new();
-    let mut any_unsupported = false;
-    for u in uncertainties {
-        match &u.reason {
-            CompileConditionReason::UndefinedProperties(names) => {
-                for n in names {
-                    if !props.contains(&n.as_str()) {
-                        props.push(n);
-                    }
-                }
-            }
-            CompileConditionReason::Unsupported => any_unsupported = true,
+/// Put `uri`'s project in scope, if it has one. One ownership lookup, so
+/// restoring N tabs costs N walks rather than N(N+1)/2.
+fn extend_deferral_scope(state: &mut State, uri: &Url) {
+    if let Some(project) = scope_project_of(state, uri) {
+        state.doc_projects.insert(uri.clone(), project);
+    }
+}
+
+/// Drop `uri` from scope. A project with no remaining open buffer leaves scope
+/// and is forgotten, so reopening a file reports afresh rather than being
+/// deduped against a message from a previous session with the file.
+fn shrink_deferral_scope(state: &mut State, uri: &Url) {
+    state.doc_projects.remove(uri);
+    forget_projects_out_of_scope(state);
+}
+
+/// Recompute every open buffer's owner from scratch.
+///
+/// Reserved for structural watched changes, which are the only thing that can
+/// move an *existing* buffer's owner (a new `<Compile>` entry, a deleted
+/// `.fsproj`). Opens and closes are handled incrementally, because this walks
+/// ancestor directories with `read_dir` per buffer.
+fn recompute_deferral_scope(state: &mut State) {
+    let uris: Vec<Url> = state.docs.keys().cloned().collect();
+    state.doc_projects.clear();
+    for uri in uris {
+        extend_deferral_scope(state, &uri);
+    }
+    forget_projects_out_of_scope(state);
+}
+
+fn forget_projects_out_of_scope(state: &mut State) {
+    let in_scope: HashSet<String> = state
+        .doc_projects
+        .values()
+        .map(|p| p.identity().to_string())
+        .collect();
+    state
+        .warned_uncertain_projects
+        .retain(|identity, _| in_scope.contains(identity));
+}
+
+/// The distinct projects in scope, in a deterministic order.
+fn projects_in_scope(state: &State) -> Vec<CanonicalProject> {
+    let mut projects: Vec<CanonicalProject> = Vec::new();
+    for project in state.doc_projects.values() {
+        if !projects.contains(project) {
+            projects.push(project.clone());
         }
     }
+    projects.sort_by(|a, b| a.identity().cmp(b.identity()));
+    projects
+}
 
-    let n = uncertainties.len();
-    let item_clause = if n == 1 {
-        "1 Compile item is".to_string()
+/// Send `message` for `project`, unless the identical message was the last one
+/// sent for it.
+///
+/// Keying on the text rather than on the project makes "don't re-toast the same
+/// problem" and "do report a new problem" one rule instead of two that have to
+/// be kept in agreement. `None` — nothing is declined — *forgets* the project,
+/// so one that is fixed and later re-broken is reported again.
+///
+/// The log line is behind the same check as the notification. A refresh runs
+/// after every dispatched message, so logging unconditionally would repeat a
+/// permanently-deferred project's full cause list thousands of times per session
+/// — into stderr, and into Loki under the `otel` feature.
+fn report_deferral(
+    conn: &Connection,
+    state: &mut State,
+    project: &CanonicalProject,
+    reconciled: project_deferral::Reconciled,
+) {
+    // Keyed on the canonical path: the same project reaches this code spelled
+    // two ways — `compiling_project`'s literal path from a source buffer, and
+    // the semantic layer's cache key — and keying them apart would send one
+    // project's message twice. The type carries that so no caller can forget.
+    //
+    // The stored value is the *deferrals*, not the rendered string: they are
+    // what the next refresh reconciles against per capability, and prose cannot
+    // answer "what did we last know about this project's fold?".
+    // Rendered from `stated`, recorded as `record`: a fold verdict carried over
+    // an invalidation may suppress a repeat, but must never be *asserted* in a
+    // fresh toast — it describes inputs that have since changed.
+    let stated = reconciled.stated().to_vec();
+    let record = reconciled.into_record();
+    let previously_shown = state
+        .warned_uncertain_projects
+        .get(project.identity())
+        .map(|prev| prev.shown.clone())
+        .unwrap_or_default();
+
+    // What the user is now looking at, per capability. A capability the current
+    // state can decide is replaced (or dropped, on recovery); one it cannot —
+    // only ever the fold, and only while it is `Unknown` — keeps the clause
+    // already on screen. Keyed per capability so a *recovered* capability is
+    // forgotten even while another stays unknowable; sharing one key meant
+    // reintroducing the recovered loss was deduped away as "already reported".
+    let mut shown: HashMap<project_deferral::DeferredCapability, String> = stated
+        .iter()
+        .map(|deferral| (deferral.capability(), deferral.clause()))
+        .collect();
+    if !project_deferral::fold_verdict_known_for(&record, &stated)
+        && let Some(carried) =
+            previously_shown.get(&project_deferral::DeferredCapability::ProjectFold)
+    {
+        shown.insert(
+            project_deferral::DeferredCapability::ProjectFold,
+            carried.clone(),
+        );
+    }
+
+    // Send when any capability's news has changed. The message states only what
+    // is *stated* — never a carried clause, which describes inputs that have
+    // since changed — even though `shown` remembers the carried one so it is not
+    // re-announced when the fold settles back to the same verdict.
+    let resend = shown != previously_shown
+        && stated
+            .iter()
+            .any(|d| previously_shown.get(&d.capability()) != Some(&d.clause()));
+
+    let report = ProjectReport { record, shown };
+    if state.warned_uncertain_projects.get(project.identity()) == Some(&report) {
+        return;
+    }
+    if report.record.is_empty() && report.shown.is_empty() {
+        state.warned_uncertain_projects.remove(project.identity());
     } else {
-        format!("{n} Compile items are")
-    };
-    let mut detail = String::new();
-    if !props.is_empty() {
-        detail.push_str(&format!(
-            " (unresolved propert{}: {})",
-            if props.len() == 1 { "y" } else { "ies" },
-            props.join(", ")
-        ));
+        state
+            .warned_uncertain_projects
+            .insert(project.identity().to_string(), report);
     }
-    if any_unsupported {
-        if detail.is_empty() {
-            detail.push_str(" (unmodeled condition syntax)");
-        } else {
-            detail.push_str(" plus unmodeled condition syntax");
-        }
+    if resend && let Some(message) = project_deferral::deferral_message(project.as_path(), &stated)
+    {
+        // The toast caps its cause list at `MAX_RENDERED_CAUSES`; the log
+        // carries the *deferrals*, so a user who reports "it says 'and 12 more'"
+        // can be asked for the trace and the omitted causes are actually there.
+        tracing::warn!(
+            project = %project,
+            deferrals = ?stated,
+            "declining project-wide features"
+        );
+        send_notification::<ShowMessage>(
+            conn,
+            ShowMessageParams {
+                typ: MessageType::WARNING,
+                message,
+            },
+        );
     }
-    format!(
-        "{name}: {item_clause} gated on a condition I couldn't evaluate{detail}, \
-         so I can't tell which files compile. Project-wide features \
-         (go-to-definition into referenced assemblies, cross-file resolution) \
-         fall back to single-file resolution here."
-    )
 }
 
 /// Pick the right diagnostic producer for the URI's file extension, returning
@@ -1593,59 +1808,6 @@ mod tests {
             state.set_client_capabilities(caps);
             assert_eq!(state.supports_diagnostic_refresh(), support);
         }
-    }
-
-    #[test]
-    fn compile_uncertainty_message_names_project_and_unresolved_properties() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let u = [CompileConditionUncertainty {
-            condition: "'$(Foo)' == 'bar'".into(),
-            reason: CompileConditionReason::UndefinedProperties(vec!["Foo".into()]),
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        }];
-        let msg = compile_uncertainty_message(Path::new("/x/Proj.fsproj"), &u);
-        assert!(msg.contains("Proj.fsproj"), "{msg}");
-        assert!(msg.contains("1 Compile item is"), "{msg}");
-        assert!(msg.contains("unresolved property: Foo"), "{msg}");
-        assert!(msg.contains("single-file"), "{msg}");
-    }
-
-    #[test]
-    fn compile_uncertainty_message_pluralises_and_dedupes_properties() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let mk = |names: Vec<&str>| CompileConditionUncertainty {
-            condition: "c".into(),
-            reason: CompileConditionReason::UndefinedProperties(
-                names.into_iter().map(str::to_string).collect(),
-            ),
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        };
-        let u = [mk(vec!["Foo"]), mk(vec!["Foo", "Bar"])];
-        let msg = compile_uncertainty_message(Path::new("/x/P.fsproj"), &u);
-        assert!(msg.contains("2 Compile items are"), "{msg}");
-        // "Foo" appears once despite two uncertainties referencing it.
-        assert!(msg.contains("unresolved properties: Foo, Bar"), "{msg}");
-    }
-
-    #[test]
-    fn compile_uncertainty_message_handles_unsupported_only() {
-        use borzoi_msbuild::{
-            CompileConditionReason, CompileConditionUncertainty, DiagnosticOrigin,
-        };
-        let u = [CompileConditionUncertainty {
-            condition: "Exists('x')".into(),
-            reason: CompileConditionReason::Unsupported,
-            span: 0..0,
-            origin: DiagnosticOrigin::Buffer,
-        }];
-        let msg = compile_uncertainty_message(Path::new("/x/P.fsproj"), &u);
-        assert!(msg.contains("unmodeled condition syntax"), "{msg}");
     }
 
     #[test]
@@ -2213,8 +2375,9 @@ mod tests {
         );
 
         // Deliver the watched-file change for the project.
-        let republish =
-            state.apply_watched_changes(&[changed(Url::from_file_path(&proj).unwrap())]);
+        let republish = state
+            .apply_watched_changes(&[changed(Url::from_file_path(&proj).unwrap())])
+            .republish;
         assert!(republish.is_empty(), "no open buffers to republish here");
 
         let symbols = state.workspace.symbols_for(&file);
@@ -2230,7 +2393,9 @@ mod tests {
         let open = url("file:///p/Open.fs");
         state.docs.insert(open.clone(), "let x = 1\n".to_string());
 
-        let republish = state.apply_watched_changes(&[changed(url("file:///p/App.fsproj"))]);
+        let republish = state
+            .apply_watched_changes(&[changed(url("file:///p/App.fsproj"))])
+            .republish;
         assert_eq!(
             republish,
             vec![open],
@@ -2250,7 +2415,9 @@ mod tests {
 
         for (uri, typ, expected) in cases {
             let mut state = State::default();
-            let republish = state.apply_watched_changes(&[event(url(uri), typ)]);
+            let republish = state
+                .apply_watched_changes(&[event(url(uri), typ)])
+                .republish;
             assert!(republish.is_empty(), "the test keeps every state unopened");
             assert_eq!(
                 state.wants_diagnostic_refresh, expected,
@@ -2268,7 +2435,9 @@ mod tests {
 
         // An unopened source file changing on disk can't alter an open buffer's
         // lexer/parser diagnostics, so nothing is republished.
-        let republish = state.apply_watched_changes(&[changed(url("file:///p/Other.fs"))]);
+        let republish = state
+            .apply_watched_changes(&[changed(url("file:///p/Other.fs"))])
+            .republish;
         assert!(republish.is_empty());
     }
 
@@ -2280,8 +2449,9 @@ mod tests {
 
         // A *created* source file changes glob-expanded Compile sets, so it
         // takes the structural path (and republishes open buffers).
-        let republish =
-            state.apply_watched_changes(&[event(url("file:///p/New.fs"), FileChangeType::CREATED)]);
+        let republish = state
+            .apply_watched_changes(&[event(url("file:///p/New.fs"), FileChangeType::CREATED)])
+            .republish;
         assert_eq!(republish, vec![open], "source create is structural");
     }
 
@@ -2362,7 +2532,8 @@ mod tests {
         );
 
         let republish = state
-            .apply_watched_changes(&[changed(url("file:///p/sibling/bin/Debug/net10.0/Lib.dll"))]);
+            .apply_watched_changes(&[changed(url("file:///p/sibling/bin/Debug/net10.0/Lib.dll"))])
+            .republish;
         assert!(
             republish.is_empty(),
             "a referenced-assembly change cannot alter an open buffer's \
@@ -2393,7 +2564,8 @@ mod tests {
         state.docs.insert(open.clone(), "<Project />".to_string());
 
         let republish = state
-            .apply_watched_changes(&[event(url("file:///p/Lib.csproj"), FileChangeType::CREATED)]);
+            .apply_watched_changes(&[event(url("file:///p/Lib.csproj"), FileChangeType::CREATED)])
+            .republish;
         assert_eq!(
             republish,
             vec![open],

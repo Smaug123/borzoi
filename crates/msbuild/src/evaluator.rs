@@ -63,9 +63,10 @@ use roxmltree::{Document, Node};
 use super::condition;
 use super::diagnostic::{
     CompileConditionReason, CompileConditionUncertainty, CompileItemUncertaintyCause,
-    CompileItemUncertaintyCauseKind, Diagnostic, DiagnosticKind, DiagnosticOrigin,
-    ImportFailReason, PackageReferenceUncertaintyCause, PackageReferenceUncertaintyCauseKind,
-    StructuralCompileItemUncertainty, StructuralPackageReferenceUncertainty,
+    CompileItemUncertaintyCauseKind, DefineConstantsUncertaintyCause, Diagnostic, DiagnosticKind,
+    DiagnosticOrigin, ImportFailReason, PackageReferenceUncertaintyCause,
+    PackageReferenceUncertaintyCauseKind, StructuralCompileItemUncertainty,
+    StructuralPackageReferenceUncertainty,
 };
 use super::imports::normalise;
 use super::properties::escaping::Escaped;
@@ -1502,6 +1503,10 @@ struct State<'r> {
     in_define_value: bool,
     /// Accumulates into [`ParsedProject::define_constants_uncertain`].
     define_constants_uncertain: bool,
+    /// Accumulates into [`ParsedProject::define_constants_uncertainties`], at
+    /// the same site that raises [`Self::define_constants_uncertain`] — the two
+    /// are one fact recorded twice, never independently.
+    define_constants_uncertainties: Vec<DefineConstantsUncertaintyCause>,
     /// `true` while evaluating an `<Import>` / `<ImportGroup>` `Condition` in a
     /// user-authored file (gated `!in_sdk_subtree` at the set sites). An import
     /// skipped by a condition we couldn't trust (unsupported, or relying on an
@@ -1894,6 +1899,7 @@ impl<'r> State<'r> {
             in_sdk_subtree: false,
             sdk_tolerance_roots: Vec::new(),
             items_uncertain: false,
+            define_constants_uncertainties: Vec::new(),
             define_context: false,
             in_define_value: false,
             define_constants_uncertain: false,
@@ -2364,6 +2370,7 @@ impl<'r> State<'r> {
             define_context: _,
             in_define_value: _,
             define_constants_uncertain,
+            define_constants_uncertainties,
             import_gate_context: _,
             package_import_gate_context: _,
             compile_condition_uncertainties,
@@ -2506,6 +2513,7 @@ impl<'r> State<'r> {
             is_partial,
             items_uncertain,
             define_constants_uncertain,
+            define_constants_uncertainties,
             compile_condition_uncertainties,
             compile_item_uncertainties,
             package_references_uncertain,
@@ -2610,11 +2618,12 @@ impl<'r> State<'r> {
     fn mark_structural_skip(&mut self, kind: StructuralCompileItemUncertainty, span: Range<usize>) {
         self.items_uncertain = true;
         // A skipped import / unresolved SDK can carry `<ProjectReference>`
-        // mutations as easily as Compile items. The un-descended `<Choose>`
-        // is the exception: `handle_choose` scans its still-possible
-        // branches for reference mutations itself, so an Include-only
-        // branch stays at worst a missed reference.
-        if !matches!(kind, StructuralCompileItemUncertainty::UnsupportedChoose) {
+        // mutations as easily as Compile items; the un-descended `<Choose>` is
+        // the exception. The rule is
+        // [`StructuralCompileItemUncertainty::hides_project_references`] rather
+        // than a local `matches!`, because a consumer explaining the dropped
+        // reference list must borrow exactly the subset that caused it.
+        if kind.hides_project_references() {
             self.project_references_uncertain = true;
         }
         self.mark_package_structural_skip(
@@ -2665,7 +2674,9 @@ impl<'r> State<'r> {
         // universal `$(DefineConstants);FOO` append idiom — but only in the
         // value (`in_define_value`); in a *condition* it's a real branch
         // decision, so it still flags.
-        if self.define_context && !(self.in_define_value && is_define_self_reference(&kind)) {
+        let define_uncertain =
+            self.define_context && !(self.in_define_value && is_define_self_reference(&kind));
+        if define_uncertain {
             self.define_constants_uncertain = true;
         }
         // The package-set analogue of the Compile rule above, with the same
@@ -2706,6 +2717,14 @@ impl<'r> State<'r> {
             self.package_reference_uncertainties
                 .push(PackageReferenceUncertaintyCause {
                     kind: PackageReferenceUncertaintyCauseKind::Diagnostic(kind.clone()),
+                    span: span.clone(),
+                    origin: origin.clone(),
+                });
+        }
+        if define_uncertain {
+            self.define_constants_uncertainties
+                .push(DefineConstantsUncertaintyCause {
+                    kind: kind.clone(),
                     span: span.clone(),
                     origin: origin.clone(),
                 });
@@ -4511,16 +4530,15 @@ pub(crate) fn changewave_env_value(
 /// project, so emitting it makes the Compile set untrustworthy *even outside*
 /// a [`State::compile_context`]. A failed import or unresolved SDK may have
 /// contributed `<Compile>` items — or properties that gate them — we never saw.
+///
+/// The predicate itself is [`DiagnosticKind::hides_unseen_content`], public
+/// because consumers reason about the same class: it is why the walk goes
+/// opaque, why `project_references_uncertain` is raised outside the SDK tree,
+/// and (in the LSP) which of an uncertain project's causes also explain a
+/// dropped `<ProjectReference>` edge set. One definition, so those cannot
+/// disagree about what counts.
 fn is_structural_compile_risk(kind: &DiagnosticKind) -> bool {
-    matches!(
-        kind,
-        DiagnosticKind::ImportFailed { .. }
-            | DiagnosticKind::UnresolvedImport { .. }
-            | DiagnosticKind::SdkNotFound { .. }
-            | DiagnosticKind::SdkVersionNotSatisfied { .. }
-            | DiagnosticKind::SdkResolutionUnsupported { .. }
-            | DiagnosticKind::ImplicitImportPresent { .. }
-    )
+    kind.hides_unseen_content()
 }
 
 fn package_structural_uncertainty_from_compile(

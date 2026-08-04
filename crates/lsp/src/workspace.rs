@@ -42,10 +42,12 @@ use borzoi_msbuild::{
 };
 
 use crate::paths::{lexically_normalize, paths_equal};
+use crate::project_deferral::ProjectEvaluation;
 use crate::project_graph::{
     Edge, EdgeKind, NodeResult, NodeTfm, ProjectGraph, ProjectKind, build_graph, classify,
 };
 use crate::sdk_discovery::{SdkDiscovery, SdkDiscoveryEnv};
+use crate::semantic::CanonicalProject;
 use crate::tfm_policy::{self, caller_owns_target_framework, seed_target_framework_global};
 use borzoi_msbuild::ItemMetadataValue;
 
@@ -461,9 +463,7 @@ impl Workspace {
     ///   one whose owning `.fsproj` failed to evaluate, gets the compiled base.
     pub fn symbols_for(&mut self, file: &Path) -> HashSet<String> {
         if is_script_path(file) {
-            if let Some(project_path) = self.owning_project(file)
-                && matches!(self.membership(&project_path, file), Membership::Member)
-            {
+            if let Some(project_path) = self.compiling_project(file) {
                 return self.symbols_for_project(&project_path);
             }
             return implicit_symbols(true);
@@ -472,6 +472,56 @@ impl Workspace {
             Some(project_path) => self.symbols_for_project(&project_path),
             None => implicit_symbols(false),
         }
+    }
+
+    /// The project whose *declines* affect `file` — what
+    /// [`crate::project_deferral`] reports on.
+    ///
+    /// Looser than [`Self::compiling_project`], and deliberately: that one asks
+    /// "may I serve this script under the project's settings?", which needs a
+    /// conclusive `Member`. This asks "will the handlers try to serve this file
+    /// through that project, and could they fail?" — and they will, for anything
+    /// the ancestor walk selects. The one exclusion is a definite `NotMember`
+    /// for a script, which is a standalone `.fsx` sitting under an unrelated
+    /// `.fsproj`: telling it that project's problems would be nonsense.
+    ///
+    /// An *inconclusive* membership (`Unknown`, from an `items_uncertain`
+    /// project) therefore stays in scope. That is exactly the case where the
+    /// handlers do select the project and `build_parses` then refuses on the
+    /// same uncertainty, so it is the case that most needs explaining.
+    pub fn reporting_project(&mut self, file: &Path) -> Option<PathBuf> {
+        let project_path = self.owning_project(file)?;
+        if is_script_path(file)
+            && matches!(self.membership(&project_path, file), Membership::NotMember)
+        {
+            return None;
+        }
+        Some(project_path)
+    }
+
+    /// The project whose settings `file` is served under, or `None` when it is
+    /// served standalone.
+    ///
+    /// This is [`Self::owning_project`] with the **script guard**: a `.fsx` is
+    /// claimed only by a project that *conclusively* compiles it (an explicit
+    /// `<Compile Include="…fsx">`, which the SDK never globs). Mere proximity
+    /// does not count — `owning_project`'s nearest-ancestor fallback would
+    /// otherwise hand a standalone script to whichever `.fsproj` happens to sit
+    /// up-tree, and then serve it that project's defines, its language version,
+    /// and (via [`crate::project_deferral`]) *its* problems, none of which have
+    /// anything to do with the script.
+    ///
+    /// Every caller that answers "what does this file belong to?" should use
+    /// this rather than `owning_project`, which answers the narrower "which
+    /// project's directory encloses it?".
+    pub fn compiling_project(&mut self, file: &Path) -> Option<PathBuf> {
+        let project_path = self.owning_project(file)?;
+        if is_script_path(file)
+            && !matches!(self.membership(&project_path, file), Membership::Member)
+        {
+            return None;
+        }
+        Some(project_path)
     }
 
     /// [`Self::symbols_for`], refined by a *linking project* the caller knows
@@ -701,6 +751,34 @@ impl Workspace {
         self.evaluated(project_path).map(|e| &e.parsed)
     }
 
+    /// Everything the LSP's per-project decline decisions read, as one value —
+    /// see [`ProjectEvaluation`]. This is the *only* supported way to build one:
+    /// assembling it by hand from [`Self::project`] loses `not_an_inner_build`,
+    /// and a capability declined on a fact the explainer cannot see is a
+    /// capability that goes away silently.
+    pub fn project_evaluation(&mut self, project_path: &Path) -> ProjectEvaluation<'_> {
+        // From the caller's spelling, never from the canonical key: on a first
+        // lookup through a symlinked path the key is what the evaluation would
+        // be *anchored on*, and `$(MSBuildProjectDirectory)` plus every joined
+        // `<Compile>` include would then name files under a spelling no open
+        // buffer uses. `CanonicalProject` keeps both for exactly this reason.
+        self.project_evaluation_of(&CanonicalProject::new(project_path))
+    }
+
+    /// [`Self::project_evaluation`] for a project whose path is already
+    /// canonical, skipping the `realpath` syscall. The deferral refresh runs
+    /// after every dispatched message and already holds canonical paths, so the
+    /// re-canonicalisation was pure cost there.
+    pub fn project_evaluation_of(&mut self, project: &CanonicalProject) -> ProjectEvaluation<'_> {
+        match self.evaluated_by_key(project.key().to_path_buf(), project.as_path()) {
+            Some(evaluated) => ProjectEvaluation::Evaluated {
+                parsed: &evaluated.parsed,
+                not_an_inner_build: evaluated.not_an_inner_build,
+            },
+            None => ProjectEvaluation::Failed,
+        }
+    }
+
     /// The cached [`EvaluatedProject`] for `project_path` — the parse plus the
     /// SDK install root the evaluator resolved — lazily computed and cached
     /// (keyed by canonicalised path). `None` when evaluation failed; the
@@ -708,11 +786,22 @@ impl Workspace {
     fn evaluated(&mut self, project_path: &Path) -> Option<&EvaluatedProject> {
         let key =
             std::fs::canonicalize(project_path).unwrap_or_else(|_| project_path.to_path_buf());
+        self.evaluated_by_key(key, project_path)
+    }
+
+    /// [`Self::evaluated`] with the cache key already computed.
+    ///
+    /// `project_path` stays the caller's spelling: it is what the evaluation is
+    /// *anchored on* (`$(MSBuildProjectDirectory)`, every joined `<Compile>`
+    /// include), so substituting the canonical key here would produce item paths
+    /// that match no open buffer on a system where `/tmp` is a symlink.
+    fn evaluated_by_key(&mut self, key: PathBuf, project_path: &Path) -> Option<&EvaluatedProject> {
+        let project_path = project_path.to_path_buf();
         let env = &self.env;
         let extra_build_properties = &self.extra_build_properties;
         self.projects
             .entry(key)
-            .or_insert_with(|| evaluate_project(project_path, env, extra_build_properties))
+            .or_insert_with(|| evaluate_project(&project_path, env, extra_build_properties))
             .as_ref()
     }
 
@@ -1221,13 +1310,23 @@ fn resolve_node_uncached(
 /// drops edges without marking them leaves the env fold counting a set those
 /// references were already filtered out of, so it sees no shortfall to report.
 fn references_suppressed(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose) -> bool {
-    // `not_an_inner_build` is a second, independent reason: we are serving the
-    // *outer dispatch* build, whose reference list is not the real build's under
-    // any TFM — and unlike the unpinned-singular case, nothing in the evaluation
-    // flagged itself, because a multi-targeted document never writes the
-    // singular and so decides `'$(TargetFramework)' == ''` cleanly.
+    // The project-side half of the condition is
+    // [`ProjectEvaluation::drops_reference_edges`], shared with the code that
+    // *explains* the dropped edges to the user rather than restated here: a walk
+    // that drops edges on a condition the message doesn't know about takes the
+    // capability away in silence. (`not_an_inner_build` is exactly such a
+    // condition — nothing in the evaluation flags it, because a multi-targeted
+    // document never writes the singular `TargetFramework` and so decides
+    // `'$(TargetFramework)' == ''` perfectly cleanly.)
+    //
+    // The purpose gate stays here: it is about why *this caller* is walking, not
+    // about the project, so it has no place in a per-project verdict.
     purpose == GraphWalkPurpose::CompileClosure
-        && (evaluated.parsed.project_references_uncertain || evaluated.not_an_inner_build)
+        && ProjectEvaluation::Evaluated {
+            parsed: &evaluated.parsed,
+            not_an_inner_build: evaluated.not_an_inner_build,
+        }
+        .drops_reference_edges()
 }
 
 fn edges_of(evaluated: &EvaluatedProject, purpose: GraphWalkPurpose, is_entry: bool) -> Vec<Edge> {

@@ -178,6 +178,34 @@ pub enum DiagnosticKind {
     },
 }
 
+impl DiagnosticKind {
+    /// Whether this diagnostic means a *file's worth of content never entered
+    /// the walk* — an import we couldn't follow, an SDK we couldn't resolve, an
+    /// implicit file we don't follow. Everything such a file might have
+    /// declared is therefore unknown to us.
+    ///
+    /// This is the class, not a judgement about any one axis. Several
+    /// consequences hang off it and must agree on membership: the evaluator
+    /// goes opaque for later undefined-property reads, raises
+    /// [`crate::ParsedProject::items_uncertain`] and
+    /// [`crate::ParsedProject::project_references_uncertain`] outside the SDK
+    /// tree, and the LSP borrows exactly these causes to explain a dropped
+    /// `<ProjectReference>` edge set (whose own axis records none). Hence one
+    /// public definition rather than a `matches!` per consumer — a new variant
+    /// added to the class is then added everywhere at once.
+    pub fn hides_unseen_content(&self) -> bool {
+        matches!(
+            self,
+            DiagnosticKind::ImportFailed { .. }
+                | DiagnosticKind::UnresolvedImport { .. }
+                | DiagnosticKind::SdkNotFound { .. }
+                | DiagnosticKind::SdkVersionNotSatisfied { .. }
+                | DiagnosticKind::SdkResolutionUnsupported { .. }
+                | DiagnosticKind::ImplicitImportPresent { .. }
+        )
+    }
+}
+
 /// Why an `<Import>` (explicit) or implicit `Directory.Build.*` file
 /// could not be followed by the with-imports walker. Each variant
 /// records enough context to diagnose the failure without re-running
@@ -314,6 +342,49 @@ pub enum StructuralCompileItemUncertainty {
     /// A user-authored `<Choose>` can contain Compile items, but this evaluator
     /// does not descend it.
     UnsupportedChoose,
+}
+
+impl StructuralCompileItemUncertainty {
+    /// Whether skipping this construct also makes the `<ProjectReference>` list
+    /// untrustworthy — i.e. whether it could have carried reference *mutations*
+    /// we never saw.
+    ///
+    /// True for everything except [`Self::UnsupportedChoose`]: `handle_choose`
+    /// scans a `<Choose>`'s still-possible branches for reference mutations
+    /// itself, so an Include-only branch stays at worst a missed reference
+    /// rather than a wrong list.
+    ///
+    /// Public because a consumer explaining a dropped reference set must borrow
+    /// exactly this subset — attributing the drop to a Compile-only `<Choose>`
+    /// would name a construct that had nothing to do with it.
+    pub fn hides_project_references(&self) -> bool {
+        !matches!(self, StructuralCompileItemUncertainty::UnsupportedChoose)
+    }
+}
+
+/// One concrete reason the evaluated `DefineConstants` set is not trustworthy —
+/// the explaining channel for [`crate::ParsedProject::define_constants_uncertain`],
+/// in the mould of [`CompileItemUncertaintyCause`].
+///
+/// The define axis has no structural arm, unlike its Compile and package twins:
+/// a dropped `<Import>`/`<Choose>`/SDK is not by itself define uncertainty (a
+/// file we never read cannot have written `<DefineConstants>` under our nose —
+/// if it could have, the read that would have seen it is the diagnostic
+/// recorded here). So the cause is always a [`DiagnosticKind`] raised while
+/// resolving a user-authored `<DefineConstants>` write or the condition gating
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefineConstantsUncertaintyCause {
+    /// The diagnostic raised in define context — an undefined property in the
+    /// gating condition, an unsupported condition or property expression, an
+    /// unexpanded item/metadata reference in the value.
+    pub kind: DiagnosticKind,
+    /// Byte span of the causal construct in the entry project's source,
+    /// remapped to the `<Import>` site for imported files.
+    pub span: Range<usize>,
+    /// Whether the causal construct lives in the entry project or an imported
+    /// file.
+    pub origin: DiagnosticOrigin,
 }
 
 /// One concrete reason the captured package/framework reference set is not
