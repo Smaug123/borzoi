@@ -131,6 +131,153 @@ fn directory_build_props_can_import_parent_with_get_path_of_file_above() {
 }
 
 #[test]
+fn repro_get_path_of_file_above_guarded_by_exists() {
+    // Same chaining wrapper as above, but the import is guarded by
+    // `Exists(...)` of the very expression it imports — the idiom a user
+    // writes so the wrapper is a no-op at the top of the chain.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.props",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromRoot.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let src = tmp.path().join("src");
+    write_at(
+        &src,
+        "Directory.Build.props",
+        r#"<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))"
+          Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../')))" />
+</Project>"#,
+    );
+    let project_path = write_at(
+        &src,
+        "Demo.fsproj",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file(&project_path);
+    let project_dir = canon(tmp.path()).join("src");
+    assert_eq!(
+        paths_of(&result.items),
+        vec![project_dir.join("FromRoot.fs"), project_dir.join("Main.fs")]
+    );
+    assert!(
+        !result.items_uncertain,
+        "Exists-guarded GetPathOfFileAbove import should be followed cleanly; diags: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn get_path_of_file_above_one_argument_overload_chains_the_same_way() {
+    // The one-argument overload defaults its starting directory to the
+    // *containing file's* — so from `src/Directory.Build.props` the search
+    // starts in `src`, finds that same file first, and imports itself. MSBuild
+    // ignores a duplicate import of a file already in the chain, so the walk
+    // terminates and the root file is never reached: the Compile set is
+    // `Main.fs` alone, exactly, with nothing uncertain.
+    let tmp = TempDir::new().unwrap();
+    write_at(
+        tmp.path(),
+        "Directory.Build.props",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="FromRoot.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let src = tmp.path().join("src");
+    write_at(
+        &src,
+        "Directory.Build.props",
+        r#"<Project>
+  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props'))"
+          Condition="Exists($([MSBuild]::GetPathOfFileAbove('Directory.Build.props')))" />
+</Project>"#,
+    );
+    let project_path = write_at(
+        &src,
+        "Demo.fsproj",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file(&project_path);
+    let project_dir = canon(tmp.path()).join("src");
+    assert_eq!(paths_of(&result.items), vec![project_dir.join("Main.fs")]);
+    assert!(
+        !result.items_uncertain,
+        "the self-import terminates without uncertainty; diags: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn a_false_get_path_of_file_above_gate_is_exactly_false() {
+    // The gate alone, with nothing above to find: `GetPathOfFileAbove` returns
+    // "" and `Exists('')` is false (oracle-pinned 2026-08-04). That is a
+    // *determinate* skip — the group must not be included and the Compile set
+    // must stay certain, which is the half a decline cannot express.
+    let tmp = TempDir::new().unwrap();
+    let project_path = write_at(
+        tmp.path(),
+        "Demo.fsproj",
+        r#"<Project>
+  <ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('no-such-marker.props')))">
+    <Compile Include="Gated.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Main.fs" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file(&project_path);
+    assert_eq!(
+        paths_of(&result.items),
+        vec![canon(tmp.path()).join("Main.fs")]
+    );
+    assert!(
+        !result.items_uncertain,
+        "a determinate false gate leaves the set certain; diags: {:?}",
+        result.diagnostics
+    );
+}
+
+#[test]
+fn get_path_of_file_above_is_usable_in_item_position() {
+    // The function lands in the *general* dispatch table, so it is reachable
+    // from the item pass too, not only from property bodies and gates.
+    let tmp = TempDir::new().unwrap();
+    write_at(tmp.path(), "marker.props", "<Project />");
+    let src = tmp.path().join("src");
+    let project_path = write_at(
+        &src,
+        "Demo.fsproj",
+        r#"<Project>
+  <ItemGroup>
+    <Compile Include="$([MSBuild]::GetPathOfFileAbove('marker.props'))" />
+  </ItemGroup>
+</Project>"#,
+    );
+    let result = parse_file(&project_path);
+    assert_eq!(
+        paths_of(&result.items),
+        vec![canon(tmp.path()).join("marker.props")]
+    );
+    assert!(!result.items_uncertain, "diags: {:?}", result.diagnostics);
+}
+
+#[test]
 fn implicit_directory_build_targets_runs_after_project_body() {
     // Project sets X=FromBody; Directory.Build.targets overrides
     // X=FromTargets. Since targets is walked AFTER the body, the

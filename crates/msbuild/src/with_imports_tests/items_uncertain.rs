@@ -933,7 +933,7 @@ fn define_constants_uncertainty_records_its_cause() {
 #[test]
 fn define_uncertainty_and_its_causes_agree() {
     let mut flagged = 0usize;
-    for (label, dbp) in DEFINE_SHAPES {
+    for (label, expected, dbp) in DEFINE_SHAPES {
         let tmp = TempDir::new().unwrap();
         let project_path = write_at(
             tmp.path(),
@@ -947,6 +947,12 @@ fn define_uncertainty_and_its_causes_agree() {
             !result.define_constants_uncertainties.is_empty(),
             "{label}: flag and causes disagree ({}, {:?})",
             result.define_constants_uncertain,
+            result.define_constants_uncertainties
+        );
+        assert_eq!(
+            result.define_constants_uncertain,
+            *expected == Axis::Uncertain,
+            "{label}: the row no longer exercises the mechanism it names ({:?})",
             result.define_constants_uncertainties
         );
         if result.define_constants_uncertain {
@@ -969,10 +975,17 @@ fn define_uncertainty_and_its_causes_agree() {
 #[test]
 fn compile_uncertainty_always_records_a_cause() {
     let mut flagged = 0usize;
-    for (label, body) in COMPILE_SHAPES {
+    for (label, expected, body) in COMPILE_SHAPES {
         let tmp = TempDir::new().unwrap();
         let project_path = write_at(tmp.path(), "Demo.fsproj", body);
         let result = parse_file(&project_path);
+        assert_eq!(
+            result.items_uncertain,
+            *expected == Axis::Uncertain,
+            "{label}: the row no longer exercises the mechanism it names ({:?}, {:?})",
+            result.compile_item_uncertainties,
+            result.compile_condition_uncertainties
+        );
         if result.items_uncertain {
             flagged += 1;
             assert!(
@@ -989,37 +1002,53 @@ fn compile_uncertainty_always_records_a_cause() {
     );
 }
 
-/// Entry-project bodies straddling the Compile axis: the first two leave the
-/// Compile set exact, the rest each drop or gate content through a different
-/// mechanism (unresolved import path, unsupported gate, undefined-property
-/// gate, undescended `<Choose>`, unresolvable SDK).
-const COMPILE_SHAPES: &[(&str, &str)] = &[
+/// Entry-project bodies straddling the Compile axis. Each row declares which
+/// side it is there to exercise, and that is asserted per row: an aggregate
+/// straddle check alone is satisfied by a row that has quietly stopped
+/// exercising its mechanism, which is exactly what happened to the two
+/// `GetPathOfFileAbove` specimens once the expander learnt the function, and to
+/// the `<Choose>` row before that.
+const COMPILE_SHAPES: &[(&str, Axis, &str)] = &[
     (
         "plain compile",
+        Axis::Exact,
         r#"<Project><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
     ),
     (
         "gated on an exactly-false condition",
+        Axis::Exact,
         r#"<Project><ItemGroup Condition="'$(Missing)' == 'x'"><Compile Include="A.fs" /></ItemGroup></Project>"#,
     ),
     (
         "import with an unresolved path",
+        Axis::Uncertain,
         r#"<Project><Import Project="$(Missing)/x.props" /><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
     ),
     (
         "compile group gated on an unsupported condition",
-        r#"<Project><ItemGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('x.props')))"><Compile Include="A.fs" /></ItemGroup></Project>"#,
+        Axis::Uncertain,
+        r#"<Project><ItemGroup Condition="'$([System.DateTime]::Now)' != ''"><Compile Include="A.fs" /></ItemGroup></Project>"#,
     ),
     (
-        "compile gated on an inexactly-undefined property",
+        // Exact by the C.2b exemption: the walk can prove `Missing` is undefined
+        // in the real build too, so the substitution is exactly "" and the gate
+        // is decided rather than guessed.
+        "compile gated on a provably-undefined property",
+        Axis::Exact,
         r#"<Project><ItemGroup><Compile Include="A.fs" Condition="'$(Missing)' != 'x'" /></ItemGroup></Project>"#,
     ),
     (
-        "compile items inside a <Choose>",
+        // Exact: the `When` gate is `'$(X)' == ''` on a provably-undefined name,
+        // so C.2b decides it and the arm is descended. (Verified against
+        // unmodified `main`, not inferred — the table's prose called this an
+        // undescended `<Choose>`, which it has not been for some time.)
+        "compile items inside a decided <Choose>",
+        Axis::Exact,
         r#"<Project><Choose><When Condition="'$(X)' == ''"><ItemGroup><Compile Include="A.fs" /></ItemGroup></When></Choose></Project>"#,
     ),
     (
         "unresolvable SDK",
+        Axis::Uncertain,
         r#"<Project Sdk="No.Such.Sdk"><ItemGroup><Compile Include="A.fs" /></ItemGroup></Project>"#,
     ),
 ];
@@ -1027,33 +1056,51 @@ const COMPILE_SHAPES: &[(&str, &str)] = &[
 /// User-authored `Directory.Build.props` bodies spanning the define axis's
 /// certain and uncertain shapes. Deliberately mixed: the invariant tests above
 /// are vacuous if every shape flags.
-const DEFINE_SHAPES: &[(&str, &str)] = &[
+const DEFINE_SHAPES: &[(&str, Axis, &str)] = &[
     (
         "no defines at all",
+        Axis::Exact,
         r#"<Project><PropertyGroup><Foo>1</Foo></PropertyGroup></Project>"#,
     ),
     (
         "unconditional define",
+        Axis::Exact,
         r#"<Project><PropertyGroup><DefineConstants>PLAIN</DefineConstants></PropertyGroup></Project>"#,
     ),
     (
         "the append idiom (self-reference is exempt)",
+        Axis::Exact,
         r#"<Project><PropertyGroup><DefineConstants>$(DefineConstants);EXTRA</DefineConstants></PropertyGroup></Project>"#,
     ),
     (
         "gated on an undefined property",
+        Axis::Uncertain,
         r#"<Project><PropertyGroup Condition="'$(TargetFramework)' == 'net6.0'"><DefineConstants>NET6</DefineConstants></PropertyGroup></Project>"#,
     ),
     (
         "gated on an unsupported condition",
-        r#"<Project><PropertyGroup Condition="Exists($([MSBuild]::GetPathOfFileAbove('x.props')))"><DefineConstants>X</DefineConstants></PropertyGroup></Project>"#,
+        Axis::Uncertain,
+        r#"<Project><PropertyGroup Condition="'$([System.DateTime]::Now)' != ''"><DefineConstants>X</DefineConstants></PropertyGroup></Project>"#,
     ),
     (
-        "value reads an undefined property",
+        // Exact for the same C.2b reason as the Compile table's twin.
+        "value reads a provably-undefined property",
+        Axis::Exact,
         r#"<Project><PropertyGroup><DefineConstants>$(Missing);Y</DefineConstants></PropertyGroup></Project>"#,
     ),
     (
         "value reads an item list",
+        Axis::Uncertain,
         r#"<Project><PropertyGroup><DefineConstants>@(Compile)</DefineConstants></PropertyGroup></Project>"#,
     ),
 ];
+
+/// Which side of an uncertainty axis a shape-table row is there to exercise.
+/// Asserted per row: the aggregate straddle check alone is satisfied by a row
+/// that silently stops testing its mechanism, which is how the previous
+/// `GetPathOfFileAbove` specimens survived becoming ordinary false gates.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum Axis {
+    Exact,
+    Uncertain,
+}

@@ -438,9 +438,19 @@ fn eval_exact_path_args(
 /// state we don't receive), or a `file` with `..`/absolute components
 /// (MSBuild combines and probes those; refusing is conservative).
 fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
-    let start = start.replace('\\', "/");
+    // MSBuild `Path.GetFullPath`s the starting directory *before* the walk
+    // (`IntrinsicFunctions.GetDirectoryNameOfFileAbove`), so a `..` in it is
+    // collapsed lexically and never becomes a level the walk can pop back down
+    // into. Walking the raw string instead lets the OS resolve the `..` on the
+    // first probe and then pops it as a literal component — reaching a directory
+    // MSBuild never visits. Oracle-pinned 2026-08-04: with the marker present
+    // only in `a/b` and the start `a/b/..`, MSBuild returns empty.
+    //
+    // `normalize_path` is that `GetFullPath`, and it subsumes the separator
+    // rewrite, the Windows-drive rejection and the rootedness requirement.
+    let start = normalize_path(std::slice::from_ref(&start.to_string()))?;
     let file = file.replace('\\', "/");
-    if rejects_windows_drive_path(&start) || rejects_windows_drive_path(&file) {
+    if rejects_windows_drive_path(&file) {
         return None;
     }
     let start_dir = std::path::Path::new(&start);
@@ -466,6 +476,53 @@ fn get_directory_name_of_file_above(start: &str, file: &str) -> Option<String> {
             return Some(String::new());
         }
     }
+}
+
+/// `$([MSBuild]::GetPathOfFileAbove(file, start))`: the same upward walk as
+/// [`get_directory_name_of_file_above`] — note the **mirrored** argument order —
+/// but returning the path *of the file* rather than of its directory, i.e.
+/// MSBuild's `NormalizePath(directoryName, file)`. `""` when the search
+/// exhausts the tree, matching MSBuild.
+///
+/// `None` — surfaced as [`Issue::Unsupported`] — for the shapes MSBuild
+/// **errors** on, where committing any value would be a wrong answer:
+/// a `file` that is not a bare filename (MSB4184, "can only be a file name and
+/// cannot include a directory") and an empty `start` (MSB4184, "The value
+/// cannot be an empty string"). Both oracle-pinned 2026-08-04.
+///
+/// This validation is *stricter* than the sibling's, which admits a
+/// multi-segment `file` and probes for it: MSBuild applies the filename-only
+/// check only on this entry point.
+///
+/// An empty `file` also declines, where MSBuild answers `""`. Declining is
+/// fail-safe and the shape does not arise.
+///
+/// A **found** path declines on a Windows host, because it is the one result
+/// here that carries separators: [`normalize_path`] joins with `/` where .NET's
+/// `Path.GetFullPath` uses `\`, so committing it would be byte-different from
+/// MSBuild — the same known gap [`eval_exact_path_arg`] already declines a
+/// `%XX`-bearing Windows argument for, and it belongs to the helper, not to this
+/// caller. An exhausted search returns `""`, which has no separators to get
+/// wrong, so it still commits.
+fn get_path_of_file_above(file: &str, start: &str) -> Option<String> {
+    // MSBuild's guard is `file != Path.GetFileName(file)`, which differs exactly
+    // when the value carries a separator. A `\` is a separator on Windows only:
+    // on a unix host `Path.GetFileName(@"a\b")` is the whole `a\b`, so MSBuild
+    // accepts it and the unix path fixup turns it into `a/b` (probed). Declining
+    // it here is therefore a deliberate over-decline off Windows — fail-safe, and
+    // it keeps this guard host-independent rather than making the *accepted*
+    // domain differ by host, which is the direction that produces wrong answers.
+    if file.is_empty() || file.contains(['/', '\\']) {
+        return None;
+    }
+    let dir = get_directory_name_of_file_above(start, file)?;
+    if dir.is_empty() {
+        return Some(String::new());
+    }
+    if cfg!(windows) {
+        return None;
+    }
+    normalize_path(&[dir, file.to_string()])
 }
 
 /// `$([MSBuild]::NormalizePath(parts…))`: .NET
@@ -1641,6 +1698,188 @@ mod tests {
         );
         assert_eq!(out, tmp.path().join("a").to_string_lossy());
         assert!(issues.is_empty());
+    }
+
+    fn path_above_expr(file: &str, start: &str) -> String {
+        format!("$([MSBuild]::GetPathOfFileAbove('{file}', '{start}'))")
+    }
+
+    #[test]
+    fn file_above_normalises_the_starting_directory_before_walking() {
+        // MSBuild `Path.GetFullPath`s the starting directory before the upward
+        // walk, so a `..` in it is collapsed *lexically* — it never becomes a
+        // level the walk can pop back down into.
+        //
+        // Oracle (`dotnet msbuild` 10.0.301, 2026-08-04): with the marker present
+        // only in `a/b` and the search started at `a/b/..`, both
+        // `GetDirectoryNameOfFileAbove` and `GetPathOfFileAbove` return `""` —
+        // the search runs from `a` upwards and never sees `a/b`.
+        //
+        // Walking the raw start instead probes `a/b/../marker.props` (which the
+        // OS resolves to a miss), then pops the literal `..` to reach `a/b` and
+        // finds it — committing a directory MSBuild says does not exist.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let start = tmp.path().join("a/b");
+        std::fs::create_dir_all(&start).unwrap();
+        std::fs::write(start.join("marker.props"), "x").unwrap();
+        let dotdot = format!("{}/..", start.to_string_lossy());
+
+        let (dir, issues) = substitute_with_fs(
+            &dir_above_expr(&dotdot, "marker.props"),
+            &PropertyMap::new(),
+        );
+        assert_eq!(dir, "", "GetDirectoryNameOfFileAbove: {issues:?}");
+
+        let (path, issues) = substitute_with_fs(
+            &path_above_expr("marker.props", &dotdot),
+            &PropertyMap::new(),
+        );
+        assert_eq!(path, "", "GetPathOfFileAbove: {issues:?}");
+    }
+
+    #[test]
+    fn get_path_of_file_above_finds_and_normalises() {
+        // The found path is `NormalizePath(dir, file)`, so a `..` in the start
+        // is gone from the result. Oracle-pinned shape:
+        // `GetPathOfFileAbove('marker.props', '$(MSBuildThisFileDirectory)../')`.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("marker.props"), "x").unwrap();
+        let (out, issues) = substitute_with_fs(
+            &path_above_expr("marker.props", &format!("{}/../", sub.to_string_lossy())),
+            &PropertyMap::new(),
+        );
+        assert_eq!(out, root.join("marker.props").to_string_lossy());
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn get_path_of_file_above_defaults_to_this_file_directory() {
+        // The one-argument overload starts from the directory of the file the
+        // expression is *written in* — pinned against `dotnet msbuild` by
+        // putting the call in an imported `.props` in a different directory: it
+        // searched from that file's directory, not the project's.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let sub = root.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(root.join("marker.props"), "x").unwrap();
+        let props = map(&[("MSBuildThisFileDirectory", &*format!("{}/", sub.display()))]);
+        let (out, issues) =
+            substitute_with_fs("$([MSBuild]::GetPathOfFileAbove('marker.props'))", &props);
+        assert_eq!(out, root.join("marker.props").to_string_lossy());
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn get_path_of_file_above_without_this_file_directory_is_unsupported() {
+        // The default start is read from the property table rather than named in
+        // the source, so its absence is not an undefined *reference* — there is
+        // nothing to substitute empty. Decline instead.
+        let (out, issues) = substitute_with_fs(
+            "$([MSBuild]::GetPathOfFileAbove('marker.props'))",
+            &PropertyMap::new(),
+        );
+        assert_eq!(out, "$([MSBuild]::GetPathOfFileAbove('marker.props'))");
+        assert!(
+            matches!(issues.as_slice(), [Issue::Unsupported { .. }]),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn get_path_of_file_above_not_found_is_empty_without_issue() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (out, issues) = substitute_with_fs(
+            &path_above_expr("no-such-file.props", &tmp.path().to_string_lossy()),
+            &PropertyMap::new(),
+        );
+        assert_eq!(out, "", "MSBuild returns empty when nothing is found");
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn get_path_of_file_above_rejects_a_file_with_a_directory_component() {
+        // MSBuild errors (MSB4184: "can only be a file name and cannot include a
+        // directory"), so committing any value here would be a wrong answer.
+        // Oracle-pinned 2026-08-04.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("marker.props"), "x").unwrap();
+        let (out, issues) = substitute_with_fs(
+            &path_above_expr("sub/marker.props", &tmp.path().to_string_lossy()),
+            &PropertyMap::new(),
+        );
+        assert_eq!(
+            out,
+            path_above_expr("sub/marker.props", &tmp.path().to_string_lossy())
+        );
+        assert!(
+            matches!(issues.as_slice(), [Issue::Unsupported { .. }]),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn get_path_of_file_above_rejects_an_empty_starting_directory() {
+        // MSB4184: "The value cannot be an empty string. (Parameter 'path')".
+        // Oracle-pinned 2026-08-04. This is the shape the deleted import-attribute
+        // special case committed to, by joining "" onto the current file's
+        // directory — a wrong commit where MSBuild fails the build.
+        let (out, issues) =
+            substitute_with_fs(&path_above_expr("marker.props", ""), &PropertyMap::new());
+        assert_eq!(out, path_above_expr("marker.props", ""));
+        assert!(
+            matches!(issues.as_slice(), [Issue::Unsupported { .. }]),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn get_path_of_file_above_rejects_a_relative_starting_directory() {
+        // MSBuild resolves a relative start against the MSBuild *process* working
+        // directory, which we do not receive: oracle-pinned 2026-08-04, the same
+        // project answered differently from two cwds.
+        let (out, issues) =
+            substitute_with_fs(&path_above_expr("marker.props", ".."), &PropertyMap::new());
+        assert_eq!(out, path_above_expr("marker.props", ".."));
+        assert!(
+            matches!(issues.as_slice(), [Issue::Unsupported { .. }]),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn get_path_of_file_above_walks_through_a_nonexistent_start() {
+        // The walk is lexical: MSBuild does not require the starting directory to
+        // exist, and finds the marker above it. Oracle-pinned 2026-08-04.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        std::fs::write(root.join("marker.props"), "x").unwrap();
+        let (out, issues) = substitute_with_fs(
+            &path_above_expr("marker.props", &format!("{}/nosuchdir", root.display())),
+            &PropertyMap::new(),
+        );
+        assert_eq!(out, root.join("marker.props").to_string_lossy());
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn get_path_of_file_above_is_unsupported_without_fs() {
+        // Same split as its sibling: the pure-parse surface documents "no
+        // filesystem access", so the probe must not run there.
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("marker.props"), "x").unwrap();
+        let expr = path_above_expr("marker.props", &tmp.path().to_string_lossy());
+        let (out, issues) = substitute(&expr, &PropertyMap::new());
+        assert_eq!(out, expr);
+        assert!(
+            matches!(issues.as_slice(), [Issue::Unsupported { .. }]),
+            "{issues:?}"
+        );
     }
 
     #[test]

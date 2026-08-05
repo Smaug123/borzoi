@@ -5041,7 +5041,7 @@ fn follow_explicit_import(node: Node<'_, '_>, current_file_dir: &Path, state: &m
         );
         return;
     };
-    let expansion = expand_import_project(raw_path, current_file_dir, node.range(), state);
+    let expansion = state.expand(raw_path, node.range());
     if expansion.had_issue() || expansion.unpinned_root.is_some() {
         // The expanded path has residual `$(...)`, substituted to "", or
         // leaned on an *unpinned* property (a value the property pass could
@@ -5467,6 +5467,14 @@ fn simple_property_reference(raw: &str) -> Option<&str> {
     Some(inner)
 }
 
+/// Split a leading `'…'` literal off `input`, returning its contents and the
+/// remaining text.
+fn parse_single_quoted(input: &str) -> Option<(&str, &str)> {
+    let rest = input.strip_prefix('\'')?;
+    let end = rest.find('\'')?;
+    Some((&rest[..end], &rest[end + 1..]))
+}
+
 fn condition_has_exists_for_property(condition: Option<&str>, property_name: &str) -> bool {
     let Some(condition) = condition else {
         return false;
@@ -5531,95 +5539,6 @@ fn resolve_property_import_target(
     } else {
         current_file_dir.join(path)
     })
-}
-
-fn expand_import_project(
-    raw_path: &str,
-    current_file_dir: &Path,
-    span: Range<usize>,
-    state: &mut State<'_>,
-) -> Expansion {
-    if let Some(expansion) =
-        expand_get_path_of_file_above_import(raw_path, current_file_dir, span.clone(), state)
-    {
-        return expansion;
-    }
-    state.expand(raw_path, span)
-}
-
-fn expand_get_path_of_file_above_import(
-    raw_path: &str,
-    current_file_dir: &Path,
-    span: Range<usize>,
-    state: &mut State<'_>,
-) -> Option<Expansion> {
-    const PREFIX: &str = "$([MSBuild]::GetPathOfFileAbove(";
-    let trimmed = raw_path.trim();
-    let args = trimmed.strip_prefix(PREFIX)?.strip_suffix("))")?;
-    let (file_arg, start_arg) = parse_two_single_quoted_args(args)?;
-    let file = state.expand(file_arg, span.clone());
-    let start = state.expand(start_arg, span);
-    if file.had_issue() || start.had_issue() {
-        return Some(Expansion {
-            value: Escaped::default(),
-            had_undefined: file.had_undefined || start.had_undefined,
-            had_unsupported: file.had_unsupported || start.had_unsupported,
-            unpinned_root: file.unpinned_root.or(start.unpinned_root),
-        });
-    }
-    // Both arguments are points of use: they name a file and a directory on
-    // disk, so they leave the domain here.
-    let start_dir = current_file_dir.join(start.value.unescape().replace('\\', "/"));
-    let value = find_file_above(&file.value.unescape(), &start_dir)
-        .map(|path| path.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    // A path found by walking the filesystem is computed text: it re-enters the
-    // escaped domain, so a `%` or `(` in it is inert — same rule as the
-    // `well_known` seeds.
-    let value = Escaped::from_computed(&value);
-    Some(Expansion {
-        value,
-        had_undefined: false,
-        had_unsupported: false,
-        // An unpinned argument makes the *resolved path* unpinned too: a
-        // real build could search from a different directory (or for a
-        // different file) and import something else entirely.
-        unpinned_root: file.unpinned_root.or(start.unpinned_root),
-    })
-}
-
-fn parse_two_single_quoted_args(args: &str) -> Option<(&str, &str)> {
-    let (first, rest) = parse_single_quoted(args.trim_start())?;
-    let rest = rest.trim_start();
-    let rest = rest.strip_prefix(',')?.trim_start();
-    let (second, rest) = parse_single_quoted(rest)?;
-    rest.trim().is_empty().then_some((first, second))
-}
-
-fn parse_single_quoted(input: &str) -> Option<(&str, &str)> {
-    let rest = input.strip_prefix('\'')?;
-    let end = rest.find('\'')?;
-    Some((&rest[..end], &rest[end + 1..]))
-}
-
-fn find_file_above(file: &str, start_dir: &Path) -> Option<PathBuf> {
-    if file.is_empty()
-        || Path::new(file)
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return None;
-    }
-    let mut dir = start_dir.to_path_buf();
-    loop {
-        let candidate = dir.join(file);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
 }
 
 /// Returns true if `attr` is a safe relative path under an SDK root —
