@@ -15,9 +15,33 @@ use crate::def::{Def, DefId};
 use crate::diagnostics::SemaDiagnostic;
 
 use super::model::{
-    DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId, OpenTrace,
-    ProjectItems, Resolution, SlotClass,
+    AutoOpenVerdict, DeclineCause, DeclineSite, DeclineTier, ExportDecl, ExportedItem, ItemId,
+    OpenTrace, ProjectItems, Resolution, SlotClass,
 };
+
+/// One `[<AutoOpen>]`-spelled module declaration in the file being resolved.
+///
+/// See [`Resolver::auto_open_module_paths`] for why `verdict` rides along
+/// rather than the declaration being filtered at record time.
+#[derive(Debug, Clone)]
+pub(super) struct AutoOpenModuleDecl {
+    /// The module's qualified path.
+    pub(super) path: Vec<String>,
+    /// Its `module private` bit.
+    pub(super) private: bool,
+    /// The declaration's own text range — its *fragment* identity.
+    pub(super) range: rowan::TextRange,
+    /// What we could establish about its marker.
+    pub(super) verdict: AutoOpenVerdict,
+}
+
+impl AutoOpenModuleDecl {
+    /// Whether this declaration may **commit** a fold: only a proven marker
+    /// names members FCS is guaranteed to have brought into scope.
+    pub(super) fn commits(&self) -> bool {
+        self.verdict == AutoOpenVerdict::Proven
+    }
+}
 
 /// A binding visible in a scope frame. `name` is `idText`-normalised; later
 /// entries in a frame shadow earlier ones (position-ordered shadowing, D4).
@@ -1083,6 +1107,31 @@ pub(super) struct Resolver<'a> {
     /// earlier Compile-order file via [`Preceding`](super::model::ProjectItems)); merged across files like
     /// [`Self::nested_module_exports`].
     pub(super) modules_with_hidden_values: HashSet<Vec<String>>,
+    /// The hidden members of [`Self::modules_with_hidden_values`] that the
+    /// auto-open fold-back can neither **name** nor prove inert — a module
+    /// alias, a case-opaque type repr, a non-generic public `[<AutoOpen>]` type
+    /// — each with the position that declared it.
+    ///
+    /// Excluded are an active-pattern case and an `extern` prototype, which
+    /// [`unenumerated_member_names_in`](Resolver::unenumerated_member_names_in)
+    /// reads off `export_decls` and declines per name, and a generic or
+    /// `private` `[<AutoOpen>]` type, which contributes nothing to a *parent*
+    /// fold.
+    ///
+    /// [`fold_own_auto_open_module`](Resolver::fold_own_auto_open_module) reads
+    /// it for whether it must ALSO raise the blunt [`Self::open_generation`]
+    /// barrier, which serves the expression and pattern namespaces at once and
+    /// so over-declines whenever a name-keyed decline would do. The position is
+    /// what makes the answer per-*fragment*: one file can declare the same
+    /// module path in a plain block and an `[<AutoOpen>]` one, and only the
+    /// latter folds, so a marker outside the folded range owes no barrier.
+    /// Every other consumer — an explicit `open`, which cannot see the opened
+    /// module's contents — keeps reading
+    /// [`Self::modules_with_hidden_values`] and stays blunt.
+    ///
+    /// A `Vec` rather than a set: markers are few (one per hidden declaration)
+    /// and every read is a scan filtered by path *and* range.
+    pub(super) hidden_expression_value_sites: Vec<(Vec<String>, rowan::TextSize)>,
     /// Qualified paths of `[<AutoOpen>]` modules declared in this file,
     /// each with its `module private` bit — one record per module, written by
     /// [`Resolver::record_auto_open_module`](super::Resolver) from both
@@ -1094,7 +1143,19 @@ pub(super) struct Resolver<'a> {
     /// filters the `private` ones out, since F# does not bring
     /// a `private` module into scope for another file's `open` of its
     /// namespace.
-    pub(super) auto_open_module_paths: Vec<(Vec<String>, bool)>,
+    /// `range` is the declaration's own text range — the *fragment* identity a
+    /// fold needs when one file declares the same module path in several blocks
+    /// and only one carries `[<AutoOpen>]`.
+    ///
+    /// Entries whose `verdict` is [`AutoOpenVerdict::Unproven`] are recorded
+    /// too, and the distinction is why this is a record rather than a path
+    /// list: a consumer that **vetoes** on the module's presence must count
+    /// them (an unprovable marker might open, so the names it would contribute
+    /// cannot be resolved past), while a consumer that **commits** a fold from
+    /// them must not (it might not open, so folding would name a binder FCS
+    /// never brings into scope). Uncertainty widens declines and narrows
+    /// commits; a single `bool` here can only do one of those.
+    pub(super) auto_open_module_paths: Vec<AutoOpenModuleDecl>,
     /// EX-2 (`docs/extension-scope-enumeration-plan.md`): the **assembly**
     /// namespace paths an explicit `open <namespace>` brings into scope, unioned
     /// across every `open` in the file. The overload engine's extension-absence
@@ -1193,9 +1254,34 @@ pub(super) struct Resolver<'a> {
     /// is over-approximate — an in-file def declared after the import would
     /// win and could commit — which only defers (sound).
     pub(super) own_auto_open_type_names: HashSet<String>,
-    /// Whether this file declares **any** `[<AutoOpen>]` container — a module
-    /// or a type — whose bare-visible surface therefore folds into the rest of
-    /// its enclosing scope.
+    /// Where this file declares a type carrying `[<AutoOpen>]` *itself* — the
+    /// declaration's start position, one entry per type.
+    ///
+    /// Such a type folds its **statics** into the enclosing frame, and sema
+    /// models none of them (task #48). They are a value-namespace surface we
+    /// cannot enumerate, sitting at a known position: FCS ranks it with the
+    /// tycon tier, so a union case or exception of the same name declared
+    /// *earlier* in the fragment loses to it, while a `let` value wins from
+    /// either side (fcs-dump-probed both orders, both kinds).
+    ///
+    /// Distinct from [`Self::own_auto_open_type_names`], which is the types
+    /// declared *inside* an `[<AutoOpen>]` module — a type-namespace question.
+    /// This one is the value namespace, and only the fold reads it.
+    pub(super) own_auto_open_type_positions: Vec<rowan::TextSize>,
+    /// Whether this file declares an `[<AutoOpen>]` container whose
+    /// bare-visible surface folds into the rest of its enclosing scope in a way
+    /// source position does not express — an `[<AutoOpen>]` **type** (whose
+    /// statics sema does not model at all), or an `[<AutoOpen>]` module inside a
+    /// `rec` block.
+    ///
+    /// A `[<AutoOpen>]` module outside a `rec` block is *not* one of these: its
+    /// surface folds into the enclosing frame at its own declaration position
+    /// ([`Resolver::fold_own_auto_open_module`]), which is exactly FCS's rule
+    /// there (fcs-dump probes `OrderAfter`/`OrderBefore`). Inside a `rec` block
+    /// FCS makes every declaration visible to every other — a use *preceding*
+    /// the module binds it, and it beats even a later `open` of a colliding
+    /// module — so nothing there can be ordered by position and the fold is
+    /// declined wholesale instead.
     ///
     /// A flag rather than a name set on purpose. That surface is open-ended:
     /// values, union and exception cases, `extern` prototypes, active-pattern
@@ -1459,6 +1545,16 @@ pub(super) struct Resolver<'a> {
     /// [`SyntaxRecovery::Unretained`] until then, which is the reading that
     /// claims nothing.
     pub(super) recovery: SyntaxRecovery,
+    /// Names an `[<AutoOpen>]` fold-back has pushed into the container that
+    /// declares the module, keyed by that container's path.
+    ///
+    /// A constructible type the container declares **after** the fold takes the
+    /// name from anything folded (fcs-dump-probed; a type *above* the module
+    /// does not). The scope frame is push-ordered rather than position-gated,
+    /// so the decline has to be pushed when the walk reaches the type — and
+    /// only for names a fold actually supplied, since the same contest through
+    /// an ordinary `open` is task #45 and is wrong on `main` too.
+    pub(super) fold_back_names: HashMap<Vec<String>, HashSet<String>>,
 }
 
 /// What the binders interned so far in **one** pattern walk resolved to, so an

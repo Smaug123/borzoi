@@ -1484,6 +1484,44 @@ pub fn ensure_fsharp_core_dll() -> PathBuf {
         .join("FSharp.Core.dll")
 }
 
+/// The bytes of the real `FSharp.Core.dll`, read once per test binary.
+///
+/// [`borzoi_assembly::Ecma335Assembly::parse`] borrows its input, so an env
+/// helper needs the bytes to outlive the view it builds; handing back a
+/// `&'static [u8]` lets every helper compose FSharp.Core into its view list
+/// without each one re-reading the file.
+pub fn fsharp_core_bytes() -> &'static [u8] {
+    use std::sync::OnceLock;
+    static BYTES: OnceLock<Vec<u8>> = OnceLock::new();
+    BYTES
+        .get_or_init(|| std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll"))
+        .as_slice()
+}
+
+/// An [`AssemblyEnv`](borzoi_sema::AssemblyEnv) holding exactly the real
+/// `FSharp.Core.dll` — what an F# compilation *always* references, and what
+/// FCS always type-checks with.
+///
+/// Prefer this to `AssemblyEnv::default()` in any test whose oracle is FCS and
+/// whose source carries an attribute, because the two are not interchangeable
+/// there. `[<AutoOpen>]` names a type that FSharp.Core declares, and the fold
+/// acts only on a marker it can *prove* is
+/// `Microsoft.FSharp.Core.AutoOpenAttribute` — so under an empty env the
+/// marker is unresolvable, we soundly decline the fold, and the test diffs a
+/// decline against an oracle that folded. That divergence is an artefact of
+/// the reference set, not a defect in the subject: the empty env is a
+/// configuration no real F# project has.
+pub fn fsharp_core_env() -> &'static borzoi_sema::AssemblyEnv {
+    use std::sync::OnceLock;
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        let view = borzoi_assembly::Ecma335Assembly::parse(fsharp_core_bytes())
+            .expect("parse FSharp.Core.dll");
+        borzoi_sema::AssemblyEnv::from_views(std::slice::from_ref(&view))
+            .expect("build AssemblyEnv")
+    })
+}
+
 /// A real BCL `System.Runtime.dll` **reference assembly** — the one carrying the
 /// public API surface of `System.String` (its `Length` property, `Chars`
 /// indexer, `Empty` static field, …). The member-access differential

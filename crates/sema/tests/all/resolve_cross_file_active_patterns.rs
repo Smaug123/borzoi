@@ -20,7 +20,7 @@
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, DefKind, Resolution, resolve_project};
+use borzoi_sema::{DefKind, Resolution, resolve_project};
 use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
@@ -57,7 +57,10 @@ fn opened_cross_file_active_pattern_case_resolves_to_recognizer() {
     // `A.(|Even|Odd|).Even`, decl at the `|Even|Odd|` name range).
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\nlet f n = match n with Even -> 1 | Odd -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     for case in ["Even", "Odd"] {
         // The use in file B is the *last* occurrence of the case name.
@@ -90,7 +93,10 @@ fn cross_file_active_pattern_case_is_not_an_expression_value() {
     // recognizer (it declines — Deferred/unrecorded).
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\nlet x = Even\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     let use_range = nth(src1, "Even", 0);
     match proj.file(1).resolution_at(use_range) {
@@ -114,7 +120,10 @@ fn value_namespace_still_resolves_while_active_pattern_case_is_excluded() {
     // namespace).
     let src0 = "module A\nlet payload = 3\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\nlet a = payload\nlet b = Even\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     // `payload` resolves cross-file to file0's value.
     let payload_use = nth(src1, "payload", 0);
@@ -149,7 +158,10 @@ fn cross_file_partial_parameterized_case_resolves_param_to_outer_value() {
         "module A\nlet (|DivBy|_|) (d: int) (n: int) = if n % d = 0 then Some () else None\n";
     let src1 =
         "module B\nopen A\nlet divisor = 3\nlet f n = match n with DivBy divisor -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let rf = proj.file(1);
 
     // `DivBy` head → file0's recognizer.
@@ -182,7 +194,10 @@ fn cross_file_total_single_case_partial_application_binds_result() {
     // body use (2).
     let src0 = "module A\nlet (|Scale|) (k: int) (x: int) = k * x\n";
     let src1 = "module B\nopen A\nlet g = 7\nlet s n = match n with Scale g -> g\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let rf = proj.file(1);
 
     let body_use = nth(src1, "g", 2);
@@ -204,7 +219,10 @@ fn cross_file_split_leaves_no_scope_entry_for_arm_body() {
     let src0 =
         "module A\nlet (|DivBy|_|) (d: int) (n: int) = if n % d = 0 then Some () else None\n";
     let src1 = "module B\nopen A\nlet divisor = 3\nlet f n = match n with DivBy divisor -> divisor | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let rf = proj.file(1);
 
     // The body `divisor` (occurrence index 2: the `let`, the pattern arg, the body).
@@ -229,7 +247,7 @@ fn latest_open_wins_for_cross_file_active_pattern_case() {
     let src2 = "module B\nopen A1\nopen A2\nlet f n = match n with Even -> 1 | _ -> 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
 
     let use_range = nth(src2, "Even", 0);
@@ -251,7 +269,10 @@ fn sole_active_pattern_trigger_no_longer_suppresses_sibling_union_cases() {
     // (FCS: `A.Color.Red`). Guards the narrowed hidden-value trigger.
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\ntype Color = Red | Green\n";
     let src1 = "module B\nopen A\nlet name c = match c with Red -> 1 | Green -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let rf = proj.file(1);
 
     for (case, def_needle) in [("Red", "Red"), ("Green", "Green")] {
@@ -276,7 +297,10 @@ fn same_file_and_cross_file_active_pattern_case_uses_share_one_identity() {
     // cross-file via `open A`.
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\nlet g x = match x with Even -> 1 | Odd -> 0\n";
     let src1 = "module B\nopen A\nlet f x = match x with Even -> 1 | Odd -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
 
     // Same-file use: the 3rd `Even` occurrence (0 = recognizer name, 1 = body
     // construction, 2 = `g`'s match head).
@@ -311,7 +335,7 @@ fn later_file_case_wins_over_earlier_auto_open_active_pattern() {
     let src2 = "module Client\nopen P\nlet f x = match x with Red -> 1 | _ -> 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let (file_idx, def) = proj
         .item_def(
@@ -338,7 +362,7 @@ fn public_active_pattern_recovered_under_a_later_inaccessible_private() {
     let src2 = "module Client\nopen N.A\nlet f x = match x with P -> 1 | _ -> 0\n";
     let proj = resolve_project(
         &[impl_file(src0), impl_file(src1), impl_file(src2)],
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
     );
     let (file_idx, _def) = proj
         .item_def(
@@ -365,7 +389,10 @@ fn active_pattern_case_does_not_mask_an_ordinary_value_qualifier() {
     // (Phase 3) — the sound outcome, never a committed case.
     let src0 = "module Lib\nmodule Container =\n    let Color = {| Red = 42 |}\n    type Color = Red | Blue\n    let (|Color|_|) (x: int) = if x = 0 then Some () else None\n";
     let src1 = "module Client\nlet v = Lib.Container.Color.Red\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     match proj
         .file(1)
         .resolution_at(nth(src1, "Lib.Container.Color.Red", 0))
@@ -385,7 +412,10 @@ fn active_pattern_declaring_module_still_hidden_by_another_trigger_declines() {
     // them). Sound decline — never a wrong commit.
     let src0 = "module A\nextern int X()\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\nlet f n = match n with Even -> 1 | Odd -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let use_range = nth(src1, "Even", 0);
     // Decline (Deferred / unrecorded) — never a wrong commit.
     match proj.file(1).resolution_at(use_range) {

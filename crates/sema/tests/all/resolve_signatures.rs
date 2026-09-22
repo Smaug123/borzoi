@@ -143,7 +143,7 @@ fn signature_drops_paired_impl_value_exports() {
             "module B\n\nlet u1 = A.shown\nlet u2 = A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 2, "A.shown"),
@@ -170,7 +170,7 @@ fn unsigned_project_still_exports() {
             "module B\n\nlet u1 = A.shown\nlet u2 = A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(&proj, res_at(&proj, &files, 1, "A.shown"), 0, "A.shown");
     assert_item_in(&proj, res_at(&proj, &files, 1, "A.hidden"), 0, "A.hidden");
 }
@@ -185,7 +185,7 @@ fn unsigned_sibling_module_still_exports() {
         ("/p/C.fs", "module C\n\nlet c = 3\n"),
         ("/p/B.fs", "module B\n\nlet u1 = C.c\nlet u2 = A.shown\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(&proj, res_at(&proj, &files, 3, "C.c"), 2, "C.c");
     assert_item_in(
         &proj,
@@ -209,7 +209,7 @@ fn pairing_is_first_following_impl_of_equal_qnof() {
             "module Use\n\nlet a = M.shown\nlet b = M.hidden\nlet c = M.extra\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 3, "M.shown"),
@@ -235,7 +235,7 @@ fn cross_directory_module_headed_sig_does_not_pair() {
             "module Use\n\nlet a = M.shown\nlet b = M.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(&proj, res_at(&proj, &files, 2, "M.shown"), 1, "M.shown");
     assert_item_in(&proj, res_at(&proj, &files, 2, "M.hidden"), 1, "M.hidden");
 }
@@ -258,7 +258,7 @@ fn namespace_headed_signature_pairs_by_filename() {
             "module B\n\nlet u1 = N.A.shown\nlet u2 = N.A.hidden\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 2, "N.A.shown"),
@@ -283,7 +283,7 @@ fn namespace_headed_signature_with_other_stem_does_not_pair() {
         ),
         ("/p/B.fs", "module B\n\nlet u2 = N.A.hidden\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 2, "N.A.hidden"),
@@ -302,7 +302,7 @@ fn open_of_signatured_module_commits_exposed_bare_uses() {
         ("/p/A.fs", "module A\n\nlet shown = 1\n"),
         ("/p/B.fs", "module B\n\nopen A\n\nlet u = shown\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 2, "shown"),
@@ -328,7 +328,7 @@ fn screened_relative_reading_withholds_root_module_commit() {
             "namespace A\n\nmodule Use =\n    let y = M.x\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 3, "M.x"),
@@ -345,7 +345,7 @@ fn screened_relative_reading_withholds_root_module_commit() {
             "namespace A\n\nmodule Use =\n    let y = M.x\n",
         ),
     ];
-    let cproj = resolve_project_files(&project(&control), &AssemblyEnv::default());
+    let cproj = resolve_project_files(&project(&control), crate::common::fsharp_core_env());
     assert_item_in(
         &cproj,
         res_at(&cproj, &control, 2, "M.x"),
@@ -373,7 +373,7 @@ fn impl_only_auto_open_is_not_published() {
             "module U\n\nopen Lib\nopen N\n\nlet y = marker\n",
         ),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_item_in(
         &proj,
         res_at(&proj, &files, 3, "marker"),
@@ -590,7 +590,7 @@ fn intervening_file_between_sig_and_impl_commits_nothing_in_project() {
         ),
         ("/p/A.fs", "module ProbeNs.Shared\n\nlet shown = 1\n"),
     ];
-    let proj = resolve_project_files(&project(&files), &AssemblyEnv::default());
+    let proj = resolve_project_files(&project(&files), crate::common::fsharp_core_env());
     assert_uncommitted(
         res_at(&proj, &files, 1, "ProbeNs.Shared.shown"),
         "intervening use of a not-yet-published signatured module",

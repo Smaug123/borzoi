@@ -96,7 +96,10 @@ fn later_literal_defers_opened_active_pattern_case() {
     // wrong target.
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\n[<Literal>]\nlet Even = 7\nlet f (n: int) = match n with Even -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     assert_defers(
         proj.file(1),
         nth(src1, "Even", 1),
@@ -110,7 +113,10 @@ fn later_literal_defers_opened_union_case() {
     // `B.Red` (the literal), not `A.C.Red`.
     let src0 = "module A\ntype C =\n    | Red\n    | Blue\n";
     let src1 = "module B\nopen A\n[<Literal>]\nlet Red = 9\nlet g (n: int) = match n with Red -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     assert_defers(
         proj.file(1),
         nth(src1, "Red", 1),
@@ -124,7 +130,10 @@ fn later_literal_defers_opened_union_case() {
 fn literal_before_open_keeps_the_opened_case() {
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\n[<Literal>]\nlet Even = 7\nopen A\nlet f (n: int) = match n with Even -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let res = proj
         .file(1)
         .resolution_at(nth(src1, "Even", 1))
@@ -143,7 +152,10 @@ fn unattributed_value_does_not_contest_the_case() {
     // without attributes a `let` cannot be `[<Literal>]`, so the case commits.
     let src0 = "module A\nlet (|Even|Odd|) n = if n % 2 = 0 then Even else Odd\n";
     let src1 = "module B\nopen A\nlet Even = 7\nlet f (n: int) = match n with Even -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     let res = proj
         .file(1)
         .resolution_at(nth(src1, "Even", 1))
@@ -161,7 +173,7 @@ fn in_file_later_literal_defers_the_case() {
     let rf = resolve_file(
         &impl_file(src),
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery_of(src),
     );
     assert_defers(&rf, nth(src, "Red", 2), "bare `Red` after in-file literal");
@@ -173,7 +185,7 @@ fn in_file_later_case_beats_the_earlier_literal() {
     let rf = resolve_file(
         &impl_file(src),
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery_of(src),
     );
     let res = rf
@@ -189,7 +201,10 @@ fn in_file_later_case_beats_the_earlier_literal() {
 fn same_module_literal_after_case_defers_through_open() {
     let src0 = "module A\ntype C =\n    | Red\n    | Blue\n\n[<Literal>]\nlet Red = 9\n";
     let src1 = "module B\nopen A\nlet g (n: int) = match n with Red -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     assert_defers(proj.file(1), nth(src1, "Red", 0), "bare `Red` via open");
 }
 
@@ -199,7 +214,10 @@ fn same_module_literal_before_case_defers_through_open() {
     // opened module's tycons before its vals.
     let src0 = "module A\n[<Literal>]\nlet Green = 5\ntype D =\n    | Green\n    | Teal\n";
     let src1 = "module B\nopen A\nlet h (n: int) = match n with Green -> 1 | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     assert_defers(proj.file(1), nth(src1, "Green", 0), "bare `Green` via open");
 }
 
@@ -210,7 +228,7 @@ fn same_file_module_literal_defers_through_open_either_order() {
     let rf = resolve_file(
         &impl_file(src_a),
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery_of(src_a),
     );
     assert_defers(&rf, nth(src_a, "Red", 2), "bare `Red` via same-file open");
@@ -219,7 +237,7 @@ fn same_file_module_literal_defers_through_open_either_order() {
     let rf = resolve_file(
         &impl_file(src_b),
         &ProjectItems::default(),
-        &AssemblyEnv::default(),
+        crate::common::fsharp_core_env(),
         &recovery_of(src_b),
     );
     assert_defers(
@@ -251,7 +269,10 @@ fn qualified_case_pattern_never_commits_the_literal() {
         ),
     ] {
         let src1 = "module B\nopen A\nlet q (d: D) = match d with A.Green -> 2 | _ -> 0\n";
-        let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+        let proj = resolve_project(
+            &[impl_file(src0), impl_file(src1)],
+            crate::common::fsharp_core_env(),
+        );
         match proj.file(1).resolution_at(nth(src1, "A.Green", 0)) {
             None | Some(Resolution::Deferred(_)) => {}
             Some(res) => {
@@ -307,7 +328,10 @@ fn auto_open_submodule_literal_defers_a_direct_namespace_case() {
     let src0 = "namespace N\n\ntype C =\n    | X\n    | Zed\n\n[<AutoOpen>]\nmodule Sub =\n    [<Literal>]\n    let X = 4\n";
     let src1 =
         "module B\n\nopen N\n\nlet f (n: int) =\n    match n with\n    | X -> 1\n    | _ -> 0\n";
-    let proj = resolve_project(&[impl_file(src0), impl_file(src1)], &AssemblyEnv::default());
+    let proj = resolve_project(
+        &[impl_file(src0), impl_file(src1)],
+        crate::common::fsharp_core_env(),
+    );
     assert_defers(
         proj.file(1),
         nth(src1, "X", 0),

@@ -235,19 +235,28 @@ pub fn resolve_file(
                 _ => {}
             }
         }
-        // …and the fact that it EXISTS. Its contents are not enumerated: a
-        // `[<AutoOpen>]` container's bare-visible surface is open-ended —
-        // values, union and exception cases, `extern` prototypes,
-        // active-pattern tags, a single-case union spelled like an
-        // abbreviation, an auto-open *type*'s statics, statics borrowed through
-        // an abbreviation — and each is invisible to a different part of the
-        // parse. Enumerating them is a list that keeps growing and can only be
-        // audited by inspection; the flag is one closed question with a
-        // one-line soundness argument, and it costs commits only in files that
-        // actually declare such a container. Read by the implicit
-        // enclosing-namespace fold, which runs before the block's walk and so
-        // cannot see any of it (`Resolver::block_local_shadow_unknowable`).
-        r.own_auto_open_container = true;
+        // …and, in a `rec` block only, the fact that it EXISTS. Everywhere else
+        // the module's surface folds into the enclosing frame at its own
+        // declaration position (`Resolver::fold_own_auto_open_module`), so
+        // ordinary source-position shadowing decides the contest and no
+        // file-global flag is needed. A `module rec` block is different in kind:
+        // FCS makes every declaration visible to every other, so a use
+        // *preceding* the module binds it — and it beats even a LATER `open` of
+        // a colliding module (fcs-dump probes `Rec`/`RecOpen`). Neither is a
+        // position rule, so the fold is declined there rather than modelled
+        // wrong, and the flag is what carries that decline to the implicit
+        // enclosing-namespace fold — which runs before the block's walk and so
+        // cannot see any of this (`Resolver::block_local_shadow_unknowable`).
+        // The module ITSELF counts, not only its ancestors: `[<AutoOpen>]
+        // module rec Inner` is forward-visible within its own body, so a use
+        // inside it sees its own later declarations and is no more
+        // position-ordered than one in an enclosing rec block. (Its rec-ness
+        // genuinely changes nothing about how its surface folds *outward* —
+        // that is the fold-back's concern, and a different question from this
+        // flag's — codex round 7.)
+        if nm.syntax().ancestors().any(|a| encloses_recursively(&a)) {
+            r.own_auto_open_container = true;
+        }
     }
     // An `[<AutoOpen>]` **type** is the other container whose surface folds into
     // the rest of its enclosing scope — its statics, and (fsi-verified) the
@@ -259,6 +268,18 @@ pub fn resolve_file(
         // supplies for a container that contributes none (fcs-dump-verified).
         if attrs_auto_open(defn.attributes()) && defn.typar_decls().is_none() {
             r.own_auto_open_container = true;
+            // The same contribution seen from the fold's side: the type's
+            // statics land in the enclosing frame at this position, and sema
+            // names none of them (task #48). A `private` one contributes
+            // nothing outside its own container, so FCS keeps a same-named
+            // exception there and the fold must not decline it
+            // (fcs-dump-verified, as is the generic case above). Recorded on
+            // this walk rather than a second one, so the two answers to "does
+            // this type contribute?" cannot drift apart.
+            if !decls::type_header_is_private(&defn) {
+                r.own_auto_open_type_positions
+                    .push(defn.syntax().text_range().start());
+            }
         }
         // The value-slot subset of the type-name pre-scan above.
         if let Some(name) = defn.long_id().and_then(|li| li.idents().last())
@@ -411,7 +432,12 @@ pub fn resolve_file(
             let header_auto_open = attrs_auto_open(module.attributes());
             let header_private = decls::header_is_private(module.syntax());
             if header_auto_open && !r.anonymous_root {
-                r.record_auto_open_module(path.clone(), header_private);
+                r.record_auto_open_module(
+                    path.clone(),
+                    header_private,
+                    module.syntax().text_range(),
+                    model::AutoOpenVerdict::Proven,
+                );
             }
             // The export-decl-list twin of the two lines above: one top-level
             // header decl carrying its `[<AutoOpen>]`/`private` bits, so
@@ -424,7 +450,18 @@ pub fn resolve_file(
                 header_pos,
                 model::ExportDeclKind::Module {
                     header: true,
-                    auto_open: header_auto_open,
+                    // A top-level header's own attributes have not resolved at
+                    // this point — this runs before the walk that would resolve
+                    // them — so only the *spelling* is available, and this path
+                    // still folds on it. The nested-module path
+                    // ([`decls::Resolver::auto_open_verdict`]) is the one that
+                    // requires proof; closing the asymmetry means hoisting
+                    // header-attribute resolution the way the nested arm's was.
+                    auto_open: if header_auto_open {
+                        model::AutoOpenVerdict::Proven
+                    } else {
+                        model::AutoOpenVerdict::NotAutoOpen
+                    },
                     private: header_private,
                 },
             );
@@ -1826,6 +1863,14 @@ fn module_header_pos(module: &ModuleOrNamespace) -> rowan::TextSize {
         .unwrap_or_else(|| module.syntax().text_range().start())
 }
 
+/// Whether `node` is a `rec` container — a `module rec`/`namespace rec` header
+/// or a nested `module rec`. Inside one, FCS makes every declaration visible to
+/// every other, so nothing in it can be ordered by source position.
+fn encloses_recursively(node: &SyntaxNode) -> bool {
+    ModuleOrNamespace::cast(node.clone()).is_some_and(|m| m.is_rec())
+        || NestedModuleDecl::cast(node.clone()).is_some_and(|m| m.is_rec())
+}
+
 /// The module-path prefix that qualifies a file's exports, or `None` for an
 /// anonymous (header-less) module. A `namespace` carries no directly-bound
 /// values (only modules/types live under it), so only a `NamedModule`
@@ -1885,6 +1930,7 @@ impl<'a> Resolver<'a> {
             open_generation: 0,
             pattern_suppressed_case_ids: HashSet::new(),
             modules_with_hidden_values: HashSet::new(),
+            hidden_expression_value_sites: Vec::new(),
             auto_open_module_paths: Vec::new(),
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,
@@ -1896,6 +1942,7 @@ impl<'a> Resolver<'a> {
             own_exception_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
             own_auto_open_type_names: HashSet::new(),
+            own_auto_open_type_positions: Vec::new(),
             own_auto_open_container: false,
             own_value_slot_type_names: HashSet::new(),
             attribute_shape_unknowable: false,
@@ -1922,6 +1969,7 @@ impl<'a> Resolver<'a> {
             recovery: SyntaxRecovery::Unretained,
             decline_sites: HashMap::new(),
             export_decls: Vec::new(),
+            fold_back_names: HashMap::new(),
         }
     }
 
@@ -2008,9 +2056,12 @@ impl<'a> Resolver<'a> {
     /// `N.Auto.Foo`. The earlier-file half arrives already privacy-filtered by
     /// `finish()`.
     fn project_auto_open_module_in_namespace(&self, namespace: &[String]) -> bool {
-        self.auto_open_module_paths.iter().any(|(p, private)| {
-            model::is_directly_in(p, namespace)
-                && (!private || self.container_path.starts_with(namespace))
+        // A VETO query: every recorded declaration counts, including one whose
+        // marker we could not prove. If it does open, resolving past the names
+        // it contributes commits the wrong binder.
+        self.auto_open_module_paths.iter().any(|d| {
+            model::is_directly_in(&d.path, namespace)
+                && (!d.private || self.container_path.starts_with(namespace))
         }) || self.preceding.has_auto_open_module_in_namespace(namespace)
     }
 
@@ -2018,8 +2069,19 @@ impl<'a> Resolver<'a> {
     /// [`Self::auto_open_module_paths`], so the same-file view and the
     /// cross-file export (the `finish()` privacy filter) can never disagree
     /// on what was declared.
-    pub(super) fn record_auto_open_module(&mut self, path: Vec<String>, is_private: bool) {
-        self.auto_open_module_paths.push((path, is_private));
+    pub(super) fn record_auto_open_module(
+        &mut self,
+        path: Vec<String>,
+        is_private: bool,
+        range: TextRange,
+        verdict: model::AutoOpenVerdict,
+    ) {
+        self.auto_open_module_paths.push(state::AutoOpenModuleDecl {
+            path,
+            private: is_private,
+            range,
+            verdict,
+        });
     }
 
     /// Demote every **assembly-rooted** resolution this file recorded to
@@ -2802,7 +2864,7 @@ mod export_decl_tests {
                 &d.kind,
                 ExportDeclKind::Module {
                     header: true,
-                    auto_open: true,
+                    auto_open: model::AutoOpenVerdict::Proven,
                     private: true,
                 }
             )),
@@ -2826,7 +2888,7 @@ mod export_decl_tests {
                 &d.kind,
                 ExportDeclKind::Module {
                     header: true,
-                    auto_open: true,
+                    auto_open: model::AutoOpenVerdict::Proven,
                     private: false,
                 }
             )),

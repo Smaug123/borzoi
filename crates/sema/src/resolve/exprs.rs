@@ -943,10 +943,12 @@ impl<'a> Resolver<'a> {
     /// file's own pre-scan. The in-file twin of
     /// `ProjectItems::auto_open_modules_directly_in`.
     pub(super) fn auto_open_modules_directly_in(&self, container: &[String]) -> Vec<Vec<String>> {
+        // A VETO consumer (it keeps the bare-constructor fallback off a name an
+        // auto-open descendant may hide), so an unproven marker counts.
         self.auto_open_module_paths
             .iter()
-            .filter(|(p, _)| p.len() == container.len() + 1 && p.starts_with(container))
-            .map(|(p, _)| p.clone())
+            .filter(|d| d.path.len() == container.len() + 1 && d.path.starts_with(container))
+            .map(|d| d.path.clone())
             .collect()
     }
 

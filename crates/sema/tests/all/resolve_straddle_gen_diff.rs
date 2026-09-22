@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 use crate::common::{invoke_fcs_dump_project, parse_fcs_uses_project, temp_fs_file};
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{AssemblyEnv, Resolution, resolve_project};
+use borzoi_sema::{Resolution, resolve_project};
 use rowan::TextRange;
 
 fn impl_file(src: &str) -> ImplFile {
@@ -291,7 +291,7 @@ fn diff_chunk(scenarios: &[Scenario], kind: Kind) -> (Vec<Divergence>, Resolved)
     let fcs = parse_fcs_uses_project(&json, &written);
 
     let asts: Vec<ImplFile> = written.iter().map(|(_, s)| impl_file(s)).collect();
-    let proj = resolve_project(&asts, &AssemblyEnv::default());
+    let proj = resolve_project(&asts, crate::common::fsharp_core_env());
 
     for (p, _) in &written {
         let _ = std::fs::remove_file(p);

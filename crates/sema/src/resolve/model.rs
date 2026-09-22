@@ -339,6 +339,23 @@ pub struct ProjectItems {
     /// winner nondeterministic. [`Self::extend_with`] appends in the same
     /// Compile-order loop as every other per-file accumulator.
     pub(super) auto_open_module_paths: Vec<(Vec<String>, usize)>,
+    /// Earlier files' non-`private` modules spelled `[<AutoOpen>]` whose marker
+    /// we could **not rule on** ([`AutoOpenVerdict::Unproven`]) — the paths
+    /// deliberately absent from [`Self::auto_open_module_paths`], kept so a later
+    /// file can still see that the contest exists.
+    ///
+    /// Filtering an unprovable fragment out of the fold lists is right — folding
+    /// it would name members FCS may never bring into scope — but its absence
+    /// from those lists is not its absence from the program. It might open, and
+    /// then the names it contributes outrank the namespace's own direct tier. A
+    /// later `open` that cannot see it commits the direct tier instead: probed
+    /// (`dotnet fsi --exec`, two files) FCS binds the module's `X`, not the
+    /// namespace's own union case `H.X`, so the direct case is a wrong target.
+    ///
+    /// Only the *values-side* contest is covered by the hidden-container marker
+    /// [`extend_with`](Self::extend_with) also pushes; the direct tier is not,
+    /// which is why the verdict itself has to cross the boundary.
+    pub(super) unproven_auto_open_module_paths: Vec<(Vec<String>, usize)>,
     /// The project-global [`ItemId`]s of earlier files' **constructor cases**
     /// (exported non-qualified union / exception constructors —
     /// [`ExportedItem::is_case`]). Lets a later file classify an opened cross-file
@@ -1156,6 +1173,10 @@ impl ProjectItems {
         for auto_open in idx.auto_open_module_paths {
             self.auto_open_module_paths.push((auto_open, file_idx));
         }
+        for unproven in idx.unproven_auto_open_module_paths {
+            self.unproven_auto_open_module_paths
+                .push((unproven, file_idx));
+        }
         for (path, record) in idx.value_exports {
             // Append to the path's export history in Compile order — every export
             // is kept, so a query can pick the latest *accessible* one (the value /
@@ -1284,6 +1305,26 @@ impl ProjectItems {
             .cloned()
             .collect()
     }
+
+    /// The **file indices** at which an earlier file declares a module directly
+    /// in `container` whose `[<AutoOpen>]` marker we could not rule on — the
+    /// cross-file half of
+    /// [`Resolver::unproven_auto_open_fragment_files_in`](super::Resolver::unproven_auto_open_fragment_files_in).
+    ///
+    /// The index, not just the fact, because the fold is file-ordered: an
+    /// unprovable fragment stales what precedes *it*, and a fragment folded
+    /// after it legitimately outranks it either way.
+    ///
+    /// No accessibility check: [`Self::unproven_auto_open_module_paths`] holds
+    /// only non-`private` declarations, since a `private` module is confined to
+    /// its own declaring container and cannot reach another file at all.
+    pub(super) fn unproven_auto_open_fragment_files_in(&self, container: &[String]) -> Vec<usize> {
+        self.unproven_auto_open_module_paths
+            .iter()
+            .filter(|(p, _)| is_directly_in(p, container))
+            .map(|(_, f)| *f)
+            .collect()
+    }
 }
 
 /// A `type_qualified_cases` entry's payload: the case's handle and its
@@ -1328,6 +1369,7 @@ struct FileExportIndices {
     type_qualified_cases: Vec<(Vec<String>, QualifiedCaseExport)>,
     type_paths: Vec<(Vec<String>, (bool, SlotClass))>,
     auto_open_module_paths: Vec<Vec<String>>,
+    unproven_auto_open_module_paths: Vec<Vec<String>>,
 }
 
 /// Where the names a hidden-value marker fears come from — the one question
@@ -1533,10 +1575,33 @@ impl FileExportIndices {
                         // none.
                         let effective_auto_open = match screen {
                             None => *auto_open,
-                            Some(s) => s.roots.iter().any(|r| r.auto_open && r.path == decl.path),
+                            Some(s) => {
+                                if s.roots.iter().any(|r| r.auto_open && r.path == decl.path) {
+                                    AutoOpenVerdict::Proven
+                                } else {
+                                    AutoOpenVerdict::NotAutoOpen
+                                }
+                            }
                         };
-                        if effective_auto_open && !*private {
+                        if effective_auto_open == AutoOpenVerdict::Proven && !*private {
                             fi.auto_open_module_paths.push(decl.path.clone());
+                        }
+                        // An unproven marker cannot be exported as an auto-open
+                        // path — we would be folding on a guess — but neither
+                        // may a later file treat the module as ordinary and let
+                        // its own enclosing binder take a name this module might
+                        // contribute. Marking the container hidden is the
+                        // cross-file "we cannot enumerate this": a consumer
+                        // defers on those names instead of resolving past them.
+                        if effective_auto_open == AutoOpenVerdict::Unproven && !*private {
+                            push_container_hidden(&mut fi, &decl.path, HiddenNames::Borrowed);
+                            // The hidden marker covers the names this module
+                            // might *supply*; it says nothing about the names
+                            // the enclosing namespace supplies **directly**,
+                            // which an opening module would otherwise take. The
+                            // verdict itself has to travel for that
+                            // ([`ProjectItems::unproven_auto_open_module_paths`]).
+                            fi.unproven_auto_open_module_paths.push(decl.path.clone());
                         }
                     }
                 }
@@ -1559,7 +1624,7 @@ impl FileExportIndices {
                         fi.nested_module_paths.push(decl.path.clone());
                     }
                 }
-                ExportDeclKind::Extern { name } => {
+                ExportDeclKind::Extern { name, .. } => {
                     if !anon && !name.is_empty() {
                         let mut shadow = decl.path.clone();
                         shadow.extend(name.iter().cloned());
@@ -1757,6 +1822,38 @@ pub(super) struct ExportDecl {
     pub(super) kind: ExportDeclKind,
 }
 
+/// What we were able to establish about a module header's `[<AutoOpen>]`
+/// marker.
+///
+/// Three-valued on purpose: **failing to prove the marker is not the same as
+/// proving its absence**, and only the second licenses an enclosing binder to
+/// win. `[<AutoOpen>]` is a *spelling*; the type it names is whatever the file's
+/// scope resolves `AutoOpen`/`AutoOpenAttribute` to, which a project type, an
+/// `open`ed assembly type, or an unknowable auto-open surface can all redirect.
+/// Collapsing this to a `bool` in either direction commits a wrong target:
+///
+/// - reading "not proven" as [`Self::NotAutoOpen`] makes the module ordinary,
+///   so an enclosing `open`'s same-named value wins where FCS binds the
+///   module's own member;
+/// - reading it as [`Self::Proven`] folds members FCS never brings into scope.
+///
+/// [`Self::Unproven`] is the answer that declines instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AutoOpenVerdict {
+    /// A marker resolved to `Microsoft.FSharp.Core.AutoOpenAttribute`. The
+    /// module auto-opens.
+    Proven,
+    /// No `[<AutoOpen>]`-spelled marker at all, or every one present resolved to
+    /// some *other* type. Either way this is an ordinary module, and that is a
+    /// positive finding — an enclosing binder may take the name.
+    NotAutoOpen,
+    /// A marker is spelled `[<AutoOpen>]`, but the walk could not say which type
+    /// it names — so we can claim neither that the module opens nor that it does
+    /// not. Consumers must decline the names it would have contributed rather
+    /// than fall through to whatever was in scope before.
+    Unproven,
+}
+
 /// The typed payload of an [`ExportDecl`]. Each variant corresponds to a
 /// declaration nature and drives a documented set of derivations in
 /// [`ProjectItems::extend_with`].
@@ -1808,7 +1905,7 @@ pub(super) enum ExportDeclKind {
     /// `auto_open_module_paths` derives (non-private auto-open modules only).
     Module {
         header: bool,
-        auto_open: bool,
+        auto_open: AutoOpenVerdict,
         private: bool,
     },
     /// A module abbreviation `module P = Target`. `path` = container + P — both
@@ -1822,7 +1919,13 @@ pub(super) enum ExportDeclKind {
     /// nameless recovery node); `path` + `name` is the nested-module shadow path,
     /// recorded only when `name` is non-empty (matching the legacy
     /// [`record_project_name_shadow`](super::Resolver::record_project_name_shadow) guard).
-    Extern { name: Vec<String> },
+    ///
+    /// `private` carries the prototype's own accessibility (`extern int private
+    /// Marker()` — an `ACCESS_TOK` child of the `EXTERN_DECL`, valid F# and
+    /// fcs-dump-clean). It is visible inside its own module only, so the
+    /// auto-open fold-back must not decline its name in the enclosing scope
+    /// ([`unenumerated_member_names_in`](super::Resolver::unenumerated_member_names_in)).
+    Extern { name: Vec<String>, private: bool },
     /// A `namespace` header ancestor prefix. `path` = the prefix.
     Namespace,
     /// A module-level active-pattern case (Stage 3a). `path` = container + case
@@ -2985,7 +3088,7 @@ impl ResolvedFile {
                     anonymous_root: false,
                     kind: ExportDeclKind::Module {
                         header: true,
-                        auto_open: false,
+                        auto_open: AutoOpenVerdict::NotAutoOpen,
                         private: false,
                     },
                 });
