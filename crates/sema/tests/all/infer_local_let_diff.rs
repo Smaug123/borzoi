@@ -324,6 +324,23 @@ fn an_earlier_use_fixes_a_parameter_before_a_condition() {
     }
 }
 
+/// A member access FCS rejects keeps nothing inside its receiver: only the whole
+/// access survives, typed `'a`. So a receiver's nodes, and any local bound in
+/// it, wait on the access resolving. The last three shapes predate CE-1 — a
+/// receiver's node was emitted unconditionally.
+#[test]
+fn a_rejected_member_access_keeps_nothing_in_its_receiver() {
+    for body in [
+        "(let x = 1 in x).Length",
+        "(1).Length",
+        "s.Foo",
+        "s.Length.Foo",
+    ] {
+        let c = check(&format!("module M\nlet f (s: string) = {body}\n"), false);
+        assert_eq!(c.exprs + c.local_binders, 0, "{body}: {c:?}");
+    }
+}
+
 /// An application FCS rejects (a non-function applied) keeps nothing inside its
 /// argument. A local in the argument is walked in a check position, and a
 /// `let` in a check position emits nothing.
@@ -415,7 +432,8 @@ struct Gen<'r> {
     modelled_only: bool,
     /// Use an open parameter wherever *any* type is asked for — the ill-typed
     /// family's lever: FCS fixes the parameter at its first use and reports the
-    /// rest, and whatever we commit must still agree with what FCS kept.
+    /// rest, and whatever we commit must still agree with what FCS kept. It also
+    /// gives `.Length` receivers of any type, so FCS rejects some accesses.
     open_anywhere: bool,
 }
 
@@ -489,7 +507,12 @@ impl Gen<'_> {
             }
             4 | 5 => self.block(t, depth - 1, false),
             6 if t == T::Int => {
-                let s = self.expr(T::Str, depth - 1);
+                let recv_t = if self.open_anywhere {
+                    TYPES[self.rng.below(TYPES.len())]
+                } else {
+                    T::Str
+                };
+                let s = self.expr(recv_t, depth - 1);
                 let strs = self.vars_of(&Kind::Mono(T::Str));
                 if !strs.is_empty() && self.rng.chance(50) {
                     format!("{}.Length", strs[self.rng.below(strs.len())])

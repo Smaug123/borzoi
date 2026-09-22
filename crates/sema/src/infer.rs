@@ -401,13 +401,15 @@
 //!   records nothing (FCS keys that node at the binder's identifier, typed as the
 //!   body). A local binder publishes its type through `def_type`, checked by the
 //!   `binder-types` oracle, which walks declaration bodies for local `let`s.
-//!   That publication is an emission like a node's, so a barrier that discards
-//!   nodes discards the locals bound inside it too
-//!   ([`Gen::discard_emissions_since`]). There are two barriers: a method call
-//!   keeps nothing inside itself, and a check-mode subtree records nothing
-//!   ([`Gen::infer_expr_inner`]) — a local's RHS is a synth position that can
-//!   sit inside a check position, which is where FCS rejects an application or
-//!   a call and keeps nothing inside its argument.
+//!   That publication is an emission like a node's, and FCS keeps neither
+//!   inside the operand of a construct it **rejects**. Three rules follow, each
+//!   applying to nodes and locals alike: a method call keeps nothing inside
+//!   itself and a check-mode subtree records nothing
+//!   ([`Gen::discard_emissions_since`], [`Gen::infer_expr_inner`]) — a local's
+//!   RHS is a synth position that can sit inside a check position, which is
+//!   where FCS rejects an application; and a member access's receiver is
+//!   **guarded** on the access resolving ([`Guard`]), since FCS drops the
+//!   receiver of `(1).Length` or `s.Length.Foo` too.
 //! - **A condition grounds a parameter only at its first occurrence.** FCS
 //!   unifies in source order, so a statement (`x; if x …`) or any earlier use
 //!   fixes the parameter first; our solver is unordered, so a condition grounds
@@ -603,6 +605,23 @@ enum MemberAccessKind {
         /// group. An instance call through a value receiver is `false`.
         is_static: bool,
     },
+}
+
+/// An index into [`Gen::guards`].
+type GuardId = usize;
+
+/// A construct FCS may **reject**, recorded so that what we emit inside its
+/// operand can wait on its acceptance. FCS keeps no node and no binder inside
+/// the operand of a construct it rejects — a member access on a receiver
+/// without that member keeps only the whole access, typed `'a` — so an emission
+/// inside one is published only if this guard, and every guard enclosing it,
+/// was confirmed ([`Gen::guard_holds`]).
+#[derive(Debug)]
+struct Guard {
+    /// The guard the construct itself sat under.
+    parent: Option<GuardId>,
+    /// Whether the construct was accepted: set by the event that proves it.
+    confirmed: bool,
 }
 
 /// A pending member access inside [`Gen::solve`] — the suspended form of
@@ -817,7 +836,7 @@ struct Gen<'a> {
     constraints: Vec<Constraint>,
     /// `(range, var)` per expression whose type to emit; `range` is the read-off
     /// key (and the same range the resolver keyed the occurrence under).
-    exprs: Vec<(TextRange, TyVid)>,
+    exprs: Vec<(TextRange, TyVid, Option<GuardId>)>,
     /// The inference variable standing for each referenced in-file binder.
     def_vars: HashMap<DefId, TyVid>,
     /// Every expression-level `let` binder [`Self::local_binding`] bound (CE-1).
@@ -828,7 +847,17 @@ struct Gen<'a> {
     /// The local binders to publish, in walk order — the binder-side twin of
     /// [`Self::exprs`], and discarded with it by an emission barrier
     /// ([`Self::discard_emissions_since`]).
-    local_emits: Vec<DefId>,
+    local_emits: Vec<(DefId, Option<GuardId>)>,
+    /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
+    guards: Vec<Guard>,
+    /// The guards enclosing the current walk position, innermost last; an
+    /// emission is tagged with the top one.
+    guard_stack: Vec<GuardId>,
+    /// The guard each member-name token's wake confirms: segment *i* of an
+    /// access confirms the *i*-th guard around its receiver
+    /// ([`Self::open_receiver_guards`]). Keyed by the token's range, which is
+    /// the member constraint's `use_range`.
+    guard_on_member: HashMap<TextRange, GuardId>,
     /// The **private function-type slot** variable for each simple named
     /// parameter of a `let`-function head ([`Self::param_var`]): the parameter's
     /// type *inside* the function's [`Ty::Fun`], and the only variable
@@ -921,6 +950,9 @@ impl<'a> Gen<'a> {
             def_vars: HashMap::new(),
             local_defs: HashSet::new(),
             local_emits: Vec::new(),
+            guards: Vec::new(),
+            guard_stack: Vec::new(),
+            guard_on_member: HashMap::new(),
             param_slots: HashMap::new(),
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
@@ -2072,7 +2104,8 @@ impl<'a> Gen<'a> {
         };
         let dv = self.def_var(def);
         self.local_defs.insert(def);
-        self.local_emits.push(def);
+        self.local_emits
+            .push((def, self.guard_stack.last().copied()));
         if let Some(rhs_var) = rhs_var {
             self.eq(Ty::Var(dv), Ty::Var(rhs_var));
         }
@@ -2709,8 +2742,11 @@ impl<'a> Gen<'a> {
             self.mark_incomplete();
             return None;
         };
-        // Emit the receiver's own value node (coercion-free — synth).
+        // Emit the receiver's own value node (coercion-free — synth), guarded on
+        // the access resolving: FCS keeps no receiver node for a rejected one.
+        self.open_receiver_guards(segments);
         self.emit(head.text_range(), recv, None);
+        self.close_guards(segments.len());
         let result = self.gen_member_access(recv, segments)?;
         self.emit(node_span(li.syntax()), result, expected);
         Some(result)
@@ -2740,9 +2776,13 @@ impl<'a> Gen<'a> {
             return None;
         }
         // The receiver is a coercion-free (synth) sub-position — a member access
-        // never coerces its receiver — so synthesize it, emitting its own node.
-        let recv = self.infer_expr(&recv_expr, None)?;
-        let result = self.gen_member_access(recv, &segments)?;
+        // never coerces its receiver — so synthesize it, emitting its own node,
+        // guarded on the access resolving: FCS keeps nothing inside the receiver
+        // of a rejected one.
+        self.open_receiver_guards(&segments);
+        let recv = self.infer_expr(&recv_expr, None);
+        self.close_guards(segments.len());
+        let result = self.gen_member_access(recv?, &segments)?;
         self.emit(node_span(dg.syntax()), result, expected);
         Some(result)
     }
@@ -3047,6 +3087,43 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Open one [`Guard`] per member segment around a member access's receiver,
+    /// nested so the innermost — the one the receiver's emissions are tagged
+    /// with — holds only if every segment resolves: FCS drops the receiver of
+    /// `s.Length.Foo` because `Foo` is rejected, though `Length` is not.
+    /// Segment *i*'s wake confirms guard *i* ([`Self::guard_on_member`]). The
+    /// caller walks the receiver, then [`Self::close_guards`].
+    fn open_receiver_guards(&mut self, segments: &[SyntaxToken]) {
+        for seg in segments {
+            let g = self.guards.len();
+            self.guards.push(Guard {
+                parent: self.guard_stack.last().copied(),
+                confirmed: false,
+            });
+            self.guard_stack.push(g);
+            self.guard_on_member.insert(seg.text_range(), g);
+        }
+    }
+
+    /// Close the `n` guards [`Self::open_receiver_guards`] opened.
+    fn close_guards(&mut self, n: usize) {
+        let keep = self.guard_stack.len() - n;
+        self.guard_stack.truncate(keep);
+    }
+
+    /// Whether an emission tagged with `guard` may be published: the guard and
+    /// every guard enclosing it were confirmed.
+    fn guard_holds(&self, guard: Option<GuardId>) -> bool {
+        let mut cur = guard;
+        while let Some(g) = cur {
+            if !self.guards[g].confirmed {
+                return false;
+            }
+            cur = self.guards[g].parent;
+        }
+        true
+    }
+
     /// The current length of both emission lists — the expression nodes and the
     /// local binders — for a barrier to [discard back to](Self::discard_emissions_since).
     fn emission_mark(&self) -> (usize, usize) {
@@ -3074,7 +3151,8 @@ impl<'a> Gen<'a> {
     /// here — emitting the coerced type when the synthesized one is a subtype.
     fn emit(&mut self, range: TextRange, v: TyVid, expected: Option<TyVid>) {
         if expected.is_none() {
-            self.exprs.push((range, v));
+            self.exprs
+                .push((range, v, self.guard_stack.last().copied()));
         }
     }
 
@@ -3545,6 +3623,15 @@ impl<'a> Gen<'a> {
                 idx,
             },
         );
+        // The access is one FCS accepts, so what its receiver emitted stands.
+        // Whether the receiver has nodes at all is then an assembly reading —
+        // the member's existence — so under the seal below it is not confirmed:
+        // an incomplete projection publishes only what an empty env would.
+        if let Some(&g) = self.guard_on_member.get(&use_range)
+            && !self.env.identities_incomplete()
+        {
+            self.guards[g].confirmed = true;
+        }
         if is_void {
             return true;
         }
@@ -3704,10 +3791,16 @@ impl<'a> Gen<'a> {
     fn finish(mut self) -> InferredFile {
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
-        let published_locals: HashSet<DefId> =
-            std::mem::take(&mut self.local_emits).into_iter().collect();
+        let published_locals: HashSet<DefId> = std::mem::take(&mut self.local_emits)
+            .into_iter()
+            .filter(|(_, guard)| self.guard_holds(*guard))
+            .map(|(def, _)| def)
+            .collect();
         let mut types = HashMap::new();
-        for (range, var) in exprs {
+        for (range, var, guard) in exprs {
+            if !self.guard_holds(guard) {
+                continue;
+            }
             let ty = self.table.resolve(&Ty::Var(var));
             if ty.is_ground() {
                 types.insert(range, ty);
