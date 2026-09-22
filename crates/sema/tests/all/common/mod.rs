@@ -126,6 +126,30 @@ pub fn invoke_fcs_dump_with_refs(subcommand: &str, source: &Path, refs: &[&Path]
     line
 }
 
+/// Like [`invoke_fcs_dump`], but a check the resident handler reports as failed
+/// comes back as `Err(message)` instead of a panic — for a corpus sweep, where
+/// one file FCS cannot check is a count, not a failure of the sweep.
+pub fn try_invoke_fcs_dump(subcommand: &str, source: &Path) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Probe {
+        #[serde(rename = "BatchError")]
+        batch_error: Option<String>,
+    }
+    let request = serde_json::json!({
+        "kind": subcommand,
+        "path": source.display().to_string(),
+        "refs": Vec::<String>::new(),
+    })
+    .to_string();
+    let line = fcs_file_batch_pool().request(&request);
+    match serde_json::from_str::<Probe>(&line) {
+        Ok(Probe {
+            batch_error: Some(msg),
+        }) => Err(msg),
+        _ => Ok(line),
+    }
+}
+
 /// The number of resident `fcs-dump` pools in this test binary; the child budget
 /// (`BORZOI_FCS_CHILDREN`, default 6) is split evenly between them, mirroring
 /// `cst`'s harness. Two: the single-file `file-batch` pool

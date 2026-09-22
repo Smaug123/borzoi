@@ -691,6 +691,19 @@ jobs:
           nix develop --command cargo test -p borzoi-sema --test all \
             attr_resolution_sweep:: -- --ignored --nocapture
 
+      - name: Gate on inferred types over the corpus
+        if: steps.gate.outputs.run == 'true'
+        # Every expression and binder type inference commits on a sampled
+        # corpus file must match FCS on a line FCS checked cleanly
+        # (`MAX_DIVERGENCES = 0`), with an agreement floor so the gate cannot
+        # decay into wholesale deferral. It also prints coverage by FCS node
+        # kind — the worklist for the next inference slice.
+        env:
+          BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
+        run: |
+          nix develop --command cargo test -p borzoi-sema --test all \
+            infer_corpus_diff:: -- --ignored --nocapture
+
   test-lsp:
     name: Test lsp
     needs: [changes, fcs-dump]

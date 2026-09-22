@@ -60,6 +60,7 @@ Both halves exist for every axis, and the split is:
 | parser on adversarial input | `parser_panic_sweep` | — |
 | in-file resolution | `resolve_corpus_diff` | `resolution-divergence` |
 | attributes | `attr_resolution_sweep` | — (rides in the resolution series) |
+| inferred types | `infer_corpus_diff` | — |
 | find references | the crate's own suite | `find-references-differential` |
 | whole project | `corpus-diff` job | `project-corpus-diff` |
 | assembly projection | `projection_skip_sweep` | — |
