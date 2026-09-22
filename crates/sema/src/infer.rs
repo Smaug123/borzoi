@@ -401,6 +401,9 @@
 //!   records nothing (FCS keys that node at the binder's identifier, typed as the
 //!   body). A local binder publishes its type through `def_type`, checked by the
 //!   `binder-types` oracle, which walks declaration bodies for local `let`s.
+//!   That publication is an emission like a node's, so a barrier that discards
+//!   nodes — a method call keeps nothing inside itself — discards the locals
+//!   bound inside it too ([`Gen::discard_emissions_since`]).
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
@@ -808,6 +811,15 @@ struct Gen<'a> {
     exprs: Vec<(TextRange, TyVid)>,
     /// The inference variable standing for each referenced in-file binder.
     def_vars: HashMap<DefId, TyVid>,
+    /// Every expression-level `let` binder [`Self::local_binding`] bound (CE-1).
+    /// Unlike a declaration's binder, a local sits *inside* an expression, so
+    /// its publication is an emission like a node's: [`Self::finish`] publishes
+    /// one only if it is still in [`Self::local_emits`].
+    local_defs: HashSet<DefId>,
+    /// The local binders to publish, in walk order — the binder-side twin of
+    /// [`Self::exprs`], and discarded with it by an emission barrier
+    /// ([`Self::discard_emissions_since`]).
+    local_emits: Vec<DefId>,
     /// The **private function-type slot** variable for each simple named
     /// parameter of a `let`-function head ([`Self::param_var`]): the parameter's
     /// type *inside* the function's [`Ty::Fun`], and the only variable
@@ -895,6 +907,8 @@ impl<'a> Gen<'a> {
             constraints: Vec::new(),
             exprs: Vec::new(),
             def_vars: HashMap::new(),
+            local_defs: HashSet::new(),
+            local_emits: Vec::new(),
             param_slots: HashMap::new(),
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
@@ -2012,6 +2026,8 @@ impl<'a> Gen<'a> {
             return;
         };
         let dv = self.def_var(def);
+        self.local_defs.insert(def);
+        self.local_emits.push(def);
         if let Some(rhs_var) = rhs_var {
             self.eq(Ty::Var(dv), Ty::Var(rhs_var));
         }
@@ -2050,15 +2066,13 @@ impl<'a> Gen<'a> {
         }
         for stmt in init {
             let unit_check = self.table.fresh();
-            match self.infer_expr(stmt, Some(unit_check)) {
-                Some(v) => {
-                    self.settle();
-                    if !self.table.resolve(&Ty::Var(v)).is_ground() {
-                        self.mark_incomplete();
-                    }
+            // A statement that does not synthesize a variable has already marked
+            // the binding incomplete in its own arm.
+            if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
+                self.settle();
+                if !self.table.resolve(&Ty::Var(v)).is_ground() {
+                    self.mark_incomplete();
                 }
-                // The statement's own arm already marked the binding incomplete.
-                None => {}
             }
         }
         let v = self.infer_expr(last, expected)?;
@@ -2303,9 +2317,10 @@ impl<'a> Gen<'a> {
     /// unresolved head (leaving the resolver's static-member resolution
     /// untouched).
     fn infer_method_call(&mut self, callee: &Expr, arg: &Expr) -> Option<TyVid> {
-        // Snapshot the emission list: everything `method_callee` and the argument
-        // walk record inside the call is discarded below (see the doc).
-        let emit_mark = self.exprs.len();
+        // Snapshot the emissions: everything `method_callee` and the argument
+        // walk record inside the call — nodes and local binders alike — is
+        // discarded below (see the doc).
+        let emit_mark = self.emission_mark();
         if let Some((path, method_tok)) = self.static_callee(callee) {
             let arg_vids = self.method_arg_vids(arg);
             // The static receiver's type is the rooting entity itself, ground at
@@ -2325,11 +2340,11 @@ impl<'a> Gen<'a> {
             );
             // Discard any argument sub-expression nodes (the shared method-call
             // rule: a method call emits nothing inside itself).
-            self.exprs.truncate(emit_mark);
+            self.discard_emissions_since(emit_mark);
             return Some(result);
         }
         let Some((recv, method_tok)) = self.method_callee(callee) else {
-            self.exprs.truncate(emit_mark);
+            self.discard_emissions_since(emit_mark);
             self.mark_incomplete();
             return None;
         };
@@ -2361,7 +2376,7 @@ impl<'a> Gen<'a> {
         );
         // Discard every node emitted inside the call (receiver + argument
         // sub-expressions): a method call emits nothing inside itself (see the doc).
-        self.exprs.truncate(emit_mark);
+        self.discard_emissions_since(emit_mark);
         Some(result)
     }
 
@@ -2948,6 +2963,22 @@ impl<'a> Gen<'a> {
                 self.table.fresh()
             }
         }
+    }
+
+    /// The current length of both emission lists — the expression nodes and the
+    /// local binders — for a barrier to [discard back to](Self::discard_emissions_since).
+    fn emission_mark(&self) -> (usize, usize) {
+        (self.exprs.len(), self.local_emits.len())
+    }
+
+    /// Discard every emission recorded since `mark`: the nodes *and* the local
+    /// binders a walk inside a barrier produced. A method call is such a barrier
+    /// (FCS keeps nothing inside a call it rejects, so we keep nothing inside any
+    /// call); the two lists are cut together so a `let` in a call's argument
+    /// cannot publish its binder while the argument's nodes are dropped.
+    fn discard_emissions_since(&mut self, (exprs, locals): (usize, usize)) {
+        self.exprs.truncate(exprs);
+        self.local_emits.truncate(locals);
     }
 
     /// Record an expression's type variable `v` at `range` for read-off — but
@@ -3591,6 +3622,8 @@ impl<'a> Gen<'a> {
     fn finish(mut self) -> InferredFile {
         let exprs = std::mem::take(&mut self.exprs);
         let def_vars = std::mem::take(&mut self.def_vars);
+        let published_locals: HashSet<DefId> =
+            std::mem::take(&mut self.local_emits).into_iter().collect();
         let mut types = HashMap::new();
         for (range, var) in exprs {
             let ty = self.table.resolve(&Ty::Var(var));
@@ -3606,6 +3639,11 @@ impl<'a> Gen<'a> {
             // (or make it a `Param`), so the exclusion is made **explicit** — the
             // parameter's type lives solely *inside* the function's `Ty::Fun`.
             if self.param_defs.contains(&def) {
+                continue;
+            }
+            // A local binder is published only if no emission barrier discarded
+            // it (CE-1).
+            if self.local_defs.contains(&def) && !published_locals.contains(&def) {
                 continue;
             }
             // A **generalised** binder publishes its scheme (its table variable

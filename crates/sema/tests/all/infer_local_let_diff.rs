@@ -260,6 +260,18 @@ fn a_sequence_types_as_its_last_statement() {
     assert_eq!(c.local_binders, 1, "{c:?}");
 }
 
+/// A method call FCS rejects (here, on arity) keeps nothing inside it: no
+/// expression node and no binder. A local declared in its argument is walked,
+/// so it must fall under the same barrier as the argument's nodes.
+#[test]
+fn a_local_inside_a_rejected_method_call_is_not_published() {
+    let c = check(
+        "module M\nlet f (b: bool) = \"s\".ToLowerInvariant(let y = 1 in y)\n",
+        false,
+    );
+    assert_eq!(c.local_binders, 0, "{c:?}");
+}
+
 /// A ground statement leaves the binding complete, so the function around it
 /// still generalises.
 #[test]
@@ -648,6 +660,52 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
     assert!(
         total.sequentials >= 10,
         "the sweep committed too few sequence nodes to be evidence: {total:?}"
+    );
+}
+
+/// The method-call barrier, generated: each function wraps a generated block
+/// in a call FCS rejects on arity, so FCS keeps no node and no binder anywhere
+/// inside it, and neither may we. The block is the same generator's, so every
+/// shape the main sweep grades is also checked for leaking out of a rejected
+/// call.
+#[test]
+fn generated_blocks_inside_rejected_calls_publish_nothing() {
+    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) / 4;
+    let mut wrapped_lets = 0usize;
+    for seed in 0..files.max(1) as u64 {
+        let mut rng = Rng(seed ^ 0x5eed_ba77);
+        let mut src = String::from("module Gen\nlet idf x = x\nlet mono (b: bool) = 1\n");
+        for i in 0..6 {
+            let modelled_only = rng.chance(50);
+            let t = TYPES[rng.below(TYPES.len())];
+            let mut g = Gen {
+                rng: &mut rng,
+                env: vec![
+                    Var {
+                        name: "s".into(),
+                        kind: Kind::Mono(T::Str),
+                    },
+                    Var {
+                        name: "b".into(),
+                        kind: Kind::Mono(T::Bool),
+                    },
+                ],
+                next: 0,
+                generic_uses: Vec::new(),
+                modelled_only,
+            };
+            let block = g.block(t, 3, false);
+            wrapped_lets += block.matches("let ").count();
+            src.push_str(&format!(
+                "let f{i} (s: string) (b: bool) = \"r\".ToLowerInvariant({block})\n"
+            ));
+        }
+        let c = check(&src, false);
+        assert_eq!(c.local_binders, 0, "{c:?}\n{src}");
+    }
+    assert!(
+        wrapped_lets >= 20,
+        "too few local bindings inside rejected calls to be evidence: {wrapped_lets}"
     );
 }
 
