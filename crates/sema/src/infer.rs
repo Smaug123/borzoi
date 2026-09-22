@@ -461,6 +461,10 @@ pub struct InferredFile {
     /// serve hover / go-to-definition identically to a resolver-resolved member
     /// (`System.Console.WriteLine`). Absent means "no sound answer" (D5).
     member_resolutions: HashMap<TextRange, Resolution>,
+    /// Each `(expr).Member` access's **receiver** type, keyed by the whole
+    /// `DOT_GET_EXPR`'s range — recorded whether or not the access resolves.
+    /// See [`Self::dot_get_receiver_type`].
+    receiver_types: HashMap<TextRange, Ty>,
 }
 
 impl InferredFile {
@@ -503,6 +507,20 @@ impl InferredFile {
     /// records (Stage 3.3b).
     pub fn member_resolutions(&self) -> &HashMap<TextRange, Resolution> {
         &self.member_resolutions
+    }
+
+    /// The synthesized type of a `(expr).Member` access's receiver expression,
+    /// keyed by the whole `DOT_GET_EXPR`'s range, whether or not the access
+    /// resolves.
+    ///
+    /// This is dot-completion's question — what is the receiver, while the
+    /// member name is still being typed (`"hi".Le`) — and it is deliberately not
+    /// an expression node: FCS keeps no node inside the receiver of an access
+    /// it rejects, so [`Self::type_at`] withholds the receiver until the access
+    /// resolves. A receiver is never coerced, so its synthesized type is its type
+    /// either way.
+    pub fn dot_get_receiver_type(&self, dot_get: TextRange) -> Option<&Ty> {
+        self.receiver_types.get(&dot_get)
     }
 
     pub fn len(&self) -> usize {
@@ -848,6 +866,10 @@ struct Gen<'a> {
     /// [`Self::exprs`], and discarded with it by an emission barrier
     /// ([`Self::discard_emissions_since`]).
     local_emits: Vec<(DefId, Option<GuardId>)>,
+    /// Each `(expr).Member` receiver's variable, keyed by the `DOT_GET_EXPR`'s
+    /// range — unguarded and never discarded, for
+    /// [`InferredFile::dot_get_receiver_type`].
+    dot_get_receivers: Vec<(TextRange, TyVid)>,
     /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
     guards: Vec<Guard>,
     /// The guards enclosing the current walk position, innermost last; an
@@ -950,6 +972,7 @@ impl<'a> Gen<'a> {
             def_vars: HashMap::new(),
             local_defs: HashSet::new(),
             local_emits: Vec::new(),
+            dot_get_receivers: Vec::new(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
@@ -2782,7 +2805,10 @@ impl<'a> Gen<'a> {
         self.open_receiver_guards(&segments);
         let recv = self.infer_expr(&recv_expr, None);
         self.close_guards(segments.len());
-        let result = self.gen_member_access(recv?, &segments)?;
+        let recv = recv?;
+        self.dot_get_receivers
+            .push((dg.syntax().text_range(), recv));
+        let result = self.gen_member_access(recv, &segments)?;
         self.emit(node_span(dg.syntax()), result, expected);
         Some(result)
     }
@@ -3861,10 +3887,18 @@ impl<'a> Gen<'a> {
                 *res = res.sealed_under_incomplete_projection();
             }
         }
+        let receiver_types = std::mem::take(&mut self.dot_get_receivers)
+            .into_iter()
+            .filter_map(|(range, var)| {
+                let ty = self.table.resolve(&Ty::Var(var));
+                ty.is_ground().then_some((range, ty))
+            })
+            .collect();
         InferredFile {
             types,
             def_types,
             member_resolutions,
+            receiver_types,
         }
     }
 }

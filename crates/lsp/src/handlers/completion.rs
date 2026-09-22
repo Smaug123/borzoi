@@ -179,11 +179,11 @@ enum Receiver {
     /// (`s` in `s.Le` / `s.`) or a paren-peeled ident receiver (`(s).Le`). Its
     /// type is read from the binder's `def_type`.
     IdentHead(SyntaxToken),
-    /// Any other receiver *expression* of a `DOT_GET_EXPR` (`"hi"` in `"hi".Le`):
-    /// its type is read from the inferred expression-type map at `range` — the
-    /// range inference keys the expression's emission under (the literal *token*
-    /// for a `Const`, the node range otherwise).
-    Expr(rowan::TextRange),
+    /// Any other receiver *expression* of a `DOT_GET_EXPR` (`"hi"` in `"hi".Le`),
+    /// identified by the whole `DOT_GET_EXPR`'s range: its type is inference's
+    /// receiver type for that access, which is recorded whether or not the
+    /// (partly typed) member resolves.
+    DotGet(rowan::TextRange),
 }
 
 /// The receiver anchored by a member-access `dot` token. The dot always lives
@@ -229,28 +229,24 @@ fn receiver_before_dot(dot: &SyntaxToken) -> Option<Receiver> {
         }
         SyntaxKind::DOT_GET_EXPR => {
             let dot_get = DotGetExpr::cast(path_parent)?;
-            receiver_of_expr(dot_get.expr()?)
+            receiver_of_expr(dot_get.expr()?, dot_get.syntax().text_range())
         }
         _ => None,
     }
 }
 
 /// Classify a `DOT_GET_EXPR` receiver *expression*, peeling transparent
-/// **parentheses** first — inference records a paren's type on its *inner*
-/// expression (parens carry no node of their own), so looking up the `Paren`
-/// node's range would wrongly decline `("hi").Le` / `(s).Le` (a codex round-2
-/// finding). A peeled **ident** receiver is a value binder (typed via
-/// `def_type`, like a `LONG_IDENT_EXPR` head); a **literal** is keyed by its
-/// token range (inference's emission key); any other expression by its node
-/// range. `None` on a malformed shape (an empty paren recovery hole, an
-/// ident/const with no token).
-fn receiver_of_expr(mut expr: Expr) -> Option<Receiver> {
+/// **parentheses** first. A peeled **ident** receiver is a value binder (typed
+/// via `def_type`, like a `LONG_IDENT_EXPR` head, so `(s).Le` completes like
+/// `s.Le`); any other expression is the access's receiver, looked up by the
+/// `DOT_GET_EXPR`'s own range `dot_get`. `None` on a malformed shape (an empty
+/// paren recovery hole, an ident with no token).
+fn receiver_of_expr(mut expr: Expr, dot_get: rowan::TextRange) -> Option<Receiver> {
     loop {
         match expr {
             Expr::Paren(p) => expr = p.inner()?,
             Expr::Ident(ident) => return Some(Receiver::IdentHead(ident.ident()?)),
-            Expr::Const(c) => return Some(Receiver::Expr(c.literal()?.text_range())),
-            other => return Some(Receiver::Expr(other.syntax().text_range())),
+            _ => return Some(Receiver::DotGet(dot_get)),
         }
     }
 }
@@ -260,7 +256,7 @@ fn receiver_of_expr(mut expr: Expr) -> Option<Receiver> {
 ///
 /// - An `IdentHead` receiver resolves to an in-file binder; its type is the
 ///   binder's `def_type` (a value/parameter typed by inference).
-/// - An `Expr` receiver's type is the inferred expression type at its key range.
+/// - A `DotGet` receiver's type is inference's receiver type for that access.
 fn receiver_type(receiver: &Receiver, file: &ResolvedFile, inferred: &InferredFile) -> Option<Ty> {
     match receiver {
         Receiver::IdentHead(head) => {
@@ -268,7 +264,7 @@ fn receiver_type(receiver: &Receiver, file: &ResolvedFile, inferred: &InferredFi
             let def = file.resolved_def_id(res)?;
             inferred.def_type(def).cloned()
         }
-        Receiver::Expr(range) => inferred.type_at(*range).cloned(),
+        Receiver::DotGet(range) => inferred.dot_get_receiver_type(*range).cloned(),
     }
 }
 
