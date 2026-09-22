@@ -303,6 +303,27 @@ fn a_condition_before_the_statement_still_grounds_the_parameter() {
     assert_eq!(c.binders, 2, "`r` and `h`: {c:?}");
 }
 
+/// FCS unifies in source order: an earlier use fixes a parameter, and a later
+/// condition on it is the error, not a retyping. So a condition grounds the
+/// parameter only when it is the parameter's first occurrence — through a
+/// statement, a local, or a plain tuple (the last predates CE-1).
+#[test]
+fn an_earlier_use_fixes_a_parameter_before_a_condition() {
+    for body in [
+        "mono x; if x then 1 else 2",
+        "let y = mono x in if x then 1 else 2",
+        "(mono x, if x then 1 else 2)",
+    ] {
+        let c = check(
+            &format!("module M\nlet mono (s: string) = 1\nlet f x = {body}\n"),
+            false,
+        );
+        // Of the declarations, only `mono : string -> int`; `f` stays silent. (A
+        // local `y : int` is right, and is not what this case is about.)
+        assert_eq!(c.binders - c.local_binders, 1, "{body}: {c:?}");
+    }
+}
+
 /// An application FCS rejects (a non-function applied) keeps nothing inside its
 /// argument. A local in the argument is walked in a check position, and a
 /// `let` in a check position emits nothing.
@@ -476,7 +497,13 @@ impl Gen<'_> {
                     format!("({s}).Length")
                 }
             }
-            7 if t == T::Int => format!("(mono {})", self.expr(T::Bool, depth - 1)),
+            7 if t == T::Int => {
+                if self.rng.chance(50) {
+                    format!("(mono {})", self.expr(T::Bool, depth - 1))
+                } else {
+                    format!("(monos {})", self.expr(T::Str, depth - 1))
+                }
+            }
             8 if t == T::Pair => {
                 let a = self.expr(T::Int, depth - 1);
                 let b = self.expr(T::Str, depth - 1);
@@ -632,7 +659,9 @@ impl Gen<'_> {
 /// the hazard was genuinely exercised.
 fn generate(seed: u64, functions: usize) -> (String, usize) {
     let mut rng = Rng(seed);
-    let mut src = String::from("module Gen\nlet idf x = x\nlet mono (b: bool) = 1\n");
+    let mut src = String::from(
+        "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n",
+    );
     let mut two_type_generics = 0;
     for i in 0..functions {
         let modelled_only = rng.chance(50);
@@ -736,8 +765,9 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     let mut wrapped_lets = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
-        let mut src =
-            String::from("module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet k0 = 1\n");
+        let mut src = String::from(
+            "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet k0 = 1\n",
+        );
         for i in 0..6 {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];

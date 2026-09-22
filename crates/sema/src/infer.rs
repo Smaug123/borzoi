@@ -408,9 +408,11 @@
 //!   ([`Gen::infer_expr_inner`]) — a local's RHS is a synth position that can
 //!   sit inside a check position, which is where FCS rejects an application or
 //!   a call and keeps nothing inside its argument.
-//! - **An open statement stops conditions grounding.** FCS has fixed the
-//!   statement to `unit` before anything after it, so a later condition may not
-//!   ground a parameter slot ([`Gen::open_statement_seen`]).
+//! - **A condition grounds a parameter only at its first occurrence.** FCS
+//!   unifies in source order, so a statement (`x; if x …`) or any earlier use
+//!   fixes the parameter first; our solver is unordered, so a condition grounds
+//!   its slot only when nothing could have come before it
+//!   ([`Gen::is_first_occurrence`]).
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
@@ -840,14 +842,9 @@ struct Gen<'a> {
     /// that parameter finds its slot. On a *complete* binding the slot is
     /// reunified with the binder var ([`Self::slot_binder_reunify`]).
     param_slots: HashMap<DefId, TyVid>,
-    /// **Per-binding**: an earlier statement's type was still open when it was
-    /// walked (CE-1), so FCS has already unified it with `unit` — a relation we
-    /// drop. From then on a condition may not ground a parameter's slot
-    /// ([`Self::constrain_bool`]): the parameter may be the statement, fixed to
-    /// `unit` first, and FCS reports the condition rather than retyping it
-    /// (`let h x = x; if x then …` is `unit -> int`). A condition *before* the
-    /// statement is FCS's first constraint and still grounds. Reset per binding.
-    open_statement_seen: bool,
+    /// **Per-binding**: the body of the function binding being walked, for
+    /// [`Self::is_first_occurrence`]. `None` outside a function binding.
+    cur_body: Option<SyntaxNode>,
     /// Every parameter `DefId` collected during [`Self::param_var`]. A parameter's
     /// type is never published standalone (D5): [`Self::finish`] skips these in
     /// `def_types`. Before 3.2c-2c this was *emergent* (a parameter's binder var
@@ -928,7 +925,7 @@ impl<'a> Gen<'a> {
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
             complete: true,
-            open_statement_seen: false,
+            cur_body: None,
             poison: Vec::new(),
             cur_params: Vec::new(),
             member_resolutions: HashMap::new(),
@@ -954,7 +951,7 @@ impl<'a> Gen<'a> {
         let mark = self.table.mark();
         self.cur_mark = mark;
         self.complete = true;
-        self.open_statement_seen = false;
+        self.cur_body = None;
         self.poison.clear();
         self.cur_params.clear();
         mark
@@ -1167,6 +1164,7 @@ impl<'a> Gen<'a> {
                 Some(Pat::LongIdent(head))
                     if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
                 {
+                    self.cur_body = Some(rhs.syntax().clone());
                     let arg_vars: Vec<TyVid> =
                         head.args().map(|arg| self.param_var(&arg)).collect();
                     let ret = self.infer_expr(&rhs, None);
@@ -1254,6 +1252,7 @@ impl<'a> Gen<'a> {
             return;
         };
         let mark = self.begin_binding();
+        self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
         let arg_vars: Vec<TyVid> = head.args().map(|arg| self.param_var(&arg)).collect();
         let r = self.table.fresh();
@@ -2097,10 +2096,11 @@ impl<'a> Gen<'a> {
     /// [settled](Self::settle) also marks the binding **incomplete**, since FCS's
     /// unification would ground it to `unit` and a later argument check could
     /// otherwise ground it to something else (`let h x = x; mono x` has
-    /// `x : unit` in FCS, not `bool`) — and it stops a later condition from
-    /// grounding a parameter slot, the one grounding that incompleteness does
-    /// not already block (see [`Self::open_statement_seen`]). A ground
-    /// statement type is untouched by the unification, so it costs nothing.
+    /// `x : unit` in FCS, not `bool`). A condition grounding a parameter slot is
+    /// the one grounding incompleteness does not block; it is held to the
+    /// parameter's first occurrence instead ([`Self::is_first_occurrence`]),
+    /// which a statement naming the parameter already is. A ground statement
+    /// type is untouched by the unification, so it costs nothing.
     fn infer_sequential(&mut self, seq: &SequentialExpr, expected: Option<TyVid>) -> Option<TyVid> {
         let stmts: Vec<Expr> = seq.statements().collect();
         let Some((last, init)) = stmts.split_last() else {
@@ -2116,16 +2116,11 @@ impl<'a> Gen<'a> {
             let unit_check = self.table.fresh();
             // A statement that does not synthesize a variable has already marked
             // the binding incomplete in its own arm.
-            match self.infer_expr(stmt, Some(unit_check)) {
-                Some(v) => {
-                    self.settle();
-                    if !self.table.resolve(&Ty::Var(v)).is_ground() {
-                        self.mark_incomplete();
-                        self.open_statement_seen = true;
-                    }
+            if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
+                self.settle();
+                if !self.table.resolve(&Ty::Var(v)).is_ground() {
+                    self.mark_incomplete();
                 }
-                // Unmodelled: its type is not known to be ground either.
-                None => self.open_statement_seen = true,
             }
         }
         let v = self.infer_expr(last, expected)?;
@@ -2864,10 +2859,16 @@ impl<'a> Gen<'a> {
                     .and_then(|tok| self.def_at(tok.text_range()))
                     .and_then(|def| self.param_slots.get(&def).copied());
                 match slot {
-                    // After an open statement the parameter may already be
-                    // `unit` in FCS (see `open_statement_seen`).
-                    Some(_) if self.open_statement_seen => self.mark_incomplete(),
-                    Some(slot) => self.eq(Ty::Var(slot), Ty::named("System.Boolean")),
+                    Some(slot)
+                        if ident
+                            .ident()
+                            .is_some_and(|tok| self.is_first_occurrence(&tok)) =>
+                    {
+                        self.eq(Ty::Var(slot), Ty::named("System.Boolean"))
+                    }
+                    // A condition on a parameter something earlier may have
+                    // fixed: FCS reports the condition, it does not retype.
+                    Some(_) => self.mark_incomplete(),
                     // A condition ident that is not a slot-owning parameter of this
                     // binding (a value / annotated / `rec` binder, a cross-file
                     // name) is unmodelled here — its `bool`-ness is an FCS
@@ -2888,6 +2889,31 @@ impl<'a> Gen<'a> {
             // constraints on its sub-terms that we drop.
             _ => self.mark_incomplete(),
         }
+    }
+
+    /// Whether the parameter token `tok` in a condition is the parameter's
+    /// **first occurrence** in the current function's body — the rule that lets
+    /// a condition ground the parameter's slot ([`Self::constrain_bool`]).
+    ///
+    /// FCS unifies in source order and reports a later conflict rather than
+    /// retyping: in `let f x = (mono x, if x then 1 else 2)` with
+    /// `mono : string -> int`, `x` is `string` and the condition is the error.
+    /// Our solver is not ordered — the condition's equality is discharged before
+    /// any argument check — so a condition grounds soundly only if nothing could
+    /// have constrained the parameter before it. A parameter's type is reachable
+    /// only through its occurrences (and aliases made from them), so "nothing
+    /// before" is "no earlier occurrence". The test is **syntactic**, over the
+    /// body's identifier tokens: an occurrence in a subtree the walk skips, or
+    /// one the resolver reads some other way, still counts.
+    fn is_first_occurrence(&self, tok: &SyntaxToken) -> bool {
+        let Some(body) = &self.cur_body else {
+            return false;
+        };
+        let name = ident_text(tok);
+        body.descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.kind() == SyntaxKind::IDENT_TOK && ident_text(t) == name)
+            .is_some_and(|first| first.text_range() == tok.text_range())
     }
 
     /// Emit a **monomorphic** function type on a `let`-function binder. Curries
