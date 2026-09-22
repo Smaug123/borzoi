@@ -402,8 +402,15 @@
 //!   body). A local binder publishes its type through `def_type`, checked by the
 //!   `binder-types` oracle, which walks declaration bodies for local `let`s.
 //!   That publication is an emission like a node's, so a barrier that discards
-//!   nodes — a method call keeps nothing inside itself — discards the locals
-//!   bound inside it too ([`Gen::discard_emissions_since`]).
+//!   nodes discards the locals bound inside it too
+//!   ([`Gen::discard_emissions_since`]). There are two barriers: a method call
+//!   keeps nothing inside itself, and a check-mode subtree records nothing
+//!   ([`Gen::infer_expr_inner`]) — a local's RHS is a synth position that can
+//!   sit inside a check position, which is where FCS rejects an application or
+//!   a call and keeps nothing inside its argument.
+//! - **An open statement stops conditions grounding.** FCS has fixed the
+//!   statement to `unit` before anything after it, so a later condition may not
+//!   ground a parameter slot ([`Gen::open_statement_seen`]).
 //!
 //! [D8]: ../../../docs/type-checker-plan.md
 
