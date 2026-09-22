@@ -461,6 +461,9 @@ pub struct InferredFile {
     /// serve hover / go-to-definition identically to a resolver-resolved member
     /// (`System.Console.WriteLine`). Absent means "no sound answer" (D5).
     member_resolutions: HashMap<TextRange, Resolution>,
+    /// Each walked binding's incompleteness reasons, in walk order; empty for a
+    /// complete binding. See [`Self::incompleteness`].
+    incompleteness: Vec<Vec<Incomplete>>,
     /// Each `(expr).Member` access's **receiver** type, keyed by the whole
     /// `DOT_GET_EXPR`'s range — recorded whether or not the access resolves.
     /// See [`Self::dot_get_receiver_type`].
@@ -523,6 +526,14 @@ impl InferredFile {
         self.receiver_types.get(&dot_get)
     }
 
+    /// Why each walked binding was incomplete, one entry per binding in walk
+    /// order (empty for a complete binding; a reason repeats if it was met
+    /// more than once). A measurement, not a result: it is what the corpus
+    /// sweep reads to say which unmodelled construct is holding real code back.
+    pub fn incompleteness(&self) -> &[Vec<Incomplete>] {
+        &self.incompleteness
+    }
+
     pub fn len(&self) -> usize {
         self.types.len()
     }
@@ -530,6 +541,72 @@ impl InferredFile {
     pub fn is_empty(&self) -> bool {
         self.types.is_empty()
     }
+}
+
+/// Why a binding was marked walk-incomplete ([`Gen::mark_incomplete`]): the
+/// census behind [`InferredFile::incompleteness`].
+///
+/// An incomplete binding fires no argument check and never generalises, so one
+/// unmodelled construct anywhere in a function body switches most of inference
+/// off for the whole body. The variants are coarse on purpose — one per *kind*
+/// of thing inference does not model — so that "the bindings whose only reason
+/// is X" reads directly as what modelling X would unlock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Incomplete {
+    /// An expression form inference does not model at all, by its syntax kind:
+    /// an infix application, a `match`, a record, a bang or `use`/`rec` `let`, …
+    Unmodelled(SyntaxKind),
+    /// A value reference that is not to an in-file binder: an assembly value,
+    /// a preceding file's value, or a name the resolver deferred.
+    NotInFileValue,
+    /// A member access or call rooted at a qualified path rather than a value —
+    /// a module function (`List.map`) or a static member (`String.Join`).
+    QualifiedPath,
+    /// A literal whose type is not fixed in isolation (`1I`, `__LINE__`).
+    DeferredLiteral,
+    /// A lambda: its function type is not modelled.
+    Lambda,
+    /// A `while` loop: its `unit` type is not modelled.
+    While,
+    /// An `if` without a final `else`, whose result is `unit`.
+    ElselessIf,
+    /// A struct tuple.
+    StructTuple,
+    /// An expression-level `let` that is not `let name = rhs`: a local
+    /// function, a pattern, an annotation.
+    LocalBindingShape,
+    /// A local whose RHS is not ground when it is bound.
+    OpenLocal,
+    /// A statement whose type is not ground when it is walked.
+    OpenStatement,
+    /// A condition whose shape is not modelled: `x && y`, a call, a member.
+    ConditionShape,
+    /// A condition on a name that is not a parameter of the binding.
+    ConditionNotParameter,
+    /// A condition on a parameter that is not the parameter's first occurrence.
+    ConditionNotFirstOccurrence,
+    /// A `()` parameter.
+    UnitParam,
+    /// A tupled parameter `(a, b)`.
+    TupleParam,
+    /// A parameter annotation outside the modelled set.
+    ParamAnnotation,
+    /// Any other parameter pattern, by its syntax kind: a wildcard, a
+    /// constructor, a record, …
+    ParamShape(SyntaxKind),
+    /// A callee that is not an in-file value or a curried application, by its
+    /// syntax kind: an infix operator, a qualified module function
+    /// (`List.map`), a lambda, …
+    CalleeShape(SyntaxKind),
+    /// A method call whose callee is not modelled, by the callee's syntax kind
+    /// (a receiver that is not an in-file value, …).
+    MethodCallee(SyntaxKind),
+    /// A member access whose path is not modelled (an active-pattern segment).
+    MemberAccessShape,
+    /// A method call whose arguments are not a plain positional list.
+    MethodArgShape,
+    /// A syntax-recovery hole: a missing sub-expression, an empty paren.
+    Recovery,
 }
 
 /// A type constraint produced by generation and discharged by the solver.
@@ -870,6 +947,9 @@ struct Gen<'a> {
     /// range — unguarded and never discarded, for
     /// [`InferredFile::dot_get_receiver_type`].
     dot_get_receivers: Vec<(TextRange, TyVid)>,
+    /// Each begun binding's incompleteness reasons, for
+    /// [`InferredFile::incompleteness`].
+    incompleteness: Vec<Vec<Incomplete>>,
     /// Every [`Guard`] the walk opened, indexed by [`GuardId`].
     guards: Vec<Guard>,
     /// The guards enclosing the current walk position, innermost last; an
@@ -973,6 +1053,7 @@ impl<'a> Gen<'a> {
             local_defs: HashSet::new(),
             local_emits: Vec::new(),
             dot_get_receivers: Vec::new(),
+            incompleteness: Vec::new(),
             guards: Vec::new(),
             guard_stack: Vec::new(),
             guard_on_member: HashMap::new(),
@@ -992,7 +1073,16 @@ impl<'a> Gen<'a> {
     /// Mark the current binding **walk-incomplete** — some sub-expression or
     /// pattern is not fully modelled, so the binding must not generalise (Stage
     /// 3.2c-2c). Ground emission is unaffected.
-    fn mark_incomplete(&mut self) {
+    fn mark_incomplete(&mut self, why: Incomplete) {
+        self.complete = false;
+        if let Some(reasons) = self.incompleteness.last_mut() {
+            reasons.push(why);
+        }
+    }
+
+    /// Mark the binding incomplete where a sub-walk that returned `None` has
+    /// already recorded why — so the census counts the cause once.
+    fn mark_incomplete_propagated(&mut self) {
         self.complete = false;
     }
 
@@ -1006,6 +1096,7 @@ impl<'a> Gen<'a> {
         let mark = self.table.mark();
         self.cur_mark = mark;
         self.complete = true;
+        self.incompleteness.push(Vec::new());
         self.cur_body = None;
         self.poison.clear();
         self.cur_params.clear();
@@ -1327,7 +1418,7 @@ impl<'a> Gen<'a> {
                     .push(Constraint::ArgCheck { arg: bv, dom: r, r });
             }
         } else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
         }
         let f_def = self.function_type(head, &arg_vars, Some(r));
         if self.complete {
@@ -1807,7 +1898,7 @@ impl<'a> Gen<'a> {
                     // A deferred literal (`USER_NUM_LIT`, a source-location
                     // identifier) is unmodelled — its type is not fixed even in
                     // isolation — so the binding must not generalise.
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::DeferredLiteral);
                     return None;
                 };
                 let v = self.table.fresh();
@@ -1830,13 +1921,13 @@ impl<'a> Gen<'a> {
             // 3.2c-2c) — checked *before* the plain `def_var` path.
             Expr::Ident(ident) => {
                 let Some(tok) = ident.ident() else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
                     // A use of a name we do not resolve to an in-file binder
                     // (cross-file, assembly, deferred, unresolved) is unmodelled.
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::NotInFileValue);
                     return None;
                 };
                 if let Some(scheme) = self.def_schemes.get(&def).cloned() {
@@ -1872,7 +1963,7 @@ impl<'a> Gen<'a> {
             // wrapping a recovery hole (no inner expression) is unmodelled.
             Expr::Paren(p) => {
                 let Some(inner) = p.inner() else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 self.infer_expr(&inner, expected)
@@ -1889,7 +1980,7 @@ impl<'a> Gen<'a> {
                 // Struct tuples (`struct (a, b)`) have a distinct runtime type
                 // and canonical rendering; defer them (unmodelled).
                 if t.is_struct() {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::StructTuple);
                     return None;
                 }
                 let elems: Vec<Ty> = t
@@ -1906,7 +1997,7 @@ impl<'a> Gen<'a> {
                                 // un-ground; the element's own recursion already set
                                 // incomplete, but this arm may also be reached for a
                                 // recovery hole — be explicit.
-                                self.mark_incomplete();
+                                self.mark_incomplete_propagated();
                                 Ty::Var(self.table.fresh())
                             }
                         }
@@ -1915,7 +2006,7 @@ impl<'a> Gen<'a> {
                 // A well-formed tuple has ≥ 2 elements; anything less is a
                 // degenerate parse, not a tuple type.
                 if elems.len() < 2 {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 }
                 let tv = self.table.fresh();
@@ -1953,11 +2044,11 @@ impl<'a> Gen<'a> {
                         // and mark incomplete (its then-branch's true type is a
                         // dropped unit-check relation).
                         if !if_chain_has_final_else(if_expr) {
-                            self.mark_incomplete();
+                            self.mark_incomplete(Incomplete::ElselessIf);
                             return None;
                         }
                         let Some(then_branch) = if_expr.then_branch() else {
-                            self.mark_incomplete();
+                            self.mark_incomplete(Incomplete::Recovery);
                             return None;
                         };
                         // A then-branch that cannot synthesize leaves the `if`'s
@@ -1997,7 +2088,7 @@ impl<'a> Gen<'a> {
                 // a `fun` value is a later slice), so it defers — and marks the
                 // binding incomplete, since a body containing a lambda has an FCS
                 // type we cannot reproduce.
-                self.mark_incomplete();
+                self.mark_incomplete(Incomplete::Lambda);
                 None
             }
             // A `while c do body`: the condition is constrained to `bool`
@@ -2014,7 +2105,7 @@ impl<'a> Gen<'a> {
                 }
                 // A `while` expression's own `unit` type is not modelled yet, so it
                 // defers — and marks the binding incomplete.
-                self.mark_incomplete();
+                self.mark_incomplete(Incomplete::While);
                 None
             }
             // Function application `f x` (Stage 3.2c-3). Both `APP_EXPR` and
@@ -2061,7 +2152,7 @@ impl<'a> Gen<'a> {
             // **bracket-indexer** `App` too, which the guarded arm above deliberately
             // does not match.
             _ => {
-                self.mark_incomplete();
+                self.mark_incomplete(Incomplete::Unmodelled(e.syntax().kind()));
                 None
             }
         }
@@ -2084,7 +2175,7 @@ impl<'a> Gen<'a> {
             self.local_binding(&binding);
         }
         let Some(body) = e.body() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         self.infer_expr(&body, expected)
@@ -2117,12 +2208,12 @@ impl<'a> Gen<'a> {
         let (None, Some(Pat::Named(named)), Some(rhs)) =
             (binding.return_type(), binding.pat(), binding.expr())
         else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::LocalBindingShape);
             return;
         };
         let rhs_var = self.infer_expr(&rhs, None);
         let Some(def) = named.ident().and_then(|tok| self.def_at(tok.text_range())) else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return;
         };
         let dv = self.def_var(def);
@@ -2134,7 +2225,7 @@ impl<'a> Gen<'a> {
         }
         self.settle();
         if !self.table.resolve(&Ty::Var(dv)).is_ground() {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::OpenLocal);
         }
     }
 
@@ -2160,12 +2251,12 @@ impl<'a> Gen<'a> {
     fn infer_sequential(&mut self, seq: &SequentialExpr, expected: Option<TyVid>) -> Option<TyVid> {
         let stmts: Vec<Expr> = seq.statements().collect();
         let Some((last, init)) = stmts.split_last() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         if init.is_empty() {
             // A one-statement sequence is a recovery artefact, not `e1; e2`.
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         }
         for stmt in init {
@@ -2175,7 +2266,7 @@ impl<'a> Gen<'a> {
             if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
                 self.settle();
                 if !self.table.resolve(&Ty::Var(v)).is_ground() {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::OpenStatement);
                 }
             }
         }
@@ -2219,11 +2310,11 @@ impl<'a> Gen<'a> {
     /// [`Self::solve`] for the wake rule and its completeness gate.
     fn infer_app(&mut self, app: &AppExpr) -> Option<TyVid> {
         let Some(func) = app.func() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         let Some(arg) = app.arg() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         // A **method call** `recv.Method(args)` is an application whose callee is a
@@ -2306,7 +2397,7 @@ impl<'a> Gen<'a> {
             Expr::Paren(p) => match p.inner() {
                 Some(inner) => self.infer_arg(&inner, d),
                 None => {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     None
                 }
             },
@@ -2337,7 +2428,7 @@ impl<'a> Gen<'a> {
         match e {
             Expr::Paren(p) => {
                 let Some(inner) = p.inner() else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 self.infer_callee(&inner)
@@ -2356,11 +2447,11 @@ impl<'a> Gen<'a> {
             // *do not* emit a node.
             Expr::Ident(ident) => {
                 let Some(tok) = ident.ident() else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 };
                 let Some(def) = self.def_at(tok.text_range()) else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::NotInFileValue);
                     return None;
                 };
                 if let Some(scheme) = self.def_schemes.get(&def).cloned() {
@@ -2379,7 +2470,7 @@ impl<'a> Gen<'a> {
                 Some(dv)
             }
             _ => {
-                self.mark_incomplete();
+                self.mark_incomplete(Incomplete::CalleeShape(e.syntax().kind()));
                 None
             }
         }
@@ -2449,7 +2540,7 @@ impl<'a> Gen<'a> {
         }
         let Some((recv, method_tok)) = self.method_callee(callee) else {
             self.discard_emissions_since(emit_mark);
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::MethodCallee(callee.syntax().kind()));
             return None;
         };
         // Walk each positional argument in **check mode**, collecting the
@@ -2575,7 +2666,7 @@ impl<'a> Gen<'a> {
             Expr::Paren(p) => match p.inner() {
                 Some(inner) => inner,
                 None => {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     return None;
                 }
             },
@@ -2607,7 +2698,7 @@ impl<'a> Gen<'a> {
                     .filter(|c| c.kind() == SyntaxKind::COMMA_TOK)
                     .count();
                 if !positional || vids.len() != commas + 1 {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::MethodArgShape);
                     return None;
                 }
                 Some(vids)
@@ -2618,7 +2709,7 @@ impl<'a> Gen<'a> {
             _ => {
                 let v = self.walk_arg_element(&inner);
                 if is_named_arg(&inner) {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::MethodArgShape);
                     None
                 } else {
                     Some(vec![v])
@@ -2640,7 +2731,7 @@ impl<'a> Gen<'a> {
         match self.infer_expr(el, Some(expected)) {
             Some(v) => v,
             None => {
-                self.mark_incomplete();
+                self.mark_incomplete_propagated();
                 self.table.fresh()
             }
         }
@@ -2741,13 +2832,13 @@ impl<'a> Gen<'a> {
         expected: Option<TyVid>,
     ) -> Option<TyVid> {
         let Some(long_ident) = li.long_ident() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         // An active-pattern name segment cannot be projected as a plain member
         // token, so a path carrying one is unmodelled here.
         if long_ident.active_pat_names().next().is_some() {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::MemberAccessShape);
             return None;
         }
         let idents: Vec<SyntaxToken> = long_ident.idents().collect();
@@ -2755,14 +2846,14 @@ impl<'a> Gen<'a> {
         let (head, segments) = match idents.split_first() {
             Some((head, segments)) if !segments.is_empty() => (head, segments),
             _ => {
-                self.mark_incomplete();
+                self.mark_incomplete(Incomplete::MemberAccessShape);
                 return None;
             }
         };
         // The head must resolve to an in-file value binder; otherwise this is a
         // qualified static path (or unresolved) we do not model here.
         let Some(recv) = self.receiver_var(head) else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::QualifiedPath);
             return None;
         };
         // Emit the receiver's own value node (coercion-free — synth), guarded on
@@ -2782,20 +2873,20 @@ impl<'a> Gen<'a> {
     /// the receiver does not synthesize or the member path is empty/unprojectable.
     fn infer_dot_get(&mut self, dg: &DotGetExpr, expected: Option<TyVid>) -> Option<TyVid> {
         let Some(recv_expr) = dg.expr() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         let Some(long_ident) = dg.long_ident() else {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
         if long_ident.active_pat_names().next().is_some() {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::MemberAccessShape);
             return None;
         }
         let segments: Vec<SyntaxToken> = long_ident.idents().collect();
         if segments.is_empty() {
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return None;
         }
         // The receiver is a coercion-free (synth) sub-position — a member access
@@ -2915,7 +3006,7 @@ impl<'a> Gen<'a> {
     fn constrain_bool(&mut self, cond: Option<Expr>) {
         let Some(cond) = cond else {
             // A missing condition (recovery) is unmodelled.
-            self.mark_incomplete();
+            self.mark_incomplete(Incomplete::Recovery);
             return;
         };
         match cond {
@@ -2934,12 +3025,12 @@ impl<'a> Gen<'a> {
                     }
                     // A condition on a parameter something earlier may have
                     // fixed: FCS reports the condition, it does not retype.
-                    Some(_) => self.mark_incomplete(),
+                    Some(_) => self.mark_incomplete(Incomplete::ConditionNotFirstOccurrence),
                     // A condition ident that is not a slot-owning parameter of this
                     // binding (a value / annotated / `rec` binder, a cross-file
                     // name) is unmodelled here — its `bool`-ness is an FCS
                     // constraint we drop.
-                    None => self.mark_incomplete(),
+                    None => self.mark_incomplete(Incomplete::ConditionNotParameter),
                 }
             }
             // A literal condition is complete only when it is a `bool` literal
@@ -2947,13 +3038,13 @@ impl<'a> Gen<'a> {
             // literal in condition position is ill-typed input we do not model.
             Expr::Const(c) => {
                 if c.literal().map(|l| l.kind()) != Some(SyntaxKind::BOOL_LIT) {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::ConditionShape);
                 }
             }
             Expr::Paren(p) => self.constrain_bool(p.inner()),
             // Any other condition shape (`x && y`, `p.HasValue`, a call) imposes FCS
             // constraints on its sub-terms that we drop.
-            _ => self.mark_incomplete(),
+            _ => self.mark_incomplete(Incomplete::ConditionShape),
         }
     }
 
@@ -3095,19 +3186,26 @@ impl<'a> Gen<'a> {
                     self.eq(Ty::Var(dv), t);
                     slot
                 } else {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::ParamAnnotation);
                     self.table.fresh()
                 }
             }
             Pat::Paren(p) => match p.inner() {
                 Some(inner) => self.param_var(&inner),
                 None => {
-                    self.mark_incomplete();
+                    self.mark_incomplete(Incomplete::Recovery);
                     self.table.fresh()
                 }
             },
             _ => {
-                self.mark_incomplete();
+                let why = match pat {
+                    Pat::Tuple(_) => Incomplete::TupleParam,
+                    // `()` is a constant pattern whose node is zero-width: the
+                    // parentheses sit outside it.
+                    Pat::Const(c) if c.syntax().text().is_empty() => Incomplete::UnitParam,
+                    other => Incomplete::ParamShape(other.syntax().kind()),
+                };
+                self.mark_incomplete(why);
                 self.table.fresh()
             }
         }
@@ -3898,6 +3996,7 @@ impl<'a> Gen<'a> {
             types,
             def_types,
             member_resolutions,
+            incompleteness: std::mem::take(&mut self.incompleteness),
             receiver_types,
         }
     }
@@ -5186,6 +5285,29 @@ mod tests {
             !expr_type_renders(src).contains(&"System.Boolean".to_string()),
             "no condition-derived bool may leak: {:?}",
             expr_type_renders(src)
+        );
+    }
+
+    /// The completeness census records one entry per walked binding, empty for
+    /// a complete one, naming each unmodelled construct it met — the input the
+    /// corpus sweep's blocker report reads.
+    #[test]
+    fn incompleteness_names_what_each_binding_did_not_model() {
+        use super::{Incomplete, SyntaxKind};
+        let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n";
+        let parsed = parse(src);
+        let recovery = SyntaxRecovery::of(&parsed);
+        let file = ImplFile::cast(parsed.root).expect("impl file");
+        let env = primitive_env();
+        let resolved = resolve_file(&file, &ProjectItems::default(), &env, &recovery);
+        let inferred = super::infer_file(&file, &resolved, &env);
+        assert_eq!(
+            inferred.incompleteness(),
+            [
+                vec![],
+                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                vec![Incomplete::UnitParam],
+            ]
         );
     }
 
