@@ -240,9 +240,12 @@ fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
 
 /// Compare one corpus file, folding its outcome into `tally`.
 fn compare_file(path: &Path, tally: &Mutex<Tally>) {
-    let Ok(source) = std::fs::read_to_string(path) else {
+    let Ok(raw) = std::fs::read_to_string(path) else {
         return;
     };
+    // FCS reads the file with a leading byte-order mark stripped, so its ranges
+    // are offsets into the BOM-less text; ours must be too.
+    let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
     let symbols: std::collections::HashSet<String> =
         FCS_SCRIPT_SYMBOLS.iter().map(|s| s.to_string()).collect();
     let parsed = parse_with_symbols(&source, &symbols);
@@ -552,4 +555,19 @@ fn fcs_script_check_defines_exactly_these_symbols() {
     let mut expected = FCS_SCRIPT_SYMBOLS.to_vec();
     expected.sort_unstable();
     assert_eq!(defined, expected);
+}
+
+/// A file with a UTF-8 byte-order mark compares exactly like its BOM-less
+/// twin: FCS strips the mark before its ranges are taken, so the sweep must
+/// too, or every commit on the first line lands off by the mark's bytes. The
+/// binding is on line 1 on purpose — later lines' offsets never see the mark.
+#[test]
+fn a_bom_prefixed_file_compares_like_its_bomless_twin() {
+    let path = crate::common::temp_fs_file("infer_corpus_bom", "\u{feff}module M = let x = 1\n");
+    let tally = Mutex::new(Tally::default());
+    compare_file(&path, &tally);
+    let _ = std::fs::remove_file(&path);
+    let t = tally.into_inner().unwrap();
+    assert!(t.divergences.is_empty(), "{:?}", t.divergences);
+    assert_eq!(t.agree_exprs + t.agree_binders, 2, "`x` and `1`: {t:?}");
 }
