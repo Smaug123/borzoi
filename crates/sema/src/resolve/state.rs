@@ -347,8 +347,8 @@ pub(super) enum CaseTier {
     /// an `open`: an `open` out-ranks the lower two outright, and two `open`
     /// tiers cannot be ordered against each other here — the project
     /// (`Resolver::open_shortening_prefixes`) and assembly
-    /// (`Resolver::open_reading_prefixes`) prefix lists are built from the same
-    /// opens but are neither shared nor index-aligned.
+    /// (`Resolver::explicit_open_reading_prefixes`) prefix lists are built from
+    /// the same opens but are neither shared nor index-aligned.
     Namespace,
 }
 
@@ -439,9 +439,11 @@ pub(super) enum TieredResolution<R> {
 /// Constructed only from [`Resolver::open_interpretations`]' readings (explicit
 /// opens) and [`implicit_open_groups`] (the auto-opens), so the ordering
 /// invariant lives there; consumed only through
-/// [`Resolver::open_reading_prefixes`], which fixes the walk order
+/// [`Resolver::explicit_open_reading_prefixes`] and
+/// [`Resolver::implicit_open_reading_prefixes`], which fix the walk order
 /// (latest-open-first, then within an open readings as ordered here) for every
-/// consumer.
+/// consumer. The two strata are not adjacent: the enclosing namespace sits
+/// between them ([`Resolver::assembly_prefixes_by_priority`]).
 #[derive(Clone, Debug)]
 pub(super) struct OpenGroup {
     /// The readings, highest-priority first.
@@ -968,7 +970,9 @@ pub(super) struct Resolver<'a> {
     /// file's explicit `open` decls (an `open` is in scope for the decls after
     /// it).
     ///
-    /// Name resolution walks these through [`Self::open_reading_prefixes`]
+    /// Name resolution walks these — the explicit stratum above the enclosing
+    /// namespace, the implicit one below it
+    /// ([`Self::assembly_prefixes_by_priority`]) —
     /// **latest-open-first** and, within an open, in the group's priority order:
     /// the latest `open` with a *complete* reading of the name wins (F# is
     /// latest-open-wins, not ambiguity — `open Demo; open Demo.Sub; Calc` is
