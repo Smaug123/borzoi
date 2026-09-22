@@ -39,6 +39,17 @@
 //! is a measurement, not a gate: the uncovered column is the worklist for the
 //! next inference slice, read in FCS's own vocabulary rather than guessed.
 //!
+//! # Completeness, by blocking construct
+//!
+//! One unmodelled construct anywhere in a binding marks the whole binding
+//! incomplete, which switches off its argument checks and its generalisation —
+//! so most of what inference could say about real code is withheld by the
+//! *completeness* gate, not by any one rule. The sweep prints, from
+//! [`borzoi_sema::InferredFile::incompleteness`], how many walked bindings are
+//! complete and, per [`borzoi_sema::Incomplete`] reason, how many bindings have
+//! it as their **only** reason (what modelling it alone would unlock) and how
+//! many have it at all. A measurement, not a gate.
+//!
 //! Deferring is never graded. A file our parser rejects is skipped (as in
 //! `resolve_corpus_diff`), and so is one FCS's batch handler could not check —
 //! almost always FCS throwing "error recovery at …" while materialising the typed
@@ -128,6 +139,13 @@ struct Tally {
     error_lines: Vec<Site>,
     /// Per FCS node kind: `(nodes on clean lines, of which we committed)`.
     coverage: BTreeMap<String, (usize, usize)>,
+    /// Bindings inference walked, and how many of them were complete.
+    bindings: usize,
+    complete_bindings: usize,
+    /// Per incompleteness reason: bindings where it is the only reason.
+    sole_blocker: BTreeMap<String, usize>,
+    /// Per incompleteness reason: bindings where it is among the reasons.
+    any_blocker: BTreeMap<String, usize>,
 }
 
 /// The `types` payload's node kinds, which [`parse_fcs_types_with_errors`]
@@ -304,10 +322,10 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
                 )
             })
             .collect();
-        Some((exprs, binders))
+        Some((exprs, binders, inferred.incompleteness().to_vec()))
     }));
     drop(silence);
-    let (exprs, binders) = match ours {
+    let (exprs, binders, incompleteness) = match ours {
         Ok(Some(x)) => x,
         Ok(None) => return,
         Err(_) => {
@@ -315,6 +333,25 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
             return;
         }
     };
+    {
+        let mut t = tally.lock().unwrap();
+        for reasons in &incompleteness {
+            t.bindings += 1;
+            let kinds: std::collections::BTreeSet<String> =
+                reasons.iter().map(|r| format!("{r:?}")).collect();
+            match kinds.len() {
+                0 => t.complete_bindings += 1,
+                1 => {
+                    let only = kinds.iter().next().expect("one kind").clone();
+                    *t.sole_blocker.entry(only).or_default() += 1;
+                }
+                _ => {}
+            }
+            for k in kinds {
+                *t.any_blocker.entry(k).or_default() += 1;
+            }
+        }
+    }
     let (types_json, binders_json) = match (
         try_invoke_fcs_dump("types", path),
         try_invoke_fcs_dump("binder-types", path),
@@ -489,6 +526,24 @@ fn inferred_types_match_fcs_over_corpus() {
             "  {kind:<28} {c:>6} / {n:<6} ({:>5.1}%)",
             100.0 * *c as f64 / *n as f64
         );
+    }
+    eprintln!(
+        "\ninference completeness: {} of {} walked bindings complete ({:.1}%)",
+        t.complete_bindings,
+        t.bindings,
+        100.0 * t.complete_bindings as f64 / t.bindings.max(1) as f64
+    );
+    let mut sole: Vec<(&String, &usize)> = t.sole_blocker.iter().collect();
+    sole.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+    eprintln!("  sole blocker (bindings it alone keeps incomplete) / present in:");
+    for (reason, n) in sole.iter().take(25) {
+        eprintln!("    {reason:<40} {n:>6} / {:<6}", t.any_blocker[*reason]);
+    }
+    let mut any: Vec<(&String, &usize)> = t.any_blocker.iter().collect();
+    any.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+    eprintln!("  most widespread (present in):");
+    for (reason, n) in any.iter().take(15) {
+        eprintln!("    {reason:<40} {n:>6}");
     }
     print_sites("divergences (gated)", &t.divergences);
     print_sites("error-recovered disagreements (reported)", &t.error_lines);

@@ -96,6 +96,32 @@ catalogue (type-directed widening, `op_Implicit`, params/optional arity,
 extension-vs-intrinsic betterness), and the two-sided `must_apply`/`may_apply`
 sound commit rule.
 
+### Measured blockers (the completeness census)
+
+An incomplete binding fires no argument check and never generalises, so on real
+code most of what inference could say is withheld by the *completeness* gate
+rather than by any one typing rule. `infer_corpus_diff` prints, from
+`InferredFile::incompleteness`, which construct is the **only** reason a binding
+is incomplete — i.e. what modelling it alone would unlock. On the stride-13
+corpus sample (2026-09-22, after CE-1; 2 799 walked bindings, 37 % complete):
+
+| blocker | sole blocker of | present in |
+|---|---:|---:|
+| infix operator application | 336 | 626 |
+| method call on a receiver that is not an in-file value | 144 | 265 |
+| value not bound in this file (assembly / earlier file) | 101 | 258 |
+| `match` | 95 | 203 |
+| tupled parameter | 39 | 163 |
+| parameter annotation outside the modelled set | 36 | 264 |
+| `new` | 31 | 37 |
+| list / array expression | 29 | 80 |
+
+Two corollaries shaped the order of work. Infix operators are the first lever
+by a wide margin. And a rule that only fires on complete bindings — the guarded
+argument read-off, prototyped on branch `infer-arg-readoff` — measured **zero**
+gain on the corpus while bindings are this incomplete, so it waits until the
+blockers above are lower. Re-run the sweep and update this table when one lands.
+
 ### Remaining 3.x hard piles (census-priority order)
 
 Each stays `Deferred` (D5 silence) until the corpus demands it
