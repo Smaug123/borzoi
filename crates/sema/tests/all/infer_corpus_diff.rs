@@ -15,15 +15,22 @@
 //! * **agree** — FCS has a node (or binder) at that range with the same
 //!   canonical type. Floored by [`MIN_AGREEMENTS`]: the sweep must keep
 //!   measuring something.
-//! * **divergence** — the lines the range spans carry no FCS error, and FCS
-//!   either reports a different type there or no node at all. A clean line is
-//!   one FCS fully checked, so its typed tree is FCS's answer and any
+//! * **divergence** — FCS reported no error anywhere in the top-level `let`
+//!   the commit sits in, and either reports a different type there or no node
+//!   at all. A declaration FCS checked without error is its answer, so any
 //!   disagreement is ours. Ceilinged by [`MAX_DIVERGENCES`]; sites printed.
-//! * **error-line** — the range touches a line FCS reported an error on, and FCS
-//!   disagrees or has no node. The file is checked *alone* (as the other corpus
-//!   sweeps do), so an `open` of a sibling module fails and FCS recovers the
-//!   rest of the line to whatever it likes. Reported, not gated: a commit there
-//!   is only as wrong as FCS's recovery is right.
+//! * **error-recovered** — FCS reported an error somewhere in that
+//!   declaration, and disagrees or has no node. The file is checked *alone* (as
+//!   the other corpus sweeps do), so an `open` of a sibling module fails and FCS
+//!   recovers the declaration as it likes — including dropping a RHS on lines
+//!   that carry no diagnostic of their own, which is why the unit is the
+//!   declaration and not the line. Reported, not gated: a commit there is only
+//!   as wrong as FCS's recovery is right.
+//!
+//! Both sides parse the same program: FCS's script check defines `INTERACTIVE`
+//! and `EDITING` ([`FCS_SCRIPT_SYMBOLS`], pinned by
+//! [`fcs_script_check_defines_exactly_these_symbols`]), and we parse with the
+//! same set.
 //!
 //! # Coverage, by FCS node kind
 //!
@@ -64,8 +71,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::{AstNode, ImplFile};
+use borzoi_cst::parser::parse_with_symbols;
+use borzoi_cst::syntax::{AstNode, ImplFile, LetDecl};
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
@@ -88,6 +95,10 @@ const MAX_DIVERGENCES: usize = 0;
 /// expression-level `let`s and sequences typed; the floor sits a little under
 /// to absorb a file moving in or out of FCS's checkable set.
 const MIN_AGREEMENTS: usize = 1650;
+
+/// The conditional-compilation symbols FCS's single-file script check defines,
+/// which our parse must match or the two sides check different programs.
+const FCS_SCRIPT_SYMBOLS: [&str; 2] = ["INTERACTIVE", "EDITING"];
 
 /// How many sites of each kind to print.
 const SAMPLE: usize = 40;
@@ -208,17 +219,42 @@ fn touches_error(lines: &Lines, errors: &[FcsCheckError], start: usize, end: usi
     errors.iter().any(|e| (l0..=l1).contains(&e.line))
 }
 
+/// The byte range of the outermost `let` declaration enclosing `[start, end)`,
+/// or the range itself outside any: the unit FCS's error recovery works in.
+fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
+    let range = rowan::TextRange::new((start as u32).into(), (end as u32).into());
+    let outermost = file
+        .syntax()
+        .covering_element(range)
+        .ancestors()
+        .filter_map(LetDecl::cast)
+        .last();
+    match outermost {
+        Some(decl) => {
+            let r = decl.syntax().text_range();
+            (u32::from(r.start()) as usize, u32::from(r.end()) as usize)
+        }
+        None => (start, end),
+    }
+}
+
 /// Compare one corpus file, folding its outcome into `tally`.
 fn compare_file(path: &Path, tally: &Mutex<Tally>) {
     let Ok(source) = std::fs::read_to_string(path) else {
         return;
     };
-    let parsed = parse(&source);
+    let symbols: std::collections::HashSet<String> =
+        FCS_SCRIPT_SYMBOLS.iter().map(|s| s.to_string()).collect();
+    let parsed = parse_with_symbols(&source, &symbols);
     if !parsed.errors.is_empty() {
         tally.lock().unwrap().our_parse_errors += 1;
         return;
     }
     let env = ref_pack_env();
+    let file_for_decls = ImplFile::cast(parsed.root.clone());
+    // Silence the expected panics of our own resolve/infer (counted below) —
+    // and only those: a panic anywhere else in the worker must keep its payload.
+    let silence = silence_panics_here();
     let ours = catch_unwind(AssertUnwindSafe(|| {
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root.clone())?;
@@ -247,6 +283,7 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
             .collect();
         Some((exprs, binders))
     }));
+    drop(silence);
     let (exprs, binders) = match ours {
         Ok(Some(x)) => x,
         Ok(None) => return,
@@ -313,7 +350,10 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
                 ours: ours.clone(),
                 fcs: theirs.cloned(),
             };
-            if touches_error(&lines, &errors, *s, *e) {
+            let (d0, d1) = file_for_decls
+                .as_ref()
+                .map_or((*s, *e), |f| enclosing_decl(f, *s, *e));
+            if touches_error(&lines, &errors, d0, d1) {
                 t.error_lines.push(site);
             } else {
                 t.divergences.push(site);
@@ -375,11 +415,18 @@ fn inferred_types_match_fcs_over_corpus() {
     std::thread::scope(|scope| {
         for _ in 0..3 {
             scope.spawn(|| {
-                let _silence = silence_panics_here();
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(path) = sample.get(i) else { break };
-                    compare_file(path, &tally);
+                    // A failure outside our own (caught) resolve/infer — the
+                    // parser, the oracle — is a failure of the sweep. Its message
+                    // has already printed; name the file it was on.
+                    if catch_unwind(AssertUnwindSafe(|| compare_file(path, &tally))).is_err() {
+                        panic!(
+                            "infer-diff: comparing {} failed (see above)",
+                            path.display()
+                        );
+                    }
                 }
             });
         }
@@ -391,8 +438,8 @@ fn inferred_types_match_fcs_over_corpus() {
         .sort_by(|a, b| (&a.path, a.line).cmp(&(&b.path, b.line)));
 
     eprintln!(
-        "infer-diff: {} files compared | {} expr + {} binder agree | {} diverge | {} on error \
-         lines | {} our-parse-errors | {} our-panics | {} fcs-failed",
+        "infer-diff: {} files compared | {} expr + {} binder agree | {} diverge | {} in \
+         error-recovered declarations | {} our-parse-errors | {} our-panics | {} fcs-failed",
         t.files_compared,
         t.agree_exprs,
         t.agree_binders,
@@ -419,7 +466,7 @@ fn inferred_types_match_fcs_over_corpus() {
         );
     }
     print_sites("divergences (gated)", &t.divergences);
-    print_sites("error-line disagreements (reported)", &t.error_lines);
+    print_sites("error-recovered disagreements (reported)", &t.error_lines);
 
     assert_eq!(t.our_panics, 0, "resolve/infer panicked on a corpus file");
     #[allow(clippy::absurd_extreme_comparisons)]
@@ -461,4 +508,48 @@ fn collect_fs(dir: &Path, out: &mut Vec<PathBuf>) {
             out.push(path);
         }
     }
+}
+
+/// The symbols FCS's single-file script check defines, read off FCS itself: one
+/// `#if SYMBOL` / `#else` pair per candidate, and the branch FCS took shows in
+/// the binder's type. [`FCS_SCRIPT_SYMBOLS`] must be exactly the ones it took,
+/// or the sweep parses a different program from the one FCS checks.
+#[test]
+fn fcs_script_check_defines_exactly_these_symbols() {
+    let candidates = [
+        "INTERACTIVE",
+        "EDITING",
+        "COMPILED",
+        "DEBUG",
+        "RELEASE",
+        "NETCOREAPP",
+        "NET",
+        "TRACE",
+    ];
+    let mut src = String::from("module M\n");
+    for sym in candidates {
+        src.push_str(&format!(
+            "#if {sym}\nlet v_{sym} = 1\n#else\nlet v_{sym} = \"no\"\n#endif\n"
+        ));
+    }
+    let path = crate::common::temp_fs_file("infer_corpus_symbols", &src);
+    let json = crate::common::invoke_fcs_dump("binder-types", &path);
+    let _ = std::fs::remove_file(&path);
+    let binders = crate::common::parse_fcs_binder_types(&json, &src);
+    let mut defined: Vec<&str> = candidates
+        .iter()
+        .copied()
+        .filter(|sym| {
+            let name = format!("v_{sym}");
+            let start = src.find(&format!("let {name} = 1")).expect("binder") + 4;
+            binders
+                .get(&(start, start + name.len()))
+                .map(String::as_str)
+                == Some("System.Int32")
+        })
+        .collect();
+    defined.sort_unstable();
+    let mut expected = FCS_SCRIPT_SYMBOLS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(defined, expected);
 }
