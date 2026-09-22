@@ -579,8 +579,14 @@ enum Constraint {
     /// **undischarged**: [`Gen::solve`] then poisons `arg`, `dom`, and the
     /// application result `r` (deferred poison), so nothing bogus generalises. `r`
     /// is carried only to drive that deferred poison; the discharge reads only
-    /// `arg`/`dom`.
-    ArgCheck { arg: TyVid, dom: TyVid, r: TyVid },
+    /// `arg`/`dom`. A successful discharge confirms `confirms`, the [`Guard`] the
+    /// argument's emissions wait on ([`Gen::infer_app_arg`]).
+    ArgCheck {
+        arg: TyVid,
+        dom: TyVid,
+        r: TyVid,
+        confirms: Option<GuardId>,
+    },
 }
 
 /// A pending application argument↔parameter check inside [`Gen::solve`] (Stage
@@ -592,6 +598,7 @@ struct ArgCheck {
     arg: TyVid,
     dom: TyVid,
     r: TyVid,
+    confirms: Option<GuardId>,
 }
 
 /// Which kind of member a suspended [`Constraint::HasMember`] resolves to — a
@@ -1324,7 +1331,12 @@ impl<'a> Gen<'a> {
             // [`Self::infer_arg`] opt-out, shared with application arguments).
             if let Some(bv) = self.infer_arg(&rhs, r) {
                 self.constraints
-                    .push(Constraint::ArgCheck { arg: bv, dom: r, r });
+                    .push(Constraint::ArgCheck {
+                        arg: bv,
+                        dom: r,
+                        r,
+                        confirms: None,
+                    });
             }
         } else {
             self.mark_incomplete();
@@ -2245,15 +2257,13 @@ impl<'a> Gen<'a> {
                 ret: Box::new(Ty::Var(r)),
             },
         );
-        // The argument is a check position against the domain `d`, so it is walked
-        // in check mode (its node is not emitted) — but **without** the poison
-        // wrapper's automatic poison of `d`/arg ([`Self::infer_arg`]). Stage 3.3c
-        // replaces that eager poison with a *suspended* `ArgCheck`: the dropped
+        // The argument is synthesized under a guard, then related to the domain
+        // `d` by a *suspended* `ArgCheck` ([`Self::infer_app_arg`]): the
         // subsumption relation is discharged as a genuine `Eq(arg, d)` when it is
         // provably coercion-free (a walk-complete binding and a no-subsumption
-        // domain), and only poisoned if it stays undischarged. The argument's var,
-        // if we could synthesize one, is the `ArgCheck`'s `arg` endpoint.
-        let arg_var = self.infer_arg(&arg, d);
+        // domain), and only poisoned if it stays undischarged. The discharge also
+        // confirms the guard, releasing what the argument recorded.
+        let (arg_var, guard) = self.infer_app_arg(&arg);
         match arg_var {
             Some(arg_var) => {
                 // Suspend the arg↔param relation. `solve` wakes it (a complete
@@ -2263,6 +2273,7 @@ impl<'a> Gen<'a> {
                     arg: arg_var,
                     dom: d,
                     r,
+                    confirms: Some(guard),
                 });
             }
             None => {
@@ -2279,8 +2290,35 @@ impl<'a> Gen<'a> {
         Some(r)
     }
 
-    /// Walk a modelled application's **argument** in check mode against the
-    /// domain `d`, returning its synthesized variable, but **suppressing** the
+    /// Synthesize a modelled application's **argument** under a fresh [`Guard`],
+    /// returning its variable and the guard. The caller relates the variable to
+    /// the domain by an [`Constraint::ArgCheck`] that confirms the guard on
+    /// discharge.
+    ///
+    /// Synth, then check: the argument is typed on its own and only then related
+    /// to the domain. Everything it records — its root node, the nodes and
+    /// locals beneath it — waits on the discharge, because that is exactly when
+    /// FCS's nodes are ours. A discharged check means the argument's type *is*
+    /// the domain, a type that admits no coercion, so FCS elaborates no coercion
+    /// node and keeps every node with its own type. An undischarged one covers
+    /// both ways FCS can differ: a coercing domain (`fobj s` puts `obj` at `s`)
+    /// and a rejected application (`k0 (…)` keeps nothing inside). The deferred
+    /// poison on an undischarged check reaches every variable in the argument's
+    /// resolved type, so synthesizing it does not loosen generalisation.
+    fn infer_app_arg(&mut self, arg: &Expr) -> (Option<TyVid>, GuardId) {
+        let g = self.guards.len();
+        self.guards.push(Guard {
+            parent: self.guard_stack.last().copied(),
+            confirmed: false,
+        });
+        self.guard_stack.push(g);
+        let v = self.infer_expr(arg, None);
+        self.close_guards(1);
+        (v, g)
+    }
+
+    /// Walk an **annotated function's body** in check mode against its return
+    /// annotation `d`, returning its synthesized variable, but **suppressing** the
     /// [`Self::infer_expr`] poison wrapper's poison of the top-level arg↔`d`
     /// relation (Stage 3.3c). At an application site that relation is not poisoned
     /// eagerly; it becomes a suspended [`Constraint::ArgCheck`] the solver may
@@ -3254,6 +3292,7 @@ impl<'a> Gen<'a> {
                 arg: ac.arg,
                 dom: ac.dom,
                 r: ac.r,
+                confirms: ac.confirms,
             });
         }
     }
@@ -3338,12 +3377,15 @@ impl<'a> Gen<'a> {
                     // code) the atomic rollback leaves no trace, and the check is
                     // *undischarged*, so its `arg`/`dom`/`r` are poisoned. Either
                     // way the check has fired and is not re-parked.
-                    if self
-                        .table
-                        .unify_atomic(&Ty::Var(ac.arg), &Ty::Var(ac.dom))
-                        .is_err()
-                    {
-                        self.poison_arg_check(ac);
+                    match self.table.unify_atomic(&Ty::Var(ac.arg), &Ty::Var(ac.dom)) {
+                        Err(_) => self.poison_arg_check(ac),
+                        // The argument's type *is* the domain, which admits no
+                        // coercion, so its nodes are FCS's: release them.
+                        Ok(()) => {
+                            if let Some(g) = ac.confirms {
+                                self.guards[g].confirmed = true;
+                            }
+                        }
                     }
                     woke = true;
                 } else {
@@ -3428,8 +3470,18 @@ impl<'a> Gen<'a> {
                         kind,
                     });
                 }
-                Constraint::ArgCheck { arg, dom, r } => {
-                    suspended_args.push(ArgCheck { arg, dom, r });
+                Constraint::ArgCheck {
+                    arg,
+                    dom,
+                    r,
+                    confirms,
+                } => {
+                    suspended_args.push(ArgCheck {
+                        arg,
+                        dom,
+                        r,
+                        confirms,
+                    });
                 }
             }
         }

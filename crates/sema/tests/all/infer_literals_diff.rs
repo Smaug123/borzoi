@@ -566,28 +566,27 @@ fn while_body_is_unit_check_position() {
 /// 3.2c-3): `let f c = if c then 1 else 2` (`f : bool -> int`) then `let n = f
 /// true` — the node at `f true` is `int`, matching FCS's `call:function` node.
 /// The bare function-position `f` is **not** emitted (FCS has no node there — the
-/// probe finding), nor is the checked argument `true`; only the application node
-/// and the function body's `int`s are typed.
+/// probe finding). The argument `true` is: its check against `f`'s `bool` domain
+/// discharges, and a `bool` domain admits no coercion, so FCS's node there is
+/// the literal's own type.
 #[test]
 fn ground_application_node_is_typed() {
     let source = "module I\nlet f c = if c then 1 else 2\nlet n = f true\n";
     let inferred = infer_src(source);
-    // The application `f true` is `int`; no node is a function type or bool here
-    // (the function-position `f` is not emitted, the argument `true` is checked).
-    assert!(
-        inferred
-            .types()
-            .values()
-            .all(|t| t.render() == "System.Int32"),
-        "every emitted type is int (body + application); got {:?}",
-        inferred
-            .types()
-            .values()
-            .map(Ty::render)
-            .collect::<Vec<_>>()
+    let mut renders: Vec<String> = inferred.types().values().map(Ty::render).collect();
+    renders.sort();
+    // The body's `1`, the body `if`, and the application `f true` are `int`; the
+    // argument `true` is `bool`. No node is a function type.
+    assert_eq!(
+        renders,
+        [
+            "System.Boolean",
+            "System.Int32",
+            "System.Int32",
+            "System.Int32"
+        ]
     );
-    // body then `1` + the body `if` + the application `f true` = 3 int nodes.
-    assert_eq!(assert_sound(source), 3);
+    assert_eq!(assert_sound(source), 4);
 }
 
 /// A **partial application** emits its residual function type at the application

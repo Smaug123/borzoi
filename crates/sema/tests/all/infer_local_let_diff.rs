@@ -56,6 +56,9 @@ struct Committed {
     sequentials: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
     fcs_errors: usize,
+    /// Of `exprs`, how many sit at an application's argument (parentheses
+    /// peeled).
+    arg_nodes: usize,
 }
 
 impl std::ops::AddAssign for Committed {
@@ -65,6 +68,7 @@ impl std::ops::AddAssign for Committed {
         self.local_binders += o.local_binders;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
+        self.arg_nodes += o.arg_nodes;
     }
 }
 
@@ -129,6 +133,19 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             )
         })
         .collect();
+    let arg_ranges: HashSet<(usize, usize)> = file
+        .syntax()
+        .descendants()
+        .filter_map(borzoi_cst::syntax::AppExpr::cast)
+        .filter(|app| !app.is_infix() && !app.is_bracket_indexer())
+        .filter_map(|app| {
+            let mut arg = app.arg()?;
+            while let Expr::Paren(p) = arg {
+                arg = p.inner()?;
+            }
+            trimmed_range(arg.syntax())
+        })
+        .collect();
     let sequential_ranges: HashSet<(usize, usize)> = file
         .syntax()
         .descendants()
@@ -159,6 +176,9 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             &source[key.0..key.1]
         );
         c.exprs += 1;
+        if arg_ranges.contains(&key) {
+            c.arg_nodes += 1;
+        }
         if sequential_ranges.contains(&key) {
             c.sequentials += 1;
         }
@@ -353,6 +373,40 @@ fn a_local_inside_a_rejected_application_is_not_published() {
     assert_eq!(c.local_binders, 0, "{c:?}");
 }
 
+/// An argument whose check discharges — its type *is* the domain, which admits
+/// no coercion — keeps its own nodes in FCS, so it records them: a sealed
+/// domain, one of our generic schemes' domains, a tuple of sealed types.
+#[test]
+fn a_discharged_argument_records_its_nodes() {
+    let c = check(
+        "module M\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet idf x = x\n\
+         let a (b: bool) = mono (if b then true else false)\n\
+         let c (s: string) = monos s\n\
+         let d = idf 42\n\
+         let e = idf (1, \"s\")\n",
+        true,
+    );
+    // `if … else …`, `s`, `42`, `(1, "s")`.
+    assert_eq!(c.arg_nodes, 4, "{c:?}");
+}
+
+/// An `obj` domain admits a coercion: FCS types the argument's own node as the
+/// coerced `obj`, so the check does not discharge and the argument records
+/// nothing. A non-function applied is rejected outright.
+#[test]
+fn an_undischarged_argument_records_nothing() {
+    let c = check(
+        "module M\nlet fobj (o: obj) = 3\nlet k0 = 1\n\
+         let g (s: string) = fobj s\n\
+         let h (s: string) = fobj (1, s)\n",
+        true,
+    );
+    assert_eq!(c.arg_nodes, 0, "{c:?}");
+    let c = check("module M\nlet k0 = 1\nlet f (b: bool) = k0 (1, \"s\")\n", false);
+    // Only `k0`'s own `1`.
+    assert_eq!((c.exprs, c.arg_nodes), (1, 0), "{c:?}");
+}
+
 /// A ground statement leaves the binding complete, so the function around it
 /// still generalises.
 #[test]
@@ -430,6 +484,12 @@ struct Gen<'r> {
     next: usize,
     generic_uses: Vec<(String, T)>,
     modelled_only: bool,
+    /// Within a modelled-only function, bind only ground locals and call only
+    /// monomorphic functions. A generic local, or a generic call as a statement
+    /// or a local's RHS, is open when the walk settles it and marks the binding
+    /// incomplete, and an incomplete binding fires no argument check — so
+    /// without this mode almost no generated application would ever discharge.
+    ground_locals_only: bool,
     /// Use an open parameter wherever *any* type is asked for — the ill-typed
     /// family's lever: FCS fixes the parameter at its first use and reports the
     /// rest, and whatever we commit must still agree with what FCS kept. It also
@@ -492,6 +552,7 @@ impl Gen<'_> {
                 let b = self.expr(t, depth - 1);
                 format!("(if {c} then {a} else {b})")
             }
+            3 if self.ground_locals_only => self.expr(t, depth - 1),
             3 => {
                 // A generic application: an in-scope generic local, or the
                 // top-level `idf`.
@@ -520,13 +581,15 @@ impl Gen<'_> {
                     format!("({s}).Length")
                 }
             }
-            7 if t == T::Int => {
-                if self.rng.chance(50) {
-                    format!("(mono {})", self.expr(T::Bool, depth - 1))
-                } else {
-                    format!("(monos {})", self.expr(T::Str, depth - 1))
+            7 if t == T::Int => match self.rng.below(3) {
+                0 => format!("(mono {})", self.expr(T::Bool, depth - 1)),
+                1 => format!("(monos {})", self.expr(T::Str, depth - 1)),
+                // A coercing domain: the argument is any type.
+                _ => {
+                    let at = TYPES[self.rng.below(TYPES.len())];
+                    format!("(fobj {})", self.expr(at, depth - 1))
                 }
-            }
+            },
             8 if t == T::Pair => {
                 let a = self.expr(T::Int, depth - 1);
                 let b = self.expr(T::Str, depth - 1);
@@ -560,7 +623,9 @@ impl Gen<'_> {
     /// One local binding, returning its source text (`name = rhs` or a
     /// pattern form) and extending the environment with what it binds.
     fn binding(&mut self, depth: usize) -> String {
-        let choice = if self.modelled_only {
+        let choice = if self.ground_locals_only {
+            7
+        } else if self.modelled_only {
             // A generic local or a plain value local: the two modelled shapes.
             [0, 7][self.rng.below(2)]
         } else {
@@ -683,11 +748,12 @@ impl Gen<'_> {
 fn generate(seed: u64, functions: usize) -> (String, usize) {
     let mut rng = Rng(seed);
     let mut src = String::from(
-        "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n",
+        "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet fobj (o: obj) = 3\n",
     );
     let mut two_type_generics = 0;
     for i in 0..functions {
         let modelled_only = rng.chance(50);
+        let ground_locals_only = rng.chance(50);
         let with_open = !modelled_only && rng.chance(60);
         let offside = rng.chance(50);
         let t = TYPES[rng.below(TYPES.len())];
@@ -706,6 +772,7 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
             next: 0,
             generic_uses: Vec::new(),
             modelled_only,
+            ground_locals_only: modelled_only && ground_locals_only,
             open_anywhere: false,
         };
         if with_open {
@@ -765,6 +832,10 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
         total.sequentials >= 10,
         "the sweep committed too few sequence nodes to be evidence: {total:?}"
     );
+    assert!(
+        total.arg_nodes >= 50,
+        "the sweep committed too few argument nodes to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
@@ -789,7 +860,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
         let mut src = String::from(
-            "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet k0 = 1\n",
+            "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet fobj (o: obj) = 3\nlet k0 = 1\n",
         );
         for i in 0..6 {
             let modelled_only = rng.chance(50);
@@ -814,6 +885,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
                 next: 0,
                 generic_uses: Vec::new(),
                 modelled_only,
+                ground_locals_only: false,
                 open_anywhere: true,
             };
             let block = g.block(t, 3, wrap == 0 && i % 2 == 0);
@@ -876,3 +948,4 @@ fn generated_programs_parse() {
         "lets: {lets}, sequences: {seqs}"
     );
 }
+
