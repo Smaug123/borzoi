@@ -149,7 +149,7 @@
 //!
 //! - **Per-binding walk-completeness** ([`Gen::complete`]). During one binding's
 //!   generation, any sub-expression or pattern we do not fully model marks the
-//!   binding *incomplete* (every `None`-return arm of [`Gen::infer_expr_inner`], a
+//!   binding *incomplete* (every `None`-return arm of [`Gen::infer_construct`], a
 //!   deferred literal, an unresolved name, a lambda, a struct/degenerate tuple, an
 //!   `if` with no final `else`, a non-simple parameter, and a condition shape
 //!   [`Gen::constrain_bool`] does not fully model — a compound `x && y` drops FCS
@@ -185,7 +185,7 @@
 //! generalise iff complete **and** every open var is created-this-binding and
 //! unpoisoned — replacing those vars by [`Ty::Param`]s numbered by first
 //! appearance (DFS, argument-before-return) — else defer. A use of a scheme'd
-//! binder ([`Gen::infer_expr_inner`]'s [`Expr::Ident`] arm) instantiates with a
+//! binder ([`Gen::infer_construct`]'s [`Expr::Ident`] arm) instantiates with a
 //! fresh var per distinct `Param`.
 //!
 //! **Stage 3.2c-3 — function application (v1: no worklist).** `f x` becomes a
@@ -833,6 +833,14 @@ struct Gen<'a> {
     /// that parameter finds its slot. On a *complete* binding the slot is
     /// reunified with the binder var ([`Self::slot_binder_reunify`]).
     param_slots: HashMap<DefId, TyVid>,
+    /// **Per-binding**: an earlier statement's type was still open when it was
+    /// walked (CE-1), so FCS has already unified it with `unit` — a relation we
+    /// drop. From then on a condition may not ground a parameter's slot
+    /// ([`Self::constrain_bool`]): the parameter may be the statement, fixed to
+    /// `unit` first, and FCS reports the condition rather than retyping it
+    /// (`let h x = x; if x then …` is `unit -> int`). A condition *before* the
+    /// statement is FCS's first constraint and still grounds. Reset per binding.
+    open_statement_seen: bool,
     /// Every parameter `DefId` collected during [`Self::param_var`]. A parameter's
     /// type is never published standalone (D5): [`Self::finish`] skips these in
     /// `def_types`. Before 3.2c-2c this was *emergent* (a parameter's binder var
@@ -913,6 +921,7 @@ impl<'a> Gen<'a> {
             param_defs: HashSet::new(),
             def_schemes: HashMap::new(),
             complete: true,
+            open_statement_seen: false,
             poison: Vec::new(),
             cur_params: Vec::new(),
             member_resolutions: HashMap::new(),
@@ -938,6 +947,7 @@ impl<'a> Gen<'a> {
         let mark = self.table.mark();
         self.cur_mark = mark;
         self.complete = true;
+        self.open_statement_seen = false;
         self.poison.clear();
         self.cur_params.clear();
         mark
@@ -1694,13 +1704,39 @@ impl<'a> Gen<'a> {
         result
     }
 
-    /// The per-construct generation rules (the body of [`Self::infer_expr`],
-    /// without its poison wrapper). Every arm that returns `None` because a
-    /// sub-expression is unmodelled, and every unwalked child, marks the binding
-    /// walk-incomplete ([`Self::mark_incomplete`]) — the seed of Stage 3.2c-2c's
-    /// generalisation gate. (Ground emission is unaffected: it does not read the
-    /// completeness flag.)
+    /// [`Self::infer_expr`] without its poison wrapper: the per-construct rules
+    /// ([`Self::infer_construct`]), with a **check-mode subtree recording
+    /// nothing**.
+    ///
+    /// Check mode already suppresses the node of the checked expression itself;
+    /// this extends that to everything walked beneath it, which is what makes the
+    /// rule hold for the few synth positions that can sit inside a check position
+    /// — a member access's receiver, a local `let`'s RHS and its binder. FCS
+    /// rejects in check positions: an application of a non-function, or a method
+    /// call it cannot resolve, keeps no node and no binder anywhere inside its
+    /// argument, so `k0 (s.Length)` has no node at `s`. Which check positions FCS
+    /// will reject is not known while walking, so none of them emits. The walk
+    /// itself still runs — its constraints and member wakes are true either way.
     fn infer_expr_inner(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
+        match expected {
+            None => self.infer_construct(e, None),
+            Some(_) => {
+                let mark = self.emission_mark();
+                let result = self.infer_construct(e, expected);
+                self.discard_emissions_since(mark);
+                result
+            }
+        }
+    }
+
+    /// The per-construct generation rules (the body of [`Self::infer_expr`],
+    /// without its poison wrapper or [`Self::infer_expr_inner`]'s check-mode
+    /// barrier). Every arm that returns `None` because a sub-expression is
+    /// unmodelled, and every unwalked child, marks the binding walk-incomplete
+    /// ([`Self::mark_incomplete`]) — the seed of Stage 3.2c-2c's generalisation
+    /// gate. (Ground emission is unaffected: it does not read the completeness
+    /// flag.)
+    fn infer_construct(&mut self, e: &Expr, expected: Option<TyVid>) -> Option<TyVid> {
         match e {
             // A bare literal. A measure literal (`1.0<kg>`) is an
             // `Expr::MeasureLit`, not `Expr::Const`, so it is excluded
@@ -1979,6 +2015,9 @@ impl<'a> Gen<'a> {
     /// puts `string` at `y`), so the only range it could go at is one where the
     /// binder is also named — and the binder's own type lives on
     /// [`InferredFile::def_type`], not there.
+    ///
+    /// Reached in check mode, the `let` records nothing at all — neither its
+    /// RHS nodes nor its binders — by [`Self::infer_expr_inner`]'s barrier.
     fn infer_let_in(&mut self, e: &LetOrUseExpr, expected: Option<TyVid>) -> Option<TyVid> {
         for binding in e.bindings() {
             self.local_binding(&binding);
@@ -2051,8 +2090,10 @@ impl<'a> Gen<'a> {
     /// [settled](Self::settle) also marks the binding **incomplete**, since FCS's
     /// unification would ground it to `unit` and a later argument check could
     /// otherwise ground it to something else (`let h x = x; mono x` has
-    /// `x : unit` in FCS, not `bool`). A ground statement type is untouched by
-    /// the unification, so it costs nothing.
+    /// `x : unit` in FCS, not `bool`) — and it stops a later condition from
+    /// grounding a parameter slot, the one grounding that incompleteness does
+    /// not already block (see [`Self::open_statement_seen`]). A ground
+    /// statement type is untouched by the unification, so it costs nothing.
     fn infer_sequential(&mut self, seq: &SequentialExpr, expected: Option<TyVid>) -> Option<TyVid> {
         let stmts: Vec<Expr> = seq.statements().collect();
         let Some((last, init)) = stmts.split_last() else {
@@ -2068,11 +2109,16 @@ impl<'a> Gen<'a> {
             let unit_check = self.table.fresh();
             // A statement that does not synthesize a variable has already marked
             // the binding incomplete in its own arm.
-            if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
-                self.settle();
-                if !self.table.resolve(&Ty::Var(v)).is_ground() {
-                    self.mark_incomplete();
+            match self.infer_expr(stmt, Some(unit_check)) {
+                Some(v) => {
+                    self.settle();
+                    if !self.table.resolve(&Ty::Var(v)).is_ground() {
+                        self.mark_incomplete();
+                        self.open_statement_seen = true;
+                    }
                 }
+                // Unmodelled: its type is not known to be ground either.
+                None => self.open_statement_seen = true,
             }
         }
         let v = self.infer_expr(last, expected)?;
@@ -2189,7 +2235,7 @@ impl<'a> Gen<'a> {
     ///   never coerces its receiver; a paren never coerces its content), so
     ///   `id (id x)`'s inner application relates its result to the outer domain via
     ///   an `ArgCheck`, not the wrapper's poison.
-    /// - **A nested application** in argument position — `infer_expr_inner`'s
+    /// - **A nested application** in argument position — `infer_construct`'s
     ///   `App` arm ([`Self::infer_app`]) already suspends its *own* arg and returns
     ///   its result without emitting a node.
     ///
@@ -2220,7 +2266,7 @@ impl<'a> Gen<'a> {
     /// - **A value/function reference** ([`Expr::Ident`]): resolve it; a
     ///   generalised binder instantiates its scheme afresh, a plain in-file binder
     ///   contributes its variable (poisoned if it is an *environment* reference, as
-    ///   in [`Self::infer_expr_inner`]'s ident arm). No node is emitted.
+    ///   in [`Self::infer_construct`]'s ident arm). No node is emitted.
     /// - **Parentheses** ([`Expr::Paren`]): transparent — peel and recurse.
     /// - **A nested application** (curried `f x y` = `App(App(f, x), y)`): the inner
     ///   `App(f, x)` is itself a callee, so recurse through [`Self::infer_app`]-style
@@ -2811,6 +2857,9 @@ impl<'a> Gen<'a> {
                     .and_then(|tok| self.def_at(tok.text_range()))
                     .and_then(|def| self.param_slots.get(&def).copied());
                 match slot {
+                    // After an open statement the parameter may already be
+                    // `unit` in FCS (see `open_statement_seen`).
+                    Some(_) if self.open_statement_seen => self.mark_incomplete(),
                     Some(slot) => self.eq(Ty::Var(slot), Ty::named("System.Boolean")),
                     // A condition ident that is not a slot-owning parameter of this
                     // binding (a value / annotated / `rec` binder, a cross-file

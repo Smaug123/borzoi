@@ -54,6 +54,8 @@ struct Committed {
     local_binders: usize,
     /// Of `exprs`, how many sit at a whole `e1; e2` sequence.
     sequentials: usize,
+    /// Errors FCS reported on the file — nonzero only where the caller allowed it.
+    fcs_errors: usize,
 }
 
 impl std::ops::AddAssign for Committed {
@@ -62,6 +64,7 @@ impl std::ops::AddAssign for Committed {
         self.binders += o.binders;
         self.local_binders += o.local_binders;
         self.sequentials += o.sequentials;
+        self.fcs_errors += o.fcs_errors;
     }
 }
 
@@ -133,7 +136,10 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         .filter_map(|n| trimmed_range(&n))
         .collect();
 
-    let mut c = Committed::default();
+    let mut c = Committed {
+        fcs_errors: errors.len(),
+        ..Committed::default()
+    };
     for (range, ty) in inferred.types() {
         let key = (
             u32::from(range.start()) as usize,
@@ -272,6 +278,43 @@ fn a_local_inside_a_rejected_method_call_is_not_published() {
     assert_eq!(c.local_binders, 0, "{c:?}");
 }
 
+/// A statement fixes an open parameter to `unit` *before* a later condition
+/// sees it: FCS types `h` as `unit -> int` and reports the condition. The
+/// dropped unit relation must also stop the condition from grounding the
+/// parameter's slot, or `h` publishes as `bool -> int`.
+#[test]
+fn a_statement_fixes_a_parameter_before_a_later_condition() {
+    let c = check(
+        "module M\nlet h x =\n    x\n    if x then 1 else 2\n",
+        false,
+    );
+    assert_eq!(c.binders, 0, "{c:?}");
+}
+
+/// A condition *before* the statement is FCS's first constraint on the
+/// parameter, so the slot it grounds is right: `h : bool -> int`, with only a
+/// warning on the non-unit statement.
+#[test]
+fn a_condition_before_the_statement_still_grounds_the_parameter() {
+    let c = check(
+        "module M\nlet h x =\n    let r = if x then 1 else 2\n    x\n    r\n",
+        true,
+    );
+    assert_eq!(c.binders, 2, "`r` and `h`: {c:?}");
+}
+
+/// An application FCS rejects (a non-function applied) keeps nothing inside its
+/// argument. A local in the argument is walked in a check position, and a
+/// `let` in a check position emits nothing.
+#[test]
+fn a_local_inside_a_rejected_application_is_not_published() {
+    let c = check(
+        "module M\nlet f = 1\nlet g (b: bool) = f (let y = 1 in y)\n",
+        false,
+    );
+    assert_eq!(c.local_binders, 0, "{c:?}");
+}
+
 /// A ground statement leaves the binding complete, so the function around it
 /// still generalises.
 #[test]
@@ -349,6 +392,10 @@ struct Gen<'r> {
     next: usize,
     generic_uses: Vec<(String, T)>,
     modelled_only: bool,
+    /// Use an open parameter wherever *any* type is asked for — the ill-typed
+    /// family's lever: FCS fixes the parameter at its first use and reports the
+    /// rest, and whatever we commit must still agree with what FCS kept.
+    open_anywhere: bool,
 }
 
 impl Gen<'_> {
@@ -377,6 +424,10 @@ impl Gen<'_> {
     /// An expression of type `t`, built to `depth`.
     fn expr(&mut self, t: T, depth: usize) -> String {
         let vars = self.vars_of(&Kind::Mono(t));
+        let opens = self.vars_of(&Kind::Open);
+        if self.open_anywhere && !opens.is_empty() && self.rng.chance(20) {
+            return opens[self.rng.below(opens.len())].clone();
+        }
         // Apply an in-scope generic local often: each application is at the
         // type asked for here, so repeated ones land at several types.
         let generics = self.vars_of(&Kind::Generic);
@@ -603,6 +654,7 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
             next: 0,
             generic_uses: Vec::new(),
             modelled_only,
+            open_anywhere: false,
         };
         if with_open {
             g.env.push(Var {
@@ -663,21 +715,33 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
     );
 }
 
-/// The method-call barrier, generated: each function wraps a generated block
-/// in a call FCS rejects on arity, so FCS keeps no node and no binder anywhere
-/// inside it, and neither may we. The block is the same generator's, so every
-/// shape the main sweep grades is also checked for leaking out of a rejected
-/// call.
+/// The ill-typed family. Each function is a generated block, wrapped in one of
+/// three ways: bare, as the argument of a method call FCS rejects on arity, or
+/// as the argument of a non-function value applied (`k0 (…)`). Open parameters
+/// are used wherever any type is asked for, so FCS fixes each at its first use
+/// and reports the others. The comparison is the strict one: anything we commit,
+/// FCS must have kept, with the same type.
+///
+/// This is where the dropped relations live. The well-typed sweep cannot see
+/// them — on a program FCS accepts, a constraint we drop never contradicts one
+/// we keep — so a rule that is only sound on accepted programs passes there and
+/// fails here.
 #[test]
-fn generated_blocks_inside_rejected_calls_publish_nothing() {
-    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) / 4;
+fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
+    // Twice the well-typed sweep's files: a dropped relation needs a particular
+    // conjunction of shapes (a statement, then a condition, on one parameter, in
+    // an otherwise ground function), and at half this size the sample missed it.
+    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40) * 2;
+    let mut total = Committed::default();
     let mut wrapped_lets = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
-        let mut src = String::from("module Gen\nlet idf x = x\nlet mono (b: bool) = 1\n");
+        let mut src =
+            String::from("module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet k0 = 1\n");
         for i in 0..6 {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];
+            let wrap = rng.below(3);
             let mut g = Gen {
                 rng: &mut rng,
                 env: vec![
@@ -689,23 +753,49 @@ fn generated_blocks_inside_rejected_calls_publish_nothing() {
                         name: "b".into(),
                         kind: Kind::Mono(T::Bool),
                     },
+                    Var {
+                        name: "p".into(),
+                        kind: Kind::Open,
+                    },
                 ],
                 next: 0,
                 generic_uses: Vec::new(),
                 modelled_only,
+                open_anywhere: true,
             };
-            let block = g.block(t, 3, false);
-            wrapped_lets += block.matches("let ").count();
-            src.push_str(&format!(
-                "let f{i} (s: string) (b: bool) = \"r\".ToLowerInvariant({block})\n"
-            ));
+            let block = g.block(t, 3, wrap == 0 && i % 2 == 0);
+            let body = match wrap {
+                0 => block,
+                1 => {
+                    wrapped_lets += block.matches("let ").count();
+                    format!(" \"r\".ToLowerInvariant({block})")
+                }
+                _ => {
+                    wrapped_lets += block.matches("let ").count();
+                    format!(" k0 ({block})")
+                }
+            };
+            let sep = if body.starts_with('\n') || body.starts_with(' ') {
+                ""
+            } else {
+                " "
+            };
+            src.push_str(&format!("let f{i} (s: string) (b: bool) p ={sep}{body}\n"));
         }
-        let c = check(&src, false);
-        assert_eq!(c.local_binders, 0, "{c:?}\n{src}");
+        total += check(&src, false);
     }
+    eprintln!("ill-typed family: {total:?}, lets inside rejected constructs: {wrapped_lets}");
     assert!(
-        wrapped_lets >= 20,
-        "too few local bindings inside rejected calls to be evidence: {wrapped_lets}"
+        total.fcs_errors >= 50,
+        "the family stopped producing ill-typed programs: {total:?}"
+    );
+    assert!(
+        wrapped_lets >= 40,
+        "too few local bindings inside rejected constructs to be evidence: {wrapped_lets}"
+    );
+    assert!(
+        total.exprs + total.binders >= 120,
+        "the family committed too little to be evidence: {total:?}"
     );
 }
 
