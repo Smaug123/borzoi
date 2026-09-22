@@ -1,6 +1,7 @@
 # Computation-expression desugaring plan — sema Phase 3.x
 
-> **Status: design, no stages landed** (written 2026-07-18). This is the
+> **Status: CE-1 landed; the rest is design** (written 2026-07-18; CE-1
+> 2026-09-22 — see its stage entry for what the implementation settled). This is the
 > sub-plan [issue #30](https://github.com/Smaug123/borzoi/issues/30) asked for
 > — the census ([type-checker-plan.md
 > D9](type-checker-plan.md#d9-scoping-evidence-the-bucket-census)) found CEs
@@ -465,6 +466,26 @@ sink or range conventions fails loudly. Green today because we emit nothing.
 immediately).
 
 ### CE-1 — body furniture: expression-level `let` and `Sequential` in infer
+
+**Landed.** Implemented as specified, with three findings the probes settled
+(module docs of `crates/sema/src/infer.rs`, "CE-1"):
+
+- "Ground by itself" is decided by *settling* the constraints so far mid-walk —
+  equalities and member wakes, never argument checks, whose completeness gate
+  is a whole-binding fact. An open local marks the binding incomplete, which is
+  what keeps every dependent emission silent: argument checks are the only
+  channel through which a use could ground the local.
+- FCS unifies a statement's type with `unit` (`UnifyUnitType`), so a statement
+  whose type is not ground after settling also marks the binding incomplete;
+  and a non-unit statement gets a synthetic `unit` node at its own range, so a
+  statement's root is never emitted.
+- FCS keys a `Let` node at the binder's *identifier* range, typed as the body,
+  so no node is emitted for a `let … in`. The `binder-types` oracle now walks
+  declaration bodies for local `let`s, which is what grades local binder types.
+
+The oracle is `crates/sema/tests/all/infer_local_let_diff.rs`: curated cases
+plus a type-directed program generator whose floors require the
+generalised-local hazard to be exercised inside fully-modelled bindings.
 
 **Dependencies:** none (parallel with CE-0). **Implements:** the §1 gap that
 CE continuations expose; independently valuable outside CEs.
