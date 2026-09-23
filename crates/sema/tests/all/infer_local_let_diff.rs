@@ -804,6 +804,71 @@ fn a_lambda_behind_a_non_simple_parameter_records_nothing_misplaced() {
     }
 }
 
+/// FCS elaborates a local pattern `let` through a `match`, and how it keys
+/// the continuation's nodes depends on the pattern and the RHS together (an
+/// all-wildcard tuple over a bare value moves the continuation's root to the
+/// pattern). Every pattern shape, RHS kind and continuation shape, graded.
+#[test]
+fn a_local_pattern_binding_records_nothing_misplaced() {
+    let patterns = [
+        "(a, c)",
+        "(a, _)",
+        "(_, c)",
+        "(_, _)",
+        "a, c",
+        "_, _",
+        "(a: int, c)",
+        "_",
+        "a",
+    ];
+    let rhss = [
+        "pr",
+        "(pr)",
+        "q",
+        "(1, 2)",
+        "(idf pr)",
+        "(if b then pr else q)",
+    ];
+    let conts = ["b", "1", "(b, 1)", "if b then 1 else 2", "let z = 3 in z"];
+    let mut failures = Vec::new();
+    for pat in patterns {
+        for rhs in rhss {
+            for cont in conts {
+                let src = format!(
+                    "module M\nlet idf x = x\nlet pr = (1, 2)\n\
+                     let f (b: bool, q: int * int) = let {pat} = {rhs} in {cont}\n"
+                );
+                if std::panic::catch_unwind(|| check(&src, false)).is_err() {
+                    failures.push(format!("let {pat} = {rhs} in {cont}"));
+                }
+            }
+        }
+    }
+    // The module-level twin: no continuation, and the RHS is kept.
+    for pat in patterns {
+        for rhs in [
+            "pr",
+            "(pr)",
+            "(1, 2)",
+            "(idf pr)",
+            "(if true then pr else pr)",
+        ] {
+            let src = format!(
+                "module M\nlet idf x = x\nlet pr = (1, 2)\nlet {pat} = {rhs}\nlet after = 1\n"
+            );
+            if std::panic::catch_unwind(|| check(&src, false)).is_err() {
+                failures.push(format!("module-level let {pat} = {rhs}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failing cells:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
 /// A bare name imposes no structure, so its RHS's check cannot fail, and
 /// what the RHS walk typed stands even when the RHS itself does not
 /// synthesize: `inner : int` inside a lambda.

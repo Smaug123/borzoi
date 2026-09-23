@@ -2381,7 +2381,12 @@ impl<'a> Gen<'a> {
             self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
-        self.infer_expr(&body, expected)
+        let body_mark = self.emission_mark();
+        let result = self.infer_expr(&body, expected);
+        if e.bindings().any(|b| moves_its_continuation(&b)) {
+            self.discard_emissions_since(body_mark);
+        }
+        result
     }
 
     /// One binding of an expression-level `let` (CE-1). A **local is not
@@ -4703,6 +4708,33 @@ fn node_span(node: &SyntaxNode) -> TextRange {
 /// FCS's `Ident.idText`. Assembly member names carry no backticks, so a
 /// backticked source segment must be de-quoted before it is compared against
 /// them. A plain identifier passes through unchanged.
+/// Whether FCS keys the continuation of the local `let` `binding` somewhere
+/// other than its own nodes: a tuple pattern binding no name, over a bare
+/// value, moves the continuation's root to the pattern (measured, with every
+/// other combination of pattern, RHS and continuation agreeing, by
+/// `a_local_pattern_binding_records_nothing_misplaced`).
+fn moves_its_continuation(binding: &Binding) -> bool {
+    let (Some(pat), Some(rhs)) = (binding.pat(), binding.expr()) else {
+        return false;
+    };
+    let mut peeled = pat.clone();
+    while let Pat::Paren(p) = &peeled {
+        match p.inner() {
+            Some(inner) => peeled = inner,
+            None => return false,
+        }
+    }
+    matches!(peeled, Pat::Tuple(_))
+        && pat
+            .syntax()
+            .descendants()
+            .all(|n| n.kind() != SyntaxKind::NAMED_PAT)
+        && matches!(
+            unparenthesize(rhs),
+            Some(Expr::Ident(_) | Expr::LongIdent(_))
+        )
+}
+
 /// Whether FCS binds function parameter `p` directly, without elaborating it
 /// through a `match` — `SimplePatsOfPat` in `SyntaxTreeOps.fs`: `()`, a
 /// (parenthesised) reference tuple of simple elements, or one simple element.
