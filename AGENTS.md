@@ -36,11 +36,11 @@ This is a Cargo workspace with nine members:
   property-group write: it is read-only to the document, outranking every write
   of that name unless `TreatAsLocalProperty` opts out. A fifth op, `defines`,
   is the one that runs *targets*: it answers which `#if` symbols fsc is
-  passed, by restoring and running `Compile` in-process with
-  `SkipCompilerExecution` (fsc's arguments are computed, fsc is not run) and
-  reading the `--define:` tokens of the real `Fsc` task's
+  passed, by restoring and running a real `Build`'s targets through `Compile`
+  in-process with `SkipCompilerExecution` (fsc's arguments are computed, fsc
+  is not run) and reading the `--define:` tokens of the real `Fsc` task's
   `FscCommandLineArgs`, declining any other define-capable spelling. It is
-  itself calibrated against a real, restored build's arguments by
+  itself calibrated against a real, restored `Build`'s arguments by
   `defines_oracle_calibration.rs` (`docs/sdk-implicit-defines-plan.md`). The five differentials
   that ride on these ops:
   `condition_diff.rs`, `property_expr_diff.rs`,

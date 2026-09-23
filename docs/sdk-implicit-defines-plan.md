@@ -75,9 +75,11 @@ Stage 3 settles it.
 ## Design
 
 1. **Oracle: the defines fsc receives.** Add a `defines` op to
-   `tools/msbuild-condition-oracle`. It restores and then runs `Compile`
-   in-process with `ProvideCommandLineArgs` and `SkipCompilerExecution`, so
-   fsc's arguments are computed but fsc is not run. It reads the `--define:`
+   `tools/msbuild-condition-oracle`. It restores, then runs in-process the
+   targets a real `Build` runs through `Compile`, read from the project's own
+   `$(BuildDependsOn)`/`$(CoreBuildDependsOn)`. It sets
+   `ProvideCommandLineArgs` and `SkipCompilerExecution`, so fsc's arguments
+   are computed but fsc is not run. It reads the `--define:`
    tokens of the `FscCommandLineArgs` that the real `Fsc` task computed.
    - Nothing about `Fsc`'s parameter binding is re-implemented: `DefineConstants`,
      `Nullable` and `OtherFlags` are expanded exactly as task parameters are,
@@ -87,18 +89,22 @@ Stage 3 settles it.
    - Only the exact canonical `--define:X` is accepted. Any other token that
      could define a symbol declines the request rather than being parsed:
      `-d:X`, `/define:X`, whitespace-padded or quoted, or a response file.
-   - Its own oracle is a *real* build's arguments: restored, compiling, with
+   - Project references are resolved without being built.
+   - A nonexistent `CustomAdditionalCompileInputs` item keeps an
+     already-built project's `CoreCompile` from being skipped.
+   - Its own oracle is a *real* `Build`'s arguments: restored, compiling, with
      `ProvideCommandLineArgs` only.
 
-   Three review rounds shaped this. The first version ran only the SDK's two
+   Four review rounds shaped this. The first version ran only the SDK's two
    define targets and re-read `$(Nullable)`/`$(OtherFlags)` by hand. That
    answered successfully but incompletely on:
    - case-folded duplicates;
    - `NULLABLE`;
    - `OtherFlags` aliases and response files;
    - item references in task parameters;
-   - whitespace-padded flags;
-   - unrestored package imports.
+   - whitespace-padded flags and embedded line breaks;
+   - unrestored package imports;
+   - hooks in `Build` but outside `Compile` (`BeforeBuild`).
 
    Each was either a re-implementation of the build or a step the build takes
    that the op skipped, which is why the op now runs the build and only reads
@@ -156,7 +162,7 @@ here, but the perturbation census should keep reporting it.
   `--define:` arguments of a real, restored, compiling build's
   `FscCommandLineArgs` under the same globals, in order. The only exception is
   a decline where the fixture demands one.
-- Calibration set (30 cases):
+- Calibration set (33 cases):
   - a `net10.0;net6.0;netstandard2.0` project, per inner TFM, crossed with
     `Configuration` ∈ {Debug, Release, `My-Config.1`};
   - `DisableImplicitFrameworkDefines`, `DisableDiagnosticTracing`, both
@@ -166,22 +172,25 @@ here, but the perturbation census should keep reporting it.
   - `Nullable` as `enable`, as `Enable`, and through an item reference;
   - `OtherFlags` with no define, with `--define:`, and with `--define:`
     through an item reference;
-  - a user target that appends before `CoreCompile`;
+  - user targets that append before `CoreCompile` and before `BeforeBuild`;
+  - a project reference;
   - a locally packed package whose `build/*.props` appends `FROM_PACKAGE`;
   - declines, each of which must also carry the symbol to fsc: `OtherFlags`
-    with `-d:`, with `/d:`, with a response file, and with each define
-    spelling padded with whitespace;
+    with `-d:`, with `/d:`, with a response file, with an embedded line break,
+    and with each define spelling padded with whitespace;
   - a user target that appends only when fsc really runs. The op must
     *disagree* here, which proves the calibration can see the op's genuine
     boundary.
 - `net472` and `net8.0` are absent because the devshell's offline package set
   carries neither targeting pack.
-- It takes about 45 s and runs with the crate's ordinary tests.
+- It takes about a minute and runs with the crate's ordinary tests.
 - Mutation checks confirmed it discriminates:
   - classifying no token as declinable fails the decline cases;
   - a stale `IntermediateOutputPath` (`CoreCompile` skipped as up to date)
     fails every case;
-  - skipping the restore fails every unrestored case.
+  - skipping the restore fails every unrestored case;
+  - running `Compile` alone instead of the `Build` prefix fails the
+    `BeforeBuild` case.
 - Out of scope, and why: build logic conditioned on fsc really running
   (`SkipCompilerExecution`), which the boundary fixture pins.
 

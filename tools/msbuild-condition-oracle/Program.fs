@@ -65,9 +65,10 @@
 ///     answers "which `#if` symbols does fsc compile this project under?",
 ///     which evaluation cannot, because the SDK adds the framework symbols
 ///     (`NET8_0`, `…_OR_GREATER`, …) in targets and `Fsc` adds more from its
-///     own parameters (`NULLABLE`, `OtherFlags`). It runs `Compile` in-process
-///     with `ProvideCommandLineArgs` and `SkipCompilerExecution` (fsc's
-///     arguments are computed, fsc is not run) and reads the
+///     own parameters (`NULLABLE`, `OtherFlags`). It runs a real `Build`'s
+///     targets through `Compile` in-process, with `ProvideCommandLineArgs` and
+///     `SkipCompilerExecution` (fsc's arguments are computed, fsc is not run),
+///     and reads the
 ///     `--define:` tokens of the `FscCommandLineArgs` the real `Fsc` task
 ///     computed, so nothing about parameter binding is re-implemented here. It
 ///     restores first, as a real build does, since a package's build props can
@@ -436,11 +437,39 @@ type private ErrorCollector() =
 /// `FscCommandLineArgs` without compiling, so everything `Fsc` derives symbols
 /// from — `DefineConstants`, `Nullable`, `OtherFlags`, each expanded exactly as
 /// task parameters are, item references included — is the task's own doing,
-/// not this tool's. Deliberately *not* `DesignTimeBuild`: that is a real
-/// switch build logic can read, and every global that differs from a real
-/// build is a place the two could disagree.
+/// not this tool's. `BuildProjectReferences=false` resolves references by
+/// asking for their target paths instead of building them: a referenced
+/// project's build cannot change this one's symbols, and globals propagate into
+/// it, where skipping the compiler would leave nothing to copy. Deliberately
+/// *not* `DesignTimeBuild`: that is a real switch build logic can read, and
+/// every global that differs from a real build is a place the two could
+/// disagree.
 let private commandLineGlobals =
-    [ "ProvideCommandLineArgs", "true"; "SkipCompilerExecution", "true" ]
+    [ "ProvideCommandLineArgs", "true"
+      "SkipCompilerExecution", "true"
+      "BuildProjectReferences", "false" ]
+
+/// The targets a real `Build` runs up to and including `Compile`: the entries
+/// of `$(BuildDependsOn)` before `CoreBuild`, then those of
+/// `$(CoreBuildDependsOn)` through `Compile`. Read from the project itself, so
+/// an extended or rewritten list is honoured, and every `BeforeTargets` /
+/// `AfterTargets` hook on those targets runs as it would in a real build.
+/// Nothing after `Compile` can change what fsc was passed. `None` when either
+/// list lacks its anchor — a project whose build graph this tool does not
+/// recognise.
+let private buildTargetsThroughCompile (instance: ProjectInstance) : string list option =
+    let split (name: string) =
+        instance.GetPropertyValue(name).Split(';')
+        |> Array.map (fun t -> t.Trim())
+        |> Array.filter (fun t -> t <> "")
+        |> List.ofArray
+
+    let build = split "BuildDependsOn"
+    let coreBuild = split "CoreBuildDependsOn"
+
+    match List.tryFindIndex ((=) "CoreBuild") build, List.tryFindIndex ((=) "Compile") coreBuild with
+    | Some beforeCore, Some compile -> Some(List.take beforeCore build @ List.take (compile + 1) coreBuild)
+    | _ -> None
 
 /// What a command-line token tells us about the symbols fsc defines.
 type private DefineToken =
@@ -457,7 +486,8 @@ type private DefineToken =
 /// Classify one `FscCommandLineArgs` token. The only accepted spelling is the
 /// exact canonical form `Fsc` itself emits: `--define:` followed by a non-empty
 /// symbol containing no whitespace or quote. Everything else that fsc could
-/// read as a define is `Unparsed` and declines the request — judged after
+/// read as a define is `Unparsed` and declines the request: any token with a
+/// line break (fsc reads `Fsc`'s response file by line), and otherwise judged after
 /// stripping surrounding whitespace and quotes (fsc trims response-file lines,
 /// and `Fsc` passes its arguments through one) and then switch characters,
 /// with the option name compared case-insensitively: a `d` or `define` head
@@ -472,6 +502,10 @@ let private classifyToken (token: string) : DefineToken =
 
     if isCanonical then
         Define(token.Substring "--define:".Length)
+    elif token.Contains '\n' || token.Contains '\r' then
+        // `Fsc` writes its arguments to a response file, which fsc reads a
+        // line at a time: one token with a line break is several arguments.
+        Unparsed token
     else
         let stripped = token.Trim().Trim('"', '\'').Trim()
 
@@ -512,20 +546,6 @@ let private evalDefines
         for (name, value) in commandLineGlobals do
             buildGlobals[name] <- value
 
-        // `CoreCompile` is incremental: over a project that was already built,
-        // its outputs are up to date, the target is skipped, and `Fsc` never
-        // reports its arguments. A fresh `IntermediateOutputPath` gives it
-        // outputs that do not exist, while leaving `obj/` itself — the restore
-        // outputs and the package imports they carry — where it is.
-        let scratch = Path.Combine(Path.GetTempPath(), "borzoi-defines-" + Guid.NewGuid().ToString "N")
-        buildGlobals["IntermediateOutputPath"] <- scratch + string Path.DirectorySeparatorChar
-
-        use _cleanup =
-            { new IDisposable with
-                member _.Dispose() =
-                    if Directory.Exists scratch then
-                        Directory.Delete(scratch, true) }
-
         let logger = ErrorCollector()
 
         // Restore first, as a real build (`dotnet build`, `msbuild -restore`)
@@ -551,29 +571,45 @@ let private evalDefines
 
         let project = Project(path, buildGlobals, null, collection)
         let instance = project.CreateProjectInstance()
+        // `CoreCompile` is incremental: over a project that was already built,
+        // its outputs are up to date, the target is skipped, and `Fsc` never
+        // reports its arguments. An input that does not exist makes it out of
+        // date. Added to this project's instance only, so nothing propagates
+        // into referenced projects the way a global would.
+        instance.AddItem(
+            "CustomAdditionalCompileInputs",
+            Path.Combine(Path.GetTempPath(), "borzoi-defines-" + Guid.NewGuid().ToString "N")
+        )
+        |> ignore
 
         if not restored then
             Error logger.Errors
-        elif not (instance.Build([| "Compile" |], [ logger :> ILogger ])) then
-            Error logger.Errors
         else
-            let tokens =
-                instance.GetItems "FscCommandLineArgs"
-                |> Seq.map (fun item -> item.EvaluatedInclude)
-                |> List.ofSeq
+            match buildTargetsThroughCompile instance with
+            | None ->
+                Error
+                    [ "$(BuildDependsOn) has no CoreBuild or $(CoreBuildDependsOn) has no Compile: "
+                      + "an unrecognised build graph" ]
+            | Some targets when not (instance.Build(Array.ofList targets, [ logger :> ILogger ])) ->
+                Error logger.Errors
+            | Some _ ->
+                let tokens =
+                    instance.GetItems "FscCommandLineArgs"
+                    |> Seq.map (fun item -> item.EvaluatedInclude)
+                    |> List.ofSeq
 
-            if List.isEmpty tokens then
-                Error [ "the build produced no FscCommandLineArgs (fsc never runs here)" ]
-            else
-                let classified = tokens |> List.map classifyToken
+                if List.isEmpty tokens then
+                    Error [ "the build produced no FscCommandLineArgs (fsc never runs here)" ]
+                else
+                    let classified = tokens |> List.map classifyToken
 
-                match classified |> List.choose (function Unparsed t -> Some t | _ -> None) with
-                | [] -> Ok(classified |> List.choose (function Define d -> Some d | _ -> None))
-                | unparsed ->
-                    Error(
-                        unparsed
-                        |> List.map (fun t -> $"a define-capable token this tool does not parse: %s{t}")
-                    )
+                    match classified |> List.choose (function Unparsed t -> Some t | _ -> None) with
+                    | [] -> Ok(classified |> List.choose (function Define d -> Some d | _ -> None))
+                    | unparsed ->
+                        Error(
+                            unparsed
+                            |> List.map (fun t -> $"a define-capable token this tool does not parse: %s{t}")
+                        )
     with :? InvalidProjectFileException as ex ->
         Error [ ex.Message ]
 

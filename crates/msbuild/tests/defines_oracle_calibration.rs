@@ -7,13 +7,13 @@
 //!
 //! Every other op of `msbuild-condition-oracle` stops at evaluation, and so is
 //! exactly as trustworthy as MSBuild's evaluator. `defines` answers a question
-//! about the *build*: it restores, runs `Compile` in-process with
-//! `SkipCompilerExecution`, and reads the `--define:` tokens of the arguments
-//! the real `Fsc` task computed. Two things in that are claims rather than
+//! about the *build*: it restores, runs a real `Build`'s targets through
+//! `Compile` in-process with `SkipCompilerExecution`, and reads the `--define:`
+//! tokens of the arguments the real `Fsc` task computed. Two things in that are claims rather than
 //! facts: that such a build passes fsc the same symbols as a real one, and
 //! that declining every other define-capable spelling leaves no symbol
-//! unreported. This test checks both against a real build, which restores and
-//! compiles (`ProvideCommandLineArgs` alone, so fsc runs). The op is always
+//! unreported. This test checks both against a real build — restore, then the
+//! whole `Build`, compiling (`ProvideCommandLineArgs` alone, so fsc runs). The op is always
 //! asked first, so it meets each fixture unrestored, as written.
 //!
 //! ## Scope, pinned from both sides
@@ -29,14 +29,16 @@
 //! - `Fsc`'s other sources: `Nullable` (whose `enable` match is case-sensitive)
 //!   and `OtherFlags`, each also supplied through an item reference, which only
 //!   task-parameter binding expands;
-//! - a user target appending before `CoreCompile`, which the op's `Compile`
-//!   runs too;
+//! - user targets appending before `CoreCompile` and before `BeforeBuild` (the
+//!   latter outside `Compile`'s graph, inside `Build`'s);
+//! - a project reference, which the op resolves without building;
 //! - a package whose build props append a define, which only a restore brings
 //!   in.
 //!
-//! Five fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
-//! `/d:X`, a response file, or either define spelling padded with whitespace
-//! (fsc trims response-file lines, so padding hides nothing from it). fsc reads
+//! Six fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
+//! `/d:X`, a response file, an embedded line break, or either define spelling
+//! padded with whitespace (`Fsc` passes its arguments to fsc as a response
+//! file, one per line, and fsc trims each line). fsc reads
 //! each as a define, and the op does not parse fsc's option grammar, so an
 //! answer would omit a symbol.
 //!
@@ -209,6 +211,33 @@ fn fixtures() -> Vec<Fixture> {
             &late_target(""),
             Agree,
         ),
+        // `BeforeBuild` precedes `CoreBuild`, so it is outside `Compile`'s
+        // graph but inside `Build`'s.
+        net10(
+            "user target before BeforeBuild",
+            "",
+            "<Target Name=\"Early\" BeforeTargets=\"BeforeBuild\">\
+             <PropertyGroup><DefineConstants>$(DefineConstants);EARLY</DefineConstants>\
+             </PropertyGroup></Target>",
+            Agree,
+        ),
+        Fixture {
+            files: &[
+                (
+                    "B/B.fsproj",
+                    "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>\
+                     <TargetFramework>net10.0</TargetFramework></PropertyGroup>\
+                     <ItemGroup><Compile Include=\"B.fs\" /></ItemGroup></Project>",
+                ),
+                ("B/B.fs", "module B\n"),
+            ],
+            ..net10(
+                "project reference",
+                "",
+                "<ItemGroup><ProjectReference Include=\"B/B.fsproj\" /></ItemGroup>",
+                Agree,
+            )
+        },
         net10(
             "OtherFlags -d:",
             "<OtherFlags>-d:EXTRA</OtherFlags>",
@@ -239,6 +268,14 @@ fn fixtures() -> Vec<Fixture> {
             "",
             Decline,
         ),
+        // `Fsc` writes its arguments to a response file, one per line; a line
+        // break inside one argument is two lines to fsc.
+        net10(
+            "OtherFlags with an embedded line break",
+            "<OtherFlags>&quot;--warnon:1182&#10;--define:EXTRA&quot;</OtherFlags>",
+            "",
+            Decline,
+        ),
         net10(
             "OtherFlags padded --define:",
             "<OtherFlags>&quot;--define:EXTRA &quot;</OtherFlags>",
@@ -264,9 +301,9 @@ fn fixtures() -> Vec<Fixture> {
     ]
 }
 
-/// The `FscCommandLineArgs` of a real build — restore, then `Compile` with fsc
-/// actually running (`ProvideCommandLineArgs` alone asks the task to report its
-/// arguments) — under `globals`.
+/// The `FscCommandLineArgs` of a real build — restore, then the whole `Build`
+/// with fsc actually running (`ProvideCommandLineArgs` alone asks the task to
+/// report its arguments) — under `globals`.
 fn real_fsc_arguments(project: &Path, globals: &[(String, String)]) -> Vec<String> {
     let out_file = project.with_file_name("fsc-args.json");
     let mut cmd = Command::new("dotnet");
@@ -274,7 +311,7 @@ fn real_fsc_arguments(project: &Path, globals: &[(String, String)]) -> Vec<Strin
         "msbuild",
         "-nologo",
         "-restore",
-        "-t:Compile",
+        "-t:Build",
         "-p:ProvideCommandLineArgs=true",
         "-getItem:FscCommandLineArgs",
     ]);
@@ -388,7 +425,10 @@ fn defines_op_matches_a_real_builds_fsc_arguments() {
         .expect("write fixture project");
         std::fs::write(dir.path().join("A.fs"), "module A\n").expect("write fixture source");
         for (name, contents) in fixture.files {
-            std::fs::write(dir.path().join(name), contents).expect("write fixture file");
+            let file = dir.path().join(name);
+            std::fs::create_dir_all(file.parent().expect("fixture file has a parent"))
+                .expect("create fixture file dir");
+            std::fs::write(file, contents).expect("write fixture file");
         }
         if fixture.package {
             provide_define_package(dir.path());
