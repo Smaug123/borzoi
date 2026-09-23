@@ -160,8 +160,13 @@ fn an_incomplete_projection_leaves_no_assembly_reading_standing() {
 }
 
 /// The type half of the same invariant, stated so a *future* door cannot open
-/// quietly: under an incomplete projection, inference must publish exactly what
-/// it publishes with **no assemblies at all**.
+/// quietly: under an incomplete projection, inference may publish only what it
+/// publishes with **no assemblies at all**.
+///
+/// Only, not exactly: an incomplete projection can publish *less*. A binding
+/// whose attribute it cannot prove is not `[<EntryPoint>]` (the unread DLL
+/// could alias it) is not typed, where an env holding nothing has no
+/// `EntryPoint` to fear.
 ///
 /// An env holding nothing can supply nothing, so it is the oracle for "this type
 /// did not come out of the assemblies" — a check that needs no per-type
@@ -185,11 +190,15 @@ fn an_incomplete_projection_publishes_only_what_no_assemblies_would() {
         let (ri, ii) = resolve_and_infer(src, &incomplete);
         let (re, ie) = resolve_and_infer(src, &empty);
 
-        assert_eq!(
-            published(&ri, &ii),
-            published(&re, &ie),
+        let without_assemblies = published(&re, &ie);
+        let leaked: Vec<_> = published(&ri, &ii)
+            .into_iter()
+            .filter(|(site, ty)| without_assemblies.get(site) != Some(ty))
+            .collect();
+        assert!(
+            leaked.is_empty(),
             "an incomplete projection published a type an empty env could not \
-             have supplied, so it came out of the assemblies: {src:?}"
+             have supplied, so it came out of the assemblies: {src:?}: {leaked:?}"
         );
 
         let under_complete = published(&rc, &ic);
