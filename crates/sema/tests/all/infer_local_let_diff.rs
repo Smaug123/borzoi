@@ -656,6 +656,66 @@ fn a_pattern_never_retypes_an_earlier_open_binder() {
     }
 }
 
+/// A pattern that is rejected part-way leaves nothing behind: `a`'s annotation
+/// must not survive a `()` beside it (FCS elaborates that parameter through
+/// a match and keeps no node at the body's `a`). And a pattern binding FCS
+/// rejects outright (`inline`, `mutable` on a pattern) binds nothing.
+#[test]
+fn a_rejected_pattern_leaves_nothing_behind() {
+    for src in [
+        "let f (a: int, ()) = a\n",
+        "let f (a: int, (b, ())) = a\n",
+        "let f ((a: int), 1) = a\n",
+        "let inline (a: int, b) = (1, \"s\")\nlet z = a\n",
+        "let inline (a, b) = (1, \"s\")\nlet z = a\n",
+        "let mutable (a, b) = (1, \"s\")\nlet z = a\n",
+        "let g (c: bool) =\n    let inline (a: int, b) = (1, \"s\")\n    a\n",
+        "let g (c: bool) =\n    let mutable (a, b) = (1, \"s\")\n    a\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// FCS binds a simple parameter directly and elaborates any other through a
+/// `match` on the body, which moves some of the body's nodes (`(a, ())`
+/// keys the body's root at the `()`). Every parameter shape crossed with
+/// every body shape: whatever the body records must sit where FCS keeps it.
+#[test]
+fn a_body_behind_a_non_simple_parameter_records_nothing_misplaced() {
+    let params = [
+        "(Some x)",
+        "[a]",
+        "(a, 1)",
+        "(a as c)",
+        "(a: int option)",
+        "()",
+        "(a, _)",
+        "((a, c), d)",
+        "(a: int, c)",
+        "(a, ())",
+        "(a, (c: int))",
+        "(struct (a, c))",
+        "((a, c))",
+        "_",
+    ];
+    let bodies = [
+        "1",
+        "(s, 1)",
+        "let v = 2 in v",
+        "if true then 1 else 2",
+        "(s.Length; \"t\")",
+    ];
+    for param in params {
+        for body in bodies {
+            let src = format!("module M\nlet f (s: string) {param} = {body}\n");
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
 /// A bare name imposes no structure, so its RHS's check cannot fail, and
 /// what the RHS walk typed stands even when the RHS itself does not
 /// synthesize: `inner : int` inside a lambda.
@@ -1118,13 +1178,19 @@ fn header_vars() -> Vec<Var> {
 /// The parameter list of a generated function over `s: string`, `b: bool`
 /// and, when `with_open`, an unannotated `p` — curried, or tupled (the
 /// function then named `tf…`, for the sweep's count), possibly with a
-/// trailing wildcard. With `shadowed`, sometimes binds `p` twice, the nested
+/// trailing wildcard, or a `()` element. With `shadowed`, sometimes binds `p` twice, the nested
 /// shape FCS accepts (a use means the inner `p`). Returns the function's name
 /// stem and its parameters.
 fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, String) {
     let open = if with_open { " p" } else { "" };
     if shadowed && with_open && rng.chance(20) {
         return ("tf", "((s: string, p), b: bool, p)".to_string());
+    }
+    // A `()` beside annotated names: the tuple is not typed, and must leave
+    // no trace of the annotations it read first.
+    if rng.chance(10) {
+        let open = if with_open { ", p" } else { "" };
+        return ("tf", format!("(s: string, (), b: bool{open})"));
     }
     match rng.below(4) {
         0 | 1 => ("f", format!("(s: string) (b: bool){open}")),

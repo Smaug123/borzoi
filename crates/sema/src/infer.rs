@@ -633,6 +633,20 @@ enum BinderSite {
     Module,
 }
 
+/// A pattern as inference reads it ([`Gen::pattern_shape`]): the shapes it
+/// types, each name already resolved to its binder.
+#[derive(Debug, Clone)]
+enum PatShape {
+    /// A name.
+    Name(DefId),
+    /// A name with an annotation in the modelled set, and its type.
+    Annotated(DefId, Ty),
+    /// `_`.
+    Wildcard,
+    /// A (reference) tuple of two or more elements.
+    Tuple(Vec<PatShape>),
+}
+
 /// A type constraint produced by generation and discharged by the solver.
 /// `Eq` (type equality) is the eager equality; `HasMember` is the **suspended**
 /// member constraint added in Stage 3.3a, which the [`Gen::solve`] loop wakes
@@ -1405,7 +1419,18 @@ impl<'a> Gen<'a> {
                 {
                     self.cur_body = Some(rhs.syntax().clone());
                     let arg_vars = self.param_vars(&head);
+                    // FCS binds a parameter directly only if it is simple
+                    // ([`is_simple_param`]); any other it elaborates through a
+                    // `match` whose target is the body, and the typed tree then
+                    // keys the body's nodes elsewhere (`(a, ())` moves the
+                    // body's root to the `()`). The body's type is still the
+                    // function's result, exactly, so it is walked as usual, but
+                    // nothing it records is kept.
+                    let body_mark = self.emission_mark();
                     let ret = self.infer_expr(&rhs, None);
+                    if !head.args().all(|arg| is_simple_param(&arg)) {
+                        self.discard_emissions_since(body_mark);
+                    }
                     let f_def = self.function_type(&head, &arg_vars, ret);
                     // On a complete binding, undo the 2b slot/binder decoupling so
                     // `let id x = x` generalises to `'a -> 'a`, not `'a -> 'b`.
@@ -1438,7 +1463,7 @@ impl<'a> Gen<'a> {
                 // open is an environment reference, which is poisoned and so
                 // never generalises.
                 Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
-                    match self.binding_pattern_ty(&pat, BinderSite::Module) {
+                    match self.binding_pattern_ty(&binding, &pat, BinderSite::Module) {
                         Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
                         Err(_) => self.discard_census_entry(),
                     }
@@ -2337,7 +2362,7 @@ impl<'a> Gen<'a> {
             return;
         }
         let recorded = self.reasons_recorded();
-        let pat_ty = match self.binding_pattern_ty(&pat, BinderSite::Local) {
+        let pat_ty = match self.binding_pattern_ty(binding, &pat, BinderSite::Local) {
             Ok(t) => t,
             Err(why) => {
                 self.mark_incomplete(why);
@@ -3409,9 +3434,19 @@ impl<'a> Gen<'a> {
         args.iter().map(|arg| self.param_var(arg)).collect()
     }
 
-    /// [`Self::pattern_ty`] for a `let`'s whole pattern, declining one that
-    /// binds a name twice, as [`Self::param_vars`] does.
-    fn binding_pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
+    /// [`Self::pattern_ty`] for the whole pattern of `binding`, declining
+    /// shapes FCS rejects as a binding: a name bound twice (as
+    /// [`Self::param_vars`] does), and `inline` or `mutable` on anything but a
+    /// bare name, for which FCS creates no binders at all.
+    fn binding_pattern_ty(
+        &mut self,
+        binding: &Binding,
+        pat: &Pat,
+        site: BinderSite,
+    ) -> Result<Ty, Incomplete> {
+        if !matches!(pat, Pat::Named(_)) && (binding.is_inline() || binding.is_mutable()) {
+            return Err(Incomplete::PatternShape(pat.syntax().kind()));
+        }
         if binds_a_name_twice(std::slice::from_ref(pat)) {
             return Err(Incomplete::DuplicateBinder);
         }
@@ -3419,32 +3454,30 @@ impl<'a> Gen<'a> {
     }
 
     /// The type of pattern `pat`, generated structurally, with each named
-    /// binder in it registered for `site`. `Err` names the
-    /// first shape not modelled; binders registered before it stay registered,
-    /// but nothing links them to the pattern, so they stay open unless
-    /// something else grounds them.
-    ///
-    /// A name is typed by its site's variable: a parameter's private slot
-    /// (see [`Self::param_var`]), or, for a `let`, its binder variable. A name
-    /// annotated with a type in the modelled set ([`Self::annotation_ty`]) is
-    /// grounded to it — the binder↔annotation relation holds even on ill-typed
-    /// code, so the annotation wins at the binder. For a parameter that
-    /// grounds both the slot and the binder, eagerly: the annotation's `Eq`
-    /// then lands before any constraint from the body, so a contradicting use
-    /// fails and rolls back instead of retyping the parameter. An annotation
-    /// around anything but a name is not modelled.
+    /// binder in it registered for `site`; `Err` names the first shape not
+    /// modelled. The pattern is read whole ([`Self::pattern_shape`]) before
+    /// anything is generated, so a rejected pattern registers no binder and
+    /// adds no constraint: a name annotated beside a `()` is not left grounded.
+    fn pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
+        let shape = self.pattern_shape(pat)?;
+        Ok(self.gen_pattern(&shape, site))
+    }
+
+    /// Read a pattern into the shapes inference types, or name the first one it
+    /// does not. Generates nothing.
     ///
     /// A struct tuple is not modelled ([`Ty::Tuple`] has no struct flag), nor
-    /// is `()`, since `unit` has no [`Ty`].
-    fn pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
+    /// is `()`, since `unit` has no [`Ty`], nor an annotation around anything
+    /// but a name, or outside the modelled set ([`Self::annotation_ty`]).
+    fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
+        let named_def = |named: &NamedPat| {
+            named
+                .ident()
+                .and_then(|tok| self.def_at(tok.text_range()))
+                .ok_or(Incomplete::Recovery)
+        };
         match pat {
-            Pat::Named(named) => {
-                let def = named
-                    .ident()
-                    .and_then(|tok| self.def_at(tok.text_range()))
-                    .ok_or(Incomplete::Recovery)?;
-                Ok(Ty::Var(self.register_binder(def, site)))
-            }
+            Pat::Named(named) => Ok(PatShape::Name(named_def(named)?)),
             Pat::Typed(typed) => {
                 let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty)) else {
                     return Err(Incomplete::PatternAnnotation);
@@ -3452,39 +3485,57 @@ impl<'a> Gen<'a> {
                 let Some(Pat::Named(named)) = typed.pat() else {
                     return Err(Incomplete::PatternAnnotation);
                 };
-                let def = named
-                    .ident()
-                    .and_then(|tok| self.def_at(tok.text_range()))
-                    .ok_or(Incomplete::Recovery)?;
-                let v = self.register_binder(def, site);
-                self.eq(Ty::Var(v), t.clone());
-                if site == BinderSite::Param {
-                    let dv = self.def_var(def);
-                    self.eq(Ty::Var(dv), t.clone());
-                }
-                Ok(t)
+                Ok(PatShape::Annotated(named_def(&named)?, t))
             }
-            Pat::Wildcard(_) => Ok(Ty::Var(self.table.fresh())),
+            Pat::Wildcard(_) => Ok(PatShape::Wildcard),
             Pat::Tuple(tuple) if tuple.is_struct() => Err(Incomplete::StructTuple),
             Pat::Tuple(tuple) => {
-                let elems: Vec<Pat> = tuple.elements().collect();
+                let elems = tuple
+                    .elements()
+                    .map(|el| self.pattern_shape(&el))
+                    .collect::<Result<Vec<_>, _>>()?;
                 if elems.len() < 2 {
                     return Err(Incomplete::Recovery);
                 }
-                let mut tys = Vec::with_capacity(elems.len());
-                for el in &elems {
-                    tys.push(self.pattern_ty(el, site)?);
-                }
-                Ok(Ty::Tuple(tys))
+                Ok(PatShape::Tuple(elems))
             }
             Pat::Paren(p) => match p.inner() {
-                Some(inner) => self.pattern_ty(&inner, site),
+                Some(inner) => self.pattern_shape(&inner),
                 None => Err(Incomplete::Recovery),
             },
             // `()` is a constant pattern whose node is zero-width: the
             // parentheses sit outside it.
             Pat::Const(c) if c.syntax().text().is_empty() => Err(Incomplete::UnitPattern),
             other => Err(Incomplete::PatternShape(other.syntax().kind())),
+        }
+    }
+
+    /// Generate a read pattern's type, registering each name for `site`.
+    ///
+    /// A name is typed by its site's variable: a parameter's private slot
+    /// (see [`Self::param_var`]), or, for a `let`, its binder variable. An
+    /// annotated name is grounded to its annotation — the binder↔annotation
+    /// relation holds even on ill-typed code, so the annotation wins at the
+    /// binder. For a parameter that grounds both the slot and the binder,
+    /// eagerly: the annotation's `Eq` then lands before any constraint from
+    /// the body, so a contradicting use fails and rolls back instead of
+    /// retyping the parameter.
+    fn gen_pattern(&mut self, shape: &PatShape, site: BinderSite) -> Ty {
+        match shape {
+            PatShape::Name(def) => Ty::Var(self.register_binder(*def, site)),
+            PatShape::Annotated(def, t) => {
+                let v = self.register_binder(*def, site);
+                self.eq(Ty::Var(v), t.clone());
+                if site == BinderSite::Param {
+                    let dv = self.def_var(*def);
+                    self.eq(Ty::Var(dv), t.clone());
+                }
+                t.clone()
+            }
+            PatShape::Wildcard => Ty::Var(self.table.fresh()),
+            PatShape::Tuple(elems) => {
+                Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
+            }
         }
     }
 
@@ -4586,6 +4637,39 @@ fn node_span(node: &SyntaxNode) -> TextRange {
 /// FCS's `Ident.idText`. Assembly member names carry no backticks, so a
 /// backticked source segment must be de-quoted before it is compared against
 /// them. A plain identifier passes through unchanged.
+/// Whether FCS binds function parameter `p` directly, without elaborating it
+/// through a `match` — `SimplePatsOfPat` in `SyntaxTreeOps.fs`: `()`, a
+/// (parenthesised) reference tuple of simple elements, or one simple element.
+fn is_simple_param(p: &Pat) -> bool {
+    match p {
+        Pat::Tuple(t) if !t.is_struct() => t.elements().all(|el| is_simple_param_element(&el)),
+        Pat::Paren(paren) => match paren.inner() {
+            Some(Pat::Tuple(t)) if !t.is_struct() => {
+                t.elements().all(|el| is_simple_param_element(&el))
+            }
+            Some(Pat::Const(c)) if c.syntax().text().is_empty() => true,
+            _ => is_simple_param_element(p),
+        },
+        Pat::Const(c) if c.syntax().text().is_empty() => true,
+        _ => is_simple_param_element(p),
+    }
+}
+
+/// One element of a simple parameter — `SimplePatOfPat` without a match: a
+/// name, `?name`, `_`, or one of those under parentheses, an annotation or
+/// attributes.
+fn is_simple_param_element(p: &Pat) -> bool {
+    match p {
+        Pat::Named(_) | Pat::OptionalVal(_) | Pat::Wildcard(_) => true,
+        Pat::Typed(t) => t.pat().is_some_and(|inner| is_simple_param_element(&inner)),
+        Pat::Attrib(a) => a.pat().is_some_and(|inner| is_simple_param_element(&inner)),
+        Pat::Paren(paren) => paren
+            .inner()
+            .is_some_and(|inner| is_simple_param_element(&inner)),
+        _ => false,
+    }
+}
+
 /// Whether the named patterns anywhere in `pats` bind some name twice.
 fn binds_a_name_twice(pats: &[Pat]) -> bool {
     let mut seen = HashSet::new();
