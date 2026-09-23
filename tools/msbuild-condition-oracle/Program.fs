@@ -59,29 +59,23 @@
 ///     layer at all.
 ///
 ///   {"op":"defines","path":s,"xml":s?,"globals":{name:value, ..}?}
-///     -> {"ok":true,"defines":[s, ..]}          // the symbols `Fsc` is passed
-///      | {"ok":false,"errors":[s, ..]}          // evaluation or a target failed
+///     -> {"ok":true,"defines":[s, ..]}          // the symbols fsc is passed
+///      | {"ok":false,"errors":[s, ..]}          // no answer, and why
 ///     The one op that runs *targets*: every other op stops at evaluation. It
 ///     answers "which `#if` symbols does fsc compile this project under?",
 ///     which evaluation cannot, because the SDK adds the framework symbols
-///     (`NET8_0`, `…_OR_GREATER`, …) in `AddImplicitDefineConstants` and
-///     removes `TRACE` in `_DisableDiagnosticTracing`. It runs exactly those
-///     two targets (plus their dependencies) and reads `$(DefineConstants)`
-///     back through a synthetic target's `Returns`, so MSBuild itself converts
-///     the string to the item list — the same conversion `Fsc`'s
-///     `DefineConstants="$(DefineConstants)"` parameter undergoes — rather than
-///     this tool re-implementing the split. Neither target needs a restore.
-///     `Fsc` has two more sources of symbols: `Nullable=enable` adds `NULLABLE`
-///     (appended here, in `Fsc`'s order), and `OtherFlags` is passed verbatim,
-///     so a project whose `OtherFlags` could carry a define is declined with
-///     `{"ok":false}` rather than answered incompletely.
-///     With `xml` the document is written to `path` first; without it the
-///     project already at `path` is used (a real corpus project).
-///     Scope: a *user* target that rewrites `DefineConstants` before
-///     `CoreCompile` by some other hook is not run, so this is the value after
-///     the SDK's define targets, not after arbitrary build logic. The
-///     calibration test in `crates/msbuild` pins that boundary against the
-///     design-time `FscCommandLineArgs`.
+///     (`NET8_0`, `…_OR_GREATER`, …) in targets and `Fsc` adds more from its
+///     own parameters (`NULLABLE`, `OtherFlags`). It runs a design-time
+///     `Compile` in-process (`DesignTimeBuild`, `ProvideCommandLineArgs`,
+///     `SkipCompilerExecution` — no restore, no compilation) and reads the
+///     `--define:` tokens of the `FscCommandLineArgs` the real `Fsc` task
+///     computed, so nothing about parameter binding is re-implemented here. A
+///     token that might define a symbol in any other spelling (`-d:X`,
+///     `/define:X`, a response file, …) declines the request rather than
+///     being guessed at. With `xml` the document is written to `path` first;
+///     without it the project already at `path` is used. The calibration test
+///     in `crates/msbuild` checks the answer against a *real* (restored,
+///     compiling) build's arguments.
 ///
 /// `globals` — on `project`, `items` and `defines` — is MSBuild's **global property** set:
 /// the `-p:` command line, and what an IDE-style consumer injects. It is not a
@@ -436,15 +430,61 @@ type private ErrorCollector() =
 
         member _.Shutdown() = ()
 
-/// The synthetic target whose `Returns` carries `$(DefineConstants)` out of the
-/// build. Underscore-prefixed like the SDK's private targets, and named so no
-/// real project can plausibly already define it.
-[<Literal>]
-let private DefinesTarget = "_BorzoiOracleDefineConstants"
+/// The globals that make a build stop at computing fsc's command line: the
+/// route IDE tooling (Ionide.ProjInfo) uses. `SkipCompilerExecution` makes the
+/// `Fsc` task bind its parameters and report `FscCommandLineArgs` without
+/// compiling, so everything `Fsc` derives symbols from — `DefineConstants`,
+/// `Nullable`, `OtherFlags`, each expanded exactly as task parameters are,
+/// item references included — is the task's own doing, not this tool's.
+/// `DesignTimeBuild` lets reference resolution proceed without a restore.
+let private designTimeGlobals =
+    [ "DesignTimeBuild", "true"
+      "ProvideCommandLineArgs", "true"
+      "SkipCompilerExecution", "true" ]
 
-/// Run the SDK's define targets over the project at `path` (writing `xml` there
-/// first, when given) and return `$(DefineConstants)` as the item list `Fsc`
-/// would receive, or the build's error messages.
+/// What a command-line token tells us about the symbols fsc defines.
+type private DefineToken =
+    /// `--define:X` — `Fsc`'s own spelling for `DefineConstants` and
+    /// `NULLABLE`, and fsc reads the symbol as everything after the first `:`.
+    | Define of string
+    /// A token fsc might read as a define (or a response file that might hold
+    /// one) in a spelling this tool does not parse: `-d:X`, `/define:X`, a
+    /// quoted or mis-cased head, `@flags.rsp`. Answering without it could omit
+    /// a symbol, so the whole request is declined.
+    | Unparsed of string
+    | Other
+
+/// Classify one `FscCommandLineArgs` token. Deliberately over-broad on the
+/// `Unparsed` side: any token whose head — after stripping quotes and switch
+/// characters, compared case-insensitively — is `d` or `define` and is not the
+/// exact canonical `--define:X` form, or any token that starts (after quotes)
+/// with `@`. fsc's own option grammar (`CompilerOptions.fs`, `parseOption`) is
+/// not re-implemented: an unrecognised spelling is a decline, never a guess.
+let private classifyToken (token: string) : DefineToken =
+    let unquoted = token.TrimStart('"', '\'')
+
+    if unquoted.StartsWith "@" then
+        Unparsed token
+    else
+        let head =
+            (unquoted.TrimStart('-', '/').TrimStart('"', '\'').Split(':')[0])
+                .ToLowerInvariant()
+
+        if head <> "d" && head <> "define" then
+            Other
+        elif
+            token.StartsWith "--define:"
+            && token.Length > "--define:".Length
+            && not (token.Contains "\"")
+        then
+            Define(token.Substring "--define:".Length)
+        else
+            Unparsed token
+
+/// The `#if` symbols fsc is passed for the project at `path` (writing `xml`
+/// there first, when given), in command-line order, or the reasons none can be
+/// reported: the build's errors, or the tokens that might define a symbol in a
+/// spelling this tool declines to parse.
 let private evalDefines
     (path: string)
     (xml: string option)
@@ -459,57 +499,53 @@ let private evalDefines
             File.WriteAllText(path, xml)
         | None -> ()
 
-        let project = Project(path, globals, null, collection)
-        // Add the synthetic target to the *in-memory* document (never saved),
-        // then re-evaluate: a target is inert until invoked, so adding it
-        // changes no property or item the evaluation computes. The target
-        // depends on the two SDK define targets. `AddImplicitDefineConstants`
-        // is conditioned on `DisableImplicitFrameworkDefines`, and a skipped
-        // target does not run its dependencies, so `_DisableDiagnosticTracing`
-        // is named directly too, as `CoreCompile`'s `BeforeTargets` hook would
-        // run it regardless.
-        let target = project.Xml.AddTarget DefinesTarget
-        target.DependsOnTargets <- "AddImplicitDefineConstants;_DisableDiagnosticTracing"
-        target.Returns <- "$(DefineConstants)"
-        // Target outputs are de-duplicated case-insensitively by default, but
-        // `Fsc` passes every item and F# symbols are case-sensitive:
-        // `MINE;mine` is two symbols.
-        target.KeepDuplicateOutputs <- "true"
-        project.ReevaluateIfNecessary()
+        let buildGlobals = Collections.Generic.Dictionary<string, string>()
+
+        if not (isNull globals) then
+            for KeyValue(name, value) in globals do
+                buildGlobals[name] <- value
+
+        for (name, value) in designTimeGlobals do
+            buildGlobals[name] <- value
+
+        // `CoreCompile` is incremental: over a project that was already built,
+        // its outputs are up to date, the target is skipped, and `Fsc` never
+        // reports its arguments. A fresh `IntermediateOutputPath` gives it
+        // outputs that do not exist, while leaving `obj/` itself — the restore
+        // outputs and the package imports they carry — where it is.
+        let scratch = Path.Combine(Path.GetTempPath(), "borzoi-defines-" + Guid.NewGuid().ToString "N")
+        buildGlobals["IntermediateOutputPath"] <- scratch + string Path.DirectorySeparatorChar
+
+        use _cleanup =
+            { new IDisposable with
+                member _.Dispose() =
+                    if Directory.Exists scratch then
+                        Directory.Delete(scratch, true) }
+
+        let project = Project(path, buildGlobals, null, collection)
         let instance = project.CreateProjectInstance()
-
         let logger = ErrorCollector()
-        let mutable outputs: Collections.Generic.IDictionary<string, TargetResult> = null
 
-        let ok =
-            instance.Build([| DefinesTarget |], [ logger :> ILogger ], &outputs)
-
-        if not ok then
+        if not (instance.Build([| "Compile" |], [ logger :> ILogger ])) then
             Error logger.Errors
         else
-            // `Fsc` also receives `OtherFlags` verbatim, and a `--define:`/`-d:`
-            // there is a symbol this op cannot read without re-implementing the
-            // compiler's command-line tokeniser. Decline instead, over-broadly:
-            // any `-d` or `define` substring.
-            let otherFlags = instance.GetPropertyValue "OtherFlags"
+            let tokens =
+                instance.GetItems "FscCommandLineArgs"
+                |> Seq.map (fun item -> item.EvaluatedInclude)
+                |> List.ofSeq
 
-            if otherFlags.Contains "-d" || otherFlags.Contains "define" then
-                Error [ $"OtherFlags may pass defines to fsc directly: %s{otherFlags}" ]
+            if List.isEmpty tokens then
+                Error [ "the build produced no FscCommandLineArgs (fsc never runs here)" ]
             else
-                let fromConstants =
-                    outputs[DefinesTarget].Items
-                    |> Seq.map (fun item -> item.ItemSpec)
-                    |> List.ofSeq
-                // `Fsc`'s `Nullable` setter matches `enable` exactly (FSharp.Build
-                // `Fsc.fs`), then emits `--define:NULLABLE` after the
-                // `DefineConstants` items.
-                let fromNullable =
-                    if instance.GetPropertyValue "Nullable" = "enable" then
-                        [ "NULLABLE" ]
-                    else
-                        []
+                let classified = tokens |> List.map classifyToken
 
-                Ok(fromConstants @ fromNullable)
+                match classified |> List.choose (function Unparsed t -> Some t | _ -> None) with
+                | [] -> Ok(classified |> List.choose (function Define d -> Some d | _ -> None))
+                | unparsed ->
+                    Error(
+                        unparsed
+                        |> List.map (fun t -> $"a define-capable token this tool does not parse: %s{t}")
+                    )
     with :? InvalidProjectFileException as ex ->
         Error [ ex.Message ]
 

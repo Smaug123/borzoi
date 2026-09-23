@@ -35,11 +35,12 @@ This is a Cargo workspace with nine members:
   evaluation's **global properties** — the `-p:` set, which is *not* a
   property-group write: it is read-only to the document, outranking every write
   of that name unless `TreatAsLocalProperty` opts out. A fifth op, `defines`,
-  is the one that runs *targets*: it answers which `#if` symbols `Fsc` is
-  passed, after the SDK's `AddImplicitDefineConstants` /
-  `_DisableDiagnosticTracing`, and is itself calibrated against the design-time
-  `FscCommandLineArgs` by `defines_oracle_calibration.rs`
-  (`docs/sdk-implicit-defines-plan.md`). The five differentials
+  is the one that runs *targets*: it answers which `#if` symbols fsc is
+  passed, by running a design-time `Compile` in-process (no restore, no
+  compilation) and reading the `--define:` tokens of the real `Fsc` task's
+  `FscCommandLineArgs`, declining any other define-capable spelling. It is
+  itself calibrated against a real, restored build's arguments by
+  `defines_oracle_calibration.rs` (`docs/sdk-implicit-defines-plan.md`). The five differentials
   that ride on these ops:
   `condition_diff.rs`, `property_expr_diff.rs`,
   `fsproj_property_table_diff.rs`,

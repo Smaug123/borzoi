@@ -75,14 +75,31 @@ Stage 3 settles it.
 ## Design
 
 1. **Oracle: the defines fsc receives.** Add a `defines` op to
-   `tools/msbuild-condition-oracle`. It builds a `ProjectInstance` under the
-   given globals, runs `AddImplicitDefineConstants;_DisableDiagnosticTracing`,
-   and reads `DefineConstants` back, split the way `Fsc` splits it.
-   - This is cheap: evaluation plus four targets, with no restore.
-   - Because it runs only a subset of the build, it needs its own oracle. That
-     is the design-time `FscCommandLineArgs` (`-t:Build
-     -p:DesignTimeBuild=true;ProvideCommandLineArgs=true;SkipCompilerExecution=true`,
-     the Ionide.ProjInfo route), which needs a restored project.
+   `tools/msbuild-condition-oracle`. It runs a design-time `Compile`
+   in-process (`DesignTimeBuild`, `ProvideCommandLineArgs`,
+   `SkipCompilerExecution`, the Ionide.ProjInfo route) and reads the
+   `--define:` tokens of the `FscCommandLineArgs` that the real `Fsc` task
+   computed.
+   - Nothing about `Fsc`'s parameter binding is re-implemented: `DefineConstants`,
+     `Nullable` and `OtherFlags` are expanded exactly as task parameters are,
+     item references included.
+   - A token that could define a symbol in any other spelling is declined, not
+     parsed: `-d:X`, `/define:X`, a quoted or mis-cased head, or a response
+     file.
+   - No restore is needed.
+   - Its own oracle is a *real* build's arguments: restored, compiling, with
+     `ProvideCommandLineArgs` only.
+
+   The first version ran only the SDK's two define targets and re-read
+   `$(Nullable)`/`$(OtherFlags)` by hand. Two review rounds found four ways
+   that answered successfully but incompletely:
+   - case-folded duplicates;
+   - `NULLABLE`;
+   - `OtherFlags` aliases and response files;
+   - item references in task parameters.
+
+   Each was an instance of re-implementing the task, which is why the op now
+   reads the task's output instead.
 2. **One consumed value, one comparison.** `ParsedProject::define_constants`
    becomes the value `Fsc` receives. It is the sum of:
    - the evaluation-time value (Stage 3);
@@ -132,29 +149,33 @@ here, but the perturbation census should keep reporting it.
 **Implements**: Design §1.
 
 **Correctness oracle** (landed as `crates/msbuild/tests/defines_oracle_calibration.rs`):
-- The `defines` op returns exactly the `--define:` arguments in the design-time
-  `FscCommandLineArgs` of the same project under the same globals. The
-  comparison is in order, not just as a set.
-- Calibration set:
+- The `defines` op returns exactly the `--define:` arguments of a real,
+  restored, compiling build's `FscCommandLineArgs` for the same project under
+  the same globals, in order. The only exception is a decline where the
+  fixture demands one.
+- Calibration set (27 cases):
   - a `net10.0;net6.0;netstandard2.0` project, per inner TFM, crossed with
     `Configuration` ∈ {Debug, Release, `My-Config.1`};
   - `DisableImplicitFrameworkDefines`, `DisableDiagnosticTracing`, both
     together, and `DisableImplicitConfigurationDefines`;
-  - a user value with whitespace and empty fragments;
-  - an overwrite that discards the self-reference;
-  - duplicate and case-distinct symbols (`MINE;mine;MINE`). MSBuild
-    de-duplicates target outputs case-insensitively unless told not to;
-  - `Nullable` as `enable` and as `Enable`;
-  - `OtherFlags` with a define, where the op must decline, and without one,
-    where it must not;
-  - a user target that appends before `CoreCompile`. The op must *disagree*
-    here, which proves the calibration can see the op's scope boundary.
+  - a user value with whitespace and empty fragments, duplicate and
+    case-distinct symbols, and an overwrite that drops the self-reference;
+  - `Nullable` as `enable`, as `Enable`, and through an item reference;
+  - `OtherFlags` with no define, with `--define:`, and with `--define:`
+    through an item reference;
+  - a user target that appends before `CoreCompile`;
+  - declines, each of which must also carry the symbol to fsc: `OtherFlags`
+    with `-d:`, with `/d:`, and with a response file;
+  - a user target that appends only outside design-time builds. The op must
+    *disagree* here, which proves the calibration can see the op's genuine
+    boundary.
 - `net472` and `net8.0` are absent because the devshell's offline package set
   carries neither targeting pack.
-- The whole calibration takes about 12 s, so it runs with the crate's ordinary
-  tests rather than by hand.
-- A mutation check confirmed it discriminates: dropping `_DisableDiagnosticTracing`
-  from the op fails the combined opt-out case.
+- It takes about 45 s and runs with the crate's ordinary tests.
+- Mutation checks confirmed it discriminates:
+  - classifying no token as declinable fails all three decline cases;
+  - a stale `IntermediateOutputPath` (`CoreCompile` skipped as up to date)
+    fails every case.
 
 ### Stage 2: census, not gate
 
