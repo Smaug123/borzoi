@@ -3470,6 +3470,14 @@ impl<'a> Gen<'a> {
     /// is `()`, since `unit` has no [`Ty`], nor an annotation around anything
     /// but a name, or outside the modelled set ([`Self::annotation_ty`]).
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
+        // Recovery drops what it cannot parse, so a recovered pattern's
+        // surviving children look well-formed: `(a,b,)` reads as a pair, where
+        // FCS keeps a third, recovery element. As for annotations
+        // ([`Self::annotation_ty`]), a pattern is read only from a declaration
+        // that parsed clean.
+        if !self.resolved.recovery().declaration_is_intact(pat.syntax()) {
+            return Err(Incomplete::Recovery);
+        }
         let named_def = |named: &NamedPat| {
             named
                 .ident()

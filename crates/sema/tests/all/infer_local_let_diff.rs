@@ -38,7 +38,7 @@ use std::collections::HashSet;
 
 use crate::common::{
     full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    temp_fs_file,
+    temp_fs_file, try_invoke_fcs_dump,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{
@@ -106,6 +106,33 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         "snippet has parse errors: {:?}\n{source}",
         parsed.errors
     );
+    check_parsed(source, parsed, expect_clean, None).expect("the oracle checks a clean parse")
+}
+
+/// [`check`] for a snippet our parser recovers from, comparing **binder**
+/// types only: what a recovered pattern binds is the question here, while the
+/// expression nodes of a recovered declaration are a wider, separate one. The
+/// comparison is the strict one (anything we commit, FCS kept), and the
+/// snippet must actually be a recovery case, or it tests nothing the others do
+/// not. Only binders inside `region` are graded — the broken declaration:
+/// how far a recovery spills into the declarations after it is the parser's
+/// question, not inference's. `None` when FCS cannot check the file at all.
+fn check_recovered(source: &str, region: std::ops::Range<usize>) -> Option<Committed> {
+    let parsed = parse(source);
+    assert!(
+        !parsed.errors.is_empty(),
+        "snippet parses clean, so it is not a recovery case\n{source}"
+    );
+    check_parsed(source, parsed, false, Some(region))
+}
+
+fn check_parsed(
+    source: &str,
+    parsed: borzoi_cst::parser::Parse,
+    expect_clean: bool,
+    binders_in: Option<std::ops::Range<usize>>,
+) -> Option<Committed> {
+    let compare_exprs = binders_in.is_none();
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = full_bcl_env();
@@ -113,9 +140,18 @@ fn check(source: &str, expect_clean: bool) -> Committed {
     let inferred = infer_file(&file, &resolved, env);
 
     let path = temp_fs_file("infer_local_let", source);
-    let types_json = invoke_fcs_dump("types", &path);
-    let binders_json = invoke_fcs_dump("binder-types", &path);
+    // A recovered file may be one FCS's own recovery cannot check; a clean
+    // one must be checkable.
+    let oracle = |op: &str| {
+        if binders_in.is_some() {
+            try_invoke_fcs_dump(op, &path).ok()
+        } else {
+            Some(invoke_fcs_dump(op, &path))
+        }
+    };
+    let jsons = oracle("types").zip(oracle("binder-types"));
     let _ = std::fs::remove_file(&path);
+    let (types_json, binders_json) = jsons?;
     let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, source);
     let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, source);
     if expect_clean {
@@ -160,7 +196,7 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         fcs_errors: errors.len(),
         ..Committed::default()
     };
-    for (range, ty) in inferred.types() {
+    for (range, ty) in inferred.types().iter().filter(|_| compare_exprs) {
         let key = (
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
@@ -189,6 +225,9 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             u32::from(def.range.start()) as usize,
             u32::from(def.range.end()) as usize,
         );
+        if binders_in.as_ref().is_some_and(|r| !r.contains(&key.0)) {
+            continue;
+        }
         let ours = ty.render();
         let theirs = fcs_binders.get(&key).unwrap_or_else(|| {
             panic!(
@@ -211,7 +250,7 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             c.tupled_functions += 1;
         }
     }
-    c
+    Some(c)
 }
 
 /// A local bound to a member access types from its RHS, and so does its use:
@@ -713,6 +752,26 @@ fn a_body_behind_a_non_simple_parameter_records_nothing_misplaced() {
             let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
             assert!(!failed, "{src}");
         }
+    }
+}
+
+/// A pattern the parser recovered is not read: `(a,b,)` survives as a
+/// two-element tuple, where FCS keeps a third, recovery element.
+#[test]
+fn a_recovered_pattern_is_not_typed() {
+    for src in [
+        "let f (a,b,) = (a,b)\n",
+        "let f (a,,b) = (a,b)\n",
+        "let f (a: int, b,) = (a,b)\n",
+        "let (a,b,) = (1, 2)\nlet c = a\n",
+        "let g (s: string) = let (a,b,) = (1, 2) in a\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| {
+            check_recovered(&src, 0..src.len()).expect("FCS checks the snippet")
+        })
+        .is_err();
+        assert!(!failed, "{src}");
     }
 }
 
@@ -1384,6 +1443,71 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     assert!(
         total.exprs + total.binders >= 120,
         "the family committed too little to be evidence: {total:?}"
+    );
+}
+
+/// Recovery, generatively: each generated file broken by one edit at a comma
+/// or parenthesis inside a `let` head (doubled, dropped, or a comma inserted),
+/// which is where a pattern recovers into something that still looks
+/// well-formed. Every binder type we commit on the recovered tree, FCS must
+/// have kept.
+///
+/// Inference reads nothing out of a declaration that did not parse clean, so
+/// a correct run commits nothing here: the one floor is that the edits
+/// genuinely produce recoveries. That the sweep can see a pattern read from a
+/// broken declaration was checked by deleting the recovery guard in
+/// `Gen::pattern_shape` — it then commits binders FCS does not have.
+#[test]
+fn generated_recovered_programs_commit_only_what_fcs_kept() {
+    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40);
+    let mut recovered = 0usize;
+    let mut total = Committed::default();
+    for seed in 0..files as u64 {
+        let (src, _) = generate(seed, 6);
+        let mut rng = Rng(seed ^ 0x0bad_c0de);
+        // Commas and parentheses between a `let` and its `=`, outside the
+        // shared header.
+        let mut sites = Vec::new();
+        let mut in_head = false;
+        for (i, c) in src.char_indices().skip(HEADER.len()) {
+            if src[i..].starts_with("let ") {
+                in_head = true;
+            } else if c == '=' {
+                in_head = false;
+            } else if in_head && matches!(c, ',' | ')') {
+                sites.push(i);
+            }
+        }
+        if sites.is_empty() {
+            continue;
+        }
+        let at = sites[rng.below(sites.len())];
+        let mut broken = src.clone();
+        match rng.below(3) {
+            0 => broken.insert(at, broken.as_bytes()[at] as char),
+            1 => {
+                broken.remove(at);
+            }
+            _ => broken.insert(at, ','),
+        }
+        if parse(&broken).errors.is_empty() {
+            continue;
+        }
+        // The edited top-level declaration: from its `let` at column 0 to the
+        // next one.
+        let start = broken[..at].rfind("\nlet ").map_or(0, |i| i + 1);
+        let end = broken[at..]
+            .find("\nlet ")
+            .map_or(broken.len(), |i| at + i + 1);
+        if let Some(c) = check_recovered(&broken, start..end) {
+            recovered += 1;
+            total += c;
+        }
+    }
+    eprintln!("recovery sweep: {recovered} recovered files, {total:?}");
+    assert!(
+        recovered >= files / 2,
+        "too few edits produced a recovery to be evidence: {recovered}"
     );
 }
 
