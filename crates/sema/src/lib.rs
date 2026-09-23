@@ -40,6 +40,7 @@ mod def;
 mod diagnostics;
 mod infer;
 mod member_ty;
+mod operators;
 mod overload;
 mod qnof;
 mod recovery;

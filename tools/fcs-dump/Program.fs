@@ -6208,8 +6208,24 @@ let private renderTypeCanonical (t: FSharpType) : string =
 ///     fan-out of `inline` operators (e.g. `a + b` reifies `op_Addition` as a
 ///     stack of same-range lambdas/applications) down to the single source
 ///     expression, so the census counts source spans, not IL-shaped artifacts.
-let private collectExprTypes (canonical: bool) (impl: FSharpImplementationFileContents) =
+/// `tolerant` opts in to walking past a node FCS cannot materialise (see
+/// `walkExpr`). Off, the first such node fails the whole dump, as it always has:
+/// on some ill-typed code (units of measure) a later conversion does not throw
+/// but hangs, so tolerance is for callers whose programs are known not to
+/// reach that — the generated inference families — not for the corpus.
+let private collectExprTypesWithGaps
+    (canonical: bool)
+    (tolerant: bool)
+    (impl: FSharpImplementationFileContents)
+    =
     let acc = ResizeArray<_>()
+    // What FCS could not materialise (see `walkExpr`): the oracle cannot say
+    // what is inside, and a consumer must know that rather than read "no node"
+    // as FCS having kept nothing there. A failing node's own `Range` does not
+    // bound its subtree (a lambda's is its parameter), so the unit reported is
+    // the *declaration* whose body held one, by its name's location.
+    let gaps = ResizeArray<FSharp.Compiler.Text.range>()
+    let gapDecls = ResizeArray<FSharp.Compiler.Text.range>()
     let seen = System.Collections.Generic.HashSet<struct (int * int * int * int)>()
     let emit (e: FSharpExpr) =
         let r = e.Range
@@ -6223,17 +6239,44 @@ let private collectExprTypes (canonical: bool) (impl: FSharpImplementationFileCo
                        Kind = classifyExpr e
                        Type = renderExprType e.Type
                        TypeCanon = canon |})
+    // A node FCS cannot materialise contributes nothing, and neither does
+    // anything beneath it. The typed tree of an ill-typed application (an
+    // operator over mismatched operands) throws "The exception has been
+    // reported…" when converted; the check already reported the error, so the
+    // subtree is error-recovered and a consumer reading no node there is right.
+    // Each failure is a costly exception, and a file of them can take minutes;
+    // past a bound the walk gives up, and the file reads as one FCS could not
+    // check at all rather than as partly checked.
+    let maxGaps = 20
     let rec walkExpr (e: FSharpExpr) =
-        emit e
-        for sub in e.ImmediateSubExpressions do
-            walkExpr sub
+        let subs =
+            try
+                emit e
+                Some e.ImmediateSubExpressions
+            with _ when tolerant ->
+                (try gaps.Add e.Range with _ -> ())
+                if gaps.Count > maxGaps then
+                    failwithf "more than %d typed-tree nodes FCS could not materialise" maxGaps
+                None
+        match subs with
+        | Some subs ->
+            for sub in subs do
+                walkExpr sub
+        | None -> ()
     let rec walkDecl (d: FSharpImplementationFileDeclaration) =
         match d with
         | FSharpImplementationFileDeclaration.Entity(_, sub) -> List.iter walkDecl sub
-        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(_, _, body) -> walkExpr body
+        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(mfv, _, body) ->
+            let before = gaps.Count
+            walkExpr body
+            if gaps.Count > before then
+                (try gapDecls.Add mfv.DeclarationLocation with _ -> ())
         | FSharpImplementationFileDeclaration.InitAction e -> walkExpr e
     List.iter walkDecl impl.Declarations
-    acc.ToArray()
+    acc.ToArray(), gapDecls.ToArray()
+
+let private collectExprTypes (canonical: bool) (impl: FSharpImplementationFileContents) =
+    fst (collectExprTypesWithGaps canonical false impl)
 
 /// Type-check a single file *as a script* with `keepAssemblyContents = true`
 /// (so the elaborated typed tree is retained) and return its
@@ -6308,7 +6351,7 @@ let private checkScriptImplFile (label: string) (absolute: string) : FSharpImple
 /// oracle for the `sema` type-inference layer (Phase 3) and the type census.
 let private dumpTypes (absolute: string) =
     let impl, diags = checkScriptImplFileWithDiags "types" absolute
-    let exprs = collectExprTypes true impl
+    let exprs, gaps = collectExprTypesWithGaps true false impl
     // The typed tree omits an expression FCS could not check, so a consumer
     // asserting "every type we produced, FCS confirms" needs to know which lines
     // errored before it can read a missing node as a disagreement.
@@ -6319,7 +6362,7 @@ let private dumpTypes (absolute: string) =
             {| Line = d.StartLine
                Code = d.ErrorNumber
                Message = d.Message |})
-    let payload = {| File = absolute; Exprs = exprs; Errors = errors |}
+    let payload = {| File = absolute; Exprs = exprs; UnconvertibleDecls = gaps; Errors = errors |}
     let json = JsonSerializer.Serialize(payload, buildOptions ())
     Console.Out.Write(json)
     Console.Out.WriteLine()
@@ -6334,7 +6377,7 @@ let private dumpTypes (absolute: string) =
 /// [`collectExprTypes`] oracle cannot reach it — this dumps the binder side
 /// directly. `Range` is the binder's declaration location, matching the
 /// `sema` resolver's `Def::range`, so the two are keyed the same way.
-let private collectBinderTypes (impl: FSharpImplementationFileContents) =
+let private collectBinderTypes (tolerant: bool) (impl: FSharpImplementationFileContents) =
     let acc = ResizeArray<_>()
     let emit (mfv: FSharpMemberOrFunctionOrValue) =
         // `.DeclarationLocation` / `.FullType` can throw on a broken symbol;
@@ -6358,13 +6401,27 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
     let emitLocal (v: FSharpMemberOrFunctionOrValue) =
         let generated = try v.IsCompilerGenerated with _ -> true
         if not generated then emit v
+    // Tolerant like [`collectExprTypesWithGaps`]'s walk, and bounded the same
+    // way: an error-recovered subtree FCS cannot materialise yields no binders.
+    let mutable failures = 0
     let rec walkLocals (e: FSharpExpr) =
-        match e with
-        | Let((v, _, _), _) -> emitLocal v
-        | LetRec(binds, _) -> for (v, _, _) in binds do emitLocal v
-        | _ -> ()
-        for sub in e.ImmediateSubExpressions do
-            walkLocals sub
+        let subs =
+            try
+                match e with
+                | Let((v, _, _), _) -> emitLocal v
+                | LetRec(binds, _) -> for (v, _, _) in binds do emitLocal v
+                | _ -> ()
+                Some e.ImmediateSubExpressions
+            with _ when tolerant ->
+                failures <- failures + 1
+                if failures > 20 then
+                    failwith "more than 20 typed-tree nodes FCS could not materialise"
+                None
+        match subs with
+        | Some subs ->
+            for sub in subs do
+                walkLocals sub
+        | None -> ()
     let rec walkDecl (d: FSharpImplementationFileDeclaration) =
         match d with
         | FSharpImplementationFileDeclaration.Entity(_, sub) -> List.iter walkDecl sub
@@ -6385,7 +6442,7 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
 /// binder-type oracle (see [`collectBinderTypes`]).
 let private dumpBinderTypes (absolute: string) =
     let impl, diags = checkScriptImplFileWithDiags "binder-types" absolute
-    let binders = collectBinderTypes impl
+    let binders = collectBinderTypes false impl
     // FCS error-recovers an annotation it rejects — `System.Nullable<string>` and
     // an IL-only name both come back as a binder typed `System.Object` — so the
     // binder record alone cannot distinguish "FCS says this type" from "FCS says
@@ -6632,6 +6689,12 @@ let private fileBatchCore () =
                     |> Seq.choose (fun e -> Option.ofObj (e.GetString()))
                     |> Seq.toList
                 | _ -> []
+            // Opt-in tolerance for typed-tree nodes FCS cannot materialise (see
+            // `collectExprTypesWithGaps`).
+            let tolerant =
+                match root.TryGetProperty("tolerant") with
+                | true, v when v.ValueKind = JsonValueKind.True -> true
+                | _ -> false
             let absolute = Path.GetFullPath path
             let refArgs = extraRefArgsOf refs
 
@@ -6690,11 +6753,15 @@ let private fileBatchCore () =
                 let attrs = collectAttrRecords parseResults.ParseTree checkResults
                 JsonSerializer.Serialize({| Attrs = attrs; Errors = errorLines () |}, compact)
             | "types" ->
-                let exprs = collectExprTypes true (implFile ())
+                let exprs, gaps = collectExprTypesWithGaps true tolerant (implFile ())
                 JsonSerializer.Serialize(
-                    {| File = absolute; Exprs = exprs; Errors = errorLines () |}, compact)
+                    {| File = absolute
+                       Exprs = exprs
+                       UnconvertibleDecls = gaps
+                       Errors = errorLines () |},
+                    compact)
             | "binder-types" ->
-                let binders = collectBinderTypes (implFile ())
+                let binders = collectBinderTypes tolerant (implFile ())
                 JsonSerializer.Serialize(
                     {| File = absolute; Binders = binders; Errors = errorLines () |}, compact)
             | "overloads" ->

@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- An assembly that redefines an FSharp.Core operator with a different type
+       (tests/all/infer_operators_diff.rs). Inference types an operator by
+       FSharp.Core's rule only when the resolver proves the token names
+       FSharp.Core's own member; every FSharp.Core alternative (`Checked`,
+       `NonStructuralComparison`) types the same, so only another assembly's
+       operator can show that the identity check is load-bearing. -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>SemaOperatorsFixture</AssemblyName>
+    <Deterministic>true</Deterministic>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Library.fs" />
+  </ItemGroup>
+
+</Project>

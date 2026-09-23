@@ -150,6 +150,33 @@ pub fn try_invoke_fcs_dump(subcommand: &str, source: &Path) -> Result<String, St
     }
 }
 
+/// Like [`try_invoke_fcs_dump`], but asking the oracle to walk past typed-tree
+/// nodes FCS cannot materialise (an error-recovered subtree), reporting the
+/// declarations that held one as `UnconvertibleDecls` instead of failing the
+/// whole dump. For generated ill-typed programs; not for the corpus, where some
+/// ill-typed code makes a later conversion hang rather than throw.
+pub fn try_invoke_fcs_dump_tolerant(subcommand: &str, source: &Path) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct Probe {
+        #[serde(rename = "BatchError")]
+        batch_error: Option<String>,
+    }
+    let request = serde_json::json!({
+        "kind": subcommand,
+        "path": source.display().to_string(),
+        "refs": Vec::<String>::new(),
+        "tolerant": true,
+    })
+    .to_string();
+    let line = fcs_file_batch_pool().request(&request);
+    match serde_json::from_str::<Probe>(&line) {
+        Ok(Probe {
+            batch_error: Some(msg),
+        }) => Err(msg),
+        _ => Ok(line),
+    }
+}
+
 /// The number of resident `fcs-dump` pools in this test binary; the child budget
 /// (`BORZOI_FCS_CHILDREN`, default 6) is split evenly between them, mirroring
 /// `cst`'s harness. Two: the single-file `file-batch` pool
@@ -1588,6 +1615,53 @@ pub fn constrained_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
     })
 }
 
+/// Build the operator-redefinition fixture (`tests/fixtures/operators_env`) once
+/// per test binary and return its `.dll` path: a module whose `(+)` over ints
+/// returns a string.
+pub fn ensure_operators_fixture_built() -> &'static Path {
+    static BUILT: OnceLock<PathBuf> = OnceLock::new();
+    BUILT
+        .get_or_init(|| {
+            let project =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/operators_env");
+            let _guard = BUILD_LOCK.lock().expect("BUILD_LOCK poisoned");
+            dotnet_build(&project, "dotnet build operators fixture");
+            project
+                .join("bin")
+                .join("Release")
+                .join("net10.0")
+                .join("SemaOperatorsFixture.dll")
+        })
+        .as_path()
+}
+
+/// [`full_bcl_env`] plus the operator-redefinition fixture
+/// ([`ensure_operators_fixture_built`]).
+pub fn operators_fixture_env() -> &'static borzoi_sema::AssemblyEnv {
+    use std::sync::OnceLock;
+    static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
+    ENV.get_or_init(|| {
+        use borzoi_assembly::Ecma335Assembly;
+        let core = std::fs::read(ensure_fsharp_core_dll()).expect("read FSharp.Core.dll");
+        let sysrt_path = ensure_system_runtime_dll();
+        let netstd_path = sysrt_path
+            .parent()
+            .expect("ref dir")
+            .join("netstandard.dll");
+        let sysrt = std::fs::read(&sysrt_path).expect("read System.Runtime.dll");
+        let netstd = std::fs::read(&netstd_path).expect("read netstandard.dll");
+        let fixture =
+            std::fs::read(ensure_operators_fixture_built()).expect("read the operators fixture");
+        let views = vec![
+            Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
+            Ecma335Assembly::parse(&sysrt).expect("parse System.Runtime.dll"),
+            Ecma335Assembly::parse(&netstd).expect("parse netstandard.dll"),
+            Ecma335Assembly::parse(&fixture).expect("parse SemaOperatorsFixture.dll"),
+        ];
+        borzoi_sema::AssemblyEnv::from_views(&views).expect("build AssemblyEnv")
+    })
+}
+
 pub fn full_bcl_env() -> &'static borzoi_sema::AssemblyEnv {
     use std::sync::OnceLock;
     static ENV: OnceLock<borzoi_sema::AssemblyEnv> = OnceLock::new();
@@ -2174,6 +2248,12 @@ struct TypesDump {
     /// [`parse_fcs_types`], which makes no such claim, ignores it.
     #[serde(rename = "Errors")]
     errors: Option<Vec<RawError>>,
+    /// The name locations of the declarations whose typed tree FCS could not
+    /// fully materialise — an error-recovered subtree whose conversion throws.
+    /// The oracle cannot say what is inside one, so a missing node there is not
+    /// FCS keeping nothing. `Option` for the same reason as [`Self::errors`].
+    #[serde(rename = "UnconvertibleDecls")]
+    unconvertible_decls: Option<Vec<FcsRange>>,
 }
 
 #[derive(Deserialize)]
@@ -2184,6 +2264,56 @@ struct RawTypedExpr {
     /// inference differential compares against [`borzoi_sema::Ty::render`].
     #[serde(rename = "TypeCanon")]
     type_canon: String,
+}
+
+/// The byte ranges of our top-level `let` declarations whose typed tree FCS
+/// could not fully materialise (the payload's `UnconvertibleDecls`): places the
+/// oracle cannot speak about, so a missing node there grades nothing. Each
+/// reported name location is matched to the `let` declaring it; one that
+/// matches none (a member, a module-level `do`) makes the whole file
+/// ungradable — the conservative reading. Refuses a payload without the field,
+/// which an oracle predating it would otherwise read as "all materialised".
+pub fn unconvertible_decl_ranges(
+    json: &str,
+    source: &str,
+    file: &borzoi_cst::syntax::ImplFile,
+) -> Vec<(usize, usize)> {
+    use borzoi_cst::syntax::{AstNode, LetDecl, Pat};
+    let dump: TypesDump = serde_json::from_str(json).expect("fcs-dump types JSON shape");
+    let idx = LineIndex::new(source);
+    let reported = dump.unconvertible_decls.expect(
+        "the `types` payload carries no `UnconvertibleDecls` field — the oracle predates it",
+    );
+    let head_name = |pat: Option<Pat>| -> Option<rowan::TextRange> {
+        match pat? {
+            Pat::Named(n) => n.ident().map(|t| t.text_range()),
+            Pat::LongIdent(li) => li.head()?.idents().last().map(|t| t.text_range()),
+            _ => None,
+        }
+    };
+    reported
+        .into_iter()
+        .map(|r| {
+            let at = (
+                idx.offset(r.start.line, r.start.col),
+                idx.offset(r.end.line, r.end.col),
+            );
+            file.syntax()
+                .descendants()
+                .filter_map(LetDecl::cast)
+                .find(|decl| {
+                    decl.bindings().any(|b| {
+                        head_name(b.pat()).is_some_and(|n| {
+                            (u32::from(n.start()) as usize, u32::from(n.end()) as usize) == at
+                        })
+                    })
+                })
+                .map_or((0, source.len()), |decl| {
+                    let r = decl.syntax().text_range();
+                    (u32::from(r.start()) as usize, u32::from(r.end()) as usize)
+                })
+        })
+        .collect()
 }
 
 /// Parse the `types` subcommand's JSON into a map from an expression's half-open

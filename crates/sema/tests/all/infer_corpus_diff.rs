@@ -106,10 +106,11 @@ const MAX_DIVERGENCES: usize = 0;
 /// goes up — bump it after a slice lands. One-sided, so it fails if the sweep
 /// stops measuring, not if inference commits more.
 ///
-/// 1697 measured 2026-09-23 (325 files compared, stride 13), with CE-1's
-/// expression-level `let`s and sequences typed; the floor sits a little under
-/// to absorb a file moving in or out of FCS's checkable set.
-const MIN_AGREEMENTS: usize = 1650;
+/// 1722 measured 2026-09-23 (325 files compared, stride 13), with CE-1's
+/// expression-level `let`s and sequences and FSharp.Core's arithmetic and
+/// comparison operators typed (1697 before the operators); the floor sits a
+/// little under to absorb a file moving in or out of FCS's checkable set.
+const MIN_AGREEMENTS: usize = 1700;
 
 /// The conditional-compilation symbols FCS's single-file script check defines,
 /// which our parse must match or the two sides check different programs.

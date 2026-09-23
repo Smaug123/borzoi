@@ -65,6 +65,12 @@ isolation.
 - **3.x-inh** — member inheritance (base-class walk) for the data-member and
   method wakes, single-candidate across the whole chain, honouring name-hiding
   and assembly-name identity.
+- **Infix operators** — FSharp.Core's `+ - * / %` and comparisons over ground
+  operands, typed by FSharp.Core's rule once the resolver proves the token is
+  FSharp.Core's own member (its compiled name, looked up with every tier's
+  shadowing). `&&`/`||` wait on issue #50 (their module is not folded); the
+  pipes, and any typing *through* an operator (FCS's weak resolution), are
+  not modelled.
 - **CE-1** — expression-level `let … in` and `e1; e2` in inference: a local
   types when its RHS is ground on its own, and anything open marks the binding
   incomplete; per [`ce-desugaring-plan.md`](ce-desugaring-plan.md).

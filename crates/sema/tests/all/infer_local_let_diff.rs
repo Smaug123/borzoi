@@ -35,8 +35,8 @@
 use std::collections::HashSet;
 
 use crate::common::{
-    full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    temp_fs_file,
+    full_bcl_env, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors, temp_fs_file,
+    unconvertible_decl_ranges,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, Expr, ImplFile, LetOrUseExpr, Pat, SequentialExpr, SyntaxNode};
@@ -56,6 +56,15 @@ struct Committed {
     sequentials: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
     fcs_errors: usize,
+    /// Commits inside a subtree FCS could not materialise: ungraded, since the
+    /// oracle cannot say what is there.
+    ungraded: usize,
+    /// Files FCS produced no typed tree for at all — ill-typed input it could
+    /// not check through (a statically-resolved operator over an argument an
+    /// earlier statement fixed to `unit`, say). Only where errors were allowed.
+    ungradable_files: usize,
+    /// Files actually graded.
+    files: usize,
 }
 
 impl std::ops::AddAssign for Committed {
@@ -65,6 +74,9 @@ impl std::ops::AddAssign for Committed {
         self.local_binders += o.local_binders;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
+        self.ungraded += o.ungraded;
+        self.ungradable_files += o.ungradable_files;
+        self.files += o.files;
     }
 }
 
@@ -101,11 +113,28 @@ fn check(source: &str, expect_clean: bool) -> Committed {
     let inferred = infer_file(&file, &resolved, env);
 
     let path = temp_fs_file("infer_local_let", source);
-    let types_json = invoke_fcs_dump("types", &path);
-    let binders_json = invoke_fcs_dump("binder-types", &path);
+    let oracle = |kind: &str| crate::common::try_invoke_fcs_dump_tolerant(kind, &path);
+    let (types_json, binders_json) = match (oracle("types"), oracle("binder-types")) {
+        (Ok(t), Ok(b)) => (t, b),
+        (Err(e), _) | (_, Err(e)) => {
+            let _ = std::fs::remove_file(&path);
+            assert!(
+                !expect_clean,
+                "fcs-dump failed ({e}) on a program it should check:\n{source}"
+            );
+            return Committed {
+                ungradable_files: 1,
+                ..Committed::default()
+            };
+        }
+    };
     let _ = std::fs::remove_file(&path);
     let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, source);
     let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, source);
+    // A commit inside a subtree FCS could not materialise is one the oracle
+    // cannot grade — "no node" there is not "FCS kept nothing".
+    let gaps = unconvertible_decl_ranges(&types_json, source, &file);
+    let in_gap = |(s, e): (usize, usize)| gaps.iter().any(|&(gs, ge)| gs <= s && e <= ge);
     if expect_clean {
         assert!(
             errors.is_empty(),
@@ -138,6 +167,7 @@ fn check(source: &str, expect_clean: bool) -> Committed {
 
     let mut c = Committed {
         fcs_errors: errors.len(),
+        files: 1,
         ..Committed::default()
     };
     for (range, ty) in inferred.types() {
@@ -146,12 +176,16 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             u32::from(range.end()) as usize,
         );
         let ours = ty.render();
-        let theirs = fcs_types.get(&key).unwrap_or_else(|| {
+        let Some(theirs) = fcs_types.get(&key) else {
+            if in_gap(key) {
+                c.ungraded += 1;
+                continue;
+            }
             panic!(
                 "we inferred `{ours}` at {key:?} (`{}`) but FCS reports no node there\n{source}",
                 &source[key.0..key.1]
             )
-        });
+        };
         assert_eq!(
             &ours,
             theirs,
@@ -170,13 +204,17 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             u32::from(def.range.end()) as usize,
         );
         let ours = ty.render();
-        let theirs = fcs_binders.get(&key).unwrap_or_else(|| {
+        let Some(theirs) = fcs_binders.get(&key) else {
+            if in_gap(key) {
+                c.ungraded += 1;
+                continue;
+            }
             panic!(
                 "we inferred `{ours}` for binder `{}` at {key:?} but FCS reports no binder \
                  there\n{source}",
                 def.name
             )
-        });
+        };
         assert_eq!(
             &ours, theirs,
             "binder type mismatch for `{}` at {key:?}\n{source}",
@@ -483,7 +521,7 @@ impl Gen<'_> {
                 self.literal(t)
             };
         }
-        match self.rng.below(10) {
+        match self.rng.below(12) {
             0 => self.literal(t),
             1 if !vars.is_empty() => vars[self.rng.below(vars.len())].clone(),
             2 => {
@@ -532,8 +570,35 @@ impl Gen<'_> {
                 let b = self.expr(T::Str, depth - 1);
                 format!("({a}, {b})")
             }
+            // An FSharp.Core infix operator. In the ill-typed family the
+            // operands may be of different types (an FCS error).
+            10 | 11 => self.infix(t, depth - 1),
             _ => self.expr(t, depth - 1),
         }
+    }
+
+    /// An infix operator application of type `t`: arithmetic over ints, `+` over
+    /// strings, a comparison for `bool`. Under `open_anywhere` the right
+    /// operand's type is sometimes another one, which FCS rejects.
+    fn infix(&mut self, t: T, depth: usize) -> String {
+        let mismatch = self.open_anywhere && self.rng.chance(30);
+        let (op, operand) = match t {
+            T::Int => (["+", "-", "*"][self.rng.below(3)], T::Int),
+            T::Str => ("+", T::Str),
+            T::Bool => (
+                ["=", "<>", "<", ">", "<=", ">="][self.rng.below(6)],
+                [T::Int, T::Str, T::Pair][self.rng.below(3)],
+            ),
+            T::Pair => return self.expr(t, depth),
+        };
+        let a = self.expr(operand, depth);
+        let other = if mismatch {
+            TYPES[self.rng.below(TYPES.len())]
+        } else {
+            operand
+        };
+        let b = self.expr(other, depth);
+        format!("({a} {op} {b})")
     }
 
     /// A statement: a non-unit expression (FS0020 is a warning), `ignore` of
@@ -841,6 +906,10 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     assert!(
         total.fcs_errors >= 50,
         "the family stopped producing ill-typed programs: {total:?}"
+    );
+    assert!(
+        total.files >= total.ungradable_files * 4,
+        "FCS could not check too many of the family's files to grade: {total:?}"
     );
     assert!(
         wrapped_lets >= 40,

@@ -839,6 +839,26 @@ impl<'a> Resolver<'a> {
             // to `Deferred`.
             .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName));
         self.record(tok.text_range(), res);
+        // An FSharp.Core-table operator also records what it names in the
+        // environment FCS resolves it in: the spelling, or failing that the
+        // compiled name, through the same lookup (and so the same shadowing).
+        //
+        // Not where this file, or any earlier one, declares an `[<AutoOpen>]`
+        // container: FCS folds its values into scope — the same block's, and
+        // an earlier file's through an `open` of its enclosing module — and
+        // the lookup does not see every such route, so an operator redefined
+        // there would read as FSharp.Core's.
+        if let Some(op) = crate::operators::core_operator(name) {
+            let target =
+                if self.own_auto_open_container || self.preceding.has_any_auto_open_module() {
+                    Resolution::Deferred(DeferredReason::UnboundName)
+                } else {
+                    self.lookup(name)
+                        .or_else(|| self.lookup(op.compiled))
+                        .unwrap_or(Resolution::Deferred(DeferredReason::UnboundName))
+                };
+            self.operator_targets.insert(tok.text_range(), target);
+        }
     }
 
     /// The opened-type **constructor** fallback for a bare expression name that

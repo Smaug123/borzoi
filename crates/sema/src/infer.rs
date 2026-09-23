@@ -416,6 +416,26 @@
 //!   its slot only when nothing could have come before it
 //!   ([`Gen::is_first_occurrence`]).
 //!
+//! **Infix operators over ground operands.** `a OP b` for FSharp.Core's
+//! arithmetic and comparison operators ([`Gen::infer_infix`]).
+//!
+//! - **Which operator.** An operator can be redefined — in the file, under its
+//!   spelling or its compiled name, or in an opened or auto-opened module — and
+//!   FCS then uses that definition. The resolver records what each operator
+//!   token resolves to under its spelling or, failing that, its compiled name
+//!   (`op_Addition`, the name FCS's environment holds), through the ordinary
+//!   lookup ([`crate::ResolvedFile::operator_target_at`]); inference types the
+//!   application only when that is FSharp.Core's own member, by assembly
+//!   identity, module and compiled name ([`Gen::core_operator_at`]).
+//! - **Only over ground operands.** Both operands are synthesized (the
+//!   operator's type parameters admit no coercion) and the constraints so far
+//!   settled; only if both are then ground does the application take
+//!   FSharp.Core's rule's type ([`operator_result`]). Nothing is inferred
+//!   *through* an operator — `x + 1` would make `x` an `int` in FCS, a
+//!   constraint we do not model — so an open operand marks the binding
+//!   incomplete, and mismatched operands (an FCS error, which it recovers by
+//!   retyping the operands' nodes) record nothing.
+//!
 //! [D8]: ../../../docs/type-checker-plan.md
 
 use std::collections::{HashMap, HashSet};
@@ -611,6 +631,12 @@ pub enum Incomplete {
     MethodArgShape,
     /// A syntax-recovery hole: a missing sub-expression, an empty paren.
     Recovery,
+    /// An FSharp.Core operator with an operand that is not ground when the
+    /// operator is walked: FCS may fix the operand through the operator.
+    OpenOperand,
+    /// An FSharp.Core operator whose ground operands its rule does not type
+    /// (mismatched, or outside the operator's types): an FCS error.
+    OperandTypes,
 }
 
 /// A type constraint produced by generation and discharged by the solver.
@@ -2369,6 +2395,13 @@ impl<'a> Gen<'a> {
         if is_member_access_callee(&func) {
             return self.infer_method_call(&func, &arg);
         }
+        // `a OP b` is `App(App(OP, a), b)` with the inner application marked
+        // infix.
+        if let Expr::App(inner) = &func
+            && inner.is_infix()
+        {
+            return self.infer_infix(inner, &arg);
+        }
         // Synthesize the function position (no node emitted).
         let tf = self.infer_callee(&func)?;
         let d = self.table.fresh();
@@ -2413,6 +2446,95 @@ impl<'a> Gen<'a> {
             }
         }
         Some(r)
+    }
+
+    /// An infix application `lhs OP rhs` (the outer application's argument is
+    /// `rhs`; `inner` is the infix `App(OP, lhs)`).
+    ///
+    /// Modelled only for an operator [proven FSharp.Core's](Self::core_operator_at)
+    /// and only over **ground** operands, so that the result type follows from
+    /// FSharp.Core's rule ([`operator_result`]) and nothing is ever inferred
+    /// *through* the operator. Both operands are synthesized — FCS checks them
+    /// left to right against the operator's own type parameters, which admit no
+    /// coercion, so their nodes keep their own types — and the constraints so far
+    /// [settled](Self::settle). Then:
+    ///
+    /// - both ground, and the rule types them: the application has the rule's
+    ///   type, and the operands' nodes stand;
+    /// - an operand still open: FCS may fix it *through* the operator (`x + 1`
+    ///   makes `x` an `int`), a constraint we do not model — the binding is
+    ///   incomplete;
+    /// - ground but outside the rule (`1 = "s"`): an FCS error, which it
+    ///   recovers by retyping the operands' nodes — incomplete, and the operands
+    ///   record nothing.
+    ///
+    /// Any other operator is an unmodelled callee, as before.
+    fn infer_infix(&mut self, inner: &AppExpr, rhs: &Expr) -> Option<TyVid> {
+        let (Some(op_expr), Some(lhs)) = (inner.func(), inner.arg()) else {
+            self.mark_incomplete(Incomplete::Recovery);
+            return None;
+        };
+        let Some(op) = self.core_operator_at(&op_expr) else {
+            self.mark_incomplete(Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR));
+            return None;
+        };
+        let mark = self.emission_mark();
+        let recorded = self.reasons_recorded();
+        let l = self.infer_expr(&lhs, None);
+        let r = self.infer_expr(rhs, None);
+        self.settle();
+        let (Some(l), Some(r)) = (l, r) else {
+            self.discard_emissions_since(mark);
+            self.mark_incomplete_propagated();
+            return None;
+        };
+        let (lt, rt) = (
+            self.table.resolve(&Ty::Var(l)),
+            self.table.resolve(&Ty::Var(r)),
+        );
+        if !lt.is_ground() || !rt.is_ground() {
+            // Open perhaps only because the operand's own walk failed.
+            self.discard_emissions_since(mark);
+            self.mark_consequence(recorded, Incomplete::OpenOperand);
+            return None;
+        }
+        let Some(ty) = operator_result(op.typing, &lt, &rt) else {
+            self.discard_emissions_since(mark);
+            self.mark_incomplete(Incomplete::OperandTypes);
+            return None;
+        };
+        let v = self.table.fresh();
+        self.eq(Ty::Var(v), ty);
+        Some(v)
+    }
+
+    /// The FSharp.Core operator the infix operator expression `op_expr` is, if
+    /// the resolver proved the token names FSharp.Core's own member
+    /// ([`ResolvedFile::operator_target_at`]): by the declaring assembly (name
+    /// and public-key token), module and compiled name. A definition of the
+    /// operator anywhere in scope, or a lookup the resolver declined, is not.
+    fn core_operator_at(&self, op_expr: &Expr) -> Option<&'static crate::operators::CoreOperator> {
+        let Expr::LongIdent(li) = op_expr else {
+            return None;
+        };
+        let tok = li
+            .syntax()
+            .descendants_with_tokens()
+            .filter_map(|el| el.into_token())
+            .find(|t| t.kind() == SyntaxKind::IDENT_TOK)?;
+        let op = crate::operators::core_operator(tok.text())?;
+        let Resolution::Member { parent, idx } =
+            self.resolved.operator_target_at(tok.text_range())?
+        else {
+            return None;
+        };
+        let entity = self.env.entity(parent);
+        let is_core = entity.assembly.name == "FSharp.Core"
+            && entity.assembly.public_key_token == Some(FSHARP_CORE_PUBLIC_KEY_TOKEN);
+        (is_core
+            && self.env.entity_full_name(parent) == op.module
+            && self.env.member_display_name(parent, idx) == op.compiled)
+            .then_some(op)
     }
 
     /// Walk a modelled application's **argument** in check mode against the
@@ -4415,6 +4537,45 @@ fn unparenthesize(e: Expr) -> Option<Expr> {
 ///
 /// Kept in lock-step with [`literal_ty`] by a shared list would over-engineer a
 /// 16-entry match; instead a unit test asserts the two agree.
+/// FSharp.Core's public-key token, which a member must carry for inference to
+/// type an operator as FSharp.Core's.
+const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
+
+/// The type FSharp.Core's rule gives an operator over two **ground** operands,
+/// or `None` where it gives none (an FCS error). The operands must be one type.
+fn operator_result(typing: crate::operators::OperatorTyping, l: &Ty, r: &Ty) -> Option<Ty> {
+    use crate::operators::OperatorTyping;
+    if l != r {
+        return None;
+    }
+    let named = |ty: &Ty| match ty {
+        Ty::Named { path, args } if args.is_empty() => Some(path.clone()),
+        _ => None,
+    };
+    let is =
+        |path: &[String], name: &str| path.len() == 2 && path[0] == "System" && path[1] == name;
+    let numeric = |ty: &Ty| {
+        named(ty).is_some_and(|p| {
+            is_sealed_primitive(&p) && !is(&p, "String") && !is(&p, "Char") && !is(&p, "Boolean")
+        })
+    };
+    fn comparable(ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { path, args } => args.is_empty() && is_sealed_primitive(path),
+            Ty::Tuple(elems) => elems.iter().all(comparable),
+            _ => false,
+        }
+    }
+    match typing {
+        OperatorTyping::Add => {
+            let text_like = named(l).is_some_and(|p| is(&p, "String") || is(&p, "Char"));
+            (numeric(l) || text_like).then(|| l.clone())
+        }
+        OperatorTyping::Arithmetic => numeric(l).then(|| l.clone()),
+        OperatorTyping::Comparison => comparable(l).then(|| Ty::named("System.Boolean")),
+    }
+}
+
 fn is_sealed_primitive(path: &[String]) -> bool {
     matches!(
         path.iter()
