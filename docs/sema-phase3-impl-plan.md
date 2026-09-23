@@ -65,6 +65,9 @@ isolation.
 - **3.x-inh** — member inheritance (base-class walk) for the data-member and
   method wakes, single-candidate across the whole chain, honouring name-hiding
   and assembly-name identity.
+- **CE-1** — expression-level `let … in` and `e1; e2` in inference: a local
+  types when its RHS is ground on its own, and anything open marks the binding
+  incomplete; per [`ce-desugaring-plan.md`](ce-desugaring-plan.md).
 - **Overloads OV-0–OV-7, OV-9** (#872–#899 and follow-ups) — the research probes,
   the `overloads` oracle, assembly flags, cross-assembly dedup, the speculation
   API, the applicability matcher, the instance-call engine with its

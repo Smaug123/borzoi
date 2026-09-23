@@ -361,9 +361,10 @@ fn a_type_owing_the_assemblies_nothing_keeps_its_answer() {
 /// `let n = "hi".Length` publishes `int` under a complete projection. If the
 /// unread DLL supplies a colliding `String` whose `Length` returns something
 /// else, that `int` is wrong — so under an incomplete projection the binder
-/// gets no type at all, and neither does the access expression. The receiver's
-/// own literal type is untouched: `"hi"` is `System.String` because it is a
-/// string literal, which no DLL can contradict.
+/// gets no type at all, and neither does the access expression. The receiver
+/// goes too, though no DLL can contradict a string literal's *type*: FCS keeps
+/// a receiver's nodes only when it accepts the access, and that the member
+/// exists is itself an assembly reading.
 #[test]
 fn a_type_read_out_of_an_assembly_member_does_not_survive() {
     let (complete, incomplete) = complete_and_incomplete();
@@ -401,8 +402,9 @@ fn a_type_read_out_of_an_assembly_member_does_not_survive() {
     );
     assert_eq!(
         inferred.type_at(literal),
-        Some(&Ty::named("System.String")),
-        "the receiver is typed by its own literal, which owes the assemblies nothing"
+        None,
+        "the receiver's node exists only if the access is accepted, which the seal \
+         leaves unproven"
     );
 }
 

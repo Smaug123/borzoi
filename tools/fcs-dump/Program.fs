@@ -6325,10 +6325,11 @@ let private dumpTypes (absolute: string) =
     Console.Out.WriteLine()
 
 /// Walk one implementation file's typed tree, emitting `{ Range, Name,
-/// TypeCanon }` for every **binder** — a value / function / member declaration
-/// and each of its curried parameters — carrying a real source location in this
-/// file. The oracle for Phase-3 *binder-type* inference
-/// (`crates/sema/tests/infer_binder_types_diff.rs`): a function value has no
+/// TypeCanon }` for every **binder** — a value / function / member declaration,
+/// each of its curried parameters, and each source-written expression-level
+/// `let` local in its body — carrying a real source location in this file. The
+/// oracle for Phase-3 *binder-type* inference
+/// (`crates/sema/tests/all/infer_binder_types_diff.rs`): a function value has no
 /// expression node of its own (its type lives on the binder), so the expression
 /// [`collectExprTypes`] oracle cannot reach it — this dumps the binder side
 /// directly. `Range` is the binder's declaration location, matching the
@@ -6348,10 +6349,26 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
                        Name = mfv.LogicalName
                        TypeCanon = canon |})
         with _ -> ()
+    // An expression-level `let … in` (and `let rec … in`) binds a local value
+    // that is a binder in its own right, with a declaration range in this file —
+    // but it lives inside a declaration's *body*, not in the declaration list, so
+    // the body is walked for it. Compiler-generated locals (a pattern's
+    // `patternInput`, a match temporary) are not source binders and are skipped:
+    // one can share a source range with a real binder of a different type.
+    let emitLocal (v: FSharpMemberOrFunctionOrValue) =
+        let generated = try v.IsCompilerGenerated with _ -> true
+        if not generated then emit v
+    let rec walkLocals (e: FSharpExpr) =
+        match e with
+        | Let((v, _, _), _) -> emitLocal v
+        | LetRec(binds, _) -> for (v, _, _) in binds do emitLocal v
+        | _ -> ()
+        for sub in e.ImmediateSubExpressions do
+            walkLocals sub
     let rec walkDecl (d: FSharpImplementationFileDeclaration) =
         match d with
         | FSharpImplementationFileDeclaration.Entity(_, sub) -> List.iter walkDecl sub
-        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(mfv, curriedArgs, _body) ->
+        | FSharpImplementationFileDeclaration.MemberOrFunctionOrValue(mfv, curriedArgs, body) ->
             emit mfv
             // The curried parameter groups (`[[a]; [b]]` for `let f a b`,
             // `[[a; b]]` for a tupled `let f (a, b)`): each parameter is itself a
@@ -6359,7 +6376,8 @@ let private collectBinderTypes (impl: FSharpImplementationFileContents) =
             for group in curriedArgs do
                 for p in group do
                     emit p
-        | FSharpImplementationFileDeclaration.InitAction _ -> ()
+            walkLocals body
+        | FSharpImplementationFileDeclaration.InitAction e -> walkLocals e
     List.iter walkDecl impl.Declarations
     acc.ToArray()
 

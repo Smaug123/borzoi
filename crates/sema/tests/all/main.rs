@@ -26,6 +26,7 @@ mod infer_annotation_shape_gen_diff;
 mod infer_binder_types_diff;
 mod infer_dropped_namespace_perturbation;
 mod infer_literals_diff;
+mod infer_local_let_diff;
 mod infer_member_access_diff;
 mod infer_recovered_annotation_diff;
 mod infer_static_call_diff;
