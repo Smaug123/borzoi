@@ -847,7 +847,10 @@ impl<'a> Resolver<'a> {
         // container: FCS folds its values into scope — the same block's, and
         // an earlier file's through an `open` of its enclosing module — and
         // the lookup does not see every such route, so an operator redefined
-        // there would read as FSharp.Core's.
+        // there would read as FSharp.Core's. The container is recognised as
+        // everywhere else in the resolver (`attrs_auto_open`), so this shares
+        // its documented blind spot: an *aliased* `AutoOpenAttribute`, which
+        // fsc itself warns on (FS3561).
         if let Some(op) = crate::operators::core_operator(name) {
             let target =
                 if self.own_auto_open_container || self.preceding.has_any_auto_open_module() {

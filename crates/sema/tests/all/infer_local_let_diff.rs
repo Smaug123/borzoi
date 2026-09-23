@@ -833,8 +833,9 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
-/// three ways: bare, as the argument of a method call FCS rejects on arity, or
-/// as the argument of a non-function value applied (`k0 (…)`). Open parameters
+/// four ways: bare, as the argument of a method call FCS rejects on arity, as
+/// the argument of a non-function value applied (`k0 (…)`), or applied itself as
+/// a function (`(…) 1`). Open parameters
 /// are used wherever any type is asked for, so FCS fixes each at its first use
 /// and reports the others. The comparison is the strict one: anything we commit,
 /// FCS must have kept, with the same type.
@@ -859,7 +860,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
         for i in 0..6 {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];
-            let wrap = rng.below(3);
+            let wrap = rng.below(4);
             let mut g = Gen {
                 rng: &mut rng,
                 env: vec![
@@ -888,9 +889,15 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
                     wrapped_lets += block.matches("let ").count();
                     format!(" \"r\".ToLowerInvariant({block})")
                 }
-                _ => {
+                2 => {
                     wrapped_lets += block.matches("let ").count();
                     format!(" k0 ({block})")
+                }
+                // The block applied as a function: a callee FCS rejects, every
+                // generated type being a non-function.
+                _ => {
+                    wrapped_lets += block.matches("let ").count();
+                    format!(" ({block}) 1")
                 }
             };
             let sep = if body.starts_with('\n') || body.starts_with(' ') {

@@ -369,3 +369,13 @@ fn another_assemblys_operator_is_not_typed_by_fsharp_cores_rule() {
         "we typed the fixture's operator by FSharp.Core's rule: {ours:?}"
     );
 }
+
+/// An operator application in callee position (`(1 + 2) 3`) is applied as a
+/// function, which FCS rejects, keeping no node inside it. Its operands are
+/// walked in synth mode, so the callee path must discard what they record —
+/// nodes and local binders alike.
+#[test]
+fn an_operator_application_used_as_a_callee_records_nothing_inside() {
+    let c = check_types("module M\nlet a = (1 + 2) 3\nlet b = ((let y = 1 in y) + 2) 3\n");
+    assert_eq!(c.exprs, 0, "{c:?}");
+}

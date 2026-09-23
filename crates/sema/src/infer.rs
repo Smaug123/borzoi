@@ -2607,8 +2607,17 @@ impl<'a> Gen<'a> {
             // `Eq(tf, Fun(d, r))` and checks its argument. An infix or
             // bracket-indexer `App` in the callee spine is unmodelled (⇒ the
             // catch-all below marks incomplete and the whole application defers).
+            //
+            // Whatever the inner application records inside itself is
+            // discarded: it is applied again, which FCS may reject (`(1 + 2) 3`
+            // applies an `int`), keeping no node inside. A curried call's
+            // arguments are check positions and record nothing anyway; an
+            // operator's operands are synth positions, and would.
             Expr::App(inner) if !inner.is_infix() && !inner.is_bracket_indexer() => {
-                self.infer_app(inner)
+                let mark = self.emission_mark();
+                let v = self.infer_app(inner);
+                self.discard_emissions_since(mark);
+                v
             }
             // A value/function reference: mirror the ident arm's resolution, but
             // *do not* emit a node.
