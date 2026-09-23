@@ -63,6 +63,7 @@ mod parser_diff_multiline_infix;
 mod parser_diff_new_expr;
 mod parser_diff_obj_expr;
 mod parser_diff_offside;
+mod parser_diff_operator_matrix;
 mod parser_diff_operators;
 mod parser_diff_pat_opname_path;
 mod parser_diff_pat_typars;

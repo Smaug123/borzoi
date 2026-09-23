@@ -1002,6 +1002,36 @@ impl<'src> Parser<'src> {
                 Some((Ok(FilteredToken::Raw(Token::In)), _)) => true,
                 _ => false,
             });
+        // A layout `DeclEnd` (no `in`) directly followed by a real token, with
+        // no `Virtual::BlockSep` between: LexFilter inserts no separator before
+        // an infix token at the enclosing block's column (`isInfix` in
+        // `LexFilter.fs`'s `CtxtSeqBlock` rule), so `let x =⏎  a⏎+ b` reaches
+        // the grammar as `hardwhiteLetBindings` followed by an expression, which
+        // `declExpr` parses as the `let`'s body — `SynModuleDecl.Expr(LetOrUse(…,
+        // +b))`, with the operator in prefix position.
+        let layout_body_idx = self.binding_terminator_index().filter(|&term_idx| {
+            explicit_in_terminator.is_none()
+                && matches!(
+                    self.filtered_tokens.get(term_idx),
+                    Some((Ok(FilteredToken::Virtual(Virtual::DeclEnd)), _))
+                )
+                && matches!(
+                    self.filtered_tokens.get(term_idx + 1),
+                    Some((Ok(FilteredToken::Raw(_)), _))
+                )
+                && self.expr_start_at(term_idx + 1)
+        });
+        if layout_body_idx.is_some() {
+            self.close_binder_binding();
+            self.parse_seq_block_body("expected expression after `let`");
+            self.builder
+                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::EXPR_DECL));
+            self.builder
+                .start_node_at(cp, FSharpLang::kind_to_raw(SyntaxKind::LET_OR_USE_EXPR));
+            self.builder.finish_node(); // LET_OR_USE_EXPR
+            self.builder.finish_node(); // EXPR_DECL
+            return;
+        }
         if let Some(term_idx) = explicit_in_terminator {
             // The expression form (`let x = e in body`) is the only shape where
             // a real expression atom sits *directly* after the `in`'s terminator,
