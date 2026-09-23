@@ -1,7 +1,8 @@
-//! Differential test for expression-level `let … in` and `e1; e2` in
-//! [`borzoi_sema::infer_file`], against both FCS typed-tree oracles: `types`
-//! (every expression node) and `binder-types` (every binder, local `let`s
-//! included).
+//! Differential test for expression-level `let … in` and `e1; e2`, and for the
+//! structural patterns (tuples, wildcards, annotated names) parameters and
+//! `let`s bind through, in [`borzoi_sema::infer_file`], against both FCS
+//! typed-tree oracles: `types` (every expression node) and `binder-types`
+//! (every binder, local `let`s included).
 //!
 //! # What is compared
 //!
@@ -27,7 +28,8 @@
 //! # Vacuity
 //!
 //! Every assertion above passes on an implementation that commits nothing. The
-//! sweep's floors (committed local binders, committed sequential nodes, and the
+//! sweep's floors (committed local binders, locals bound inside a pattern,
+//! functions with a tupled parameter, committed sequential nodes, and the
 //! generator's own count of generic locals applied at two types) are what make a
 //! green run evidence. They are one-sided: they fail if the sweep stops
 //! measuring, not if inference gets better.
@@ -39,7 +41,9 @@ use crate::common::{
     temp_fs_file,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::{AstNode, Expr, ImplFile, LetOrUseExpr, Pat, SequentialExpr, SyntaxNode};
+use borzoi_cst::syntax::{
+    AstNode, Expr, ImplFile, LetOrUseExpr, NamedPat, Pat, SequentialExpr, SyntaxNode,
+};
 use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
 /// What one checked file committed, for the curated cases' expectations and
@@ -52,6 +56,12 @@ struct Committed {
     binders: usize,
     /// Of `binders`, how many are expression-level `let` locals.
     local_binders: usize,
+    /// Of `local_binders`, how many are bound inside a pattern rather than as
+    /// the whole of a `let name = …`.
+    pattern_locals: usize,
+    /// Of `binders`, how many are generated functions with a tupled parameter
+    /// (named `tf…`).
+    tupled_functions: usize,
     /// Of `exprs`, how many sit at a whole `e1; e2` sequence.
     sequentials: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
@@ -63,6 +73,8 @@ impl std::ops::AddAssign for Committed {
         self.exprs += o.exprs;
         self.binders += o.binders;
         self.local_binders += o.local_binders;
+        self.pattern_locals += o.pattern_locals;
+        self.tupled_functions += o.tupled_functions;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
     }
@@ -113,20 +125,28 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         );
     }
 
-    let local_binder_ranges: HashSet<(usize, usize)> = file
+    // Every name a local `let` binds, and whether it is bound inside a larger
+    // pattern.
+    let local_binder_ranges: std::collections::HashMap<(usize, usize), bool> = file
         .syntax()
         .descendants()
         .filter_map(LetOrUseExpr::cast)
         .flat_map(|e| e.bindings().collect::<Vec<_>>())
-        .filter_map(|b| match b.pat()? {
-            Pat::Named(n) => n.ident(),
-            _ => None,
-        })
-        .map(|t| {
-            (
-                u32::from(t.text_range().start()) as usize,
-                u32::from(t.text_range().end()) as usize,
-            )
+        .filter_map(|b| b.pat())
+        .flat_map(|p| {
+            let in_pattern = !matches!(p, Pat::Named(_));
+            p.syntax()
+                .descendants()
+                .filter_map(NamedPat::cast)
+                .filter_map(|n| n.ident())
+                .map(move |t| {
+                    let range = (
+                        u32::from(t.text_range().start()) as usize,
+                        u32::from(t.text_range().end()) as usize,
+                    );
+                    (range, in_pattern)
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     let sequential_ranges: HashSet<(usize, usize)> = file
@@ -183,8 +203,12 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             def.name
         );
         c.binders += 1;
-        if local_binder_ranges.contains(&key) {
+        if let Some(&in_pattern) = local_binder_ranges.get(&key) {
             c.local_binders += 1;
+            c.pattern_locals += usize::from(in_pattern);
+        }
+        if def.name.starts_with("tf") {
+            c.tupled_functions += 1;
         }
     }
     c
@@ -362,6 +386,173 @@ fn a_ground_statement_keeps_the_function_generalisable() {
     assert_eq!(c.binders, 1, "{c:?}");
 }
 
+/// Tupled and wildcard parameters are typed structurally: each named element
+/// has its own slot inside the parameter's tuple, and a wildcard is a fresh
+/// variable that generalises like an unused parameter.
+#[test]
+fn tupled_and_wildcard_parameters_type_the_function() {
+    for (src, binders) in [
+        // `f : bool * 'a -> int`.
+        ("let f (a, b) = if a then 1 else 2\n", 1),
+        // `k : 'a * 'b -> 'a * int`.
+        ("let k (x, _) = (x, 1)\n", 1),
+        // `g : 'a -> int`.
+        ("let g _ = 1\n", 1),
+        // `n : int * 'a -> int * 'a`.
+        ("let n (a: int, b) = (a, b)\n", 1),
+        // Nested: `d : ('a * bool) * 'b -> 'b * 'a * int`.
+        ("let d ((a, c), b) = (b, a, if c then 1 else 2)\n", 1),
+        // Curried tuples: `e : 'a * 'b -> 'c -> 'c * 'a`.
+        ("let e (a, _) c = (c, a)\n", 1),
+    ] {
+        let c = check(&format!("module M\n{src}"), true);
+        assert_eq!(c.binders, binders, "{src}: {c:?}");
+    }
+}
+
+/// An application of a tupled function to a tuple wakes through the tuple:
+/// `t : string * int`.
+#[test]
+fn a_tupled_function_applied_to_a_tuple_grounds_the_result() {
+    let c = check(
+        "module M\nlet f (a, b) = (b, if a then 1 else 2)\nlet t = f (true, \"s\")\n",
+        true,
+    );
+    // `f` and `t`.
+    assert_eq!(c.binders, 2, "{c:?}");
+}
+
+/// A local tuple pattern binds each element from the RHS's tuple type.
+#[test]
+fn a_local_tuple_pattern_types_each_element() {
+    let c = check(
+        "module M\nlet m (s: string) = let (u, v) = (s.Length, s) in (v, u)\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 2, "{c:?}");
+    // `u`, `v`, and `m : string -> string * int`.
+    assert_eq!(c.binders, 3, "{c:?}");
+}
+
+/// A local tuple pattern with a wildcard and without parentheses.
+#[test]
+fn a_local_tuple_pattern_may_skip_elements() {
+    let c = check(
+        "module M\nlet m (s: string) =\n    let u, _ = (s.Length, s)\n    u\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 1, "{c:?}");
+}
+
+/// A module-level tuple pattern types its binders the same way.
+#[test]
+fn a_module_level_tuple_pattern_types_each_element() {
+    let c = check("module M\nlet (p, q) = (1, \"s\")\nlet r = (q, p)\n", true);
+    // `p`, `q`, `r`.
+    assert_eq!(c.binders, 3, "{c:?}");
+}
+
+/// The generalised-local hazard through a pattern: FCS may generalise `g`, so
+/// it is open at its binding and must not be grounded by either use. Its
+/// sibling `v` is ground, and is published.
+#[test]
+fn a_generalisable_element_of_a_local_tuple_is_not_monomorphised() {
+    let c = check(
+        "module M\nlet idf x = x\nlet h (b: bool) =\n    let (g, v) = (idf, 1)\n    (g v, g \"s\")\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 1, "`v` only: {c:?}");
+}
+
+/// A local pattern binding whose RHS is a bare value binds it directly, and FCS
+/// keeps no node for the value; one whose RHS is anything else keeps it.
+#[test]
+fn a_local_pattern_over_a_bare_value_keeps_no_rhs_node() {
+    for rhs in ["p", "(p)", "pr", "idf p"] {
+        // An application's result waits on its argument check, which does not
+        // fire mid-walk, so `idf p` leaves the locals open: only agreement is
+        // asserted for it.
+        let locals = if rhs == "idf p" { 0 } else { 2 };
+        let c = check(
+            &format!(
+                "module M\nlet idf x = x\nlet pr = (1, \"s\")\nlet n (p: int * string) = let (u, v) = {rhs} in (v, u)\n"
+            ),
+            true,
+        );
+        assert_eq!(c.local_binders, locals, "{rhs}: {c:?}");
+    }
+}
+
+/// An annotation in a pattern makes the RHS a coercion position: FCS types
+/// `"s"` here as `obj`, not `string`.
+#[test]
+fn an_annotated_pattern_coerces_its_rhs() {
+    for src in [
+        "let m (s: string) = let (a: obj, b) = (s, 1) in b\n",
+        "let (a: obj, b) = (\"s\", 1)\n",
+        "let m (s: string) = let (a: int, b) = (s.Length, s) in b\n",
+    ] {
+        check(&format!("module M\n{src}"), true);
+    }
+}
+
+/// An attribute can constrain a binding's type: FCS types `main` as
+/// `string[] -> int` from `[<EntryPoint>]` alone, before its body is checked,
+/// and reaches the attribute through an abbreviation or an `open type` too. So
+/// a binding that may carry it is not typed, and a later use of its binders
+/// defers.
+#[test]
+fn a_binding_that_may_be_an_entry_point_is_not_typed() {
+    for src in [
+        "[<EntryPoint>]\nlet main _ = 0\n",
+        "[<EntryPoint>]\nlet main argv = 0\n",
+        "[<EntryPoint>]\nlet main argv = if argv then 1 else 2\n",
+        "[<EntryPoint>]\nlet main _ = \"s\"\n",
+        "[<EntryPointAttribute()>]\nlet main argv = 0\n",
+        "type EP = EntryPointAttribute\n[<EP>]\nlet main argv = 0\n",
+        "type EP = Microsoft.FSharp.Core.EntryPointAttribute\n[<EP()>]\nlet main _ = 0\n",
+        "[<Microsoft.FSharp.Core.EntryPoint>]\nlet main _ = 0\n",
+        "let [<EntryPoint>] main argv = 0\n",
+    ] {
+        let c = check(&format!("module M\n{src}"), false);
+        // Only an abbreviation's own declaration may be committed; `main` never.
+        assert_eq!(c.binders, 0, "{src}: {c:?}");
+    }
+}
+
+/// Any other attribute leaves the binding typed: `[<Literal>] k : int`.
+#[test]
+fn an_attribute_that_is_not_an_entry_point_is_type_neutral() {
+    for src in [
+        "let [<Literal>] k = 1\nlet h x = (x, k)\n",
+        "[<Literal>]\nlet k = 1\nlet h x = (x, k)\n",
+        "[<CompiledName(\"G\")>]\nlet g (x: int) = x\n",
+    ] {
+        let c = check(&format!("module M\n{src}"), true);
+        assert!(c.binders >= 1, "{src}: {c:?}");
+    }
+}
+
+/// Patterns FCS rejects, or that bind through a shape we do not model, commit
+/// nothing FCS did not keep.
+#[test]
+fn ill_typed_and_unmodelled_patterns_commit_only_what_fcs_kept() {
+    for src in [
+        "let bad (s: string) = let (a, b) = (1, 2, 3) in a\n",
+        "let bad (s: string) = let (a: int, b) = (\"s\", 1) in b\n",
+        "let bad (a, b) = if a then 1 else b\n",
+        "let bad (a: int, b) = if a then b else b\n",
+        "let bad x = let (a, b) = x in if a then x else x\n",
+        "let st (struct (a, b)) = if a then 1 else 2\n",
+        "let (p, q) = (1, 2, 3)\n",
+        "let bad (a, b) = (a.Length, b)\n",
+        "let f (a, b) = if a then b else b\nlet t = f (1, \"s\")\n",
+        "let f (a, b) = if a then b else b\nlet t = f true\n",
+    ] {
+        check(&format!("module M\n{src}"), false);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The generative sweep.
 // ---------------------------------------------------------------------------
@@ -456,7 +647,13 @@ impl Gen<'_> {
             T::Int => ["1", "2", "42"][self.rng.below(3)].to_string(),
             T::Str => ["\"s\"", "\"t\""][self.rng.below(2)].to_string(),
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
-            T::Pair => "(7, \"p\")".to_string(),
+            T::Pair => {
+                if self.rng.chance(30) {
+                    "pr".to_string()
+                } else {
+                    "(7, \"p\")".to_string()
+                }
+            }
         }
     }
 
@@ -561,8 +758,9 @@ impl Gen<'_> {
     /// pattern form) and extending the environment with what it binds.
     fn binding(&mut self, depth: usize) -> String {
         let choice = if self.modelled_only {
-            // A generic local or a plain value local: the two modelled shapes.
-            [0, 7][self.rng.below(2)]
+            // The modelled shapes: a generic local, a tuple pattern, and a
+            // plain value local.
+            [0, 3, 7][self.rng.below(3)]
         } else {
             self.rng.below(8)
         };
@@ -591,21 +789,43 @@ impl Gen<'_> {
                 });
                 format!("{name} w = w")
             }
-            // A tuple pattern — unmodelled, binding two monomorphic names.
+            // A tuple pattern over an `int * string`: parenthesised or not,
+            // either element possibly a wildcard or annotated. In the ill-typed
+            // family the RHS may be a tuple of the wrong arity, or an open
+            // parameter, which the pattern fixes as a pair.
             3 => {
-                let rhs = self.expr(T::Pair, depth);
-                let a = self.fresh("a");
-                let b = self.fresh("b");
-                let text = format!("({a}, {b}) = {rhs}");
-                self.env.push(Var {
-                    name: a,
-                    kind: Kind::Mono(T::Int),
-                });
-                self.env.push(Var {
-                    name: b,
-                    kind: Kind::Mono(T::Str),
-                });
-                text
+                let rhs = if self.open_anywhere && self.rng.chance(20) {
+                    format!("({}, {}, 3)", self.expr(T::Int, 0), self.expr(T::Str, 0))
+                } else {
+                    self.expr(T::Pair, depth)
+                };
+                // An annotation needs the parentheses: `a: int, b` does not
+                // parse as a tuple of an annotated name.
+                let parens = self.rng.chance(70);
+                let mut elems = Vec::new();
+                for (stem, t, ann) in [("a", T::Int, "int"), ("b", T::Str, "string")] {
+                    let roll = self.rng.below(10);
+                    if roll == 0 {
+                        elems.push("_".to_string());
+                        continue;
+                    }
+                    let name = self.fresh(stem);
+                    elems.push(if roll == 1 && parens {
+                        format!("{name}: {ann}")
+                    } else {
+                        name.clone()
+                    });
+                    self.env.push(Var {
+                        name,
+                        kind: Kind::Mono(t),
+                    });
+                }
+                let pat = elems.join(", ");
+                if parens {
+                    format!("({pat}) = {rhs}")
+                } else {
+                    format!("{pat} = {rhs}")
+                }
             }
             // An alias of an open parameter: the local is open at its binding.
             4 if !self.vars_of(&Kind::Open).is_empty() => {
@@ -675,6 +895,44 @@ impl Gen<'_> {
     }
 }
 
+/// The generated files' shared header: the functions the generator applies,
+/// the `pr` pair, and a module-level tuple pattern binding `hp` and `hq`.
+const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n\
+                      let pr = (7, \"p\")\nlet (hp, hq) = (1, \"h\")\n";
+
+/// The names every generated function body may use besides its parameters.
+fn header_vars() -> Vec<Var> {
+    vec![
+        Var {
+            name: "hp".into(),
+            kind: Kind::Mono(T::Int),
+        },
+        Var {
+            name: "hq".into(),
+            kind: Kind::Mono(T::Str),
+        },
+    ]
+}
+
+/// The parameter list of a generated function over `s: string`, `b: bool`
+/// and, when `with_open`, an unannotated `p` — curried, or tupled (the
+/// function then named `tf…`, for the sweep's count), possibly with a
+/// trailing wildcard. Returns the function's name stem and its parameters.
+fn params(rng: &mut Rng, with_open: bool) -> (&'static str, String) {
+    let open = if with_open { " p" } else { "" };
+    match rng.below(4) {
+        0 | 1 => ("f", format!("(s: string) (b: bool){open}")),
+        2 => {
+            let open = if with_open { ", p" } else { "" };
+            ("tf", format!("(s: string, b: bool{open})"))
+        }
+        _ => {
+            let open = if with_open { ", p" } else { "" };
+            ("tf", format!("((s: string), _, b: bool{open}) _"))
+        }
+    }
+}
+
 /// One generated file: the shared header, then `functions` top-level
 /// functions over a string, a bool and (sometimes) an open parameter. Returns
 /// the source and how many generic locals were applied at two distinct types
@@ -682,27 +940,28 @@ impl Gen<'_> {
 /// the hazard was genuinely exercised.
 fn generate(seed: u64, functions: usize) -> (String, usize) {
     let mut rng = Rng(seed);
-    let mut src = String::from(
-        "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n",
-    );
+    let mut src = String::from(HEADER);
     let mut two_type_generics = 0;
     for i in 0..functions {
         let modelled_only = rng.chance(50);
         let with_open = !modelled_only && rng.chance(60);
         let offside = rng.chance(50);
         let t = TYPES[rng.below(TYPES.len())];
+        let (stem, params) = params(&mut rng, with_open);
+        let mut env = header_vars();
+        env.extend([
+            Var {
+                name: "s".into(),
+                kind: Kind::Mono(T::Str),
+            },
+            Var {
+                name: "b".into(),
+                kind: Kind::Mono(T::Bool),
+            },
+        ]);
         let mut g = Gen {
             rng: &mut rng,
-            env: vec![
-                Var {
-                    name: "s".into(),
-                    kind: Kind::Mono(T::Str),
-                },
-                Var {
-                    name: "b".into(),
-                    kind: Kind::Mono(T::Bool),
-                },
-            ],
+            env,
             next: 0,
             generic_uses: Vec::new(),
             modelled_only,
@@ -722,15 +981,10 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
         if modelled_only {
             two_type_generics += by_name.values().filter(|s| s.len() > 1).count();
         }
-        let params = if with_open {
-            "(s: string) (b: bool) p"
-        } else {
-            "(s: string) (b: bool)"
-        };
         if offside {
-            src.push_str(&format!("let f{i} {params} ={body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} ={body}\n"));
         } else {
-            src.push_str(&format!("let f{i} {params} = {body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} = {body}\n"));
         }
     }
     (src, two_type_generics)
@@ -765,6 +1019,14 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
         total.sequentials >= 10,
         "the sweep committed too few sequence nodes to be evidence: {total:?}"
     );
+    assert!(
+        total.pattern_locals >= 40,
+        "the sweep committed too few locals bound in a pattern to be evidence: {total:?}"
+    );
+    assert!(
+        total.tupled_functions >= 20,
+        "the sweep committed too few functions with a tupled parameter to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
@@ -788,29 +1050,30 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     let mut wrapped_lets = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
-        let mut src = String::from(
-            "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet k0 = 1\n",
-        );
+        let mut src = format!("{HEADER}let k0 = 1\n");
         for i in 0..6 {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];
             let wrap = rng.below(3);
+            let (stem, params) = params(&mut rng, true);
+            let mut env = header_vars();
+            env.extend([
+                Var {
+                    name: "s".into(),
+                    kind: Kind::Mono(T::Str),
+                },
+                Var {
+                    name: "b".into(),
+                    kind: Kind::Mono(T::Bool),
+                },
+                Var {
+                    name: "p".into(),
+                    kind: Kind::Open,
+                },
+            ]);
             let mut g = Gen {
                 rng: &mut rng,
-                env: vec![
-                    Var {
-                        name: "s".into(),
-                        kind: Kind::Mono(T::Str),
-                    },
-                    Var {
-                        name: "b".into(),
-                        kind: Kind::Mono(T::Bool),
-                    },
-                    Var {
-                        name: "p".into(),
-                        kind: Kind::Open,
-                    },
-                ],
+                env,
                 next: 0,
                 generic_uses: Vec::new(),
                 modelled_only,
@@ -833,7 +1096,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
             } else {
                 " "
             };
-            src.push_str(&format!("let f{i} (s: string) (b: bool) p ={sep}{body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} ={sep}{body}\n"));
         }
         total += check(&src, false);
     }
