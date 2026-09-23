@@ -7,13 +7,14 @@
 //!
 //! Every other op of `msbuild-condition-oracle` stops at evaluation, and so is
 //! exactly as trustworthy as MSBuild's evaluator. `defines` answers a question
-//! about the *build*: it runs a design-time `Compile` in-process — no restore,
-//! `SkipCompilerExecution` — and reads the `--define:` tokens of the arguments
+//! about the *build*: it restores, runs `Compile` in-process with
+//! `SkipCompilerExecution`, and reads the `--define:` tokens of the arguments
 //! the real `Fsc` task computed. Two things in that are claims rather than
-//! facts: that a design-time, unrestored build passes fsc the same symbols as a
-//! real one, and that declining every other define-capable spelling leaves no
-//! symbol unreported. This test checks both against a real build, which
-//! restores and compiles (`ProvideCommandLineArgs` alone, so fsc runs).
+//! facts: that such a build passes fsc the same symbols as a real one, and
+//! that declining every other define-capable spelling leaves no symbol
+//! unreported. This test checks both against a real build, which restores and
+//! compiles (`ProvideCommandLineArgs` alone, so fsc runs). The op is always
+//! asked first, so it meets each fixture unrestored, as written.
 //!
 //! ## Scope, pinned from both sides
 //!
@@ -28,17 +29,21 @@
 //! - `Fsc`'s other sources: `Nullable` (whose `enable` match is case-sensitive)
 //!   and `OtherFlags`, each also supplied through an item reference, which only
 //!   task-parameter binding expands;
-//! - a user target appending before `CoreCompile`, which a design-time
-//!   `Compile` runs too.
+//! - a user target appending before `CoreCompile`, which the op's `Compile`
+//!   runs too;
+//! - a package whose build props append a define, which only a restore brings
+//!   in.
 //!
-//! Three fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
-//! `/d:X`, or a response file. fsc reads each as a define, and the op does not
-//! parse fsc's option grammar, so an answer would omit a symbol.
+//! Five fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
+//! `/d:X`, a response file, or either define spelling padded with whitespace
+//! (fsc trims response-file lines, so padding hides nothing from it). fsc reads
+//! each as a define, and the op does not parse fsc's option grammar, so an
+//! answer would omit a symbol.
 //!
 //! One fixture must make the op **disagree**: a user target that appends only
-//! outside design-time builds. That is the op's genuine boundary, and the
-//! fixture proves the calibration can see it; if it ever agrees, the comparison
-//! has stopped discriminating.
+//! when fsc is really run. That is the op's genuine boundary, and the fixture
+//! proves the calibration can see it; if it ever agrees, the comparison has
+//! stopped discriminating.
 //!
 //! `net472` and `net8.0` are absent because the devshell restores offline from a
 //! pinned package set that carries neither targeting pack; `net6.0` stands in
@@ -73,6 +78,9 @@ struct Fixture {
     body: String,
     /// Further files beside the project, as `(name, contents)`.
     files: &'static [(&'static str, &'static str)],
+    /// Whether the fixture references [`DEFINE_PACKAGE`], packed into a local
+    /// source beside it.
+    package: bool,
     /// One global set per case.
     cases: Vec<Vec<(&'static str, &'static str)>>,
     expect: Expect,
@@ -88,6 +96,7 @@ fn net10(name: &'static str, props: &str, rest: &str, expect: Expect) -> Fixture
              </PropertyGroup>{rest}"
         ),
         files: &[],
+        package: false,
         cases: vec![vec![]],
         expect,
     }
@@ -121,6 +130,7 @@ fn fixtures() -> Vec<Fixture> {
                    </PropertyGroup>"
                 .to_string(),
             files: &[],
+            package: false,
             cases: multi_cases,
             expect: Agree,
         },
@@ -220,10 +230,35 @@ fn fixtures() -> Vec<Fixture> {
                 Decline,
             )
         },
+        // fsc trims response-file lines, and `Fsc` passes its arguments
+        // through one, so padding hides nothing from fsc — only from a
+        // classifier that does not trim.
         net10(
-            "user target outside design-time builds (outside the op's scope)",
+            "OtherFlags padded -d:",
+            "<OtherFlags>&quot; -d:EXTRA&quot;</OtherFlags>",
             "",
-            &late_target(" Condition=\"'$(DesignTimeBuild)' != 'true'\""),
+            Decline,
+        ),
+        net10(
+            "OtherFlags padded --define:",
+            "<OtherFlags>&quot;--define:EXTRA &quot;</OtherFlags>",
+            "",
+            Decline,
+        ),
+        Fixture {
+            package: true,
+            ..net10(
+                "package build props append a define",
+                "",
+                "<ItemGroup><PackageReference Include=\"BorzoiDefinePkg\" Version=\"1.0.0\" />\
+                 </ItemGroup>",
+                Agree,
+            )
+        },
+        net10(
+            "user target skipped when fsc is not run (outside the op's scope)",
+            "",
+            &late_target(" Condition=\"'$(SkipCompilerExecution)' != 'true'\""),
             Diverge,
         ),
     ]
@@ -270,6 +305,55 @@ fn real_fsc_arguments(project: &Path, globals: &[(String, String)]) -> Vec<Strin
         .collect()
 }
 
+/// A package whose `build/<id>.props` appends `FROM_PACKAGE` to
+/// `DefineConstants` — a symbol that exists only once the project is restored,
+/// because package build props are imported through the restore outputs.
+const DEFINE_PACKAGE: &str = "BorzoiDefinePkg";
+
+/// Pack [`DEFINE_PACKAGE`] into `dir/pkgs` and point a `nuget.config` in `dir`
+/// at it (added to, not replacing, the ambient sources the rest of the restore
+/// needs).
+fn provide_define_package(dir: &Path) {
+    let source = dir.join("pkgsrc");
+    std::fs::create_dir_all(source.join("build")).expect("create package source dir");
+    std::fs::write(
+        source.join("build").join(format!("{DEFINE_PACKAGE}.props")),
+        "<Project><PropertyGroup>\
+         <DefineConstants>$(DefineConstants);FROM_PACKAGE</DefineConstants>\
+         </PropertyGroup></Project>",
+    )
+    .expect("write package props");
+    let package_project = source.join(format!("{DEFINE_PACKAGE}.csproj"));
+    std::fs::write(
+        &package_project,
+        format!(
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><PropertyGroup>\
+             <TargetFramework>netstandard2.0</TargetFramework>\
+             <PackageId>{DEFINE_PACKAGE}</PackageId><Version>1.0.0</Version>\
+             <IncludeBuildOutput>false</IncludeBuildOutput>\
+             <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\
+             <NoWarn>NU5128</NoWarn></PropertyGroup>\
+             <ItemGroup><None Include=\"build/{DEFINE_PACKAGE}.props\" Pack=\"true\" \
+             PackagePath=\"build/{DEFINE_PACKAGE}.props\" /></ItemGroup></Project>"
+        ),
+    )
+    .expect("write package project");
+    let mut cmd = Command::new("dotnet");
+    cmd.args(["pack", "-nologo", "-o"]);
+    cmd.arg(dir.join("pkgs"));
+    cmd.arg(&package_project);
+    scrub_oracle_env(&mut cmd);
+    BoundedCommand::new(cmd)
+        .timeout(Duration::from_secs(600))
+        .run_ok("dotnet pack of the define-appending package");
+    std::fs::write(
+        dir.join("nuget.config"),
+        "<configuration><packageSources><add key=\"local\" value=\"pkgs\" />\
+         </packageSources></configuration>",
+    )
+    .expect("write nuget.config");
+}
+
 /// Whether the fsc argument `argument` carries the `EXTRA` symbol the decline
 /// fixtures plant: directly, or in the response file an `@path` argument names.
 fn hands_fsc_extra(argument: &str) -> bool {
@@ -285,8 +369,10 @@ fn defines_op_matches_a_real_builds_fsc_arguments() {
     let mut failures = Vec::new();
     let mut compared = 0;
     // Non-vacuity: at least one agreeing case must carry a symbol only a target
-    // adds, or the comparison never exercised the op's reason to exist.
+    // adds, and one a package adds, or the comparison never exercised the op's
+    // reasons to exist.
     let mut saw_target_added_symbol = false;
+    let mut saw_package_added_symbol = false;
 
     for fixture in fixtures() {
         let dir = tempfile::TempDir::new().expect("tempdir for fixture");
@@ -304,18 +390,24 @@ fn defines_op_matches_a_real_builds_fsc_arguments() {
         for (name, contents) in fixture.files {
             std::fs::write(dir.path().join(name), contents).expect("write fixture file");
         }
+        if fixture.package {
+            provide_define_package(dir.path());
+        }
 
         for case in &fixture.cases {
             let globals: Vec<(String, String)> = case
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
+            // The op goes first, on the project as written — unrestored, for
+            // the first case of each fixture — because restoring is part of
+            // what it claims to do, exactly as a real build does.
+            let op = oracle.defines(&project, None, &globals);
             let arguments = real_fsc_arguments(&project, &globals);
             let fsc: Vec<String> = arguments
                 .iter()
                 .filter_map(|a| a.strip_prefix("--define:").map(str::to_string))
                 .collect();
-            let op = oracle.defines(&project, None, &globals);
             compared += 1;
             println!(
                 "{} {globals:?}\n  fsc: {fsc:?}\n  op:  {op:?}",
@@ -324,6 +416,7 @@ fn defines_op_matches_a_real_builds_fsc_arguments() {
             match (fixture.expect, op) {
                 (Expect::Agree, Ok(op)) if op == fsc => {
                     saw_target_added_symbol |= op.iter().any(|d| d.ends_with("_OR_GREATER"));
+                    saw_package_added_symbol |= op.iter().any(|d| d == "FROM_PACKAGE");
                 }
                 (Expect::Diverge, Ok(op)) if op != fsc => {}
                 // A decline is only justified if fsc really was handed the
@@ -350,5 +443,9 @@ fn defines_op_matches_a_real_builds_fsc_arguments() {
     assert!(
         saw_target_added_symbol,
         "no agreeing case carried a target-added `_OR_GREATER` symbol"
+    );
+    assert!(
+        saw_package_added_symbol,
+        "no agreeing case carried the package-added `FROM_PACKAGE` symbol"
     );
 }

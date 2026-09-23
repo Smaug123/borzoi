@@ -65,14 +65,15 @@
 ///     answers "which `#if` symbols does fsc compile this project under?",
 ///     which evaluation cannot, because the SDK adds the framework symbols
 ///     (`NET8_0`, `…_OR_GREATER`, …) in targets and `Fsc` adds more from its
-///     own parameters (`NULLABLE`, `OtherFlags`). It runs a design-time
-///     `Compile` in-process (`DesignTimeBuild`, `ProvideCommandLineArgs`,
-///     `SkipCompilerExecution` — no restore, no compilation) and reads the
+///     own parameters (`NULLABLE`, `OtherFlags`). It runs `Compile` in-process
+///     with `ProvideCommandLineArgs` and `SkipCompilerExecution` (fsc's
+///     arguments are computed, fsc is not run) and reads the
 ///     `--define:` tokens of the `FscCommandLineArgs` the real `Fsc` task
-///     computed, so nothing about parameter binding is re-implemented here. A
-///     token that might define a symbol in any other spelling (`-d:X`,
-///     `/define:X`, a response file, …) declines the request rather than
-///     being guessed at. With `xml` the document is written to `path` first;
+///     computed, so nothing about parameter binding is re-implemented here. It
+///     restores first, as a real build does, since a package's build props can
+///     write `DefineConstants`. A token that might define a symbol in any
+///     other spelling (`-d:X`, `/define:X`, whitespace-padded, a response
+///     file, …) declines the request rather than being guessed at. With `xml` the document is written to `path` first;
 ///     without it the project already at `path` is used. The calibration test
 ///     in `crates/msbuild` checks the answer against a *real* (restored,
 ///     compiling) build's arguments.
@@ -430,17 +431,16 @@ type private ErrorCollector() =
 
         member _.Shutdown() = ()
 
-/// The globals that make a build stop at computing fsc's command line: the
-/// route IDE tooling (Ionide.ProjInfo) uses. `SkipCompilerExecution` makes the
-/// `Fsc` task bind its parameters and report `FscCommandLineArgs` without
-/// compiling, so everything `Fsc` derives symbols from — `DefineConstants`,
-/// `Nullable`, `OtherFlags`, each expanded exactly as task parameters are,
-/// item references included — is the task's own doing, not this tool's.
-/// `DesignTimeBuild` lets reference resolution proceed without a restore.
-let private designTimeGlobals =
-    [ "DesignTimeBuild", "true"
-      "ProvideCommandLineArgs", "true"
-      "SkipCompilerExecution", "true" ]
+/// The globals that make a build stop at computing fsc's command line.
+/// `SkipCompilerExecution` makes the `Fsc` task bind its parameters and report
+/// `FscCommandLineArgs` without compiling, so everything `Fsc` derives symbols
+/// from — `DefineConstants`, `Nullable`, `OtherFlags`, each expanded exactly as
+/// task parameters are, item references included — is the task's own doing,
+/// not this tool's. Deliberately *not* `DesignTimeBuild`: that is a real
+/// switch build logic can read, and every global that differs from a real
+/// build is a place the two could disagree.
+let private commandLineGlobals =
+    [ "ProvideCommandLineArgs", "true"; "SkipCompilerExecution", "true" ]
 
 /// What a command-line token tells us about the symbols fsc defines.
 type private DefineToken =
@@ -454,32 +454,36 @@ type private DefineToken =
     | Unparsed of string
     | Other
 
-/// Classify one `FscCommandLineArgs` token. Deliberately over-broad on the
-/// `Unparsed` side: any token whose head — after stripping quotes and switch
-/// characters, compared case-insensitively — is `d` or `define` and is not the
-/// exact canonical `--define:X` form, or any token that starts (after quotes)
-/// with `@`. fsc's own option grammar (`CompilerOptions.fs`, `parseOption`) is
-/// not re-implemented: an unrecognised spelling is a decline, never a guess.
+/// Classify one `FscCommandLineArgs` token. The only accepted spelling is the
+/// exact canonical form `Fsc` itself emits: `--define:` followed by a non-empty
+/// symbol containing no whitespace or quote. Everything else that fsc could
+/// read as a define is `Unparsed` and declines the request — judged after
+/// stripping surrounding whitespace and quotes (fsc trims response-file lines,
+/// and `Fsc` passes its arguments through one) and then switch characters,
+/// with the option name compared case-insensitively: a `d` or `define` head
+/// in any other spelling, or a leading `@` (a response file). fsc's own option
+/// grammar (`CompilerOptions.fs`, `parseOption`) is not re-implemented, so an
+/// unrecognised spelling is a decline, never a guess.
 let private classifyToken (token: string) : DefineToken =
-    let unquoted = token.TrimStart('"', '\'')
+    let isCanonical =
+        token.StartsWith "--define:"
+        && token.Length > "--define:".Length
+        && not (token |> Seq.exists (fun c -> Char.IsWhiteSpace c || c = '"' || c = '\''))
 
-    if unquoted.StartsWith "@" then
-        Unparsed token
+    if isCanonical then
+        Define(token.Substring "--define:".Length)
     else
-        let head =
-            (unquoted.TrimStart('-', '/').TrimStart('"', '\'').Split(':')[0])
-                .ToLowerInvariant()
+        let stripped = token.Trim().Trim('"', '\'').Trim()
 
-        if head <> "d" && head <> "define" then
-            Other
-        elif
-            token.StartsWith "--define:"
-            && token.Length > "--define:".Length
-            && not (token.Contains "\"")
-        then
-            Define(token.Substring "--define:".Length)
-        else
+        if stripped.StartsWith "@" then
             Unparsed token
+        else
+            let head =
+                (stripped.TrimStart('-', '/').TrimStart('"', '\'').Split(':')[0])
+                    .Trim()
+                    .ToLowerInvariant()
+
+            if head = "d" || head = "define" then Unparsed token else Other
 
 /// The `#if` symbols fsc is passed for the project at `path` (writing `xml`
 /// there first, when given), in command-line order, or the reasons none can be
@@ -505,7 +509,7 @@ let private evalDefines
             for KeyValue(name, value) in globals do
                 buildGlobals[name] <- value
 
-        for (name, value) in designTimeGlobals do
+        for (name, value) in commandLineGlobals do
             buildGlobals[name] <- value
 
         // `CoreCompile` is incremental: over a project that was already built,
@@ -522,11 +526,35 @@ let private evalDefines
                     if Directory.Exists scratch then
                         Directory.Delete(scratch, true) }
 
-        let project = Project(path, buildGlobals, null, collection)
-        let instance = project.CreateProjectInstance()
         let logger = ErrorCollector()
 
-        if not (instance.Build([| "Compile" |], [ logger :> ILogger ])) then
+        // Restore first, as a real build (`dotnet build`, `msbuild -restore`)
+        // does: a package's `build/*.props` and `.targets` — which may write
+        // `DefineConstants` — are imported only through the restore outputs.
+        // Like `-restore`, it runs in its own evaluation under a restore session
+        // id with package imports excluded, and the build then re-evaluates
+        // from scratch so it sees what the restore wrote.
+        let restored =
+            use restoreCollection = new ProjectCollection()
+            let restoreGlobals = Collections.Generic.Dictionary<string, string>()
+
+            if not (isNull globals) then
+                for KeyValue(name, value) in globals do
+                    restoreGlobals[name] <- value
+
+            restoreGlobals["MSBuildRestoreSessionId"] <- Guid.NewGuid().ToString()
+            restoreGlobals["ExcludeRestorePackageImports"] <- "true"
+
+            Project(path, restoreGlobals, null, restoreCollection)
+                .CreateProjectInstance()
+                .Build([| "Restore" |], [ logger :> ILogger ])
+
+        let project = Project(path, buildGlobals, null, collection)
+        let instance = project.CreateProjectInstance()
+
+        if not restored then
+            Error logger.Errors
+        elif not (instance.Build([| "Compile" |], [ logger :> ILogger ])) then
             Error logger.Errors
         else
             let tokens =
