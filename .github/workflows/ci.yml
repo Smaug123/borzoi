@@ -370,6 +370,17 @@ jobs:
           nix develop --command cargo test -p borzoi-msbuild \
             --test fsproj_msbuild_corpus_diff -- --ignored --nocapture
 
+      - name: Pin the SDK-chain decline attribution
+        if: steps.gate.outputs.run == 'true'
+        # Two-sided, like `parser_corpus`'s `CLEAN_PARSES`: the SDK is pinned and
+        # the evaluator deterministic, so improving coverage is *supposed* to
+        # fail this and force the figures to be restated. It exists because the
+        # prose version of these numbers was wrong for a year and sent a plan
+        # stage to wait on a lever worth 1.5% of what the comment claimed.
+        run: |
+          nix develop --command cargo test -p borzoi-msbuild \
+            --test sdk_chain_decline_attribution -- --ignored --nocapture
+
   test-nuget:
     name: Test nuget
     needs: changes
