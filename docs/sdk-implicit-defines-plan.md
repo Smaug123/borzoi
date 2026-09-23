@@ -102,7 +102,13 @@ Stage 3 settles it.
    - declined: any **user-authored** target (outside the SDK subtree) that
      writes `DefineConstants` or `_ImplicitDefineConstant`, or that hooks one
      of the six targets above through `BeforeTargets` / `AfterTargets` /
-     `DependsOnTargets`.
+     `DependsOnTargets`;
+   - `Fsc`'s two other symbol sources, which the oracle handles the same way:
+     - `NULLABLE` is appended when `$(Nullable)` is exactly `enable` (the `Fsc`
+       setter's match is case-sensitive);
+     - the project is declined when `$(OtherFlags)` could carry a
+       `--define:`/`-d:`. It is passed to fsc verbatim, and tokenising a
+       command line is not worth modelling.
 
    This deliberately duplicates SDK logic in Rust. `#263` avoided doing that for
    `Link` because nothing consumed `Link`. Here the value is consumed and
@@ -136,6 +142,11 @@ here, but the perturbation census should keep reporting it.
     together, and `DisableImplicitConfigurationDefines`;
   - a user value with whitespace and empty fragments;
   - an overwrite that discards the self-reference;
+  - duplicate and case-distinct symbols (`MINE;mine;MINE`). MSBuild
+    de-duplicates target outputs case-insensitively unless told not to;
+  - `Nullable` as `enable` and as `Enable`;
+  - `OtherFlags` with a define, where the op must decline, and without one,
+    where it must not;
   - a user target that appends before `CoreCompile`. The op must *disagree*
     here, which proves the calibration can see the op's scope boundary.
 - `net472` and `net8.0` are absent because the devshell's offline package set

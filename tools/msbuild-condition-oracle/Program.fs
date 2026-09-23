@@ -71,6 +71,10 @@
 ///     the string to the item list — the same conversion `Fsc`'s
 ///     `DefineConstants="$(DefineConstants)"` parameter undergoes — rather than
 ///     this tool re-implementing the split. Neither target needs a restore.
+///     `Fsc` has two more sources of symbols: `Nullable=enable` adds `NULLABLE`
+///     (appended here, in `Fsc`'s order), and `OtherFlags` is passed verbatim,
+///     so a project whose `OtherFlags` could carry a define is declined with
+///     `{"ok":false}` rather than answered incompletely.
 ///     With `xml` the document is written to `path` first; without it the
 ///     project already at `path` is used (a real corpus project).
 ///     Scope: a *user* target that rewrites `DefineConstants` before
@@ -467,6 +471,10 @@ let private evalDefines
         let target = project.Xml.AddTarget DefinesTarget
         target.DependsOnTargets <- "AddImplicitDefineConstants;_DisableDiagnosticTracing"
         target.Returns <- "$(DefineConstants)"
+        // Target outputs are de-duplicated case-insensitively by default, but
+        // `Fsc` passes every item and F# symbols are case-sensitive:
+        // `MINE;mine` is two symbols.
+        target.KeepDuplicateOutputs <- "true"
         project.ReevaluateIfNecessary()
         let instance = project.CreateProjectInstance()
 
@@ -476,13 +484,32 @@ let private evalDefines
         let ok =
             instance.Build([| DefinesTarget |], [ logger :> ILogger ], &outputs)
 
-        if ok then
-            outputs[DefinesTarget].Items
-            |> Seq.map (fun item -> item.ItemSpec)
-            |> List.ofSeq
-            |> Ok
-        else
+        if not ok then
             Error logger.Errors
+        else
+            // `Fsc` also receives `OtherFlags` verbatim, and a `--define:`/`-d:`
+            // there is a symbol this op cannot read without re-implementing the
+            // compiler's command-line tokeniser. Decline instead, over-broadly:
+            // any `-d` or `define` substring.
+            let otherFlags = instance.GetPropertyValue "OtherFlags"
+
+            if otherFlags.Contains "-d" || otherFlags.Contains "define" then
+                Error [ $"OtherFlags may pass defines to fsc directly: %s{otherFlags}" ]
+            else
+                let fromConstants =
+                    outputs[DefinesTarget].Items
+                    |> Seq.map (fun item -> item.ItemSpec)
+                    |> List.ofSeq
+                // `Fsc`'s `Nullable` setter matches `enable` exactly (FSharp.Build
+                // `Fsc.fs`), then emits `--define:NULLABLE` after the
+                // `DefineConstants` items.
+                let fromNullable =
+                    if instance.GetPropertyValue "Nullable" = "enable" then
+                        [ "NULLABLE" ]
+                    else
+                        []
+
+                Ok(fromConstants @ fromNullable)
     with :? InvalidProjectFileException as ex ->
         Error [ ex.Message ]
 

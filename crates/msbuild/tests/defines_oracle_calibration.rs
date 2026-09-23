@@ -28,6 +28,13 @@
 //! receives an item list, so the string-to-items conversion is under test too),
 //! and a user write that discards the self-reference.
 //!
+//! The other sources `Fsc` draws symbols from are covered too: `Nullable`
+//! (whose `enable` match is case-sensitive, so both spellings are fixtures) and
+//! `OtherFlags`, which the op declines when it could carry a define and must
+//! not decline when it cannot. Duplicate and case-distinct symbols are a
+//! fixture because MSBuild de-duplicates target outputs case-insensitively
+//! unless told not to, and F# symbols are case-sensitive.
+//!
 //! One fixture is expected to **disagree**: a user target that appends to
 //! `DefineConstants` before `CoreCompile`. The op deliberately does not run
 //! arbitrary user targets, and consumers of it must decline such projects. The
@@ -61,6 +68,9 @@ enum Expect {
     /// Not the `--define:` list: the fixture exercises build logic outside the
     /// op's scope.
     Diverge,
+    /// The op declines, because the fixture passes symbols through a route it
+    /// does not read (`OtherFlags`).
+    Decline,
 }
 
 struct Fixture {
@@ -140,6 +150,55 @@ fn fixtures() -> Vec<Fixture> {
                    </PropertyGroup>",
             cases: vec![vec![]],
             expect: Expect::Agree,
+        },
+        Fixture {
+            // Case-distinct and repeated: F# symbols are case-sensitive, and
+            // `Fsc` passes every item.
+            name: "duplicate and case-distinct symbols",
+            body: "<PropertyGroup>\
+                   <TargetFramework>net10.0</TargetFramework>\
+                   <DefineConstants>$(DefineConstants);MINE;mine;MINE</DefineConstants>\
+                   </PropertyGroup>",
+            cases: vec![vec![]],
+            expect: Expect::Agree,
+        },
+        Fixture {
+            name: "Nullable enable",
+            body: "<PropertyGroup>\
+                   <TargetFramework>net10.0</TargetFramework>\
+                   <Nullable>enable</Nullable>\
+                   </PropertyGroup>",
+            cases: vec![vec![]],
+            expect: Expect::Agree,
+        },
+        Fixture {
+            // `Fsc`'s setter matches `enable` case-sensitively.
+            name: "Nullable Enable",
+            body: "<PropertyGroup>\
+                   <TargetFramework>net10.0</TargetFramework>\
+                   <Nullable>Enable</Nullable>\
+                   </PropertyGroup>",
+            cases: vec![vec![]],
+            expect: Expect::Agree,
+        },
+        Fixture {
+            // `OtherFlags` without a define: the decline must not be blanket.
+            name: "OtherFlags without a define",
+            body: "<PropertyGroup>\
+                   <TargetFramework>net10.0</TargetFramework>\
+                   <OtherFlags>--warnon:1182</OtherFlags>\
+                   </PropertyGroup>",
+            cases: vec![vec![]],
+            expect: Expect::Agree,
+        },
+        Fixture {
+            name: "OtherFlags with a define",
+            body: "<PropertyGroup>\
+                   <TargetFramework>net10.0</TargetFramework>\
+                   <OtherFlags>--define:EXTRA</OtherFlags>\
+                   </PropertyGroup>",
+            cases: vec![vec![]],
+            expect: Expect::Decline,
         },
         Fixture {
             name: "overwrite without self-reference",
@@ -239,34 +298,22 @@ fn defines_op_matches_the_design_time_fsc_arguments() {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();
             let fsc = fsc_defines(&project, &globals);
-            let op = oracle
-                .defines(&project, None, &globals)
-                .unwrap_or_else(|errors| {
-                    panic!(
-                        "defines op failed on `{}` under {globals:?}: {errors:?}",
-                        fixture.name
-                    )
-                });
+            let op = oracle.defines(&project, None, &globals);
             compared += 1;
             println!(
                 "{} {globals:?}\n  fsc: {fsc:?}\n  op:  {op:?}",
                 fixture.name
             );
-            match fixture.expect {
-                Expect::Agree if op != fsc => failures.push(format!(
-                    "`{}` under {globals:?}: fsc {fsc:?}, op {op:?}",
-                    fixture.name
-                )),
-                Expect::Agree => {
+            match (fixture.expect, op) {
+                (Expect::Agree, Ok(op)) if op == fsc => {
                     saw_target_added_symbol |= op.iter().any(|d| d.ends_with("_OR_GREATER"));
                 }
-                Expect::Diverge if op == fsc => failures.push(format!(
-                    "`{}` under {globals:?}: expected the op to miss build logic outside its \
-                     scope, but it agreed with fsc ({fsc:?}); the calibration no longer \
-                     discriminates",
+                (Expect::Diverge, Ok(op)) if op != fsc => {}
+                (Expect::Decline, Err(_)) => {}
+                (expect, op) => failures.push(format!(
+                    "`{}` under {globals:?}: expected {expect:?}, got {op:?} against fsc {fsc:?}",
                     fixture.name
                 )),
-                Expect::Diverge => {}
             }
         }
     }
