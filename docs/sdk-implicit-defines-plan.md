@@ -125,21 +125,25 @@ here, but the perturbation census should keep reporting it.
 
 **Implements**: Design §1.
 
-**Correctness oracle**:
-- The `defines` op returns, as a set, exactly the `--define:` arguments in the
-  design-time `FscCommandLineArgs` of the same project under the same globals.
-- Check this over a fixed calibration set of restored projects:
-  - `net8.0` and `net10.0`;
-  - `netstandard2.0` and `netstandard2.1`;
-  - `net472`;
-  - a multi-targeted project, per inner TFM;
-  - `Configuration=Release` and a custom configuration `My-Config.1`;
-  - `DisableImplicitFrameworkDefines=true`;
-  - `DisableDiagnosticTracing=true`;
-  - a user target that appends to `DefineConstants` before `CoreCompile`.
-- The calibration test is the *oracle's* oracle. It is `#[ignore]`d, run by hand
-  whenever the SDK pin moves, and the SDK version is recorded beside the
-  fixtures.
+**Correctness oracle** (landed as `crates/msbuild/tests/defines_oracle_calibration.rs`):
+- The `defines` op returns exactly the `--define:` arguments in the design-time
+  `FscCommandLineArgs` of the same project under the same globals. The
+  comparison is in order, not just as a set.
+- Calibration set:
+  - a `net10.0;net6.0;netstandard2.0` project, per inner TFM, crossed with
+    `Configuration` ∈ {Debug, Release, `My-Config.1`};
+  - `DisableImplicitFrameworkDefines`, `DisableDiagnosticTracing`, both
+    together, and `DisableImplicitConfigurationDefines`;
+  - a user value with whitespace and empty fragments;
+  - an overwrite that discards the self-reference;
+  - a user target that appends before `CoreCompile`. The op must *disagree*
+    here, which proves the calibration can see the op's scope boundary.
+- `net472` and `net8.0` are absent because the devshell's offline package set
+  carries neither targeting pack.
+- The whole calibration takes about 12 s, so it runs with the crate's ordinary
+  tests rather than by hand.
+- A mutation check confirmed it discriminates: dropping `_DisableDiagnosticTracing`
+  from the op fails the combined opt-out case.
 
 ### Stage 2: census, not gate
 

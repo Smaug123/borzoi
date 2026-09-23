@@ -5,7 +5,7 @@
 ///
 /// Protocol: JSONL request/response over stdin/stdout, one response line per
 /// request line, in order (the same long-lived-batch-child pattern as
-/// tools/fcs-dump and tools/nuget-oracle). Two ops:
+/// tools/fcs-dump and tools/nuget-oracle). The ops:
 ///
 ///   {"op":"eval","condition":s,"properties":{name:value, ..}}
 ///     -> {"ok":true,"value":true|false}   // MSBuild evaluated the condition
@@ -58,7 +58,28 @@
 ///     comment-split text) — this op is what lets a differential see that
 ///     layer at all.
 ///
-/// `globals` — on `project` and `items` — is MSBuild's **global property** set:
+///   {"op":"defines","path":s,"xml":s?,"globals":{name:value, ..}?}
+///     -> {"ok":true,"defines":[s, ..]}          // the symbols `Fsc` is passed
+///      | {"ok":false,"errors":[s, ..]}          // evaluation or a target failed
+///     The one op that runs *targets*: every other op stops at evaluation. It
+///     answers "which `#if` symbols does fsc compile this project under?",
+///     which evaluation cannot, because the SDK adds the framework symbols
+///     (`NET8_0`, `…_OR_GREATER`, …) in `AddImplicitDefineConstants` and
+///     removes `TRACE` in `_DisableDiagnosticTracing`. It runs exactly those
+///     two targets (plus their dependencies) and reads `$(DefineConstants)`
+///     back through a synthetic target's `Returns`, so MSBuild itself converts
+///     the string to the item list — the same conversion `Fsc`'s
+///     `DefineConstants="$(DefineConstants)"` parameter undergoes — rather than
+///     this tool re-implementing the split. Neither target needs a restore.
+///     With `xml` the document is written to `path` first; without it the
+///     project already at `path` is used (a real corpus project).
+///     Scope: a *user* target that rewrites `DefineConstants` before
+///     `CoreCompile` by some other hook is not run, so this is the value after
+///     the SDK's define targets, not after arbitrary build logic. The
+///     calibration test in `crates/msbuild` pins that boundary against the
+///     design-time `FscCommandLineArgs`.
+///
+/// `globals` — on `project`, `items` and `defines` — is MSBuild's **global property** set:
 /// the `-p:` command line, and what an IDE-style consumer injects. It is not a
 /// property group write. A global outranks every document write of the same
 /// name (unless the document's `TreatAsLocalProperty` opts out), gates
@@ -102,6 +123,8 @@ open System.Text.Json
 open System.Xml
 open Microsoft.Build.Evaluation
 open Microsoft.Build.Exceptions
+open Microsoft.Build.Execution
+open Microsoft.Build.Framework
 open Microsoft.Build.Locator
 
 /// The item whose presence encodes the condition's truth. Deliberately an
@@ -386,6 +409,95 @@ let private respondItemsMeta (root: JsonElement) : string =
                        metadata = values |> Map.toSeq |> dict |}) |}
     | None -> JsonSerializer.Serialize {| ok = false |}
 
+/// Collects the messages of the errors a build raises, so a failed `defines`
+/// request says *why* instead of only that it failed.
+type private ErrorCollector() =
+    let errors = ResizeArray<string>()
+    let mutable verbosity = LoggerVerbosity.Quiet
+    let mutable parameters = ""
+
+    member _.Errors = List.ofSeq errors
+
+    interface ILogger with
+        member _.Verbosity
+            with get () = verbosity
+            and set v = verbosity <- v
+
+        member _.Parameters
+            with get () = parameters
+            and set v = parameters <- v
+
+        member _.Initialize(source: IEventSource) =
+            source.add_ErrorRaised (fun _ e -> errors.Add $"%s{e.Code}: %s{e.Message}")
+
+        member _.Shutdown() = ()
+
+/// The synthetic target whose `Returns` carries `$(DefineConstants)` out of the
+/// build. Underscore-prefixed like the SDK's private targets, and named so no
+/// real project can plausibly already define it.
+[<Literal>]
+let private DefinesTarget = "_BorzoiOracleDefineConstants"
+
+/// Run the SDK's define targets over the project at `path` (writing `xml` there
+/// first, when given) and return `$(DefineConstants)` as the item list `Fsc`
+/// would receive, or the build's error messages.
+let private evalDefines
+    (path: string)
+    (xml: string option)
+    (globals: Collections.Generic.IDictionary<string, string>)
+    : Result<string list, string list> =
+    use collection = new ProjectCollection()
+
+    try
+        match xml with
+        | Some xml ->
+            Directory.CreateDirectory(Path.GetDirectoryName path: string) |> ignore
+            File.WriteAllText(path, xml)
+        | None -> ()
+
+        let project = Project(path, globals, null, collection)
+        // Add the synthetic target to the *in-memory* document (never saved),
+        // then re-evaluate: a target is inert until invoked, so adding it
+        // changes no property or item the evaluation computes. The target
+        // depends on the two SDK define targets. `AddImplicitDefineConstants`
+        // is conditioned on `DisableImplicitFrameworkDefines`, and a skipped
+        // target does not run its dependencies, so `_DisableDiagnosticTracing`
+        // is named directly too, as `CoreCompile`'s `BeforeTargets` hook would
+        // run it regardless.
+        let target = project.Xml.AddTarget DefinesTarget
+        target.DependsOnTargets <- "AddImplicitDefineConstants;_DisableDiagnosticTracing"
+        target.Returns <- "$(DefineConstants)"
+        project.ReevaluateIfNecessary()
+        let instance = project.CreateProjectInstance()
+
+        let logger = ErrorCollector()
+        let mutable outputs: Collections.Generic.IDictionary<string, TargetResult> = null
+
+        let ok =
+            instance.Build([| DefinesTarget |], [ logger :> ILogger ], &outputs)
+
+        if ok then
+            outputs[DefinesTarget].Items
+            |> Seq.map (fun item -> item.ItemSpec)
+            |> List.ofSeq
+            |> Ok
+        else
+            Error logger.Errors
+    with :? InvalidProjectFileException as ex ->
+        Error [ ex.Message ]
+
+let private respondDefines (root: JsonElement) : string =
+    let path = root.GetProperty("path").GetString()
+
+    let xml =
+        match root.TryGetProperty "xml" with
+        | true, x when x.ValueKind = JsonValueKind.String -> Some(x.GetString())
+        | _ -> None
+
+    match evalDefines path xml (readGlobals root) with
+    | Ok defines -> JsonSerializer.Serialize {| ok = true; defines = defines |}
+    | Error errors -> JsonSerializer.Serialize {| ok = false; errors = errors |}
+
 let private respondProject (root: JsonElement) : string =
     let xml = root.GetProperty("xml").GetString()
 
@@ -429,6 +541,7 @@ let main _argv =
                     | "project" -> respondProject root
                     | "items" -> respondItems root
                     | "itemsMeta" -> respondItemsMeta root
+                    | "defines" -> respondDefines root
                     | other -> JsonSerializer.Serialize {| error = $"unknown op: %s{other}" |}
                 with ex ->
                     JsonSerializer.Serialize {| error = ex.Message |}

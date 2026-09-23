@@ -196,7 +196,7 @@ fn write_marker_atomically(marker: &Path, contents: &str) {
 /// silently reopens the hole), so clear everything and re-add only the runtime
 /// essentials — none of which a generated condition ever references. Mirrors
 /// `scrub_msbuild_env` in `fsproj_msbuild_diff.rs`, and for the same reason.
-fn scrub_oracle_env(cmd: &mut Command) {
+pub fn scrub_oracle_env(cmd: &mut Command) {
     cmd.env_clear();
     for var in ["PATH", "HOME", "TMPDIR"] {
         if let Ok(value) = std::env::var(var) {
@@ -483,6 +483,47 @@ impl Oracle {
                 })
                 .collect(),
         )
+    }
+
+    /// The `#if` symbols `Fsc` is passed for the project at `path` under
+    /// `globals`: MSBuild evaluates it, runs the SDK's define targets
+    /// (`AddImplicitDefineConstants`, `_DisableDiagnosticTracing`), and converts
+    /// `$(DefineConstants)` to the item list the `Fsc` task parameter receives.
+    /// With `xml`, the document is written to `path` first; without, the
+    /// project already on disk is used.
+    ///
+    /// `Err` carries MSBuild's error messages: an unevaluable project, or one
+    /// with no define targets at all (the outer build of a multi-targeted
+    /// project, where fsc never runs).
+    ///
+    /// The value after the SDK's define targets, not after arbitrary user build
+    /// logic: `defines_oracle_calibration` pins that boundary against the
+    /// design-time `FscCommandLineArgs`.
+    pub fn defines(
+        &mut self,
+        path: &Path,
+        xml: Option<&str>,
+        globals: &[(String, String)],
+    ) -> Result<Vec<String>, Vec<String>> {
+        let resp = self.request(&serde_json::json!({
+            "op": "defines",
+            "path": path.to_string_lossy().into_owned(),
+            "xml": xml,
+            "globals": globals_object(globals),
+        }));
+        let strings = |key: &str| -> Vec<String> {
+            resp[key]
+                .as_array()
+                .unwrap_or_else(|| panic!("oracle defines response carries a `{key}` array"))
+                .iter()
+                .map(|v| v.as_str().expect("each entry is a string").to_string())
+                .collect()
+        };
+        if resp["ok"].as_bool() == Some(true) {
+            Ok(strings("defines"))
+        } else {
+            Err(strings("errors"))
+        }
     }
 
     /// `globals` is MSBuild's **global property** set for the evaluation: the
