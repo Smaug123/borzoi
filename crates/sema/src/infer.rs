@@ -543,14 +543,16 @@ impl InferredFile {
     }
 }
 
-/// Why a binding was marked walk-incomplete ([`Gen::mark_incomplete`]): the
-/// census behind [`InferredFile::incompleteness`].
+/// Why a binding was marked walk-incomplete: the census behind
+/// [`InferredFile::incompleteness`].
 ///
 /// An incomplete binding fires no argument check and never generalises, so one
 /// unmodelled construct anywhere in a function body switches most of inference
 /// off for the whole body. The variants are coarse on purpose — one per *kind*
-/// of thing inference does not model — so that "the bindings whose only reason
-/// is X" reads directly as what modelling X would unlock.
+/// of thing inference does not model — so that "the bindings whose only
+/// observed reason is X" reads as what modelling X could unlock. It is an
+/// upper bound, not a proof: the walk does not descend into what it does not
+/// model, so a reason beneath an unmodelled construct goes unrecorded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:
@@ -1080,6 +1082,13 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// Drop the census entry [`Self::begin_binding`] opened, for a binding that
+    /// turns out not to be walked here — so the census counts walked bindings,
+    /// each once.
+    fn discard_census_entry(&mut self) {
+        self.incompleteness.pop();
+    }
+
     /// Mark the binding incomplete where a sub-walk that returned `None` has
     /// already recorded why — so the census counts the cause once.
     fn mark_incomplete_propagated(&mut self) {
@@ -1332,6 +1341,10 @@ impl<'a> Gen<'a> {
                 // the same R2-e coverage check-walk over the RHS. Any other
                 // parenthesised shape keeps today's catch-all behaviour.
                 Some(Pat::Paren(paren)) => {
+                    // Either way this binding's census entry is not the one
+                    // that stands: `bind_annotated_named` begins its own, and
+                    // any other shape is not walked at all.
+                    self.discard_census_entry();
                     if let Some((named, ty)) = trivial_typed_head(&paren) {
                         self.bind_annotated_named(&named, &ty, Some(rhs));
                     } else {
@@ -1339,6 +1352,8 @@ impl<'a> Gen<'a> {
                     }
                 }
                 _ => {
+                    // Not walked: no census entry.
+                    self.discard_census_entry();
                     self.solve();
                     continue;
                 }
@@ -1450,7 +1465,7 @@ impl<'a> Gen<'a> {
     /// outside the gate keeps the whole-binding skip (no walk), as before.
     fn bind_annotated_named(&mut self, named: &NamedPat, ann: &Type, rhs: Option<Expr>) {
         self.begin_binding();
-        if let Some(t) = self.annotation_ty(ann)
+        let walked = if let Some(t) = self.annotation_ty(ann)
             && let Some(tok) = named.ident()
             && let Some(def) = self.def_at(tok.text_range())
         {
@@ -1465,6 +1480,12 @@ impl<'a> Gen<'a> {
                 );
                 let _ = self.infer_expr(&rhs, Some(dv));
             }
+            true
+        } else {
+            false
+        };
+        if !walked {
+            self.discard_census_entry();
         }
         self.solve();
     }
@@ -2225,7 +2246,12 @@ impl<'a> Gen<'a> {
         }
         self.settle();
         if !self.table.resolve(&Ty::Var(dv)).is_ground() {
-            self.mark_incomplete(Incomplete::OpenLocal);
+            match rhs_var {
+                // A RHS that synthesized but is not ground: the local is open.
+                Some(_) => self.mark_incomplete(Incomplete::OpenLocal),
+                // The RHS failed, and recorded why; that is the one reason.
+                None => self.mark_incomplete_propagated(),
+            }
         }
     }
 
@@ -5294,7 +5320,8 @@ mod tests {
     #[test]
     fn incompleteness_names_what_each_binding_did_not_model() {
         use super::{Incomplete, SyntaxKind};
-        let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n";
+        let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n\
+                   let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y + 1 in 0\n";
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
@@ -5307,6 +5334,11 @@ mod tests {
                 vec![],
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
                 vec![Incomplete::UnitParam],
+                // `let (x: int) = 1`: one walked binding, complete.
+                vec![],
+                // `let (p, q) = …` is not walked, so it has no entry.
+                // `h`: the local's RHS failed; that is its one reason.
+                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
             ]
         );
     }

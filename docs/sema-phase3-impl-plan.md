@@ -101,20 +101,22 @@ sound commit rule.
 An incomplete binding fires no argument check and never generalises, so on real
 code most of what inference could say is withheld by the *completeness* gate
 rather than by any one typing rule. `infer_corpus_diff` prints, from
-`InferredFile::incompleteness`, which construct is the **only** reason a binding
-is incomplete — i.e. what modelling it alone would unlock. On the stride-13
-corpus sample (2026-09-22, after CE-1; 2 799 walked bindings, 37 % complete):
+`InferredFile::incompleteness`, which construct is the **only observed** reason
+a binding is incomplete — an upper bound on what modelling it alone would unlock
+(the walk does not descend into what it does not model, so a reason beneath an
+unmodelled construct goes unseen). On the stride-13
+corpus sample (2026-09-23, after CE-1; 2 674 walked bindings, 34.6 % complete):
 
-| blocker | sole blocker of | present in |
+| blocker | only observed reason of | present in |
 |---|---:|---:|
-| infix operator application | 336 | 626 |
-| method call on a receiver that is not an in-file value | 144 | 265 |
+| infix operator application | 339 | 626 |
+| method call on a receiver that is not an in-file value | 147 | 265 |
 | value not bound in this file (assembly / earlier file) | 101 | 258 |
-| `match` | 95 | 203 |
+| `match` | 93 | 198 |
 | tupled parameter | 39 | 163 |
-| parameter annotation outside the modelled set | 36 | 264 |
+| parameter annotation outside the modelled set | 36 | 261 |
 | `new` | 31 | 37 |
-| list / array expression | 29 | 80 |
+| record expression | 22 | 36 |
 
 Two corollaries shaped the order of work. Infix operators are the first lever
 by a wide margin. And a rule that only fires on complete bindings — the guarded
