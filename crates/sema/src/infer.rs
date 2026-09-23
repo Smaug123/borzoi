@@ -116,15 +116,16 @@
 //! ill-typed mid-edit code F# resolves the conflict differently (keeping `int`,
 //! reporting the condition error). So the condition-derived `bool` must not reach
 //! any place we publish a parameter's *own* type. The mechanism:
-//! [`Gen::param_var`] gives each simple named parameter a **private slot**
+//! [`Gen::param_var`] gives each named parameter — alone, or an element of a
+//! tupled parameter ([`Gen::pattern_ty`]) — a **private slot**
 //! variable that is the parameter's type *inside* the function's `Ty::Fun`, and
 //! condition typing grounds **that slot** ([`Gen::param_slots`]), *not* the
 //! parameter's binder [`def_var`](Gen::def_var). The binder's variable — which
 //! its expression uses and `def_type` read off — is therefore never grounded by a
 //! condition, so `bool` flows *only* into the function signature and never into a
-//! standalone parameter read-off (D5). Any non-simple parameter (annotated,
-//! tupled, wildcard, unit) gets no slot, so it never grounds and the function
-//! defers.
+//! standalone parameter read-off (D5). A parameter pattern outside the modelled
+//! shapes (unit, a constructor, an annotation outside the modelled set) gets no
+//! slot, so it never grounds and the function defers.
 //!
 //! Publishing only the function type is provably sound: a ground `Ty::Fun` means
 //! every parameter slot is ground, and any unmodelled constraint on a parameter
@@ -151,7 +152,7 @@
 //!   generation, any sub-expression or pattern we do not fully model marks the
 //!   binding *incomplete* (every `None`-return arm of [`Gen::infer_construct`], a
 //!   deferred literal, an unresolved name, a lambda, a struct/degenerate tuple, an
-//!   `if` with no final `else`, a non-simple parameter, and a condition shape
+//!   `if` with no final `else`, an unmodelled parameter pattern, and a condition shape
 //!   [`Gen::constrain_bool`] does not fully model — a compound `x && y` drops FCS
 //!   constraints on `x`/`y`). Incomplete ⇒ **no generalisation** (ground emission
 //!   is unaffected — the subset argument needs no completeness).
@@ -422,9 +423,9 @@ use std::collections::{HashMap, HashSet};
 
 use borzoi_assembly::{EntityKind, FSharpConstraints, Primitive, TypeRef};
 use borzoi_cst::syntax::{
-    AppExpr, AstNode, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr, ImplFile, LetDecl,
-    LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat, SequentialExpr, SyntaxKind,
-    SyntaxNode, SyntaxToken, TupleSegment, Type,
+    AppExpr, AstNode, AttributeList, Binding, ConstExpr, DotGetExpr, Expr, IfThenElseExpr,
+    ImplFile, LetDecl, LetOrUseExpr, LongIdentExpr, LongIdentPat, NamedPat, ParenPat, Pat,
+    SequentialExpr, SyntaxKind, SyntaxNode, SyntaxToken, TupleSegment, Type,
 };
 use rowan::TextRange;
 
@@ -576,8 +577,8 @@ pub enum Incomplete {
     ElselessIf,
     /// A struct tuple.
     StructTuple,
-    /// An expression-level `let` that is not `let name = rhs`: a local
-    /// function, a pattern, an annotation.
+    /// An expression-level `let` that is not `let pat = rhs`: a local
+    /// function, a return annotation, an attribute that may be `EntryPoint`.
     LocalBindingShape,
     /// A local whose RHS is not ground when it is bound.
     OpenLocal,
@@ -589,15 +590,22 @@ pub enum Incomplete {
     ConditionNotParameter,
     /// A condition on a parameter that is not the parameter's first occurrence.
     ConditionNotFirstOccurrence,
-    /// A `()` parameter.
-    UnitParam,
-    /// A tupled parameter `(a, b)`.
-    TupleParam,
-    /// A parameter annotation outside the modelled set.
-    ParamAnnotation,
-    /// Any other parameter pattern, by its syntax kind: a wildcard, a
-    /// constructor, a record, …
-    ParamShape(SyntaxKind),
+    /// A `()` pattern: `unit` has no [`Ty`].
+    UnitPattern,
+    /// A pattern annotation outside the modelled set, or around anything but
+    /// a name.
+    PatternAnnotation,
+    /// A `let` pattern holding an annotation, whose relation to the RHS is a
+    /// coercion.
+    CoercedPattern,
+    /// A name bound twice in one binding's parameters or pattern.
+    DuplicateBinder,
+    /// A `let` pattern whose RHS type holds an earlier binding's open
+    /// variable, on which the pattern would impose structure.
+    InheritedOpen,
+    /// Any other pattern, by its syntax kind: a constructor, a record, a
+    /// literal, …
+    PatternShape(SyntaxKind),
     /// A callee that is not an in-file value or a curried application, by its
     /// syntax kind: an infix operator, a qualified module function
     /// (`List.map`), a lambda, …
@@ -611,6 +619,32 @@ pub enum Incomplete {
     MethodArgShape,
     /// A syntax-recovery hole: a missing sub-expression, an empty paren.
     Recovery,
+}
+
+/// Where a pattern's named binders are bound, which decides the variable each
+/// one's type is read from ([`Gen::register_binder`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BinderSite {
+    /// A function parameter.
+    Param,
+    /// An expression-level `let`.
+    Local,
+    /// A module-level `let`.
+    Module,
+}
+
+/// A pattern as inference reads it ([`Gen::pattern_shape`]): the shapes it
+/// types, each name already resolved to its binder.
+#[derive(Debug, Clone)]
+enum PatShape {
+    /// A name.
+    Name(DefId),
+    /// A name with an annotation in the modelled set, and its type.
+    Annotated(DefId, Ty),
+    /// `_`.
+    Wildcard,
+    /// A (reference) tuple of two or more elements.
+    Tuple(Vec<PatShape>),
 }
 
 /// A type constraint produced by generation and discharged by the solver.
@@ -1228,6 +1262,39 @@ impl<'a> Gen<'a> {
             .and_then(|res| self.resolved.resolved_def_id(res))
     }
 
+    /// Whether `node` — a `let` declaration or one of its bindings — carries an
+    /// attribute of its own (`[<A>] let x = …` puts it on the declaration,
+    /// `let [<A>] x = …` on the binding) that may be FSharp.Core's
+    /// `EntryPointAttribute`. FCS unifies such a binding with `string[] -> int`
+    /// before checking its body, so neither the binding's type nor its body's
+    /// nodes can be read from the binding alone.
+    ///
+    /// Which type an attribute denotes is the resolver's verdict
+    /// ([`ResolvedFile::attribute_may_be`]), since an abbreviation or an
+    /// `open type` reaches `EntryPoint` under any name. An assembly
+    /// abbreviation's target is not chased, so one counts as a possible
+    /// `EntryPoint`, as does an attribute with no name to key it by.
+    fn may_be_entry_point(&self, node: &SyntaxNode) -> bool {
+        let env = self.env;
+        node.children()
+            .filter_map(AttributeList::cast)
+            .flat_map(|list| list.attributes().collect::<Vec<_>>())
+            .any(|attr| {
+                let toks: Vec<SyntaxToken> = attr
+                    .type_name()
+                    .map(|n| n.idents().collect())
+                    .unwrap_or_default();
+                let (Some(first), Some(last)) = (toks.first(), toks.last()) else {
+                    return true;
+                };
+                let range = TextRange::new(first.text_range().start(), last.text_range().end());
+                self.resolved.attribute_may_be(range, |h| {
+                    env.is_entry_point_attribute(h)
+                        || env.entity(h).kind == EntityKind::Abbreviation
+                })
+            })
+    }
+
     /// Fold `file` into per-binding constraint batches, solving each before the
     /// next (Algorithm W's sequential order — the generation half of D8, now at
     /// binding granularity). The walk visits `LET_DECL`s in **document order**,
@@ -1256,6 +1323,65 @@ impl<'a> Gen<'a> {
     /// body, reunify parameter slots on a complete binding, then **generalise** or
     /// emit the function type.
     fn let_binding(&mut self, let_decl: &LetDecl) {
+        // A declaration is typed only if nothing up to its end recovered.
+        // Recovery can spill past the declaration it broke out of — `let f
+        // (s: string)) p =` leaves its indented body's `let`s standing as
+        // apparently intact top-level declarations, which FCS never checks —
+        // so no declaration after a recovery can be shown to be one FCS
+        // typed. A broken declaration's own binders are skipped the same way.
+        if self.resolved.recovery().clean_through(let_decl.syntax()) {
+            self.type_let_decl(let_decl);
+        }
+        for binding in let_decl.bindings() {
+            self.own_binders(&binding);
+        }
+    }
+
+    /// Give every name a module-level binding binds its variable now, in its
+    /// own declaration, whether or not the declaration was typed.
+    ///
+    /// A binder's variable is otherwise created lazily, at its first use —
+    /// and a use in a later binding would then allocate it *after* that
+    /// binding's mark, where it passes for the later binding's own variable:
+    /// the guards that stop a binding grounding an earlier binder's open
+    /// variable ([`Self::arg_check_binds_only_current_vars`],
+    /// [`Self::mentions_inherited_open`]) key on allocation age, and would let
+    /// `mono u` retype a `let rec u` as `mono`'s domain. Parameters are not
+    /// binders of the declaration and are left to their function.
+    fn own_binders(&mut self, binding: &Binding) {
+        let Some(pat) = binding.pat() else {
+            return;
+        };
+        let names: Vec<NamedPat> = match &pat {
+            Pat::LongIdent(head)
+                if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
+            {
+                Vec::new()
+            }
+            _ => pat
+                .syntax()
+                .descendants()
+                .filter_map(NamedPat::cast)
+                .collect(),
+        };
+        let mut defs: Vec<DefId> = names
+            .iter()
+            .filter_map(|n| n.ident())
+            .filter_map(|tok| self.def_at(tok.text_range()))
+            .collect();
+        if let Pat::LongIdent(head) = &pat
+            && let Some(name) = head.head().and_then(|li| li.idents().last())
+            && let Some(def) = self.def_at(name.text_range())
+        {
+            defs.push(def);
+        }
+        for def in defs {
+            self.def_var(def);
+        }
+    }
+
+    /// Type one module-level `let` declaration ([`Self::let_binding`]).
+    fn type_let_decl(&mut self, let_decl: &LetDecl) {
         // A recursive group (`let rec … and …`) is solved as a unit: a sibling
         // binding's constraints can flow back to a binder, so a literal RHS is
         // *not* isolated and its type may be retargeted. Defer the whole group
@@ -1263,7 +1389,23 @@ impl<'a> Gen<'a> {
         if let_decl.is_rec() {
             return;
         }
+        // A binding that may carry `[<EntryPoint>]` is not typed at all
+        // ([`Self::may_be_entry_point`]); its binders stay open, and a later
+        // use of one is an environment reference that never generalises.
+        if self.may_be_entry_point(let_decl.syntax()) {
+            return;
+        }
         for binding in let_decl.bindings() {
+            if self.may_be_entry_point(binding.syntax()) {
+                continue;
+            }
+            // `let mutable f x = …` is FS0831: FCS types the function
+            // monomorphically at `obj`, which nothing here models.
+            if binding.is_mutable()
+                && matches!(binding.pat(), Some(Pat::LongIdent(head)) if head.args().next().is_some())
+            {
+                continue;
+            }
             // A return-type annotation (`let x : T = …` / `let f x : T = …`)
             // supplies an expected type that checks — and may retarget — the RHS
             // or body, a coercion-possible position: the RHS is never walked
@@ -1342,9 +1484,19 @@ impl<'a> Gen<'a> {
                     if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
                 {
                     self.cur_body = Some(rhs.syntax().clone());
-                    let arg_vars: Vec<TyVid> =
-                        head.args().map(|arg| self.param_var(&arg)).collect();
+                    let arg_vars = self.param_vars(&head);
+                    // FCS binds a parameter directly only if it is simple
+                    // ([`is_simple_param`]); any other it elaborates through a
+                    // `match` whose target is the body, and the typed tree then
+                    // keys the body's nodes elsewhere (`(a, ())` moves the
+                    // body's root to the `()`). The body's type is still the
+                    // function's result, exactly, so it is walked as usual, but
+                    // nothing it records is kept.
+                    let body_mark = self.emission_mark();
                     let ret = self.infer_expr(&rhs, None);
+                    if !head.args().all(|arg| is_simple_param(&arg)) {
+                        self.discard_emissions_since(body_mark);
+                    }
                     let f_def = self.function_type(&head, &arg_vars, ret);
                     // On a complete binding, undo the 2b slot/binder decoupling so
                     // `let id x = x` generalises to `'a -> 'a`, not `'a -> 'b`.
@@ -1362,16 +1514,26 @@ impl<'a> Gen<'a> {
                 // binder↔annotation truth as the return-annotation form, with
                 // the same R2-e coverage check-walk over the RHS. Any other
                 // parenthesised shape keeps today's catch-all behaviour.
-                Some(Pat::Paren(paren)) => {
-                    // Either way this binding's census entry is not the one
-                    // that stands: `bind_annotated_named` begins its own, and
-                    // any other shape is not walked at all.
+                Some(Pat::Paren(paren)) if trivial_typed_head(&paren).is_some() => {
+                    // `bind_annotated_named` begins its own census entry.
                     self.discard_census_entry();
                     if let Some((named, ty)) = trivial_typed_head(&paren) {
                         self.bind_annotated_named(&named, &ty, Some(rhs));
-                    } else {
-                        self.solve();
                     }
+                }
+                // A pattern value binding `let (a, b) = <rhs>`, typed like a
+                // plain value binding: the pattern's binders are linked to the
+                // RHS through the pattern's structure ([`Self::pattern_rhs`]),
+                // and nothing generalises. A shape [`Self::pattern_ty`] rejects
+                // is not walked at all, and a later use of a binder it leaves
+                // open is an environment reference, which is poisoned and so
+                // never generalises.
+                Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
+                    match self.binding_pattern_ty(&binding, &pat, BinderSite::Module) {
+                        Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
+                        Err(_) => self.discard_census_entry(),
+                    }
+                    self.solve();
                 }
                 _ => {
                     // Not walked: no census entry.
@@ -1437,7 +1599,7 @@ impl<'a> Gen<'a> {
         let mark = self.begin_binding();
         self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
-        let arg_vars: Vec<TyVid> = head.args().map(|arg| self.param_var(&arg)).collect();
+        let arg_vars = self.param_vars(head);
         let r = self.table.fresh();
         self.eq(Ty::Var(r), t);
         if let Some(rhs) = rhs {
@@ -2125,7 +2287,14 @@ impl<'a> Gen<'a> {
             Expr::Fun(fun) => {
                 if let Some(body) = fun.body() {
                     let body_expected = expected.map(|_| self.table.fresh());
+                    // A lambda's parameters are elaborated as a function's
+                    // are: behind a non-simple one the body's nodes move, so
+                    // it records nothing (see [`is_simple_param`]).
+                    let body_mark = self.emission_mark();
                     self.infer_expr(&body, body_expected);
+                    if !fun.args().all(|arg| is_simple_param(&arg)) {
+                        self.discard_emissions_since(body_mark);
+                    }
                 }
                 // The lambda's own function type is not modelled yet (`Ty::Fun` on
                 // a `fun` value is a later slice), so it defers — and marks the
@@ -2215,13 +2384,24 @@ impl<'a> Gen<'a> {
     /// RHS nodes nor its binders — by [`Self::infer_expr_inner`]'s barrier.
     fn infer_let_in(&mut self, e: &LetOrUseExpr, expected: Option<TyVid>) -> Option<TyVid> {
         for binding in e.bindings() {
+            // A local that may carry `[<EntryPoint>]` is not typed, as at
+            // module level ([`Self::let_binding`]).
+            if self.may_be_entry_point(e.syntax()) || self.may_be_entry_point(binding.syntax()) {
+                self.mark_incomplete(Incomplete::LocalBindingShape);
+                continue;
+            }
             self.local_binding(&binding);
         }
         let Some(body) = e.body() else {
             self.mark_incomplete(Incomplete::Recovery);
             return None;
         };
-        self.infer_expr(&body, expected)
+        let body_mark = self.emission_mark();
+        let result = self.infer_expr(&body, expected);
+        if e.bindings().any(|b| moves_its_continuation(&b)) {
+            self.discard_emissions_since(body_mark);
+        }
+        result
     }
 
     /// One binding of an expression-level `let` (CE-1). A **local is not
@@ -2231,46 +2411,142 @@ impl<'a> Gen<'a> {
     /// `int`, and the second use's result would read back `int` where FCS has
     /// `string`.
     ///
-    /// So a local types only when its RHS is **ground on its own**, before the
-    /// continuation is walked: the RHS is inferred in synth mode (an
-    /// unannotated binding imposes no expected type), linked to the binder, and
-    /// the constraints so far are [settled](Self::settle). A ground binder can
-    /// then only be *confirmed* by the continuation — a conflicting use fails
-    /// and rolls back, exactly as FCS reports the use rather than retyping the
-    /// binder. A binder still open at that point is one FCS may have
-    /// generalised, or grounded through something we do not model, so the
-    /// binding is marked **incomplete**: no argument check fires in it, which is
-    /// the one channel through which a use could ground the local's variable,
-    /// and nothing in it generalises.
+    /// So a local types only when it is **ground on its own**, before the
+    /// continuation is walked: the pattern is typed ([`Self::pattern_ty`]), the
+    /// RHS is inferred and linked to it, and the constraints so far are
+    /// [settled](Self::settle). A ground binder can then only be *confirmed* by
+    /// the continuation — a conflicting use fails and rolls back, exactly as
+    /// FCS reports the use rather than retyping the binder. A binder still open
+    /// at that point is one FCS may have generalised, or grounded through
+    /// something we do not model, so the binding is marked **incomplete**: no
+    /// argument check fires in it, which is the one channel through which a
+    /// use could ground the local's variable, and nothing in it generalises.
     ///
-    /// Every other binding shape (a function head, a tuple or wildcard pattern,
-    /// a return annotation) is unmodelled: the binding is marked incomplete and
-    /// its RHS is not walked. Its binders get variables lazily at their uses,
+    /// FCS checks the RHS against the pattern's type, which decides what it
+    /// keeps of the RHS's nodes ([`Self::pattern_rhs`]).
+    ///
+    /// A function head or a return annotation is unmodelled, as is a pattern
+    /// [`Self::pattern_ty`] rejects: the binding is marked incomplete and its
+    /// RHS is not walked. Its binders get variables lazily at their uses,
     /// open, and only the incompleteness keeps them from being grounded there.
     fn local_binding(&mut self, binding: &Binding) {
-        let (None, Some(Pat::Named(named)), Some(rhs)) =
-            (binding.return_type(), binding.pat(), binding.expr())
+        let (None, Some(pat), Some(rhs)) = (binding.return_type(), binding.pat(), binding.expr())
         else {
             self.mark_incomplete(Incomplete::LocalBindingShape);
             return;
         };
-        let recorded = self.reasons_recorded();
-        let rhs_var = self.infer_expr(&rhs, None);
-        let Some(def) = named.ident().and_then(|tok| self.def_at(tok.text_range())) else {
-            self.mark_incomplete(Incomplete::Recovery);
+        if matches!(pat, Pat::LongIdent(_)) {
+            self.mark_incomplete(Incomplete::LocalBindingShape);
             return;
-        };
-        let dv = self.def_var(def);
-        self.local_defs.insert(def);
-        self.local_emits
-            .push((def, self.guard_stack.last().copied()));
-        if let Some(rhs_var) = rhs_var {
-            self.eq(Ty::Var(dv), Ty::Var(rhs_var));
         }
-        self.settle();
-        if !self.table.resolve(&Ty::Var(dv)).is_ground() {
+        let recorded = self.reasons_recorded();
+        let pat_ty = match self.binding_pattern_ty(binding, &pat, BinderSite::Local) {
+            Ok(t) => t,
+            Err(why) => {
+                self.mark_incomplete(why);
+                return;
+            }
+        };
+        self.pattern_rhs(&pat, pat_ty.clone(), &rhs, BinderSite::Local);
+        // The whole pattern's type, not just its names': a wildcard binds
+        // nothing, but an RHS still open under it is as unsettled as a named
+        // one.
+        if !self.table.resolve(&pat_ty).is_ground() {
             self.mark_consequence(recorded, Incomplete::OpenLocal);
         }
+    }
+
+    /// Walk the RHS of a pattern binding against the pattern's type `pat_ty`
+    /// and [settle](Self::settle), for a binding at `site`.
+    ///
+    /// FCS checks the RHS *against* the pattern's type. What that relation is
+    /// depends on whether the pattern holds an annotation.
+    ///
+    /// **Annotated** (`let (a: obj, b) = …`): the check is a coercion position,
+    /// so the relation is subsumption, which is not modelled. An equality in
+    /// its place would be wrong both ways — it would write the annotation's
+    /// type into whatever the RHS mentions (an earlier binder FCS generalised,
+    /// a parameter a condition grounds), and it fails on a legal coercion. So
+    /// the relation is dropped: the RHS is walked in check mode, recording
+    /// nothing, and the binding is marked incomplete. The annotated names keep
+    /// their annotations' types, which hold at the binder whatever the RHS.
+    ///
+    /// **Unannotated**: the pattern's type is a tuple tree of fresh variables,
+    /// so the relation is an equality, and one that can only bind those fresh
+    /// variables or impose tuple structure — never a type the RHS did not
+    /// have. It is added after the RHS's own constraints have settled, since
+    /// FCS resolves those first, and only if the settled RHS holds no earlier
+    /// binding's open variable ([`Self::mentions_inherited_open`]). What FCS keeps of the RHS's nodes is mirrored
+    /// in two ways:
+    ///
+    /// - A local pattern binding (not a bare name) whose RHS is a bare value
+    ///   binds that value directly, and FCS keeps no node for it. So a name or
+    ///   dotted path RHS is walked in check mode, which records nothing; for a
+    ///   name that loses nothing else, and a dotted path (which may be a
+    ///   qualified value, or a member access FCS does keep) gives up its
+    ///   receiver's nodes too.
+    /// - A check that fails drops the RHS's nodes — how far down depends on
+    ///   where the expected type stops propagating (a tuple of the wrong arity
+    ///   keeps none of its elements). So the RHS's nodes stand only if the
+    ///   equality holds once settled. A relation still pending then is an
+    ///   argument check, which FCS resolves after pushing the pattern's type
+    ///   into the call, so it may fail inside the call's argument; but an
+    ///   argument's nodes are never recorded, so nothing kept here sits there.
+    fn pattern_rhs(&mut self, pat: &Pat, pat_ty: Ty, rhs: &Expr, site: BinderSite) {
+        let annotated = pat
+            .syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::TYPED_PAT);
+        if annotated {
+            let expected = self.table.fresh();
+            self.infer_expr(rhs, Some(expected));
+            self.mark_incomplete(Incomplete::CoercedPattern);
+            self.settle();
+            return;
+        }
+        let bound_directly = site == BinderSite::Local
+            && !matches!(pat, Pat::Named(_))
+            && matches!(
+                unparenthesize(rhs.clone()),
+                Some(Expr::Ident(_) | Expr::LongIdent(_))
+            );
+        let expected = bound_directly.then(|| self.table.fresh());
+        let mark = self.emission_mark();
+        let rhs_var = self.infer_expr(rhs, expected);
+        self.settle();
+        // A pattern that is a single variable (a name, a wildcard) imposes no
+        // structure, so its check cannot fail, and the RHS's nodes stand even
+        // when the RHS itself does not synthesize.
+        let structural = !matches!(pat_ty, Ty::Var(_));
+        if structural && rhs_var.is_some_and(|v| self.mentions_inherited_open(v)) {
+            // The equality would give an earlier binding's open variable a
+            // structure of this binding's fresh variables, which then pass for
+            // this binding's own: an argument check could ground them, and so
+            // retype the earlier binder. The relation is dropped instead.
+            self.mark_incomplete(Incomplete::InheritedOpen);
+            self.discard_emissions_since(mark);
+            return;
+        }
+        if let Some(rhs_var) = rhs_var {
+            self.eq(pat_ty.clone(), Ty::Var(rhs_var));
+        }
+        self.settle();
+        let agrees =
+            rhs_var.is_some_and(|v| self.table.resolve(&pat_ty) == self.table.resolve(&Ty::Var(v)));
+        if structural && !agrees {
+            self.discard_emissions_since(mark);
+        }
+    }
+
+    /// Whether `v`'s type mentions an open variable an earlier binding owns —
+    /// the variables [`Self::arg_check_binds_only_current_vars`] refuses to
+    /// let an argument check ground.
+    fn mentions_inherited_open(&mut self, v: TyVid) -> bool {
+        let mut roots = HashSet::new();
+        collect_var_roots(&self.table.resolve(&Ty::Var(v)), &mut roots);
+        roots
+            .into_iter()
+            .any(|r| self.table.any_older_unioned(r, self.cur_mark))
     }
 
     /// A sequence `s1; …; sn` (CE-1), typed as its last statement, which carries
@@ -3128,12 +3404,12 @@ impl<'a> Gen<'a> {
     /// (3.2c-2c).
     ///
     /// `arg_vars` come from [`Self::param_var`], collected *before* the body walk
-    /// so a simple named parameter's private slot is recorded in time for the
-    /// body's condition typing to ground it. Sound by construction: a simple named
-    /// parameter contributes a private slot variable (grounded, if at all, only by
-    /// condition typing, and read off *only* through this function type); any other
-    /// parameter shape (annotated, tuple, wildcard, unit) contributes a fresh
-    /// unbound variable, leaving the function type non-ground so it defers.
+    /// so a named parameter's private slot is recorded in time for the body's
+    /// condition typing to ground it. Sound by construction: a named parameter
+    /// (alone or inside a tuple) contributes a private slot variable (grounded,
+    /// if at all, by its annotation or by condition typing, and read off *only*
+    /// through this function type); an unmodelled parameter shape contributes a
+    /// fresh unbound variable, leaving the function type non-ground so it defers.
     ///
     /// Returns the function's `DefId` when it built and constrained the type, so
     /// [`Self::let_binding`] can finalise it ([`Self::finalise_function`]);
@@ -3192,68 +3468,186 @@ impl<'a> Gen<'a> {
     /// that is the point of the stage — because the annotation is now a
     /// modelled constraint, not a dropped one.
     ///
-    /// Any other pattern shape (a non-table annotation, tuple, wildcard, unit,
-    /// constructor, or a recovery hole) gets a fresh, unregistered variable —
+    /// A tuple, wildcard or parenthesised parameter is typed structurally by
+    /// [`Self::pattern_ty`]: a tuple's slot is the tuple of its elements'
+    /// slots, each named element registered exactly as a simple parameter is,
+    /// and a wildcard is a fresh variable that nothing grounds, so it
+    /// generalises like an unused parameter.
+    ///
+    /// Any other pattern shape (a non-table annotation, unit, a constructor, a
+    /// struct tuple, or a recovery hole) gets a fresh, unregistered variable —
     /// never ground, so it defers the whole function type — and marks the
     /// binding **incomplete** (Stage 3.2c-2c): its type comes from a shape
     /// this stage does not model, so a function with such a parameter must not
     /// generalise.
     fn param_var(&mut self, pat: &Pat) -> TyVid {
-        match pat {
-            Pat::Named(named) => {
+        match self.pattern_ty(pat, BinderSite::Param) {
+            Ok(Ty::Var(slot)) => slot,
+            Ok(t) => {
                 let slot = self.table.fresh();
-                if let Some(tok) = named.ident()
-                    && let Some(def) = self.def_at(tok.text_range())
-                {
-                    self.param_slots.insert(def, slot);
-                    // Track the parameter for (a) the "never published standalone"
-                    // exclusion in `finish` and (b) the slot=binder reunification on
-                    // a complete binding.
-                    self.param_defs.insert(def);
-                    self.cur_params.push((def, slot));
-                }
+                self.eq(Ty::Var(slot), t);
                 slot
             }
-            // Stage R2-b: `(x: T)` with a table annotation is a normal simple
-            // parameter whose slot *and* binder are grounded to the
-            // annotation's type (see the method docs for why both, eagerly).
-            Pat::Typed(typed) => {
-                if let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty))
-                    && let Some(Pat::Named(named)) = typed.pat()
-                    && let Some(tok) = named.ident()
-                    && let Some(def) = self.def_at(tok.text_range())
-                {
-                    let slot = self.table.fresh();
-                    self.param_slots.insert(def, slot);
-                    self.param_defs.insert(def);
-                    self.cur_params.push((def, slot));
-                    let dv = self.def_var(def);
-                    self.eq(Ty::Var(slot), t.clone());
-                    self.eq(Ty::Var(dv), t);
-                    slot
-                } else {
-                    self.mark_incomplete(Incomplete::ParamAnnotation);
-                    self.table.fresh()
-                }
-            }
-            Pat::Paren(p) => match p.inner() {
-                Some(inner) => self.param_var(&inner),
-                None => {
-                    self.mark_incomplete(Incomplete::Recovery);
-                    self.table.fresh()
-                }
-            },
-            _ => {
-                let why = match pat {
-                    Pat::Tuple(_) => Incomplete::TupleParam,
-                    // `()` is a constant pattern whose node is zero-width: the
-                    // parentheses sit outside it.
-                    Pat::Const(c) if c.syntax().text().is_empty() => Incomplete::UnitParam,
-                    other => Incomplete::ParamShape(other.syntax().kind()),
-                };
+            Err(why) => {
                 self.mark_incomplete(why);
                 self.table.fresh()
             }
+        }
+    }
+
+    /// The slot variables of a function head's parameters ([`Self::param_var`]).
+    ///
+    /// A name bound twice among them is not typed at all: FCS rejects every
+    /// such head but one — a nested tuple, `((a, b), a)`, whose body sees the
+    /// inner `a` — and which binder a use means there is FCS's elaboration
+    /// order, not the resolver's scoping. Each parameter then gets a fresh,
+    /// unregistered variable, so no condition can ground a slot through a use
+    /// resolved to the wrong binder, and the binding is incomplete.
+    fn param_vars(&mut self, head: &LongIdentPat) -> Vec<TyVid> {
+        let args: Vec<Pat> = head.args().collect();
+        if binds_a_name_twice(&args) {
+            self.mark_incomplete(Incomplete::DuplicateBinder);
+            return args.iter().map(|_| self.table.fresh()).collect();
+        }
+        args.iter().map(|arg| self.param_var(arg)).collect()
+    }
+
+    /// [`Self::pattern_ty`] for the whole pattern of `binding`, declining
+    /// shapes FCS rejects as a binding: a name bound twice (as
+    /// [`Self::param_vars`] does), and `inline` or `mutable` on anything but a
+    /// bare name, for which FCS creates no binders at all.
+    fn binding_pattern_ty(
+        &mut self,
+        binding: &Binding,
+        pat: &Pat,
+        site: BinderSite,
+    ) -> Result<Ty, Incomplete> {
+        if !matches!(pat, Pat::Named(_)) && (binding.is_inline() || binding.is_mutable()) {
+            return Err(Incomplete::PatternShape(pat.syntax().kind()));
+        }
+        if binds_a_name_twice(std::slice::from_ref(pat)) {
+            return Err(Incomplete::DuplicateBinder);
+        }
+        self.pattern_ty(pat, site)
+    }
+
+    /// The type of pattern `pat`, generated structurally, with each named
+    /// binder in it registered for `site`; `Err` names the first shape not
+    /// modelled. The pattern is read whole ([`Self::pattern_shape`]) before
+    /// anything is generated, so a rejected pattern registers no binder and
+    /// adds no constraint: a name annotated beside a `()` is not left grounded.
+    fn pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
+        let shape = self.pattern_shape(pat)?;
+        Ok(self.gen_pattern(&shape, site))
+    }
+
+    /// Read a pattern into the shapes inference types, or name the first one it
+    /// does not. Generates nothing.
+    ///
+    /// A struct tuple is not modelled ([`Ty::Tuple`] has no struct flag), nor
+    /// is `()`, since `unit` has no [`Ty`], nor an annotation around anything
+    /// but a name, or outside the modelled set ([`Self::annotation_ty`]).
+    fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
+        // Recovery drops what it cannot parse, so a recovered pattern's
+        // surviving children look well-formed: `(a,b,)` reads as a pair, where
+        // FCS keeps a third, recovery element. And it can spill past the
+        // declaration it broke out of, leaving a later `let` apparently intact
+        // where FCS never checks it. So a pattern is read only when nothing up
+        // to it recovered ([`crate::recovery::SyntaxRecovery::clean_through`]).
+        let recovery = self.resolved.recovery();
+        if !recovery.declaration_is_intact(pat.syntax()) || !recovery.clean_through(pat.syntax()) {
+            return Err(Incomplete::Recovery);
+        }
+        let named_def = |named: &NamedPat| {
+            named
+                .ident()
+                .and_then(|tok| self.def_at(tok.text_range()))
+                .ok_or(Incomplete::Recovery)
+        };
+        match pat {
+            Pat::Named(named) => Ok(PatShape::Name(named_def(named)?)),
+            Pat::Typed(typed) => {
+                let Some(t) = typed.ty().and_then(|ty| self.annotation_ty(&ty)) else {
+                    return Err(Incomplete::PatternAnnotation);
+                };
+                let Some(Pat::Named(named)) = typed.pat() else {
+                    return Err(Incomplete::PatternAnnotation);
+                };
+                Ok(PatShape::Annotated(named_def(&named)?, t))
+            }
+            Pat::Wildcard(_) => Ok(PatShape::Wildcard),
+            Pat::Tuple(tuple) if tuple.is_struct() => Err(Incomplete::StructTuple),
+            Pat::Tuple(tuple) => {
+                let elems = tuple
+                    .elements()
+                    .map(|el| self.pattern_shape(&el))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if elems.len() < 2 {
+                    return Err(Incomplete::Recovery);
+                }
+                Ok(PatShape::Tuple(elems))
+            }
+            Pat::Paren(p) => match p.inner() {
+                Some(inner) => self.pattern_shape(&inner),
+                None => Err(Incomplete::Recovery),
+            },
+            // `()` is a constant pattern whose node is zero-width: the
+            // parentheses sit outside it.
+            Pat::Const(c) if c.syntax().text().is_empty() => Err(Incomplete::UnitPattern),
+            other => Err(Incomplete::PatternShape(other.syntax().kind())),
+        }
+    }
+
+    /// Generate a read pattern's type, registering each name for `site`.
+    ///
+    /// A name is typed by its site's variable: a parameter's private slot
+    /// (see [`Self::param_var`]), or, for a `let`, its binder variable. An
+    /// annotated name is grounded to its annotation — the binder↔annotation
+    /// relation holds even on ill-typed code, so the annotation wins at the
+    /// binder. For a parameter that grounds both the slot and the binder,
+    /// eagerly: the annotation's `Eq` then lands before any constraint from
+    /// the body, so a contradicting use fails and rolls back instead of
+    /// retyping the parameter.
+    fn gen_pattern(&mut self, shape: &PatShape, site: BinderSite) -> Ty {
+        match shape {
+            PatShape::Name(def) => Ty::Var(self.register_binder(*def, site)),
+            PatShape::Annotated(def, t) => {
+                let v = self.register_binder(*def, site);
+                self.eq(Ty::Var(v), t.clone());
+                if site == BinderSite::Param {
+                    let dv = self.def_var(*def);
+                    self.eq(Ty::Var(dv), t.clone());
+                }
+                t.clone()
+            }
+            PatShape::Wildcard => Ty::Var(self.table.fresh()),
+            PatShape::Tuple(elems) => {
+                Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
+            }
+        }
+    }
+
+    /// The variable a named binder's type is read from at `site`, registering
+    /// the binder as that site requires. A parameter gets a fresh private slot,
+    /// recorded for condition typing and the slot=binder reunification, and is
+    /// never published standalone. A local is published only if no emission
+    /// barrier discards it ([`Self::local_emits`]).
+    fn register_binder(&mut self, def: DefId, site: BinderSite) -> TyVid {
+        match site {
+            BinderSite::Param => {
+                let slot = self.table.fresh();
+                self.param_slots.insert(def, slot);
+                self.param_defs.insert(def);
+                self.cur_params.push((def, slot));
+                slot
+            }
+            BinderSite::Local => {
+                self.local_defs.insert(def);
+                self.local_emits
+                    .push((def, self.guard_stack.last().copied()));
+                self.def_var(def)
+            }
+            BinderSite::Module => self.def_var(def),
         }
     }
 
@@ -4331,6 +4725,75 @@ fn node_span(node: &SyntaxNode) -> TextRange {
 /// FCS's `Ident.idText`. Assembly member names carry no backticks, so a
 /// backticked source segment must be de-quoted before it is compared against
 /// them. A plain identifier passes through unchanged.
+/// Whether FCS keys the continuation of the local `let` `binding` somewhere
+/// other than its own nodes: a tuple pattern binding no name, over a bare
+/// value, moves the continuation's root to the pattern (measured, with every
+/// other combination of pattern, RHS and continuation agreeing, by
+/// `a_local_pattern_binding_records_nothing_misplaced`).
+fn moves_its_continuation(binding: &Binding) -> bool {
+    let (Some(pat), Some(rhs)) = (binding.pat(), binding.expr()) else {
+        return false;
+    };
+    let mut peeled = pat.clone();
+    while let Pat::Paren(p) = &peeled {
+        match p.inner() {
+            Some(inner) => peeled = inner,
+            None => return false,
+        }
+    }
+    matches!(peeled, Pat::Tuple(_))
+        && pat
+            .syntax()
+            .descendants()
+            .all(|n| n.kind() != SyntaxKind::NAMED_PAT)
+        && matches!(
+            unparenthesize(rhs),
+            Some(Expr::Ident(_) | Expr::LongIdent(_))
+        )
+}
+
+/// Whether FCS binds function parameter `p` directly, without elaborating it
+/// through a `match` — `SimplePatsOfPat` in `SyntaxTreeOps.fs`: `()`, a
+/// (parenthesised) reference tuple of simple elements, or one simple element.
+fn is_simple_param(p: &Pat) -> bool {
+    match p {
+        Pat::Tuple(t) if !t.is_struct() => t.elements().all(|el| is_simple_param_element(&el)),
+        Pat::Paren(paren) => match paren.inner() {
+            Some(Pat::Tuple(t)) if !t.is_struct() => {
+                t.elements().all(|el| is_simple_param_element(&el))
+            }
+            Some(Pat::Const(c)) if c.syntax().text().is_empty() => true,
+            _ => is_simple_param_element(p),
+        },
+        Pat::Const(c) if c.syntax().text().is_empty() => true,
+        _ => is_simple_param_element(p),
+    }
+}
+
+/// One element of a simple parameter — `SimplePatOfPat` without a match: a
+/// name, `?name`, `_`, or one of those under parentheses, an annotation or
+/// attributes.
+fn is_simple_param_element(p: &Pat) -> bool {
+    match p {
+        Pat::Named(_) | Pat::OptionalVal(_) | Pat::Wildcard(_) => true,
+        Pat::Typed(t) => t.pat().is_some_and(|inner| is_simple_param_element(&inner)),
+        Pat::Attrib(a) => a.pat().is_some_and(|inner| is_simple_param_element(&inner)),
+        Pat::Paren(paren) => paren
+            .inner()
+            .is_some_and(|inner| is_simple_param_element(&inner)),
+        _ => false,
+    }
+}
+
+/// Whether the named patterns anywhere in `pats` bind some name twice.
+fn binds_a_name_twice(pats: &[Pat]) -> bool {
+    let mut seen = HashSet::new();
+    pats.iter()
+        .flat_map(|p| p.syntax().descendants().filter_map(NamedPat::cast))
+        .filter_map(|n| n.ident())
+        .any(|tok| !seen.insert(ident_text(&tok)))
+}
+
 fn ident_text(tok: &SyntaxToken) -> String {
     let text = tok.text();
     text.strip_prefix("``")
@@ -5212,15 +5675,16 @@ mod tests {
         // model, so a bogus scheme would be a D5 violation. Skips: an annotated
         // binder whose annotation is outside the R2-a table subset
         // (`let a : int option = None` — a generic application defers), a
-        // `let rec` group, and a tuple-pattern binding. Each leaves the
-        // reference open; the function must defer.
+        // `let rec` group, and a pattern binding with an unmodelled element.
+        // Each leaves the reference open; the function must defer.
         for src in [
             // Annotated value whose annotation R2-a's gate defers (generic app).
             "module M\nlet a : int option = None\nlet h x = (x, a)\n",
             // `let rec` group skipped whole.
             "module M\nlet rec a = 1\nlet h x = (x, a)\n",
-            // Tuple-pattern binding (not a `Pat::Named`), skipped via the `_` arm.
-            "module M\nlet (a, b) = (1, 2)\nlet h x = (x, a)\n",
+            // A pattern binding with a constant element, which `pattern_ty`
+            // rejects after `a` has its variable.
+            "module M\nlet (a, 1) = (1, 1)\nlet h x = (x, a)\n",
         ] {
             let types = def_types(src);
             assert_eq!(
@@ -5232,12 +5696,17 @@ mod tests {
         // The flip side (Stage R2-a): a *table*-annotated earlier binder is
         // ground, so the same shape generalises over it — exactly like a
         // literal-typed environment reference.
-        let types = def_types("module M\nlet a : int = 1\nlet h x = (x, a)\n");
-        assert_eq!(
-            types.get("h").map(String::as_str),
-            Some("'a -> 'a * System.Int32"),
-            "a ground annotated environment reference must not block generalisation"
-        );
+        for src in [
+            "module M\nlet a : int = 1\nlet h x = (x, a)\n",
+            "module M\nlet (a, b) = (1, 2)\nlet h x = (x, a)\n",
+        ] {
+            let types = def_types(src);
+            assert_eq!(
+                types.get("h").map(String::as_str),
+                Some("'a -> 'a * System.Int32"),
+                "a ground environment reference must not block generalisation: {src:?}"
+            );
+        }
     }
 
     #[test]
@@ -5355,10 +5824,10 @@ mod tests {
             [
                 vec![],
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
-                vec![Incomplete::UnitParam],
-                // `let (x: int) = 1`: one walked binding, complete.
+                vec![Incomplete::UnitPattern],
+                // `let (x: int) = 1` and `let (p, q) = …`: walked, complete.
                 vec![],
-                // `let (p, q) = …` is not walked, so it has no entry.
+                vec![],
                 // `h`: the local's RHS failed; that is its one reason.
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
                 // `i`, `j`, `k`: the local left open, the method callee and the

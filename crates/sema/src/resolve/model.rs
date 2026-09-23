@@ -3186,18 +3186,37 @@ impl ResolvedFile {
     ///   agreement: FCS errors and binds nothing) — contributes nothing.
     pub fn attributes_may_declare_extension(&self, env: &AssemblyEnv) -> bool {
         self.attribute_shape_unknowable
-            || self.attribute_resolutions.values().any(|res| match res {
-                Resolution::Deferred(_) => true,
-                Resolution::Entity(h) => env.is_extension_attribute(*h),
-                Resolution::Local(id) => {
-                    let name = &self.defs[id.index()].name;
-                    self.own_abbrev_type_simple_names
-                        .contains(super::id_text(name))
-                }
-                // No other variant is ever recorded for an attribute; if one
-                // appears, defer rather than trust it.
-                _ => true,
-            })
+            || self
+                .attribute_resolutions
+                .keys()
+                .any(|&range| self.attribute_may_be(range, |h| env.is_extension_attribute(h)))
+    }
+
+    /// Whether the attribute written at `range` (its name's range, the
+    /// [`Self::attribute_resolutions`] key) may denote a type `is_target`
+    /// picks out, by the rules [`Self::attributes_may_declare_extension`]
+    /// lists: a deferred verdict may be anything; a committed assembly entity
+    /// is the target exactly when `is_target` says so; an in-file type may be
+    /// only if it is an abbreviation; and no record at all means FCS binds
+    /// nothing there.
+    pub fn attribute_may_be(
+        &self,
+        range: TextRange,
+        is_target: impl Fn(EntityHandle) -> bool,
+    ) -> bool {
+        match self.attribute_resolutions.get(&range) {
+            None => false,
+            Some(Resolution::Deferred(_)) => true,
+            Some(Resolution::Entity(h)) => is_target(*h),
+            Some(Resolution::Local(id)) => {
+                let name = &self.defs[id.index()].name;
+                self.own_abbrev_type_simple_names
+                    .contains(super::id_text(name))
+            }
+            // No other variant is ever recorded for an attribute; if one
+            // appears, defer rather than trust it.
+            Some(_) => true,
+        }
     }
 
     /// The full range→[`Resolution`] map.

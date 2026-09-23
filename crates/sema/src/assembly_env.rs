@@ -2774,6 +2774,14 @@ impl AssemblyEnv {
             && e.namespace[2] == "CompilerServices"
     }
 
+    /// Whether `handle` **is** FSharp.Core's `EntryPointAttribute`, matched by
+    /// metadata identity. FCS unifies a binding carrying it with
+    /// `string[] -> int` before checking the binding's body.
+    pub fn is_entry_point_attribute(&self, handle: EntityHandle) -> bool {
+        let e = self.entity(handle);
+        e.name == "EntryPointAttribute" && e.namespace == ["Microsoft", "FSharp", "Core"]
+    }
+
     /// The source (else IL) simple name of `handle`.
     fn entity_source_name(&self, handle: EntityHandle) -> &str {
         let e = self.entity(handle);

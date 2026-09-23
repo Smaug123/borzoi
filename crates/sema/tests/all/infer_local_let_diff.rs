@@ -1,7 +1,8 @@
-//! Differential test for expression-level `let … in` and `e1; e2` in
-//! [`borzoi_sema::infer_file`], against both FCS typed-tree oracles: `types`
-//! (every expression node) and `binder-types` (every binder, local `let`s
-//! included).
+//! Differential test for expression-level `let … in` and `e1; e2`, and for the
+//! structural patterns (tuples, wildcards, annotated names) parameters and
+//! `let`s bind through, in [`borzoi_sema::infer_file`], against both FCS
+//! typed-tree oracles: `types` (every expression node) and `binder-types`
+//! (every binder, local `let`s included).
 //!
 //! # What is compared
 //!
@@ -27,7 +28,8 @@
 //! # Vacuity
 //!
 //! Every assertion above passes on an implementation that commits nothing. The
-//! sweep's floors (committed local binders, committed sequential nodes, and the
+//! sweep's floors (committed local binders, locals bound inside a pattern,
+//! functions with a tupled parameter, committed sequential nodes, and the
 //! generator's own count of generic locals applied at two types) are what make a
 //! green run evidence. They are one-sided: they fail if the sweep stops
 //! measuring, not if inference gets better.
@@ -36,10 +38,12 @@ use std::collections::HashSet;
 
 use crate::common::{
     full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    temp_fs_file,
+    temp_fs_file, try_invoke_fcs_dump,
 };
 use borzoi_cst::parser::parse;
-use borzoi_cst::syntax::{AstNode, Expr, ImplFile, LetOrUseExpr, Pat, SequentialExpr, SyntaxNode};
+use borzoi_cst::syntax::{
+    AstNode, Expr, ImplFile, LetOrUseExpr, NamedPat, Pat, SequentialExpr, SyntaxNode,
+};
 use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
 /// What one checked file committed, for the curated cases' expectations and
@@ -52,6 +56,12 @@ struct Committed {
     binders: usize,
     /// Of `binders`, how many are expression-level `let` locals.
     local_binders: usize,
+    /// Of `local_binders`, how many are bound inside a pattern rather than as
+    /// the whole of a `let name = …`.
+    pattern_locals: usize,
+    /// Of `binders`, how many are generated functions with a tupled parameter
+    /// (named `tf…`).
+    tupled_functions: usize,
     /// Of `exprs`, how many sit at a whole `e1; e2` sequence.
     sequentials: usize,
     /// Errors FCS reported on the file — nonzero only where the caller allowed it.
@@ -63,6 +73,8 @@ impl std::ops::AddAssign for Committed {
         self.exprs += o.exprs;
         self.binders += o.binders;
         self.local_binders += o.local_binders;
+        self.pattern_locals += o.pattern_locals;
+        self.tupled_functions += o.tupled_functions;
         self.sequentials += o.sequentials;
         self.fcs_errors += o.fcs_errors;
     }
@@ -94,6 +106,33 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         "snippet has parse errors: {:?}\n{source}",
         parsed.errors
     );
+    check_parsed(source, parsed, expect_clean, None).expect("the oracle checks a clean parse")
+}
+
+/// [`check`] for a snippet our parser recovers from, comparing **binder**
+/// types only: what a recovered pattern binds is the question here, while the
+/// expression nodes of a recovered declaration are a wider, separate one. The
+/// comparison is the strict one (anything we commit, FCS kept), and the
+/// snippet must actually be a recovery case, or it tests nothing the others do
+/// not. Only binders inside `region` are graded — the broken declaration:
+/// how far a recovery spills into the declarations after it is the parser's
+/// question, not inference's. `None` when FCS cannot check the file at all.
+fn check_recovered(source: &str, region: std::ops::Range<usize>) -> Option<Committed> {
+    let parsed = parse(source);
+    assert!(
+        !parsed.errors.is_empty(),
+        "snippet parses clean, so it is not a recovery case\n{source}"
+    );
+    check_parsed(source, parsed, false, Some(region))
+}
+
+fn check_parsed(
+    source: &str,
+    parsed: borzoi_cst::parser::Parse,
+    expect_clean: bool,
+    binders_in: Option<std::ops::Range<usize>>,
+) -> Option<Committed> {
+    let compare_exprs = binders_in.is_none();
     let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let env = full_bcl_env();
@@ -101,9 +140,18 @@ fn check(source: &str, expect_clean: bool) -> Committed {
     let inferred = infer_file(&file, &resolved, env);
 
     let path = temp_fs_file("infer_local_let", source);
-    let types_json = invoke_fcs_dump("types", &path);
-    let binders_json = invoke_fcs_dump("binder-types", &path);
+    // A recovered file may be one FCS's own recovery cannot check; a clean
+    // one must be checkable.
+    let oracle = |op: &str| {
+        if binders_in.is_some() {
+            try_invoke_fcs_dump(op, &path).ok()
+        } else {
+            Some(invoke_fcs_dump(op, &path))
+        }
+    };
+    let jsons = oracle("types").zip(oracle("binder-types"));
     let _ = std::fs::remove_file(&path);
+    let (types_json, binders_json) = jsons?;
     let (fcs_types, errors) = parse_fcs_types_with_errors(&types_json, source);
     let (fcs_binders, _) = parse_fcs_binder_types_with_errors(&binders_json, source);
     if expect_clean {
@@ -113,20 +161,28 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         );
     }
 
-    let local_binder_ranges: HashSet<(usize, usize)> = file
+    // Every name a local `let` binds, and whether it is bound inside a larger
+    // pattern.
+    let local_binder_ranges: std::collections::HashMap<(usize, usize), bool> = file
         .syntax()
         .descendants()
         .filter_map(LetOrUseExpr::cast)
         .flat_map(|e| e.bindings().collect::<Vec<_>>())
-        .filter_map(|b| match b.pat()? {
-            Pat::Named(n) => n.ident(),
-            _ => None,
-        })
-        .map(|t| {
-            (
-                u32::from(t.text_range().start()) as usize,
-                u32::from(t.text_range().end()) as usize,
-            )
+        .filter_map(|b| b.pat())
+        .flat_map(|p| {
+            let in_pattern = !matches!(p, Pat::Named(_));
+            p.syntax()
+                .descendants()
+                .filter_map(NamedPat::cast)
+                .filter_map(|n| n.ident())
+                .map(move |t| {
+                    let range = (
+                        u32::from(t.text_range().start()) as usize,
+                        u32::from(t.text_range().end()) as usize,
+                    );
+                    (range, in_pattern)
+                })
+                .collect::<Vec<_>>()
         })
         .collect();
     let sequential_ranges: HashSet<(usize, usize)> = file
@@ -140,7 +196,7 @@ fn check(source: &str, expect_clean: bool) -> Committed {
         fcs_errors: errors.len(),
         ..Committed::default()
     };
-    for (range, ty) in inferred.types() {
+    for (range, ty) in inferred.types().iter().filter(|_| compare_exprs) {
         let key = (
             u32::from(range.start()) as usize,
             u32::from(range.end()) as usize,
@@ -169,6 +225,9 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             u32::from(def.range.start()) as usize,
             u32::from(def.range.end()) as usize,
         );
+        if binders_in.as_ref().is_some_and(|r| !r.contains(&key.0)) {
+            continue;
+        }
         let ours = ty.render();
         let theirs = fcs_binders.get(&key).unwrap_or_else(|| {
             panic!(
@@ -183,11 +242,15 @@ fn check(source: &str, expect_clean: bool) -> Committed {
             def.name
         );
         c.binders += 1;
-        if local_binder_ranges.contains(&key) {
+        if let Some(&in_pattern) = local_binder_ranges.get(&key) {
             c.local_binders += 1;
+            c.pattern_locals += usize::from(in_pattern);
+        }
+        if def.name.starts_with("tf") {
+            c.tupled_functions += 1;
         }
     }
-    c
+    Some(c)
 }
 
 /// A local bound to a member access types from its RHS, and so does its use:
@@ -362,6 +425,487 @@ fn a_ground_statement_keeps_the_function_generalisable() {
     assert_eq!(c.binders, 1, "{c:?}");
 }
 
+/// Tupled and wildcard parameters are typed structurally: each named element
+/// has its own slot inside the parameter's tuple, and a wildcard is a fresh
+/// variable that generalises like an unused parameter.
+#[test]
+fn tupled_and_wildcard_parameters_type_the_function() {
+    for (src, binders) in [
+        // `f : bool * 'a -> int`.
+        ("let f (a, b) = if a then 1 else 2\n", 1),
+        // `k : 'a * 'b -> 'a * int`.
+        ("let k (x, _) = (x, 1)\n", 1),
+        // `g : 'a -> int`.
+        ("let g _ = 1\n", 1),
+        // `n : int * 'a -> int * 'a`.
+        ("let n (a: int, b) = (a, b)\n", 1),
+        // Nested: `d : ('a * bool) * 'b -> 'b * 'a * int`.
+        ("let d ((a, c), b) = (b, a, if c then 1 else 2)\n", 1),
+        // Curried tuples: `e : 'a * 'b -> 'c -> 'c * 'a`.
+        ("let e (a, _) c = (c, a)\n", 1),
+    ] {
+        let c = check(&format!("module M\n{src}"), true);
+        assert_eq!(c.binders, binders, "{src}: {c:?}");
+    }
+}
+
+/// An application of a tupled function to a tuple wakes through the tuple:
+/// `t : string * int`.
+#[test]
+fn a_tupled_function_applied_to_a_tuple_grounds_the_result() {
+    let c = check(
+        "module M\nlet f (a, b) = (b, if a then 1 else 2)\nlet t = f (true, \"s\")\n",
+        true,
+    );
+    // `f` and `t`.
+    assert_eq!(c.binders, 2, "{c:?}");
+}
+
+/// A local tuple pattern binds each element from the RHS's tuple type.
+#[test]
+fn a_local_tuple_pattern_types_each_element() {
+    let c = check(
+        "module M\nlet m (s: string) = let (u, v) = (s.Length, s) in (v, u)\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 2, "{c:?}");
+    // `u`, `v`, and `m : string -> string * int`.
+    assert_eq!(c.binders, 3, "{c:?}");
+}
+
+/// A local tuple pattern with a wildcard and without parentheses.
+#[test]
+fn a_local_tuple_pattern_may_skip_elements() {
+    let c = check(
+        "module M\nlet m (s: string) =\n    let u, _ = (s.Length, s)\n    u\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 1, "{c:?}");
+}
+
+/// A module-level tuple pattern types its binders the same way.
+#[test]
+fn a_module_level_tuple_pattern_types_each_element() {
+    let c = check("module M\nlet (p, q) = (1, \"s\")\nlet r = (q, p)\n", true);
+    // `p`, `q`, `r`.
+    assert_eq!(c.binders, 3, "{c:?}");
+}
+
+/// The generalised-local hazard through a pattern: FCS may generalise `g`, so
+/// it is open at its binding and must not be grounded by either use. Its
+/// sibling `v` is ground, and is published.
+#[test]
+fn a_generalisable_element_of_a_local_tuple_is_not_monomorphised() {
+    let c = check(
+        "module M\nlet idf x = x\nlet h (b: bool) =\n    let (g, v) = (idf, 1)\n    (g v, g \"s\")\n",
+        true,
+    );
+    assert_eq!(c.local_binders, 1, "`v` only: {c:?}");
+}
+
+/// A local pattern binding whose RHS is a bare value binds it directly, and FCS
+/// keeps no node for the value; one whose RHS is anything else keeps it.
+#[test]
+fn a_local_pattern_over_a_bare_value_keeps_no_rhs_node() {
+    for rhs in ["p", "(p)", "pr", "idf p"] {
+        // An application's result waits on its argument check, which does not
+        // fire mid-walk, so `idf p` leaves the locals open: only agreement is
+        // asserted for it.
+        let locals = if rhs == "idf p" { 0 } else { 2 };
+        let c = check(
+            &format!(
+                "module M\nlet idf x = x\nlet pr = (1, \"s\")\nlet n (p: int * string) = let (u, v) = {rhs} in (v, u)\n"
+            ),
+            true,
+        );
+        assert_eq!(c.local_binders, locals, "{rhs}: {c:?}");
+    }
+}
+
+/// An annotation in a pattern makes the RHS a coercion position: FCS types
+/// `"s"` here as `obj`, not `string`.
+#[test]
+fn an_annotated_pattern_coerces_its_rhs() {
+    for src in [
+        "let m (s: string) = let (a: obj, b) = (s, 1) in b\n",
+        "let (a: obj, b) = (\"s\", 1)\n",
+        "let m (s: string) = let (a: int, b) = (s.Length, s) in b\n",
+    ] {
+        check(&format!("module M\n{src}"), true);
+    }
+}
+
+/// An attribute can constrain a binding's type: FCS types `main` as
+/// `string[] -> int` from `[<EntryPoint>]` alone, before its body is checked,
+/// and reaches the attribute through an abbreviation or an `open type` too. So
+/// a binding that may carry it is not typed, and a later use of its binders
+/// defers.
+#[test]
+fn a_binding_that_may_be_an_entry_point_is_not_typed() {
+    for src in [
+        "[<EntryPoint>]\nlet main _ = 0\n",
+        "[<EntryPoint>]\nlet main argv = 0\n",
+        "[<EntryPoint>]\nlet main argv = if argv then 1 else 2\n",
+        "[<EntryPoint>]\nlet main _ = \"s\"\n",
+        "[<EntryPointAttribute()>]\nlet main argv = 0\n",
+        "type EP = EntryPointAttribute\n[<EP>]\nlet main argv = 0\n",
+        "type EP = Microsoft.FSharp.Core.EntryPointAttribute\n[<EP()>]\nlet main _ = 0\n",
+        "[<Microsoft.FSharp.Core.EntryPoint>]\nlet main _ = 0\n",
+        "let [<EntryPoint>] main argv = 0\n",
+    ] {
+        let c = check(&format!("module M\n{src}"), false);
+        // Only an abbreviation's own declaration may be committed; `main` never.
+        assert_eq!(c.binders, 0, "{src}: {c:?}");
+    }
+}
+
+/// Any other attribute leaves the binding typed: `[<Literal>] k : int`.
+#[test]
+fn an_attribute_that_is_not_an_entry_point_is_type_neutral() {
+    for src in [
+        "let [<Literal>] k = 1\nlet h x = (x, k)\n",
+        "[<Literal>]\nlet k = 1\nlet h x = (x, k)\n",
+        "[<CompiledName(\"G\")>]\nlet g (x: int) = x\n",
+    ] {
+        let c = check(&format!("module M\n{src}"), true);
+        assert!(c.binders >= 1, "{src}: {c:?}");
+    }
+}
+
+/// An annotation in a pattern makes the pattern↔RHS relation a coercion, not
+/// an equality: it must neither retype what the RHS mentions (an earlier
+/// polymorphic binder, a parameter a condition grounds) nor be dropped while
+/// the binding still generalises. And the RHS's own constraints decide its
+/// type before the pattern's do.
+#[test]
+fn a_pattern_relation_never_retypes_the_rhs() {
+    for src in [
+        "let idf x = x\nlet g = idf\nlet (f: int -> int, b) = (g, 1)\nlet h = g \"s\"\n",
+        "let idf x = x\nlet k (c: bool) =\n    let g = idf\n    let (f: int -> int, b) = (g, 1)\n    g \"s\"\n",
+        "let f x = if x then let (a: obj, b) = (x, 1) in x else x\n",
+        "let f x = let (a: int, b: obj) = (x, \"s\") in a\n",
+        "let f (s: string) = let (a: bool, b) = (s.Length, s) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf 1 in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, _) = (1, idf 2) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf (1, 2, 3) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf (s.Length, 2, 3) in a\n",
+        "let idf x = x\nlet (a, b) = idf (1, 2, 3)\n",
+        "let mono (c: bool) = 1\nlet f x = let (a: int, b: int) = (x, 1) in mono x\n",
+        "let mono (c: bool) = 1\nlet f x = (let (a: int, b: int) = (x, 1) in a, mono x)\n",
+        "let f (s: string) = let (a, b) = (s).Length in a\n",
+        "let (a, b) = (\"s\").Length\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// A name bound twice among one binding's parameters, or in one `let`
+/// pattern. FCS accepts only the nested tuple (whose body sees the *inner*
+/// `a`) and rejects the rest; which binder a use means is FCS's elaboration
+/// order, so none of them is typed.
+#[test]
+fn a_name_bound_twice_is_not_typed() {
+    for src in [
+        "let f ((a, b), a) = a\nlet t = f ((1, 2), \"s\")\n",
+        "let f ((a, b), a) = if a then 1 else 2\n",
+        "let f (a, (b, a)) = if a then 1 else 2\n",
+        "let g a a = if a then 1 else 2\n",
+        "let h (a, b) a = if a then 1 else 2\n",
+        "let k (a, a) = if a then 1 else 2\n",
+        "let m (s: string) = let (u, u) = (1, s) in u\n",
+        "let (p, p) = (1, \"s\")\nlet q = p\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// A wildcard binds nothing, but its RHS can still be open: FCS unifies `x`
+/// with `int` through the `else`, so `mono x` is the error and `x` stays
+/// `int`. The local must leave the binding incomplete, as a named one would.
+#[test]
+fn an_open_wildcard_local_leaves_the_binding_incomplete() {
+    for src in [
+        "let mono (x: string) = 1\nlet f x = let _ = if true then x else 1 in mono x\n",
+        "let mono (x: string) = 1\nlet f x = let (_, _) = ((if true then x else 1), 2) in mono x\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// The class behind the wildcard case, exhaustively: every local shape that
+/// leaves `p` open through a relation we drop (FCS unifies it through an
+/// `else`, or through the statement's `unit`), crossed with every later
+/// consumer that could ground it. Whatever FCS fixed `p` to first must not
+/// be overwritten by the consumer.
+#[test]
+fn a_local_left_open_by_a_dropped_relation_blocks_later_grounding() {
+    let locals = [
+        "let _ = if b then p else 1",
+        "let _ = if b then p else \"s\"",
+        "let (_, _) = ((if b then p else 1), 2)",
+        "let (_, w) = ((if b then p else 1), 2)",
+        "let v = if b then p else 1",
+        "let (v, _) = ((if b then p else 1), 2)",
+        "let _ = (p; 1)",
+    ];
+    let consumers = ["mono p", "monos p", "if p then 1 else 2", "(p, 1)"];
+    for local in locals {
+        for consumer in consumers {
+            let src = format!(
+                "module M\nlet mono (c: bool) = 1\nlet monos (t: string) = 2\n\
+                 let f (b: bool) p =\n    {local}\n    {consumer}\n"
+            );
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
+/// A pattern must not impose structure on an earlier binding's open
+/// variable: the structure's fresh components would pass for this binding's
+/// own, and an argument check could then retype the earlier binder (FCS keeps
+/// `u : string * string` and rejects `mono u`). Every earlier unmodelled value
+/// crossed with every pattern shape that reaches it.
+#[test]
+fn a_pattern_never_retypes_an_earlier_open_binder() {
+    // Earlier values inference does not type: an unmodelled RHS, and each
+    // way a declaration is skipped outright.
+    let earlier = [
+        "let u = List.head [(\"s\", \"t\")]",
+        "let u = fst ((\"s\", \"t\"), 1)",
+        "let rec u = (\"s\", \"t\")",
+        "let rec u = (\"s\", \"t\")\nand w = 1",
+        "[<EntryPoint>]\nlet u = (\"s\", \"t\")",
+        "let (u, 1) = ((\"s\", \"t\"), 1)",
+        "let u : string * string = (\"s\", \"t\")",
+        "let mutable u = (\"s\", \"t\")",
+    ];
+    let later = [
+        "let ((a, b), r) = (u, mono u)",
+        "let (a, b) = u\nlet r = mono u",
+        "let (a, b) = (u)\nlet r = mono u",
+        "let g (c: bool) = let ((a, b), r) = (u, mono u) in r",
+        "let g (c: bool) =\n    let (a, b) = (u)\n    mono u",
+        "let g (c: bool) =\n    let ((a, _), _) = (u, 1)\n    mono u",
+    ];
+    for e in earlier {
+        for l in later {
+            let src = format!("module M\nlet mono (p: int * int) = 1\n{e}\n{l}\n");
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
+/// A pattern that is rejected part-way leaves nothing behind: `a`'s annotation
+/// must not survive a `()` beside it (FCS elaborates that parameter through
+/// a match and keeps no node at the body's `a`). And a pattern binding FCS
+/// rejects outright (`inline`, `mutable` on a pattern) binds nothing.
+#[test]
+fn a_rejected_pattern_leaves_nothing_behind() {
+    for src in [
+        "let f (a: int, ()) = a\n",
+        "let f (a: int, (b, ())) = a\n",
+        "let f ((a: int), 1) = a\n",
+        "let inline (a: int, b) = (1, \"s\")\nlet z = a\n",
+        "let inline (a, b) = (1, \"s\")\nlet z = a\n",
+        "let mutable (a, b) = (1, \"s\")\nlet z = a\n",
+        "let g (c: bool) =\n    let inline (a: int, b) = (1, \"s\")\n    a\n",
+        "let g (c: bool) =\n    let mutable (a, b) = (1, \"s\")\n    a\n",
+        "let mutable f (a, b) = a\n",
+        "let mutable f a = a\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// FCS binds a simple parameter directly and elaborates any other through a
+/// `match` on the body, which moves some of the body's nodes (`(a, ())`
+/// keys the body's root at the `()`). Every parameter shape crossed with
+/// every body shape: whatever the body records must sit where FCS keeps it.
+#[test]
+fn a_body_behind_a_non_simple_parameter_records_nothing_misplaced() {
+    let params = [
+        "(Some x)",
+        "[a]",
+        "(a, 1)",
+        "(a as c)",
+        "(a: int option)",
+        "()",
+        "(a, _)",
+        "((a, c), d)",
+        "(a: int, c)",
+        "(a, ())",
+        "(a, (c: int))",
+        "(struct (a, c))",
+        "((a, c))",
+        "_",
+    ];
+    let bodies = [
+        "1",
+        "(s, 1)",
+        "let v = 2 in v",
+        "if true then 1 else 2",
+        "(s.Length; \"t\")",
+    ];
+    for param in params {
+        for body in bodies {
+            let src = format!("module M\nlet f (s: string) {param} = {body}\n");
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
+/// A pattern the parser recovered is not read: `(a,b,)` survives as a
+/// two-element tuple, where FCS keeps a third, recovery element.
+#[test]
+fn a_recovered_pattern_is_not_typed() {
+    for src in [
+        "let f (a,b,) = (a,b)\n",
+        "let f (a,,b) = (a,b)\n",
+        "let f (a: int, b,) = (a,b)\n",
+        "let (a,b,) = (1, 2)\nlet c = a\n",
+        "let g (s: string) = let (a,b,) = (1, 2) in a\n",
+        // Recovery can spill: the inner `let` survives as an apparently intact
+        // declaration of its own, which FCS never checks.
+        "let f (s: string)) p =\n    let (a, b) = (1, \"s\")\n    a\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| {
+            check_recovered(&src, 0..src.len()).expect("FCS checks the snippet")
+        })
+        .is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// A lambda's parameters are elaborated as a function's are, so a body behind
+/// a non-simple one records nothing: every lambda parameter shape crossed with
+/// every position a pattern `let` reaches a lambda from.
+#[test]
+fn a_lambda_behind_a_non_simple_parameter_records_nothing_misplaced() {
+    let params = ["(a, ())", "(Some a)", "((a, c), d)", "(a, _)", "a", "()"];
+    let sites = [
+        "let (f, n) = ((fun {p} -> 1), 2)",
+        "let g (s: string) = let (f, n) = ((fun {p} -> (s, 1)), 2) in n",
+        "let h = fun {p} -> 1",
+        "let k (s: string) = let f = (fun {p} -> 1) in s",
+    ];
+    for p in params {
+        for site in sites {
+            let src = format!("module M\n{}\n", site.replace("{p}", p));
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
+/// FCS elaborates a local pattern `let` through a `match`, and how it keys
+/// the continuation's nodes depends on the pattern and the RHS together (an
+/// all-wildcard tuple over a bare value moves the continuation's root to the
+/// pattern). Every pattern shape, RHS kind and continuation shape, graded.
+#[test]
+fn a_local_pattern_binding_records_nothing_misplaced() {
+    let patterns = [
+        "(a, c)",
+        "(a, _)",
+        "(_, c)",
+        "(_, _)",
+        "a, c",
+        "_, _",
+        "(a: int, c)",
+        "_",
+        "a",
+    ];
+    let rhss = [
+        "pr",
+        "(pr)",
+        "q",
+        "(1, 2)",
+        "(idf pr)",
+        "(if b then pr else q)",
+    ];
+    let conts = ["b", "1", "(b, 1)", "if b then 1 else 2", "let z = 3 in z"];
+    let mut failures = Vec::new();
+    for pat in patterns {
+        for rhs in rhss {
+            for cont in conts {
+                let src = format!(
+                    "module M\nlet idf x = x\nlet pr = (1, 2)\n\
+                     let f (b: bool, q: int * int) = let {pat} = {rhs} in {cont}\n"
+                );
+                if std::panic::catch_unwind(|| check(&src, false)).is_err() {
+                    failures.push(format!("let {pat} = {rhs} in {cont}"));
+                }
+            }
+        }
+    }
+    // The module-level twin: no continuation, and the RHS is kept.
+    for pat in patterns {
+        for rhs in [
+            "pr",
+            "(pr)",
+            "(1, 2)",
+            "(idf pr)",
+            "(if true then pr else pr)",
+        ] {
+            let src = format!(
+                "module M\nlet idf x = x\nlet pr = (1, 2)\nlet {pat} = {rhs}\nlet after = 1\n"
+            );
+            if std::panic::catch_unwind(|| check(&src, false)).is_err() {
+                failures.push(format!("module-level let {pat} = {rhs}"));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} failing cells:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// A bare name imposes no structure, so its RHS's check cannot fail, and
+/// what the RHS walk typed stands even when the RHS itself does not
+/// synthesize: `inner : int` inside a lambda.
+#[test]
+fn a_bare_name_keeps_what_its_unsynthesized_rhs_typed() {
+    let c = check(
+        "module M\nlet outer a = let g = fun x -> let inner = 1 in inner in a\n",
+        true,
+    );
+    assert!(c.local_binders >= 1, "{c:?}");
+}
+
+/// Patterns FCS rejects, or that bind through a shape we do not model, commit
+/// nothing FCS did not keep.
+#[test]
+fn ill_typed_and_unmodelled_patterns_commit_only_what_fcs_kept() {
+    for src in [
+        "let bad (s: string) = let (a, b) = (1, 2, 3) in a\n",
+        "let bad (s: string) = let (a: int, b) = (\"s\", 1) in b\n",
+        "let bad (a, b) = if a then 1 else b\n",
+        "let bad (a: int, b) = if a then b else b\n",
+        "let bad x = let (a, b) = x in if a then x else x\n",
+        "let st (struct (a, b)) = if a then 1 else 2\n",
+        "let (p, q) = (1, 2, 3)\n",
+        "let bad (a, b) = (a.Length, b)\n",
+        "let f (a, b) = if a then b else b\nlet t = f (1, \"s\")\n",
+        "let f (a, b) = if a then b else b\nlet t = f true\n",
+    ] {
+        check(&format!("module M\n{src}"), false);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The generative sweep.
 // ---------------------------------------------------------------------------
@@ -456,7 +1000,7 @@ impl Gen<'_> {
             T::Int => ["1", "2", "42"][self.rng.below(3)].to_string(),
             T::Str => ["\"s\"", "\"t\""][self.rng.below(2)].to_string(),
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
-            T::Pair => "(7, \"p\")".to_string(),
+            T::Pair => ["pr", "uu", "(7, \"p\")"][self.rng.below(3)].to_string(),
         }
     }
 
@@ -561,10 +1105,11 @@ impl Gen<'_> {
     /// pattern form) and extending the environment with what it binds.
     fn binding(&mut self, depth: usize) -> String {
         let choice = if self.modelled_only {
-            // A generic local or a plain value local: the two modelled shapes.
-            [0, 7][self.rng.below(2)]
+            // The modelled shapes: a generic local, a tuple pattern, a
+            // wildcard, and a plain value local.
+            [0, 3, 8, 7][self.rng.below(4)]
         } else {
-            self.rng.below(8)
+            self.rng.below(9)
         };
         match choice {
             // A generic local, from the several sources FCS generalises.
@@ -591,21 +1136,113 @@ impl Gen<'_> {
                 });
                 format!("{name} w = w")
             }
-            // A tuple pattern — unmodelled, binding two monomorphic names.
+            // A tuple pattern over an `int * string`: parenthesised or not,
+            // either element possibly a wildcard or annotated — with its own
+            // type, or `obj`, which coerces. In the ill-typed family the RHS may
+            // be a tuple of the wrong arity, or an open parameter, which the
+            // pattern fixes as a pair, and an annotation may name the other
+            // element's type.
+            //
+            // Or a pattern over `idf` and an `int` literal, binding a generic
+            // element: FCS generalises it (the whole RHS is generalisable — an
+            // application in it would not be), so each later use is at its own
+            // type.
+            3 if self.rng.chance(25) => {
+                let g = self.fresh("g");
+                let v = self.fresh("v");
+                let int = self.literal(T::Int);
+                if self.rng.chance(50) {
+                    // Annotated: `g` is a monomorphic `int -> int`, never used,
+                    // and the relation to `idf` is a coercion.
+                    self.env.push(Var {
+                        name: v.clone(),
+                        kind: Kind::Mono(T::Int),
+                    });
+                    format!("({g}: int -> int, {v}) = (idf, {int})")
+                } else {
+                    self.env.push(Var {
+                        name: g.clone(),
+                        kind: Kind::Generic,
+                    });
+                    self.env.push(Var {
+                        name: v.clone(),
+                        kind: Kind::Mono(T::Int),
+                    });
+                    format!("({g}, {v}) = (idf, {int})")
+                }
+            }
             3 => {
-                let rhs = self.expr(T::Pair, depth);
-                let a = self.fresh("a");
-                let b = self.fresh("b");
-                let text = format!("({a}, {b}) = {rhs}");
-                self.env.push(Var {
-                    name: a,
-                    kind: Kind::Mono(T::Int),
-                });
-                self.env.push(Var {
-                    name: b,
-                    kind: Kind::Mono(T::Str),
-                });
-                text
+                let mut rhs = if self.open_anywhere && self.rng.chance(20) {
+                    format!("({}, {}, 3)", self.expr(T::Int, 0), self.expr(T::Str, 0))
+                } else {
+                    self.expr(T::Pair, depth)
+                };
+                // An annotation needs the parentheses: `a: int, b` does not
+                // parse as a tuple of an annotated name.
+                let parens = self.rng.chance(70);
+                let mut elems = Vec::new();
+                // Bound after the loop, so a regenerated RHS cannot name them.
+                let mut bound = Vec::new();
+                for (stem, t, ann, wrong) in [
+                    ("a", T::Int, "int", ("string", T::Str)),
+                    ("b", T::Str, "string", ("int", T::Int)),
+                ] {
+                    let roll = self.rng.below(10);
+                    if roll == 0 {
+                        elems.push("_".to_string());
+                        continue;
+                    }
+                    let name = self.fresh(stem);
+                    let (text, kind) = match roll {
+                        1 if parens => (format!("{name}: {ann}"), Some(t)),
+                        // Coerced to `obj`, a type the generator has no
+                        // expressions of: bound, never used. FCS coerces a
+                        // tuple's elements, not a pair-typed value, so the RHS
+                        // becomes a tuple expression.
+                        2 if parens => {
+                            if !rhs.ends_with(", 3)") {
+                                rhs = format!(
+                                    "({}, {})",
+                                    self.expr(T::Int, depth.saturating_sub(1)),
+                                    self.expr(T::Str, depth.saturating_sub(1))
+                                );
+                            }
+                            (format!("{name}: obj"), None)
+                        }
+                        3 if parens && self.open_anywhere => {
+                            (format!("{name}: {}", wrong.0), Some(wrong.1))
+                        }
+                        _ => (name.clone(), Some(t)),
+                    };
+                    elems.push(text);
+                    if let Some(t) = kind {
+                        bound.push(Var {
+                            name,
+                            kind: Kind::Mono(t),
+                        });
+                    }
+                }
+                self.env.extend(bound);
+                let pat = elems.join(", ");
+                if parens {
+                    format!("({pat}) = {rhs}")
+                } else {
+                    format!("{pat} = {rhs}")
+                }
+            }
+            // A wildcard over an expression of any type — in the ill-typed
+            // family often one an open parameter leaves open.
+            8 => {
+                let t = TYPES[self.rng.below(TYPES.len())];
+                let opens = self.vars_of(&Kind::Open);
+                if self.open_anywhere && !opens.is_empty() && self.rng.chance(50) {
+                    // FCS unifies the open parameter with the `else`'s type,
+                    // a relation we drop: the local must stay unsettled.
+                    let o = opens[self.rng.below(opens.len())].clone();
+                    format!("_ = (if b then {o} else {})", self.literal(t))
+                } else {
+                    format!("_ = {}", self.expr(t, depth))
+                }
             }
             // An alias of an open parameter: the local is open at its binding.
             4 if !self.vars_of(&Kind::Open).is_empty() => {
@@ -675,6 +1312,57 @@ impl Gen<'_> {
     }
 }
 
+/// The generated files' shared header: the functions the generator applies,
+/// the `pr` pair, `uu` (a pair FCS types but inference does not, so its
+/// variable is open in every later binding), and a module-level tuple
+/// pattern binding `hp` and `hq`.
+const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n\
+                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n";
+
+/// The names every generated function body may use besides its parameters.
+fn header_vars() -> Vec<Var> {
+    vec![
+        Var {
+            name: "hp".into(),
+            kind: Kind::Mono(T::Int),
+        },
+        Var {
+            name: "hq".into(),
+            kind: Kind::Mono(T::Str),
+        },
+    ]
+}
+
+/// The parameter list of a generated function over `s: string`, `b: bool`
+/// and, when `with_open`, an unannotated `p` — curried, or tupled (the
+/// function then named `tf…`, for the sweep's count), possibly with a
+/// trailing wildcard, or a `()` element. With `shadowed`, sometimes binds `p` twice, the nested
+/// shape FCS accepts (a use means the inner `p`). Returns the function's name
+/// stem and its parameters.
+fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, String) {
+    let open = if with_open { " p" } else { "" };
+    if shadowed && with_open && rng.chance(20) {
+        return ("tf", "((s: string, p), b: bool, p)".to_string());
+    }
+    // A `()` beside annotated names: the tuple is not typed, and must leave
+    // no trace of the annotations it read first.
+    if rng.chance(10) {
+        let open = if with_open { ", p" } else { "" };
+        return ("tf", format!("(s: string, (), b: bool{open})"));
+    }
+    match rng.below(4) {
+        0 | 1 => ("f", format!("(s: string) (b: bool){open}")),
+        2 => {
+            let open = if with_open { ", p" } else { "" };
+            ("tf", format!("(s: string, b: bool{open})"))
+        }
+        _ => {
+            let open = if with_open { ", p" } else { "" };
+            ("tf", format!("((s: string), _, b: bool{open}) _"))
+        }
+    }
+}
+
 /// One generated file: the shared header, then `functions` top-level
 /// functions over a string, a bool and (sometimes) an open parameter. Returns
 /// the source and how many generic locals were applied at two distinct types
@@ -682,27 +1370,28 @@ impl Gen<'_> {
 /// the hazard was genuinely exercised.
 fn generate(seed: u64, functions: usize) -> (String, usize) {
     let mut rng = Rng(seed);
-    let mut src = String::from(
-        "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n",
-    );
+    let mut src = String::from(HEADER);
     let mut two_type_generics = 0;
     for i in 0..functions {
         let modelled_only = rng.chance(50);
         let with_open = !modelled_only && rng.chance(60);
         let offside = rng.chance(50);
         let t = TYPES[rng.below(TYPES.len())];
+        let (stem, params) = params(&mut rng, with_open, false);
+        let mut env = header_vars();
+        env.extend([
+            Var {
+                name: "s".into(),
+                kind: Kind::Mono(T::Str),
+            },
+            Var {
+                name: "b".into(),
+                kind: Kind::Mono(T::Bool),
+            },
+        ]);
         let mut g = Gen {
             rng: &mut rng,
-            env: vec![
-                Var {
-                    name: "s".into(),
-                    kind: Kind::Mono(T::Str),
-                },
-                Var {
-                    name: "b".into(),
-                    kind: Kind::Mono(T::Bool),
-                },
-            ],
+            env,
             next: 0,
             generic_uses: Vec::new(),
             modelled_only,
@@ -722,15 +1411,10 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
         if modelled_only {
             two_type_generics += by_name.values().filter(|s| s.len() > 1).count();
         }
-        let params = if with_open {
-            "(s: string) (b: bool) p"
-        } else {
-            "(s: string) (b: bool)"
-        };
         if offside {
-            src.push_str(&format!("let f{i} {params} ={body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} ={body}\n"));
         } else {
-            src.push_str(&format!("let f{i} {params} = {body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} = {body}\n"));
         }
     }
     (src, two_type_generics)
@@ -765,6 +1449,14 @@ fn generated_local_lets_and_sequences_agree_with_fcs() {
         total.sequentials >= 10,
         "the sweep committed too few sequence nodes to be evidence: {total:?}"
     );
+    assert!(
+        total.pattern_locals >= 40,
+        "the sweep committed too few locals bound in a pattern to be evidence: {total:?}"
+    );
+    assert!(
+        total.tupled_functions >= 20,
+        "the sweep committed too few functions with a tupled parameter to be evidence: {total:?}"
+    );
 }
 
 /// The ill-typed family. Each function is a generated block, wrapped in one of
@@ -788,29 +1480,30 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     let mut wrapped_lets = 0usize;
     for seed in 0..files.max(1) as u64 {
         let mut rng = Rng(seed ^ 0x5eed_ba77);
-        let mut src = String::from(
-            "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\nlet k0 = 1\n",
-        );
+        let mut src = format!("{HEADER}let k0 = 1\n");
         for i in 0..6 {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];
             let wrap = rng.below(3);
+            let (stem, params) = params(&mut rng, true, true);
+            let mut env = header_vars();
+            env.extend([
+                Var {
+                    name: "s".into(),
+                    kind: Kind::Mono(T::Str),
+                },
+                Var {
+                    name: "b".into(),
+                    kind: Kind::Mono(T::Bool),
+                },
+                Var {
+                    name: "p".into(),
+                    kind: Kind::Open,
+                },
+            ]);
             let mut g = Gen {
                 rng: &mut rng,
-                env: vec![
-                    Var {
-                        name: "s".into(),
-                        kind: Kind::Mono(T::Str),
-                    },
-                    Var {
-                        name: "b".into(),
-                        kind: Kind::Mono(T::Bool),
-                    },
-                    Var {
-                        name: "p".into(),
-                        kind: Kind::Open,
-                    },
-                ],
+                env,
                 next: 0,
                 generic_uses: Vec::new(),
                 modelled_only,
@@ -833,7 +1526,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
             } else {
                 " "
             };
-            src.push_str(&format!("let f{i} (s: string) (b: bool) p ={sep}{body}\n"));
+            src.push_str(&format!("let {stem}{i} {params} ={sep}{body}\n"));
         }
         total += check(&src, false);
     }
@@ -849,6 +1542,71 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
     assert!(
         total.exprs + total.binders >= 120,
         "the family committed too little to be evidence: {total:?}"
+    );
+}
+
+/// Recovery, generatively: each generated file broken by one edit at a comma
+/// or parenthesis inside a `let` head (doubled, dropped, or a comma inserted),
+/// which is where a pattern recovers into something that still looks
+/// well-formed. Every binder type we commit on the recovered tree, FCS must
+/// have kept.
+///
+/// Inference reads nothing out of a declaration that did not parse clean, so
+/// a correct run commits nothing here: the one floor is that the edits
+/// genuinely produce recoveries. That the sweep can see a pattern read from a
+/// broken declaration was checked by deleting the recovery guard in
+/// `Gen::pattern_shape` — it then commits binders FCS does not have.
+#[test]
+fn generated_recovered_programs_commit_only_what_fcs_kept() {
+    let files = crate::common::env_usize_or("BORZOI_LOCAL_LET_FILES", 40);
+    let mut recovered = 0usize;
+    let mut total = Committed::default();
+    for seed in 0..files as u64 {
+        let (src, _) = generate(seed, 6);
+        let mut rng = Rng(seed ^ 0x0bad_c0de);
+        // Commas and parentheses between a `let` and its `=`, outside the
+        // shared header.
+        let mut sites = Vec::new();
+        let mut in_head = false;
+        for (i, c) in src.char_indices().skip(HEADER.len()) {
+            if src[i..].starts_with("let ") {
+                in_head = true;
+            } else if c == '=' {
+                in_head = false;
+            } else if in_head && matches!(c, ',' | ')') {
+                sites.push(i);
+            }
+        }
+        if sites.is_empty() {
+            continue;
+        }
+        let at = sites[rng.below(sites.len())];
+        let mut broken = src.clone();
+        match rng.below(3) {
+            0 => broken.insert(at, broken.as_bytes()[at] as char),
+            1 => {
+                broken.remove(at);
+            }
+            _ => broken.insert(at, ','),
+        }
+        if parse(&broken).errors.is_empty() {
+            continue;
+        }
+        // The edited top-level declaration: from its `let` at column 0 to the
+        // next one.
+        let start = broken[..at].rfind("\nlet ").map_or(0, |i| i + 1);
+        let end = broken[at..]
+            .find("\nlet ")
+            .map_or(broken.len(), |i| at + i + 1);
+        if let Some(c) = check_recovered(&broken, start..end) {
+            recovered += 1;
+            total += c;
+        }
+    }
+    eprintln!("recovery sweep: {recovered} recovered files, {total:?}");
+    assert!(
+        recovered >= files / 2,
+        "too few edits produced a recovery to be evidence: {recovered}"
     );
 }
 

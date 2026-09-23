@@ -696,8 +696,8 @@ impl ProjectFile {
             qnof: QualifiedNameOfFile::placeholder(),
             // The bare-`ImplFile` entry points take trees without the parses
             // that produced them, so nothing here can prove a clean parse. The
-            // cost is inference declining every annotation in the fold; a
-            // caller that wants those must go through
+            // cost is inference declining every declaration in the fold; a
+            // caller that wants types must go through
             // [`resolve_project_files`] with a real [`SyntaxRecovery`].
             recovery: SyntaxRecovery::Unretained,
         }
