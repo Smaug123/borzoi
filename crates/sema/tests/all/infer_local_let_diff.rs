@@ -584,6 +584,62 @@ fn a_name_bound_twice_is_not_typed() {
     }
 }
 
+/// A wildcard binds nothing, but its RHS can still be open: FCS unifies `x`
+/// with `int` through the `else`, so `mono x` is the error and `x` stays
+/// `int`. The local must leave the binding incomplete, as a named one would.
+#[test]
+fn an_open_wildcard_local_leaves_the_binding_incomplete() {
+    for src in [
+        "let mono (x: string) = 1\nlet f x = let _ = if true then x else 1 in mono x\n",
+        "let mono (x: string) = 1\nlet f x = let (_, _) = ((if true then x else 1), 2) in mono x\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
+/// The class behind the wildcard case, exhaustively: every local shape that
+/// leaves `p` open through a relation we drop (FCS unifies it through an
+/// `else`, or through the statement's `unit`), crossed with every later
+/// consumer that could ground it. Whatever FCS fixed `p` to first must not
+/// be overwritten by the consumer.
+#[test]
+fn a_local_left_open_by_a_dropped_relation_blocks_later_grounding() {
+    let locals = [
+        "let _ = if b then p else 1",
+        "let _ = if b then p else \"s\"",
+        "let (_, _) = ((if b then p else 1), 2)",
+        "let (_, w) = ((if b then p else 1), 2)",
+        "let v = if b then p else 1",
+        "let (v, _) = ((if b then p else 1), 2)",
+        "let _ = (p; 1)",
+    ];
+    let consumers = ["mono p", "monos p", "if p then 1 else 2", "(p, 1)"];
+    for local in locals {
+        for consumer in consumers {
+            let src = format!(
+                "module M\nlet mono (c: bool) = 1\nlet monos (t: string) = 2\n\
+                 let f (b: bool) p =\n    {local}\n    {consumer}\n"
+            );
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
+/// A bare name imposes no structure, so its RHS's check cannot fail, and
+/// what the RHS walk typed stands even when the RHS itself does not
+/// synthesize: `inner : int` inside a lambda.
+#[test]
+fn a_bare_name_keeps_what_its_unsynthesized_rhs_typed() {
+    let c = check(
+        "module M\nlet outer a = let g = fun x -> let inner = 1 in inner in a\n",
+        true,
+    );
+    assert!(c.local_binders >= 1, "{c:?}");
+}
+
 /// Patterns FCS rejects, or that bind through a shape we do not model, commit
 /// nothing FCS did not keep.
 #[test]
@@ -809,11 +865,11 @@ impl Gen<'_> {
     /// pattern form) and extending the environment with what it binds.
     fn binding(&mut self, depth: usize) -> String {
         let choice = if self.modelled_only {
-            // The modelled shapes: a generic local, a tuple pattern, and a
-            // plain value local.
-            [0, 3, 7][self.rng.below(3)]
+            // The modelled shapes: a generic local, a tuple pattern, a
+            // wildcard, and a plain value local.
+            [0, 3, 8, 7][self.rng.below(4)]
         } else {
-            self.rng.below(8)
+            self.rng.below(9)
         };
         match choice {
             // A generic local, from the several sources FCS generalises.
@@ -932,6 +988,20 @@ impl Gen<'_> {
                     format!("({pat}) = {rhs}")
                 } else {
                     format!("{pat} = {rhs}")
+                }
+            }
+            // A wildcard over an expression of any type — in the ill-typed
+            // family often one an open parameter leaves open.
+            8 => {
+                let t = TYPES[self.rng.below(TYPES.len())];
+                let opens = self.vars_of(&Kind::Open);
+                if self.open_anywhere && !opens.is_empty() && self.rng.chance(50) {
+                    // FCS unifies the open parameter with the `else`'s type,
+                    // a relation we drop: the local must stay unsettled.
+                    let o = opens[self.rng.below(opens.len())].clone();
+                    format!("_ = (if b then {o} else {})", self.literal(t))
+                } else {
+                    format!("_ = {}", self.expr(t, depth))
                 }
             }
             // An alias of an open parameter: the local is open at its binding.

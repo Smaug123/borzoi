@@ -1435,7 +1435,7 @@ impl<'a> Gen<'a> {
                 // open is an environment reference, which is poisoned and so
                 // never generalises.
                 Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
-                    match self.binding_pattern_ty(&pat, BinderSite::Module, &mut Vec::new()) {
+                    match self.binding_pattern_ty(&pat, BinderSite::Module) {
                         Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
                         Err(_) => self.discard_census_entry(),
                     }
@@ -2334,20 +2334,18 @@ impl<'a> Gen<'a> {
             return;
         }
         let recorded = self.reasons_recorded();
-        let mut bound = Vec::new();
-        let pat_ty = match self.binding_pattern_ty(&pat, BinderSite::Local, &mut bound) {
+        let pat_ty = match self.binding_pattern_ty(&pat, BinderSite::Local) {
             Ok(t) => t,
             Err(why) => {
                 self.mark_incomplete(why);
                 return;
             }
         };
-        self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Local);
-        let open = bound.iter().any(|&def| {
-            let dv = self.def_var(def);
-            !self.table.resolve(&Ty::Var(dv)).is_ground()
-        });
-        if open {
+        self.pattern_rhs(&pat, pat_ty.clone(), &rhs, BinderSite::Local);
+        // The whole pattern's type, not just its names': a wildcard binds
+        // nothing, but an RHS still open under it is as unsettled as a named
+        // one.
+        if !self.table.resolve(&pat_ty).is_ground() {
             self.mark_consequence(recorded, Incomplete::OpenLocal);
         }
     }
@@ -2413,9 +2411,13 @@ impl<'a> Gen<'a> {
             self.eq(pat_ty.clone(), Ty::Var(rhs_var));
         }
         self.settle();
+        // A pattern that is a single variable (a name, a wildcard) imposes no
+        // structure, so its check cannot fail, and the RHS's nodes stand even
+        // when the RHS itself does not synthesize.
+        let structural = !matches!(pat_ty, Ty::Var(_));
         let agrees =
             rhs_var.is_some_and(|v| self.table.resolve(&pat_ty) == self.table.resolve(&Ty::Var(v)));
-        if !agrees {
+        if structural && !agrees {
             self.discard_emissions_since(mark);
         }
     }
@@ -3352,7 +3354,7 @@ impl<'a> Gen<'a> {
     /// this stage does not model, so a function with such a parameter must not
     /// generalise.
     fn param_var(&mut self, pat: &Pat) -> TyVid {
-        match self.pattern_ty(pat, BinderSite::Param, &mut Vec::new()) {
+        match self.pattern_ty(pat, BinderSite::Param) {
             Ok(Ty::Var(slot)) => slot,
             Ok(t) => {
                 let slot = self.table.fresh();
@@ -3385,20 +3387,15 @@ impl<'a> Gen<'a> {
 
     /// [`Self::pattern_ty`] for a `let`'s whole pattern, declining one that
     /// binds a name twice, as [`Self::param_vars`] does.
-    fn binding_pattern_ty(
-        &mut self,
-        pat: &Pat,
-        site: BinderSite,
-        bound: &mut Vec<DefId>,
-    ) -> Result<Ty, Incomplete> {
+    fn binding_pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
         if binds_a_name_twice(std::slice::from_ref(pat)) {
             return Err(Incomplete::DuplicateBinder);
         }
-        self.pattern_ty(pat, site, bound)
+        self.pattern_ty(pat, site)
     }
 
     /// The type of pattern `pat`, generated structurally, with each named
-    /// binder in it registered for `site` and pushed to `bound`. `Err` names the
+    /// binder in it registered for `site`. `Err` names the
     /// first shape not modelled; binders registered before it stay registered,
     /// but nothing links them to the pattern, so they stay open unless
     /// something else grounds them.
@@ -3415,19 +3412,13 @@ impl<'a> Gen<'a> {
     ///
     /// A struct tuple is not modelled ([`Ty::Tuple`] has no struct flag), nor
     /// is `()`, since `unit` has no [`Ty`].
-    fn pattern_ty(
-        &mut self,
-        pat: &Pat,
-        site: BinderSite,
-        bound: &mut Vec<DefId>,
-    ) -> Result<Ty, Incomplete> {
+    fn pattern_ty(&mut self, pat: &Pat, site: BinderSite) -> Result<Ty, Incomplete> {
         match pat {
             Pat::Named(named) => {
                 let def = named
                     .ident()
                     .and_then(|tok| self.def_at(tok.text_range()))
                     .ok_or(Incomplete::Recovery)?;
-                bound.push(def);
                 Ok(Ty::Var(self.register_binder(def, site)))
             }
             Pat::Typed(typed) => {
@@ -3441,7 +3432,6 @@ impl<'a> Gen<'a> {
                     .ident()
                     .and_then(|tok| self.def_at(tok.text_range()))
                     .ok_or(Incomplete::Recovery)?;
-                bound.push(def);
                 let v = self.register_binder(def, site);
                 self.eq(Ty::Var(v), t.clone());
                 if site == BinderSite::Param {
@@ -3459,12 +3449,12 @@ impl<'a> Gen<'a> {
                 }
                 let mut tys = Vec::with_capacity(elems.len());
                 for el in &elems {
-                    tys.push(self.pattern_ty(el, site, bound)?);
+                    tys.push(self.pattern_ty(el, site)?);
                 }
                 Ok(Ty::Tuple(tys))
             }
             Pat::Paren(p) => match p.inner() {
-                Some(inner) => self.pattern_ty(&inner, site, bound),
+                Some(inner) => self.pattern_ty(&inner, site),
                 None => Err(Incomplete::Recovery),
             },
             // `()` is a constant pattern whose node is zero-width: the
