@@ -533,6 +533,35 @@ fn an_attribute_that_is_not_an_entry_point_is_type_neutral() {
     }
 }
 
+/// An annotation in a pattern makes the pattern↔RHS relation a coercion, not
+/// an equality: it must neither retype what the RHS mentions (an earlier
+/// polymorphic binder, a parameter a condition grounds) nor be dropped while
+/// the binding still generalises. And the RHS's own constraints decide its
+/// type before the pattern's do.
+#[test]
+fn a_pattern_relation_never_retypes_the_rhs() {
+    for src in [
+        "let idf x = x\nlet g = idf\nlet (f: int -> int, b) = (g, 1)\nlet h = g \"s\"\n",
+        "let idf x = x\nlet k (c: bool) =\n    let g = idf\n    let (f: int -> int, b) = (g, 1)\n    g \"s\"\n",
+        "let f x = if x then let (a: obj, b) = (x, 1) in x else x\n",
+        "let f x = let (a: int, b: obj) = (x, \"s\") in a\n",
+        "let f (s: string) = let (a: bool, b) = (s.Length, s) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf 1 in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, _) = (1, idf 2) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf (1, 2, 3) in a\n",
+        "let idf x = x\nlet f (s: string) = let (a, b) = idf (s.Length, 2, 3) in a\n",
+        "let idf x = x\nlet (a, b) = idf (1, 2, 3)\n",
+        "let mono (c: bool) = 1\nlet f x = let (a: int, b: int) = (x, 1) in mono x\n",
+        "let mono (c: bool) = 1\nlet f x = (let (a: int, b: int) = (x, 1) in a, mono x)\n",
+        "let f (s: string) = let (a, b) = (s).Length in a\n",
+        "let (a, b) = (\"s\").Length\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
 /// Patterns FCS rejects, or that bind through a shape we do not model, commit
 /// nothing FCS did not keep.
 #[test]
@@ -790,11 +819,42 @@ impl Gen<'_> {
                 format!("{name} w = w")
             }
             // A tuple pattern over an `int * string`: parenthesised or not,
-            // either element possibly a wildcard or annotated. In the ill-typed
-            // family the RHS may be a tuple of the wrong arity, or an open
-            // parameter, which the pattern fixes as a pair.
+            // either element possibly a wildcard or annotated — with its own
+            // type, or `obj`, which coerces. In the ill-typed family the RHS may
+            // be a tuple of the wrong arity, or an open parameter, which the
+            // pattern fixes as a pair, and an annotation may name the other
+            // element's type.
+            //
+            // Or a pattern over `idf` and an `int` literal, binding a generic
+            // element: FCS generalises it (the whole RHS is generalisable — an
+            // application in it would not be), so each later use is at its own
+            // type.
+            3 if self.rng.chance(25) => {
+                let g = self.fresh("g");
+                let v = self.fresh("v");
+                let int = self.literal(T::Int);
+                if self.rng.chance(50) {
+                    // Annotated: `g` is a monomorphic `int -> int`, never used,
+                    // and the relation to `idf` is a coercion.
+                    self.env.push(Var {
+                        name: v.clone(),
+                        kind: Kind::Mono(T::Int),
+                    });
+                    format!("({g}: int -> int, {v}) = (idf, {int})")
+                } else {
+                    self.env.push(Var {
+                        name: g.clone(),
+                        kind: Kind::Generic,
+                    });
+                    self.env.push(Var {
+                        name: v.clone(),
+                        kind: Kind::Mono(T::Int),
+                    });
+                    format!("({g}, {v}) = (idf, {int})")
+                }
+            }
             3 => {
-                let rhs = if self.open_anywhere && self.rng.chance(20) {
+                let mut rhs = if self.open_anywhere && self.rng.chance(20) {
                     format!("({}, {}, 3)", self.expr(T::Int, 0), self.expr(T::Str, 0))
                 } else {
                     self.expr(T::Pair, depth)
@@ -803,23 +863,48 @@ impl Gen<'_> {
                 // parse as a tuple of an annotated name.
                 let parens = self.rng.chance(70);
                 let mut elems = Vec::new();
-                for (stem, t, ann) in [("a", T::Int, "int"), ("b", T::Str, "string")] {
+                // Bound after the loop, so a regenerated RHS cannot name them.
+                let mut bound = Vec::new();
+                for (stem, t, ann, wrong) in [
+                    ("a", T::Int, "int", ("string", T::Str)),
+                    ("b", T::Str, "string", ("int", T::Int)),
+                ] {
                     let roll = self.rng.below(10);
                     if roll == 0 {
                         elems.push("_".to_string());
                         continue;
                     }
                     let name = self.fresh(stem);
-                    elems.push(if roll == 1 && parens {
-                        format!("{name}: {ann}")
-                    } else {
-                        name.clone()
-                    });
-                    self.env.push(Var {
-                        name,
-                        kind: Kind::Mono(t),
-                    });
+                    let (text, kind) = match roll {
+                        1 if parens => (format!("{name}: {ann}"), Some(t)),
+                        // Coerced to `obj`, a type the generator has no
+                        // expressions of: bound, never used. FCS coerces a
+                        // tuple's elements, not a pair-typed value, so the RHS
+                        // becomes a tuple expression.
+                        2 if parens => {
+                            if !rhs.ends_with(", 3)") {
+                                rhs = format!(
+                                    "({}, {})",
+                                    self.expr(T::Int, depth.saturating_sub(1)),
+                                    self.expr(T::Str, depth.saturating_sub(1))
+                                );
+                            }
+                            (format!("{name}: obj"), None)
+                        }
+                        3 if parens && self.open_anywhere => {
+                            (format!("{name}: {}", wrong.0), Some(wrong.1))
+                        }
+                        _ => (name.clone(), Some(t)),
+                    };
+                    elems.push(text);
+                    if let Some(t) = kind {
+                        bound.push(Var {
+                            name,
+                            kind: Kind::Mono(t),
+                        });
+                    }
                 }
+                self.env.extend(bound);
                 let pat = elems.join(", ");
                 if parens {
                     format!("({pat}) = {rhs}")

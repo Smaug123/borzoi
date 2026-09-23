@@ -595,6 +595,9 @@ pub enum Incomplete {
     /// A pattern annotation outside the modelled set, or around anything but
     /// a name.
     PatternAnnotation,
+    /// A `let` pattern holding an annotation, whose relation to the RHS is a
+    /// coercion.
+    CoercedPattern,
     /// Any other pattern, by its syntax kind: a constructor, a record, a
     /// literal, …
     PatternShape(SyntaxKind),
@@ -2351,8 +2354,24 @@ impl<'a> Gen<'a> {
     /// Walk the RHS of a pattern binding against the pattern's type `pat_ty`
     /// and [settle](Self::settle), for a binding at `site`.
     ///
-    /// FCS checks the RHS *against* the pattern's type, which shapes what it
-    /// keeps of the RHS in two ways, each mirrored here:
+    /// FCS checks the RHS *against* the pattern's type. What that relation is
+    /// depends on whether the pattern holds an annotation.
+    ///
+    /// **Annotated** (`let (a: obj, b) = …`): the check is a coercion position,
+    /// so the relation is subsumption, which is not modelled. An equality in
+    /// its place would be wrong both ways — it would write the annotation's
+    /// type into whatever the RHS mentions (an earlier binder FCS generalised,
+    /// a parameter a condition grounds), and it fails on a legal coercion. So
+    /// the relation is dropped: the RHS is walked in check mode, recording
+    /// nothing, and the binding is marked incomplete. The annotated names keep
+    /// their annotations' types, which hold at the binder whatever the RHS.
+    ///
+    /// **Unannotated**: the pattern's type is a tuple tree of fresh variables,
+    /// so the relation is an equality, and one that can only bind those fresh
+    /// variables or impose tuple structure — never a type the RHS did not
+    /// have. It is added after the RHS's own constraints have settled, since
+    /// FCS resolves those first. What FCS keeps of the RHS's nodes is mirrored
+    /// in two ways:
     ///
     /// - A local pattern binding (not a bare name) whose RHS is a bare value
     ///   binds that value directly, and FCS keeps no node for it. So a name or
@@ -2362,17 +2381,23 @@ impl<'a> Gen<'a> {
     ///   receiver's nodes too.
     /// - A check that fails drops the RHS's nodes — how far down depends on
     ///   where the expected type stops propagating (a tuple of the wrong arity
-    ///   keeps none of its elements). So unless the RHS's type provably is the
-    ///   pattern's — both typed and resolving to the same type once settled —
-    ///   every node and local the RHS walk recorded is discarded.
-    ///
-    /// The last rule also covers an annotation in the pattern, which makes the
-    /// check a coercion position (`let (a: obj, b) = ("s", 1)` types `"s"` as
-    /// `obj`). The expected type reaches only positions whose type is part of
-    /// the RHS's own — tuple elements, branches, a body's result — so a node
-    /// FCS coerced leaves our synthesized RHS type unequal to the pattern's,
-    /// and the walk's emissions are discarded.
+    ///   keeps none of its elements). So the RHS's nodes stand only if the
+    ///   equality holds once settled. A relation still pending then is an
+    ///   argument check, which FCS resolves after pushing the pattern's type
+    ///   into the call, so it may fail inside the call's argument; but an
+    ///   argument's nodes are never recorded, so nothing kept here sits there.
     fn pattern_rhs(&mut self, pat: &Pat, pat_ty: Ty, rhs: &Expr, site: BinderSite) {
+        let annotated = pat
+            .syntax()
+            .descendants()
+            .any(|n| n.kind() == SyntaxKind::TYPED_PAT);
+        if annotated {
+            let expected = self.table.fresh();
+            self.infer_expr(rhs, Some(expected));
+            self.mark_incomplete(Incomplete::CoercedPattern);
+            self.settle();
+            return;
+        }
         let bound_directly = site == BinderSite::Local
             && !matches!(pat, Pat::Named(_))
             && matches!(
@@ -2382,6 +2407,7 @@ impl<'a> Gen<'a> {
         let expected = bound_directly.then(|| self.table.fresh());
         let mark = self.emission_mark();
         let rhs_var = self.infer_expr(rhs, expected);
+        self.settle();
         if let Some(rhs_var) = rhs_var {
             self.eq(pat_ty.clone(), Ty::Var(rhs_var));
         }
@@ -3248,12 +3274,12 @@ impl<'a> Gen<'a> {
     /// (3.2c-2c).
     ///
     /// `arg_vars` come from [`Self::param_var`], collected *before* the body walk
-    /// so a simple named parameter's private slot is recorded in time for the
-    /// body's condition typing to ground it. Sound by construction: a simple named
-    /// parameter contributes a private slot variable (grounded, if at all, only by
-    /// condition typing, and read off *only* through this function type); any other
-    /// parameter shape (annotated, tuple, wildcard, unit) contributes a fresh
-    /// unbound variable, leaving the function type non-ground so it defers.
+    /// so a named parameter's private slot is recorded in time for the body's
+    /// condition typing to ground it. Sound by construction: a named parameter
+    /// (alone or inside a tuple) contributes a private slot variable (grounded,
+    /// if at all, by its annotation or by condition typing, and read off *only*
+    /// through this function type); an unmodelled parameter shape contributes a
+    /// fresh unbound variable, leaving the function type non-ground so it defers.
     ///
     /// Returns the function's `DefId` when it built and constrained the type, so
     /// [`Self::let_binding`] can finalise it ([`Self::finalise_function`]);
