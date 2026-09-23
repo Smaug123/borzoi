@@ -22,6 +22,8 @@
 
 #![allow(dead_code)] // each importer uses a different subset.
 
+pub mod sdk_chain;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
