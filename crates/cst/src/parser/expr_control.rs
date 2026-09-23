@@ -442,13 +442,25 @@ impl<'src> Parser<'src> {
                 .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
             self.pos += 1;
         }
-        if matches!(
-            self.peek(),
-            Some((Ok(FilteredToken::Virtual(Virtual::End)), _)),
-        ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
-            self.pos += 1;
+        match self.peek() {
+            Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
+                self.builder
+                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.pos += 1;
+            }
+            // A token between the body's close and `CtxtFun`'s is still
+            // inside the lambda: an operator line undented past the body but
+            // not past the `fun` (`fun v ->⏎      a⏎     + b`) closes only
+            // the body, so FCS's `anonLambdaExpr` meets the `+` where the
+            // lambda's close must follow ("Unexpected infix operator").
+            Some((_, span)) => {
+                let span = span.clone();
+                self.errors.push(ParseError {
+                    message: "unexpected token after the lambda body".to_string(),
+                    span,
+                });
+            }
+            None => {}
         }
 
         self.builder.finish_node(); // FUN_EXPR
@@ -725,13 +737,26 @@ impl<'src> Parser<'src> {
 
         // Drain the `CtxtMatchClauses` close (zero-width). Exactly one —
         // see the doc comment.
-        if matches!(
-            self.peek(),
-            Some((Ok(FilteredToken::Virtual(Virtual::End)), _)),
-        ) {
-            self.builder
-                .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
-            self.pos += 1;
+        match self.peek() {
+            Some((Ok(FilteredToken::Virtual(Virtual::End)), _)) => {
+                self.builder
+                    .token(FSharpLang::kind_to_raw(SyntaxKind::ERROR), "");
+                self.pos += 1;
+            }
+            // A token between the last clause and the clause-list close is
+            // still inside `CtxtMatchClauses`: an operator line undented past
+            // the clause result but not past the clauses (`| _ ->⏎      a⏎
+            //  + b`) closes the result block and nothing else, so FCS's
+            // `patternClauses` meets the `+` where only `|` or the close may
+            // follow ("Unexpected infix operator in expression").
+            Some((_, span)) => {
+                let span = span.clone();
+                self.errors.push(ParseError {
+                    message: "unexpected token after the last `match` clause".to_string(),
+                    span,
+                });
+            }
+            None => {}
         }
     }
 

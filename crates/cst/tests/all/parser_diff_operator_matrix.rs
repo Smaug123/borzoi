@@ -90,15 +90,53 @@ fn diff_operator_pair_matrix() {
     );
 }
 
+/// The offside contexts a continuation line can undent against. Each is a
+/// template whose `{line}` is replaced by the operator line; the operand `a`
+/// sits at column 10 in every one, so the swept columns span the margin, each
+/// enclosing construct's own column, and the operand's.
+///
+/// The enclosing construct matters as much as the spelling: what an offside
+/// operator line closes, and what the grammar does with it afterwards, differs
+/// between a module-level `let` (a declaration separator is expected), an
+/// expression-level `let` (a sequential body follows), a member body and a
+/// match arm.
+const UNDENTATION_CONTEXTS: &[&str] = &[
+    // Module-level `let`.
+    "let x =\n          a\n{line}\n",
+    // A `let` in a nested module.
+    "module M =\n    let x =\n          a\n{line}\n",
+    // An expression-level `let`, with a body after it.
+    "let f () =\n    let x =\n          a\n{line}\n    x\n",
+    // A member body.
+    "type T() =\n    member _.M =\n          a\n{line}\n",
+    // A match arm's result.
+    "let y =\n    match v with\n    | _ ->\n          a\n{line}\n",
+    // A `function` clause's result.
+    "let g =\n    function\n    | _ ->\n          a\n{line}\n",
+    // A `try … with` handler's result.
+    "let y =\n    try f ()\n    with _ ->\n          a\n{line}\n",
+    // An `if … then` branch.
+    "let y =\n    if c then\n          a\n{line}\n",
+    // A lambda body.
+    "let g =\n    fun v ->\n          a\n{line}\n",
+    // A parenthesised expression.
+    "let y =\n    (\n          a\n{line})\n",
+];
+
 /// A continuation line opening with each operator, at every column from the
-/// margin to the context's own column (6): the infix grace decides, per
-/// spelling, how far left of the context the line may start.
+/// margin to the operand's own column, in every [`UNDENTATION_CONTEXTS`]
+/// entry: the infix grace decides, per spelling, how far left of the context
+/// the line may start, and the context decides what an offside line means.
 #[test]
 fn diff_infix_undentation_matrix() {
     sweep(
         "infix-undentation",
-        OPS.iter().flat_map(|op| {
-            (0..=6).map(move |col| format!("let x =\n      a\n{}{op} b\n", " ".repeat(col)))
+        UNDENTATION_CONTEXTS.iter().flat_map(|context| {
+            OPS.iter().flat_map(move |op| {
+                (0..=10).map(move |col| {
+                    context.replace("{line}", &format!("{}{op} b", " ".repeat(col)))
+                })
+            })
         }),
     );
 }
