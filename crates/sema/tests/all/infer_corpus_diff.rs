@@ -91,7 +91,7 @@ const MAX_DIVERGENCES: usize = 0;
 /// goes up — bump it after a slice lands. One-sided, so it fails if the sweep
 /// stops measuring, not if inference commits more.
 ///
-/// 1703 measured 2026-09-22 (326 files compared, stride 13), with CE-1's
+/// 1697 measured 2026-09-23 (325 files compared, stride 13), with CE-1's
 /// expression-level `let`s and sequences typed; the floor sits a little under
 /// to absorb a file moving in or out of FCS's checkable set.
 const MIN_AGREEMENTS: usize = 1650;
@@ -118,6 +118,8 @@ struct Site {
 struct Tally {
     files_compared: usize,
     our_parse_errors: usize,
+    /// Files skipped for a line directive (see [`has_line_directive`]).
+    line_directives: usize,
     our_panics: usize,
     fcs_failed: Vec<(PathBuf, String)>,
     agree_exprs: usize,
@@ -219,6 +221,20 @@ fn touches_error(lines: &Lines, errors: &[FcsCheckError], start: usize, end: usi
     errors.iter().any(|e| (l0..=l1).contains(&e.line))
 }
 
+/// Whether `source` carries a line directive (`#line 100 "f.fs"`, or `# 100`).
+/// FCS reports ranges and diagnostics after it in the directive's *virtual*
+/// coordinates — another line, often another file name, whose nodes the oracle
+/// drops — so the file cannot be compared position by position, and is skipped.
+fn has_line_directive(source: &str) -> bool {
+    source.lines().any(|line| {
+        let Some(rest) = line.trim_start().strip_prefix('#') else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        rest.starts_with("line") || rest.starts_with(|c: char| c.is_ascii_digit())
+    })
+}
+
 /// The byte range of the outermost `let` declaration enclosing `[start, end)`,
 /// or the range itself outside any: the unit FCS's error recovery works in.
 fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
@@ -246,6 +262,10 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
     // FCS reads the file with a leading byte-order mark stripped, so its ranges
     // are offsets into the BOM-less text; ours must be too.
     let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
+    if has_line_directive(&source) {
+        tally.lock().unwrap().line_directives += 1;
+        return;
+    }
     let symbols: std::collections::HashSet<String> =
         FCS_SCRIPT_SYMBOLS.iter().map(|s| s.to_string()).collect();
     let parsed = parse_with_symbols(&source, &symbols);
@@ -442,13 +462,15 @@ fn inferred_types_match_fcs_over_corpus() {
 
     eprintln!(
         "infer-diff: {} files compared | {} expr + {} binder agree | {} diverge | {} in \
-         error-recovered declarations | {} our-parse-errors | {} our-panics | {} fcs-failed",
+         error-recovered declarations | {} our-parse-errors | {} line-directive files | {} \
+         our-panics | {} fcs-failed",
         t.files_compared,
         t.agree_exprs,
         t.agree_binders,
         t.divergences.len(),
         t.error_lines.len(),
         t.our_parse_errors,
+        t.line_directives,
         t.our_panics,
         t.fcs_failed.len(),
     );
@@ -570,4 +592,22 @@ fn a_bom_prefixed_file_compares_like_its_bomless_twin() {
     let t = tally.into_inner().unwrap();
     assert!(t.divergences.is_empty(), "{:?}", t.divergences);
     assert_eq!(t.agree_exprs + t.agree_binders, 2, "`x` and `1`: {t:?}");
+}
+
+/// A file with a line directive is skipped rather than compared: FCS reports
+/// what follows the directive in its virtual coordinates, so an error there
+/// would miss the declaration it belongs to and a node would carry another
+/// file's name. Here the directive sits before an erroring declaration, which
+/// would otherwise read as a gated divergence.
+#[test]
+fn a_line_directive_file_is_skipped_not_compared() {
+    let src = "module M\n#line 100 \"generated.fs\"\nlet (|A|B|) (x: int) (y: int) = if x > y then A else B\nlet s = \"BAD DOG!\"\n";
+    let path = crate::common::temp_fs_file("infer_corpus_line", src);
+    let tally = Mutex::new(Tally::default());
+    compare_file(&path, &tally);
+    let _ = std::fs::remove_file(&path);
+    let t = tally.into_inner().unwrap();
+    assert_eq!((t.line_directives, t.files_compared), (1, 0), "{t:?}");
+    assert!(has_line_directive("# 7 \"x.fs\"\n"));
+    assert!(!has_line_directive("#if DEBUG\n#endif\n"));
 }
