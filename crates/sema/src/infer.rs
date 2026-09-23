@@ -1082,6 +1082,26 @@ impl<'a> Gen<'a> {
         }
     }
 
+    /// How many reasons the current binding's census entry holds — the mark a
+    /// sub-walk's [`Self::mark_consequence`] compares against.
+    fn reasons_recorded(&self) -> usize {
+        self.incompleteness.last().map_or(0, Vec::len)
+    }
+
+    /// Mark the binding incomplete for a reason that may be only the
+    /// *consequence* of a sub-walk: a local or statement left open, a method
+    /// callee that did not synthesize. If the sub-walk begun at `recorded`
+    /// already recorded a reason, that is the cause, and `why` is not counted
+    /// again — so "the only observed reason" counts what modelling one
+    /// construct could unlock, not its downstream effects.
+    fn mark_consequence(&mut self, recorded: usize, why: Incomplete) {
+        if self.reasons_recorded() > recorded {
+            self.mark_incomplete_propagated();
+        } else {
+            self.mark_incomplete(why);
+        }
+    }
+
     /// Drop the census entry [`Self::begin_binding`] opened, for a binding that
     /// turns out not to be walked here — so the census counts walked bindings,
     /// each once.
@@ -2232,6 +2252,7 @@ impl<'a> Gen<'a> {
             self.mark_incomplete(Incomplete::LocalBindingShape);
             return;
         };
+        let recorded = self.reasons_recorded();
         let rhs_var = self.infer_expr(&rhs, None);
         let Some(def) = named.ident().and_then(|tok| self.def_at(tok.text_range())) else {
             self.mark_incomplete(Incomplete::Recovery);
@@ -2246,12 +2267,7 @@ impl<'a> Gen<'a> {
         }
         self.settle();
         if !self.table.resolve(&Ty::Var(dv)).is_ground() {
-            match rhs_var {
-                // A RHS that synthesized but is not ground: the local is open.
-                Some(_) => self.mark_incomplete(Incomplete::OpenLocal),
-                // The RHS failed, and recorded why; that is the one reason.
-                None => self.mark_incomplete_propagated(),
-            }
+            self.mark_consequence(recorded, Incomplete::OpenLocal);
         }
     }
 
@@ -2289,10 +2305,11 @@ impl<'a> Gen<'a> {
             let unit_check = self.table.fresh();
             // A statement that does not synthesize a variable has already marked
             // the binding incomplete in its own arm.
+            let recorded = self.reasons_recorded();
             if let Some(v) = self.infer_expr(stmt, Some(unit_check)) {
                 self.settle();
                 if !self.table.resolve(&Ty::Var(v)).is_ground() {
-                    self.mark_incomplete(Incomplete::OpenStatement);
+                    self.mark_consequence(recorded, Incomplete::OpenStatement);
                 }
             }
         }
@@ -2564,9 +2581,10 @@ impl<'a> Gen<'a> {
             self.discard_emissions_since(emit_mark);
             return Some(result);
         }
+        let recorded = self.reasons_recorded();
         let Some((recv, method_tok)) = self.method_callee(callee) else {
             self.discard_emissions_since(emit_mark);
-            self.mark_incomplete(Incomplete::MethodCallee(callee.syntax().kind()));
+            self.mark_consequence(recorded, Incomplete::MethodCallee(callee.syntax().kind()));
             return None;
         };
         // Walk each positional argument in **check mode**, collecting the
@@ -5321,7 +5339,9 @@ mod tests {
     fn incompleteness_names_what_each_binding_did_not_model() {
         use super::{Incomplete, SyntaxKind};
         let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n\
-                   let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y + 1 in 0\n";
+                   let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y + 1 in 0\n\
+                   let i y = let z = (y + 1, 2) in 0\nlet j (y: int) = (y + 1).ToString()\n\
+                   let k y = (y + 1; 0)\n";
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
@@ -5338,6 +5358,12 @@ mod tests {
                 vec![],
                 // `let (p, q) = …` is not walked, so it has no entry.
                 // `h`: the local's RHS failed; that is its one reason.
+                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                // `i`, `j`, `k`: the local left open, the method callee and the
+                // statement left open are consequences of the infix operator,
+                // which is recorded once and alone.
+                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
+                vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
             ]
         );
