@@ -95,7 +95,7 @@ Stage 3 settles it.
    - Its own oracle is a *real* `Build`'s arguments: restored, compiling, with
      `ProvideCommandLineArgs` only.
 
-   Four review rounds shaped this. The first version ran only the SDK's two
+   Five review rounds shaped this. The first version ran only the SDK's two
    define targets and re-read `$(Nullable)`/`$(OtherFlags)` by hand. That
    answered successfully but incompletely on:
    - case-folded duplicates;
@@ -104,7 +104,9 @@ Stage 3 settles it.
    - item references in task parameters;
    - whitespace-padded flags and embedded line breaks;
    - unrestored package imports;
-   - hooks in `Build` but outside `Compile` (`BeforeBuild`).
+   - hooks in `Build` but outside `Compile` (`BeforeBuild`);
+   - `%` escapes, which the reported argument items decode;
+   - build lists rewritten while the build runs.
 
    Each was either a re-implementation of the build or a step the build takes
    that the op skipped, which is why the op now runs the build and only reads
@@ -162,7 +164,7 @@ here, but the perturbation census should keep reporting it.
   `--define:` arguments of a real, restored, compiling build's
   `FscCommandLineArgs` under the same globals, in order. The only exception is
   a decline where the fixture demands one.
-- Calibration set (33 cases):
+- Calibration set (35 cases):
   - a `net10.0;net6.0;netstandard2.0` project, per inner TFM, crossed with
     `Configuration` ∈ {Debug, Release, `My-Config.1`};
   - `DisableImplicitFrameworkDefines`, `DisableDiagnosticTracing`, both
@@ -177,7 +179,8 @@ here, but the perturbation census should keep reporting it.
   - a locally packed package whose `build/*.props` appends `FROM_PACKAGE`;
   - declines, each of which must also carry the symbol to fsc: `OtherFlags`
     with `-d:`, with `/d:`, with a response file, with an embedded line break,
-    and with each define spelling padded with whitespace;
+    with each define spelling padded with whitespace, and with an escaped `%`;
+    plus a target that rewrites `CoreBuildDependsOn` while the build runs;
   - a user target that appends only when fsc really runs. The op must
     *disagree* here, which proves the calibration can see the op's genuine
     boundary.
@@ -193,6 +196,13 @@ here, but the perturbation census should keep reporting it.
     `BeforeBuild` case.
 - Out of scope, and why: build logic conditioned on fsc really running
   (`SkipCompilerExecution`), which the boundary fixture pins.
+- Known limit of the method: every fixture is hand-chosen, and each review
+  round has found a further adversarial shape. The rounds have converged to
+  shapes far outside what the Stage 4 model commits on, since it declines user
+  targets and define-capable `OtherFlags` anyway. The systematic next step,
+  if one is wanted, is a *generated* calibration: random combinations of the
+  fixture features, checked against real builds, with a
+  conditional-compilation probe as the final arbiter.
 
 ### Stage 2: census, not gate
 

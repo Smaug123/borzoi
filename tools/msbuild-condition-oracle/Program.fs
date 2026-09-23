@@ -592,6 +592,20 @@ let private evalDefines
                       + "an unrecognised build graph" ]
             | Some targets when not (instance.Build(Array.ofList targets, [ logger :> ILogger ])) ->
                 Error logger.Errors
+            // A target that rewrites either list while the build runs changes
+            // what a real `Build` executes after that point; the list above
+            // was read before any target ran.
+            | Some targets when buildTargetsThroughCompile instance <> Some targets ->
+                Error [ "the build rewrote $(BuildDependsOn) or $(CoreBuildDependsOn) while running" ]
+            // `Fsc` reports its arguments as items, and an item unescapes
+            // `%XX`: `--define:%45X` reads back as `--define:EX` although fsc
+            // was passed `%45X`. The values `Fsc` builds define arguments from
+            // are checked instead, since the reported tokens cannot show it.
+            | Some _ when
+                [ "DefineConstants"; "OtherFlags" ]
+                |> List.exists (fun name -> (instance.GetPropertyValue name).Contains '%')
+                ->
+                Error [ "DefineConstants or OtherFlags contains '%', which fsc's reported arguments decode" ]
             | Some _ ->
                 let tokens =
                     instance.GetItems "FscCommandLineArgs"

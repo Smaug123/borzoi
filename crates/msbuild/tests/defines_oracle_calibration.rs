@@ -35,10 +35,12 @@
 //! - a package whose build props append a define, which only a restore brings
 //!   in.
 //!
-//! Six fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
-//! `/d:X`, a response file, an embedded line break, or either define spelling
+//! Eight fixtures must make the op **decline**: `OtherFlags` carrying `-d:X`,
+//! `/d:X`, a response file, an embedded line break, either define spelling
 //! padded with whitespace (`Fsc` passes its arguments to fsc as a response
-//! file, one per line, and fsc trims each line). fsc reads
+//! file, one per line, and fsc trims each line), or an escaped `%` (the
+//! reported arguments are items, which unescape it); and a target that rewrites
+//! `CoreBuildDependsOn` while the build runs. fsc reads
 //! each as a define, and the op does not parse fsc's option grammar, so an
 //! answer would omit a symbol.
 //!
@@ -274,6 +276,26 @@ fn fixtures() -> Vec<Fixture> {
             "OtherFlags with an embedded line break",
             "<OtherFlags>&quot;--warnon:1182&#10;--define:EXTRA&quot;</OtherFlags>",
             "",
+            Decline,
+        ),
+        // `Fsc` reports its arguments as items, which unescape: fsc is passed
+        // `%45XTRA`, the report says `EXTRA`.
+        net10(
+            "OtherFlags with an escaped percent",
+            "<OtherFlags>--define:%2545XTRA</OtherFlags>",
+            "",
+            Decline,
+        ),
+        // A target that extends `CoreBuildDependsOn` while the build runs.
+        net10(
+            "CoreBuildDependsOn rewritten during the build",
+            "",
+            "<Target Name=\"Inject\" BeforeTargets=\"BeforeBuild\">\
+             <PropertyGroup><CoreBuildDependsOn>AddExtra;$(CoreBuildDependsOn)</CoreBuildDependsOn>\
+             </PropertyGroup></Target>\
+             <Target Name=\"AddExtra\">\
+             <PropertyGroup><DefineConstants>$(DefineConstants);EXTRA</DefineConstants>\
+             </PropertyGroup></Target>",
             Decline,
         ),
         net10(
