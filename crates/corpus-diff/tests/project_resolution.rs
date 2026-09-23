@@ -128,6 +128,7 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
         "parse errors in {src:?}: {:?}",
         parsed.errors
     );
+    let recovery = SyntaxRecovery::of(&parsed);
     let file = ImplFile::cast(parsed.root).expect("impl file");
     let srcs = vec![SourceFile::Impl(file)];
     let paths = vec![path];
@@ -135,7 +136,7 @@ fn synthetic_loaded_project(src: &str, env: AssemblyEnv) -> LoadedProject {
     let files: Vec<ProjectFile> = srcs
         .into_iter()
         .zip(qnofs)
-        .map(|(file, qnof)| ProjectFile::new(file, qnof, SyntaxRecovery::Unretained))
+        .map(|(file, qnof)| ProjectFile::new(file, qnof, recovery.clone()))
         .collect();
     let env = Arc::new(env);
     let resolved = Arc::new(resolve_project_files(&files, env.as_ref()));

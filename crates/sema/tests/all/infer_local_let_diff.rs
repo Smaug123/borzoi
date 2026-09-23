@@ -718,6 +718,8 @@ fn a_rejected_pattern_leaves_nothing_behind() {
         "let mutable (a, b) = (1, \"s\")\nlet z = a\n",
         "let g (c: bool) =\n    let inline (a: int, b) = (1, \"s\")\n    a\n",
         "let g (c: bool) =\n    let mutable (a, b) = (1, \"s\")\n    a\n",
+        "let mutable f (a, b) = a\n",
+        "let mutable f a = a\n",
     ] {
         let src = format!("module M\n{src}");
         let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
@@ -773,6 +775,9 @@ fn a_recovered_pattern_is_not_typed() {
         "let f (a: int, b,) = (a,b)\n",
         "let (a,b,) = (1, 2)\nlet c = a\n",
         "let g (s: string) = let (a,b,) = (1, 2) in a\n",
+        // Recovery can spill: the inner `let` survives as an apparently intact
+        // declaration of its own, which FCS never checks.
+        "let f (s: string)) p =\n    let (a, b) = (1, \"s\")\n    a\n",
     ] {
         let src = format!("module M\n{src}");
         let failed = std::panic::catch_unwind(|| {

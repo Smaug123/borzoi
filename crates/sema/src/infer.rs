@@ -1323,7 +1323,15 @@ impl<'a> Gen<'a> {
     /// body, reunify parameter slots on a complete binding, then **generalise** or
     /// emit the function type.
     fn let_binding(&mut self, let_decl: &LetDecl) {
-        self.type_let_decl(let_decl);
+        // A declaration is typed only if nothing up to its end recovered.
+        // Recovery can spill past the declaration it broke out of — `let f
+        // (s: string)) p =` leaves its indented body's `let`s standing as
+        // apparently intact top-level declarations, which FCS never checks —
+        // so no declaration after a recovery can be shown to be one FCS
+        // typed. A broken declaration's own binders are skipped the same way.
+        if self.resolved.recovery().clean_through(let_decl.syntax()) {
+            self.type_let_decl(let_decl);
+        }
         for binding in let_decl.bindings() {
             self.own_binders(&binding);
         }
@@ -1389,6 +1397,13 @@ impl<'a> Gen<'a> {
         }
         for binding in let_decl.bindings() {
             if self.may_be_entry_point(binding.syntax()) {
+                continue;
+            }
+            // `let mutable f x = …` is FS0831: FCS types the function
+            // monomorphically at `obj`, which nothing here models.
+            if binding.is_mutable()
+                && matches!(binding.pat(), Some(Pat::LongIdent(head)) if head.args().next().is_some())
+            {
                 continue;
             }
             // A return-type annotation (`let x : T = …` / `let f x : T = …`)
@@ -3535,10 +3550,12 @@ impl<'a> Gen<'a> {
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
         // Recovery drops what it cannot parse, so a recovered pattern's
         // surviving children look well-formed: `(a,b,)` reads as a pair, where
-        // FCS keeps a third, recovery element. As for annotations
-        // ([`Self::annotation_ty`]), a pattern is read only from a declaration
-        // that parsed clean.
-        if !self.resolved.recovery().declaration_is_intact(pat.syntax()) {
+        // FCS keeps a third, recovery element. And it can spill past the
+        // declaration it broke out of, leaving a later `let` apparently intact
+        // where FCS never checks it. So a pattern is read only when nothing up
+        // to it recovered ([`crate::recovery::SyntaxRecovery::clean_through`]).
+        let recovery = self.resolved.recovery();
+        if !recovery.declaration_is_intact(pat.syntax()) || !recovery.clean_through(pat.syntax()) {
             return Err(Incomplete::Recovery);
         }
         let named_def = |named: &NamedPat| {
