@@ -1248,9 +1248,12 @@ impl ProjectItems {
         self.namespace_paths.contains(path)
     }
 
-    /// Whether any earlier file declares an `[<AutoOpen>]` module, anywhere.
-    pub(super) fn has_any_auto_open_module(&self) -> bool {
-        !self.auto_open_module_paths.is_empty()
+    /// Whether an earlier file exports a value whose last path segment is
+    /// `name`, at any path.
+    pub(super) fn defines_value_named(&self, name: &str) -> bool {
+        self.value_exports
+            .keys()
+            .any(|path| path.last().is_some_and(|last| last == name))
     }
 
     /// Whether an earlier file exports a direct `[<AutoOpen>]` module under
@@ -2648,8 +2651,8 @@ pub struct ResolvedFile {
     /// [`Resolution::Deferred`] makes no claim; an attribute neither candidate
     /// matches is *absent* (FCS errors and sinks nothing there).
     pub(super) attribute_resolutions: HashMap<TextRange, Resolution>,
-    /// See [`Self::operator_target_at`].
-    pub(super) operator_targets: HashMap<TextRange, Resolution>,
+    /// See [`Self::preceding_defines_operator`].
+    pub(super) preceding_operator_definitions: HashSet<&'static str>,
     /// The file's syntactic whole-file type-simple-name pre-scan (see
     /// [`Resolver::own_type_simple_names`](super::state::Resolver)), carried
     /// into [`ProjectItems::project_type_simple_names`] by the Compile-order
@@ -2924,7 +2927,7 @@ impl ResolvedFile {
             resolutions: HashMap::new(),
             or_pattern_aliases: HashSet::new(),
             attribute_resolutions: HashMap::new(),
-            operator_targets: HashMap::new(),
+            preceding_operator_definitions: HashSet::new(),
             own_type_simple_names: HashSet::new(),
             own_module_simple_names: HashSet::new(),
             own_abbrev_type_simple_names: HashSet::new(),
@@ -3125,22 +3128,14 @@ impl ResolvedFile {
         self.attribute_resolutions.get(&range).copied()
     }
 
-    /// What the operator token at `range` resolves to, for an operator in
-    /// FSharp.Core's table of the ones inference types: its spelling (`+`), or —
-    /// when nothing answers to that — its compiled name (`op_Addition`), which is
-    /// the name FCS's environment holds, so a definition spelled either way
-    /// shadows FSharp.Core's. Resolved by the ordinary value lookup, with every
-    /// tier's shadowing, and sealed under an incomplete projection. A side
-    /// table rather than the main map: it answers inference's question (is this
-    /// FSharp.Core's operator?), not a navigation one, and the main map's record
-    /// at the token is left as it was.
-    pub fn operator_target_at(&self, range: TextRange) -> Option<Resolution> {
-        self.operator_targets.get(&range).copied()
-    }
-
-    /// Every operator token's target (see [`Self::operator_target_at`]).
-    pub fn operator_targets(&self) -> &HashMap<TextRange, Resolution> {
-        &self.operator_targets
+    /// Whether an **earlier** Compile-order file exports a value named by the
+    /// operator `spelling` (`+`) or its compiled name (`op_Addition`) — anywhere
+    /// in its modules, private or not, in scope here or not. An exhaustive
+    /// question on purpose: it lets inference rule out every project route by
+    /// which a redefinition could shadow FSharp.Core's operator without trusting
+    /// any one of them. Only FSharp.Core-table operators are recorded.
+    pub(crate) fn preceding_defines_operator(&self, spelling: &str) -> bool {
+        self.preceding_operator_definitions.contains(spelling)
     }
 
     /// The full written-attribute-range→[`Resolution`] map (EX-3 §2(d)).

@@ -757,6 +757,12 @@ pub struct AssemblyEnv {
     /// Not the *enclosing* namespace, which is a property of the file being
     /// resolved rather than of the closure, so it has no fixed answer to cache.
     bare_value_index: std::sync::OnceLock<BareValueIndex>,
+    /// Lazily-built set behind [`Self::declares_operator_value_outside_fsharp_core`]:
+    /// every `op_`-prefixed name a referenced assembly other than FSharp.Core
+    /// declares as a module value or an `[<AutoOpen>]` type's static, dropped
+    /// members included. Depends only on the entities, which never change after
+    /// construction.
+    operator_values_outside_core: std::sync::OnceLock<HashSet<String>>,
     /// Lazily-built index behind
     /// [`Self::contested_child_namespace_declares`]: the first segments of every
     /// child namespace a contested auto-open's *contributor* declares under it,
@@ -2000,6 +2006,53 @@ impl AssemblyEnv {
         self.assembly_provenance(handle)
             .and_then(|id| self.assemblies.get(id.0 as usize))
             .and_then(|p| p.as_deref())
+    }
+
+    /// Whether a referenced assembly **other than FSharp.Core** declares a value
+    /// named `compiled` (an operator's compiled name, `op_Addition`) where a bare
+    /// operator could reach it: as a module value, or as a static of an
+    /// `[<AutoOpen>]` type — *whether or not* it is in scope anywhere, and
+    /// counting members the projection dropped by their recorded names.
+    ///
+    /// This is an exhaustive enumeration, deliberately not a scoped lookup: it
+    /// is what lets inference prove FSharp.Core's operator is the only one a use
+    /// could mean without trusting any route by which a module's values come
+    /// into scope. A type's own operators (`System.DateTime.op_Addition`) are
+    /// not bare values and are not counted. A dropped *type* is not enumerable,
+    /// and an incomplete projection hides whole assemblies; the caller declines
+    /// on either ([`Self::has_dropped_types`], [`Self::identities_incomplete`]).
+    pub fn declares_operator_value_outside_fsharp_core(&self, compiled: &str) -> bool {
+        self.operator_values_outside_core
+            .get_or_init(|| {
+                let mut names = HashSet::new();
+                for handle in self.all_handles() {
+                    let e = self.entity(handle);
+                    let is_core = e.assembly.name == "FSharp.Core";
+                    if is_core || !(e.kind == borzoi_assembly::EntityKind::Module || e.is_auto_open)
+                    {
+                        continue;
+                    }
+                    for name in e
+                        .members
+                        .iter()
+                        .map(member_name)
+                        .chain(e.skipped_members.iter().map(|s| s.name.as_str()))
+                    {
+                        if name.starts_with("op_") {
+                            names.insert(name.to_string());
+                        }
+                    }
+                }
+                names
+            })
+            .contains(compiled)
+    }
+
+    /// Whether any referenced assembly dropped an undecodable type (see
+    /// [`Self::mark_namespace_dropped_type`]) — a type whose members nothing can
+    /// enumerate.
+    pub fn has_dropped_types(&self) -> bool {
+        !self.namespaces_with_dropped_types.is_empty()
     }
 
     /// The total number of interned entities (top-level + nested).

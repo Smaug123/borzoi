@@ -419,14 +419,13 @@
 //! **Infix operators over ground operands.** `a OP b` for FSharp.Core's
 //! arithmetic and comparison operators ([`Gen::infer_infix`]).
 //!
-//! - **Which operator.** An operator can be redefined — in the file, under its
-//!   spelling or its compiled name, or in an opened or auto-opened module — and
-//!   FCS then uses that definition. The resolver records what each operator
-//!   token resolves to under its spelling or, failing that, its compiled name
-//!   (`op_Addition`, the name FCS's environment holds), through the ordinary
-//!   lookup ([`crate::ResolvedFile::operator_target_at`]); inference types the
-//!   application only when that is FSharp.Core's own member, by assembly
-//!   identity, module and compiled name ([`Gen::core_operator_at`]).
+//! - **Which operator.** An operator can be redefined — in the file under its
+//!   spelling or its compiled name, in a `module rec` after its use, in an
+//!   opened or auto-opened module, through an assembly-level auto-open — and FCS
+//!   then uses that definition. Rather than ask the scope (a lookup that misses
+//!   any route it does not model), inference types the application only when
+//!   no redefinition exists *anywhere*: in the file, an earlier file, or a
+//!   referenced assembly other than FSharp.Core ([`Gen::core_operator_at`]).
 //! - **Only over ground operands.** Both operands are synthesized (the
 //!   operator's type parameters admit no coercion) and the constraints so far
 //!   settled; only if both are then ground does the application take
@@ -778,6 +777,7 @@ struct SuspendedMember {
 pub fn infer_file(file: &ImplFile, resolved: &ResolvedFile, env: &AssemblyEnv) -> InferredFile {
     let ext_scope = ExtensionScope::of(resolved, env);
     let mut cx = Gen::new(resolved, env, ext_scope);
+    cx.redefined_in_file = operators_redefined_in(file);
     cx.walk(file);
     cx.solve();
     cx.finish()
@@ -973,6 +973,9 @@ struct Gen<'a> {
     /// [`Self::exprs`], and discarded with it by an emission barrier
     /// ([`Self::discard_emissions_since`]).
     local_emits: Vec<(DefId, Option<GuardId>)>,
+    /// The FSharp.Core-table operators this file may redefine
+    /// ([`operators_redefined_in`]), which [`Self::core_operator_at`] declines.
+    redefined_in_file: HashSet<&'static str>,
     /// Each `(expr).Member` receiver's variable, keyed by the `DOT_GET_EXPR`'s
     /// range — unguarded and never discarded, for
     /// [`InferredFile::dot_get_receiver_type`].
@@ -1082,6 +1085,7 @@ impl<'a> Gen<'a> {
             def_vars: HashMap::new(),
             local_defs: HashSet::new(),
             local_emits: Vec::new(),
+            redefined_in_file: HashSet::new(),
             dot_get_receivers: Vec::new(),
             incompleteness: Vec::new(),
             guards: Vec::new(),
@@ -2508,11 +2512,26 @@ impl<'a> Gen<'a> {
         Some(v)
     }
 
-    /// The FSharp.Core operator the infix operator expression `op_expr` is, if
-    /// the resolver proved the token names FSharp.Core's own member
-    /// ([`ResolvedFile::operator_target_at`]): by the declaring assembly (name
-    /// and public-key token), module and compiled name. A definition of the
-    /// operator anywhere in scope, or a lookup the resolver declined, is not.
+    /// The FSharp.Core operator the infix operator expression `op_expr` is — the
+    /// table entry for its spelling, provided **no redefinition of it exists
+    /// anywhere** a use could reach: this file ([`Gen::redefined_in_file`]), an
+    /// earlier Compile-order file
+    /// ([`ResolvedFile::preceding_defines_operator`]), or a referenced assembly
+    /// other than FSharp.Core
+    /// ([`AssemblyEnv::declares_operator_value_outside_fsharp_core`]), with every
+    /// assembly read and no type dropped.
+    ///
+    /// An enumeration of sources, not a scoped lookup. FCS resolves an operator
+    /// through its compiled name in the value environment, so any definition
+    /// that comes into scope — in the file under either name, a `module rec`'s
+    /// later one, an opened or auto-opened module's, an assembly-level
+    /// auto-open's — shadows FSharp.Core's; proving none of them applies by
+    /// asking the scope is an absence proof built from existence lookups, and
+    /// every route the lookup does not model becomes a wrong type. Asking
+    /// whether a definition exists *at all* needs no route, at the price of
+    /// declining where one exists but is out of scope. FSharp.Core's own
+    /// alternatives (`Checked`, `NonStructuralComparison`) type identically, so
+    /// they are not counted.
     fn core_operator_at(&self, op_expr: &Expr) -> Option<&'static crate::operators::CoreOperator> {
         let Expr::LongIdent(li) = op_expr else {
             return None;
@@ -2523,18 +2542,14 @@ impl<'a> Gen<'a> {
             .filter_map(|el| el.into_token())
             .find(|t| t.kind() == SyntaxKind::IDENT_TOK)?;
         let op = crate::operators::core_operator(tok.text())?;
-        let Resolution::Member { parent, idx } =
-            self.resolved.operator_target_at(tok.text_range())?
-        else {
-            return None;
-        };
-        let entity = self.env.entity(parent);
-        let is_core = entity.assembly.name == "FSharp.Core"
-            && entity.assembly.public_key_token == Some(FSHARP_CORE_PUBLIC_KEY_TOKEN);
-        (is_core
-            && self.env.entity_full_name(parent) == op.module
-            && self.env.member_display_name(parent, idx) == op.compiled)
-            .then_some(op)
+        let redefined = self.redefined_in_file.contains(op.spelling)
+            || self.resolved.preceding_defines_operator(op.spelling)
+            || self.env.identities_incomplete()
+            || self.env.has_dropped_types()
+            || self
+                .env
+                .declares_operator_value_outside_fsharp_core(op.compiled);
+        (!redefined).then_some(op)
     }
 
     /// Walk a modelled application's **argument** in check mode against the
@@ -4546,9 +4561,54 @@ fn unparenthesize(e: Expr) -> Option<Expr> {
 ///
 /// Kept in lock-step with [`literal_ty`] by a shared list would over-engineer a
 /// 16-entry match; instead a unit test asserts the two agree.
-/// FSharp.Core's public-key token, which a member must carry for inference to
-/// type an operator as FSharp.Core's.
-const FSHARP_CORE_PUBLIC_KEY_TOKEN: [u8; 8] = [0xb0, 0x3f, 0x5f, 0x7f, 0x11, 0xd5, 0x0a, 0x3a];
+/// The FSharp.Core-table operators `file` may redefine: any it **binds**
+/// anywhere (a `let`, a local, a member, a parameter, under its spelling), any
+/// whose compiled name appears as an identifier at all, and every one if the
+/// file has an `open type` (a type's static operators then become bare).
+/// Syntactic and position-blind on purpose — a `module rec`'s later
+/// definition counts as much as an earlier one — and over-approximate, which
+/// only declines.
+fn operators_redefined_in(file: &ImplFile) -> HashSet<&'static str> {
+    use crate::operators::CORE_OPERATORS;
+    let root = file.syntax();
+    if root
+        .descendants()
+        .filter_map(borzoi_cst::syntax::OpenDecl::cast)
+        .any(|open| open.is_type())
+    {
+        return CORE_OPERATORS.iter().map(|op| op.spelling).collect();
+    }
+    let mut out = HashSet::new();
+    for tok in root
+        .descendants_with_tokens()
+        .filter_map(|el| el.into_token())
+        .filter(|t| t.kind() == SyntaxKind::IDENT_TOK)
+    {
+        let text = ident_text(&tok);
+        for op in CORE_OPERATORS {
+            if text == op.compiled || (text == op.spelling && in_binding_position(&tok)) {
+                out.insert(op.spelling);
+            }
+        }
+    }
+    out
+}
+
+/// Whether an identifier token sits in a **pattern** — a binding position —
+/// rather than an expression: the nearer of its pattern and expression
+/// ancestors is a pattern.
+fn in_binding_position(tok: &SyntaxToken) -> bool {
+    for node in tok.parent_ancestors() {
+        let kind = format!("{:?}", node.kind());
+        if kind.ends_with("_PAT") {
+            return true;
+        }
+        if kind.ends_with("_EXPR") {
+            return false;
+        }
+    }
+    false
+}
 
 /// The type FSharp.Core's rule gives an operator over two **ground** operands,
 /// or `None` where it gives none (an FCS error). The operands must be one type.
@@ -5510,10 +5570,11 @@ mod tests {
     #[test]
     fn incompleteness_names_what_each_binding_did_not_model() {
         use super::{Incomplete, SyntaxKind};
-        let src = "module M\nlet a = 1\nlet f x = x + 1\nlet g () = 2\n\
-                   let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y + 1 in 0\n\
-                   let i y = let z = (y + 1, 2) in 0\nlet j (y: int) = (y + 1).ToString()\n\
-                   let k y = (y + 1; 0)\n";
+        // The pipe stands in for "a construct inference does not model".
+        let src = "module M\nlet a = 1\nlet f x = x |> id\nlet g () = 2\n\
+                   let (x: int) = 1\nlet (p, q) = (1, 2)\nlet h y = let z = y |> id in 0\n\
+                   let i y = let z = (y |> id, 2) in 0\nlet j (y: int) = (y |> id).ToString()\n\
+                   let k y = (y |> id; 0)\n";
         let parsed = parse(src);
         let recovery = SyntaxRecovery::of(&parsed);
         let file = ImplFile::cast(parsed.root).expect("impl file");
@@ -5532,7 +5593,7 @@ mod tests {
                 // `h`: the local's RHS failed; that is its one reason.
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
                 // `i`, `j`, `k`: the local left open, the method callee and the
-                // statement left open are consequences of the infix operator,
+                // statement left open are consequences of the unmodelled pipe,
                 // which is recorded once and alone.
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],

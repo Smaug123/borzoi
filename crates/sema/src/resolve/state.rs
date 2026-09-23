@@ -1125,10 +1125,6 @@ pub(super) struct Resolver<'a> {
     /// name's range — built by `Resolver::resolve_attribute_lists` and carried
     /// into [`ResolvedFile::attribute_resolutions`](super::model::ResolvedFile).
     pub(super) attribute_resolutions: HashMap<TextRange, Resolution>,
-    /// What each FSharp.Core-table operator token resolves to — its spelling,
-    /// or failing that its compiled name — keyed by the token's range; carried
-    /// into [`ResolvedFile::operator_target_at`](super::model::ResolvedFile::operator_target_at).
-    pub(super) operator_targets: HashMap<TextRange, Resolution>,
     /// Every project **type**'s simple name declared *anywhere in this file*,
     /// pre-scanned before the walk ([`resolve_file`](super::resolve_file)) —
     /// order-independent by design. The attribute resolution's own-file guard

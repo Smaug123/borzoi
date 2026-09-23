@@ -1,208 +1,26 @@
 //! Infix operators over ground operands, against FCS.
 //!
-//! Two layers, each graded on its own:
+//! Two properties, graded against FCS's typed tree:
 //!
-//! 1. **Which operator a token is.** An operator can be redefined — in the
-//!    file, under its spelling (`let (+) a b = …`) or its compiled name
-//!    (`let op_Addition a b = …`), or in an opened or auto-opened module — and
-//!    FCS then uses that definition. [`borzoi_sema::ResolvedFile::operator_target_at`]
-//!    records what the token resolves to; inference trusts it only when it is
-//!    FSharp.Core's own member. The differential grades that claim against the
-//!    symbol FCS reports at the token, over files that shadow and files that do
-//!    not.
-//! 2. **What the application's type is.** With the operator proven FSharp.Core's
-//!    and both operands ground, the result follows from FSharp.Core's typing
-//!    rules; the expression and binder types are graded against FCS's typed
-//!    tree like every other inference differential.
+//! 1. **Over FSharp.Core's operators, the rule's type.** With both operands
+//!    ground, arithmetic is typed as the operands and a comparison is `bool`.
+//! 2. **A redefinition anywhere withholds the rule.** An operator can be
+//!    redefined by many routes — in the file under its spelling or compiled
+//!    name, in a local, in a `module rec` after its use, in an opened,
+//!    auto-opened or alias-auto-opened module, in an earlier file, in another
+//!    assembly's module, through an assembly-level auto-open — and FCS then
+//!    types a use by that definition. Every route here redefines the operator
+//!    with a *different* result type, so a use typed by FSharp.Core's rule
+//!    shows up as a wrong type; and each case also pins that FCS really does
+//!    take the redefinition, or it would prove nothing.
 
 use crate::common::{
     full_bcl_env, invoke_fcs_dump, parse_fcs_binder_types_with_errors, parse_fcs_types_with_errors,
-    parse_fcs_uses, temp_fs_file,
+    temp_fs_file,
 };
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};
-use borzoi_sema::{
-    AssemblyEnv, ProjectItems, Resolution, SyntaxRecovery, infer_file, resolve_file,
-};
-
-/// The operators the table models, and the FSharp.Core symbol FCS reports for
-/// each when it is FSharp.Core's.
-const OPERATORS: [(&str, &str); 10] = [
-    ("+", "Microsoft.FSharp.Core.Operators.(+)"),
-    ("-", "Microsoft.FSharp.Core.Operators.(-)"),
-    ("*", "Microsoft.FSharp.Core.Operators.(*)"),
-    ("/", "Microsoft.FSharp.Core.Operators.(/)"),
-    ("=", "Microsoft.FSharp.Core.Operators.(=)"),
-    ("<>", "Microsoft.FSharp.Core.Operators.(<>)"),
-    ("<", "Microsoft.FSharp.Core.Operators.(<)"),
-    (">", "Microsoft.FSharp.Core.Operators.(>)"),
-    ("<=", "Microsoft.FSharp.Core.Operators.(<=)"),
-    (">=", "Microsoft.FSharp.Core.Operators.(>=)"),
-];
-
-/// The F# source full name of the assembly member `res` names, or `None` for
-/// anything else.
-fn member_full_name(env: &AssemblyEnv, res: Resolution) -> Option<String> {
-    let Resolution::Member { parent, idx } = res else {
-        return None;
-    };
-    Some(format!(
-        "{}.{}",
-        env.entity_full_name(parent),
-        env.member_display_name(parent, idx)
-    ))
-}
-
-/// The compiled name FSharp.Core gives an operator's spelling.
-fn compiled(spelling: &str) -> &'static str {
-    match spelling {
-        "+" => "op_Addition",
-        "-" => "op_Subtraction",
-        "*" => "op_Multiply",
-        "/" => "op_Division",
-        "=" => "op_Equality",
-        "<>" => "op_Inequality",
-        "<" => "op_LessThan",
-        ">" => "op_GreaterThan",
-        "<=" => "op_LessThanOrEqual",
-        ">=" => "op_GreaterThanOrEqual",
-        other => panic!("no compiled name for {other}"),
-    }
-}
-
-/// Every operator claim we make in `src` agrees with FCS: where we say a token
-/// is FSharp.Core's operator, FCS's symbol at that token is that operator.
-/// Returns each operator token's start offset and whether we claimed it.
-fn check_operator_targets(src: &str) -> Vec<(usize, bool)> {
-    let parsed = parse(src);
-    assert!(parsed.errors.is_empty(), "{:?}\n{src}", parsed.errors);
-    let recovery = SyntaxRecovery::of(&parsed);
-    let file = ImplFile::cast(parsed.root).expect("impl file");
-    let env = full_bcl_env();
-    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
-
-    let path = temp_fs_file("infer_operators", src);
-    let json = invoke_fcs_dump("uses", &path);
-    let _ = std::fs::remove_file(&path);
-    let uses = parse_fcs_uses(&json, src);
-
-    let mut outcomes = Vec::new();
-    for (range, target) in resolved.operator_targets() {
-        let key = (
-            u32::from(range.start()) as usize,
-            u32::from(range.end()) as usize,
-        );
-        let spelling = &src[key.0..key.1];
-        let Some(ours) = member_full_name(env, *target) else {
-            outcomes.push((key.0, false));
-            continue;
-        };
-        let expected_core = OPERATORS
-            .iter()
-            .find(|(s, _)| *s == spelling)
-            .map(|(_, fcs)| *fcs)
-            .expect("an operator in the table");
-        // Our claim names the FSharp.Core member by compiled name; FCS by display.
-        assert_eq!(
-            ours,
-            expected_core.replace(&format!("({spelling})"), compiled(spelling)),
-            "operator `{spelling}` at {key:?} resolved to an unexpected member\n{src}"
-        );
-        let fcs = uses
-            .iter()
-            .find(|u| (u.start, u.end) == key)
-            .unwrap_or_else(|| panic!("FCS reports no use at `{spelling}` {key:?}\n{src}"));
-        assert_eq!(
-            fcs.full_name.as_deref(),
-            Some(expected_core),
-            "we say `{spelling}` at {key:?} is FSharp.Core's; FCS disagrees\n{src}"
-        );
-        outcomes.push((key.0, true));
-    }
-    outcomes.sort_unstable();
-    outcomes
-}
-
-/// With nothing redefined, every operator is FSharp.Core's.
-#[test]
-fn core_operators_resolve_to_fsharp_core() {
-    let src = "module M\n\
-               let a = 1 + 2 - 3 * 4 / 5\n\
-               let b = (1 = 2, 1 <> 2, 1 < 2, 1 > 2, 1 <= 2, 1 >= 2)\n";
-    let outcomes = check_operator_targets(src);
-    assert_eq!(outcomes.len(), 10, "{outcomes:?}");
-    assert!(outcomes.iter().all(|(_, claimed)| *claimed), "{outcomes:?}");
-}
-
-/// Every way of redefining an operator withholds the FSharp.Core claim: in the
-/// file under its spelling or its compiled name, in a local, and in an opened
-/// or auto-opened module.
-#[test]
-fn a_redefined_operator_is_not_fsharp_cores() {
-    for (defs, body) in [
-        ("let (+) (a: int) (b: int) = a - b\n", "let a = 1 + 2\n"),
-        (
-            "let op_Addition (a: int) (b: int) = a - b\n",
-            "let a = 1 + 2\n",
-        ),
-        ("", "let a = (let (+) x y = x - y in 1 + 2)\n"),
-        (
-            "module Ops =\n    let (=) (a: int) (b: int) = false\nopen Ops\n",
-            "let a = 1 = 2\n",
-        ),
-        (
-            "[<AutoOpen>]\nmodule Ops =\n    let (<) (a: int) (b: int) = false\n",
-            "let a = 1 < 2\n",
-        ),
-    ] {
-        let src = format!("module M\n{defs}{body}");
-        let outcomes = check_operator_targets(&src);
-        // The redefined operator's use is the last operator token in the file.
-        let (_, claimed) = outcomes.last().expect("an operator token");
-        assert!(!claimed, "a redefined operator must not be claimed\n{src}");
-    }
-}
-
-/// A preceding file's `[<AutoOpen>]` module that redefines an operator: FCS
-/// binds the use in the next file to it, so we must not claim FSharp.Core's.
-#[test]
-fn an_operator_redefined_in_a_preceding_auto_open_module_is_not_fsharp_cores() {
-    let a = "module A\n[<AutoOpen>]\nmodule Ops =\n    let (<) (x: int) (y: int) = false\n";
-    let b = "module B\nopen A\nlet c = 1 < 2\n";
-    let written: Vec<(std::path::PathBuf, String)> = [("ops_a", a), ("ops_b", b)]
-        .iter()
-        .map(|(label, src)| (temp_fs_file(label, src), (*src).to_string()))
-        .collect();
-    let paths: Vec<&std::path::Path> = written.iter().map(|(p, _)| p.as_path()).collect();
-    let json = crate::common::invoke_fcs_dump_project(&paths);
-    let fcs = crate::common::parse_fcs_uses_project(&json, &written);
-    let asts: Vec<ImplFile> = [a, b]
-        .iter()
-        .map(|src| ImplFile::cast(parse(src).root).expect("impl file"))
-        .collect();
-    let env = full_bcl_env();
-    let proj = borzoi_sema::resolve_project(&asts, env);
-    for (p, _) in &written {
-        let _ = std::fs::remove_file(p);
-    }
-    let i = b.rfind('<').expect("the use");
-    let range = rowan::TextRange::new((i as u32).into(), ((i + 1) as u32).into());
-    let fcs_b = fcs
-        .iter()
-        .find(|f| f.path.file_name() == written[1].0.file_name())
-        .expect("FCS uses for B");
-    let fcs_use = fcs_b
-        .uses
-        .iter()
-        .find(|u| (u.start, u.end) == (i, i + 1))
-        .expect("FCS use at `<`");
-    assert_eq!(fcs_use.full_name.as_deref(), Some("A.Ops.(<)"));
-    let ours = proj.file(1).operator_target_at(range);
-    assert!(
-        ours.and_then(|res| member_full_name(env, res)).is_none(),
-        "we claimed an assembly operator where FCS binds A.Ops.(<): {ours:?}"
-    );
-}
+use borzoi_sema::{ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
 /// What one file committed: expression types, binder types, and — of the
 /// expression types — how many sit at a whole infix application.
@@ -320,13 +138,6 @@ fn an_open_operand_commits_nothing() {
     assert_eq!((c.operator_nodes, c.binders), (0, 0), "{c:?}");
 }
 
-/// A redefined operator is typed by its definition, not FSharp.Core's rule.
-#[test]
-fn a_redefined_operator_is_not_typed_by_fsharp_cores_rule() {
-    let c = check_types("module M\nlet (+) (a: string) (b: string) = 1\nlet k = \"a\" + \"b\"\n");
-    assert_eq!(c.operator_nodes, 0, "{c:?}");
-}
-
 /// Mismatched operands are an FCS error, recovered as it likes (`1 = "s"` puts
 /// `int` at `"s"`): nothing inside such an application is committed.
 #[test]
@@ -378,4 +189,147 @@ fn another_assemblys_operator_is_not_typed_by_fsharp_cores_rule() {
 fn an_operator_application_used_as_a_callee_records_nothing_inside() {
     let c = check_types("module M\nlet a = (1 + 2) 3\nlet b = ((let y = 1 in y) + 2) 3\n");
     assert_eq!(c.exprs, 0, "{c:?}");
+}
+
+/// Each route by which `+` (or `<`) can be redefined in a single file, with a
+/// `string` result, and the application to check. FCS types the application
+/// `string` on every route (asserted), so FSharp.Core's rule (`int`, `bool`)
+/// would be a wrong type.
+const REDEFINITION_ROUTES: [(&str, &str); 7] = [
+    // In the file, under the spelling.
+    (
+        "module M\nlet (+) (a: int) (b: int) = \"s\"\nlet k = 1 + 2\n",
+        "1 + 2",
+    ),
+    // In the file, under the compiled name.
+    (
+        "module M\nlet op_Addition (a: int) (b: int) = \"s\"\nlet k = 1 + 2\n",
+        "1 + 2",
+    ),
+    // In a local.
+    (
+        "module M\nlet k = (let (+) (a: int) (b: int) = \"s\" in 1 + 2)\n",
+        "1 + 2",
+    ),
+    // In a `module rec`, after the use.
+    (
+        "module rec M\nlet k = 1 + 2\nlet (+) (a: int) (b: int) = \"s\"\n",
+        "1 + 2",
+    ),
+    // In an opened module.
+    (
+        "module M\nmodule Ops =\n    let (+) (a: int) (b: int) = \"s\"\nopen Ops\nlet k = 1 + 2\n",
+        "1 + 2",
+    ),
+    // In an auto-opened module.
+    (
+        "module M\n[<AutoOpen>]\nmodule Ops =\n    let (<) (a: int) (b: int) = \"s\"\nlet k = 1 < 2\n",
+        "1 < 2",
+    ),
+    // In a module auto-opened through an aliased attribute (FCS warns, FS3561).
+    (
+        "module M\ntype AO = Microsoft.FSharp.Core.AutoOpenAttribute\n[<AO>]\nmodule Ops =\n    \
+         let (+) (a: int) (b: int) = \"s\"\nlet k = 1 + 2\n",
+        "1 + 2",
+    ),
+];
+
+#[test]
+fn every_single_file_redefinition_route_withholds_the_rule() {
+    for (src, app) in REDEFINITION_ROUTES {
+        let path = temp_fs_file("infer_operators_route", src);
+        let json = invoke_fcs_dump("types", &path);
+        let _ = std::fs::remove_file(&path);
+        let (fcs, _) = parse_fcs_types_with_errors(&json, src);
+        let i = src.find(app).expect("the application");
+        assert_eq!(
+            fcs.get(&(i, i + app.len())).map(String::as_str),
+            Some("System.String"),
+            "the route must really redefine the operator, or it proves nothing\n{src}"
+        );
+        // Every commit is graded against FCS, so FSharp.Core's rule at `app`
+        // fails here.
+        check_types(src);
+    }
+}
+
+/// An operator redefined in an **earlier file**'s auto-open module, reached
+/// through an `open` of its enclosing module: FCS binds the use to it, so the
+/// application must not take FSharp.Core's rule (`bool`) — the redefinition
+/// returns a `string`.
+#[test]
+fn an_operator_redefined_in_an_earlier_file_withholds_the_rule() {
+    let a = "module A\n[<AutoOpen>]\nmodule Ops =\n    let (<) (x: int) (y: int) = \"s\"\n";
+    let b = "module B\nopen A\nlet c = 1 < 2\n";
+    let written: Vec<(std::path::PathBuf, String)> = [("ops_a", a), ("ops_b", b)]
+        .iter()
+        .map(|(label, src)| (temp_fs_file(label, src), (*src).to_string()))
+        .collect();
+    let paths: Vec<&std::path::Path> = written.iter().map(|(p, _)| p.as_path()).collect();
+    let json = crate::common::invoke_fcs_dump_project(&paths);
+    let fcs = crate::common::parse_fcs_uses_project(&json, &written);
+    for (p, _) in &written {
+        let _ = std::fs::remove_file(p);
+    }
+    let i = b.rfind('<').expect("the use");
+    let fcs_b = fcs
+        .iter()
+        .find(|f| f.path.file_name() == written[1].0.file_name())
+        .expect("FCS uses for B");
+    let fcs_use = fcs_b
+        .uses
+        .iter()
+        .find(|u| (u.start, u.end) == (i, i + 1))
+        .expect("FCS use at `<`");
+    assert_eq!(fcs_use.full_name.as_deref(), Some("A.Ops.(<)"));
+
+    let asts: Vec<ImplFile> = [a, b]
+        .iter()
+        .map(|src| ImplFile::cast(parse(src).root).expect("impl file"))
+        .collect();
+    let env = full_bcl_env();
+    let proj = borzoi_sema::resolve_project(&asts, env);
+    let inferred = infer_file(&asts[1], proj.file(1), env);
+    let app = b.find("1 < 2").expect("the application");
+    let ours = inferred.types().iter().find(|(r, _)| {
+        (u32::from(r.start()) as usize, u32::from(r.end()) as usize) == (app, app + 5)
+    });
+    assert!(
+        ours.is_none(),
+        "typed a redefined operator by FSharp.Core's rule: {ours:?}"
+    );
+}
+
+/// An operator another assembly redefines through an **assembly-level
+/// auto-open** (`[<assembly: AutoOpen("OpsFixture.ManifestOps")>]`): with no
+/// `open`, FCS types `3 - 1` by that definition (`string`).
+#[test]
+fn an_assembly_level_auto_open_redefinition_withholds_the_rule() {
+    let src = "module M\nlet k = 3 - 1\n";
+    let parsed = parse(src);
+    let recovery = SyntaxRecovery::of(&parsed);
+    let file = ImplFile::cast(parsed.root).expect("impl file");
+    let env = crate::common::operators_fixture_env();
+    let resolved = resolve_file(&file, &ProjectItems::default(), env, &recovery);
+    let inferred = infer_file(&file, &resolved, env);
+
+    let path = temp_fs_file("infer_operators_manifest", src);
+    let dll = crate::common::ensure_operators_fixture_built();
+    let types_json = crate::common::invoke_fcs_dump_with_refs("types", &path, &[dll]);
+    let _ = std::fs::remove_file(&path);
+    let (fcs_types, _) = parse_fcs_types_with_errors(&types_json, src);
+    let i = src.find("3 - 1").expect("the application");
+    assert_eq!(
+        fcs_types.get(&(i, i + 5)).map(String::as_str),
+        Some("System.String"),
+        "FCS types the auto-opened operator by its own definition"
+    );
+    let ours = inferred
+        .types()
+        .iter()
+        .find(|(r, _)| (u32::from(r.start()) as usize, u32::from(r.end()) as usize) == (i, i + 5));
+    assert!(
+        ours.is_none(),
+        "typed a redefined operator by FSharp.Core's rule: {ours:?}"
+    );
 }

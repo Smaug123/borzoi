@@ -1889,7 +1889,6 @@ impl<'a> Resolver<'a> {
             open_extension_namespaces: Vec::new(),
             open_extension_unknowable: false,
             attribute_resolutions: HashMap::new(),
-            operator_targets: HashMap::new(),
             own_type_simple_names: HashSet::new(),
             own_module_simple_names: HashSet::new(),
             own_binder_simple_names: HashSet::new(),
@@ -2054,12 +2053,6 @@ impl<'a> Resolver<'a> {
                 self.decline_sites.entry(*range).or_insert(sealed);
             }
         }
-        // The operator side table is an assembly reading like the rest. It
-        // carries no census of its own — the main map already accounts for the
-        // token — so it is sealed without a decline site.
-        for res in self.operator_targets.values_mut() {
-            *res = res.sealed_under_incomplete_projection();
-        }
     }
 
     /// The census invariant the type path *can* guarantee, checked rather than
@@ -2130,7 +2123,14 @@ impl<'a> Resolver<'a> {
             resolutions: self.resolutions,
             or_pattern_aliases: self.or_pattern_aliases,
             attribute_resolutions: self.attribute_resolutions,
-            operator_targets: self.operator_targets,
+            preceding_operator_definitions: crate::operators::CORE_OPERATORS
+                .iter()
+                .filter(|op| {
+                    self.preceding.defines_value_named(op.spelling)
+                        || self.preceding.defines_value_named(op.compiled)
+                })
+                .map(|op| op.spelling)
+                .collect(),
             own_type_simple_names: self.own_type_simple_names,
             own_module_simple_names: self.own_module_simple_names,
             own_abbrev_type_simple_names: self.own_abbrev_type_simple_names,
