@@ -598,6 +598,8 @@ pub enum Incomplete {
     /// A `let` pattern holding an annotation, whose relation to the RHS is a
     /// coercion.
     CoercedPattern,
+    /// A name bound twice in one binding's parameters or pattern.
+    DuplicateBinder,
     /// Any other pattern, by its syntax kind: a constructor, a record, a
     /// literal, …
     PatternShape(SyntaxKind),
@@ -1399,8 +1401,7 @@ impl<'a> Gen<'a> {
                     if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
                 {
                     self.cur_body = Some(rhs.syntax().clone());
-                    let arg_vars: Vec<TyVid> =
-                        head.args().map(|arg| self.param_var(&arg)).collect();
+                    let arg_vars = self.param_vars(&head);
                     let ret = self.infer_expr(&rhs, None);
                     let f_def = self.function_type(&head, &arg_vars, ret);
                     // On a complete binding, undo the 2b slot/binder decoupling so
@@ -1434,7 +1435,7 @@ impl<'a> Gen<'a> {
                 // open is an environment reference, which is poisoned and so
                 // never generalises.
                 Some(pat @ (Pat::Paren(_) | Pat::Tuple(_))) => {
-                    match self.pattern_ty(&pat, BinderSite::Module, &mut Vec::new()) {
+                    match self.binding_pattern_ty(&pat, BinderSite::Module, &mut Vec::new()) {
                         Ok(pat_ty) => self.pattern_rhs(&pat, pat_ty, &rhs, BinderSite::Module),
                         Err(_) => self.discard_census_entry(),
                     }
@@ -1504,7 +1505,7 @@ impl<'a> Gen<'a> {
         let mark = self.begin_binding();
         self.cur_body = rhs.as_ref().map(|rhs| rhs.syntax().clone());
 
-        let arg_vars: Vec<TyVid> = head.args().map(|arg| self.param_var(&arg)).collect();
+        let arg_vars = self.param_vars(head);
         let r = self.table.fresh();
         self.eq(Ty::Var(r), t);
         if let Some(rhs) = rhs {
@@ -2334,7 +2335,7 @@ impl<'a> Gen<'a> {
         }
         let recorded = self.reasons_recorded();
         let mut bound = Vec::new();
-        let pat_ty = match self.pattern_ty(&pat, BinderSite::Local, &mut bound) {
+        let pat_ty = match self.binding_pattern_ty(&pat, BinderSite::Local, &mut bound) {
             Ok(t) => t,
             Err(why) => {
                 self.mark_incomplete(why);
@@ -3363,6 +3364,37 @@ impl<'a> Gen<'a> {
                 self.table.fresh()
             }
         }
+    }
+
+    /// The slot variables of a function head's parameters ([`Self::param_var`]).
+    ///
+    /// A name bound twice among them is not typed at all: FCS rejects every
+    /// such head but one — a nested tuple, `((a, b), a)`, whose body sees the
+    /// inner `a` — and which binder a use means there is FCS's elaboration
+    /// order, not the resolver's scoping. Each parameter then gets a fresh,
+    /// unregistered variable, so no condition can ground a slot through a use
+    /// resolved to the wrong binder, and the binding is incomplete.
+    fn param_vars(&mut self, head: &LongIdentPat) -> Vec<TyVid> {
+        let args: Vec<Pat> = head.args().collect();
+        if binds_a_name_twice(&args) {
+            self.mark_incomplete(Incomplete::DuplicateBinder);
+            return args.iter().map(|_| self.table.fresh()).collect();
+        }
+        args.iter().map(|arg| self.param_var(arg)).collect()
+    }
+
+    /// [`Self::pattern_ty`] for a `let`'s whole pattern, declining one that
+    /// binds a name twice, as [`Self::param_vars`] does.
+    fn binding_pattern_ty(
+        &mut self,
+        pat: &Pat,
+        site: BinderSite,
+        bound: &mut Vec<DefId>,
+    ) -> Result<Ty, Incomplete> {
+        if binds_a_name_twice(std::slice::from_ref(pat)) {
+            return Err(Incomplete::DuplicateBinder);
+        }
+        self.pattern_ty(pat, site, bound)
     }
 
     /// The type of pattern `pat`, generated structurally, with each named
@@ -4540,6 +4572,15 @@ fn node_span(node: &SyntaxNode) -> TextRange {
 /// FCS's `Ident.idText`. Assembly member names carry no backticks, so a
 /// backticked source segment must be de-quoted before it is compared against
 /// them. A plain identifier passes through unchanged.
+/// Whether the named patterns anywhere in `pats` bind some name twice.
+fn binds_a_name_twice(pats: &[Pat]) -> bool {
+    let mut seen = HashSet::new();
+    pats.iter()
+        .flat_map(|p| p.syntax().descendants().filter_map(NamedPat::cast))
+        .filter_map(|n| n.ident())
+        .any(|tok| !seen.insert(ident_text(&tok)))
+}
+
 fn ident_text(tok: &SyntaxToken) -> String {
     let text = tok.text();
     text.strip_prefix("``")

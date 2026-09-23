@@ -562,6 +562,28 @@ fn a_pattern_relation_never_retypes_the_rhs() {
     }
 }
 
+/// A name bound twice among one binding's parameters, or in one `let`
+/// pattern. FCS accepts only the nested tuple (whose body sees the *inner*
+/// `a`) and rejects the rest; which binder a use means is FCS's elaboration
+/// order, so none of them is typed.
+#[test]
+fn a_name_bound_twice_is_not_typed() {
+    for src in [
+        "let f ((a, b), a) = a\nlet t = f ((1, 2), \"s\")\n",
+        "let f ((a, b), a) = if a then 1 else 2\n",
+        "let f (a, (b, a)) = if a then 1 else 2\n",
+        "let g a a = if a then 1 else 2\n",
+        "let h (a, b) a = if a then 1 else 2\n",
+        "let k (a, a) = if a then 1 else 2\n",
+        "let m (s: string) = let (u, u) = (1, s) in u\n",
+        "let (p, p) = (1, \"s\")\nlet q = p\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
 /// Patterns FCS rejects, or that bind through a shape we do not model, commit
 /// nothing FCS did not keep.
 #[test]
@@ -1002,9 +1024,14 @@ fn header_vars() -> Vec<Var> {
 /// The parameter list of a generated function over `s: string`, `b: bool`
 /// and, when `with_open`, an unannotated `p` — curried, or tupled (the
 /// function then named `tf…`, for the sweep's count), possibly with a
-/// trailing wildcard. Returns the function's name stem and its parameters.
-fn params(rng: &mut Rng, with_open: bool) -> (&'static str, String) {
+/// trailing wildcard. With `shadowed`, sometimes binds `p` twice, the nested
+/// shape FCS accepts (a use means the inner `p`). Returns the function's name
+/// stem and its parameters.
+fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, String) {
     let open = if with_open { " p" } else { "" };
+    if shadowed && with_open && rng.chance(20) {
+        return ("tf", "((s: string, p), b: bool, p)".to_string());
+    }
     match rng.below(4) {
         0 | 1 => ("f", format!("(s: string) (b: bool){open}")),
         2 => {
@@ -1032,7 +1059,7 @@ fn generate(seed: u64, functions: usize) -> (String, usize) {
         let with_open = !modelled_only && rng.chance(60);
         let offside = rng.chance(50);
         let t = TYPES[rng.below(TYPES.len())];
-        let (stem, params) = params(&mut rng, with_open);
+        let (stem, params) = params(&mut rng, with_open, false);
         let mut env = header_vars();
         env.extend([
             Var {
@@ -1140,7 +1167,7 @@ fn generated_ill_typed_programs_commit_only_what_fcs_kept() {
             let modelled_only = rng.chance(50);
             let t = TYPES[rng.below(TYPES.len())];
             let wrap = rng.below(3);
-            let (stem, params) = params(&mut rng, true);
+            let (stem, params) = params(&mut rng, true, true);
             let mut env = header_vars();
             env.extend([
                 Var {
