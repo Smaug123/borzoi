@@ -600,6 +600,9 @@ pub enum Incomplete {
     CoercedPattern,
     /// A name bound twice in one binding's parameters or pattern.
     DuplicateBinder,
+    /// A `let` pattern whose RHS type holds an earlier binding's open
+    /// variable, on which the pattern would impose structure.
+    InheritedOpen,
     /// Any other pattern, by its syntax kind: a constructor, a record, a
     /// literal, …
     PatternShape(SyntaxKind),
@@ -2369,7 +2372,8 @@ impl<'a> Gen<'a> {
     /// so the relation is an equality, and one that can only bind those fresh
     /// variables or impose tuple structure — never a type the RHS did not
     /// have. It is added after the RHS's own constraints have settled, since
-    /// FCS resolves those first. What FCS keeps of the RHS's nodes is mirrored
+    /// FCS resolves those first, and only if the settled RHS holds no earlier
+    /// binding's open variable ([`Self::mentions_inherited_open`]). What FCS keeps of the RHS's nodes is mirrored
     /// in two ways:
     ///
     /// - A local pattern binding (not a bare name) whose RHS is a bare value
@@ -2407,19 +2411,39 @@ impl<'a> Gen<'a> {
         let mark = self.emission_mark();
         let rhs_var = self.infer_expr(rhs, expected);
         self.settle();
-        if let Some(rhs_var) = rhs_var {
-            self.eq(pat_ty.clone(), Ty::Var(rhs_var));
-        }
-        self.settle();
         // A pattern that is a single variable (a name, a wildcard) imposes no
         // structure, so its check cannot fail, and the RHS's nodes stand even
         // when the RHS itself does not synthesize.
         let structural = !matches!(pat_ty, Ty::Var(_));
+        if structural && rhs_var.is_some_and(|v| self.mentions_inherited_open(v)) {
+            // The equality would give an earlier binding's open variable a
+            // structure of this binding's fresh variables, which then pass for
+            // this binding's own: an argument check could ground them, and so
+            // retype the earlier binder. The relation is dropped instead.
+            self.mark_incomplete(Incomplete::InheritedOpen);
+            self.discard_emissions_since(mark);
+            return;
+        }
+        if let Some(rhs_var) = rhs_var {
+            self.eq(pat_ty.clone(), Ty::Var(rhs_var));
+        }
+        self.settle();
         let agrees =
             rhs_var.is_some_and(|v| self.table.resolve(&pat_ty) == self.table.resolve(&Ty::Var(v)));
         if structural && !agrees {
             self.discard_emissions_since(mark);
         }
+    }
+
+    /// Whether `v`'s type mentions an open variable an earlier binding owns —
+    /// the variables [`Self::arg_check_binds_only_current_vars`] refuses to
+    /// let an argument check ground.
+    fn mentions_inherited_open(&mut self, v: TyVid) -> bool {
+        let mut roots = HashSet::new();
+        collect_var_roots(&self.table.resolve(&Ty::Var(v)), &mut roots);
+        roots
+            .into_iter()
+            .any(|r| self.table.any_older_unioned(r, self.cur_mark))
     }
 
     /// A sequence `s1; …; sn` (CE-1), typed as its last statement, which carries

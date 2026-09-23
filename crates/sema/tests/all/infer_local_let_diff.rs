@@ -628,6 +628,34 @@ fn a_local_left_open_by_a_dropped_relation_blocks_later_grounding() {
     }
 }
 
+/// A pattern must not impose structure on an earlier binding's open
+/// variable: the structure's fresh components would pass for this binding's
+/// own, and an argument check could then retype the earlier binder (FCS keeps
+/// `u : string * string` and rejects `mono u`). Every earlier unmodelled value
+/// crossed with every pattern shape that reaches it.
+#[test]
+fn a_pattern_never_retypes_an_earlier_open_binder() {
+    let earlier = [
+        "let u = List.head [(\"s\", \"t\")]",
+        "let u = fst ((\"s\", \"t\"), 1)",
+    ];
+    let later = [
+        "let ((a, b), r) = (u, mono u)",
+        "let (a, b) = u\nlet r = mono u",
+        "let (a, b) = (u)\nlet r = mono u",
+        "let g (c: bool) = let ((a, b), r) = (u, mono u) in r",
+        "let g (c: bool) =\n    let (a, b) = (u)\n    mono u",
+        "let g (c: bool) =\n    let ((a, _), _) = (u, 1)\n    mono u",
+    ];
+    for e in earlier {
+        for l in later {
+            let src = format!("module M\nlet mono (p: int * int) = 1\n{e}\n{l}\n");
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
+    }
+}
+
 /// A bare name imposes no structure, so its RHS's check cannot fail, and
 /// what the RHS walk typed stands even when the RHS itself does not
 /// synthesize: `inner : int` inside a lambda.
@@ -754,13 +782,7 @@ impl Gen<'_> {
             T::Int => ["1", "2", "42"][self.rng.below(3)].to_string(),
             T::Str => ["\"s\"", "\"t\""][self.rng.below(2)].to_string(),
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
-            T::Pair => {
-                if self.rng.chance(30) {
-                    "pr".to_string()
-                } else {
-                    "(7, \"p\")".to_string()
-                }
-            }
+            T::Pair => ["pr", "uu", "(7, \"p\")"][self.rng.below(3)].to_string(),
         }
     }
 
@@ -1073,9 +1095,11 @@ impl Gen<'_> {
 }
 
 /// The generated files' shared header: the functions the generator applies,
-/// the `pr` pair, and a module-level tuple pattern binding `hp` and `hq`.
+/// the `pr` pair, `uu` (a pair FCS types but inference does not, so its
+/// variable is open in every later binding), and a module-level tuple
+/// pattern binding `hp` and `hq`.
 const HEADER: &str = "module Gen\nlet idf x = x\nlet mono (b: bool) = 1\nlet monos (t: string) = 2\n\
-                      let pr = (7, \"p\")\nlet (hp, hq) = (1, \"h\")\n";
+                      let pr = (7, \"p\")\nlet uu = fst ((7, \"u\"), 1)\nlet (hp, hq) = (1, \"h\")\n";
 
 /// The names every generated function body may use besides its parameters.
 fn header_vars() -> Vec<Var> {
