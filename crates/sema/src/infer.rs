@@ -550,9 +550,11 @@ impl InferredFile {
 /// unmodelled construct anywhere in a function body switches most of inference
 /// off for the whole body. The variants are coarse on purpose — one per *kind*
 /// of thing inference does not model — so that "the bindings whose only
-/// observed reason is X" reads as what modelling X could unlock. It is an
-/// upper bound, not a proof: the walk does not descend into what it does not
-/// model, so a reason beneath an unmodelled construct goes unrecorded.
+/// observed reason is X" ranks what modelling X could unlock. It is a
+/// heuristic, not a bound in either direction: the walk does not descend into
+/// what it does not model, so a reason beneath an unmodelled construct goes
+/// unrecorded; and a failure's effect elsewhere (a local aliasing an open
+/// local) can surface as a reason of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Incomplete {
     /// An expression form inference does not model at all, by its syntax kind:

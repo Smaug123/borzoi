@@ -102,9 +102,11 @@ An incomplete binding fires no argument check and never generalises, so on real
 code most of what inference could say is withheld by the *completeness* gate
 rather than by any one typing rule. `infer_corpus_diff` prints, from
 `InferredFile::incompleteness`, which construct is the **only observed** reason
-a binding is incomplete — an upper bound on what modelling it alone would unlock
-(the walk does not descend into what it does not model, so a reason beneath an
-unmodelled construct goes unseen). On the stride-13
+a binding is incomplete — a heuristic ranking of what modelling it could unlock,
+not a bound (the walk does not descend into what it does not model, so a reason
+beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
+such as a local aliasing an open local, can surface as a reason of its own). On
+the stride-13
 corpus sample (2026-09-23, after CE-1; 2 674 walked bindings, 34.6 % complete):
 
 | blocker | only observed reason of | present in |
