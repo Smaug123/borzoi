@@ -124,7 +124,7 @@
 //! its expression uses and `def_type` read off — is therefore never grounded by a
 //! condition, so `bool` flows *only* into the function signature and never into a
 //! standalone parameter read-off (D5). A parameter pattern outside the modelled
-//! shapes (unit, a constructor, an annotation outside the modelled set) gets no
+//! shapes (a constructor, a literal, an annotation outside the modelled set) gets no
 //! slot, so it never grounds and the function defers.
 //!
 //! Publishing only the function type is provably sound: a ground `Ty::Fun` means
@@ -590,8 +590,6 @@ pub enum Incomplete {
     ConditionNotParameter,
     /// A condition on a parameter that is not the parameter's first occurrence.
     ConditionNotFirstOccurrence,
-    /// A `()` pattern: `unit` has no [`Ty`].
-    UnitPattern,
     /// A pattern annotation outside the modelled set, or around anything but
     /// a name.
     PatternAnnotation,
@@ -643,6 +641,8 @@ enum PatShape {
     Annotated(DefId, Ty),
     /// `_`.
     Wildcard,
+    /// `()`.
+    Unit,
     /// A (reference) tuple of two or more elements.
     Tuple(Vec<PatShape>),
 }
@@ -1829,11 +1829,7 @@ impl<'a> Gen<'a> {
     /// - a **measure** (`Ty` has no measure story — plan probe R5);
     /// - a **source-renamed** entity (its FCS rendering uses the F# source
     ///   name, which the flat `namespace + IL name` path would misrender);
-    /// - the **`unit` terminal** (`Microsoft.FSharp.Core.Unit`): `Ty` has no
-    ///   unit story and 3.3d's void rule assumes its absence, so the one
-    ///   terminal a chase can reach that `Ty` cannot carry stays deferred
-    ///   (revisitable when `Ty` gains a unit story — probe R9 showed the
-    ///   rendering itself would be correct).
+    /// - `System.Void`, which F# admits only as `typeof<System.Void>`.
     ///
     /// The nested/renamed check is one comparison: the canonical dotted path
     /// must equal [`AssemblyEnv::entity_full_name`], which walks enclosing
@@ -1900,12 +1896,12 @@ impl<'a> Gen<'a> {
         }
         let mut path: Vec<String> = entity.namespace.clone();
         path.push(entity.name.clone());
-        // `unit` has no `Ty` story and 3.3d's void rule assumes its absence.
-        // `System.Void` is a different refusal for a stronger reason: F# admits
-        // it only as `typeof<System.Void>` (FS0411), so it is never a type an
-        // annotation denotes — and `Ty::render_fsharp` would alias it to `unit`,
-        // making a rejected annotation hover as a plausible one.
-        if path == ["Microsoft", "FSharp", "Core", "Unit"] || path == ["System", "Void"] {
+        // `System.Void` is refused: F# admits it only as `typeof<System.Void>`
+        // (FS0411), so it is never a type an annotation denotes — and
+        // `Ty::render_fsharp` would alias it to `unit`, making a rejected
+        // annotation hover as a plausible one. (F#'s own `unit` is
+        // `Microsoft.FSharp.Core.Unit`, which bridges like any other type.)
+        if path == ["System", "Void"] {
             return None;
         }
         if self.env.entity_full_name(handle) != path.join(".") {
@@ -2108,8 +2104,10 @@ impl<'a> Gen<'a> {
                 // The literal *token*'s range, not the `ConstExpr` node's: in a
                 // tuple element (`(1, "hi")`) the node range swallows the leading
                 // ` ` trivia after the comma, but FCS's node spans only the
-                // literal.
-                if let Some(lit) = c.literal() {
+                // literal. `()` is two tokens, and FCS spans both.
+                if is_unit_literal(e) {
+                    self.emit(node_span(c.syntax()), v, expected);
+                } else if let Some(lit) = c.literal() {
                     self.emit(lit.text_range(), v, expected);
                 }
                 Some(v)
@@ -2980,7 +2978,7 @@ impl<'a> Gen<'a> {
         // Peel exactly the call's own argument parentheses: `M()` is a bare unit
         // const, `M(e)` wraps its argument in one `Paren`, `M e` is a bare argument.
         let inner = match arg {
-            _ if is_unit_arg(arg) => return Some(Vec::new()), // `M()`
+            _ if is_unit_literal(arg) => return Some(Vec::new()), // `M()`
             // `M(e)` — the call parens; a recovery hole (no inner) is incomplete.
             Expr::Paren(p) => match p.inner() {
                 Some(inner) => inner,
@@ -2992,7 +2990,7 @@ impl<'a> Gen<'a> {
             other => other.clone(), // `M e`
         };
         // A unit *inside* the call parens (`M(())`) is one explicit unit argument.
-        if is_unit_arg(&inner) {
+        if is_unit_literal(&inner) {
             return Some(vec![self.walk_arg_element(&inner)]);
         }
         match &inner {
@@ -3471,7 +3469,7 @@ impl<'a> Gen<'a> {
     /// and a wildcard is a fresh variable that nothing grounds, so it
     /// generalises like an unused parameter.
     ///
-    /// Any other pattern shape (a non-table annotation, unit, a constructor, a
+    /// Any other pattern shape (a non-table annotation, a constructor, a
     /// struct tuple, or a recovery hole) gets a fresh, unregistered variable —
     /// never ground, so it defers the whole function type — and marks the
     /// binding **incomplete** (Stage 3.2c-2c): its type comes from a shape
@@ -3542,8 +3540,8 @@ impl<'a> Gen<'a> {
     /// does not. Generates nothing.
     ///
     /// A struct tuple is not modelled ([`Ty::Tuple`] has no struct flag), nor
-    /// is `()`, since `unit` has no [`Ty`], nor an annotation around anything
-    /// but a name, or outside the modelled set ([`Self::annotation_ty`]).
+    /// is an annotation around anything but a name, or outside the modelled set
+    /// ([`Self::annotation_ty`]).
     fn pattern_shape(&self, pat: &Pat) -> Result<PatShape, Incomplete> {
         // Recovery drops what it cannot parse, so a recovered pattern's
         // surviving children look well-formed: `(a,b,)` reads as a pair, where
@@ -3590,7 +3588,7 @@ impl<'a> Gen<'a> {
             },
             // `()` is a constant pattern whose node is zero-width: the
             // parentheses sit outside it.
-            Pat::Const(c) if c.syntax().text().is_empty() => Err(Incomplete::UnitPattern),
+            Pat::Const(c) if c.syntax().text().is_empty() => Ok(PatShape::Unit),
             other => Err(Incomplete::PatternShape(other.syntax().kind())),
         }
     }
@@ -3618,6 +3616,7 @@ impl<'a> Gen<'a> {
                 t.clone()
             }
             PatShape::Wildcard => Ty::Var(self.table.fresh()),
+            PatShape::Unit => Ty::named(UNIT),
             PatShape::Tuple(elems) => {
                 Ty::Tuple(elems.iter().map(|el| self.gen_pattern(el, site)).collect())
             }
@@ -4817,13 +4816,12 @@ fn is_member_access_callee(e: &Expr) -> bool {
 }
 
 /// Whether an expression is a **unit** literal `()` — a `CONST_EXPR` whose first
-/// token is [`SyntaxKind::LPAREN_TOK`], the multi-token `SynConst.Unit` shape the
-/// parser produces for a unit method-call argument `s.M()` (its
-/// [`ConstExpr::literal`](borzoi_cst::syntax::ConstExpr::literal) returns the
-/// `(` token, not `None`). A unit argument has no parameters to poison and is fully
-/// modelled, so [`Gen::infer_method_call`] skips walking it (avoiding a spurious
-/// walk-incomplete from `literal_ty`'s `None` on `()`).
-fn is_unit_arg(e: &Expr) -> bool {
+/// token is [`SyntaxKind::LPAREN_TOK`], the multi-token `SynConst.Unit` shape
+/// (its [`ConstExpr::literal`](borzoi_cst::syntax::ConstExpr::literal) returns
+/// the `(` token, not `None`). Its node spans both parentheses, as FCS's does. A
+/// unit method-call argument `s.M()` has no parameters to poison, so
+/// [`Gen::infer_method_call`] takes it as zero arguments without walking it.
+fn is_unit_literal(e: &Expr) -> bool {
     matches!(e, Expr::Const(c) if c.literal().map(|t| t.kind()) == Some(SyntaxKind::LPAREN_TOK))
 }
 
@@ -4897,6 +4895,7 @@ fn is_sealed_primitive(path: &[String]) -> bool {
             | ["System", "String"]
             | ["System", "Char"]
             | ["System", "Boolean"]
+            | ["Microsoft", "FSharp", "Core", "Unit"]
     )
 }
 
@@ -4904,6 +4903,9 @@ fn is_sealed_primitive(path: &[String]) -> bool {
 /// no-expected-type position (the caller guarantees that). Nearly total over
 /// literal kinds — the position, not the kind, is what makes it sound — except
 /// the few whose type is not fixed even in isolation.
+/// F#'s `unit`, as FCS names it.
+const UNIT: &str = "Microsoft.FSharp.Core.Unit";
+
 fn literal_ty(c: &ConstExpr) -> Option<Ty> {
     let kind = c.literal()?.kind();
     let prim = |path: &str| Some(Ty::named(path));
@@ -4929,6 +4931,8 @@ fn literal_ty(c: &ConstExpr) -> Option<Ty> {
         | SyntaxKind::TRIPLE_STRING_LIT => prim("System.String"),
         SyntaxKind::CHAR_LIT => prim("System.Char"),
         SyntaxKind::BOOL_LIT => prim("System.Boolean"),
+        // `()`: the multi-token `SynConst.Unit`, whose first token is the `(`.
+        SyntaxKind::LPAREN_TOK => prim(UNIT),
         // Byte strings are `byte[]` (the `op_Implicit` to `ReadOnlySpan<byte>`
         // fires at a *use* site, not here — the bound value stays `byte[]`).
         SyntaxKind::BYTE_STRING_LIT
@@ -5821,7 +5825,7 @@ mod tests {
             [
                 vec![],
                 vec![Incomplete::CalleeShape(SyntaxKind::INFIX_APP_EXPR)],
-                vec![Incomplete::UnitPattern],
+                vec![],
                 // `let (x: int) = 1` and `let (p, q) = …`: walked, complete.
                 vec![],
                 vec![],
@@ -6213,6 +6217,7 @@ mod tests {
             "\"s\"",
             "'c'",
             "true",
+            "()",
             "\"bytes\"B",
         ];
         for lit in kinds {

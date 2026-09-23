@@ -180,7 +180,12 @@ impl Ty {
                 // under F#'s postfix generics an unquoted `Odd Type` is not
                 // malformed but a *different* type (`Type<Odd>`). An alias is our
                 // own literal (`int`, `string list`) and needs no such treatment.
-                let head = borzoi_assembly::fsharp_alias(&namespace, name)
+                // `unit` is F#'s own type, not a BCL one, so it is not in
+                // `fsharp_alias`'s table.
+                let unit =
+                    (namespace == "Microsoft.FSharp.Core" && name == "Unit").then_some("unit");
+                let head = unit
+                    .or_else(|| borzoi_assembly::fsharp_alias(&namespace, name))
                     .map(str::to_owned)
                     .unwrap_or_else(|| {
                         borzoi_assembly::join_quoted(path.iter().map(String::as_str))
@@ -601,6 +606,18 @@ mod tests {
         };
         assert_eq!(scheme.render(), "'a -> ('b -> 'b) * 'a");
         assert_eq!(scheme.render_fsharp(), "'a -> ('b -> 'b) * 'a");
+    }
+
+    #[test]
+    fn render_fsharp_spells_unit_as_fsharp_does() {
+        let unit = Ty::named("Microsoft.FSharp.Core.Unit");
+        assert_eq!(unit.render(), "Microsoft.FSharp.Core.Unit");
+        assert_eq!(unit.render_fsharp(), "unit");
+        let f = Ty::Fun {
+            arg: Box::new(unit),
+            ret: Box::new(Ty::named("System.String")),
+        };
+        assert_eq!(f.render_fsharp(), "unit -> string");
     }
 
     #[test]

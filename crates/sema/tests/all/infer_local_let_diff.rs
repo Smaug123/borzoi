@@ -874,6 +874,53 @@ fn a_local_pattern_binding_records_nothing_misplaced() {
     );
 }
 
+/// `unit`: the `()` literal, a `()` parameter or pattern, and an argument
+/// check against a `unit` domain (sealed, so it discharges).
+#[test]
+fn unit_types_its_literal_parameter_and_pattern() {
+    for (src, binders) in [
+        // `a : unit`.
+        ("let a = ()\n", 1),
+        // `h : unit -> string`.
+        ("let h () = \"s\"\n", 1),
+        // `h`, and `v : string` through the discharged check.
+        ("let h () = \"s\"\nlet v = h ()\n", 2),
+        // `g : unit -> unit -> int`.
+        ("let g () () = 1\n", 1),
+        // `k : 'a * unit -> 'a`.
+        ("let k (a, ()) = a\n", 1),
+        // `u : unit`, and `w` through a `unit` pattern.
+        ("let u = ()\nlet w (s: string) = let () = u in s\n", 2),
+        // `id` applied to `()`: `r : unit`.
+        ("let idf x = x\nlet r = idf ()\n", 2),
+        // An annotation: `f : unit -> unit`.
+        ("let f (x: unit) = x\n", 1),
+        // `u : unit` through its annotation.
+        ("let u : unit = ()\n", 1),
+    ] {
+        let c = check(&format!("module M\n{src}"), true);
+        assert_eq!(c.binders, binders, "{src}: {c:?}");
+    }
+}
+
+/// `unit` against every other type: whatever we commit, FCS kept.
+#[test]
+fn unit_in_ill_typed_positions_commits_only_what_fcs_kept() {
+    for src in [
+        "let h () = \"s\"\nlet v = h 1\n",
+        "let h (n: int) = \"s\"\nlet v = h ()\n",
+        "let f () = if () then 1 else 2\n",
+        "let f (s: string) = let () = s in 1\n",
+        "let () = 1\n",
+        "let f x = (if x then () else 1)\n",
+        "let mono (b: bool) = 1\nlet f x = let () = x in mono x\n",
+    ] {
+        let src = format!("module M\n{src}");
+        let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+        assert!(!failed, "{src}");
+    }
+}
+
 /// A bare name imposes no structure, so its RHS's check cannot fail, and
 /// what the RHS walk typed stands even when the RHS itself does not
 /// synthesize: `inner : int` inside a lambda.
@@ -937,9 +984,10 @@ enum T {
     Bool,
     /// `int * string`.
     Pair,
+    Unit,
 }
 
-const TYPES: [T; 4] = [T::Int, T::Str, T::Bool, T::Pair];
+const TYPES: [T; 5] = [T::Int, T::Str, T::Bool, T::Pair, T::Unit];
 
 /// What an in-scope name can be used as.
 #[derive(Debug, Clone, PartialEq)]
@@ -1001,6 +1049,7 @@ impl Gen<'_> {
             T::Str => ["\"s\"", "\"t\""][self.rng.below(2)].to_string(),
             T::Bool => ["true", "false"][self.rng.below(2)].to_string(),
             T::Pair => ["pr", "uu", "(7, \"p\")"][self.rng.below(3)].to_string(),
+            T::Unit => "()".to_string(),
         }
     }
 
@@ -1350,8 +1399,9 @@ fn params(rng: &mut Rng, with_open: bool, shadowed: bool) -> (&'static str, Stri
         let open = if with_open { ", p" } else { "" };
         return ("tf", format!("(s: string, (), b: bool{open})"));
     }
-    match rng.below(4) {
+    match rng.below(5) {
         0 | 1 => ("f", format!("(s: string) (b: bool){open}")),
+        4 => ("f", format!("(s: string) (b: bool){open} ()")),
         2 => {
             let open = if with_open { ", p" } else { "" };
             ("tf", format!("(s: string, b: bool{open})"))

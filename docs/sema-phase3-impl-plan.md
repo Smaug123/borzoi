@@ -107,26 +107,24 @@ not a bound (the walk does not descend into what it does not model, so a reason
 beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
 such as a local aliasing an open local, can surface as a reason of its own). On
 the stride-13
-corpus sample (2026-09-23, after structural tuple and wildcard patterns; 2 590
-walked bindings, 36.8 % complete):
+corpus sample (2026-09-23, after structural patterns and `unit`; 2 602 walked
+bindings, 37.0 % complete):
 
 | blocker | only observed reason of | present in |
 |---|---:|---:|
-| infix operator application | 346 | 605 |
-| method call on a receiver that is not an in-file value | 156 | 263 |
-| value not bound in this file (assembly / earlier file) | 112 | 254 |
-| pattern annotation outside the modelled set | 49 | 328 |
-| `match` | 42 | 142 |
-| `new` | 31 | 37 |
-| list or array expression | 23 | 74 |
-| record expression | 22 | 36 |
+| infix operator application | 477 | 606 |
+| method call on a receiver that is not an in-file value | 168 | 264 |
+| value not bound in this file (assembly / earlier file) | 123 | 264 |
+| `use`, `let rec` or `let!` inside an expression | 64 | 89 |
+| pattern annotation outside the modelled set | 51 | 331 |
+| `match` | 47 | 144 |
+| `new` | 32 | 37 |
+| list or array expression | 29 | 74 |
 
-A `()` parameter is the third most widespread reason (294 bindings) but rarely
-the only one: `Ty` has no `unit`, and the void rule for method returns relies
-on that absence, so modelling it is a slice of its own. A binding whose
-attribute the resolver cannot prove is not `[<EntryPoint>]` is not walked at
-all (84 in this sample), since FCS fixes such a binding's type to
-`string[] -> int` before checking its body.
+A binding whose attribute the resolver cannot prove is not `[<EntryPoint>]` is
+not walked at all (FCS fixes such a binding's type to `string[] -> int` before
+checking its body), and neither is any declaration after a syntax error in its
+file (recovery can spill into declarations that look intact).
 
 Two corollaries shaped the order of work. Infix operators are the first lever
 by a wide margin. And a rule that only fires on complete bindings — the guarded
