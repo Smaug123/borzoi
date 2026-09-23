@@ -1027,6 +1027,64 @@ fn gate_bit_derivation_from_the_verdicts() {
     );
 }
 
+/// A referenced assembly's **abbreviation** of an attribute type may denote
+/// its target: FCS strips the abbreviation before matching, so with
+/// `type ExtAttribute = System.Runtime.CompilerServices.ExtensionAttribute` in
+/// a referenced DLL, `[<Ext>] static member Shout(s: string)` is callable as
+/// `"hi".Shout()`, while an abbreviation of `ObsoleteAttribute` leaves the same
+/// call FS0039 (fsi-verified). Both gates that ask which attribute a use
+/// denotes must therefore answer "maybe" for such an abbreviation, however the
+/// resolver reaches it — the abbreviation's own name is never its identity.
+#[test]
+fn an_assembly_abbreviation_of_an_attribute_may_be_its_target() {
+    let read = |p: &std::path::Path| std::fs::read(p).unwrap_or_else(|e| panic!("read {p:?}: {e}"));
+    let fixture = read(crate::resolve_fsharp_abbrev::ensure_fixture_built());
+    let bcl = read(&crate::common::ensure_system_runtime_dll());
+    let core = read(&crate::common::ensure_fsharp_core_dll());
+    let views = [
+        Ecma335Assembly::parse(&fixture).expect("parse F# abbreviation fixture dll"),
+        Ecma335Assembly::parse(&bcl).expect("parse System.Runtime.dll"),
+        Ecma335Assembly::parse(&core).expect("parse FSharp.Core.dll"),
+    ];
+    let env = AssemblyEnv::from_views(&views).expect("build AssemblyEnv");
+    let ns = ["Demo".to_string(), "AttrAlias".to_string()];
+    // (written name, may mark an extension, may be an entry point)
+    for (written, extension, entry_point) in [
+        ("Ext", true, false),
+        ("ExtChain", true, false),
+        ("Ep", false, true),
+    ] {
+        let marker = env
+            .lookup_type(&ns, &format!("{written}Attribute"), 0)
+            .unwrap_or_else(|| panic!("the fixture must export `{written}Attribute`"));
+        assert!(
+            env.is_abbreviation(marker),
+            "`{written}Attribute` must be an abbreviation, or the case tests nothing"
+        );
+        let src = format!(
+            "module Test\n\nopen Demo.AttrAlias\n\n[<{written}>]\ntype E =\n    static member Shout(s: string) = s\n"
+        );
+        let rf = resolve(&src, &env);
+        if extension {
+            assert!(
+                rf.attributes_may_declare_extension(&env),
+                "`[<{written}>]` may mark an extension"
+            );
+        }
+        if entry_point {
+            let start = src.find(&format!("[<{written}")).expect("written attr") + 2;
+            let span = TextRange::new(
+                u32::try_from(start).unwrap().into(),
+                u32::try_from(start + written.len()).unwrap().into(),
+            );
+            assert!(
+                rf.attribute_may_be(span, &env, |h| env.is_entry_point_attribute(h)),
+                "`[<{written}>]` may be `EntryPoint`"
+            );
+        }
+    }
+}
+
 // ===== AO-2: the project-auto-open presence defer goes name-keyed =====
 //
 // Stage 4's scope-narrowing deferred EVERY attribute candidate in any file

@@ -1271,9 +1271,8 @@ impl<'a> Gen<'a> {
     ///
     /// Which type an attribute denotes is the resolver's verdict
     /// ([`ResolvedFile::attribute_may_be`]), since an abbreviation or an
-    /// `open type` reaches `EntryPoint` under any name. An assembly
-    /// abbreviation's target is not chased, so one counts as a possible
-    /// `EntryPoint`, as does an attribute with no name to key it by.
+    /// `open type` reaches `EntryPoint` under any name; an attribute with no
+    /// name to key it by counts as a possible `EntryPoint`.
     fn may_be_entry_point(&self, node: &SyntaxNode) -> bool {
         let env = self.env;
         node.children()
@@ -1288,10 +1287,8 @@ impl<'a> Gen<'a> {
                     return true;
                 };
                 let range = TextRange::new(first.text_range().start(), last.text_range().end());
-                self.resolved.attribute_may_be(range, |h| {
-                    env.is_entry_point_attribute(h)
-                        || env.entity(h).kind == EntityKind::Abbreviation
-                })
+                self.resolved
+                    .attribute_may_be(range, env, |h| env.is_entry_point_attribute(h))
             })
     }
 
