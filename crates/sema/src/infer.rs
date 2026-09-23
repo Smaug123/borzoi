@@ -1323,6 +1323,57 @@ impl<'a> Gen<'a> {
     /// body, reunify parameter slots on a complete binding, then **generalise** or
     /// emit the function type.
     fn let_binding(&mut self, let_decl: &LetDecl) {
+        self.type_let_decl(let_decl);
+        for binding in let_decl.bindings() {
+            self.own_binders(&binding);
+        }
+    }
+
+    /// Give every name a module-level binding binds its variable now, in its
+    /// own declaration, whether or not the declaration was typed.
+    ///
+    /// A binder's variable is otherwise created lazily, at its first use —
+    /// and a use in a later binding would then allocate it *after* that
+    /// binding's mark, where it passes for the later binding's own variable:
+    /// the guards that stop a binding grounding an earlier binder's open
+    /// variable ([`Self::arg_check_binds_only_current_vars`],
+    /// [`Self::mentions_inherited_open`]) key on allocation age, and would let
+    /// `mono u` retype a `let rec u` as `mono`'s domain. Parameters are not
+    /// binders of the declaration and are left to their function.
+    fn own_binders(&mut self, binding: &Binding) {
+        let Some(pat) = binding.pat() else {
+            return;
+        };
+        let names: Vec<NamedPat> = match &pat {
+            Pat::LongIdent(head)
+                if head.args().next().is_some() || head.name_pat_pairs().is_some() =>
+            {
+                Vec::new()
+            }
+            _ => pat
+                .syntax()
+                .descendants()
+                .filter_map(NamedPat::cast)
+                .collect(),
+        };
+        let mut defs: Vec<DefId> = names
+            .iter()
+            .filter_map(|n| n.ident())
+            .filter_map(|tok| self.def_at(tok.text_range()))
+            .collect();
+        if let Pat::LongIdent(head) = &pat
+            && let Some(name) = head.head().and_then(|li| li.idents().last())
+            && let Some(def) = self.def_at(name.text_range())
+        {
+            defs.push(def);
+        }
+        for def in defs {
+            self.def_var(def);
+        }
+    }
+
+    /// Type one module-level `let` declaration ([`Self::let_binding`]).
+    fn type_let_decl(&mut self, let_decl: &LetDecl) {
         // A recursive group (`let rec … and …`) is solved as a unit: a sibling
         // binding's constraints can flow back to a binder, so a literal RHS is
         // *not* isolated and its type may be retargeted. Defer the whole group
@@ -2221,7 +2272,14 @@ impl<'a> Gen<'a> {
             Expr::Fun(fun) => {
                 if let Some(body) = fun.body() {
                     let body_expected = expected.map(|_| self.table.fresh());
+                    // A lambda's parameters are elaborated as a function's
+                    // are: behind a non-simple one the body's nodes move, so
+                    // it records nothing (see [`is_simple_param`]).
+                    let body_mark = self.emission_mark();
                     self.infer_expr(&body, body_expected);
+                    if !fun.args().all(|arg| is_simple_param(&arg)) {
+                        self.discard_emissions_since(body_mark);
+                    }
                 }
                 // The lambda's own function type is not modelled yet (`Ty::Fun` on
                 // a `fun` value is a later slice), so it defers — and marks the

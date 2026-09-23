@@ -674,9 +674,17 @@ fn a_local_left_open_by_a_dropped_relation_blocks_later_grounding() {
 /// crossed with every pattern shape that reaches it.
 #[test]
 fn a_pattern_never_retypes_an_earlier_open_binder() {
+    // Earlier values inference does not type: an unmodelled RHS, and each
+    // way a declaration is skipped outright.
     let earlier = [
         "let u = List.head [(\"s\", \"t\")]",
         "let u = fst ((\"s\", \"t\"), 1)",
+        "let rec u = (\"s\", \"t\")",
+        "let rec u = (\"s\", \"t\")\nand w = 1",
+        "[<EntryPoint>]\nlet u = (\"s\", \"t\")",
+        "let (u, 1) = ((\"s\", \"t\"), 1)",
+        "let u : string * string = (\"s\", \"t\")",
+        "let mutable u = (\"s\", \"t\")",
     ];
     let later = [
         "let ((a, b), r) = (u, mono u)",
@@ -772,6 +780,27 @@ fn a_recovered_pattern_is_not_typed() {
         })
         .is_err();
         assert!(!failed, "{src}");
+    }
+}
+
+/// A lambda's parameters are elaborated as a function's are, so a body behind
+/// a non-simple one records nothing: every lambda parameter shape crossed with
+/// every position a pattern `let` reaches a lambda from.
+#[test]
+fn a_lambda_behind_a_non_simple_parameter_records_nothing_misplaced() {
+    let params = ["(a, ())", "(Some a)", "((a, c), d)", "(a, _)", "a", "()"];
+    let sites = [
+        "let (f, n) = ((fun {p} -> 1), 2)",
+        "let g (s: string) = let (f, n) = ((fun {p} -> (s, 1)), 2) in n",
+        "let h = fun {p} -> 1",
+        "let k (s: string) = let f = (fun {p} -> 1) in s",
+    ];
+    for p in params {
+        for site in sites {
+            let src = format!("module M\n{}\n", site.replace("{p}", p));
+            let failed = std::panic::catch_unwind(|| check(&src, false)).is_err();
+            assert!(!failed, "{src}");
+        }
     }
 }
 
