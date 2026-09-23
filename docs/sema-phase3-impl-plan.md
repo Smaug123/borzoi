@@ -96,6 +96,51 @@ catalogue (type-directed widening, `op_Implicit`, params/optional arity,
 extension-vs-intrinsic betterness), and the two-sided `must_apply`/`may_apply`
 sound commit rule.
 
+### Measured blockers (the completeness census)
+
+An incomplete binding fires no argument check and never generalises, so on real
+code most of what inference could say is withheld by the *completeness* gate
+rather than by any one typing rule. `infer_corpus_diff` prints, from
+`InferredFile::incompleteness`, which construct is the **only observed** reason
+a binding is incomplete — a heuristic ranking of what modelling it could unlock,
+not a bound (the walk does not descend into what it does not model, so a reason
+beneath an unmodelled construct goes unseen; and a failure's effect elsewhere,
+such as a local aliasing an open local, can surface as a reason of its own). On
+the stride-13
+corpus sample (2026-09-23, after CE-1; 2 674 walked bindings, 34.6 % complete):
+
+| blocker | only observed reason of | present in |
+|---|---:|---:|
+| infix operator application | 339 | 626 |
+| method call on a receiver that is not an in-file value | 151 | 265 |
+| value not bound in this file (assembly / earlier file) | 101 | 258 |
+| `match` | 93 | 198 |
+| tupled parameter | 39 | 163 |
+| parameter annotation outside the modelled set | 36 | 261 |
+| `new` | 31 | 37 |
+| record expression | 22 | 36 |
+
+Two corollaries shaped the order of work. Infix operators are the first lever
+by a wide margin. And a rule that only fires on complete bindings — the guarded
+argument read-off, prototyped on branch `infer-arg-readoff` — measured **zero**
+gain on the corpus while bindings are this incomplete, so it waits until the
+blockers above are lower. Re-run the sweep and update this table when one lands.
+
+**Infix operators, prototyped and shelved** (branch `infer-operators`). Typing
+FSharp.Core's arithmetic and comparisons over *ground* operands measured only
++25 agreements (most real operands are unannotated parameters, so they are
+open when the operator is walked; the next lever there is FCS's weak
+resolution). The harder problem was proving a use *is* FSharp.Core's operator:
+F# makes a value bare-accessible through many channels, and three review rounds
+each found another — an aliased `[<AutoOpen>]`, a `module rec`'s later
+definition, an assembly-level auto-open, a signature-screened earlier file, an
+`[<AutoOpen>]` type abbreviation exposing another type's static properties.
+Neither a scoped lookup nor an enumeration of sources closed that set. The
+sound route is operator resolution in the resolver itself — `+` looked up
+under its compiled name `op_Addition` with the vetted machinery ordinary names
+use — once the resolver's auto-open folding (#233) is complete; inference then
+trusts that resolution.
+
 ### Remaining 3.x hard piles (census-priority order)
 
 Each stays `Deferred` (D5 silence) until the corpus demands it
