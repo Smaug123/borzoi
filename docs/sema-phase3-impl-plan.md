@@ -110,7 +110,7 @@ corpus sample (2026-09-23, after CE-1; 2 674 walked bindings, 34.6 % complete):
 | blocker | only observed reason of | present in |
 |---|---:|---:|
 | infix operator application | 339 | 626 |
-| method call on a receiver that is not an in-file value | 147 | 265 |
+| method call on a receiver that is not an in-file value | 151 | 265 |
 | value not bound in this file (assembly / earlier file) | 101 | 258 |
 | `match` | 93 | 198 |
 | tupled parameter | 39 | 163 |
