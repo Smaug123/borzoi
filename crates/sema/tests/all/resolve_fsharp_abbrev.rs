@@ -37,7 +37,7 @@ fn dotnet_build(project: &Path, what: &str) {
     BoundedCommand::new(cmd).timeout(BUILD_TIMEOUT).run_ok(what);
 }
 
-fn ensure_fixture_built() -> &'static Path {
+pub(crate) fn ensure_fixture_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT
         .get_or_init(|| {

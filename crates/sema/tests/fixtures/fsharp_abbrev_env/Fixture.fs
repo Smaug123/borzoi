@@ -520,3 +520,13 @@ namespace Demo.RootShortenValue
 // keep looking and find the autoopen fixture's `let Leaf` one position shorter.
 type Leaf<'T> =
     { Payload : 'T }
+
+namespace Demo.AttrAlias
+
+// Attribute abbreviations for the gates that ask which attribute type a use
+// denotes: FCS strips the abbreviation before matching, so `[<Ext>]` marks an
+// extension exactly as `[<Extension>]` does and `[<Ep>]` an entry point, while
+// an abbreviation of any other attribute marks neither.
+type ExtAttribute = System.Runtime.CompilerServices.ExtensionAttribute
+type ExtChainAttribute = ExtAttribute
+type EpAttribute = Microsoft.FSharp.Core.EntryPointAttribute

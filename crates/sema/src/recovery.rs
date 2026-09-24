@@ -128,6 +128,23 @@ impl SyntaxRecovery {
         SyntaxRecovery::Unretained
     }
 
+    /// Whether the file parsed with no recovery anywhere before `node` ends —
+    /// stronger than [`Self::declaration_is_intact`], for readings a recovery
+    /// *earlier* in the file can invalidate. Recovery can spill past the
+    /// declaration it broke out of: `let f (s: string)) p =` leaves its
+    /// indented body's `let` standing as an apparently intact top-level
+    /// declaration, which FCS never checks. A recovery wholly after `node`
+    /// cannot change how anything before it parsed.
+    pub fn clean_through(&self, node: &SyntaxNode) -> bool {
+        match self {
+            SyntaxRecovery::Unretained => false,
+            SyntaxRecovery::Reported(spans) => {
+                let end = node.text_range().end();
+                spans.iter().all(|span| span.start() >= end)
+            }
+        }
+    }
+
     /// Whether the declaration enclosing `node` parsed with no recovery — the
     /// question a consumer must answer *yes* to before committing anything it
     /// read out of that declaration's syntax.

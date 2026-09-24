@@ -35,6 +35,40 @@ use borzoi_sema::{
 };
 use rowan::TextRange;
 
+/// Parse and resolve `srcs` as one project in Compile order, with each file's
+/// real [`SyntaxRecovery`]: inference reads nothing from a file whose parse it
+/// cannot see, so the recovery-blind `resolve_project` convenience form would
+/// leave these cases vacuously silent.
+fn clean_project(
+    srcs: &[&str],
+    env: &AssemblyEnv,
+) -> (Vec<ImplFile>, borzoi_sema::ResolvedProject) {
+    let mut files = Vec::new();
+    let mut project = Vec::new();
+    let paths: Vec<std::path::PathBuf> = (0..srcs.len())
+        .map(|i| std::path::PathBuf::from(format!("F{i}.fs")))
+        .collect();
+    let mut sources = Vec::new();
+    let mut recoveries = Vec::new();
+    for src in srcs {
+        let p = parse(src);
+        assert!(
+            p.errors.is_empty(),
+            "parse errors in {src:?}: {:?}",
+            p.errors
+        );
+        recoveries.push(SyntaxRecovery::of(&p));
+        let file = ImplFile::cast(p.root).expect("impl file");
+        files.push(file.clone());
+        sources.push(borzoi_sema::SourceFile::Impl(file));
+    }
+    let qnofs = borzoi_sema::qualified_names(&sources, &paths);
+    for ((source, qnof), recovery) in sources.into_iter().zip(qnofs).zip(recoveries) {
+        project.push(borzoi_sema::ProjectFile::new(source, qnof, recovery));
+    }
+    (files, borzoi_sema::resolve_project_files(&project, env))
+}
+
 /// An [`AssemblyEnv`] over the real BCL `System.Runtime.dll` — so `System.String`
 /// (and its `Length` / `Chars` / `Empty` members) is present.
 fn bcl_env() -> AssemblyEnv {
@@ -1855,20 +1889,12 @@ fn cross_file_extension_class_defers_the_overload_gate() {
     // an auto-open module) is a project extension source a later same-namespace file
     // sees with no `open`. The compile-order cross-file signal defers the later
     // file; the reversed order (call file first) commits.
-    use borzoi_sema::resolve_project;
     let env = bcl_env();
     let f1 = "module M1\n\
               [<System.Runtime.CompilerServices.Extension>]\n\
               type Exts =\n    static member Foo(x: int) : int = x\n";
     let f2 = "module M2\nlet s = \"hi\"\nlet n = s.Substring(1)\n";
-    let parse_impl = |src: &str| {
-        let p = parse(src);
-        assert!(p.errors.is_empty(), "parse errors: {:?}", p.errors);
-        ImplFile::cast(p.root).expect("impl file")
-    };
-
-    let files = [parse_impl(f1), parse_impl(f2)];
-    let project = resolve_project(&files, &env);
+    let (files, project) = clean_project(&[f1, f2], &env);
     let f2_resolved = project.file(1);
     let inferred = infer_file(&files[1], f2_resolved, &env);
     let def_types: HashMap<String, String> = inferred
@@ -1884,8 +1910,7 @@ fn cross_file_extension_class_defers_the_overload_gate() {
 
     // Reversed Compile order: the call file precedes the `[<Extension>]` file, so
     // no *preceding* extension source is in scope — the overload commits.
-    let reordered = [parse_impl(f2), parse_impl(f1)];
-    let project2 = resolve_project(&reordered, &env);
+    let (reordered, project2) = clean_project(&[f2, f1], &env);
     let call_first = project2.file(0);
     let inferred2 = infer_file(&reordered[0], call_first, &env);
     let types2: HashMap<String, String> = inferred2
@@ -2772,18 +2797,9 @@ fn augmentation_with_unnameable_member_defers_everything() {
 /// un-nameable member (an operator) in file 1 defers file 2 wholesale.
 #[test]
 fn preceding_augmentation_defers_only_its_member_names() {
-    use borzoi_sema::resolve_project;
     let env = bcl_and_fsharp_core_env();
     let run = |f1: &str, f2: &str| -> Option<String> {
-        let files: Vec<ImplFile> = [f1, f2]
-            .iter()
-            .map(|s| {
-                let p = parse(s);
-                assert!(p.errors.is_empty(), "parse errors in {s:?}: {:?}", p.errors);
-                ImplFile::cast(p.root).expect("impl file")
-            })
-            .collect();
-        let project = resolve_project(&files, &env);
+        let (files, project) = clean_project(&[f1, f2], &env);
         let rf2 = &project.files()[1];
         let inferred = infer_file(&files[1], rf2, &env);
         inferred
@@ -3029,18 +3045,9 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
     );
 
     // Cross-file: the marker resolution threads through the wholesale bit.
-    use borzoi_sema::resolve_project;
     let f1 = "module M1\nopen System.Runtime.CompilerServices\n[<AutoOpen>]\nmodule Helpers =\n    [<Extension>]\n    type H =\n        static member Twice (s: string) = s + s\n";
     let f2 = "module M2\nlet s = \"hi\"\nlet n = s.Substring(1)\n";
-    let files: Vec<ImplFile> = [f1, f2]
-        .iter()
-        .map(|s| {
-            let p = parse(s);
-            assert!(p.errors.is_empty(), "parse errors in {s:?}: {:?}", p.errors);
-            ImplFile::cast(p.root).expect("impl file")
-        })
-        .collect();
-    let project = resolve_project(&files, &env);
+    let (files, project) = clean_project(&[f1, f2], &env);
     let rf2 = &project.files()[1];
     let inferred = infer_file(&files[1], rf2, &env);
     let n_ty = inferred
@@ -3059,18 +3066,9 @@ fn auto_open_module_with_extension_attribute_still_defers_wholesale() {
 /// names — instead of the old path-presence wholesale defer.
 #[test]
 fn preceding_plain_auto_open_no_longer_defers_the_overload() {
-    use borzoi_sema::resolve_project;
     let env = bcl_and_fsharp_core_env();
     let run = |f1: &str, f2: &str| -> Option<String> {
-        let files: Vec<ImplFile> = [f1, f2]
-            .iter()
-            .map(|s| {
-                let p = parse(s);
-                assert!(p.errors.is_empty(), "parse errors in {s:?}: {:?}", p.errors);
-                ImplFile::cast(p.root).expect("impl file")
-            })
-            .collect();
-        let project = resolve_project(&files, &env);
+        let (files, project) = clean_project(&[f1, f2], &env);
         let rf2 = &project.files()[1];
         let inferred = infer_file(&files[1], rf2, &env);
         inferred
@@ -3104,15 +3102,7 @@ fn preceding_plain_auto_open_no_longer_defers_the_overload() {
 
     // Compile-order: the auto-open only affects LATER files. The colliding
     // augmentation compiled AFTER the call file does not defer it.
-    let files: Vec<ImplFile> = [caller, colliding]
-        .iter()
-        .map(|s| {
-            let p = parse(s);
-            assert!(p.errors.is_empty());
-            ImplFile::cast(p.root).expect("impl file")
-        })
-        .collect();
-    let project = resolve_project(&files, &env);
+    let (files, project) = clean_project(&[caller, colliding], &env);
     let rf1 = &project.files()[0];
     let inferred = infer_file(&files[0], rf1, &env);
     let n_ty = inferred
