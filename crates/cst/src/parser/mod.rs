@@ -418,6 +418,10 @@ fn parse_inner(
     // the parse-error parity the differential harness checks.
     let reserved_warnings = reserved_ident_diagnostics(&raw_tokens);
 
+    // `:`/`$` inside an operator lexeme: an error FCS's lexer raises while
+    // still producing the operator token, so the tree is unaffected.
+    let operator_char_errors = operator_char_diagnostics(&raw_tokens);
+
     // Language-version legality gate. The version never threads into the
     // preprocessor — the driver records the gated `#elif` spans, and we turn
     // them into diagnostics here — so the tree shape is identical regardless of
@@ -461,6 +465,7 @@ fn parse_inner(
     let mut errors = parser.errors;
     errors.extend(directive_errors);
     errors.extend(tab_errors);
+    errors.extend(operator_char_errors);
     errors.extend(langversion_errors);
     errors.extend(node_surface_diagnostics(&root, lang));
     // Warnings come from the productions and the lex-filter's offside
@@ -671,6 +676,37 @@ fn tab_diagnostics(source: &str, raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
 /// '#'` gap — `foo!` and `foo#` diverge too), so the accept/reject signal for
 /// `break!` is not yet faithful; only the FS0046 emission (presence and span) is
 /// matched here.
+/// FCS's `checkExprOp` (`lex.fsl:110`): an operator lexeme containing `:` or
+/// `$` is an error ("'…' is not permitted as a character in operator names"),
+/// reported once per offending character over the whole lexeme. The
+/// fixed-spelling tokens that legitimately carry those characters (`::`, `:=`,
+/// `:>`, `:?>`, a bare `$`) never lex as [`Token::Op`], so every `Op` is subject
+/// to the check — except that the `>`-headed rule (`checkExprGreaterColonOp`,
+/// `lex.fsl:983`) checks only `$`. That rule applies when the first character
+/// past the leading `ignored_op_char`s is `>`; a `$` among those leading
+/// characters makes the lexeme an error regardless of which rule claims it.
+fn operator_char_diagnostics(raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
+    let mut out = Vec::new();
+    for (res, span) in raw_tokens {
+        let Ok(TriviaToken::Lexed(Token::Op(op))) = res else {
+            continue;
+        };
+        let greater_headed = op.trim_start_matches(['.', '?']).starts_with('>');
+        for c in [':', '$'] {
+            if op.contains(c) && !(c == ':' && greater_headed) {
+                out.push(ParseError {
+                    message: format!(
+                        "'{c}' is not permitted as a character in operator names and is \
+                         reserved for future use"
+                    ),
+                    span: span.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
 fn reserved_ident_diagnostics(raw_tokens: &[RawTok<'_>]) -> Vec<ParseError> {
     let mut out = Vec::new();
     for (i, (res, span)) in raw_tokens.iter().enumerate() {

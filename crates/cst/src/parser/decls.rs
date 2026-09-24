@@ -1305,7 +1305,9 @@ impl<'src> Parser<'src> {
                     return (seen_decl, seen_non_hash_decl, header_parsed);
                 }
                 self.bump_layout_virtual();
-                needs_sep = false;
+                if *v != Virtual::BlockEnd {
+                    needs_sep = false;
+                }
                 // Leading layout scaffolding before the first decl — for a
                 // whole-file `module`/`namespace` header this includes the body's
                 // opening `OBLOCKBEGIN`. Re-base the single-`;` depth past it so

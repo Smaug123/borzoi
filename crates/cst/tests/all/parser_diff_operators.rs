@@ -2,9 +2,7 @@
 //! application, and infix/prefix operators. Split out of the former
 //! monolithic `parser_diff.rs`.
 
-use crate::common::{
-    assert_asts_match, assert_asts_match_allow_errors, assert_asts_match_fcs_rejects_ours_accepts,
-};
+use crate::common::{assert_asts_match, assert_asts_match_allow_errors};
 
 /// `( 1 )` — paren expression around an int. FCS produces
 /// `SynExpr.Paren(SynExpr.Const(SynConst.Int32 1), …)`; we emit
@@ -290,10 +288,11 @@ fn diff_ast_infix_mod_left_assoc_with_star() {
 /// (INFIX_COMPARE_OP) matches with `$` as head and `+` as op_char tail.
 /// Both length 2, but fslex's first-rule-wins tie-break favors line 974.
 /// Pins our `classify_op_text` behavior on a contended dollar-prefix op.
-/// FCS still projects the recovery AST but marks the parse as erroneous.
+/// Both sides reject it (`checkExprOp`: `$` is not permitted in an operator
+/// name) and recover the same tree.
 #[test]
 fn diff_ast_infix_dollar_plus() {
-    assert_asts_match_fcs_rejects_ours_accepts("a $+ b\n");
+    assert_asts_match_allow_errors("a $+ b\n");
 }
 
 /// `a %> b` — `%`-prefixed operators (other than bare `%`/`%%`) classify as
@@ -354,10 +353,10 @@ fn diff_ast_unspaced_minus_is_infix() {
 /// INFIX_COMPARE_OP — matching fslex's first-rule-wins on the original
 /// input where rule 978 (`$` as compare head) beats rule 986 (`!` as
 /// prefix). Pins the `$`-in-greedy-prefix fallback path.
-/// FCS still projects the recovery AST but marks the parse as erroneous.
+/// Both sides reject it (`checkExprOp`) and recover the same tree.
 #[test]
 fn diff_ast_infix_dollar_bang() {
-    assert_asts_match_fcs_rejects_ours_accepts("a $! b\n");
+    assert_asts_match_allow_errors("a $! b\n");
 }
 
 /// `- x\n` — minusExpr-level prefix MINUS on an identifier. pars.fsy

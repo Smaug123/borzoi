@@ -60,7 +60,12 @@ use crate::common::{
 /// which is what keeps the number honest between measurements. Same discipline
 /// as `ci.yml`'s `BORZOI_PROJECT_EXPECT_DIVERGENCES`, and for the same stated
 /// reason: a one-sided bound quietly decays into a rubber stamp.
-const CLEAN_PARSES: usize = 5628;
+///
+/// 5625 on 2026-09-23: three files FCS rejects moved from "we accept" to "both
+/// reject" (`$` in an operator name, and a stray token after a module `let`'s
+/// body block), with `parser_corpus_diff`'s we-reject/FCS-accepts bucket
+/// unchanged — a lowering with a reason.
+const CLEAN_PARSES: usize = 5625;
 
 // The raw parser panicking on a corpus file used to be ratcheted (`MAX_PANICS`,
 // 7 when it was last measured in June 2026). It reaches zero on the pinned

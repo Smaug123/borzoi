@@ -132,9 +132,11 @@ const MAX_AST_RANGE_DIVERGENCES: usize = 30;
 /// `c3c01c99`) with the general offside FS0058 emission
 /// (`docs/offside-diagnostics-plan.md`, §A) in place: emitting the offside
 /// diagnostic moves the affected files from "we accept" to "both reject",
-/// leaving 29. The margin absorbs the FCS `ast-batch` accept/reject
-/// nondeterminism seen on a few blank-line-sensitive fixtures.
-const MAX_WE_ACCEPT_FCS_REJECTS: usize = 31;
+/// leaving 29; 26 on 2026-09-23 once `$` in an operator name and a stray token
+/// after a module `let`'s body block were rejected. The margin absorbs the FCS
+/// `ast-batch` accept/reject nondeterminism seen on a few blank-line-sensitive
+/// fixtures.
+const MAX_WE_ACCEPT_FCS_REJECTS: usize = 28;
 
 /// Upper bound on real corpus files that are not UTF-8 source. These are
 /// explicit skips because our parser takes `&str`; I/O failures still panic.
