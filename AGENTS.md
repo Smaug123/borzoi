@@ -22,7 +22,7 @@ This is a Cargo workspace with nine members:
   JSONL batch oracle (in the `tools/fcs-dump` / `tools/nuget-oracle` mould)
   that evaluates in-process through the MSBuild API; it is never a
   runtime dependency of the LSP. Reached from the tests through the crate's
-  `test-support`-feature `test_support` module. It has four ops, and the
+  `test-support`-feature `test_support` module. Its evaluation ops are four, and the
   distinction matters: `eval` (a `Condition` string) and `expand` (a property
   *body*) both take their input *after* MSBuild's XML layer has run, so they
   are structurally blind to it; `project` hands MSBuild a whole document
@@ -34,7 +34,14 @@ This is a Cargo workspace with nine members:
   generative sweep cannot afford). `project` and `items` also carry the
   evaluation's **global properties** — the `-p:` set, which is *not* a
   property-group write: it is read-only to the document, outranking every write
-  of that name unless `TreatAsLocalProperty` opts out. The five differentials
+  of that name unless `TreatAsLocalProperty` opts out. A fifth op, `defines`,
+  is the one that runs *targets*: it answers which `#if` symbols fsc is
+  passed, by restoring and running a real `Build`'s targets through `Compile`
+  in-process with `SkipCompilerExecution` (fsc's arguments are computed, fsc
+  is not run) and reading the `--define:` tokens of the real `Fsc` task's
+  `FscCommandLineArgs`, declining any other define-capable spelling. It is
+  itself calibrated against a real, restored `Build`'s arguments by
+  `defines_oracle_calibration.rs` (`docs/sdk-implicit-defines-plan.md`). The five differentials
   that ride on these ops:
   `condition_diff.rs`, `property_expr_diff.rs`,
   `fsproj_property_table_diff.rs`,

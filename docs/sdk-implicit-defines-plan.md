@@ -75,14 +75,42 @@ Stage 3 settles it.
 ## Design
 
 1. **Oracle: the defines fsc receives.** Add a `defines` op to
-   `tools/msbuild-condition-oracle`. It builds a `ProjectInstance` under the
-   given globals, runs `AddImplicitDefineConstants;_DisableDiagnosticTracing`,
-   and reads `DefineConstants` back, split the way `Fsc` splits it.
-   - This is cheap: evaluation plus four targets, with no restore.
-   - Because it runs only a subset of the build, it needs its own oracle. That
-     is the design-time `FscCommandLineArgs` (`-t:Build
-     -p:DesignTimeBuild=true;ProvideCommandLineArgs=true;SkipCompilerExecution=true`,
-     the Ionide.ProjInfo route), which needs a restored project.
+   `tools/msbuild-condition-oracle`. It restores, then runs in-process the
+   targets a real `Build` runs through `Compile`, read from the project's own
+   `$(BuildDependsOn)`/`$(CoreBuildDependsOn)`. It sets
+   `ProvideCommandLineArgs` and `SkipCompilerExecution`, so fsc's arguments
+   are computed but fsc is not run. It reads the `--define:`
+   tokens of the `FscCommandLineArgs` that the real `Fsc` task computed.
+   - Nothing about `Fsc`'s parameter binding is re-implemented: `DefineConstants`,
+     `Nullable` and `OtherFlags` are expanded exactly as task parameters are,
+     item references included.
+   - It restores, as a real build does, because a package's build props can
+     write `DefineConstants`.
+   - Only the exact canonical `--define:X` is accepted. Any other token that
+     could define a symbol declines the request rather than being parsed:
+     `-d:X`, `/define:X`, whitespace-padded or quoted, or a response file.
+   - Project references are resolved without being built.
+   - A nonexistent `CustomAdditionalCompileInputs` item keeps an
+     already-built project's `CoreCompile` from being skipped.
+   - Its own oracle is a *real* `Build`'s arguments: restored, compiling, with
+     `ProvideCommandLineArgs` only.
+
+   Five review rounds shaped this. The first version ran only the SDK's two
+   define targets and re-read `$(Nullable)`/`$(OtherFlags)` by hand. That
+   answered successfully but incompletely on:
+   - case-folded duplicates;
+   - `NULLABLE`;
+   - `OtherFlags` aliases and response files;
+   - item references in task parameters;
+   - whitespace-padded flags and embedded line breaks;
+   - unrestored package imports;
+   - hooks in `Build` but outside `Compile` (`BeforeBuild`);
+   - `%` escapes, which the reported argument items decode;
+   - build lists rewritten while the build runs.
+
+   Each was either a re-implementation of the build or a step the build takes
+   that the op skipped, which is why the op now runs the build and only reads
+   its output.
 2. **One consumed value, one comparison.** `ParsedProject::define_constants`
    becomes the value `Fsc` receives. It is the sum of:
    - the evaluation-time value (Stage 3);
@@ -102,7 +130,13 @@ Stage 3 settles it.
    - declined: any **user-authored** target (outside the SDK subtree) that
      writes `DefineConstants` or `_ImplicitDefineConstant`, or that hooks one
      of the six targets above through `BeforeTargets` / `AfterTargets` /
-     `DependsOnTargets`.
+     `DependsOnTargets`;
+   - `Fsc`'s two other symbol sources, which the oracle handles the same way:
+     - `NULLABLE` is appended when `$(Nullable)` is exactly `enable` (the `Fsc`
+       setter's match is case-sensitive);
+     - the project is declined when `$(OtherFlags)` could carry a
+       `--define:`/`-d:`. It is passed to fsc verbatim, and tokenising a
+       command line is not worth modelling.
 
    This deliberately duplicates SDK logic in Rust. `#263` avoided doing that for
    `Link` because nothing consumed `Link`. Here the value is consumed and
@@ -125,21 +159,50 @@ here, but the perturbation census should keep reporting it.
 
 **Implements**: Design §1.
 
-**Correctness oracle**:
-- The `defines` op returns, as a set, exactly the `--define:` arguments in the
-  design-time `FscCommandLineArgs` of the same project under the same globals.
-- Check this over a fixed calibration set of restored projects:
-  - `net8.0` and `net10.0`;
-  - `netstandard2.0` and `netstandard2.1`;
-  - `net472`;
-  - a multi-targeted project, per inner TFM;
-  - `Configuration=Release` and a custom configuration `My-Config.1`;
-  - `DisableImplicitFrameworkDefines=true`;
-  - `DisableDiagnosticTracing=true`;
-  - a user target that appends to `DefineConstants` before `CoreCompile`.
-- The calibration test is the *oracle's* oracle. It is `#[ignore]`d, run by hand
-  whenever the SDK pin moves, and the SDK version is recorded beside the
-  fixtures.
+**Correctness oracle** (landed as `crates/msbuild/tests/defines_oracle_calibration.rs`):
+- The `defines` op, asked first on the unrestored project, returns exactly the
+  `--define:` arguments of a real, restored, compiling build's
+  `FscCommandLineArgs` under the same globals, in order. The only exception is
+  a decline where the fixture demands one.
+- Calibration set (35 cases):
+  - a `net10.0;net6.0;netstandard2.0` project, per inner TFM, crossed with
+    `Configuration` ∈ {Debug, Release, `My-Config.1`};
+  - `DisableImplicitFrameworkDefines`, `DisableDiagnosticTracing`, both
+    together, and `DisableImplicitConfigurationDefines`;
+  - a user value with whitespace and empty fragments, duplicate and
+    case-distinct symbols, and an overwrite that drops the self-reference;
+  - `Nullable` as `enable`, as `Enable`, and through an item reference;
+  - `OtherFlags` with no define, with `--define:`, and with `--define:`
+    through an item reference;
+  - user targets that append before `CoreCompile` and before `BeforeBuild`;
+  - a project reference;
+  - a locally packed package whose `build/*.props` appends `FROM_PACKAGE`;
+  - declines, each of which must also carry the symbol to fsc: `OtherFlags`
+    with `-d:`, with `/d:`, with a response file, with an embedded line break,
+    with each define spelling padded with whitespace, and with an escaped `%`;
+    plus a target that rewrites `CoreBuildDependsOn` while the build runs;
+  - a user target that appends only when fsc really runs. The op must
+    *disagree* here, which proves the calibration can see the op's genuine
+    boundary.
+- `net472` and `net8.0` are absent because the devshell's offline package set
+  carries neither targeting pack.
+- It takes about a minute and runs with the crate's ordinary tests.
+- Mutation checks confirmed it discriminates:
+  - classifying no token as declinable fails the decline cases;
+  - a stale `IntermediateOutputPath` (`CoreCompile` skipped as up to date)
+    fails every case;
+  - skipping the restore fails every unrestored case;
+  - running `Compile` alone instead of the `Build` prefix fails the
+    `BeforeBuild` case.
+- Out of scope, and why: build logic conditioned on fsc really running
+  (`SkipCompilerExecution`), which the boundary fixture pins.
+- Known limit of the method: every fixture is hand-chosen, and each review
+  round has found a further adversarial shape. The rounds have converged to
+  shapes far outside what the Stage 4 model commits on, since it declines user
+  targets and define-capable `OtherFlags` anyway. The systematic next step,
+  if one is wanted, is a *generated* calibration: random combinations of the
+  fixture features, checked against real builds, with a
+  conditional-compilation probe as the final arbiter.
 
 ### Stage 2: census, not gate
 
