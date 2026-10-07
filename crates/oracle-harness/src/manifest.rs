@@ -46,6 +46,10 @@ pub enum EntryError {
     /// The same entry twice. Entries are keys: a caller whose items can repeat
     /// uses [`Manifest::from_counted`].
     Duplicate(String),
+    /// An item passed to [`Manifest::from_counted`] that already ends in the
+    /// ` x<digits>` count suffix, which would make `a x2` indistinguishable from
+    /// `a` twice.
+    ReservedCountSuffix(String),
 }
 
 impl std::fmt::Display for EntryError {
@@ -58,6 +62,9 @@ impl std::fmt::Display for EntryError {
                 write!(f, "manifest entry has surrounding whitespace: {e:?}")
             }
             EntryError::Duplicate(e) => write!(f, "duplicate manifest entry: {e:?}"),
+            EntryError::ReservedCountSuffix(e) => {
+                write!(f, "counted item ends in the reserved ` x<n>` suffix: {e:?}")
+            }
         }
     }
 }
@@ -102,10 +109,17 @@ impl Manifest {
     /// times becomes the single entry `"<item> x<n>"`. For oracles that report
     /// the same fact more than once (FCS records some symbol uses twice at one
     /// range), where the multiplicity is itself part of the deterministic output.
+    /// An item may not itself end in ` x<digits>`, so the encoding is injective.
     pub fn from_counted(items: impl IntoIterator<Item = String>) -> Result<Self, EntryError> {
         let mut counts: BTreeMap<String, usize> = BTreeMap::new();
         for item in items {
             validate(&item)?;
+            if item
+                .rsplit_once(" x")
+                .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            {
+                return Err(EntryError::ReservedCountSuffix(item));
+            }
             *counts.entry(item).or_default() += 1;
         }
         Manifest::from_entries(counts.into_iter().map(|(item, n)| {
@@ -332,6 +346,36 @@ mod tests {
                 let want = if n == 1 { item.clone() } else { format!("{item} x{n}") };
                 prop_assert!(m.entries().contains(&want), "missing {want:?} in {m:?}");
             }
+        }
+
+        /// A counted manifest decodes back to exactly the multiset it was built
+        /// from (so distinct multisets never collapse to one manifest): the
+        /// count suffix cannot be forged by an item that spells one itself.
+        #[test]
+        fn from_counted_decodes_to_its_multiset(
+            items in prop::collection::vec(
+                prop::sample::select(vec!["a", "a x2", "a x3", "a x", "b x1", "b"]),
+                0..6,
+            ),
+        ) {
+            let Ok(m) = Manifest::from_counted(items.iter().map(|s| s.to_string())) else {
+                return Ok(());
+            };
+            let mut want: BTreeMap<String, usize> = BTreeMap::new();
+            for i in &items {
+                *want.entry(i.to_string()).or_default() += 1;
+            }
+            let mut got: BTreeMap<String, usize> = BTreeMap::new();
+            for e in m.entries() {
+                let (item, n) = match e.rsplit_once(" x") {
+                    Some((item, n)) if n.parse::<usize>().is_ok_and(|n| n > 1) => {
+                        (item.to_string(), n.parse::<usize>().expect("checked"))
+                    }
+                    _ => (e.clone(), 1),
+                };
+                *got.entry(item).or_default() += n;
+            }
+            prop_assert_eq!(got, want);
         }
 
         #[test]
