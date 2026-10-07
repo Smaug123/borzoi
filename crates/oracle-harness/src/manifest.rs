@@ -232,6 +232,48 @@ impl ManifestDiff {
     }
 }
 
+/// The suffix Nix appends to a store entry whose name collides
+/// case-insensitively with a sibling's, on a case-insensitive file system
+/// (macOS): the pinned F# corpus has both `CompilerOptions/Fsc` and
+/// `CompilerOptions/fsc`, and on macOS the second is stored as
+/// `fsc~nix~case~hack~1`. Linux keeps the original name.
+const NIX_CASE_HACK: &str = "~nix~case~hack~";
+
+/// One path component as the source tree spells it: [`NIX_CASE_HACK`] and its
+/// counter stripped. Distinct entries of the original tree have distinct names,
+/// so decoding cannot merge two files (and a manifest built with
+/// [`Manifest::from_entries`] would refuse the duplicate if it did).
+fn decode_component(name: &str) -> &str {
+    match name.rsplit_once(NIX_CASE_HACK) {
+        Some((original, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => original,
+        _ => name,
+    }
+}
+
+/// The components of `path` below `root`, each with Nix's case-hack suffix
+/// decoded. Panics if `path` is not under `root`: an entry keyed by an
+/// absolute path would differ per machine.
+pub fn relative_components(root: &Path, path: &Path) -> Vec<String> {
+    let rel = path.strip_prefix(root).unwrap_or_else(|_| {
+        panic!(
+            "{} is not under the manifest root {}",
+            path.display(),
+            root.display()
+        )
+    });
+    rel.components()
+        .map(|c| decode_component(&c.as_os_str().to_string_lossy()).to_string())
+        .collect()
+}
+
+/// `path` relative to `root` as a manifest key: the [`relative_components`]
+/// joined with `/`, so an entry names the same file wherever the input is
+/// checked out, whichever separator the platform uses, and whether or not Nix
+/// renamed it for a case-insensitive file system.
+pub fn relative_key(root: &Path, path: &Path) -> String {
+    relative_components(root, path).join("/")
+}
+
 fn update_requested() -> bool {
     std::env::var_os(UPDATE_ENV).is_some_and(|v| !v.is_empty() && v != "0")
 }
@@ -391,6 +433,41 @@ mod tests {
                 prop_assert!(text.lines().any(|l| l == want));
             }
         }
+
+        /// The key is the components as the source tree spells them,
+        /// `/`-joined, whether or not Nix renamed any of them.
+        #[test]
+        fn relative_key_is_the_decoded_components_joined_by_slash(
+            parts in prop::collection::vec(("[A-Za-z0-9 ._~-]{1,8}", prop::option::of(1u32..4)), 1..5),
+        ) {
+            let root = Path::new("/corpus/root");
+            let mut path = root.to_path_buf();
+            for (name, hack) in &parts {
+                prop_assume!(decode_component(name) == name.as_str() && name != "." && name != "..");
+                path.push(match hack {
+                    Some(n) => format!("{name}{NIX_CASE_HACK}{n}"),
+                    None => name.clone(),
+                });
+            }
+            let want = parts.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join("/");
+            prop_assert_eq!(relative_key(root, &path), want);
+        }
+    }
+
+    #[test]
+    fn relative_key_decodes_only_a_well_formed_case_hack() {
+        let root = Path::new("/nix/store/x-source");
+        let key = |rel: &str| relative_key(root, &root.join(rel));
+        assert_eq!(
+            key("tests/CompilerOptions/fsc~nix~case~hack~1/times/times01.fs"),
+            "tests/CompilerOptions/fsc/times/times01.fs"
+        );
+        assert_eq!(key("a/Fsc/b.fs"), "a/Fsc/b.fs");
+        assert_eq!(key("a/x~nix~case~hack~/b.fs"), "a/x~nix~case~hack~/b.fs");
+        assert_eq!(
+            key("a/x~nix~case~hack~1a/b.fs"),
+            "a/x~nix~case~hack~1a/b.fs"
+        );
     }
 
     #[test]

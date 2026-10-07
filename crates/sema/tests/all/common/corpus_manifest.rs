@@ -42,48 +42,16 @@ pub fn check_manifest(name: &str, actual: &Manifest, regenerate: &str) {
     check(&manifest_path(name), actual, regenerate);
 }
 
-/// The suffix Nix appends to a store entry whose name collides
-/// case-insensitively with a sibling's, on a case-insensitive file system
-/// (macOS): the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`,
-/// and on macOS the second is stored as `fsc~nix~case~hack~1`.
-const NIX_CASE_HACK: &str = "~nix~case~hack~";
-
-/// One path component as the source tree spells it: [`NIX_CASE_HACK`] and its
-/// counter stripped. Distinct entries of the original tree have distinct names,
-/// so decoding cannot merge two files; [`sort_by_corpus_key`] asserts it anyway.
-fn decode_component(name: &str) -> &str {
-    match name.rfind(NIX_CASE_HACK) {
-        Some(i)
-            if {
-                let n = &name[i + NIX_CASE_HACK.len()..];
-                !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
-            } =>
-        {
-            &name[..i]
-        }
-        _ => name,
-    }
-}
-
 /// `path` relative to the corpus `root`, `/`-separated and with Nix's case-hack
-/// suffixes decoded, so an entry names the same file wherever and on whatever
-/// file system the corpus is checked out.
+/// suffixes decoded (`manifest::relative_key`), so an entry names the same file
+/// wherever and on whatever file system the corpus is checked out.
 pub fn corpus_relative(root: &Path, path: &Path) -> String {
-    corpus_components(root, path).join("/")
+    borzoi_oracle_harness::manifest::relative_key(root, path)
 }
 
 /// The decoded components of `path` below `root`.
 fn corpus_components(root: &Path, path: &Path) -> Vec<String> {
-    let rel = path.strip_prefix(root).unwrap_or_else(|_| {
-        panic!(
-            "{} is not under the corpus root {}",
-            path.display(),
-            root.display()
-        )
-    });
-    rel.components()
-        .map(|c| decode_component(&c.as_os_str().to_string_lossy()).to_string())
-        .collect()
+    borzoi_oracle_harness::manifest::relative_components(root, path)
 }
 
 /// Sort corpus files component-wise by their decoded [`corpus_relative`]
