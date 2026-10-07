@@ -20,6 +20,8 @@
 mod condition;
 mod diagnostic;
 mod evaluator;
+mod glob;
+pub mod glob_resolver;
 mod imports;
 mod properties;
 mod sdk_resolver;
@@ -203,8 +205,10 @@ pub struct GlobRequest<'a> {
 ///
 /// Expanding globs requires touching the filesystem (and matching
 /// MSBuild's `FileMatcher` semantics), which is policy the parser stays
-/// out of — see the gospel "dependency rejection" principle. When the
-/// caller supplies no resolver, a wildcard `Include` surfaces as
+/// out of — see the gospel "dependency rejection" principle. The
+/// filesystem-backed implementation is [`glob_resolver::resolve`]; the
+/// evaluator still only ever sees it as this parameter. When the caller
+/// supplies no resolver, a wildcard `Include` surfaces as
 /// [`DiagnosticKind::UnsupportedGlob`] and an `Exclude` as
 /// [`DiagnosticKind::UnsupportedItemOperation`] (the phase-8 behaviour).
 pub type GlobResolver<'r> = dyn Fn(&GlobRequest<'_>) -> Vec<PathBuf> + 'r;

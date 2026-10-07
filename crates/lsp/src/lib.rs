@@ -3,8 +3,6 @@ pub mod csharp_sidecar;
 pub mod cst_panic_safe;
 pub mod diagnostics;
 pub mod fsproj_diagnostics;
-mod glob;
-pub mod glob_resolver;
 pub mod goto_source;
 pub mod handlers;
 pub mod logging;
