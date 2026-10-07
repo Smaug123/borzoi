@@ -137,7 +137,9 @@ This is a Cargo workspace with nine members:
   beats silent and forever. Builds on `borzoi-spawn`. Also `manifest`: the
   exact per-item pin a deterministic corpus gate compares its run against (a
   sorted line per item, a line diff on any movement, `BORZOI_UPDATE_MANIFESTS=1`
-  to regenerate) — the replacement for one-sided count ratchets.
+  to regenerate) — the replacement for one-sided count ratchets — and
+  `corpus_key`, the host-independent spelling of a corpus file and position in
+  an entry (Nix's macOS `~nix~case~hack~` suffix decoded).
 - `crates/sema/` — `borzoi-sema`. Semantic analysis (name resolution
   today, type inference later) over the `borzoi-cst` AST. `resolve_file`
   builds a position-ordered scope tree and resolves each name use to its

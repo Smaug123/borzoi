@@ -230,10 +230,10 @@ had to be pinned for that:
   suffix (the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`).
   Keys decode it, files are sorted by their decoded components so a strided
   sample picks the same files everywhere, and two files decoding to one key
-  fail the sweep.
+  fail the sweep (`borzoi_oracle_harness::corpus_key`).
 
-The comparison helper is `borzoi_oracle_harness::manifest`, deliberately outside
-`sema`. The other crates' corpus gates still assert one-sided counts with slack
+The comparison helper is `borzoi_oracle_harness::manifest`, and the corpus key
+spelling `borzoi_oracle_harness::corpus_key`, both deliberately outside `sema`. The other crates' corpus gates still assert one-sided counts with slack
 — `cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep`, the
 `corpus-diff` job's lack of an answered floor — and are the next candidates for
 it.
