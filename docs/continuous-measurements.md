@@ -70,13 +70,22 @@ Both halves exist for every axis, and the split is:
 | overload engine | `overload_corpus_diff` | `overload-coverage` |
 | MSBuild on real projects | `fsproj_msbuild_corpus_diff` | — |
 
-`fsproj_msbuild_corpus_diff` gates at the strict defaults —
-`BORZOI_MSBUILD_MAX_DIVERGENCES=0`, `BORZOI_MSBUILD_MAX_ERRORS=0` — over a
-six-project sample of the pinned corpus, currently
-`compared_projects=6 matched_facets=31 skipped_facets=11 divergences=0
-error_projects=0`. Evaluation is pre-execution, so it needs no restore and
-costs seconds; it rides in `test-msbuild` under the same change filter as the
-crate.
+`fsproj_msbuild_corpus_diff` visits **every** `.fsproj` in the pinned corpus
+(72 projects, about 40 s; evaluation is pre-execution, so it needs no restore)
+and gates on two things. No facet may diverge — there is no knob for that. And
+every project's outcome — each facet's `match`, `decline(<first cause>)` or
+`skip(<reason>)`, or a project-level `error(<MSBuild code>)` — must equal its
+line in the checked-in `crates/msbuild/tests/fixtures/fsproj_msbuild_corpus_manifest.tsv`
+exactly. The corpus is content-addressed and the evaluator deterministic, so
+any movement in either direction is a change in what we commit, and fails until
+it is understood and re-blessed (`BORZOI_MSBUILD_MANIFEST_BLESS=1`). It rides
+in `test-msbuild` under the same change filter as the crate.
+
+It used to visit a stride-13 sample of six projects with
+`MIN_COMPARED_PROJECTS=1`, and passed while six projects outside the sample
+committed wrong Compile lists (the SDK's default `**/*.fs` glob running where
+the evaluator assumed SDK Compile items never matter). A floor of one cannot
+see a project go from compared to declined either; the manifest sees both.
 
 It was the last row to be wired, and the reason is worth keeping. A ceiling set
 to the divergence count you happen to have ratifies a known-wrong value as the
