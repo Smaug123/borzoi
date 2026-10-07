@@ -678,10 +678,11 @@ jobs:
 
       - name: Gate on the resolution corpus sweep
         if: steps.gate.outputs.run == 'true'
-        # The ratcheted half of what `stats.yml` publishes as
-        # `resolution-divergence`: the soundness gate
-        # (`MAX_RESOLUTION_DIVERGENCES = 0`) and the B1 completeness floor. The
-        # report generator records those numbers; only this asserts on them.
+        # The gated half of what `stats.yml` publishes as
+        # `resolution-divergence`: zero divergences, and every use's bucket
+        # pinned exactly by `crates/sema/tests/manifests/resolve_corpus_diff.txt`
+        # (any movement fails, with a line diff and the regeneration command).
+        # The report generator records the numbers; only this asserts on them.
         # Same stride as the series, so the two see the same sample.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
@@ -693,9 +694,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         # The generative attribute matrix runs in the crate's ordinary suite;
         # this is the same certain-implies-exact property over real code, where
-        # every attribute in the corpus is a test point for free. It carries its
-        # own commit floor, so it cannot decay into wholesale deferral and
-        # report that as a pass.
+        # every attribute in the corpus is a test point for free. Every
+        # attribute's outcome is pinned by a checked-in manifest, so it cannot
+        # decay into deferral and report that as a pass.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |
@@ -706,9 +707,9 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         # Every expression and binder type inference commits on a sampled
         # corpus file must match FCS on a line FCS checked cleanly
-        # (`MAX_DIVERGENCES = 0`), with an agreement floor so the gate cannot
-        # decay into wholesale deferral. It also prints coverage by FCS node
-        # kind — the worklist for the next inference slice.
+        # (zero divergences), with every commit's bucket pinned by a checked-in
+        # manifest so the gate cannot decay into deferral. It also prints
+        # coverage by FCS node kind — the worklist for the next inference slice.
         env:
           BORZOI_FCS_DUMP: ${{ runner.temp }}/fcs-dump-bundle/fcs-dump
         run: |

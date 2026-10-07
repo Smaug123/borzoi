@@ -19,6 +19,7 @@
 //!
 //! Test-only: a `dev-dependency` of the harnesses, never of shipping code.
 
+pub mod manifest;
 pub mod module_tree;
 pub mod panic_silence;
 

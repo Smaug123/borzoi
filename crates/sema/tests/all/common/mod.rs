@@ -12,6 +12,7 @@
 #![allow(dead_code)] // each importer uses a different subset.
 
 pub mod companion_corpus;
+pub mod corpus_manifest;
 pub mod fold_matrix;
 pub mod fsharp_member_corpus;
 pub mod generator;
@@ -420,6 +421,10 @@ pub struct FileCensus {
     pub path: String,
     #[serde(rename = "Ok")]
     pub ok: bool,
+    /// Whether FCS's check reported any error-severity diagnostic. Required, not
+    /// defaulted: a missing field must not read as "checked cleanly".
+    #[serde(rename = "HasCheckErrors")]
+    pub has_check_errors: bool,
     #[serde(rename = "Uses", default)]
     pub uses: Vec<CensusUse>,
 }

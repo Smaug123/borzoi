@@ -134,7 +134,10 @@ This is a Cargo workspace with nine members:
   `nuget-oracle`) driven as a lock-step request/response loop, so .NET startup is
   paid once per test binary rather than once per case. A wedged or crashed oracle
   is killed, respawned and the request retried, then panics — bounded and loud
-  beats silent and forever. Builds on `borzoi-spawn`.
+  beats silent and forever. Builds on `borzoi-spawn`. Also `manifest`: the
+  exact per-item pin a deterministic corpus gate compares its run against (a
+  sorted line per item, a line diff on any movement, `BORZOI_UPDATE_MANIFESTS=1`
+  to regenerate) — the replacement for one-sided count ratchets.
 - `crates/sema/` — `borzoi-sema`. Semantic analysis (name resolution
   today, type inference later) over the `borzoi-cst` AST. `resolve_file`
   builds a position-ordered scope tree and resolves each name use to its
@@ -335,7 +338,8 @@ nix develop -c cargo test -p borzoi-cst  --test all parser_corpus::       -- --i
 nix develop -c cargo test -p borzoi-cst  --test all parser_corpus_diff::  -- --ignored  # ~5.5 min
 nix develop -c cargo test -p borzoi-cst  --test all parser_panic_sweep::fresh_seed -- --ignored  # ~10 s
 nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --ignored  #  ~20 s
-nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored
+nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s
+nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ignored    #  ~30 s
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
 nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
@@ -351,9 +355,19 @@ files deep while nothing ran the sweep. The same discipline `ci.yml`'s
 `BORZOI_PROJECT_EXPECT_DIVERGENCES` already applies, for the reason stated
 there: a one-sided bound quietly decays into a rubber stamp.
 
-The other sweeps' floors are one-sided and documented as such. What must never
-happen to any of them is loosening one to make a red run green without first
-establishing which direction it moved and why.
+The sema sweeps go one step further and pin every graded *item*, not a count:
+each compares its run against a checked-in manifest
+(`crates/sema/tests/manifests/`) and fails on any movement in either direction,
+printing a line diff. If every moved line is intended, regenerate with
+`BORZOI_UPDATE_MANIFESTS=1` on the same command (the failure message prints it)
+and commit the manifest diff, so the reviewer sees exactly which items moved.
+Their hard soundness gates (zero divergences) are separate assertions that
+regeneration cannot bless. `docs/continuous-measurements.md` ("Exact
+manifests") has the format and the helper, `borzoi_oracle_harness::manifest`.
+
+The remaining sweeps' floors are one-sided and documented as such. What must
+never happen to any of them is loosening one to make a red run green without
+first establishing which direction it moved and why.
 
 `docs/continuous-measurements.md` has the full gate/measurement split, and the
 record of why the MSBuild-on-real-projects row stayed unwired-and-named while it

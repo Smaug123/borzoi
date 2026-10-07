@@ -1,14 +1,15 @@
 //! Regenerate the categorised name-resolution divergence report — the
 //! resolution analogue of `cst`'s `fcs_divergence.rs`.
 //!
-//! [`resolve_corpus_diff.rs`](crate) *asserts* a floor of matches, a ceiling of
-//! divergences, and (now) a ceiling of B1 gaps over the corpus, but it only ever
-//! prints a sample of sites. When you want to *triage* — "which lexical names
-//! that FCS resolves do we still defer, and what are they?" — you need the full
-//! categorised lists. This is the generator for those: it sweeps the same corpus,
-//! classifies every FCS-resolved symbol *use* whose declaration is in the same
-//! file, and writes one file per bucket under `resolve-divergence/` at the
-//! workspace root (gitignored; override with `BORZOI_RESOLVE_DIVERGENCE_OUT`).
+//! [`resolve_corpus_diff.rs`](crate) *asserts* zero divergences and pins every
+//! B1 use's bucket exactly through its checked-in manifest, but the manifest is
+//! keyed by position, not by construct. When you want to *triage* — "which
+//! lexical names that FCS resolves do we still defer, and what are they?" — you
+//! need the categorised lists. This is the generator for those: it sweeps the
+//! same corpus, classifies every FCS-resolved symbol *use* whose declaration is
+//! in the same file, and writes one file per bucket under `resolve-divergence/`
+//! at the workspace root (gitignored; override with
+//! `BORZOI_RESOLVE_DIVERGENCE_OUT`).
 //!
 //! The classification crosses **outcome** (did our resolver agree, disagree, or
 //! decline?) with the [`Bucket`] taxonomy (what *machinery* the use needs), the
@@ -66,7 +67,7 @@
 //! Honours the same `BORZOI_RESOLVE_DIFF_STRIDE` (default 13) /
 //! `BORZOI_RESOLVE_DIFF_LIMIT` sample controls as the gate, so the two see the
 //! same files: this report's `gap_b1` count is exactly the gate's `tally.gaps`,
-//! the denominator of its `MIN_B1_COVERAGE_PERMILLE` completeness ratchet.
+//! the number of uses (with multiplicity) its manifest lists as `gap`.
 
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use serde::Serialize;

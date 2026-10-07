@@ -13,19 +13,38 @@
 //! Certain-implies-exact, per committed range. Each commit falls in one bucket:
 //!
 //! * **agree** — FCS has a node (or binder) at that range with the same
-//!   canonical type. Floored by [`MIN_AGREEMENTS`]: the sweep must keep
-//!   measuring something.
+//!   canonical type.
 //! * **divergence** — FCS reported no error anywhere in the top-level `let`
 //!   the commit sits in, and either reports a different type there or no node
 //!   at all. A declaration FCS checked without error is its answer, so any
-//!   disagreement is ours. Ceilinged by [`MAX_DIVERGENCES`]; sites printed.
+//!   disagreement is ours. Gated to zero by an assertion of its own; sites
+//!   printed.
 //! * **error-recovered** — FCS reported an error somewhere in that
 //!   declaration, and disagrees or has no node. The file is checked *alone* (as
 //!   the other corpus sweeps do), so an `open` of a sibling module fails and FCS
 //!   recovers the declaration as it likes — including dropping a RHS on lines
 //!   that carry no diagnostic of their own, which is why the unit is the
-//!   declaration and not the line. Reported, not gated: a commit there is only
+//!   declaration and not the line. Not gated to zero: a commit there is only
 //!   as wrong as FCS's recovery is right.
+//!
+//! # The manifest
+//!
+//! The corpus is pinned by the flake and both sides are deterministic, so the
+//! bucket of every commit is a fixed fact, and the sweep checks it **exactly**
+//! against `tests/manifests/infer_corpus_diff.txt`: one line per sampled file
+//! (compared, or skipped and why) and one per commit, keyed by corpus-relative
+//! path, kind and `line:col` range, with both types for a commit that disagrees.
+//! A lost agreement fails it, and so does a new one, an error-recovered commit
+//! changing type, or a file moving in or out of the comparable set; an intended
+//! movement is acknowledged by regenerating the manifest and committing the
+//! diff:
+//!
+//! ```text
+//! BORZOI_UPDATE_MANIFESTS=1 nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ignored
+//! ```
+//!
+//! Regeneration cannot bless a divergence or a panic: those assertions run
+//! first.
 //!
 //! Both sides parse the same program: FCS's script check defines `INTERACTIVE`
 //! and `EDITING` ([`FCS_SCRIPT_SYMBOLS`], pinned by
@@ -77,8 +96,9 @@
 //! ```
 //!
 //! Tune the sample with `BORZOI_INFER_DIFF_STRIDE` (default 13, the stride the
-//! other corpus sweeps use) and `BORZOI_INFER_DIFF_LIMIT`. The ratchets below
-//! are tied to the default stride.
+//! other corpus sweeps use) and `BORZOI_INFER_DIFF_LIMIT`. The manifest
+//! describes the default sample, so a run with either set checks only the
+//! divergence and panic gates.
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -88,29 +108,21 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use borzoi_cst::parser::parse_with_symbols;
 use borzoi_cst::syntax::{AstNode, ImplFile, LetDecl};
+use borzoi_oracle_harness::manifest::Manifest;
 use borzoi_oracle_harness::panic_silence::silence_panics_here;
 use borzoi_sema::{AssemblyEnv, ProjectItems, SyntaxRecovery, infer_file, resolve_file};
 
+use crate::common::corpus_manifest::{
+    Positions, check_manifest, corpus_relative, regenerate_ignored,
+};
 use crate::common::{
     FcsCheckError, LineIndex, env_usize_or, parse_fcs_binder_types_with_errors,
     parse_fcs_types_with_errors, try_invoke_fcs_dump,
 };
 use serde::Deserialize;
 
-/// Ceiling on commits that disagree with FCS on a line it checked cleanly. Zero
-/// since the sweep was first run (2026-09-22), and it stays there: a
-/// divergence here is a wrong hover on real code.
-const MAX_DIVERGENCES: usize = 0;
-
-/// Floor on commits FCS confirms (expression and binder types together). Only
-/// goes up — bump it after a slice lands. One-sided, so it fails if the sweep
-/// stops measuring, not if inference commits more.
-///
-/// 1733 measured 2026-09-23 (325 files compared, stride 13), with CE-1's
-/// expression-level `let`s and sequences, structural tuple and wildcard
-/// patterns, and `unit` typed; the floor sits a little under to absorb a file
-/// moving in or out of FCS's checkable set.
-const MIN_AGREEMENTS: usize = 1680;
+/// The sample the checked-in manifest describes: every `DEFAULT_STRIDE`th file.
+const DEFAULT_STRIDE: usize = 13;
 
 /// The conditional-compilation symbols FCS's single-file script check defines,
 /// which our parse must match or the two sides check different programs.
@@ -132,6 +144,8 @@ struct Site {
 
 #[derive(Debug, Default)]
 struct Tally {
+    /// One entry per sampled file and per commit (see the module docs).
+    manifest: Vec<String>,
     files_compared: usize,
     our_parse_errors: usize,
     /// Files skipped for a line directive (see [`has_line_directive`]).
@@ -278,23 +292,30 @@ fn enclosing_decl(file: &ImplFile, start: usize, end: usize) -> (usize, usize) {
     }
 }
 
-/// Compare one corpus file, folding its outcome into `tally`.
-fn compare_file(path: &Path, tally: &Mutex<Tally>) {
+/// Compare one corpus file, folding its outcome into `tally`. `rel` is the
+/// file's name in manifest entries.
+fn compare_file(path: &Path, rel: &str, tally: &Mutex<Tally>) {
+    let entry = |status: &str| format!("{rel} {status}");
     let Ok(raw) = std::fs::read_to_string(path) else {
+        tally.lock().unwrap().manifest.push(entry("unreadable"));
         return;
     };
     // FCS reads the file with a leading byte-order mark stripped, so its ranges
     // are offsets into the BOM-less text; ours must be too.
     let source = raw.strip_prefix('\u{feff}').unwrap_or(&raw).to_string();
     if has_line_directive(&source) {
-        tally.lock().unwrap().line_directives += 1;
+        let mut t = tally.lock().unwrap();
+        t.line_directives += 1;
+        t.manifest.push(entry("line-directive"));
         return;
     }
     let symbols: std::collections::HashSet<String> =
         FCS_SCRIPT_SYMBOLS.iter().map(|s| s.to_string()).collect();
     let parsed = parse_with_symbols(&source, &symbols);
     if !parsed.errors.is_empty() {
-        tally.lock().unwrap().our_parse_errors += 1;
+        let mut t = tally.lock().unwrap();
+        t.our_parse_errors += 1;
+        t.manifest.push(entry("our-parse-errors"));
         return;
     }
     let env = ref_pack_env();
@@ -333,9 +354,18 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
     drop(silence);
     let (exprs, binders, incompleteness) = match ours {
         Ok(Some(x)) => x,
-        Ok(None) => return,
+        Ok(None) => {
+            tally
+                .lock()
+                .unwrap()
+                .manifest
+                .push(entry("not-an-impl-file"));
+            return;
+        }
         Err(_) => {
-            tally.lock().unwrap().our_panics += 1;
+            let mut t = tally.lock().unwrap();
+            t.our_panics += 1;
+            t.manifest.push(entry("our-panic"));
             return;
         }
     };
@@ -364,11 +394,9 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
     ) {
         (Ok(t), Ok(b)) => (t, b),
         (Err(e), _) | (_, Err(e)) => {
-            tally
-                .lock()
-                .unwrap()
-                .fcs_failed
-                .push((path.to_path_buf(), e));
+            let mut t = tally.lock().unwrap();
+            t.fcs_failed.push((path.to_path_buf(), e));
+            t.manifest.push(entry("fcs-failed"));
             return;
         }
     };
@@ -380,8 +408,10 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
     let ours_at: std::collections::HashSet<(usize, usize)> =
         exprs.iter().map(|(r, _)| *r).collect();
 
+    let positions = Positions::new(&source);
     let mut t = tally.lock().unwrap();
     t.files_compared += 1;
+    t.manifest.push(entry("compared"));
     for node in &kinds.exprs {
         let start = idx.offset(node.range.start.line, node.range.start.col);
         let end = idx.offset(node.range.end.line, node.range.end.col);
@@ -400,14 +430,20 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
                  t: &mut Tally| {
         for ((s, e), ours) in commits {
             let theirs = fcs.get(&(*s, *e));
+            let key = format!("{rel}:{}-{} {kind}", positions.at(*s), positions.at(*e));
             if theirs == Some(ours) {
                 if kind == "expr" {
                     t.agree_exprs += 1;
                 } else {
                     t.agree_binders += 1;
                 }
+                t.manifest.push(format!("{key} agree"));
                 continue;
             }
+            let disagreement = format!(
+                "ours={ours:?} fcs={}",
+                theirs.map_or("<no node>".to_string(), |f| format!("{f:?}"))
+            );
             let site = Site {
                 path: path.to_path_buf(),
                 kind,
@@ -420,8 +456,11 @@ fn compare_file(path: &Path, tally: &Mutex<Tally>) {
                 .as_ref()
                 .map_or((*s, *e), |f| enclosing_decl(f, *s, *e));
             if touches_error(&lines, &errors, d0, d1) {
+                t.manifest
+                    .push(format!("{key} error-recovered {disagreement}"));
                 t.error_lines.push(site);
             } else {
+                t.manifest.push(format!("{key} divergence {disagreement}"));
                 t.divergences.push(site);
             }
         }
@@ -461,7 +500,7 @@ fn inferred_types_match_fcs_over_corpus() {
         return;
     };
     let root = PathBuf::from(root);
-    let stride = env_usize_or("BORZOI_INFER_DIFF_STRIDE", 13).max(1);
+    let stride = env_usize_or("BORZOI_INFER_DIFF_STRIDE", DEFAULT_STRIDE).max(1);
     let limit = env_usize_or("BORZOI_INFER_DIFF_LIMIT", usize::MAX);
     let mut all = Vec::new();
     collect_fs(&root, &mut all);
@@ -487,7 +526,9 @@ fn inferred_types_match_fcs_over_corpus() {
                     // A failure outside our own (caught) resolve/infer — the
                     // parser, the oracle — is a failure of the sweep. Its message
                     // has already printed; name the file it was on.
-                    if catch_unwind(AssertUnwindSafe(|| compare_file(path, &tally))).is_err() {
+                    let rel = corpus_relative(&root, path);
+                    if catch_unwind(AssertUnwindSafe(|| compare_file(path, &rel, &tally))).is_err()
+                    {
                         panic!(
                             "infer-diff: comparing {} failed (see above)",
                             path.display()
@@ -554,20 +595,29 @@ fn inferred_types_match_fcs_over_corpus() {
     print_sites("divergences (gated)", &t.divergences);
     print_sites("error-recovered disagreements (reported)", &t.error_lines);
 
+    // The soundness gates, which no manifest regeneration may bless: a
+    // divergence is a wrong hover on real code.
     assert_eq!(t.our_panics, 0, "resolve/infer panicked on a corpus file");
-    #[allow(clippy::absurd_extreme_comparisons)]
-    {
-        assert!(
-            t.divergences.len() <= MAX_DIVERGENCES,
-            "{} committed types disagree with FCS on cleanly-checked lines (ceiling \
-             MAX_DIVERGENCES = {MAX_DIVERGENCES})",
-            t.divergences.len()
-        );
-    }
     assert!(
-        t.agree_exprs + t.agree_binders >= MIN_AGREEMENTS,
-        "only {} commits agree with FCS (floor MIN_AGREEMENTS = {MIN_AGREEMENTS})",
-        t.agree_exprs + t.agree_binders
+        t.divergences.is_empty(),
+        "{} committed types disagree with FCS in declarations it checked cleanly",
+        t.divergences.len()
+    );
+
+    if stride != DEFAULT_STRIDE || limit != usize::MAX {
+        eprintln!(
+            "infer-diff: NOT comparing the manifest — it describes the default \
+             sample (stride {DEFAULT_STRIDE}, no limit), and this run sampled \
+             stride {stride}, limit {limit}."
+        );
+        return;
+    }
+    let manifest =
+        Manifest::from_counted(t.manifest).unwrap_or_else(|e| panic!("manifest entry: {e}"));
+    check_manifest(
+        "infer_corpus_diff",
+        &manifest,
+        &regenerate_ignored("infer_corpus_diff"),
     );
 }
 
@@ -648,7 +698,7 @@ fn fcs_script_check_defines_exactly_these_symbols() {
 fn a_bom_prefixed_file_compares_like_its_bomless_twin() {
     let path = crate::common::temp_fs_file("infer_corpus_bom", "\u{feff}module M = let x = 1\n");
     let tally = Mutex::new(Tally::default());
-    compare_file(&path, &tally);
+    compare_file(&path, "case.fs", &tally);
     let _ = std::fs::remove_file(&path);
     let t = tally.into_inner().unwrap();
     assert!(t.divergences.is_empty(), "{:?}", t.divergences);
@@ -665,7 +715,7 @@ fn a_line_directive_file_is_skipped_not_compared() {
     let src = "module M\n#line 100 \"generated.fs\"\nlet (|A|B|) (x: int) (y: int) = if x > y then A else B\nlet s = \"BAD DOG!\"\n";
     let path = crate::common::temp_fs_file("infer_corpus_line", src);
     let tally = Mutex::new(Tally::default());
-    compare_file(&path, &tally);
+    compare_file(&path, "case.fs", &tally);
     let _ = std::fs::remove_file(&path);
     let t = tally.into_inner().unwrap();
     assert_eq!((t.line_directives, t.files_compared), (1, 0), "{t:?}");
