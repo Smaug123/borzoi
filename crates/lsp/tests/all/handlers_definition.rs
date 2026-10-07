@@ -438,14 +438,15 @@ fn orphan_file_under_partial_project_falls_back_to_single_file() {
     assert_eq!(loc.range.start.character, 4);
 }
 
+/// `Shared.foo` records the whole path as `Item(foo)` and the qualifier
+/// `Shared` as `Deferred(QualifiedAccess)`. A cursor on `Shared` is on the
+/// module — FCS reports module `Shared` there — so it must not be sent to
+/// `foo`: with no model of a module as a definition, the honest answer is none.
+/// A cursor on `foo` still follows the whole-path resolution to `foo`'s binder.
+/// `handlers_qualifier_cursors` generalises this over path depth, namespaces,
+/// placement, leaf kind, and the hover and references handlers.
 #[test]
-fn long_ident_segment_prefers_whole_path_over_inner_deferred() {
-    // `Shared.foo` records the whole-path range as `Item` and the inner
-    // `Shared` segment as `Deferred(QualifiedAccess)`. A cursor on the
-    // `S` of `Shared` must follow the non-Deferred whole-path resolution,
-    // not silently bind to the inner `Deferred`. Without the
-    // prefer-non-Deferred rule in `smallest_resolution_at` this test fails
-    // with `None`.
+fn a_cursor_on_a_qualifier_is_not_sent_to_the_leaf() {
     let tmp = TempDir::new().unwrap();
     let proj = tmp.path().join("P.fsproj");
     let a = tmp.path().join("A.fs");
@@ -467,17 +468,24 @@ fn long_ident_segment_prefers_whole_path_over_inner_deferred() {
     let mut state = State::default();
     state.docs.insert(b_uri.clone(), b_src.to_string());
 
-    // Cursor on the `S` of `Shared` (start of the LongIdent).
+    // Every cursor position on `Shared`, from its first character to its last.
     let segment_byte = b_src.find("Shared").unwrap();
     let line = b_src[..segment_byte].matches('\n').count() as u32;
     let col = b_src[..segment_byte]
         .rsplit_once('\n')
         .map(|(_, last)| last.len())
         .unwrap_or(segment_byte) as u32;
-    let loc =
-        run(&mut state, &b_uri, line, col).expect("a definition for the LongIdent first segment");
-    // The whole-path Item resolves to file 0's `foo` binder regardless of
-    // which segment the cursor sat on.
+    for c in col..col + "Shared".len() as u32 {
+        assert_eq!(
+            run(&mut state, &b_uri, line, c),
+            None,
+            "a cursor on the qualifier (column {c}) must not be sent to `foo`"
+        );
+    }
+
+    // The leaf follows the whole-path `Item` to file 0's `foo` binder.
+    let (line, col) = cursor_inside(b_src, "foo");
+    let loc = run(&mut state, &b_uri, line, col).expect("a definition for the leaf `foo`");
     assert_eq!(loc.uri, Url::from_file_path(&a).unwrap());
     assert_eq!(loc.range.start.line, 1);
 }

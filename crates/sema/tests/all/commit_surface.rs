@@ -10,8 +10,8 @@
 //! and a wrong one is invisible.
 //!
 //! These are the FCS-free cases for that surface. The empirical half rides on
-//! `borzoi-corpus-diff`, which reads `committed_resolution_at` and so diffs
-//! real-world attribute uses against FCS.
+//! `borzoi-corpus-diff`, which grades what the LSP serves from both maps and so
+//! diffs real-world attribute uses against FCS.
 
 use borzoi_cst::parser::parse;
 use borzoi_cst::syntax::{AstNode, ImplFile};

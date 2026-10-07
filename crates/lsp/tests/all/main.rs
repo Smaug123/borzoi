@@ -22,6 +22,7 @@ mod handlers_completion;
 mod handlers_definition;
 mod handlers_document_symbol;
 mod handlers_hover;
+mod handlers_qualifier_cursors;
 mod handlers_references;
 mod handlers_references_corpus_diff;
 mod handlers_references_diff;

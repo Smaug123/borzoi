@@ -2090,11 +2090,12 @@ impl<'a> Resolver<'a> {
     /// The two commit maps answer at disjoint ranges, checked rather than
     /// asserted in prose.
     ///
-    /// Both consumers of the union rely on it: the LSP chains the maps to
-    /// navigate an attribute name, and `borzoi-corpus-diff` reads
-    /// [`ResolvedFile::committed_resolution_at`] to diff every answer this file
-    /// commits. A collision would make either one's verdict depend on which map
-    /// it happened to look in first — a wrong answer, arrived at silently.
+    /// Every consumer of the union relies on it: the LSP chains the maps to
+    /// navigate an attribute name (and `borzoi-corpus-diff` grades exactly what
+    /// that chain serves), and [`ResolvedFile::committed_resolution_at`] answers
+    /// from whichever map holds a range. A collision would make any one's
+    /// verdict depend on which map it happened to look in first — a wrong
+    /// answer, arrived at silently.
     ///
     /// It holds because an attribute name's range is written where no other name
     /// is: `resolve_attribute_type` keys on the attribute path's own
