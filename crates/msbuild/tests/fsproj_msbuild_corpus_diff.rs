@@ -1,40 +1,61 @@
-//! Broad MSBuild oracle over real `.fsproj` corpora.
+//! MSBuild oracle over every real `.fsproj` in the pinned corpus.
 //!
 //! The small `fsproj_msbuild_diff` integration test pins a handful of known
-//! F# compiler projects. This ignored runner is the wider empirical harness:
-//! it recursively discovers real `.fsproj` files, evaluates each one through
-//! this crate, asks `dotnet msbuild -getItem/-getProperty` for the same facts,
-//! and fails on any unexcused divergence.
-//!
-//! Run a sampled sweep under `nix develop`:
+//! F# compiler projects. This ignored runner is the wide empirical harness:
+//! it discovers every `.fsproj` under the corpus, evaluates each one through
+//! this crate (with the SDK resolver and the shipped glob resolver, exactly as
+//! the LSP does), asks `dotnet msbuild -getItem/-getProperty` for the same
+//! facts, and compares them facet by facet.
 //!
 //! ```text
 //! cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff \
 //!   -- --ignored --nocapture
 //! ```
 //!
-//! By default the runner uses `BORZOI_CORPUS` (or
-//! `BORZOI_MSBUILD_CORPUS` when set), visits a deterministic sample, and
-//! requires at least one project/facet comparison. Set
-//! `BORZOI_MSBUILD_EXHAUSTIVE=1` to visit every discovered project, or
-//! `BORZOI_MSBUILD_PROJECT_LIST` to pass an explicit platform-separated
-//! project list. The project list takes precedence over the ambient
-//! `BORZOI_CORPUS` fallback, and only conflicts with an explicit
-//! `BORZOI_MSBUILD_CORPUS`. Explicit project lists are never sampled;
-//! `BORZOI_MSBUILD_STRIDE` / `BORZOI_MSBUILD_LIMIT` apply only to
-//! discovered corpora. `BORZOI_MSBUILD_REPORT_JSONL=/path/out.jsonl` writes
-//! one summary record per visited project. The default ratchets are strict:
-//! `BORZOI_MSBUILD_MAX_DIVERGENCES=0`,
-//! `BORZOI_MSBUILD_MAX_ERRORS=0`, and
-//! `BORZOI_MSBUILD_MIN_COMPARED_PROJECTS=1`.
+//! ## What it asserts
 //!
-//! This test deliberately keeps skipped facets visible. A skipped facet is not
-//! evidence of correctness: it means the parser reported uncertainty specific
-//! to that output (`items_uncertain`, `package_references_uncertain`,
-//! `define_constants_uncertain`) and the oracle comparison would be unfair. For
-//! `DefineConstants`, the only matched mismatch is MSBuild having extra
-//! well-known SDK-injected symbols (`DEBUG`, `TRACE`, and TFM/platform symbols)
-//! after every parser-reported symbol has been accounted for.
+//! - **No divergence, ever.** A facet we commit must equal MSBuild's exactly
+//!   (ordered: the Compile list is compared in order, because order is what the
+//!   LSP folds over). There is no knob to tolerate one.
+//! - **The outcome manifest.** For every project under the pinned corpus
+//!   (`BORZOI_CORPUS`), the outcome of each facet — `match`, a
+//!   `decline(...)` with the class of its first cause, or a `skip(...)` where
+//!   the comparison would be unfair — and any project-level `error(...)` must
+//!   equal the checked-in [`MANIFEST`] line exactly. The corpus is
+//!   content-addressed and the evaluator deterministic, so there is no drift
+//!   for slack to absorb: any movement, in either direction, fails and must be
+//!   acknowledged by re-blessing the manifest. That is what makes a newly
+//!   *declined* project as visible as a newly diverging one, and a newly
+//!   committed one as visible as either.
+//!
+//! The `define_constants` facet is compared (a divergence still fails) but not
+//! recorded in the manifest: its contract is being reworked separately
+//! (`docs/sdk-implicit-defines-plan.md`).
+//!
+//! ## Knobs
+//!
+//! - `BORZOI_MSBUILD_MANIFEST_BLESS=1` rewrites [`MANIFEST`] from this run
+//!   instead of asserting it. Only a whole-corpus run may bless, and only when
+//!   nothing diverged. Review the diff before committing it.
+//! - `BORZOI_MSBUILD_PROJECT_LIST_FILE=/path/list.txt` runs a chosen subset:
+//!   one project per line, `#` comments and blank lines ignored, relative paths
+//!   resolved against `BORZOI_CORPUS` — so lines copied from the manifest work
+//!   as they are (anything after a tab is ignored). Listed projects under the
+//!   corpus are still checked against their manifest lines.
+//! - `BORZOI_MSBUILD_PROJECT_LIST` is the same, as a platform-separated list.
+//! - `BORZOI_MSBUILD_CORPUS=/other/tree` points the sweep at a different
+//!   corpus. Projects outside the pinned corpus have no manifest; for them an
+//!   error counts against `BORZOI_MSBUILD_MAX_ERRORS` (default 0).
+//! - `BORZOI_MSBUILD_REPORT_JSONL=/path/out.jsonl` writes one summary record
+//!   per visited project.
+//!
+//! A skipped or declined facet is not evidence of correctness: it means the
+//! parser reported uncertainty specific to that output (`items_uncertain`,
+//! `package_references_uncertain`, `define_constants_uncertain`) or the
+//! comparison would be unfair. For `DefineConstants`, the only matched
+//! mismatch is MSBuild having extra well-known SDK-injected symbols (`DEBUG`,
+//! `TRACE`, and TFM/platform symbols) after every parser-reported symbol has
+//! been accounted for.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
@@ -49,11 +70,12 @@ use borzoi_oracle_harness::BoundedCommand;
 mod common;
 
 use borzoi_msbuild::{
-    Diagnostic, GlobalJson, ItemKind, PackageRefOp, PackageReference,
+    Diagnostic, GlobResolver, GlobalJson, ItemKind, PackageRefOp, PackageReference,
     PackageReferenceUncertaintyCause, PackageReferenceUncertaintyCauseKind, ParsedProject,
     SdkPathEntry, SdkResolution, SdkResolveError, SdkVersion,
-    StructuralPackageReferenceUncertainty, VersionSpec, find_global_json, parse_fsproj,
-    parse_fsproj_with_imports, parse_global_json, resolve_sdk, target_frameworks, workloads,
+    StructuralPackageReferenceUncertainty, VersionSpec, find_global_json, glob_resolver,
+    parse_fsproj, parse_fsproj_with_imports, parse_global_json, resolve_sdk, target_frameworks,
+    workloads,
 };
 use serde::{Deserialize, Serialize};
 
@@ -66,32 +88,59 @@ fn fsproj_msbuild_corpus_diff() {
     run.assert_success();
 }
 
+/// The checked-in outcome manifest, relative to this crate's directory.
+const MANIFEST: &str = "tests/fixtures/fsproj_msbuild_corpus_manifest.tsv";
+
 #[derive(Debug)]
 struct Config {
     projects: Vec<PathBuf>,
-    max_divergences: usize,
+    /// The pinned corpus root (`BORZOI_CORPUS`), canonicalised: the frame
+    /// manifest keys are relative to. `None` when unset.
+    pinned_corpus: Option<PathBuf>,
+    /// Whether this run visits the whole pinned corpus, so the manifest must
+    /// match as a *set* — no project missing, none extra.
+    whole_pinned_corpus: bool,
+    bless: bool,
     max_errors: usize,
-    min_compared_projects: usize,
     report_jsonl: Option<PathBuf>,
 }
 
 impl Config {
     fn from_env() -> Result<Self, String> {
+        let pinned_corpus = std::env::var_os("BORZOI_CORPUS")
+            .map(PathBuf::from)
+            .map(|p| {
+                fs::canonicalize(&p).map_err(|e| format!("BORZOI_CORPUS {}: {e}", p.display()))
+            })
+            .transpose()?;
         let project_source = project_source_from_env(
             std::env::var_os("BORZOI_MSBUILD_PROJECT_LIST"),
+            std::env::var_os("BORZOI_MSBUILD_PROJECT_LIST_FILE"),
             std::env::var_os("BORZOI_MSBUILD_CORPUS"),
-            std::env::var_os("BORZOI_CORPUS"),
+            pinned_corpus.clone(),
         )?;
-
-        let sampling =
-            sampling_from_env_for_source(&project_source, env_bool("BORZOI_MSBUILD_EXHAUSTIVE"))?;
-        let projects = projects_from_source(project_source, sampling)?;
+        let whole_pinned_corpus = match (&project_source, &pinned_corpus) {
+            (ProjectSource::CorpusRoot(root), Some(pinned)) => {
+                fs::canonicalize(root).ok().as_ref() == Some(pinned)
+            }
+            _ => false,
+        };
+        let projects = projects_from_source(project_source, pinned_corpus.as_deref())?;
+        let bless = env_bool("BORZOI_MSBUILD_MANIFEST_BLESS");
+        if bless && !whole_pinned_corpus {
+            return Err(
+                "BORZOI_MSBUILD_MANIFEST_BLESS needs a whole-corpus run over BORZOI_CORPUS \
+                 (no project list, no BORZOI_MSBUILD_CORPUS)"
+                    .to_string(),
+            );
+        }
 
         Ok(Self {
             projects,
-            max_divergences: env_usize("BORZOI_MSBUILD_MAX_DIVERGENCES")?.unwrap_or(0),
+            pinned_corpus,
+            whole_pinned_corpus,
+            bless,
             max_errors: env_usize("BORZOI_MSBUILD_MAX_ERRORS")?.unwrap_or(0),
-            min_compared_projects: env_usize("BORZOI_MSBUILD_MIN_COMPARED_PROJECTS")?.unwrap_or(1),
             report_jsonl: std::env::var_os("BORZOI_MSBUILD_REPORT_JSONL").map(PathBuf::from),
         })
     }
@@ -99,31 +148,26 @@ impl Config {
 
 #[derive(Debug, PartialEq, Eq)]
 enum ProjectSource {
-    ProjectList(OsString),
+    ProjectList(Vec<PathBuf>),
     CorpusRoot(PathBuf),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Sampling {
-    stride: usize,
-    limit: usize,
-}
-
-impl Sampling {
-    fn from_env() -> Result<Self, String> {
-        Ok(Self {
-            stride: env_usize("BORZOI_MSBUILD_STRIDE")?.unwrap_or(13).max(1),
-            limit: env_usize("BORZOI_MSBUILD_LIMIT")?.unwrap_or(20),
-        })
-    }
 }
 
 fn projects_from_source(
     project_source: ProjectSource,
-    sampling: Option<Sampling>,
+    pinned_corpus: Option<&Path>,
 ) -> Result<Vec<PathBuf>, String> {
     let mut projects = match project_source {
-        ProjectSource::ProjectList(list) => split_project_list(&list),
+        ProjectSource::ProjectList(list) => list
+            .into_iter()
+            .map(|p| match (p.is_relative(), pinned_corpus) {
+                (true, Some(root)) => Ok(root.join(p)),
+                (true, None) => Err(format!(
+                    "relative project {} needs BORZOI_CORPUS to resolve against",
+                    p.display()
+                )),
+                (false, _) => Ok(p),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         ProjectSource::CorpusRoot(root) => {
             if !root.is_dir() {
                 return Err(format!("corpus root {} is not a directory", root.display()));
@@ -137,61 +181,59 @@ fn projects_from_source(
     if projects.is_empty() {
         return Err("no .fsproj files found".to_string());
     }
-
-    if let Some(sampling) = sampling {
-        projects = sample_projects(projects, sampling);
-    }
-
     Ok(projects)
 }
 
-fn sampling_from_env_for_source(
-    project_source: &ProjectSource,
-    exhaustive: bool,
-) -> Result<Option<Sampling>, String> {
-    if should_sample_projects(project_source, exhaustive) {
-        Sampling::from_env().map(Some)
-    } else {
-        Ok(None)
-    }
-}
-
-fn should_sample_projects(project_source: &ProjectSource, exhaustive: bool) -> bool {
-    !exhaustive && matches!(project_source, ProjectSource::CorpusRoot(_))
-}
-
-fn sample_projects(projects: Vec<PathBuf>, sampling: Sampling) -> Vec<PathBuf> {
-    projects
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| i % sampling.stride == 0)
-        .map(|(_, p)| p)
-        .take(sampling.limit)
+/// Parse a project-list file: one project per line; blank lines and `#`
+/// comments ignored; anything after the first tab dropped, so manifest lines
+/// paste in unchanged.
+fn parse_project_list_file(text: &str) -> Vec<PathBuf> {
+    text.lines()
+        .map(|line| line.split('\t').next().unwrap_or("").trim())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(PathBuf::from)
         .collect()
 }
 
 fn project_source_from_env(
     project_list: Option<OsString>,
+    project_list_file: Option<OsString>,
     explicit_msbuild_corpus: Option<OsString>,
-    fallback_corpus: Option<OsString>,
+    pinned_corpus: Option<PathBuf>,
 ) -> Result<ProjectSource, String> {
-    if project_list.is_some() && explicit_msbuild_corpus.is_some() {
-        return Err(
-            "set only one of BORZOI_MSBUILD_PROJECT_LIST and BORZOI_MSBUILD_CORPUS".to_string(),
-        );
+    let explicit = [
+        project_list.is_some(),
+        project_list_file.is_some(),
+        explicit_msbuild_corpus.is_some(),
+    ]
+    .iter()
+    .filter(|set| **set)
+    .count();
+    if explicit > 1 {
+        return Err("set at most one of BORZOI_MSBUILD_PROJECT_LIST, \
+             BORZOI_MSBUILD_PROJECT_LIST_FILE and BORZOI_MSBUILD_CORPUS"
+            .to_string());
     }
 
     if let Some(list) = project_list {
-        return Ok(ProjectSource::ProjectList(list));
+        return Ok(ProjectSource::ProjectList(
+            std::env::split_paths(&list).collect(),
+        ));
+    }
+    if let Some(file) = project_list_file {
+        let file = PathBuf::from(file);
+        let text = fs::read_to_string(&file)
+            .map_err(|e| format!("read project list {}: {e}", file.display()))?;
+        return Ok(ProjectSource::ProjectList(parse_project_list_file(&text)));
     }
 
     explicit_msbuild_corpus
-        .or(fallback_corpus)
         .map(PathBuf::from)
+        .or(pinned_corpus)
         .map(ProjectSource::CorpusRoot)
         .ok_or_else(|| {
-            "set BORZOI_MSBUILD_CORPUS, BORZOI_CORPUS, or \
-             BORZOI_MSBUILD_PROJECT_LIST"
+            "set BORZOI_CORPUS, BORZOI_MSBUILD_CORPUS, BORZOI_MSBUILD_PROJECT_LIST or \
+             BORZOI_MSBUILD_PROJECT_LIST_FILE"
                 .to_string()
         })
 }
@@ -238,12 +280,20 @@ impl Run {
         Ok(())
     }
 
+    /// The manifest key for `project`: its path relative to the pinned corpus,
+    /// `/`-separated. `None` for a project outside it.
+    fn manifest_key(&self, project: &str) -> Option<String> {
+        let root = self.config.pinned_corpus.as_ref()?;
+        let path = fs::canonicalize(project).unwrap_or_else(|_| PathBuf::from(project));
+        path.strip_prefix(root).ok().map(to_forward_slashes)
+    }
+
     fn assert_success(&self) {
-        let mut divergences = 0usize;
-        let mut compared_projects = 0usize;
-        let mut matched_facets = 0usize;
-        let mut skipped_facets = 0usize;
-        let mut error_projects = 0usize;
+        let mut divergences = Vec::new();
+        let mut unmanifested_errors = 0usize;
+        let mut actual: BTreeMap<String, String> = BTreeMap::new();
+        let (mut compared_projects, mut matched_facets, mut skipped_facets, mut error_projects) =
+            (0usize, 0usize, 0usize, 0usize);
 
         for report in &self.reports {
             if report.status == ProjectStatus::Error {
@@ -256,41 +306,130 @@ impl Run {
                 match facet.status {
                     FacetStatus::Matched => matched_facets += 1,
                     FacetStatus::Skipped => skipped_facets += 1,
-                    FacetStatus::Diverged => divergences += 1,
+                    FacetStatus::Diverged => divergences.push(format!(
+                        "{} {}: {}",
+                        report.project, facet.name, facet.detail
+                    )),
                 }
+            }
+            match self.manifest_key(&report.project) {
+                Some(key) => {
+                    actual.insert(key, report.manifest_outcome());
+                }
+                None if report.status == ProjectStatus::Error => unmanifested_errors += 1,
+                None => {}
             }
         }
 
         eprintln!(
-            "msbuild corpus diff: visited={} compared_projects={} matched_facets={} \
-             skipped_facets={} divergences={} error_projects={}",
+            "msbuild corpus diff: visited={} compared_projects={compared_projects} \
+             matched_facets={matched_facets} skipped_facets={skipped_facets} \
+             divergences={} error_projects={error_projects}",
             self.reports.len(),
-            compared_projects,
-            matched_facets,
-            skipped_facets,
-            divergences,
-            error_projects,
+            divergences.len(),
         );
 
         assert!(
-            compared_projects >= self.config.min_compared_projects,
-            "msbuild corpus diff compared only {} project(s), below minimum {}",
-            compared_projects,
-            self.config.min_compared_projects
+            divergences.is_empty(),
+            "msbuild corpus diff found {} divergence(s) — a committed value MSBuild \
+             disagrees with:\n{}",
+            divergences.len(),
+            divergences.join("\n")
         );
         assert!(
-            divergences <= self.config.max_divergences,
-            "msbuild corpus diff found {} divergence(s), above maximum {}",
-            divergences,
-            self.config.max_divergences
-        );
-        assert!(
-            error_projects <= self.config.max_errors,
-            "msbuild corpus diff hit {} project error(s), above maximum {}",
-            error_projects,
+            unmanifested_errors <= self.config.max_errors,
+            "msbuild corpus diff hit {unmanifested_errors} error(s) outside the pinned corpus, \
+             above maximum {}",
             self.config.max_errors
         );
+
+        let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR")).join(MANIFEST);
+        if self.config.bless {
+            fs::write(&manifest_path, render_manifest(&actual))
+                .unwrap_or_else(|e| panic!("write {}: {e}", manifest_path.display()));
+            eprintln!(
+                "blessed {} ({} projects); review the diff before committing it",
+                manifest_path.display(),
+                actual.len()
+            );
+            return;
+        }
+        let text = fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", manifest_path.display()));
+        let expected = parse_manifest(&text).unwrap_or_else(|e| panic!("{MANIFEST}: {e}"));
+        let movement = manifest_movement(&expected, &actual, self.config.whole_pinned_corpus);
+        assert!(
+            movement.is_empty(),
+            "msbuild corpus diff outcomes moved against {MANIFEST} ({} line(s)):\n{}\n\n\
+             The corpus is pinned and the evaluator deterministic, so this is a change in \
+             what we commit or decline. Establish which direction it moved and why; if it \
+             is intended, re-run with BORZOI_MSBUILD_MANIFEST_BLESS=1 and commit the \
+             manifest diff.",
+            movement.len(),
+            movement.join("\n")
+        );
     }
+}
+
+/// Render the manifest: a header, then one `key<TAB>outcome` line per
+/// project, sorted by key.
+fn render_manifest(outcomes: &BTreeMap<String, String>) -> String {
+    let mut out = String::from(
+        "# Per-project outcomes of `fsproj_msbuild_corpus_diff` over the pinned corpus\n\
+         # (BORZOI_CORPUS). Generated: re-bless with BORZOI_MSBUILD_MANIFEST_BLESS=1, never\n\
+         # by hand. Every line must match a run exactly; see the test's module docs.\n",
+    );
+    for (key, outcome) in outcomes {
+        out.push_str(key);
+        out.push('\t');
+        out.push_str(outcome);
+        out.push('\n');
+    }
+    out
+}
+
+fn parse_manifest(text: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut out = BTreeMap::new();
+    for (number, line) in text.lines().enumerate() {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (key, outcome) = line
+            .split_once('\t')
+            .ok_or_else(|| format!("line {}: no tab in {line:?}", number + 1))?;
+        if out.insert(key.to_string(), outcome.to_string()).is_some() {
+            return Err(format!("line {}: duplicate project {key}", number + 1));
+        }
+    }
+    Ok(out)
+}
+
+/// Every way `actual` differs from `expected`, one line each. A project the
+/// manifest lacks always counts; a manifest project this run did not visit
+/// counts only when the run was meant to visit them all.
+fn manifest_movement(
+    expected: &BTreeMap<String, String>,
+    actual: &BTreeMap<String, String>,
+    whole_corpus: bool,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (key, outcome) in actual {
+        match expected.get(key) {
+            Some(want) if want == outcome => {}
+            Some(want) => out.push(format!(
+                "  {key}\n    manifest: {want}\n    actual:   {outcome}"
+            )),
+            None => out.push(format!("  {key}: not in the manifest; actual: {outcome}")),
+        }
+    }
+    if whole_corpus {
+        for key in expected.keys().filter(|k| !actual.contains_key(*k)) {
+            out.push(format!(
+                "  {key}: in the manifest, but no longer in the corpus"
+            ));
+        }
+    }
+    out
 }
 
 fn compare_project(project: &Path) -> ProjectReport {
@@ -319,7 +458,9 @@ fn compare_project(project: &Path) -> ProjectReport {
         &extra_properties,
         &common::oracle_environment(),
         Some(&resolver),
-        None,
+        // The resolver the LSP passes: without it every wildcard or `Exclude`
+        // item declines, and the comparison cannot see them at all.
+        Some(&glob_resolver::resolve as &GlobResolver<'_>),
     ) {
         Ok(parsed) => parsed,
         Err(e) => return ProjectReport::error(display, Stage::Parse, e.to_string()),
@@ -422,7 +563,11 @@ fn compare_compile(parsed: &ParsedProject, msbuild: &MsbuildOutput) -> FacetRepo
         return FacetReport::skipped(
             "compile",
             format!("items_uncertain=true; {}", uncertainty_summary(parsed)),
-        );
+        )
+        .classed(format!(
+            "decline(items_uncertain: {})",
+            compile_decline_class(parsed)
+        ));
     }
     let ours: Vec<CompileView> = parsed
         .items
@@ -460,7 +605,8 @@ fn compare_package_references(parsed: &ParsedProject, msbuild: &MsbuildOutput) -
                 "package_references_uncertain=true; {}",
                 package_uncertainty_summary(parsed)
             ),
-        );
+        )
+        .classed(package_decline_class(parsed));
     }
     if parsed
         .package_references
@@ -472,7 +618,8 @@ fn compare_package_references(parsed: &ParsedProject, msbuild: &MsbuildOutput) -
             "PackageReference Update items are captured separately by this crate, \
              while MSBuild's item view folds them into existing items"
                 .to_string(),
-        );
+        )
+        .classed("skip(PackageReference Update)".to_string());
     }
     let ours: Vec<PackageView> = parsed
         .package_references
@@ -496,7 +643,8 @@ fn compare_framework_references(parsed: &ParsedProject, msbuild: &MsbuildOutput)
                 "package_references_uncertain=true; {}",
                 package_uncertainty_summary(parsed)
             ),
-        );
+        )
+        .classed(package_decline_class(parsed));
     }
     let ours: Vec<String> = parsed
         .framework_references
@@ -554,7 +702,8 @@ fn compare_lang_version(parsed: &ParsedProject, msbuild: &MsbuildOutput) -> Face
     let ours = parsed.lang_version.clone().unwrap_or_default();
     let theirs = msbuild.properties.lang_version.trim().to_string();
     if ours.is_empty() && theirs.is_empty() {
-        return FacetReport::skipped("lang_version", "unset on both sides".to_string());
+        return FacetReport::skipped("lang_version", "unset on both sides".to_string())
+            .classed("skip(unset on both sides)".to_string());
     }
     compare_scalar("lang_version", ours, theirs)
 }
@@ -778,10 +927,6 @@ fn resolve_nuget_packages_dir() -> Option<PathBuf> {
     home.map(|h| PathBuf::from(h).join(".nuget").join("packages"))
 }
 
-fn split_project_list(list: &OsString) -> Vec<PathBuf> {
-    std::env::split_paths(list).collect()
-}
-
 fn collect_fsprojs(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     collect_fsprojs_into(root, &mut out);
@@ -963,6 +1108,40 @@ fn uncertainty_summary(parsed: &ParsedProject) -> String {
         );
     }
     diagnostics_summary(parsed)
+}
+
+/// The leading variant chain of a `Debug` rendering, without its payload:
+/// `Diagnostic(UndefinedProperty { name: "X" })` → `Diagnostic(UndefinedProperty)`.
+/// The manifest records causes at this grain: stable across SDK pins (no
+/// paths), and still enough to say which mechanism declined.
+fn variant_path(debug: &str) -> String {
+    let lead: String = debug
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '(')
+        .collect();
+    let lead = lead.trim_end_matches('(');
+    let opens = lead.matches('(').count();
+    format!("{lead}{}", ")".repeat(opens))
+}
+
+/// The manifest class of a Compile decline: its first recorded cause.
+fn compile_decline_class(parsed: &ParsedProject) -> String {
+    if let Some(first) = parsed.compile_condition_uncertainties.first() {
+        return format!("condition {:?}", first.reason);
+    }
+    match parsed.compile_item_uncertainties.first() {
+        Some(cause) => variant_path(&format!("{:?}", cause.kind)),
+        None => "no recorded cause".to_string(),
+    }
+}
+
+/// The manifest class of a package/framework decline: its first recorded cause.
+fn package_decline_class(parsed: &ParsedProject) -> String {
+    let cause = match parsed.package_reference_uncertainties.first() {
+        Some(cause) => variant_path(&format!("{:?}", cause.kind)),
+        None => "no recorded cause".to_string(),
+    };
+    format!("decline(package_references_uncertain: {cause})")
 }
 
 fn diagnostics_summary(parsed: &ParsedProject) -> String {
@@ -1254,7 +1433,40 @@ struct ProjectReport {
     omitted_diagnostics: usize,
 }
 
+/// The facets the manifest records. `define_constants` is compared but left
+/// out: its contract is being reworked separately.
+const MANIFEST_FACETS: &[&str] = &[
+    "compile",
+    "project_references",
+    "package_references",
+    "framework_references",
+    "target_frameworks",
+    "lang_version",
+];
+
 impl ProjectReport {
+    /// This project's manifest outcome: `error(stage: class)`, or each
+    /// manifest facet's `name=outcome`, `|`-separated in a fixed order.
+    fn manifest_outcome(&self) -> String {
+        if self.status == ProjectStatus::Error {
+            let stage = self.stage.map(|s| format!("{s:?}")).unwrap_or_default();
+            return format!("error({stage}: {})", error_class(self.error.as_deref()));
+        }
+        MANIFEST_FACETS
+            .iter()
+            .map(|name| {
+                let outcome = self
+                    .facets
+                    .iter()
+                    .find(|f| f.name == *name)
+                    .map(|f| f.outcome.as_str())
+                    .unwrap_or("absent");
+                format!("{name}={outcome}")
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
     fn error(project: String, stage: Stage, error: String) -> Self {
         Self {
             project,
@@ -1265,6 +1477,31 @@ impl ProjectReport {
             diagnostics: Vec::new(),
             omitted_diagnostics: 0,
         }
+    }
+}
+
+/// The stable class of a project error: the MSBuild error codes it reports
+/// (`MSB4019`), else its first line — never a path-bearing detail.
+fn error_class(error: Option<&str>) -> String {
+    let error = error.unwrap_or("");
+    let mut codes: Vec<&str> = error
+        .match_indices("error MSB")
+        .map(|(i, _)| {
+            let code = &error[i + "error ".len()..];
+            let end = code
+                .char_indices()
+                .skip(3)
+                .find(|(_, c)| !c.is_ascii_digit())
+                .map_or(code.len(), |(i, _)| i);
+            &code[..end]
+        })
+        .collect();
+    codes.sort_unstable();
+    codes.dedup();
+    if codes.is_empty() {
+        error.lines().next().unwrap_or("").to_string()
+    } else {
+        codes.join(",")
     }
 }
 
@@ -1289,6 +1526,8 @@ enum Stage {
 struct FacetReport {
     name: &'static str,
     status: FacetStatus,
+    /// What the manifest records: `match`, `decline(...)`, `skip(...)`.
+    outcome: String,
     detail: String,
 }
 
@@ -1297,6 +1536,7 @@ impl FacetReport {
         Self {
             name,
             status: FacetStatus::Matched,
+            outcome: "match".to_string(),
             detail,
         }
     }
@@ -1305,6 +1545,7 @@ impl FacetReport {
         Self {
             name,
             status: FacetStatus::Skipped,
+            outcome: "skip".to_string(),
             detail,
         }
     }
@@ -1313,8 +1554,14 @@ impl FacetReport {
         Self {
             name,
             status: FacetStatus::Diverged,
+            outcome: "DIVERGED".to_string(),
             detail,
         }
+    }
+
+    /// Set the manifest outcome of a skipped facet.
+    fn classed(self, outcome: String) -> Self {
+        Self { outcome, ..self }
     }
 }
 
@@ -1426,24 +1673,26 @@ mod tests {
     }
 
     #[test]
-    fn project_list_overrides_the_fallback_corpus() {
+    fn project_list_overrides_the_pinned_corpus() {
         assert_eq!(
             project_source_from_env(
                 Some(OsString::from("/tmp/one.fsproj")),
                 None,
-                Some(OsString::from("/tmp/corpus")),
+                None,
+                Some(PathBuf::from("/tmp/corpus")),
             )
             .unwrap(),
-            ProjectSource::ProjectList(OsString::from("/tmp/one.fsproj")),
+            ProjectSource::ProjectList(vec![PathBuf::from("/tmp/one.fsproj")]),
         );
     }
 
     #[test]
-    fn project_list_conflicts_with_an_explicit_msbuild_corpus() {
+    fn project_sources_are_mutually_exclusive() {
         let error = project_source_from_env(
             Some(OsString::from("/tmp/one.fsproj")),
+            None,
             Some(OsString::from("/tmp/msbuild-corpus")),
-            Some(OsString::from("/tmp/fallback-corpus")),
+            Some(PathBuf::from("/tmp/fallback-corpus")),
         )
         .unwrap_err();
 
@@ -1452,41 +1701,88 @@ mod tests {
     }
 
     #[test]
-    fn project_list_is_not_sampled_by_default() {
-        let paths = vec![
-            PathBuf::from("a.fsproj"),
-            PathBuf::from("b.fsproj"),
-            PathBuf::from("c.fsproj"),
-        ];
-        let source = ProjectSource::ProjectList(std::env::join_paths(&paths).unwrap());
-        let sampling = sampling_from_env_for_source(&source, false).unwrap();
-
-        assert_eq!(projects_from_source(source, sampling).unwrap(), paths);
-    }
-
-    #[test]
-    fn corpus_source_is_sampled_only_when_not_exhaustive() {
-        let source = ProjectSource::CorpusRoot(PathBuf::from("/tmp/corpus"));
-
-        assert!(should_sample_projects(&source, false));
-        assert!(!should_sample_projects(&source, true));
-    }
-
-    #[test]
-    fn sample_projects_uses_stride_and_limit() {
-        let projects = (0..30)
-            .map(|i| PathBuf::from(format!("{i:02}.fsproj")))
-            .collect();
-
+    fn project_list_file_takes_manifest_lines_and_skips_comments() {
+        let text =
+            "# header\n\nsrc/A/A.fsproj\tcompile=match | lang_version=match\n  /abs/B.fsproj  \n";
         assert_eq!(
-            sample_projects(
-                projects,
-                Sampling {
-                    stride: 13,
-                    limit: 2,
-                },
-            ),
-            vec![PathBuf::from("00.fsproj"), PathBuf::from("13.fsproj")]
+            parse_project_list_file(text),
+            vec![
+                PathBuf::from("src/A/A.fsproj"),
+                PathBuf::from("/abs/B.fsproj")
+            ]
+        );
+    }
+
+    #[test]
+    fn relative_list_entries_resolve_against_the_pinned_corpus() {
+        let projects = projects_from_source(
+            ProjectSource::ProjectList(vec![
+                PathBuf::from("b/B.fsproj"),
+                PathBuf::from("/x/A.fsproj"),
+            ]),
+            Some(Path::new("/corpus")),
+        )
+        .unwrap();
+        assert_eq!(
+            projects,
+            vec![
+                PathBuf::from("/corpus/b/B.fsproj"),
+                PathBuf::from("/x/A.fsproj")
+            ]
+        );
+    }
+
+    #[test]
+    fn manifest_round_trips_and_reports_every_kind_of_movement() {
+        let actual: BTreeMap<String, String> = [
+            ("a.fsproj", "compile=match"),
+            ("b.fsproj", "compile=decline(items_uncertain: x)"),
+            ("new.fsproj", "compile=match"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        assert_eq!(parse_manifest(&render_manifest(&actual)).unwrap(), actual);
+
+        let expected: BTreeMap<String, String> = [
+            ("a.fsproj", "compile=match"),
+            ("b.fsproj", "compile=match"),
+            ("gone.fsproj", "compile=match"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let whole = manifest_movement(&expected, &actual, true);
+        assert_eq!(whole.len(), 3, "{whole:#?}");
+        // A subset run does not miss the projects it never visited.
+        let subset = manifest_movement(&expected, &actual, false);
+        assert_eq!(subset.len(), 2, "{subset:#?}");
+    }
+
+    #[test]
+    fn variant_path_drops_payloads() {
+        assert_eq!(
+            variant_path("Diagnostic(UndefinedProperty { name: \"X\" })"),
+            "Diagnostic(UndefinedProperty)"
+        );
+        assert_eq!(
+            variant_path("Structural(UnsupportedChoose)"),
+            "Structural(UnsupportedChoose)"
+        );
+        assert_eq!(
+            variant_path("DirectoryPackagesProps { path: \"/p\" }"),
+            "DirectoryPackagesProps"
+        );
+    }
+
+    #[test]
+    fn error_class_keeps_msbuild_codes_only() {
+        let error = "dotnet msbuild exited with 1\n/x/A.fsproj(2,3): error MSB4019: The imported \
+                     project \"/x/y.props\" was not found.\n/x/A.fsproj(2,3): error MSB4019: again";
+        assert_eq!(error_class(Some(error)), "MSB4019");
+        assert_eq!(
+            error_class(Some("canonicalize: nope\nmore")),
+            "canonicalize: nope"
         );
     }
 }
