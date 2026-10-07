@@ -25,10 +25,8 @@
 //!   broadened proactive sweep confirmed the split: every over- or
 //!   under-resolution falls on a dead *project*; no live project diverges.
 
-mod common;
-
+use crate::common::Oracle;
 use borzoi_nuget::NuGetFramework;
-use common::Oracle;
 
 /// Enumerate a broad cross-product of TFM strings across every framework
 /// family, at a spread of versions/platforms/profiles/portable forms.

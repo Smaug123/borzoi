@@ -445,10 +445,10 @@ jobs:
         # happened to reach first. Reproduce with the printed seed before
         # concluding anything about the change.
         run: |
-          nix develop --command cargo test -p borzoi-nuget --test soak \
+          nix develop --command cargo test -p borzoi-nuget --test all soak:: \
             -- --ignored --nocapture
-          nix develop --command cargo test -p borzoi-nuget --test resolver_diff \
-            randomised_soundness_soak -- --ignored --nocapture
+          nix develop --command cargo test -p borzoi-nuget --test all \
+            resolver_diff::randomised_soundness_soak -- --ignored --nocapture
 
   test-astgen:
     name: Test astgen

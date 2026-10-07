@@ -3,10 +3,8 @@
 //! `Satisfies` over (range, version) pairs including exact-endpoint probes.
 //! Same fixed-seed determinism rationale as `version_diff.rs`.
 
-mod common;
-
+use crate::common::{Oracle, SplitMix64, gen_range_string, gen_version_string};
 use borzoi_nuget::{NuGetVersion, VersionRange};
-use common::{Oracle, SplitMix64, gen_range_string, gen_version_string};
 
 /// Hand-picked corners: bracket structure, degenerate intervals, floats in
 /// every position (legal and not), whitespace, metadata in bounds.

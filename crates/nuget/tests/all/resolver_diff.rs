@@ -26,17 +26,15 @@
 //! `resolve_offline` reads and the oracle request, so the two can never
 //! silently disagree about a package's declared dependencies.
 
-mod common;
-
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use crate::common::{Oracle, SplitMix64};
 use borzoi_nuget::{
     DirectPackageRequirement, NuGetFramework, NuGetVersion, PackageId, PackageIdentity,
     PackagePaths, VersionRange, resolve_offline,
 };
-use common::{Oracle, SplitMix64};
 use serde_json::json;
 
 // ============================================================================
