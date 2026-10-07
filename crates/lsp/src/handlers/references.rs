@@ -1,7 +1,7 @@
 //! `textDocument/references` — every use of the cursor's symbol, project-wide.
 //!
-//! Resolves the cursor to a [`Resolution`] (using the same containment +
-//! prefer-non-`Deferred` rules as goto-definition), then iterates every file
+//! Resolves the cursor to a [`Resolution`] (using the same smallest-containing
+//! rule as goto-definition, [`super::smallest_resolution_at`]), then iterates every file
 //! in the [`ResolvedProject`] and collects ranges whose recorded resolution
 //! is exactly that one ([`Resolution`] is `Copy + PartialEq`). A range in the
 //! label position of a call argument shaped `name = value` or `?name = value`
