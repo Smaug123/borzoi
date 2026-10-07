@@ -150,29 +150,33 @@ pub fn symbol_information(
     }
 }
 
-/// The resolution recorded at `byte` in `file`, with two layers of
-/// disambiguation that v1 handlers (definition / references / hover) share:
+/// The resolution recorded at `byte` in `file`, under the rule the v1 handlers
+/// (definition / references / hover) share:
 ///
 /// 1. **Containment is inclusive at both ends.** A cursor at the very end of
 ///    an identifier's range (a frequent click pattern) should still resolve.
-/// 2. **Prefer a non-`Deferred` resolution.** A `LongIdent` records the
-///    *whole-path* range as a real `Resolution` (e.g. `Item` or `Entity`)
-///    and each inner segment as `Deferred(QualifiedAccess)`; both contain a
-///    cursor on a segment. Choosing the smallest containing range would
-///    pick the `Deferred` (which the spec says answer with nothing).
-///    Choosing the smallest *non-`Deferred`* one falls through to the
-///    whole-path resolution, which is the meaningful answer. When every
-///    candidate is `Deferred`, the smallest one wins as a fallback.
+/// 2. **The smallest containing range wins, deferral or not.** The smallest
+///    range is the name actually under the cursor; anything larger is an
+///    enclosing construct that names something else. A dotted path
+///    `Shared.foo` records the *whole path* as `Item(foo)` and the qualifier
+///    `Shared` as `Deferred(QualifiedAccess)`, and a cursor on `Shared` is on
+///    the module, not on `foo`: FCS reports the module there. Passing over the
+///    deferral to the enclosing answer would serve `foo`'s definition for the
+///    module — a wrong target, where the deferral is an honest "nothing".
+/// 3. **Ties go to the range the cursor is strictly inside.** At a boundary
+///    between two adjacent equal-length ranges (`a+b`, cursor before `b`), the
+///    range starting there beats the one ending there, so the answer does not
+///    depend on hash-map iteration order. Remaining ties fall to the earlier
+///    start, which makes the choice total.
 ///
 /// Returns `None` when no recorded range contains `byte` at all.
 pub fn smallest_resolution_at(file: &ResolvedFile, byte: usize) -> Option<Resolution> {
     smallest_resolution_with_range(file, byte).map(|(_, r)| r)
 }
 
-/// Same containment + prefer-non-`Deferred` rule as [`smallest_resolution_at`],
-/// but also returns the matching `TextRange`. Hover uses the range to scope
-/// its tooltip to the symbol under the cursor; the other handlers don't
-/// need it.
+/// Same containment rule as [`smallest_resolution_at`], but also returns the
+/// matching `TextRange`. Hover uses the range to scope its tooltip to the
+/// symbol under the cursor; the other handlers don't need it.
 pub fn smallest_resolution_with_range(
     file: &ResolvedFile,
     byte: usize,
@@ -184,17 +188,37 @@ pub fn smallest_resolution_with_range(
     // resolutions: chain them in so go-to-definition / hover on `[<MyAttr>]`
     // reach the attribute's type. The two maps' ranges never collide — an
     // attribute name's range holds no other resolution.
-    let containing = || {
-        file.resolutions()
-            .iter()
-            .chain(file.attribute_resolutions().iter())
-            .filter(move |(range, _)| range.start() <= byte && byte <= range.end())
-    };
-    containing()
-        .filter(|(_, r)| !matches!(r, Resolution::Deferred(_)))
-        .min_by_key(|(range, _)| range.len())
-        .or_else(|| containing().min_by_key(|(range, _)| range.len()))
+    file.resolutions()
+        .iter()
+        .chain(file.attribute_resolutions().iter())
+        .filter(|(range, _)| range.start() <= byte && byte <= range.end())
+        .min_by_key(|(range, _)| (range.len(), byte == range.end(), range.start()))
         .map(|(r, res)| (*r, *res))
+}
+
+/// The resolution go-to-definition **serves** for a cursor at `byte`, with the
+/// range it was recorded at: the resolver's answer
+/// ([`smallest_resolution_with_range`]) unless it deferred or recorded nothing
+/// there, in which case inference's member resolution
+/// ([`smallest_member_resolution_with_range`]) stands in, and failing that the
+/// resolver's deferral (or nothing) is the verdict.
+///
+/// The one definition of that precedence. Go-to-definition, the
+/// "no definition available" explanation, and the whole-project differential
+/// against FCS all read it, so what the user is shown and what the oracle grades
+/// cannot drift apart. `inferred` is `None` where there is no inference to
+/// consult (a signature buffer, or the single-file fallback).
+pub fn served_resolution_with_range(
+    file: &ResolvedFile,
+    inferred: Option<&InferredFile>,
+    byte: usize,
+) -> Option<(TextRange, Resolution)> {
+    match smallest_resolution_with_range(file, byte) {
+        Some(served @ (_, res)) if !matches!(res, Resolution::Deferred(_)) => Some(served),
+        deferred_or_none => inferred
+            .and_then(|i| smallest_member_resolution_with_range(i, byte))
+            .or(deferred_or_none),
+    }
 }
 
 /// The smallest inferred-type entry whose range contains `byte`, if any — the
@@ -231,7 +255,7 @@ pub fn smallest_member_resolution_with_range(
         .member_resolutions()
         .iter()
         .filter(|(range, _)| range.start() <= byte && byte <= range.end())
-        .min_by_key(|(range, _)| range.len())
+        .min_by_key(|(range, _)| (range.len(), byte == range.end(), range.start()))
         .map(|(range, res)| (*range, *res))
 }
 
