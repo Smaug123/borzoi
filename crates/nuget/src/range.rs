@@ -1,6 +1,6 @@
 //! `VersionRange`: NuGet's version-range model, matching
 //! `NuGet.Versioning`'s `VersionRange` (differentially tested against it in
-//! `tests/range_diff.rs`).
+//! `tests/all/range_diff.rs`).
 //!
 //! Shapes accepted, mirroring `VersionRange.TryParse`:
 //!

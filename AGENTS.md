@@ -219,7 +219,7 @@ real F# Compiler Service by *differential* tests living in `crates/cst/tests/all
 
 Common commands:
 
-Like `sema`, `assembly` and `lsp`, this crate has a *single* integration-test
+Like `sema`, `assembly`, `nuget` and `lsp`, this crate has a *single* integration-test
 binary, `--test all` (`tests/all/main.rs`), whose submodules are the case groups
 — see "One test binary per crate" below. Select a group with a `module::` filter
 rather than `--test <group>`.
@@ -268,7 +268,7 @@ with `borzoi_cst::lexfilter::filter(src, borzoi_cst::lexer::lex(src))`.
 
 ## One test binary per crate
 
-`cst`, `sema`, `assembly` and `lsp` each have exactly one integration-test
+`cst`, `sema`, `assembly`, `nuget` and `lsp` each have exactly one integration-test
 target: `tests/all/main.rs`, whose submodules are the case groups. Cargo
 compiles and links every `tests/*.rs` as its own crate, so the old layout —
 76 test binaries in `cst` alone — relinked all of them for a one-line change to
@@ -348,7 +348,8 @@ nix develop -c cargo test -p borzoi-sema --test all resolve_corpus_diff:: -- --i
 nix develop -c cargo test -p borzoi-sema --test all attr_resolution_sweep:: -- --ignored  #  ~25 s
 nix develop -c cargo test -p borzoi-sema --test all infer_corpus_diff:: -- --ignored    #  ~30 s
 nix develop -c cargo test -p borzoi      --test all parser_corpus_sweep:: -- --ignored  #  ~50 s
-nix develop -c cargo test -p borzoi-nuget --test soak -- --ignored                      #  ~10 s
+nix develop -c cargo test -p borzoi-nuget --test all soak:: -- --ignored               #  ~15 s
+nix develop -c cargo test -p borzoi-nuget --test all resolver_diff::randomised_soundness_soak -- --ignored  # ~15 s
 nix develop -c cargo test -p borzoi-msbuild --test fsproj_msbuild_corpus_diff -- --ignored  # ~5 s
 nix develop -c cargo test -p borzoi-msbuild --test sdk_chain_decline_attribution -- --ignored  # ~1 s
 ```

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use borzoi_spawn::{BoundedCommand, ChildFailure};
 
-use borzoi::handlers::smallest_resolution_with_range;
+use borzoi::handlers::{served_resolution_with_range, smallest_resolution_with_range};
 use borzoi::project_assets::{resolve_assemblies_for_tfm, resolve_assemblies_root_only};
 use borzoi::sdk_discovery::SdkDiscoveryEnv;
 use borzoi::semantic::{ProjectParses, SemanticState};
@@ -32,8 +32,8 @@ use borzoi_sema::test_support::{
     assembly_full_name_agrees, certified_expected as certified_structural,
 };
 use borzoi_sema::{
-    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, OpenOpacity, Resolution,
-    ResolvedFile, ResolvedProject, infer_file,
+    AssemblyEnv, DeclineCause, DeclineSite, DeclineTier, Def, InferredFile, OpenOpacity,
+    Resolution, ResolvedFile, ResolvedProject, infer_file,
 };
 
 // The oracle's structural naming of a declaration is shared with the LSP
@@ -1387,7 +1387,8 @@ pub struct Comparison {
     pub assembly_decline_census: DeclineCensus,
     /// How many of the considered uses were answered out of the **attribute**
     /// commit map rather than the main one
-    /// ([`borzoi_sema::ResolvedFile::committed_resolution_at`]).
+    /// ([`borzoi_sema::ResolvedFile::attribute_resolutions`]): the answer the
+    /// LSP serves at the use came from there.
     ///
     /// Published because the alternative to publishing it is not noticing. An
     /// attribute answer is invisible to `resolution_at`, so a differential that
@@ -1408,10 +1409,11 @@ pub struct Comparison {
     /// deferral, which is to say it makes no claim about a go-to-definition
     /// target it serves, and stays green however wrong that target is.
     ///
-    /// It reads **0** on the pinned corpus, and that is a measurement rather
-    /// than a defect: every member answer inference commits there is one the
-    /// resolver committed too (`Object.ReferenceEquals`, graded already), so
-    /// nothing is answered by inference alone. The fixtures in
+    /// It reads **1** on the pinned corpus (2026-10-07), and that is a
+    /// measurement rather than a defect: nearly every member answer inference
+    /// commits there is one the resolver committed too
+    /// (`Object.ReferenceEquals`, graded already), so almost nothing is
+    /// answered by inference alone. The fixtures in
     /// `project_resolution.rs` are what exercise the grading meanwhile.
     pub member_commits_compared: usize,
     pub skipped_uses: SkippedUses,
@@ -1434,6 +1436,24 @@ pub struct Comparison {
     pub assembly_divergences: Vec<AssemblyDivergence>,
     pub reverse_divergences: Vec<ReverseDivergence>,
     pub fcs_error_files: Vec<FcsErrorFile>,
+}
+
+impl Comparison {
+    /// Count a graded answer against the surface that served it, so the
+    /// per-surface counts say how much of each was actually put to the oracle.
+    fn observe_surface(&mut self, served: ServedAnswer) {
+        match served {
+            ServedAnswer::Committed(_, AnswerSurface::Attribute) => {
+                self.attribute_commits_compared += 1;
+            }
+            ServedAnswer::Committed(_, AnswerSurface::Member) => {
+                self.member_commits_compared += 1;
+            }
+            ServedAnswer::Committed(_, AnswerSurface::Resolver)
+            | ServedAnswer::Declined
+            | ServedAnswer::Contested => {}
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
@@ -1470,6 +1490,12 @@ pub struct SkippedUses {
     /// answers alone — never on whether ours agrees — so this can never become
     /// the bucket a disagreement escapes into. It is the project-stream twin of
     /// the attribute oracle's `ambiguous` record.
+    ///
+    /// The same holds one level down, at the **cursor** a record is graded at
+    /// (its last byte): where a second, shorter record also contains that
+    /// cursor, the oracle has two answers for one cursor position, and the
+    /// record is counted here too. The indexer is the common case — FCS reports
+    /// `Item` over all of `counts.[line]`, whose last byte is just past `line`.
     pub ambiguous_oracle_range: usize,
     /// A **constructor** record at a range that also carries a record for the
     /// name itself — see [`ProjectUse::is_constructor`]. The name's record is
@@ -2833,41 +2859,20 @@ pub struct AssemblyDecl {
     pub structural: Option<StructuralName>,
 }
 
-/// Whether the answer at `range` is a **commit** the attribute map alone holds
-/// — the case that is compared here only because
-/// [`borzoi_sema::ResolvedFile::committed_resolution_at`] is what gets asked.
-///
-/// A deferral recorded in that map is excluded: it makes no claim, so counting
-/// it would inflate the number that is supposed to say how much was actually
-/// put to the oracle.
-fn attribute_commit(rf: &borzoi_sema::ResolvedFile, range: TextRange) -> bool {
-    rf.resolution_at(range).is_none()
-        && matches!(rf.attribute_resolution_at(range), Some(res) if !matches!(res, Resolution::Deferred(_)))
-}
-
 /// The member answers **inference** commits in one file
-/// ([`borzoi_sema::InferredFile::member_resolutions`]), indexed by where each
-/// member name *ends*.
+/// ([`borzoi_sema::InferredFile::member_resolutions`]) that the LSP would serve,
+/// for the reverse direction.
 ///
 /// `Object.ReferenceEquals (x, y)` is answered in two steps: the resolver
 /// declines the path, and inference — once the receiver's type is known — looks
 /// the member up and records what it found. `handlers/definition.rs` and
 /// `handlers/hover.rs` layer that table over the resolver's deferral, so an
-/// entry here *is* a go-to-definition target. Read through the resolver's maps
-/// alone the site still looks deferred, which claims nothing and so can never
-/// diverge, however wrong the answer served there is.
-///
-/// **The index is by end offset because that is what the oracle agrees on.**
-/// Inference keys the member *name* token (`ReferenceEquals`, so hover can scope
-/// its tooltip to it), while FCS reports one use spanning the whole long
-/// identifier (`Object.ReferenceEquals`) and names it by its **final** segment's
-/// symbol. The two spans share their end and nothing else, so a comparison keyed
-/// on the whole range compares nothing at all — which is the failure mode this
-/// index exists to rule out. An end offset identifies at most one entry: member
-/// ranges are single identifier tokens, so two cannot end together.
+/// entry here *is* a go-to-definition target, and the reverse pass must ask the
+/// oracle to license it like any other answer. The forward pass needs no table:
+/// it asks the LSP's own [`served_resolution_with_range`] what it serves.
 #[derive(Debug, Default)]
 struct MemberCommits {
-    by_end: HashMap<rowan::TextSize, (TextRange, Resolution)>,
+    served: Vec<(TextRange, Resolution)>,
 }
 
 impl MemberCommits {
@@ -2881,18 +2886,17 @@ impl MemberCommits {
     /// - **A deferred entry.** Inference's table is sealed wholesale to
     ///   `Deferred(IncompleteAssemblies)` when the env's identity set is
     ///   incomplete, and a deferral claims nothing.
-    /// - **An entry a concrete resolver answer contains.** The LSP takes the
-    ///   smallest *containing* resolver resolution first, so where the resolver
+    /// - **An entry a concrete resolver answer contains.** Where the resolver
     ///   answers `System.Object.ReferenceEquals` across the whole path, the
-    ///   member token inside it is never reached. Keeping it would let one
-    ///   served answer be graded twice — and reported twice, at two ranges, in
-    ///   the reverse direction.
+    ///   member token inside it is not what the LSP serves. Keeping it would let
+    ///   one served answer be graded twice — and reported twice, at two ranges,
+    ///   in the reverse direction.
     fn served(
         entries: impl IntoIterator<Item = (TextRange, Resolution)>,
         concrete_resolver_ranges: &[TextRange],
     ) -> Self {
         MemberCommits {
-            by_end: entries
+            served: entries
                 .into_iter()
                 .filter(|(_, res)| is_concrete_resolution(*res))
                 .filter(|(member, _)| {
@@ -2900,34 +2904,28 @@ impl MemberCommits {
                         answered.start() <= member.start() && member.end() <= answered.end()
                     })
                 })
-                .map(|(range, res)| (range.end(), (range, res)))
                 .collect(),
         }
     }
 
-    /// Inference's answer for the symbol an oracle use at `range` names, if it
-    /// has one: the member whose name is that use's tail. Equality of ranges is
-    /// the common case (FCS reports a bare `x.Length` at `Length`); a qualified
-    /// path is the case the end-alignment is for.
-    fn answer_for(&self, range: TextRange) -> Option<Resolution> {
-        self.by_end
-            .get(&range.end())
-            .filter(|(member, _)| member.start() >= range.start())
-            .map(|(_, res)| *res)
-    }
-
-    fn iter(&self) -> impl Iterator<Item = (TextRange, Resolution)> {
-        self.by_end.values().copied()
+    fn iter(&self) -> impl Iterator<Item = (TextRange, Resolution)> + '_ {
+        self.served.iter().copied()
     }
 }
 
-/// Solve `file_idx` and collect the member answers it serves.
+/// Solve `file_idx`: the inferred file, for the forward pass to hand to the
+/// LSP's served-answer rule, and the member answers it serves, for the reverse
+/// pass.
 ///
-/// Empty for a `.fsi` Compile slot: a signature file has no implementation tree
-/// to infer over, which is why the LSP's enrichment is impl-only too.
-fn member_commits(loaded: &LoadedProject, file_idx: usize) -> MemberCommits {
+/// No inference for a `.fsi` Compile slot: a signature file has no
+/// implementation tree to infer over, which is why the LSP's enrichment is
+/// impl-only too.
+fn infer_for_comparison(
+    loaded: &LoadedProject,
+    file_idx: usize,
+) -> (Option<InferredFile>, MemberCommits) {
     let Some(impl_file) = loaded.parses.files[file_idx].file.as_impl() else {
-        return MemberCommits::default();
+        return (None, MemberCommits::default());
     };
     let rf = loaded.resolved.file(file_idx);
     let inferred = infer_file(impl_file, rf, &loaded.assembly_env);
@@ -2938,46 +2936,106 @@ fn member_commits(loaded: &LoadedProject, file_idx: usize) -> MemberCommits {
         .filter(|(_, res)| is_concrete_resolution(**res))
         .map(|(range, _)| *range)
         .collect();
-    MemberCommits::served(
+    let members = MemberCommits::served(
         inferred
             .member_resolutions()
             .iter()
             .map(|(range, res)| (*range, *res)),
         &answered,
-    )
+    );
+    (Some(inferred), members)
 }
 
-/// The answer this file commits at `range` across **every** surface the LSP
-/// serves it from: the resolver's two commit maps
-/// ([`borzoi_sema::ResolvedFile::committed_resolution_at`]) and, where those
-/// defer, inference's member table.
+/// Which of the three surfaces the LSP serves from supplied an answer — counted
+/// so that a surface going dark (no answer of its kind graded any more) is
+/// visible, rather than silently passing every divergence check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AnswerSurface {
+    /// The resolver's main occurrence map.
+    Resolver,
+    /// The resolver's attribute-type map.
+    Attribute,
+    /// Inference's member table.
+    Member,
+}
+
+/// What the oracle use `u` is graded against: what the LSP **serves** for a
+/// cursor on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ServedAnswer {
+    /// The oracle has a second, shorter record at the probed cursor, so it does
+    /// not say what that position means and adjudicates nothing there.
+    Contested,
+    /// The LSP serves a deferral, or nothing: no claim.
+    Declined,
+    /// The LSP serves this answer, from this surface.
+    Committed(Resolution, AnswerSurface),
+}
+
+/// What the LSP **serves** for a cursor on oracle use `u`, and which surface
+/// served it.
 ///
-/// The precedence is the LSP's own (`handlers/definition.rs`): a concrete
-/// resolver answer wins, otherwise the member answer stands in, otherwise the
-/// resolver's deferral is the verdict. Grading anything narrower would grade a
-/// verdict no user is ever shown.
-fn committed_answer(
+/// The question is asked of the LSP's own rule
+/// ([`served_resolution_with_range`]: the smallest containing resolver answer,
+/// then inference's member table), not of the answer recorded at the oracle's
+/// exact range. The two differ, and the difference is where a wrong target can
+/// hide: in `Shared.foo` the resolver records `Item(foo)` over the whole path
+/// and a deferral over the qualifier `Shared`, so the exact-range answer at
+/// FCS's `Shared` record is a deferral — a claim of nothing — while a cursor on
+/// `Shared` is served whatever the LSP's containment rule picks. Grading the
+/// record would grade a verdict no user is shown.
+///
+/// **The cursor is the use's last byte.** FCS names a use by its final
+/// identifier: a qualifier's record spans its own token, a value reached
+/// through a path spans the whole path, and either way the record's last
+/// character is on the identifier it names. Its first byte need not be: for
+/// `s.Length` it is on `s`, which has its own record and its own answer.
+///
+/// That byte must be **owned** by `u` — no other record no longer than `u` may
+/// contain it, its end included — or the oracle has two answers for one cursor
+/// and adjudicates neither ([`ServedAnswer::Contested`], counted as an
+/// [ambiguous range](SkippedUses::ambiguous_oracle_range)). The indexer is the
+/// shape that needs this: FCS reports `Item` over all of `counts.[line]`, so its
+/// last byte is the `]`, where the cursor is also just past `line`. Ownership
+/// is decided over *every* record in the file, graded or not, since a record
+/// this differential cannot grade still says what the oracle thinks is under
+/// the cursor — except a [constructor record](ProjectUse::is_constructor), which
+/// describes the call a written name makes and is never a rival answer to the
+/// name.
+fn served_answer(
     rf: &ResolvedFile,
-    members: &MemberCommits,
-    range: TextRange,
-) -> Option<Resolution> {
-    match rf.committed_resolution_at(range) {
-        Some(res) if !matches!(res, Resolution::Deferred(_)) => Some(res),
-        deferred_or_none => members.answer_for(range).or(deferred_or_none),
+    inferred: Option<&InferredFile>,
+    file_uses: &FileUses,
+    u: &ProjectUse,
+) -> ServedAnswer {
+    debug_assert!(u.start < u.end, "zero-width uses are skipped before this");
+    let probe = u.end - 1;
+    let len = u.end - u.start;
+    // Containment is inclusive at the end, as the LSP's is: a cursor just past
+    // another record's last character is one the LSP may hand to that record.
+    let contested = file_uses.uses.iter().any(|other| {
+        (other.start, other.end) != (u.start, u.end)
+            && !other.is_constructor
+            && other.start <= probe
+            && probe <= other.end
+            && other.end - other.start <= len
+    });
+    if contested {
+        return ServedAnswer::Contested;
     }
-}
-
-/// Whether the answer at `range` is one **inference** supplied. Asked through
-/// the same lookup [`committed_answer`] grades by, over a table holding only
-/// what [`MemberCommits::served`] admits, so the count cannot drift from what
-/// was actually compared: an entry the resolver's own answer covers, or one
-/// deferred, is not in the table to be found.
-///
-/// Counted for the same reason [`attribute_commit`] is: it is the number that
-/// says how much of this surface the oracle was actually asked about. It going
-/// to zero is the signal that the differential has stopped reading the surface.
-fn member_commit(members: &MemberCommits, range: TextRange) -> bool {
-    members.answer_for(range).is_some()
+    match served_resolution_with_range(rf, inferred, probe) {
+        Some((range, res)) if is_concrete_resolution(res) => {
+            let surface = if rf.resolution_at(range) == Some(res) {
+                AnswerSurface::Resolver
+            } else if rf.attribute_resolution_at(range) == Some(res) {
+                AnswerSurface::Attribute
+            } else {
+                AnswerSurface::Member
+            };
+            ServedAnswer::Committed(res, surface)
+        }
+        Some(_) | None => ServedAnswer::Declined,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3010,7 +3068,11 @@ pub struct ReverseDivergence {
 ///
 /// This is intentionally a soundness comparator, not a completeness gate:
 /// `None`/`Deferred` counts as a deferral. A concrete wrong answer is a
-/// divergence. The reverse pass is stricter about over-resolution: every
+/// divergence. Each oracle record is graded against what the LSP **serves** for
+/// a cursor on it (`served_answer`), which is what a user is shown, rather
+/// than against the answer recorded at its exact range — the two differ at a
+/// qualifier like `Shared` in `Shared.foo`, and only the first can catch a
+/// wrong target there. The reverse pass is stricter about over-resolution: every
 /// concrete sema resolution in a comparable file must be covered by an FCS use
 /// that names the same project declaration or assembly symbol. Coverage uses
 /// containment rather than exact range equality because sema sometimes records a
@@ -3051,7 +3113,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
         comparison.files_compared += 1;
         comparison.uses_reported += file_uses.uses.len();
         let rf = loaded.resolved.file(file_idx);
-        let members = member_commits(loaded, file_idx);
+        let (inferred, members) = infer_for_comparison(loaded, file_idx);
         let shape = oracle_shape(file_uses);
         for u in &file_uses.uses {
             if u.is_from_definition {
@@ -3081,21 +3143,24 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
             let UseDecl::InProject(expected) = &u.decl else {
                 match assembly_decl(u) {
                     Some(expected) => {
+                        let served = served_answer(rf, inferred.as_ref(), file_uses, u);
+                        if served == ServedAnswer::Contested {
+                            comparison.skipped_uses.ambiguous_oracle_range += 1;
+                            continue;
+                        }
                         comparison.assembly_uses_considered += 1;
-                        if attribute_commit(rf, range) {
-                            comparison.attribute_commits_compared += 1;
-                        }
-                        if member_commit(&members, range) {
-                            comparison.member_commits_compared += 1;
-                        }
-                        match committed_answer(rf, &members, range) {
-                            None | Some(Resolution::Deferred(_)) => {
+                        comparison.observe_surface(served);
+                        match served {
+                            ServedAnswer::Contested | ServedAnswer::Declined => {
                                 comparison.assembly_deferrals += 1;
                                 comparison
                                     .assembly_decline_census
                                     .observe(rf.decline_site(range));
                             }
-                            Some(res @ (Resolution::Entity(_) | Resolution::Member { .. })) => {
+                            ServedAnswer::Committed(
+                                res @ (Resolution::Entity(_) | Resolution::Member { .. }),
+                                _,
+                            ) => {
                                 let actual = assembly_resolution_decl(&loaded.assembly_env, res);
                                 if canonical_assembly(&actual.assembly)
                                     == canonical_assembly(&expected.assembly)
@@ -3120,7 +3185,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                                     });
                                 }
                             }
-                            Some(other) => {
+                            ServedAnswer::Committed(other, _) => {
                                 comparison.assembly_divergences.push(AssemblyDivergence {
                                     file: file_uses.path.clone(),
                                     range: (u.start, u.end),
@@ -3149,21 +3214,21 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                 }
                 continue;
             };
+            let served = served_answer(rf, inferred.as_ref(), file_uses, u);
+            if served == ServedAnswer::Contested {
+                comparison.skipped_uses.ambiguous_oracle_range += 1;
+                continue;
+            }
             comparison.uses_considered += 1;
-            if attribute_commit(rf, range) {
-                comparison.attribute_commits_compared += 1;
-            }
-            if member_commit(&members, range) {
-                comparison.member_commits_compared += 1;
-            }
-            match committed_answer(rf, &members, range) {
-                None | Some(Resolution::Deferred(_)) => {
+            comparison.observe_surface(served);
+            match served {
+                ServedAnswer::Contested | ServedAnswer::Declined => {
                     comparison.deferrals += 1;
                     comparison
                         .project_decline_census
                         .observe(rf.decline_site(range));
                 }
-                Some(res @ (Resolution::Local(_) | Resolution::Item(_))) => {
+                ServedAnswer::Committed(res @ (Resolution::Local(_) | Resolution::Item(_)), _) => {
                     match resolution_def(loaded, file_idx, res) {
                         Some((actual_file_idx, def))
                             if path_key(&loaded.parses.paths[actual_file_idx])
@@ -3196,7 +3261,7 @@ pub fn compare_project_uses(loaded: &LoadedProject, fcs: &[FileUses]) -> Compari
                         }),
                     }
                 }
-                Some(other) => comparison.divergences.push(Divergence {
+                ServedAnswer::Committed(other, _) => comparison.divergences.push(Divergence {
                     file: file_uses.path.clone(),
                     range: (u.start, u.end),
                     name: u.name.clone(),
@@ -3240,6 +3305,19 @@ struct OracleShape {
     ambiguous: HashSet<(usize, usize)>,
 }
 
+/// Whether constructor record `ctor` describes the same written name as the
+/// non-constructor record spanning `named` — the name's record is the one that
+/// grades the site.
+///
+/// The same range is the common case. FCS also emits a second `.ctor` record
+/// for an attribute that starts one character *into* the written name
+/// (`[<Base>]`: `BaseAttribute` at `Base`, `.ctor` at `ase`), so the rule is
+/// that the two end together and the name's record encloses the constructor's
+/// — which is the cursor (the last byte) the comparison grades both at.
+fn constructor_shadowed_by(ctor: &ProjectUse, named: (usize, usize)) -> bool {
+    named.1 == ctor.end && named.0 <= ctor.start
+}
+
 impl OracleShape {
     /// Whether this record is the one to grade its site by.
     ///
@@ -3248,7 +3326,11 @@ impl OracleShape {
     /// type answer against it is a category error that passes only when the
     /// constructor's declaration range happens to coincide with its type's.
     fn grades(&self, u: &ProjectUse) -> bool {
-        !(u.is_constructor && self.named_at.contains(&(u.start, u.end)))
+        !(u.is_constructor
+            && self
+                .named_at
+                .iter()
+                .any(|named| constructor_shadowed_by(u, *named)))
     }
 
     fn is_ambiguous(&self, u: &ProjectUse) -> bool {
@@ -3281,7 +3363,11 @@ fn oracle_shape(file_uses: &FileUses) -> OracleShape {
     let mut answer_at: HashMap<(usize, usize), OracleAnswer<'_>> = HashMap::new();
     let mut ambiguous = HashSet::new();
     for u in file_uses.uses.iter().filter(gradable) {
-        if u.is_constructor && named_at.contains(&(u.start, u.end)) {
+        if u.is_constructor
+            && named_at
+                .iter()
+                .any(|named| constructor_shadowed_by(u, *named))
+        {
             continue;
         }
         let answer = (&u.decl, u.assembly.as_deref(), u.full_name.as_deref());
@@ -4568,8 +4654,10 @@ mod tests {
             &[],
         );
 
-        assert_eq!(served.answer_for(range(10, 16)), Some(answer));
-        assert_eq!(served.answer_for(range(20, 26)), None);
+        assert_eq!(
+            served.iter().collect::<Vec<_>>(),
+            vec![(range(10, 16), answer)]
+        );
     }
 
     /// A member entry a concrete resolver answer *contains* is not served, so it
@@ -4585,13 +4673,15 @@ mod tests {
         let env = marker_fixture_env();
         let answer = concrete_answer(&env);
         let covered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 58)]);
-        assert_eq!(covered.answer_for(range(43, 58)), None);
         assert_eq!(covered.iter().count(), 0);
 
         // Merely overlapping is not covering: a resolver answer that stops short
         // of the member name leaves it served.
         let uncovered = MemberCommits::served([(range(43, 58), answer)], &[range(36, 42)]);
-        assert_eq!(uncovered.answer_for(range(43, 58)), Some(answer));
+        assert_eq!(
+            uncovered.iter().collect::<Vec<_>>(),
+            vec![(range(43, 58), answer)]
+        );
     }
 
     #[test]

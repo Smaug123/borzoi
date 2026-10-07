@@ -661,15 +661,25 @@ the LSP answers from: the member table **inference** fills in
 the resolver's `Deferred(QualifiedAccess)` at a member name. An entry there is a
 go-to-definition target, and read through the resolver alone the site still
 looks deferred, so a wrong member answer could stand forever without moving a
-number. It reads **0** on the pinned corpus today: every member answer inference
-commits there is one the resolver already committed itself, so nothing is
-answered by inference alone. That is the honest state of the surface, not a
-fault — the guard is in place for when inference starts answering where the
-resolver cannot, and the fixtures in `project_resolution.rs` are what exercise
-the grading meanwhile. The two sides key one answer at different spans (FCS
-reports the whole access, inference the member name), so the comparison aligns
-on the span's **end**; keying on whole ranges compares nothing while reporting a
-clean run.
+number. It reads **1** on the pinned corpus today (2026-10-07): nearly every
+member answer inference commits there is one the resolver already committed
+itself, so almost nothing is answered by inference alone. That is the honest
+state of the surface, not a fault — the guard is in place for when inference
+starts answering where the resolver cannot, and the fixtures in
+`project_resolution.rs` are what exercise the grading meanwhile.
+
+All three surfaces are graded the same way: each oracle record is put to the
+LSP's own served-answer rule (`handlers::served_resolution_with_range`) for a
+cursor on the record's **last byte**, not looked up at the record's exact range.
+The two sides key one answer at different spans — FCS reports a member access
+over the whole access and a qualified value over the whole path, while inference
+keys the member name and the resolver records a deferral over each qualifier —
+so an exact-range lookup compares the wrong thing at both. At a qualifier it is
+worse than comparing nothing: the record's own answer is a deferral, while the
+LSP's containment rule decides what a cursor there is actually served, and a
+rule that reached past the deferral to the whole path's answer served the leaf
+for every module qualifier (1,111 wrong targets on the pinned corpus, none of
+them visible to the exact-range comparison).
 
 Two skip buckets travel with the attribute number, because asking the oracle
 about a range for the first time exposed that it can answer more than once.
@@ -686,9 +696,12 @@ written name is something else.
 
 `skipped_uses.ambiguous_oracle_range` is what survives that: a range where two
 records still disagree about the declaration after the constructor has stepped
-aside, so the oracle genuinely does not say what the site resolves to. It is
-decided on the oracle's answers alone, never on whether ours agrees, so it cannot
-become the bucket a real disagreement escapes into. Watch it against
+aside, so the oracle genuinely does not say what the site resolves to — or where
+a second, shorter non-constructor record also contains the cursor a record is
+graded at, so the oracle has two answers for that position (the indexer:
+FCS reports `Item` over all of `counts.[line]`, whose last byte is just past
+`line`). It is decided on the oracle's answers alone, never on whether ours
+agrees, so it cannot become the bucket a real disagreement escapes into. Watch it against
 `attribute_commits_compared`: a rise here alongside a fall there is coverage
 draining into "unadjudicable", which is the honest bucket but not a free one.
 

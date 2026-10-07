@@ -9,10 +9,8 @@
 //! generator only adds mutations (case, separators, digits) to catch
 //! parse-boundary behaviour.
 
-mod common;
-
+use crate::common::{FRAMEWORK_ZOO as CORNERS, Oracle, SplitMix64, gen_framework_string};
 use borzoi_nuget::NuGetFramework;
-use common::{FRAMEWORK_ZOO as CORNERS, Oracle, SplitMix64, gen_framework_string};
 
 /// The deliberate platform-grammar deviation (see `framework.rs`): true
 /// when the oracle's parsed platform contains a non-letter, i.e. a shape

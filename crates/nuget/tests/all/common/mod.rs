@@ -47,8 +47,8 @@ fn project_dir() -> PathBuf {
 /// scheme as `ensure_fcs_dump_built`, and for the same reasons: one marker
 /// file whose *contents* are the source fingerprint of the apphost on disk,
 /// so branch-switching can never leave a stale oracle answering for the
-/// wrong sources, while `cargo test`'s serial test binaries skip the ~2 s
-/// `dotnet build` after the first one has run it.
+/// wrong sources, while a run whose sources are unchanged skips the ~2 s
+/// `dotnet build` that an earlier run already paid.
 fn ensure_oracle_built() -> &'static Path {
     static BUILT: OnceLock<PathBuf> = OnceLock::new();
     BUILT

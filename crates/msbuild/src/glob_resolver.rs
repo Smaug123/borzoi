@@ -1,10 +1,13 @@
 //! Filesystem-backed MSBuild glob resolver — the imperative shell around
 //! the pure `crate::glob` matcher.
 //!
-//! `borzoi-msbuild` stays filesystem-free (gospel "dependency
-//! rejection"): its evaluator routes any globbing/excluding item element
-//! through a caller-supplied [`borzoi_msbuild::GlobResolver`]. This module *is* that
-//! resolver for the LSP — for each wildcard fragment it enumerates the
+//! The evaluator never touches the filesystem to glob (gospel "dependency
+//! rejection"): it routes any globbing/excluding item element through a
+//! caller-supplied [`crate::GlobResolver`]. This module is the resolver
+//! every caller in the workspace passes — the LSP, and the MSBuild
+//! differentials that must test exactly what the LSP runs, the same way
+//! [`crate::resolve_sdk`] is the shipped `SdkResolver`. For each wildcard
+//! fragment it enumerates the
 //! filesystem under the fragment's fixed (wildcard-free) prefix, drives
 //! `crate::glob::select`, passes literal fragments through unchanged, and
 //! joins everything in MSBuild's document order.
@@ -41,7 +44,7 @@
 
 use std::path::{Path, PathBuf};
 
-use borzoi_msbuild::GlobRequest;
+use crate::GlobRequest;
 
 use crate::glob::{Pattern, select, split_glob_root, split_segments};
 
@@ -49,7 +52,7 @@ use crate::glob::{Pattern, select, split_glob_root, split_segments};
 const MAX_GLOB_DEPTH: usize = 64;
 
 /// Expand one [`GlobRequest`] into the ordered list of absolute paths to
-/// splice as items. Suitable as a [`borzoi_msbuild::GlobResolver`].
+/// splice as items. Suitable as a [`crate::GlobResolver`].
 pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
     // The base directory is a *literal* filesystem path (it may legitimately
     // contain `*`/`?` on a case-sensitive Unix filesystem), so it is split
@@ -161,7 +164,7 @@ pub fn resolve(req: &GlobRequest<'_>) -> Vec<PathBuf> {
 /// root; `..` segments are pushed literally, not resolved.
 ///
 /// The walk root is rooted at the POSIX filesystem root `/`. Drive-letter /
-/// UNC Windows roots are deliberately out of scope: this LSP targets
+/// UNC Windows roots are deliberately out of scope: the LSP targets
 /// case-sensitive Unix-like agent environments (see the `glob` module), so a
 /// `C:`-style prefix segment would be re-rooted under `/` rather than
 /// preserved. Supporting Windows roots would mean modelling drive/UNC path

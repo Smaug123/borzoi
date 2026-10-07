@@ -7,10 +7,8 @@
 //! into ordered asset-type lists. Exact asset-list interpretation belongs with
 //! the resolver/asset-selection slices that consume it.
 
-mod common;
-
+use crate::common::{FRAMEWORK_ZOO, Oracle, SplitMix64};
 use borzoi_nuget::{NuGetFramework, parse_nuspec};
-use common::{FRAMEWORK_ZOO, Oracle, SplitMix64};
 
 const NUSPECS: &[&str] = &[
     r#"

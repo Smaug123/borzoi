@@ -50,7 +50,7 @@
 //!   proof that restore rejected it), though its *contents* are never read.
 //! - Only the winner's occurrence of a package is ever expanded.
 //!
-//! This is exact, not a heuristic — `tests/resolver_diff.rs` diffs it against the
+//! This is exact, not a heuristic — `tests/all/resolver_diff.rs` diffs it against the
 //! genuine restore engine, and the over-resolution above is pinned there by
 //! `a_losing_path_does_not_contribute_its_winners_dependencies`.
 //!

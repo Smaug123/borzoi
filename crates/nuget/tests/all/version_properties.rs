@@ -13,15 +13,13 @@
 //! shapes that make a mixed numeric/string rule non-transitive in general —
 //! a label that parses as `Int32` compares numerically, one that overflows
 //! degrades to a string — are exercised deliberately, from
-//! [`common::COMPARATOR_POOL`]; see [`laws_hold_over_every_triple_of_the_pool`]
+//! [`crate::common::COMPARATOR_POOL`]; see [`laws_hold_over_every_triple_of_the_pool`]
 //! for the exhaustive check and
 //! [`the_pooled_generator_reaches_the_adversarial_corners`] for the evidence
 //! that the random side reaches them too.
 
-mod common;
-
+use crate::common::COMPARATOR_POOL;
 use borzoi_nuget::NuGetVersion;
-use common::COMPARATOR_POOL;
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};

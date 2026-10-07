@@ -9,10 +9,8 @@
 //! stable run-to-run; the *random-input* exploration lives in the proptest
 //! file, which doesn't need cross-process reproducibility.
 
-mod common;
-
+use crate::common::{COMPARATOR_POOL, Oracle, SplitMix64, gen_version_string};
 use borzoi_nuget::NuGetVersion;
-use common::{COMPARATOR_POOL, Oracle, SplitMix64, gen_version_string};
 
 /// Hand-picked corners: every historically-fiddly shape gets a guaranteed
 /// seat regardless of what the generator happens to produce.
