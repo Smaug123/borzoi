@@ -4162,10 +4162,10 @@ impl<'a> Resolver<'a> {
     /// here", and an entity we decline to resolve through still answers yes.
     ///
     /// Just as deliberately **explicit-only** —
-    /// [`Self::explicit_open_reading_prefixes`], not
-    /// [`Self::open_reading_prefixes`]. The two surfaces this excludes both
-    /// sit *below* the enclosing namespace, so a project case reading beats them
-    /// and vetoing on them would lose resolutions we already had:
+    /// [`Self::explicit_open_reading_prefixes`], not the whole open ladder. The
+    /// two surfaces this excludes both sit *below* the enclosing namespace
+    /// ([`Self::implicit_open_reading_prefixes`]), so a project case reading
+    /// beats them and vetoing on them would lose resolutions we already had:
     ///
     /// - the **implicit** opens. F# auto-opens `Microsoft.FSharp.Core` into every
     ///   file, so a project union named `Option` / `Result` / `Choice` — names

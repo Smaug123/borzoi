@@ -43,29 +43,29 @@
 //!
 //! ## What this sweep says about the tier order
 //!
-//! A self-qualifier reached under a **prefix** is something today's ladder never
-//! gets to: the opens are walked first and supply the name before the enclosing
-//! namespace is tried. Move the enclosing namespace above the opens in
-//! `assembly_prefixes_by_priority` and this sweep goes red *vacuously* — no
-//! self-qualified head reaches FSharp.Core at all.
-//!
-//! Two rules are needed to make it green there, and only the first is in place:
+//! A self-qualifier is reached under a **prefix**, so this sweep is what holds
+//! the enclosing-namespace tier honest: that tier out-ranks the implicit opens,
+//! and inside `namespace N; module List` its reading of a written `List.rev` is
+//! `N.List.rev` — the current module, which FCS does not bind (FS0039). Without
+//! the two rules below no self-qualified head would reach FSharp.Core at all,
+//! and both are in place:
 //!
 //! - `assembly_path_records` asks `self_module_shadow_only` about the **source**
 //!   path rather than the prefix-expanded one. `N.List.rev` for a written
 //!   `List.rev` has head `N`, a namespace segment in no module chain, so asking
 //!   there classifies the reading `Occupied` and preempts the opens.
-//! - `resolve_assembly_path_over` must stop returning `ShadowDeferred` at an
-//!   `AssemblyPath::SelfModuleShadowed` reading, so a lower one can answer.
-//!   **Not done, and not separable** — see the note on
-//!   `tier_order_diff`'s `KNOWN_DIVERGENCES`. That reading can still supply the
-//!   member from the *assembly* side when the project module shares an FQN with
-//!   a referenced entity, and the walk has no way to say "the project half is
-//!   shadowed, the assembly half still answers". Modelling that is the
-//!   per-member merge, so the two land together.
+//! - that reading declines only when the assemblies hold a **rooting position**
+//!   for it. The `SelfModuleShadowed` verdict exists because an assembly entity
+//!   at the same FQN as the project module may still answer the path
+//!   (`Calc.Zero()` inside `Demo.Calc` binds the assembly's `Demo.Calc.Zero`),
+//!   which the walk cannot decide; where the assemblies root nothing there is no
+//!   such reading to be uncertain about, so it is an ordinary no-match and a
+//!   lower tier answers.
 //!
-//! Run the reorder experiment before touching either rule; it is the only thing
-//! that exercises them.
+//! The half still missing is the **per-member merge**: FCS merges a project
+//! module with a same-named assembly namespace member by member, and until that
+//! is modelled a reading the project really does occupy declines for the whole
+//! path. See the note on `tier_order_diff`'s `KNOWN_DIVERGENCES`.
 
 use std::path::{Path, PathBuf};
 

@@ -117,93 +117,46 @@ impl Order {
 /// recorded, so it states something about the compiler rather than rubber-stamps
 /// whatever the suite happened to print.
 const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
-    // `assembly_prefixes_by_priority` ranks ALL opens — the implicit ones
-    // (FSharp.Core's, and namespace-shaped `[<assembly: AutoOpen>]`s) included —
-    // above the enclosing namespace. FCS enters the enclosing namespace *after*
-    // assembly import, so it shadows every implicit open; only explicit source
-    // `open`s, which come later still, out-rank it. Order-independent, and not
-    // specific to manifest surfaces: a bare `Option` from inside a namespace
-    // declaring its own `Option` binds that one, not FSharp.Core's.
+    // What is left of the ladder error is the **implicit-open/root boundary**,
+    // and it is not an ordering we can get right: an assembly's root contents
+    // and its manifest `[<assembly: AutoOpen>]`s both enter the name environment
+    // at that assembly's import (`CheckDeclarations.fs`'s `AddCcuToTcEnv`, folded
+    // over the references), so *reference order* decides between two assemblies
+    // and no fixed rank reproduces it. The rows below are that boundary; the
+    // decoy-first twin of each agrees only because our fixed answer happens to
+    // be FCS's in that order.
     //
-    // **Reordering the walk alone does not fix this, and the cost is
-    // measured.** Moving the enclosing namespace above the implicit opens
-    // clears all six rows below and introduces no new divergence — and costs
-    // `resolve_real_project_diff` **627** assembly resolutions on
-    // WoofWare.PawPrint and **32** on WoofWare.PawPrint.Domain, every one a
-    // deferral where FCS binds. The reason is that the walk's *shadow risks*
-    // are keyed by the namespace prefix they live in but take their **rank**
-    // from wherever that prefix happens to sit in the walk, so moving a tier
-    // moves every veto attached to it. Two models are still entangled with
-    // the ladder, each isolated by disabling one arm and re-running rrpd:
+    // The other half of the error — the implicit opens ranked above the
+    // **enclosing namespace** — is fixed. The compiler settles it directly:
+    // `ImplicitlyOpenOwnNamespace` ("Inside `namespace X.Y.Z` there is an
+    // implicit open of `X.Y.Z`") runs after the whole `AddCcuToTcEnv` fold and
+    // before the file's own `open`s, and FCS's name environment is
+    // last-write-wins, so the enclosing namespace outranks every implicit open
+    // and yields only to explicit source `open`s.
     //
-    //  1. The **value** path cannot model FCS's per-member merge of a project
-    //     module with an assembly namespace, so a project `module List` in the
-    //     enclosing namespace preempts `Microsoft.FSharp.Collections`. That is
-    //     the bulk of PawPrint's 627; restricting the reorder to type position
-    //     left 37 when it was measured against a 617-loss tree.
-    //  2. Those last 37 are all a bare `Result` vetoed by
-    //     `auto_open_modules_in_namespace_shadow_type_named` at the enclosing
-    //     prefix — but an assembly `[<AutoOpen>]` module enters scope at
-    //     assembly-import time, *below* the enclosing namespace, so consulting
-    //     it there is the rank/keying conflation in its purest form.
+    // Its price is a **decline**, never a wrong target, and it is measured
+    // rather than argued: the whole-project differential loses 48 assembly
+    // agreements on the six pinned projects (3977 → 3929) and 661 on
+    // WoofWare.PawPrint (13888 → 13227), with divergences unmoved in both
+    // (2026-08-02). The decline census attributes it to one missing model, not
+    // to the ladder: FCS merges a project module with a same-named assembly
+    // namespace **per member** (`ProjectPathShadow`, 331 of PawPrint's;
+    // `ProjectTypePathShadow`, 37), so a project `module List` in the enclosing
+    // namespace now preempts `Microsoft.FSharp.Collections` for the whole path
+    // instead of falling through member by member. `AssemblyAutoOpenShadow` —
+    // the channel a rank fix would have addressed — is **zero** on both corpora
+    // before and after. That merge is the next slice, and the census sizes it.
     //
-    // A fourth was the same conflation in the project-`[<AutoOpen>]` channel
-    // (`project_shadow_at`), `Preemptive` and blind to which name it was
-    // guarding, which deferred *every* bare annotation in a file whose
-    // namespace held an auto-open module. Keying it on `project_type_named` is
-    // what took Domain's cost from 618 to the 32 above, and it is the shape the
-    // rest should follow: bound what a risk can be hiding before ranking it.
-    // Its dotted twin (`project_module_named`) is keyed the same way, and what
-    // is left over there is a *rank* error with the operands swapped — the
-    // `VExQ`/`VNsQ` rows below, where the risk is asked per prefix and so is
-    // under-ranked rather than over-ranked.
+    // The one part of it the reorder could not wait for is the **self-qualifier**
+    // reading, because `module List = …` inside `namespace N` is ordinary F#:
+    // the enclosing-namespace reading `N.List` is the current module, which FCS
+    // does not bind (FS0039). `assembly_path_records` now declines there only
+    // when the assemblies hold a rooting position for the reading — the case
+    // where an assembly entity really might answer it (`Calc.Zero()` inside
+    // `Demo.Calc` binds the assembly's `Demo.Calc.Zero`) — and treats a reading
+    // the assemblies cannot root at all as the no-match it is, so the walk
+    // carries on to FSharp.Core.
     //
-    // So the fix is to give each remaining shadow risk an explicit rank instead
-    // of inheriting the prefix's position, and only then move the tier. Until
-    // that lands these rows stay, and a reorder that clears them without
-    // addressing (1) and (2) trades a rare wrong target for hundreds of lost
-    // ones.
-    //
-    // The self-qualifier model was recorded as a third entry until it turned
-    // out not to be separable. Its *recognition* half is settled:
-    // `assembly_path_records` asks `self_module_shadow_only` about the source
-    // path, so `N.List.rev` for a written `List.rev` is no longer classified
-    // `Occupied` on account of a head the walk itself supplied.
-    //
-    // Its other half — letting a lower reading answer once a self shadow is
-    // seen, instead of deferring at it — folds into (1). A `SelfModuleShadowed`
-    // reading can still supply the member from the *assembly* side when the
-    // project module shares an FQN with a referenced entity (`Calc.Zero()`
-    // inside `Demo.Calc` binds the assembly's `Demo.Calc.Zero`, not a lower
-    // open's `Demo.Sub.Calc.Zero`), and nothing in the walk can say "the
-    // project half is shadowed, the assembly half still answers". That *is*
-    // the per-member merge, so the two land together and neither is a slice on
-    // its own. `resolve_self_qualifier_gen_diff`'s module docs carry the
-    // reorder experiment that exercises them.
-    (
-        "TEnNs/contributor-first",
-        "NsAuto",
-        "Enclosing",
-        "implicit opens outrank the enclosing namespace in our ladder; FCS puts them below it",
-    ),
-    (
-        "TEnNs/decoy-first",
-        "NsAuto",
-        "Enclosing",
-        "implicit opens outrank the enclosing namespace in our ladder; FCS puts them below it",
-    ),
-    (
-        "DEnNs/contributor-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs, reached as a dotted head: the tier error is not form-specific",
-    ),
-    (
-        "DEnNs/decoy-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs, reached as a dotted head: the tier error is not form-specific",
-    ),
     // We rank the implicit-open tier above root unconditionally. FCS has no
     // such tier: the root contents of an assembly and its manifest auto-opens
     // both enter the name environment at that assembly's import, so reference
@@ -221,39 +174,9 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
         "Root",
         "as TNsRo, reached as a dotted head: the tier error is not form-specific",
     ),
-    // The arity-1 twins of the two errors above. Both reproduce unchanged one
-    // arity up, which is the evidence that they are tier errors rather than
-    // anything the arity-keyed lookup introduces.
-    (
-        "GEnNs/contributor-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
-    ),
-    (
-        "GEnNs/decoy-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs at arity 1: the enclosing-namespace error is not arity-specific",
-    ),
-    // The dotted-head twins of the same two errors at arity 1. With `D` (dotted
-    // at arity 0) and `G` (bare at arity 1) already recorded, these complete the
-    // form × arity square: both errors reproduce on all four combinations, so
-    // neither is an artefact of the form the name is reached through nor of the
-    // arity-keyed leaf lookup, and the final-segment arity keying does not
-    // interact with head-tier precedence at all.
-    (
-        "HEnNs/contributor-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs, dotted head at arity 1: the error is neither form- nor arity-specific",
-    ),
-    (
-        "HEnNs/decoy-first",
-        "NsAuto",
-        "Enclosing",
-        "as TEnNs, dotted head at arity 1: the error is neither form- nor arity-specific",
-    ),
+    // The arity-1 twins of the error above. It reproduces unchanged one arity
+    // up, which is the evidence that it is a tier error rather than anything the
+    // arity-keyed lookup introduces.
     (
         "GNsRo/contributor-first",
         "NsAuto",
@@ -266,41 +189,15 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
         "Root",
         "as TNsRo, dotted head at arity 1: the error is neither form- nor arity-specific",
     ),
-    // The same two errors reached through the `Risk` dimension, where the tier
-    // that should win holds a *hidden* entity rather than a visible plant.
-    // Everything above needs the name declared at two visible tiers; these need
-    // it at one, with the winner behind an assembly `[<AutoOpen>]` module. So
-    // the error is not an artefact of two visible declarations contending —
-    // and the wrong commit here is strictly worse than the pair cases, because
-    // the veto that exists to catch exactly this hidden entity never runs: the
-    // implicit-open tier resolves and returns before the prefix carrying the
-    // risk is ever visited.
-    (
-        "SNsYEn/contributor-first",
-        "NsAuto",
-        "Hidden@Enclosing",
-        "as TEnNs, against a hidden winner: the implicit-open tier commits before the enclosing \
-         namespace's auto-open module is even looked at",
-    ),
-    (
-        "SNsYEn/decoy-first",
-        "NsAuto",
-        "Hidden@Enclosing",
-        "as TEnNs, against a hidden winner: the implicit-open tier commits before the enclosing \
-         namespace's auto-open module is even looked at",
-    ),
-    (
-        "VNsMEn/contributor-first",
-        "NsAuto",
-        "Hidden@Enclosing",
-        "as SNsYEn, reached as a dotted head",
-    ),
-    (
-        "VNsMEn/decoy-first",
-        "NsAuto",
-        "Hidden@Enclosing",
-        "as SNsYEn, reached as a dotted head",
-    ),
+    // The same error reached through the `Risk` dimension, where the tier that
+    // should win holds a *hidden* entity rather than a visible plant. Everything
+    // above needs the name declared at two visible tiers; these need it at one,
+    // with the winner behind an assembly `[<AutoOpen>]` module. So the error is
+    // not an artefact of two visible declarations contending — and the wrong
+    // commit here is strictly worse than the pair cases, because the veto that
+    // exists to catch exactly this hidden entity never runs: the implicit-open
+    // tier resolves and returns before the prefix carrying the risk is ever
+    // visited.
     (
         "SNsYRo/contributor-first",
         "NsAuto",
@@ -331,7 +228,10 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
     // ask it. Hoisting the question out of the loop is not a reorder either: a
     // preemptive veto asked once, before any tier, fires for every file holding
     // such a module, which is the cost the rank work exists to bound. So these
-    // four wait on it.
+    // two wait on it: only the **explicit**-open plant is left, because the
+    // enclosing namespace now out-ranks the implicit opens and so is reached
+    // before an implicit-open plant can commit (the `VNsQ` rows of
+    // `KNOWN_DEFERRALS`).
     (
         "VExQ/contributor-first",
         "Explicit",
@@ -345,18 +245,6 @@ const KNOWN_DIVERGENCES: &[(&str, &str, &str, &str)] = &[
         "Hidden@Project",
         "a project [<AutoOpen>] module owns this dotted head, but it lives in the enclosing \
          namespace and the plant sits at the explicit open, which our walk commits first",
-    ),
-    (
-        "VNsQ/contributor-first",
-        "NsAuto",
-        "Hidden@Project",
-        "as VExQ, with the plant at the implicit open",
-    ),
-    (
-        "VNsQ/decoy-first",
-        "NsAuto",
-        "Hidden@Project",
-        "as VExQ, with the plant at the implicit open",
     ),
 ];
 
@@ -379,12 +267,14 @@ const WRONG_ARITY_DENIALS: &[(&str, &str)] = &[];
 /// them. Each is stated once because every row it labels is the same modelling
 /// gap reached from a different case.
 mod decline {
-    /// The blocker itself. The hidden entity could bind the probe's form, but
-    /// it sits at the implicit-open tier and FCS binds the *visible* plant
-    /// above it. `ShadowVeto::Preemptive` has no rank: it ends
-    /// the whole walk from wherever the prefix carrying the risk happens to
-    /// sit, and our ladder reaches the implicit opens before the tier that
-    /// actually wins.
+    /// The hidden entity could bind the probe's form, but it sits at the
+    /// implicit-open tier and FCS binds the *visible* plant above it. A
+    /// `ShadowVeto::Vetoed` verdict has no rank of its own: it ends the whole
+    /// walk from wherever the prefix carrying the risk happens to
+    /// sit. Only the **root**-tier plants still reach this, since the ladder
+    /// now visits the implicit opens after the enclosing namespace and before
+    /// the root, and the implicit-open/root boundary is the one FCS decides by
+    /// reference order rather than by rank.
     pub const RISK_BELOW_THE_PLANT: &str = "the hidden entity is real but enters scope below the tier FCS binds; the veto carries no \
          rank, so reaching its prefix first ends the walk before the winning tier is tried";
 
@@ -489,23 +379,13 @@ const NOTHING: &str = "nothing";
 /// standing reason. The verdict is what makes the row two-sided on the
 /// *reason*: `deferred` alone would let every guard-moving change through.
 const KNOWN_DEFERRALS: &[(&str, &str, &str, &str)] = &[
-    // The blocker's own signature: the hidden entity sits at the
-    // implicit-open tier, below the plant FCS binds, and the unranked veto
-    // ends the walk from there. Every one is a bare/dotted pair of the same
-    // two cases, which is the evidence it is a rank error and not a channel
-    // one. 6 cases.
-    (
-        "SEnYNs/contributor-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::RISK_BELOW_THE_PLANT,
-    ),
-    (
-        "SEnYNs/decoy-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::RISK_BELOW_THE_PLANT,
-    ),
+    // The rank error that survives the ladder: the hidden entity sits at the
+    // implicit-open tier, below the plant FCS binds, and the unranked veto ends
+    // the walk from there. Only the **root**-tier plants are left — the
+    // enclosing-namespace ones now out-rank the implicit opens outright — and
+    // the implicit-open/root boundary is the one FCS decides by reference
+    // order, which is why these two remain. A bare/dotted pair of one case. 2
+    // cases.
     (
         "SRoYNs/contributor-first",
         "deferred:assembly_auto_open_shadow@implicit_open",
@@ -513,22 +393,80 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str, &str)] = &[
         decline::RISK_BELOW_THE_PLANT,
     ),
     (
-        "VEnMNs/contributor-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::RISK_BELOW_THE_PLANT,
-    ),
-    (
-        "VEnMNs/decoy-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::RISK_BELOW_THE_PLANT,
-    ),
-    (
         "VRoMNs/contributor-first",
         "deferred:assembly_auto_open_shadow@implicit_open",
         "Root",
         decline::RISK_BELOW_THE_PLANT,
+    ),
+    // The mirror image, and the ladder's own price: the risk now sits at the
+    // enclosing namespace, which out-ranks the implicit-open plant, so the veto
+    // fires *above* the tier FCS binds. In `SNsYEn`/`VNsMEn` FCS binds the
+    // hidden entity and the deferral is the right answer; in `SNsMEn`/`VNsYEn`
+    // what is hidden cannot bind the probe's form, so it is the shape-blindness
+    // of the channel rather than its rank. 8 cases.
+    (
+        "SNsYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "Hidden@Enclosing",
+        decline::HIDDEN_WINS,
+    ),
+    (
+        "SNsYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "Hidden@Enclosing",
+        decline::HIDDEN_WINS,
+    ),
+    (
+        "VNsMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "Hidden@Enclosing",
+        decline::HIDDEN_WINS,
+    ),
+    (
+        "VNsMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "Hidden@Enclosing",
+        decline::HIDDEN_WINS,
+    ),
+    (
+        "SNsMEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "NsAuto",
+        decline::NAME_KEYED_SHAPE_BLIND,
+    ),
+    (
+        "SNsMEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "NsAuto",
+        decline::NAME_KEYED_SHAPE_BLIND,
+    ),
+    (
+        "VNsYEn/contributor-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "NsAuto",
+        decline::NAME_KEYED_SHAPE_BLIND,
+    ),
+    (
+        "VNsYEn/decoy-first",
+        "deferred:assembly_auto_open_shadow@enclosing_namespace",
+        "NsAuto",
+        decline::NAME_KEYED_SHAPE_BLIND,
+    ),
+    // The project channel's twin of the row above: the enclosing namespace now
+    // out-ranks the implicit-open plant, so the project `[<AutoOpen>]` module —
+    // which really does declare this dotted head — is consulted before the plant
+    // and correctly wins. 2 cases.
+    (
+        "VNsQ/contributor-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
+    ),
+    (
+        "VNsQ/decoy-first",
+        "deferred:project_auto_open_shadow@enclosing_namespace",
+        "Hidden@Project",
+        decline::PROJECT_HIDDEN_WINS,
     ),
     // Risk and plant share the root tier and FCS binds the plant. 2 cases.
     (
@@ -568,18 +506,6 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str, &str)] = &[
     (
         "SEnMEx/decoy-first",
         "deferred:assembly_auto_open_shadow@explicit_open",
-        "Enclosing",
-        decline::NAME_KEYED_SHAPE_BLIND,
-    ),
-    (
-        "SEnMNs/contributor-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::NAME_KEYED_SHAPE_BLIND,
-    ),
-    (
-        "SEnMNs/decoy-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
@@ -688,18 +614,6 @@ const KNOWN_DEFERRALS: &[(&str, &str, &str, &str)] = &[
     (
         "VEnYEx/decoy-first",
         "deferred:assembly_auto_open_shadow@explicit_open",
-        "Enclosing",
-        decline::NAME_KEYED_SHAPE_BLIND,
-    ),
-    (
-        "VEnYNs/contributor-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
-        "Enclosing",
-        decline::NAME_KEYED_SHAPE_BLIND,
-    ),
-    (
-        "VEnYNs/decoy-first",
-        "deferred:assembly_auto_open_shadow@implicit_open",
         "Enclosing",
         decline::NAME_KEYED_SHAPE_BLIND,
     ),
