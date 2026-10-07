@@ -504,7 +504,7 @@ fn inferred_types_match_fcs_over_corpus() {
     let limit = env_usize_or("BORZOI_INFER_DIFF_LIMIT", usize::MAX);
     let mut all = Vec::new();
     collect_fs(&root, &mut all);
-    all.sort();
+    crate::common::corpus_manifest::sort_by_corpus_key(&root, &mut all);
     let sample: Vec<PathBuf> = all.iter().step_by(stride).take(limit).cloned().collect();
     assert!(!sample.is_empty(), "no .fs files under {root:?}");
     eprintln!(

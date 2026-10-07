@@ -114,11 +114,11 @@ src/LegacyMSBuildResolver/LegacyMSBuildReferenceResolver.fs:66:3 "Literal" commi
 src/LegacyMSBuildResolver/LegacyMSBuildReferenceResolver.fs:69:3 "Literal" commit
 src/LegacyMSBuildResolver/LegacyMSBuildReferenceResolver.fs:72:3 "Literal" commit
 tests/FSharp.Build.UnitTests/MapSourceRootsTests.fs compared fcs-check-errors
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc~nix~case~hack~1/checked/UncheckedDefaultOf01.fs compared fcs-clean
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc~nix~case~hack~1/dumpAllCommandLineOptions/dummy.fs compared fcs-clean
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc~nix~case~hack~1/platform/error_02.fs compared fcs-clean
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc~nix~case~hack~1/standalone/E_MayNotIncludeEXE.fs compared fcs-check-errors
-tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc~nix~case~hack~1/tokenize/tokenize01.fs compared fcs-clean
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/checked/UncheckedDefaultOf01.fs compared fcs-clean
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/dumpAllCommandLineOptions/dummy.fs compared fcs-clean
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/platform/error_02.fs compared fcs-clean
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/standalone/E_MayNotIncludeEXE.fs compared fcs-check-errors
+tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsc/tokenize/tokenize01.fs compared fcs-clean
 tests/FSharp.Compiler.ComponentTests/CompilerOptions/fsi/Langversion.fs compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/Basic/E_privateThingsInaccessible04.fs compared fcs-check-errors
 tests/FSharp.Compiler.ComponentTests/Conformance/BasicGrammarElements/AccessibilityAnnotations/OnTypeMembers/E_OnProperty02.fs our-parse-errors

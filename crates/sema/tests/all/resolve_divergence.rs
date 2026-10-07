@@ -244,7 +244,7 @@ fn regenerate_resolution_divergence_report() {
 
     let mut all_files = Vec::new();
     collect_fs(&root, &mut all_files);
-    all_files.sort();
+    crate::common::corpus_manifest::sort_by_corpus_key(&root, &mut all_files);
     let sample: Vec<PathBuf> = all_files
         .iter()
         .step_by(stride)

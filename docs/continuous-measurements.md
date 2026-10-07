@@ -212,6 +212,26 @@ it is a wrong answer. One stands today, and the manifest names it:
 an enclosing `let x` where F# binds the callee's parameter — the limitation
 `resolve/exprs.rs` documents at `is_named_arg_label`.
 
+A manifest is only exact if every host computes the same one, and two things
+had to be pinned for that:
+
+- **The oracle's reference set.** FCS's script checks take their framework
+  references from the runtime `fcs-dump` runs on. CI used to publish it
+  self-contained, which made that runtime the bundle's own directory: every
+  check, in every lane, resolved against implementation assemblies plus
+  `FSharp.Compiler.Service` and `fcs-dump` themselves, rather than the SDK
+  reference pack a local `dotnet build` uses. Corpus files that `open` the
+  compiler's namespaces then partly checked in CI, which moved ~870 resolution
+  matches. A one-sided floor could not see that; the manifest failed on it at
+  once. CI now publishes framework-dependent, and `fcs-dump` refuses to start
+  self-contained.
+- **File keys.** On a case-insensitive file system Nix stores a name that
+  collides case-insensitively with a sibling under a `~nix~case~hack~<n>`
+  suffix (the corpus has both `CompilerOptions/Fsc` and `CompilerOptions/fsc`).
+  Keys decode it, files are sorted by their decoded components so a strided
+  sample picks the same files everywhere, and two files decoding to one key
+  fail the sweep.
+
 The comparison helper is `borzoi_oracle_harness::manifest`, deliberately outside
 `sema`. The other crates' corpus gates still assert one-sided counts with slack
 — `cst`'s `MAX_WE_ACCEPT_FCS_REJECTS`, `assembly`'s `bcl_ref_pack_sweep`, the

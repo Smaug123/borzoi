@@ -67,7 +67,7 @@ fn workspace_root() -> PathBuf {
 
 /// Run `fcs-dump <subcommand> <source>` and return its stdout as a UTF-8 string.
 ///
-/// Honours `BORZOI_FCS_DUMP` (path to a pre-built self-contained binary)
+/// Honours `BORZOI_FCS_DUMP` (path to a pre-built framework-dependent binary)
 /// when set; otherwise builds `tools/fcs-dump` via [`ensure_fcs_dump_built`]
 /// (sentinel-gated, so the build runs at most once per source change across the
 /// whole `cargo test`) and execs the resulting apphost on every call.

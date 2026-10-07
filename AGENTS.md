@@ -243,8 +243,13 @@ via `dotnet build -c Release`; the first test run builds it). It serialises FCS'
 `ParsedInput`/token streams to JSON; the Rust harness drives a *long-lived*
 `fcs-dump …-batch` child over stdin/stdout to amortise .NET startup (so don't
 switch the runner to cargo-nextest — separate test binaries defeat the batching).
-Override the binary with `BORZOI_FCS_DUMP=/path/to/fcs-dump`. To inspect
-the FCS side directly:
+Override the binary with `BORZOI_FCS_DUMP=/path/to/fcs-dump`; it must be a
+**framework-dependent** build (`dotnet publish --self-contained false`, or the
+`dotnet build` output). FCS's script checks take their framework references from
+the runtime fcs-dump runs on, so a self-contained bundle would check every file
+against its own directory — implementation assemblies plus
+FSharp.Compiler.Service itself — and fcs-dump refuses to start that way. To
+inspect the FCS side directly:
 
 ```sh
 nix develop -c dotnet build tools/fcs-dump/fcs-dump.fsproj -c Release

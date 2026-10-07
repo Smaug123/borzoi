@@ -303,7 +303,7 @@ fn corpus_attributes_agree_with_fcs() {
     let mut all_files = Vec::new();
     let root = PathBuf::from(root);
     collect_fs(&root, &mut all_files);
-    all_files.sort();
+    crate::common::corpus_manifest::sort_by_corpus_key(&root, &mut all_files);
     let sample: Vec<PathBuf> = all_files
         .iter()
         .step_by(stride)

@@ -176,14 +176,20 @@ jobs:
           esac
           echo "rid=$rid" >> "$GITHUB_OUTPUT"
 
-      - name: Publish fcs-dump (self-contained)
+      - name: Publish fcs-dump (framework-dependent)
         if: steps.gate.outputs.run == 'true'
+        # Framework-dependent, like the local `dotnet build` the harnesses fall
+        # back to: FCS's script checks take their framework references from the
+        # runtime fcs-dump runs on, which must be the SDK's (the reference pack).
+        # A self-contained bundle would hand every check its own directory —
+        # implementation assemblies plus FSharp.Compiler.Service itself — and
+        # fcs-dump refuses to run that way. Every consumer runs under
+        # `nix develop`, whose DOTNET_ROOT the apphost resolves the runtime from.
         run: |
           nix develop --command dotnet publish tools/fcs-dump \
             -c Release \
             -r ${{ steps.rid.outputs.rid }} \
-            --self-contained true \
-            -p:PublishSingleFile=false \
+            --self-contained false \
             -o "$RUNNER_TEMP/fcs-dump-bundle"
 
       - name: Package fcs-dump bundle
